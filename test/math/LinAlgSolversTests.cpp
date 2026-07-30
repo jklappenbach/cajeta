@@ -329,6 +329,171 @@ TEST(LinAlgSolversTests, qrLauchliOrthogonalityHouseholderBound) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 3.1.1 / 3.1.2 — factor application: choSolve from the cholesky factor and
+// luSolve from the [P,L,U] bag each agree with the direct solve, vector and
+// multi-RHS, f64 (1e-12) + one f32 choSolve case (1e-3). The LU fixture is
+// the pivot-forcing A from the Unit-1 test (A[0][0] = 0).
+TEST(LinAlgSolversTests, choSolveLuSolveMatchDirectSolve) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        // SPD fixture
+        "        float64[] ds = [ 4.0, 1.0, 1.0, 1.0, 3.0, 0.0, 1.0, 0.0, 2.0 ];\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float64> spd = Tensor.of<float64>(ds, s33);\n"
+        "        Tensor<float64> b = D.mkB();\n"
+        "        Tensor<float64> bm = D.mkB2();\n"
+        "        Tensor<float64> lch = LinAlg.cholesky<float64>(spd);\n"
+        "        Tensor<float64> xc = LinAlg.choSolve<float64>(lch, b);\n"
+        "        Tensor<float64> xd = LinAlg.solve<float64>(spd, b);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 3) {\n"
+        "            if (!D.close(xc.get1(i), xd.get1(i))) { return -1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float64> xcm = LinAlg.choSolve<float64>(lch, bm);\n"
+        "        Tensor<float64> xdm = LinAlg.solve<float64>(spd, bm);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            int64 c = 0;\n"
+        "            while (c < 2) {\n"
+        "                if (!D.close(xcm.get2(i, c), xdm.get2(i, c))) { return -2; }\n"
+        "                c = c + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // luSolve on the pivot-forcing fixture
+        "        float64[] da = [ 0.0, 2.0, 1.0, 1.0, 1.0, -1.0, 3.0, -1.0, 2.0 ];\n"
+        "        Tensor<float64> a = Tensor.of<float64>(da, s33);\n"
+        "        Tensor<float64>[] plu = LinAlg.lu<float64>(a);\n"
+        "        Tensor<float64> xl = LinAlg.luSolve<float64>(plu[0], plu[1], plu[2], b);\n"
+        "        Tensor<float64> xs = LinAlg.solve<float64>(a, b);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            if (!D.close(xl.get1(i), xs.get1(i))) { return -3; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float64> xlm = LinAlg.luSolve<float64>(plu[0], plu[1], plu[2], bm);\n"
+        "        Tensor<float64> xsm = LinAlg.solve<float64>(a, bm);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            int64 c = 0;\n"
+        "            while (c < 2) {\n"
+        "                if (!D.close(xlm.get2(i, c), xsm.get2(i, c))) { return -4; }\n"
+        "                c = c + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // f32 choSolve
+        "        float32[] dsf = [ 4.0f, 1.0f, 1.0f, 1.0f, 3.0f, 0.0f, 1.0f, 0.0f, 2.0f ];\n"
+        "        Tensor<float32> spdf = Tensor.of<float32>(dsf, s33);\n"
+        "        float32[] dbf = [ 2.0f, 7.0f, 9.0f ];\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float32> bf = Tensor.of<float32>(dbf, s3);\n"
+        "        Tensor<float32> lchf = LinAlg.cholesky<float32>(spdf);\n"
+        "        Tensor<float32> xcf = LinAlg.choSolve<float32>(lchf, bf);\n"
+        "        Tensor<float32> xdf = LinAlg.solve<float32>(spdf, bf);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            if (!D.closeF(xcf.get1(i), xdf.get1(i))) { return -5; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 3.1.3 / 3.1.4 — consumer-grade lstsq on a (20,3) quadratic-fit design
+// matrix (rows [1, t, t^2], t = i/10, deterministic +-0.01 noise; the
+// fixture is reconstructed in-language with the same f64 expressions numpy
+// evaluated, so inputs are bit-identical to the pin computation).
+// numpy pins: x = [2.0014285714285713, 0.4984962406015036,
+// -1.4999999999999996]; second RHS column [-1.0014285714285716,
+// 1.0015037593984961, 0.24999999999999978]. Square input equals solve;
+// normal-equations path (choSolve of A^T A) agrees to 1e-8.
+TEST(LinAlgSolversTests, lstsqTallMatchesNumpyAndNormalEquations) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        "        int64[] s203 = heap int64[2]; s203[0] = 20; s203[1] = 3;\n"
+        "        Tensor<float64> a = Tensor.zeros<float64>(s203);\n"
+        "        int64[] s20 = heap int64[1]; s20[0] = 20;\n"
+        "        Tensor<float64> y1 = Tensor.zeros<float64>(s20);\n"
+        "        int64[] s202 = heap int64[2]; s202[0] = 20; s202[1] = 2;\n"
+        "        Tensor<float64> ym = Tensor.zeros<float64>(s202);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 20) {\n"
+        "            float64 t = (float64) i / 10.0;\n"
+        "            float64 noise = 0.01;\n"
+        "            if (i % 2 == 1) { noise = -0.01; }\n"
+        "            a.flatSet(i * 3, 1.0);\n"
+        "            a.flatSet(i * 3 + 1, t);\n"
+        "            a.flatSet(i * 3 + 2, t * t);\n"
+        "            float64 v1 = 2.0 + 0.5 * t - 1.5 * (t * t) + noise;\n"
+        "            float64 v2 = -1.0 + 1.0 * t + 0.25 * (t * t) - noise;\n"
+        "            y1.set1(i, v1);\n"
+        "            ym.flatSet(i * 2, v1);\n"
+        "            ym.flatSet(i * 2 + 1, v2);\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // vector lstsq vs numpy
+        "        Tensor<float64> x = LinAlg.lstsq<float64>(a, y1);\n"
+        "        if (x.ndim() != 1 || x.shapeAt(0) != 3) { return -1; }\n"
+        "        if (!D.close(x.get1(0), 2.0014285714285713)) { return -2; }\n"
+        "        if (!D.close(x.get1(1), 0.4984962406015036)) { return -3; }\n"
+        "        if (!D.close(x.get1(2), -1.4999999999999996)) { return -4; }\n"
+        // multi-RHS: column 0 matches the vector solve, column 1 matches numpy
+        "        Tensor<float64> xm = LinAlg.lstsq<float64>(a, ym);\n"
+        "        if (xm.ndim() != 2 || xm.shapeAt(0) != 3 || xm.shapeAt(1) != 2) { return -5; }\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            if (xm.get2(i, 0) != x.get1(i)) { return -6; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (!D.close(xm.get2(0, 1), -1.0014285714285716)) { return -7; }\n"
+        "        if (!D.close(xm.get2(1, 1), 1.0015037593984961)) { return -8; }\n"
+        "        if (!D.close(xm.get2(2, 1), 0.24999999999999978)) { return -9; }\n"
+        // square input equals solve (well-conditioned)
+        "        float64[] dq = [ 4.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0 ];\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float64> sq = Tensor.of<float64>(dq, s33);\n"
+        "        Tensor<float64> b3 = D.mkB();\n"
+        "        Tensor<float64> xq = LinAlg.lstsq<float64>(sq, b3);\n"
+        "        Tensor<float64> xqs = LinAlg.solve<float64>(sq, b3);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            if (!D.close(xq.get1(i), xqs.get1(i))) { return -10; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        // 3.1.4 normal equations: choSolve(cholesky(A^T A), A^T y) vs lstsq
+        "        Tensor<float64> g = Tensor.matmul<float64>(a.transpose(), a);\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float64> aty = Tensor.zeros<float64>(s3);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            float64 acc = 0.0;\n"
+        "            int64 r = 0;\n"
+        "            while (r < 20) {\n"
+        "                acc = acc + a.get2(r, i) * y1.get1(r);\n"
+        "                r = r + 1;\n"
+        "            }\n"
+        "            aty.set1(i, acc);\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float64> lg = LinAlg.cholesky<float64>(g);\n"
+        "        Tensor<float64> xn = LinAlg.choSolve<float64>(lg, aty);\n"
+        "        i = 0;\n"
+        "        while (i < 3) {\n"
+        "            float64 dd = xn.get1(i) - x.get1(i);\n"
+        "            if (dd < 0.0) { dd = -dd; }\n"
+        "            if (dd > 0.00000001) { return -11; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 1.1.4 — a zero diagonal in a non-unit triangular solve throws (no NaN
 // propagation); the SAME matrix under unitDiag is legal (diagonal ignored).
 TEST(LinAlgSolversTests, solveTriangularSingularThrowsUnitDiagIgnores) {

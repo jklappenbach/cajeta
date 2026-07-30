@@ -348,6 +348,58 @@ public final class LinAlg {
     }
 
     /**
+     * Solve the SPD system `A·x = B` from its Cholesky factor (scipy `cho_solve`):
+     * `L·y = B` forward, then `Lᵀ·x = y` backward — factor once with
+     * {@link #cholesky}, solve many, at half the cost of LU and with no re-factor.
+     * `l` is the `(n,n)` lower factor; `b` is `(n,)` or `(n,k)`.
+     *
+     * @EntryPoint
+     */
+    public static #Tensor<E> choSolve<E extends Floating>(Tensor<E> l, Tensor<E> b) {
+        Tensor<E> y = LinAlg.solveTriangular<E>(l, b, true, false, false);
+        Tensor<E> x = LinAlg.solveTriangular<E>(l, y, true, false, true);
+        return #x;
+    }
+
+    /**
+     * Solve `A·x = B` from the `[P, L, U]` bag of {@link #lu} (scipy `lu_solve`):
+     * `A = P·L·U`, so apply `Pᵀ` to `B`, forward-substitute through the
+     * unit-lower `L`, back-substitute through `U`. `b` is `(n,)` or `(n,k)`.
+     *
+     * @EntryPoint
+     */
+    public static #Tensor<E> luSolve<E extends Floating>(
+            Tensor<E> p, Tensor<E> l, Tensor<E> u, Tensor<E> b) {
+        int64 n = l.shapeAt(0);
+        if (b.ndim() < 1 || b.ndim() > 2 || b.shapeAt(0) != n) {
+            throw heap LinAlgException("luSolve: b must be (n,) or (n,k) with rows matching l");
+        }
+        int64 k = 1;
+        if (b.ndim() == 2) { k = b.shapeAt(1); }
+        Tensor<E> bsrc = b.copy();
+        Tensor<E> bp = b.copy();
+        // bp = Pᵀ·B (P has exactly one 1 per column: P[perm[i]][i] = 1)
+        int64 i = 0;
+        while (i < n) {
+            int64 c = 0;
+            while (c < k) {
+                E acc = (E) 0;
+                int64 r = 0;
+                while (r < n) {
+                    acc = acc + p.get2(r, i) * bsrc.flatGet(r * k + c);
+                    r = r + 1;
+                }
+                bp.flatSet(i * k + c, acc);
+                c = c + 1;
+            }
+            i = i + 1;
+        }
+        Tensor<E> y = LinAlg.solveTriangular<E>(l, bp, true, false, false);
+        Tensor<E> x = LinAlg.solveTriangular<E>(u, y, false, false, false);
+        return #x;
+    }
+
+    /**
      * QR factorization (numpy `linalg.qr`, reduced mode) of a `(m,n)` matrix via
      * Householder reflections. Returns `[Q, R]` with `A = Q·R`: `Q (m,r)` has
      * orthonormal columns, `R (r,n)` is upper-triangular, `r = min(m,n)`. Householder
@@ -727,28 +779,102 @@ public final class LinAlg {
     }
 
     /**
-     * Least-squares solution of `A·x ≈ b` (numpy `linalg.lstsq`) via the pseudo-inverse:
-     * `x = A⁺·b`. For a nonsingular square `A` this equals `solve`; for rank-deficient
-     * `A` it returns the minimum-norm solution. `b` is a length-`n` vector.
+     * Least-squares solution of `A·x ≈ B` (numpy `linalg.lstsq`) for a full-rank
+     * `(m,n)` design matrix, `m ≥ n`: Householder QR, `x = R⁻¹·(Qᵀ·B)` — the
+     * numerically-correct regression path (sklearn's LinearRegression algorithm).
+     * `B` is `(m,)` or `(m,k)` (multi-RHS); the result is `(n,)` / `(n,k)`. For a
+     * nonsingular square `A` this equals `solve`. A near-rank-deficient SQUARE
+     * system falls back to the graceful pseudo-inverse minimum-norm solution (the
+     * pre-QR behavior); rank-deficient TALL input and `m < n` (underdetermined
+     * minimum-norm) throw until the svd fallback lands (linalg-solvers Unit 4).
      */
     public static #Tensor<E> lstsq<E extends Floating>(Tensor<E> a, Tensor<E> b) {
-        int64 n = a.shapeAt(0);
-        Tensor<E> p = LinAlg.pinv<E>(a);
-        int64[] vs = heap int64[1];
-        vs[0] = n;
-        Tensor<E> x = Tensor.zeros<E>(vs);
+        if (a.ndim() != 2) {
+            throw heap LinAlgException("lstsq: a must be 2-D (m,n)");
+        }
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        if (m < n) {
+            throw heap LinAlgException("lstsq: m < n pending the svd minimum-norm fallback (linalg-solvers U4)");
+        }
+        if (b.ndim() < 1 || b.ndim() > 2 || b.shapeAt(0) != m) {
+            throw heap LinAlgException("lstsq: b must be (m,) or (m,k) with rows matching a");
+        }
+        int64 k = 1;
+        if (b.ndim() == 2) { k = b.shapeAt(1); }
+        Tensor<E>[] f = LinAlg.qr<E>(a);
+        Tensor<E> q = f[0];                    // (m,n)
+        Tensor<E> r = f[1];                    // (n,n)
+        E rmax = (E) 0;
+        int64 d = 0;
+        while (d < n) {
+            E rv = LinAlg.absE<E>(r.get2(d, d));
+            if (rv > rmax) { rmax = rv; }
+            d = d + 1;
+        }
+        E tol = rmax / (E) 1000000;
+        boolean deficient = false;
+        d = 0;
+        while (d < n) {
+            if (LinAlg.absE<E>(r.get2(d, d)) <= tol) { deficient = true; }
+            d = d + 1;
+        }
+        if (deficient) {
+            if (m != n || b.ndim() != 1) {
+                throw heap LinAlgException("lstsq: rank-deficient input pending the svd fallback (linalg-solvers U4)");
+            }
+            // graceful minimum-norm for the square case, as before: x = A⁺·b
+            Tensor<E> pv = LinAlg.pinv<E>(a);
+            int64[] vs = heap int64[1];
+            vs[0] = n;
+            Tensor<E> xm = Tensor.zeros<E>(vs);
+            int64 i2 = 0;
+            while (i2 < n) {
+                E acc = (E) 0;
+                int64 j2 = 0;
+                while (j2 < n) {
+                    acc = acc + pv.get2(i2, j2) * b.get1(j2);
+                    j2 = j2 + 1;
+                }
+                xm.set1(i2, acc);
+                i2 = i2 + 1;
+            }
+            return #xm;
+        }
+        // c = Qᵀ·B, computed as (n,k) regardless of b's rank
+        Tensor<E> bsrc = b.copy();
+        int64[] csh = heap int64[2];
+        csh[0] = n;
+        csh[1] = k;
+        Tensor<E> c2 = Tensor.zeros<E>(csh);
         int64 i = 0;
         while (i < n) {
-            E acc = (E) 0;
-            int64 j = 0;
-            while (j < n) {
-                acc = acc + p.get2(i, j) * b.get1(j);
-                j = j + 1;
+            int64 c = 0;
+            while (c < k) {
+                E acc = (E) 0;
+                int64 rr = 0;
+                while (rr < m) {
+                    acc = acc + q.get2(rr, i) * bsrc.flatGet(rr * k + c);
+                    rr = rr + 1;
+                }
+                c2.flatSet(i * k + c, acc);
+                c = c + 1;
             }
-            x.set1(i, acc);
             i = i + 1;
         }
-        return #x;
+        Tensor<E> x2 = LinAlg.solveTriangular<E>(r, c2, false, false, false);
+        if (b.ndim() == 1) {
+            int64[] vs2 = heap int64[1];
+            vs2[0] = n;
+            Tensor<E> xv = Tensor.zeros<E>(vs2);
+            int64 i3 = 0;
+            while (i3 < n) {
+                xv.set1(i3, x2.get2(i3, 0));
+                i3 = i3 + 1;
+            }
+            return #xv;
+        }
+        return #x2;
     }
 
     /**
