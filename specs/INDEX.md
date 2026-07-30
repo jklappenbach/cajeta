@@ -44,4 +44,5 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [xpu-build-ergonomics](xpu-build-ergonomics-spec.md) | — | draft |
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
+| [linalg-solvers](linalg-solvers-spec.md) | [plan](../agents/linalg-solvers-plan.md) | draft — spec+plan authored 2026-07-29, awaiting approval (unblocks cajeta-ml) |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
