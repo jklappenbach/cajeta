@@ -13,6 +13,14 @@
 > This is a **spec** — requirements and use cases (the *why/what*). Build decisions (the
 > *how*) are deferred as `> **TBD (plan-time):**` markers and collected in §13, to be
 > resolved when this spec is turned into a plan. Outline-numbered for addressability.
+>
+> **Amendment (2026-07-29, python-stack-analysis §4.7):** the façade ships as an
+> **external library** (the cajeta-xgboost model), not stdlib, and the engines it skins
+> are distributed per §4.7 — sparse type in núcleo, factorizations in
+> `cajeta.math.linalg` (`specs/linalg-solvers-spec.md`), algorithm families in
+> per-domain external `cajeta-*` libs commissioned on demand. There is no `cajeta-scipy`
+> monolith; this façade is the muscle-memory *skin* only. Reference source pinned:
+> scipy v1.18.0 at `code/ml/scipy-ref`.
 
 ## 1. Definition
 

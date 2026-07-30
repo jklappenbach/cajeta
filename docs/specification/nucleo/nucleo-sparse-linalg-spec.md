@@ -13,6 +13,23 @@
 > (the *how*) are deferred as `> **TBD (plan-time):**` markers and collected in §10,
 > to be resolved when this spec is turned into a plan. Outline-numbered for
 > addressability.
+>
+> **Re-scoped 2026-07-29** (python-stack-analysis §4.7, decided with Julian). This
+> spec decomposes into three dispositions:
+> 1. **RETAINED — the sparse array type** (§2–§4 core: CSR/CSC/COO over `Column`
+>    buffers, COO construction, format conversion, sparse×dense and sparse×sparse
+>    matmul). Types belong in núcleo; this is still the spec of record. Not yet
+>    planned — no commissioning consumer; first likely trigger is sparse design
+>    matrices in `cajeta-ml` (text/one-hot workloads).
+> 2. **MOVED EXTERNAL — the sparse solvers** (`spsolve`, `cg`, any Krylov family +
+>    preconditioners; TBDs [S5][S6] move with them). Algorithm family → a per-domain
+>    external `cajeta-*` lib, commissioned on demand per the §4.7 rule.
+> 3. **SUPERSEDED — the `dev.cajeta.nucleo.linalg` typed-record façade** (§7, TBDs
+>    [L1]–[L3]). The stdlib keeps positional bags and is being completed directly by
+>    `specs/linalg-solvers-spec.md` (rectangular QR/SVD, triangular + factor-
+>    application solvers, consumer-grade lstsq, slogdet, norms); typed-record
+>    returns ride the external `dev.cajeta.scipy` façade instead.
+> Reference source pinned: scipy v1.18.0 at `code/ml/scipy-ref`.
 
 ## 1. Definition
 

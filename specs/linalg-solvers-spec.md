@@ -3,8 +3,9 @@
 > Status: draft for review (2026-07-29). Completes **`cajeta.math.linalg`** from
 > square-only foundation grade to consumer grade — the solver layer downstream
 > libraries stand on (first consumer: an external `cajeta-ml` linear-regression
-> library; see also `docs/specification/nucleo/nucleo-sparse-linalg-spec.md`,
-> whose typed-record façade wraps these numerics, and the scipy/pandas facades).
+> library; layering per `python-stack-analysis.md` §4.7 — the external
+> `dev.cajeta.scipy` façade skins these numerics, and the sparse array type is
+> specced separately in `nucleo-sparse-linalg-spec.md` as re-scoped 2026-07-29).
 > Backend stays **native cajeta over the Tensor/GEMM core — no foreign
 > BLAS/LAPACK** (the standing "cajeta owns its math" decision, numpy-porting
 > Phase 11). Outline-numbered for addressability. Plan-time decisions are
@@ -56,8 +57,8 @@ a norms surface.
   solve many — triangular solves, `choSolve`, `slogdet` for log-likelihoods.
 - **PCA / dimensionality reduction**: rectangular `svd` with true (not
   Gram-degraded) accuracy.
-- **`nucleo-sparse-linalg`** (drafted): its `cg` needs vector norms for
-  convergence checks; its typed-record façade wraps these same functions.
+- **Sparse solvers** (external, per python-stack-analysis §4.7): iterative
+  methods (`cg`-family) need vector norms for convergence checks.
 
 ### 1.4 Non-goals
 - **Complex dtype / general `eig` with eigenvectors.** `eigvals` (Francis QR,
@@ -68,8 +69,8 @@ a norms surface.
 - **GPU linalg.** CPU floor, like the existing unit. The GEMM-heavy pieces
   (Gram products, blocked updates) already route through `Tensor.matmul`.
 - **Foreign BLAS/LAPACK.** Standing decision.
-- **Typed-record returns.** Stdlib keeps positional bags; records are the
-  `dev.cajeta.nucleo.linalg` façade's job (sparse-linalg spec §7).
+- **Typed-record returns.** Stdlib keeps positional bags; records ride the
+  external `dev.cajeta.scipy` façade (python-stack-analysis §4.7).
 - **Sparse.** Separate drafted spec.
 - **Autograd VJP rules for linalg ops** (differentiable `solve`/`cholesky`) —
   future, with the nucleo-autograd registry.
@@ -176,8 +177,8 @@ Use cases:
 - **[D1] QR mode surface** — reduced-only (numpy default) vs a `full` flag.
   Lean: reduced only in v1; full mode has no listed consumer.
 - **[D2] `lstsq` extras** (residuals, rank, singular values) — bag them now
-  vs leave for the nucleo façade record. Lean: return `x` only; the façade
-  owns rich returns (sparse-linalg spec §7 ethos).
+  vs leave for a façade record. Lean: return `x` only; rich returns are the
+  external scipy façade's job (python-stack-analysis §4.7).
 - **[D3] Where the new tests live** — extend `NumpyOpsTests.cpp` (already
   ~2900 lines) vs a new `test/math/LinAlgSolversTests.cpp`. Lean: new file.
 - **[D4] `solveTriangular` flag spelling** — three booleans vs an options

@@ -300,9 +300,9 @@ nucleo.nn        module / parameter core      (skinned by torch.nn + keras)
 nucleo.optim     optimizers + schedulers      (shared)
 nucleo.frame     Polars-shaped lazy typed dataframe over column + expr
 nucleo.index     pluggable index interface (+ zone-maps · in-memory B+ · Z-order)
-nucleo.sparse    sparse arrays + sparse linalg (scipy's one new type)
-nucleo.linalg    factorizations extending cajeta.math linalg
-nucleo.trees     gradient-boosting (histogram + tree construction; XGBoost lineage)
+nucleo.sparse    sparse arrays (scipy's one new type; sparse SOLVERS now external — §4.7)
+nucleo.linalg    ~superseded (§4.7): factorizations live in cajeta.math.linalg, bags not records~
+nucleo.trees     ~shipped EXTERNAL as cajeta-xgboost (§4.7)~
 nucleo.geometry  geometry-attribute tables + splat tables (+ BVH over tensor buffers, not rows)
         builds on → stdlib cajeta.math.Tensor (numpy, done) + cajeta.xpu (device model)
 ```
@@ -376,6 +376,37 @@ once. On the roadmap as far-field LOD ("distant geometry collapses to splats").
 > onto planar GPU buffers). Topology (mesh connectivity is a graph, not a column) and
 > acceleration structures (BVH over geometry) stay out of the table.
 
+### 4.7 Amendment (2026-07-29) — the externalization precedent
+Practice since this analysis was written (2026-06-23) amended the module map, and the
+amendment is now doctrine (decided with Julian, 2026-07-29):
+
+- **What happened.** The map placed gradient boosting at `nucleo.trees` (stdlib). It
+  actually shipped as **external `cajeta-xgboost`** (`dev.cajeta.xgboost` 0.1.0 — own
+  repo, own CI, Olla publish, own release cadence) — and that model won: no toolchain
+  coupling, no stdlib-digest churn, and the ecosystem machinery (CI templates, signed
+  Olla publish, tour/docs conventions) made an external library cheap.
+- **The rule going forward.** *Core = types + numeric primitives*, in the stdlib:
+  `cajeta.math` (tensor, linalg, fft, poly, stats, random, special) and the núcleo
+  mechanisms (`column`/`expr`/`frame`/`autograd`/`nn`/`optim`, and the **sparse array
+  type**). *Algorithm families and estimators = external `cajeta-*` libraries*,
+  commissioned per consumer — **never monolith ports** of an upstream package.
+- **SciPy dissolves** along that line: its one core type (sparse) → `nucleo.sparse`;
+  dense factorizations/solvers → `cajeta.math.linalg` (`specs/linalg-solvers-spec.md`);
+  `special` + small stats → `cajeta.math`; the algorithm families
+  (`optimize`/`signal`/`spatial`/`interpolate`/`integrate`/`cluster`/`ndimage`) and the
+  sparse *solvers* (`spsolve`/`cg`/Krylov) → per-domain external libs, on demand. The
+  `dev.cajeta.scipy` façade stays as specced — an external thin skin over whichever
+  engines exist. There is no `cajeta-scipy` monolith: SciPy's module boundaries are
+  historical accident, not design.
+- **scikit-learn → external `cajeta-ml`**, which **owns the estimator protocol**
+  (fit/predict/score, metrics contracts); `cajeta-xgboost` conforms via a thin adapter.
+  This resolves the §Open "unified estimator façade" question.
+- **`nucleo.linalg` (record façade package) is superseded**: the stdlib keeps positional
+  bags; typed-record returns ride the external façades.
+- **Pinned references** for porting fidelity: scipy **v1.18.0** at `code/ml/scipy-ref`,
+  scikit-learn **1.9.0** at `code/ml/sklearn-ref`, xgboost **3.1.2** at
+  `code/cpp/xgboost-ref`.
+
 ---
 
 ## 5. Sequencing and priorities
@@ -433,7 +464,9 @@ intersection and the flagship.
   façade name).
 - Exact scipy submodule cut for v1 (which of optimize/signal/interpolate/integrate/special/
   spatial/ndimage/cluster ship first vs. defer).
-- Whether `nucleo.trees`/scikit get a unified estimator façade or separate skins.
+- ~~Whether `nucleo.trees`/scikit get a unified estimator façade or separate skins.~~
+  **RESOLVED 2026-07-29 (§4.7):** external `cajeta-ml` owns the estimator protocol;
+  `cajeta-xgboost` conforms via a thin adapter.
 - *(Deferred, not v1)* A native **caramelo** framework's relationship to `nucleo.autograd` — if
   built, whether its SPELA-style forward-only training consumes the MIR pass or bypasses autodiff
   (likely both paths). The nn/optim optimizer protocol is already general enough to host it.
