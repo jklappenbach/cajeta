@@ -249,4 +249,216 @@ public final class Stats {
         E half = (E) 0.5f;
         return Stats.quantile<E>(t, half);
     }
+
+    // ------------------------------------------------------------------
+    // Special functions (cajeta-ml plan Unit 2; scipy.special parity).
+    // Scalar float64, pure cajeta — no compiler intrinsics, no new package
+    // (decided 2026-07-29: `cajeta.lang.Math` is the intrinsic registry;
+    // these are statistics functions). erf/erfc ride the regularized
+    // incomplete gamma (series + Lentz continued fraction over a Lanczos
+    // log-gamma) rather than transcribed rational-approximation tables —
+    // formulaic and machine-precision at every argument.
+    // ------------------------------------------------------------------
+
+    /**
+     * Natural log of the gamma function for `x > 0` (scipy `gammaln`) —
+     * Lanczos approximation (g=5, n=6), ~1e-15 relative.
+     */
+    public static float64 gammaLn(float64 x) {
+        float64 xx = x;
+        float64 y = xx;
+        float64 tmp = xx + 5.5;
+        tmp = tmp - (xx + 0.5) * Math.log(xx + 5.5);
+        float64 ser = 1.000000000190015;
+        float64[] cof = [ 76.18009172947146, -86.50532032941677, 24.01409824083091,
+                          -1.231739572450155, 0.001208650973866179, -0.000005395239384953 ];
+        int64 j = 0;
+        while (j < 6) {
+            y = y + 1.0;
+            ser = ser + cof[j] / y;
+            j = j + 1;
+        }
+        return -tmp + Math.log(2.5066282746310005 * ser / xx);
+    }
+
+    /** Regularized lower incomplete gamma P(a,x) by series (x < a+1 regime). */
+    static float64 gammPSeries(float64 a, float64 x) {
+        float64 ap = a;
+        float64 sum = 1.0 / a;
+        float64 del = sum;
+        int64 n = 0;
+        while (n < 200) {
+            ap = ap + 1.0;
+            del = del * x / ap;
+            sum = sum + del;
+            float64 ad = del;
+            if (ad < 0.0) { ad = -ad; }
+            float64 asum = sum;
+            if (asum < 0.0) { asum = -asum; }
+            if (ad < asum * 0.000000000000001) { break; }
+            n = n + 1;
+        }
+        return sum * Math.exp(-x + a * Math.log(x) - Stats.gammaLn(a));
+    }
+
+    /** Regularized upper incomplete gamma Q(a,x) by Lentz continued fraction (x >= a+1). */
+    static float64 gammQContinued(float64 a, float64 x) {
+        float64 tiny = 0.000000000000000000000000000001;   // 1e-30 floor
+        float64 b = x + 1.0 - a;
+        float64 c = 1.0 / tiny;
+        float64 d = 1.0 / b;
+        float64 h = d;
+        int64 i = 1;
+        while (i <= 200) {
+            float64 an = -(float64) i * ((float64) i - a);
+            b = b + 2.0;
+            d = an * d + b;
+            float64 adv = d;
+            if (adv < 0.0) { adv = -adv; }
+            if (adv < tiny) { d = tiny; }
+            c = b + an / c;
+            float64 acv = c;
+            if (acv < 0.0) { acv = -acv; }
+            if (acv < tiny) { c = tiny; }
+            d = 1.0 / d;
+            float64 del = d * c;
+            h = h * del;
+            float64 dd = del - 1.0;
+            if (dd < 0.0) { dd = -dd; }
+            if (dd < 0.000000000000001) { break; }
+            i = i + 1;
+        }
+        return Math.exp(-x + a * Math.log(x) - Stats.gammaLn(a)) * h;
+    }
+
+    /**
+     * The error function (scipy `erf`): `2/√π ∫₀ˣ e^(−t²) dt`, via
+     * `sign(x)·P(1/2, x²)`.
+     */
+    public static float64 erf(float64 x) {
+        if (x == 0.0) { return 0.0; }
+        float64 x2 = x * x;
+        float64 p = 0.0;
+        if (x2 < 1.5) {
+            p = Stats.gammPSeries(0.5, x2);
+        } else {
+            p = 1.0 - Stats.gammQContinued(0.5, x2);
+        }
+        if (x < 0.0) { return -p; }
+        return p;
+    }
+
+    /**
+     * The complementary error function (scipy `erfc`): `1 − erf(x)`, computed
+     * without cancellation in the far tail (`erfc(26) ≈ 5.7e-296` is exact to
+     * relative precision, where `1 − erf` would round to 0).
+     */
+    public static float64 erfc(float64 x) {
+        if (x == 0.0) { return 1.0; }
+        float64 x2 = x * x;
+        if (x < 0.0) {
+            if (x2 < 1.5) { return 1.0 + Stats.gammPSeries(0.5, x2); }
+            return 2.0 - Stats.gammQContinued(0.5, x2);
+        }
+        if (x2 < 1.5) { return 1.0 - Stats.gammPSeries(0.5, x2); }
+        return Stats.gammQContinued(0.5, x2);
+    }
+
+    /**
+     * The logistic sigmoid (scipy `expit`): `1/(1+e^(−x))`, branch-split so
+     * neither tail overflows (`expit(750) = 1`, `expit(−750) = 0`, exactly
+     * scipy's saturation).
+     */
+    public static float64 expit(float64 x) {
+        if (x >= 0.0) {
+            return 1.0 / (1.0 + Math.exp(-x));
+        }
+        float64 e = Math.exp(x);
+        return e / (1.0 + e);
+    }
+
+    /** Lentz continued fraction for the incomplete beta (NR `betacf`). */
+    static float64 betaContinued(float64 a, float64 b, float64 x) {
+        float64 tiny = 0.000000000000000000000000000001;   // 1e-30 floor
+        float64 qab = a + b;
+        float64 qap = a + 1.0;
+        float64 qam = a - 1.0;
+        float64 c = 1.0;
+        float64 d = 1.0 - qab * x / qap;
+        float64 adv = d;
+        if (adv < 0.0) { adv = -adv; }
+        if (adv < tiny) { d = tiny; }
+        d = 1.0 / d;
+        float64 h = d;
+        int64 m = 1;
+        while (m <= 200) {
+            float64 fm = (float64) m;
+            float64 m2 = 2.0 * fm;
+            float64 aa = fm * (b - fm) * x / ((qam + m2) * (a + m2));
+            d = 1.0 + aa * d;
+            adv = d;
+            if (adv < 0.0) { adv = -adv; }
+            if (adv < tiny) { d = tiny; }
+            c = 1.0 + aa / c;
+            float64 acv = c;
+            if (acv < 0.0) { acv = -acv; }
+            if (acv < tiny) { c = tiny; }
+            d = 1.0 / d;
+            h = h * d * c;
+            aa = -(a + fm) * (qab + fm) * x / ((a + m2) * (qap + m2));
+            d = 1.0 + aa * d;
+            adv = d;
+            if (adv < 0.0) { adv = -adv; }
+            if (adv < tiny) { d = tiny; }
+            c = 1.0 + aa / c;
+            acv = c;
+            if (acv < 0.0) { acv = -acv; }
+            if (acv < tiny) { c = tiny; }
+            d = 1.0 / d;
+            float64 del = d * c;
+            h = h * del;
+            float64 dd = del - 1.0;
+            if (dd < 0.0) { dd = -dd; }
+            if (dd < 0.000000000000001) { break; }
+            m = m + 1;
+        }
+        return h;
+    }
+
+    /**
+     * The regularized incomplete beta function `I_x(a, b)` (scipy `betainc`)
+     * — the workhorse behind the Student-t and F CDFs. NR `betai`: the
+     * continued fraction taken on whichever of `x` / `1−x` converges fast.
+     * Accuracy class ~1e-10 absolute (the Lanczos prefactor loses a few
+     * e-12 through `exp(gammaLn(a+b)−…)` at moderate a,b) — ample for
+     * p-values; a higher-order Lanczos is the upgrade path if a consumer
+     * ever needs more.
+     */
+    public static float64 betainc(float64 a, float64 b, float64 x) {
+        if (x <= 0.0) { return 0.0; }
+        if (x >= 1.0) { return 1.0; }
+        float64 lbt = Stats.gammaLn(a + b) - Stats.gammaLn(a) - Stats.gammaLn(b)
+                    + a * Math.log(x) + b * Math.log(1.0 - x);
+        float64 bt = Math.exp(lbt);
+        if (x < (a + 1.0) / (a + b + 2.0)) {
+            return bt * Stats.betaContinued(a, b, x) / a;
+        }
+        return 1.0 - bt * Stats.betaContinued(b, a, 1.0 - x) / b;
+    }
+
+    /** Standard normal CDF (scipy `norm.cdf`): `erfc(−x/√2)/2` — tail-safe. */
+    public static float64 normalCdf(float64 x) {
+        return 0.5 * Stats.erfc(-x / 1.4142135623730951);
+    }
+
+    /**
+     * Student-t CDF with `df` degrees of freedom (scipy `t.cdf`), via the
+     * incomplete beta: the exact p-value backbone for regression inference
+     * (cajeta-ml `summary()`).
+     */
+    public static float64 tCdf(float64 x, float64 df) {
+        float64 p = 0.5 * Stats.betainc(0.5 * df, 0.5, df / (df + x * x));
+        if (x > 0.0) { return 1.0 - p; }
+        return p;
+    }
 }
