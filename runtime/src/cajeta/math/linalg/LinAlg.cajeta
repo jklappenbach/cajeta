@@ -671,106 +671,540 @@ public final class LinAlg {
         return #out;
     }
 
+    /** `sqrt(a² + b²)` without destructive under/overflow (NR `pythag`). */
+    private static E pythag<E extends Floating>(E a, E b) {
+        E aa = LinAlg.absE<E>(a);
+        E ab = LinAlg.absE<E>(b);
+        if (aa > ab) {
+            E r = ab / aa;
+            return aa * Math.sqrt((E) 1 + r * r);
+        }
+        if (ab == (E) 0) {
+            return (E) 0;
+        }
+        E r2 = aa / ab;
+        return ab * Math.sqrt((E) 1 + r2 * r2);
+    }
+
+    /** Machine epsilon of `E`, computed at runtime (2⁻⁵² f64, 2⁻²³ f32). */
+    private static E machEps<E extends Floating>() {
+        E eps = (E) 1;
+        E half = (E) 1 / (E) 2;
+        while ((E) 1 + eps * half != (E) 1) {
+            eps = eps * half;
+        }
+        return eps;
+    }
+
     /**
-     * Singular value decomposition (numpy `linalg.svd`, full square case): returns
-     * `[U, S, Vt]` with `A = U·diag(S)·Vt`, `U`/`Vt` orthonormal and `S` the singular
-     * values in **descending** order. Computed natively from the symmetric eigenproblem
-     * of `AᵀA` (right vectors `V` and σ²), then `U = A·V/σ`. (General nonsymmetric `eig`
-     * — complex spectra — is deferred; it needs the interleaved-complex tier.)
+     * Singular value decomposition (numpy `linalg.svd`, reduced mode) of a `(m,n)`
+     * matrix: `[U (m,r), S (r,), Vt (r,n)]`, `r = min(m,n)`, `A = U·diag(S)·Vt`,
+     * `S` **descending**, `U`/`V` orthonormal columns. Golub–Kahan–Reinsch: Householder
+     * bidiagonalization + implicit-shift QR on the bidiagonal (the NR `svdcmp`
+     * algorithm) — full accuracy at every conditioning, unlike the earlier
+     * `eigh(AᵀA)` route, whose Gram matrix squares the condition number and loses
+     * half the digits of the small singular values. `m < n` is handled by
+     * factoring `Aᵀ` and swapping the factors. Throws {@link LinAlgException} if
+     * `a` is not 2-D or the QR iteration fails to converge (30-sweep cap).
      *
      * @EntryPoint
      */
     public static #Tensor<E>[] svd<E extends Floating>(Tensor<E> a) {
-        int64 n = a.shapeAt(0);
-        // NB: a.transpose() is a non-owning VIEW sharing a's Storage — binding it to a
-        // local would free that shared Storage when this scope ends (borrow-drop UAF,
-        // [[cajeta-wildcard-field-drop-hazard]]). Pass it inline so no droppable local owns it.
-        Tensor<E> gram = Tensor.matmul<E>(a.transpose(), a);
-        Tensor<E>[] eig = LinAlg.eigh<E>(gram);
-        Tensor<E> evals = eig[0];
-        Tensor<E> vmat = eig[1];
-        int64[] sh = heap int64[2];
-        sh[0] = n;
-        sh[1] = n;
-        int64[] vs = heap int64[1];
-        vs[0] = n;
+        if (a.ndim() != 2) {
+            throw heap LinAlgException("svd: a must be 2-D (m,n)");
+        }
+        int64 am = a.shapeAt(0);
+        int64 an = a.shapeAt(1);
+        if (am >= an) {
+            Tensor<E> w = a.copy();
+            Tensor<E>[] core = LinAlg.svdCore<E>(w, am, an);
+            return #core;
+        }
+        // m < n: factor Aᵀ (n,m), then A = U·S·Vt with U = V'ᵀᵀ… i.e. swap:
+        // Aᵀ = U'·S·Vt'  ⇒  A = Vt'ᵀ·S·U'ᵀ
+        int64[] tsh = heap int64[2];
+        tsh[0] = an;
+        tsh[1] = am;
+        Tensor<E> at = Tensor.zeros<E>(tsh);
+        int64 ti = 0;
+        while (ti < an) {
+            int64 tj = 0;
+            while (tj < am) {
+                at.flatSet(ti * am + tj, a.get2(tj, ti));
+                tj = tj + 1;
+            }
+            ti = ti + 1;
+        }
+        Tensor<E>[] core = LinAlg.svdCore<E>(at, an, am);   // U' (n,m), S (m), Vt' (m,m)
+        int64 r = am;
+        int64[] ush = heap int64[2];
+        ush[0] = am;
+        ush[1] = r;
+        int64[] vsh = heap int64[2];
+        vsh[0] = r;
+        vsh[1] = an;
+        int64[] ssh = heap int64[1];
+        ssh[0] = r;
         Tensor<E>[] out = heap Tensor<E>[3];
-        out[0] = Tensor.zeros<E>(sh);            // U
-        out[1] = Tensor.zeros<E>(vs);            // S (descending)
-        out[2] = Tensor.zeros<E>(sh);            // Vt = Vᵀ
-        E tiny = (E) 1 / (E) 1000000000;
-        int64 k = 0;
-        while (k < n) {
-            int64 sidx = n - 1 - k;              // eigh is ascending → take from the top
-            E lam = evals.get1(sidx);
-            if (lam < (E) 0) { lam = (E) 0; }
-            E sigma = Math.sqrt(lam);
-            out[1].set1(k, sigma);
-            // Vt row k = V column sidx
-            int64 r = 0;
-            while (r < n) {
-                E vrk = vmat.get2(r, sidx);
-                out[2].flatSet(k * n + r, vrk);
-                r = r + 1;
+        out[0] = Tensor.zeros<E>(ush);                       // U = Vt'ᵀ (m,r)
+        out[1] = Tensor.zeros<E>(ssh);                       // S (copied: core owns its element)
+        out[2] = Tensor.zeros<E>(vsh);                       // Vt = U'ᵀ (r,n)
+        int64 si = 0;
+        while (si < r) {
+            out[1].set1(si, core[1].get1(si));
+            si = si + 1;
+        }
+        int64 i = 0;
+        while (i < am) {
+            int64 j = 0;
+            while (j < r) {
+                out[0].flatSet(i * r + j, core[2].get2(j, i));
+                j = j + 1;
             }
-            // U column k = A·(V col sidx) / sigma
-            if (sigma > tiny) {
-                r = 0;
-                while (r < n) {
-                    E acc = (E) 0;
-                    int64 c = 0;
-                    while (c < n) {
-                        acc = acc + a.get2(r, c) * vmat.get2(c, sidx);
-                        c = c + 1;
-                    }
-                    E uval = acc / sigma;
-                    out[0].flatSet(r * n + k, uval);
-                    r = r + 1;
-                }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < r) {
+            int64 j = 0;
+            while (j < an) {
+                out[2].flatSet(i * an + j, core[0].get2(j, i));
+                j = j + 1;
             }
-            k = k + 1;
+            i = i + 1;
         }
         return #out;
     }
 
     /**
-     * Moore-Penrose pseudo-inverse (numpy `linalg.pinv`): `A⁺ = V·diag(1/σ)·Uᵀ`, with
-     * singular values `σ ≤ tol` zeroed (`tol = σmax·1e-4`, relative to our float Jacobi
-     * accuracy). Equals `inv` for a nonsingular square `A`, and gives the least-squares
-     * minimum-norm solution for rank-deficient `A`. Square case.
+     * Golub–Kahan–Reinsch worker for `m ≥ n`: consumes the `(m,n)` working copy `u`
+     * (overwritten with the left vectors), returns `[U (m,n), S (n,), Vt (n,n)]`
+     * sorted descending. 0-indexed port of the NR `svdcmp` recurrence.
+     */
+    private static #Tensor<E>[] svdCore<E extends Floating>(Tensor<E> u, int64 m, int64 n) {
+        int64[] vs = heap int64[1];
+        vs[0] = n;
+        Tensor<E> w = Tensor.zeros<E>(vs);                   // singular values
+        Tensor<E> rv1 = Tensor.zeros<E>(vs);                 // superdiagonal workspace
+        int64[] vsh = heap int64[2];
+        vsh[0] = n;
+        vsh[1] = n;
+        Tensor<E> v = Tensor.zeros<E>(vsh);
+        E g = (E) 0;
+        E scale = (E) 0;
+        E anorm = (E) 0;
+        // --- Householder bidiagonalization ---
+        int64 i = 0;
+        int64 l = 0;
+        while (i < n) {
+            l = i + 1;
+            rv1.set1(i, scale * g);
+            g = (E) 0;
+            scale = (E) 0;
+            if (i < m) {
+                int64 k = i;
+                while (k < m) {
+                    scale = scale + LinAlg.absE<E>(u.get2(k, i));
+                    k = k + 1;
+                }
+                if (scale != (E) 0) {
+                    E s = (E) 0;
+                    k = i;
+                    while (k < m) {
+                        E uk = u.get2(k, i) / scale;
+                        u.flatSet(k * n + i, uk);
+                        s = s + uk * uk;
+                        k = k + 1;
+                    }
+                    E f = u.get2(i, i);
+                    g = Math.sqrt(s);
+                    if (f >= (E) 0) { g = (E) 0 - g; }       // g = -SIGN(sqrt(s), f)
+                    E h = f * g - s;
+                    u.flatSet(i * n + i, f - g);
+                    int64 j = l;
+                    while (j < n) {
+                        E s2 = (E) 0;
+                        k = i;
+                        while (k < m) {
+                            s2 = s2 + u.get2(k, i) * u.get2(k, j);
+                            k = k + 1;
+                        }
+                        E f2 = s2 / h;
+                        k = i;
+                        while (k < m) {
+                            u.flatSet(k * n + j, u.get2(k, j) + f2 * u.get2(k, i));
+                            k = k + 1;
+                        }
+                        j = j + 1;
+                    }
+                    k = i;
+                    while (k < m) {
+                        u.flatSet(k * n + i, u.get2(k, i) * scale);
+                        k = k + 1;
+                    }
+                }
+            }
+            w.set1(i, scale * g);
+            g = (E) 0;
+            scale = (E) 0;
+            if (i < m && i != n - 1) {
+                int64 k = l;
+                while (k < n) {
+                    scale = scale + LinAlg.absE<E>(u.get2(i, k));
+                    k = k + 1;
+                }
+                if (scale != (E) 0) {
+                    E s = (E) 0;
+                    k = l;
+                    while (k < n) {
+                        E uk = u.get2(i, k) / scale;
+                        u.flatSet(i * n + k, uk);
+                        s = s + uk * uk;
+                        k = k + 1;
+                    }
+                    E f = u.get2(i, l);
+                    g = Math.sqrt(s);
+                    if (f >= (E) 0) { g = (E) 0 - g; }
+                    E h = f * g - s;
+                    u.flatSet(i * n + l, f - g);
+                    k = l;
+                    while (k < n) {
+                        rv1.set1(k, u.get2(i, k) / h);
+                        k = k + 1;
+                    }
+                    int64 j = l;
+                    while (j < m) {
+                        E s2 = (E) 0;
+                        k = l;
+                        while (k < n) {
+                            s2 = s2 + u.get2(j, k) * u.get2(i, k);
+                            k = k + 1;
+                        }
+                        k = l;
+                        while (k < n) {
+                            u.flatSet(j * n + k, u.get2(j, k) + s2 * rv1.get1(k));
+                            k = k + 1;
+                        }
+                        j = j + 1;
+                    }
+                    k = l;
+                    while (k < n) {
+                        u.flatSet(i * n + k, u.get2(i, k) * scale);
+                        k = k + 1;
+                    }
+                }
+            }
+            E cn = LinAlg.absE<E>(w.get1(i)) + LinAlg.absE<E>(rv1.get1(i));
+            if (cn > anorm) { anorm = cn; }
+            i = i + 1;
+        }
+        // --- accumulate right-hand transforms V ---
+        i = n - 1;
+        while (i >= 0) {
+            if (i < n - 1) {
+                if (g != (E) 0) {
+                    int64 j = l;
+                    while (j < n) {
+                        v.flatSet(j * n + i, (u.get2(i, j) / u.get2(i, l)) / g);
+                        j = j + 1;
+                    }
+                    j = l;
+                    while (j < n) {
+                        E s = (E) 0;
+                        int64 k = l;
+                        while (k < n) {
+                            s = s + u.get2(i, k) * v.get2(k, j);
+                            k = k + 1;
+                        }
+                        k = l;
+                        while (k < n) {
+                            v.flatSet(k * n + j, v.get2(k, j) + s * v.get2(k, i));
+                            k = k + 1;
+                        }
+                        j = j + 1;
+                    }
+                }
+                int64 j2 = l;
+                while (j2 < n) {
+                    v.flatSet(i * n + j2, (E) 0);
+                    v.flatSet(j2 * n + i, (E) 0);
+                    j2 = j2 + 1;
+                }
+            }
+            v.flatSet(i * n + i, (E) 1);
+            g = rv1.get1(i);
+            l = i;
+            i = i - 1;
+        }
+        // --- accumulate left-hand transforms U ---
+        i = n - 1;
+        while (i >= 0) {
+            l = i + 1;
+            g = w.get1(i);
+            int64 j = l;
+            while (j < n) {
+                u.flatSet(i * n + j, (E) 0);
+                j = j + 1;
+            }
+            if (g != (E) 0) {
+                g = (E) 1 / g;
+                j = l;
+                while (j < n) {
+                    E s = (E) 0;
+                    int64 k = l;
+                    while (k < m) {
+                        s = s + u.get2(k, i) * u.get2(k, j);
+                        k = k + 1;
+                    }
+                    E f = (s / u.get2(i, i)) * g;
+                    k = i;
+                    while (k < m) {
+                        u.flatSet(k * n + j, u.get2(k, j) + f * u.get2(k, i));
+                        k = k + 1;
+                    }
+                    j = j + 1;
+                }
+                j = i;
+                while (j < m) {
+                    u.flatSet(j * n + i, u.get2(j, i) * g);
+                    j = j + 1;
+                }
+            } else {
+                j = i;
+                while (j < m) {
+                    u.flatSet(j * n + i, (E) 0);
+                    j = j + 1;
+                }
+            }
+            u.flatSet(i * n + i, u.get2(i, i) + (E) 1);
+            i = i - 1;
+        }
+        // --- diagonalize the bidiagonal form (implicit-shift QR) ---
+        int64 k = n - 1;
+        while (k >= 0) {
+            int64 its = 1;
+            while (its <= 30) {
+                boolean flag = true;
+                int64 nm = 0;
+                l = k;
+                while (l >= 0) {
+                    nm = l - 1;
+                    if (LinAlg.absE<E>(rv1.get1(l)) + anorm == anorm) {
+                        flag = false;
+                        break;
+                    }
+                    if (LinAlg.absE<E>(w.get1(nm)) + anorm == anorm) {
+                        break;
+                    }
+                    l = l - 1;
+                }
+                if (flag) {
+                    // cancel rv1[l] against the zero w[nm]
+                    E c = (E) 0;
+                    E s = (E) 1;
+                    i = l;
+                    while (i <= k) {
+                        E f = s * rv1.get1(i);
+                        rv1.set1(i, c * rv1.get1(i));
+                        if (LinAlg.absE<E>(f) + anorm == anorm) {
+                            break;
+                        }
+                        g = w.get1(i);
+                        E h = LinAlg.pythag<E>(f, g);
+                        w.set1(i, h);
+                        h = (E) 1 / h;
+                        c = g * h;
+                        s = (E) 0 - f * h;
+                        int64 j = 0;
+                        while (j < m) {
+                            E y = u.get2(j, nm);
+                            E z = u.get2(j, i);
+                            u.flatSet(j * n + nm, y * c + z * s);
+                            u.flatSet(j * n + i, z * c - y * s);
+                            j = j + 1;
+                        }
+                        i = i + 1;
+                    }
+                }
+                E z = w.get1(k);
+                if (l == k) {
+                    if (z < (E) 0) {
+                        w.set1(k, (E) 0 - z);
+                        int64 j = 0;
+                        while (j < n) {
+                            v.flatSet(j * n + k, (E) 0 - v.get2(j, k));
+                            j = j + 1;
+                        }
+                    }
+                    break;
+                }
+                if (its == 30) {
+                    throw heap LinAlgException("svd: no convergence in 30 iterations");
+                }
+                E x = w.get1(l);
+                nm = k - 1;
+                E y = w.get1(nm);
+                g = rv1.get1(nm);
+                E h = rv1.get1(k);
+                E f = ((y - z) * (y + z) + (g - h) * (g + h)) / ((E) 2 * h * y);
+                g = LinAlg.pythag<E>(f, (E) 1);
+                E gs = LinAlg.absE<E>(g);
+                if (f < (E) 0) { gs = (E) 0 - gs; }          // SIGN(g, f)
+                f = ((x - z) * (x + z) + h * ((y / (f + gs)) - h)) / x;
+                E c = (E) 1;
+                E s = (E) 1;
+                int64 j = l;
+                while (j <= nm) {
+                    i = j + 1;
+                    g = rv1.get1(i);
+                    y = w.get1(i);
+                    h = s * g;
+                    g = c * g;
+                    z = LinAlg.pythag<E>(f, h);
+                    rv1.set1(j, z);
+                    c = f / z;
+                    s = h / z;
+                    f = x * c + g * s;
+                    g = g * c - x * s;
+                    h = y * s;
+                    y = y * c;
+                    int64 jj = 0;
+                    while (jj < n) {
+                        E xv = v.get2(jj, j);
+                        E zv = v.get2(jj, i);
+                        v.flatSet(jj * n + j, xv * c + zv * s);
+                        v.flatSet(jj * n + i, zv * c - xv * s);
+                        jj = jj + 1;
+                    }
+                    z = LinAlg.pythag<E>(f, h);
+                    w.set1(j, z);
+                    if (z != (E) 0) {
+                        z = (E) 1 / z;
+                        c = f * z;
+                        s = h * z;
+                    }
+                    f = c * g + s * y;
+                    x = c * y - s * g;
+                    jj = 0;
+                    while (jj < m) {
+                        E yu = u.get2(jj, j);
+                        E zu = u.get2(jj, i);
+                        u.flatSet(jj * n + j, yu * c + zu * s);
+                        u.flatSet(jj * n + i, zu * c - yu * s);
+                        jj = jj + 1;
+                    }
+                    j = j + 1;
+                }
+                rv1.set1(l, (E) 0);
+                rv1.set1(k, f);
+                w.set1(k, x);
+                its = its + 1;
+            }
+            k = k - 1;
+        }
+        // --- sort descending: swap w entries + U columns + V columns ---
+        int64 sa = 0;
+        while (sa < n) {
+            int64 best = sa;
+            int64 sb = sa + 1;
+            while (sb < n) {
+                if (w.get1(sb) > w.get1(best)) { best = sb; }
+                sb = sb + 1;
+            }
+            if (best != sa) {
+                E tw = w.get1(sa);
+                w.set1(sa, w.get1(best));
+                w.set1(best, tw);
+                int64 rr = 0;
+                while (rr < m) {
+                    E tu = u.get2(rr, sa);
+                    u.flatSet(rr * n + sa, u.get2(rr, best));
+                    u.flatSet(rr * n + best, tu);
+                    rr = rr + 1;
+                }
+                rr = 0;
+                while (rr < n) {
+                    E tv = v.get2(rr, sa);
+                    v.flatSet(rr * n + sa, v.get2(rr, best));
+                    v.flatSet(rr * n + best, tv);
+                    rr = rr + 1;
+                }
+            }
+            sa = sa + 1;
+        }
+        // --- pack [U, S, Vt] into fresh outputs (u/w/v are locals or borrows;
+        // returned tensors must own their storage) ---
+        int64[] ush = heap int64[2];
+        ush[0] = m;
+        ush[1] = n;
+        Tensor<E>[] out = heap Tensor<E>[3];
+        out[0] = Tensor.zeros<E>(ush);
+        out[1] = Tensor.zeros<E>(vs);
+        out[2] = Tensor.zeros<E>(vsh);
+        int64 ui = 0;
+        while (ui < m) {
+            int64 uj = 0;
+            while (uj < n) {
+                out[0].flatSet(ui * n + uj, u.get2(ui, uj));
+                uj = uj + 1;
+            }
+            ui = ui + 1;
+        }
+        int64 vi = 0;
+        while (vi < n) {
+            out[1].set1(vi, w.get1(vi));
+            int64 vj = 0;
+            while (vj < n) {
+                out[2].flatSet(vi * n + vj, v.get2(vj, vi));
+                vj = vj + 1;
+            }
+            vi = vi + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Moore-Penrose pseudo-inverse (numpy `linalg.pinv`) of a `(m,n)` matrix:
+     * `A⁺ = V·diag(1/σ)·Uᵀ` `(n,m)`, with singular values `σ ≤ tol` zeroed
+     * (`tol = σmax·max(m,n)·ε`, numpy's lstsq/matrix_rank cutoff semantics — the
+     * bidiagonal svd earns the tight tolerance the old Gram route could not).
+     * Equals `inv` for a nonsingular square `A`; gives the least-squares
+     * minimum-norm solution for rank-deficient or rectangular `A`.
      */
     public static #Tensor<E> pinv<E extends Floating>(Tensor<E> a) {
-        int64 n = a.shapeAt(0);
+        if (a.ndim() != 2) {
+            throw heap LinAlgException("pinv: a must be 2-D (m,n)");
+        }
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 r = m;
+        if (n < m) { r = n; }
         Tensor<E>[] sv = LinAlg.svd<E>(a);
-        Tensor<E> u = sv[0];
-        Tensor<E> s = sv[1];
-        Tensor<E> vt = sv[2];
-        E smax = s.get1(0);                       // svd S is descending → [0] is largest
-        E tol = smax / (E) 10000;
+        Tensor<E> u = sv[0];                      // (m,r)
+        Tensor<E> s = sv[1];                      // (r,)
+        Tensor<E> vt = sv[2];                     // (r,n)
+        E smax = s.get1(0);                       // descending → [0] is largest
+        E mx = (E) m;
+        if (n > m) { mx = (E) n; }
+        E tol = smax * mx * LinAlg.machEps<E>();
         int64[] sh = heap int64[2];
         sh[0] = n;
-        sh[1] = n;
+        sh[1] = m;
         Tensor<E> out = Tensor.zeros<E>(sh);
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
-            while (j < n) {
+            while (j < m) {
                 E acc = (E) 0;
                 int64 k = 0;
-                while (k < n) {
+                while (k < r) {
                     E sk = s.get1(k);
                     if (sk > tol) {
-                        E sinv = (E) 1 / sk;
-                        // A⁺[i][j] = Σ_k V[i][k]·(1/σ_k)·Uᵀ[k][j] = Σ Vt[k][i]·sinv·U[j][k]
-                        E vki = vt.get2(k, i);
-                        E ujk = u.get2(j, k);
-                        E term = vki * sinv * ujk;
-                        acc = acc + term;
+                        // A⁺[i][j] = Σ_k V[i][k]·(1/σ_k)·Uᵀ[k][j] = Σ Vt[k][i]·(1/σ_k)·U[j][k]
+                        acc = acc + vt.get2(k, i) * ((E) 1 / sk) * u.get2(j, k);
                     }
                     k = k + 1;
                 }
-                int64 oidx = i * n + j;
-                out.flatSet(oidx, acc);
+                out.flatSet(i * m + j, acc);
                 j = j + 1;
             }
             i = i + 1;
@@ -783,10 +1217,10 @@ public final class LinAlg {
      * `(m,n)` design matrix, `m ≥ n`: Householder QR, `x = R⁻¹·(Qᵀ·B)` — the
      * numerically-correct regression path (sklearn's LinearRegression algorithm).
      * `B` is `(m,)` or `(m,k)` (multi-RHS); the result is `(n,)` / `(n,k)`. For a
-     * nonsingular square `A` this equals `solve`. A near-rank-deficient SQUARE
-     * system falls back to the graceful pseudo-inverse minimum-norm solution (the
-     * pre-QR behavior); rank-deficient TALL input and `m < n` (underdetermined
-     * minimum-norm) throw until the svd fallback lands (linalg-solvers Unit 4).
+     * nonsingular square `A` this equals `solve`. Rank-deficient input (any shape)
+     * and the underdetermined case `m < n` take the svd minimum-norm path
+     * (`x = A⁺·B`, numpy semantics); deficiency is detected on `diag(R)` at the
+     * `rmax·max(m,n)·ε` scale.
      */
     public static #Tensor<E> lstsq<E extends Floating>(Tensor<E> a, Tensor<E> b) {
         if (a.ndim() != 2) {
@@ -794,53 +1228,74 @@ public final class LinAlg {
         }
         int64 m = a.shapeAt(0);
         int64 n = a.shapeAt(1);
-        if (m < n) {
-            throw heap LinAlgException("lstsq: m < n pending the svd minimum-norm fallback (linalg-solvers U4)");
-        }
         if (b.ndim() < 1 || b.ndim() > 2 || b.shapeAt(0) != m) {
             throw heap LinAlgException("lstsq: b must be (m,) or (m,k) with rows matching a");
         }
         int64 k = 1;
         if (b.ndim() == 2) { k = b.shapeAt(1); }
-        Tensor<E>[] f = LinAlg.qr<E>(a);
-        Tensor<E> q = f[0];                    // (m,n)
-        Tensor<E> r = f[1];                    // (n,n)
-        E rmax = (E) 0;
-        int64 d = 0;
-        while (d < n) {
-            E rv = LinAlg.absE<E>(r.get2(d, d));
-            if (rv > rmax) { rmax = rv; }
-            d = d + 1;
-        }
-        E tol = rmax / (E) 1000000;
-        boolean deficient = false;
-        d = 0;
-        while (d < n) {
-            if (LinAlg.absE<E>(r.get2(d, d)) <= tol) { deficient = true; }
-            d = d + 1;
-        }
-        if (deficient) {
-            if (m != n || b.ndim() != 1) {
-                throw heap LinAlgException("lstsq: rank-deficient input pending the svd fallback (linalg-solvers U4)");
+        boolean deficient = true;
+        if (m >= n) {
+            Tensor<E>[] f = LinAlg.qr<E>(a);
+            Tensor<E> r = f[1];                // (n,n)
+            E rmax = (E) 0;
+            int64 d = 0;
+            while (d < n) {
+                E rv = LinAlg.absE<E>(r.get2(d, d));
+                if (rv > rmax) { rmax = rv; }
+                d = d + 1;
             }
-            // graceful minimum-norm for the square case, as before: x = A⁺·b
-            Tensor<E> pv = LinAlg.pinv<E>(a);
-            int64[] vs = heap int64[1];
-            vs[0] = n;
-            Tensor<E> xm = Tensor.zeros<E>(vs);
-            int64 i2 = 0;
-            while (i2 < n) {
+            E mx = (E) m;
+            E tol = rmax * mx * LinAlg.machEps<E>() * (E) 8;
+            deficient = false;
+            d = 0;
+            while (d < n) {
+                if (LinAlg.absE<E>(r.get2(d, d)) <= tol) { deficient = true; }
+                d = d + 1;
+            }
+            if (!deficient) {
+                Tensor<E> xq = LinAlg.lstsqQrPath<E>(f[0], r, b, m, n, k);
+                return #xq;
+            }
+        }
+        // svd minimum-norm path (rank-deficient or m < n): x = A⁺·B
+        Tensor<E> pv = LinAlg.pinv<E>(a);      // (n,m)
+        Tensor<E> bsrc2 = b.copy();
+        int64[] xsh2 = heap int64[2];
+        xsh2[0] = n;
+        xsh2[1] = k;
+        Tensor<E> xm = Tensor.zeros<E>(xsh2);
+        int64 i2 = 0;
+        while (i2 < n) {
+            int64 c2i = 0;
+            while (c2i < k) {
                 E acc = (E) 0;
                 int64 j2 = 0;
-                while (j2 < n) {
-                    acc = acc + pv.get2(i2, j2) * b.get1(j2);
+                while (j2 < m) {
+                    acc = acc + pv.get2(i2, j2) * bsrc2.flatGet(j2 * k + c2i);
                     j2 = j2 + 1;
                 }
-                xm.set1(i2, acc);
-                i2 = i2 + 1;
+                xm.flatSet(i2 * k + c2i, acc);
+                c2i = c2i + 1;
             }
-            return #xm;
+            i2 = i2 + 1;
         }
+        if (b.ndim() == 1) {
+            int64[] vs3 = heap int64[1];
+            vs3[0] = n;
+            Tensor<E> xv2 = Tensor.zeros<E>(vs3);
+            int64 i4 = 0;
+            while (i4 < n) {
+                xv2.set1(i4, xm.get2(i4, 0));
+                i4 = i4 + 1;
+            }
+            return #xv2;
+        }
+        return #xm;
+    }
+
+    /** The full-rank QR solve `x = R⁻¹(Qᵀ·B)` behind {@link #lstsq}. */
+    private static #Tensor<E> lstsqQrPath<E extends Floating>(
+            Tensor<E> q, Tensor<E> r, Tensor<E> b, int64 m, int64 n, int64 k) {
         // c = Qᵀ·B, computed as (n,k) regardless of b's rank
         Tensor<E> bsrc = b.copy();
         int64[] csh = heap int64[2];
@@ -882,14 +1337,20 @@ public final class LinAlg {
      * above `tol = σmax·1e-4`. Detects rank deficiency / singularity.
      */
     public static int64 matrixRank<E extends Floating>(Tensor<E> a) {
-        int64 n = a.shapeAt(0);
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 r = m;
+        if (n < m) { r = n; }
         Tensor<E>[] sv = LinAlg.svd<E>(a);
         Tensor<E> s = sv[1];
         E smax = s.get1(0);
-        E tol = smax / (E) 10000;
+        E mx = (E) m;
+        if (n > m) { mx = (E) n; }
+        // numpy matrix_rank semantics: tol = σmax·max(m,n)·ε
+        E tol = smax * mx * LinAlg.machEps<E>();
         int64 rank = 0;
         int64 k = 0;
-        while (k < n) {
+        while (k < r) {
             E sk = s.get1(k);
             if (sk > tol) { rank = rank + 1; }
             k = k + 1;
@@ -902,11 +1363,14 @@ public final class LinAlg {
      * ill-conditioned; infinite (very large here) for a singular matrix.
      */
     public static E cond<E extends Floating>(Tensor<E> a) {
-        int64 n = a.shapeAt(0);
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 r = m;
+        if (n < m) { r = n; }
         Tensor<E>[] sv = LinAlg.svd<E>(a);
         Tensor<E> s = sv[1];
         E smax = s.get1(0);
-        E smin = s.get1(n - 1);
+        E smin = s.get1(r - 1);
         return smax / smin;
     }
 

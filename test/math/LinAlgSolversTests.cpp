@@ -494,6 +494,187 @@ TEST(LinAlgSolversTests, lstsqTallMatchesNumpyAndNormalEquations) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 4.1.1 — bidiagonal svd on tall (5,3) and wide (3,5): numpy singular-value
+// pins (1e-12), reduced shapes, descending order, U·diag(S)·Vt reconstruction,
+// orthonormal U columns and Vt rows.
+TEST(LinAlgSolversTests, svdRectangularMatchesNumpy) {
+    std::string src = std::string(PRE) + HELPERS +
+        // checks svd(a) for (m,n): shape/order/recon/orthogonality; sv pins passed in
+        "    public static int32 checkSvd(Tensor<float64> a, Tensor<float64> pins, int32 base) {\n"
+        "        int64 m = a.shapeAt(0);\n"
+        "        int64 n = a.shapeAt(1);\n"
+        "        int64 rk = m; if (n < m) { rk = n; }\n"
+        "        Tensor<float64>[] f = LinAlg.svd<float64>(a);\n"
+        "        Tensor<float64> u = f[0];\n"
+        "        Tensor<float64> s = f[1];\n"
+        "        Tensor<float64> vt = f[2];\n"
+        "        if (u.shapeAt(0) != m || u.shapeAt(1) != rk) { return base; }\n"
+        "        if (s.shapeAt(0) != rk) { return base - 1; }\n"
+        "        if (vt.shapeAt(0) != rk || vt.shapeAt(1) != n) { return base - 2; }\n"
+        "        int64 i = 0;\n"
+        "        while (i < rk) {\n"
+        "            if (!D.close(s.get1(i), pins.get1(i))) { return base - 3; }\n"
+        "            if (i > 0) { if (s.get1(i) > s.get1(i - 1)) { return base - 4; } }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        i = 0;\n"
+        "        while (i < m) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < n) {\n"
+        "                float64 acc = 0.0;\n"
+        "                int64 k = 0;\n"
+        "                while (k < rk) {\n"
+        "                    acc = acc + u.get2(i, k) * s.get1(k) * vt.get2(k, j);\n"
+        "                    k = k + 1;\n"
+        "                }\n"
+        "                if (!D.close(acc, a.get2(i, j))) { return base - 5; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float64> utu = Tensor.matmul<float64>(u.transpose(), u);\n"
+        "        Tensor<float64> vvt = Tensor.matmul<float64>(vt, vt.transpose());\n"
+        "        i = 0;\n"
+        "        while (i < rk) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < rk) {\n"
+        "                float64 want = 0.0; if (i == j) { want = 1.0; }\n"
+        "                if (!D.close(utu.get2(i, j), want)) { return base - 6; }\n"
+        "                if (!D.close(vvt.get2(i, j), want)) { return base - 7; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float64[] dt = [ 2.0, -1.0, 3.0, 1.0, 4.0, 0.0, -2.0, 1.0, 2.0, 3.0, 0.0, -1.0, 1.0, 2.0, 1.0 ];\n"
+        "        int64[] s53 = heap int64[2]; s53[0] = 5; s53[1] = 3;\n"
+        "        Tensor<float64> tall = Tensor.of<float64>(dt, s53);\n"
+        "        float64[] pt = [ 4.806168449760469, 4.249945163697459, 3.85210474131891 ];\n"
+        "        int64[] s3 = heap int64[1]; s3[0] = 3;\n"
+        "        Tensor<float64> pinsT = Tensor.of<float64>(pt, s3);\n"
+        "        int32 rcT = D.checkSvd(tall, pinsT, -10);\n"
+        "        if (rcT != 0) { return rcT; }\n"
+        "        float64[] dw = [ 1.0, 2.0, 0.0, -1.0, 3.0, 2.0, -1.0, 1.0, 0.0, 1.0, 0.0, 3.0, -2.0, 1.0, 2.0 ];\n"
+        "        int64[] s35 = heap int64[2]; s35[0] = 3; s35[1] = 5;\n"
+        "        Tensor<float64> wide = Tensor.of<float64>(dw, s35);\n"
+        "        float64[] pw = [ 5.254138363048124, 3.24102506057107, 1.3746951002663361 ];\n"
+        "        Tensor<float64> pinsW = Tensor.of<float64>(pw, s3);\n"
+        "        int32 rcW = D.checkSvd(wide, pinsW, -20);\n"
+        "        if (rcW != 0) { return rcW; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.2 — the accuracy case the Gram route provably fails: (4,3) f32 matrix
+// with cond ~ 1e4 (built from orthogonal factors, singular values
+// [10, 0.05, 0.001], rounded to f32). numpy f32 pins: [10.0, 4.999999e-2,
+// 9.999771e-4]; tolerance 3e-5 (the m·eps class). The eigh(AᵀA) route
+// computes sigma3 ~ 1.898e-3 — off by 9e-4, 30x outside this bound.
+TEST(LinAlgSolversTests, svdF32IllConditionedBeatsGramRoute) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        "        float32[] da = [ 3.6491716f, 1.8303664f, -0.034683466f, -0.0009065672f, 0.0018131344f, -0.01903647f, 7.304767f, 3.6478841f, 0.025184933f, 3.6501963f, 1.8283168f, -0.0156864f ];\n"
+        "        int64[] s43 = heap int64[2]; s43[0] = 4; s43[1] = 3;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, s43);\n"
+        "        Tensor<float32>[] f = LinAlg.svd<float32>(a);\n"
+        "        Tensor<float32> s = f[1];\n"
+        "        float32 d0 = s.get1(0) - 10.0f; if (d0 < 0.0f) { d0 = -d0; }\n"
+        "        float32 d1 = s.get1(1) - 0.04999999f; if (d1 < 0.0f) { d1 = -d1; }\n"
+        "        float32 d2 = s.get1(2) - 0.0009999771f; if (d2 < 0.0f) { d2 = -d2; }\n"
+        "        if (d0 > 0.0001f) { return -1; }\n"
+        "        if (d1 > 0.00003f) { return -2; }\n"
+        "        if (d2 > 0.00003f) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.3 / 4.1.4 — rectangular pinv satisfies the four Moore-Penrose
+// identities (1e-10); matrixRank under numpy tolerance semantics: diag(1,
+// 1e-5) is rank 2 (the old sigma_max*1e-4 rule misclassified it as 1) and
+// the exactly-singular [[1,2],[2,4]] stays rank 1.
+TEST(LinAlgSolversTests, pinvMoorePenroseAndRankTolerance) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static boolean closeM(Tensor<float64> x, Tensor<float64> y) {\n"
+        "        int64 m = x.shapeAt(0);\n"
+        "        int64 n = x.shapeAt(1);\n"
+        "        int64 i = 0;\n"
+        "        while (i < m) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < n) {\n"
+        "                float64 d = x.get2(i, j) - y.get2(i, j);\n"
+        "                if (d < 0.0) { d = -d; }\n"
+        "                if (d > 0.0000000001) { return false; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return true;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float64[] dt = [ 2.0, -1.0, 3.0, 1.0, 4.0, 0.0, -2.0, 1.0, 2.0, 3.0, 0.0, -1.0, 1.0, 2.0, 1.0 ];\n"
+        "        int64[] s53 = heap int64[2]; s53[0] = 5; s53[1] = 3;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(dt, s53);\n"
+        "        Tensor<float64> p = LinAlg.pinv<float64>(a);\n"
+        "        if (p.shapeAt(0) != 3 || p.shapeAt(1) != 5) { return -1; }\n"
+        "        Tensor<float64> ap = Tensor.matmul<float64>(a, p);\n"       // (5,5)
+        "        Tensor<float64> pa = Tensor.matmul<float64>(p, a);\n"       // (3,3)
+        "        if (!D.closeM(Tensor.matmul<float64>(ap, a), a)) { return -2; }\n"
+        "        if (!D.closeM(Tensor.matmul<float64>(pa, p), p)) { return -3; }\n"
+        "        if (!D.closeM(ap.transpose().copy(), ap)) { return -4; }\n"
+        "        if (!D.closeM(pa.transpose().copy(), pa)) { return -5; }\n"
+        // rank tolerance semantics
+        "        float64[] dd = [ 1.0, 0.0, 0.0, 0.00001 ];\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float64> nearDef = Tensor.of<float64>(dd, s22);\n"
+        "        if (LinAlg.matrixRank<float64>(nearDef) != 2) { return -6; }\n"
+        "        float64[] ds = [ 1.0, 2.0, 2.0, 4.0 ];\n"
+        "        Tensor<float64> sing = Tensor.of<float64>(ds, s22);\n"
+        "        if (LinAlg.matrixRank<float64>(sing) != 1) { return -7; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 4.1.5 — lstsq minimum-norm: rank-deficient tall (col2 = 2*col1) matches
+// numpy's min-norm solution; the underdetermined m<n case now solves (exact
+// on a consistent system, x = A^T(AA^T)^-1 b).
+TEST(LinAlgSolversTests, lstsqRankDeficientAndUnderdeterminedMinNorm) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        "        float64[] da = [ 1.0, 2.0, 2.0, 4.0, 3.0, 6.0, 4.0, 8.0, 5.0, 10.0 ];\n"
+        "        int64[] s52 = heap int64[2]; s52[0] = 5; s52[1] = 2;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(da, s52);\n"
+        "        float64[] db = [ 1.0, 3.0, 2.0, 5.0, 4.0 ];\n"
+        "        int64[] s5 = heap int64[1]; s5[0] = 5;\n"
+        "        Tensor<float64> b = Tensor.of<float64>(db, s5);\n"
+        "        Tensor<float64> x = LinAlg.lstsq<float64>(a, b);\n"
+        "        if (!D.close(x.get1(0), 0.19272727272727275)) { return -1; }\n"
+        "        if (!D.close(x.get1(1), 0.3854545454545455)) { return -2; }\n"
+        // m < n: A=[[1,0,1],[0,1,1]], b=[2,3] -> min-norm [1/3, 4/3, 5/3]
+        "        float64[] du = [ 1.0, 0.0, 1.0, 0.0, 1.0, 1.0 ];\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<float64> au = Tensor.of<float64>(du, s23);\n"
+        "        float64[] db2 = [ 2.0, 3.0 ];\n"
+        "        int64[] s2 = heap int64[1]; s2[0] = 2;\n"
+        "        Tensor<float64> b2 = Tensor.of<float64>(db2, s2);\n"
+        "        Tensor<float64> xu = LinAlg.lstsq<float64>(au, b2);\n"
+        "        if (xu.shapeAt(0) != 3) { return -3; }\n"
+        "        if (!D.close(xu.get1(0), 1.0 / 3.0)) { return -4; }\n"
+        "        if (!D.close(xu.get1(1), 4.0 / 3.0)) { return -5; }\n"
+        "        if (!D.close(xu.get1(2), 5.0 / 3.0)) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 1.1.4 — a zero diagonal in a non-unit triangular solve throws (no NaN
 // propagation); the SAME matrix under unitDiag is legal (diagonal ignored).
 TEST(LinAlgSolversTests, solveTriangularSingularThrowsUnitDiagIgnores) {
