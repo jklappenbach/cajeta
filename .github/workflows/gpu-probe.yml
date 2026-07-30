@@ -1,0 +1,75 @@
+# GPU probe captures for cajeta-xgboost, on PHOENIX (the self-hosted
+# Windows/NVIDIA runner registered to THIS repo — personal-account runners
+# are per-repo, which is why the workflow lives here while the probe source
+# lives in cajeta-xgboost/tools/gpuprobe).
+#
+# gpu-numeric-fidelity 1.1.2: the xgboost fixtures' grad.npy rounds >= 1 are
+# a numpy reconstruction, not a device dump. probe_device_grads.cu runs the
+# verbatim 3.1.2 objective kernels over the committed fixture margins on the
+# real GPU (expf = the SFU libdevice sequence) and this uploads the resulting
+# device_grad/device_hess npys — the ground truth the multi-round parity
+# tests were missing. Authorized by Julian 2026-07-29.
+#
+# Later rounds on the same harness: the Unit 2 evaluate-kernel gain probe,
+# the Unit 3 scan probe.
+
+name: gpu-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      xgboost-ref:
+        description: 'cajeta-xgboost ref to check out'
+        required: true
+        default: 'main'
+      fixtures:
+        description: 'Comma-separated fixture dirs under tools/fixtures (names containing "multi" run the softmax kernel)'
+        required: true
+        default: 'tiny_binary,tiny_multi'
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64, gpu]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout cajeta-xgboost
+        uses: actions/checkout@v4
+        with:
+          repository: jklappenbach/cajeta-xgboost
+          ref: ${{ inputs.xgboost-ref }}
+
+      - name: GPU + toolchain sanity
+        shell: pwsh
+        run: |
+          nvidia-smi -L
+          nvcc --version
+
+      # nvcc on Windows needs cl.exe; source the VS build env via vswhere.
+      - name: Compile the probe (MSVC host env)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
+          nvcc -arch=native -O2 tools\gpuprobe\probe_device_grads.cu -o probe_device_grads.exe
+          if errorlevel 1 exit /b 1
+
+      - name: Run over the requested fixtures
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in "${{ inputs.fixtures }}".Split(',')) {
+            $f = $f.Trim()
+            $mode = if ($f -like '*multi*') { 'multi' } else { 'binary' }
+            $out = "captures/$f"
+            New-Item -ItemType Directory -Force -Path $out | Out-Null
+            Write-Host ">> $f ($mode)"
+            ./probe_device_grads.exe "tools/fixtures/$f" $mode $out
+            if ($LASTEXITCODE -ne 0) { throw "probe failed for $f" }
+          }
+
+      - name: Upload captures
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-grad-captures
+          path: captures/
+          if-no-files-found: error
