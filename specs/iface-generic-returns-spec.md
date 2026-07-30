@@ -1,10 +1,24 @@
 # Interface Methods with Generic-Instantiation Return Types — Defect Spec
 
-> Status: draft (2026-07-30). Compiler defect, discovered by cajeta-ml Unit 1's
-> estimator-protocol conformance suite; **blocks the ecosystem estimator
-> protocol** (`Predictor.predict` returns `#Tensor<float64>`; `crossValScore`
-> dispatches it through the interface). Minimal repros below reproduce on
-> HEAD (`0d5fc68a` toolchain).
+> Status: **FIXED 2026-07-30** (same day as discovery). Root cause: interface
+> method declarations FORCED the sret return ABI for every class return
+> except literal `cajeta.lang.String` (`Method.cpp returnsStackValue()`,
+> the #63 heuristic), while implementations returning ordinary heap classes
+> emit `ret ptr` — the indirect call through the interface vtable misaligned
+> (the sret slot became `this`) and dispatch SIGSEGV'd. The fix flips the
+> exception into a whitelist: sret is forced ONLY for the value-shape-by-
+> convention return (`cajeta.lang.Optional`, the AsyncIterator.next shape —
+> ecosystem-wide the only one); every other class return takes the reference
+> (pointer) ABI, matching what impl bodies emit. Diagnostics added per §2.3
+> (null vtable slots and dispatch-index misses now warn instead of silently
+> nil-calling). Regression pins: `InterfaceTests` gained 4 tests covering
+> plain-generic, owned-`#`-generic, String, and Optional returns through
+> interfaces; the cajeta-ml pin test is un-gated and green.
+>
+> CORRECTION: "manifestation 1.2" below was a false alarm — the repro
+> imported `cajeta.lang.ArrayList` (it lives in `cajeta.collection`); the
+> placeholder error was the (rough) wrong-import diagnostic, unrelated to
+> interfaces. Historical text below kept for the record.
 
 ## 1. Definition
 

@@ -44,6 +44,6 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [linalg-solvers](linalg-solvers-spec.md) | [plan](../agents/linalg-solvers-plan.md) | active — Units 1-5 delivered green 2026-07-30 (triangular/multi-RHS solves, Householder QR, bidiagonal SVD, QR lstsq + min-norm, slogdet/norms); U6 docs done, sweep at release gate |
-| [cajeta-ml](cajeta-ml-spec.md) | [plan](../agents/cajeta-ml-plan.md) | active — U1 shipped 2026-07-30 (repo jklappenbach/cajeta-ml, protocol + conformance 8/0/2); U3 crossValScore blocked on iface-generic-returns |
-| [iface-generic-returns](iface-generic-returns-spec.md) | — (defect; blocks cajeta-ml U3 crossValScore + the estimator protocol core) | draft |
+| [cajeta-ml](cajeta-ml-spec.md) | [plan](../agents/cajeta-ml-plan.md) | active — U1-U3 shipped 2026-07-30 (repo jklappenbach/cajeta-ml, CI green, suite 17/0/1, interface pin un-gated); U4-U7 next, need a toolchain release |
+| [iface-generic-returns](iface-generic-returns-spec.md) | — (defect) | FIXED 2026-07-30 — sret whitelist flip in returnsStackValue; InterfaceTests +4 pins; ml pin un-gated; row drops at next INDEX sweep |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |

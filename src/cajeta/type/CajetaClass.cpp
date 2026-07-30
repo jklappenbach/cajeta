@@ -1835,9 +1835,16 @@ namespace cajeta {
                         != ifaceMethod->getModifiers().end()) continue;
                 MethodPtr concrete = findByName(ifaceMethod->getName());
                 if (!concrete || !concrete->getLlvmFunction()) {
-                    // Missing or unbuilt — leave a null slot. The hash-
-                    // vtable build will have surfaced the real diagnostic
-                    // earlier; null here just keeps the global well-formed.
+                    // Missing or unbuilt — leave a null slot, but say so:
+                    // a dispatch through it is a guaranteed nil-call SIGSEGV
+                    // (iface-generic-returns spec, requirement 2.3).
+                    std::cerr << "warning: [iface-vtable-null-slot] "
+                              << classCanonical << " has no built implementation for "
+                              << ifaceCanonical << "::" << ifaceMethod->getName()
+                              << (concrete ? " (found, LLVM function unbuilt)"
+                                           : " (no same-name concrete method)")
+                              << " — dispatch through this interface slot will crash"
+                              << std::endl;
                     entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
                     continue;
                 }
@@ -6457,6 +6464,17 @@ namespace cajeta {
                         (uint64_t) (methodIdx + 1)),
                     "iface_method_slot");
                 callee = builder->CreateLoad(ptrTy, methodSlot, "iface_method_fn");
+            } else {
+                // Method absent from the interface's flattened list — the
+                // callee stays whatever the direct-resolution path picked
+                // (an interface method has no body, so that's a nil call at
+                // runtime). Diagnose instead of crashing silently
+                // (iface-generic-returns spec, requirement 2.3).
+                std::cerr << "warning: [iface-dispatch-index-miss] "
+                          << this->getQName()->toCanonical() << "::"
+                          << method->getName()
+                          << " not found in the flattened interface method list"
+                          << " — interface dispatch will crash" << std::endl;
             }
 
             // Swap the body pointer for the data pointer at the `this`
