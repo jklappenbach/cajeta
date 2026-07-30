@@ -30,10 +30,12 @@ and every future model library conforms to.
 - **Model selection**: `trainTestSplit`, `KFold`, `crossValScore`.
 - **Metrics**: mse/rmse/mae/r², accuracy/precision/recall/f1, confusion
   matrix, log-loss, ROC-AUC.
-- **Stdlib prerequisite (cross-repo)**: `cajeta.math.special` — `erf`/`erfc`,
-  `expit`, `betainc` (+ normal/t CDFs in `cajeta.math.stats`). Small pure
+- **Stdlib prerequisite (cross-repo)**: extend **`cajeta.math.stats.Stats`**
+  with `erf`/`erfc`, `expit`, `betainc`, and normal/t CDFs. Small pure
   primitives; per §4.7 they belong in the stdlib, and logistic + p-values
-  need them.
+  need them. No new package (decided 2026-07-29): `cajeta.lang.Math` is the
+  compiler-intrinsic registry, and these are statistics functions — a device
+  `erf` intrinsic is a separate future concern if a kernel consumer appears.
 - **Ecosystem deliverables, first-class**: repo scaffold, manifest-first
   `cajeta.json`, CI/CD (build/test on main, tag → GitHub Release + Olla
   publish, self-arming on `OLLA_*` secrets), self-checking tour, `docs/`.
@@ -187,9 +189,10 @@ there they were bolted on afterward):
   vs unregularized-by-default. Lean: follow sklearn (`C=1.0`) for muscle
   memory, document loudly; `summary()` warns when regularized (p-values on a
   penalized fit are not classical inference).
-- **[M4] Where `special` lands** — one stdlib commit inside this plan
-  (cross-repo unit, the nucleo-frame U17 precedent) vs a separate micro-spec.
-  Lean: cross-repo unit here; it's ~4 functions with scipy-pinned tests.
+- **[M4] Where the special functions land** — RESOLVED 2026-07-29 (Julian):
+  extend `cajeta.math.stats.Stats`, no new package; delivered as one
+  cross-repo stdlib commit inside this plan (the nucleo-frame U17
+  precedent), ~6 functions with scipy-pinned tests.
 - **[M5] Protocol packaging** — protocol types in `dev.cajeta.ml` proper vs a
   separate tiny `dev.cajeta.ml.api` package so conformers avoid the full dep.
   Lean: single package in v1; split only if an external conformer needs it
