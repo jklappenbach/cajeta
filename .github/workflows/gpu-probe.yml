@@ -31,7 +31,7 @@ on:
         description: 'Which probe to run'
         required: true
         type: choice
-        options: [device-grads, evaluate-gain, train-repro]
+        options: [device-grads, evaluate-gain, train-repro, instrumented-eval]
         default: device-grads
       xgboost-ref:
         description: 'cajeta-xgboost ref to check out'
@@ -49,13 +49,59 @@ on:
 jobs:
   probe:
     runs-on: [self-hosted, Windows, X64, gpu]
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.probe == 'instrumented-eval' && 150 || 30 }}
     steps:
       - name: Checkout cajeta-xgboost
         uses: actions/checkout@v4
         with:
           repository: jklappenbach/cajeta-xgboost
           ref: ${{ inputs.xgboost-ref }}
+
+      # instrumented-eval: build xgboost v3.1.2 from source with printf
+      # instrumentation in the evaluate agent (tools/gpuprobe/
+      # instrument_eval_3.1.2.patch), swap the built xgboost.dll into the
+      # 3.1.2 wheel, and rerun the fixture. The prints show every tile winner
+      # reaching Update (accept/reject) and each post-reduce node winner —
+      # the ground truth for the node-14 selection question.
+      - name: Checkout xgboost v3.1.2 source
+        if: ${{ inputs.probe == 'instrumented-eval' }}
+        uses: actions/checkout@v4
+        with:
+          repository: dmlc/xgboost
+          ref: v3.1.2
+          path: xgboost-src
+          submodules: recursive
+
+      - name: Build instrumented xgboost + rerun the fixture
+        if: ${{ inputs.probe == 'instrumented-eval' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git -C xgboost-src apply ..\tools\gpuprobe\instrument_eval_3.1.2.patch
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vspath = & $vswhere -latest -property installationPath
+          cmake -S xgboost-src -B xgboost-src/build -A x64 `
+            -DUSE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DBUILD_DEPRECATED_CLI=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'cmake configure failed' }
+          cmake --build xgboost-src/build --config Release --parallel
+          if ($LASTEXITCODE -ne 0) { throw 'build failed' }
+          $dll = Get-ChildItem xgboost-src -Recurse -Filter xgboost.dll | Select-Object -First 1
+          Write-Host ">> built: $($dll.FullName)"
+
+          Invoke-WebRequest -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' -OutFile uv.zip
+          Expand-Archive uv.zip -DestinationPath uvbin -Force
+          $env:UV_PYTHON_INSTALL_DIR = "$PWD\uv-pythons"
+          $env:UV_CACHE_DIR = "$PWD\uv-cache"
+          & uvbin\uv.exe python install 3.12
+          & uvbin\uv.exe venv xgbenv --python 3.12
+          & uvbin\uv.exe pip install --python xgbenv\Scripts\python.exe --quiet 'xgboost==3.1.2' numpy
+          $wheeldll = Get-ChildItem xgbenv -Recurse -Filter xgboost.dll | Select-Object -First 1
+          Write-Host ">> replacing wheel dll: $($wheeldll.FullName)"
+          Copy-Item $dll.FullName $wheeldll.FullName -Force
+          New-Item -ItemType Directory -Force -Path captures | Out-Null
+          & xgbenv\Scripts\python.exe tools/gpuprobe/train_repro.py tools/fixtures/tiny_reg_mcw10 `
+            2>&1 | Tee-Object -FilePath captures/instrumented-eval.txt
+          if ($LASTEXITCODE -ne 0) { throw 'instrumented run failed' }
 
       - name: GPU + toolchain sanity
         shell: powershell
@@ -92,7 +138,7 @@ jobs:
 
       # nvcc on Windows needs cl.exe; source the VS build env via vswhere.
       - name: Compile the probe (MSVC host env)
-        if: ${{ inputs.probe != 'train-repro' }}
+        if: ${{ inputs.probe == 'device-grads' || inputs.probe == 'evaluate-gain' }}
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
