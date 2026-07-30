@@ -31,7 +31,7 @@ on:
         description: 'Which probe to run'
         required: true
         type: choice
-        options: [device-grads, evaluate-gain]
+        options: [device-grads, evaluate-gain, train-repro]
         default: device-grads
       xgboost-ref:
         description: 'cajeta-xgboost ref to check out'
@@ -63,8 +63,27 @@ jobs:
           nvidia-smi -L
           nvcc --version
 
+      # train-repro needs no nvcc: it retrains the fixture with the real pip
+      # wheel on the real GPU, once per version, and reports the picked splits
+      # (gpu-numeric-fidelity 2.2.1 — node 14 selection investigation).
+      - name: Retrain with the real wheels
+        if: ${{ inputs.probe == 'train-repro' }}
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path captures | Out-Null
+          foreach ($v in '3.1.2', '3.3.0') {
+            Write-Host ">> xgboost $v"
+            py -3 -m venv "xgbenv-$v"
+            & "xgbenv-$v/Scripts/python" -m pip install --quiet "xgboost==$v" numpy
+            & "xgbenv-$v/Scripts/python" tools/gpuprobe/train_repro.py tools/fixtures/tiny_reg_mcw10 `
+              2>&1 | Tee-Object -FilePath "captures/train-repro-$v.txt"
+            if ($LASTEXITCODE -ne 0) { throw "train-repro failed for $v" }
+          }
+
       # nvcc on Windows needs cl.exe; source the VS build env via vswhere.
       - name: Compile the probe (MSVC host env)
+        if: ${{ inputs.probe != 'train-repro' }}
         shell: cmd
         run: |
           for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
@@ -104,6 +123,6 @@ jobs:
       - name: Upload captures
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.probe == 'evaluate-gain' && 'evaluate-gain-captures' || 'device-grad-captures' }}
+          name: ${{ inputs.probe }}-captures
           path: captures/
           if-no-files-found: error
