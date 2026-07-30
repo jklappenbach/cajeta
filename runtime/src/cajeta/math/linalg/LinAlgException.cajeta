@@ -1,0 +1,20 @@
+package cajeta.math.linalg;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by `cajeta.math.linalg` on shape violations (non-square matrix,
+ * RHS row-count mismatch) and on singular input where the operation cannot
+ * proceed (a zero diagonal in a triangular solve). The cajeta analogue of
+ * numpy's `LinAlgError`.
+ *
+ * Recoverable: bad shapes and singular systems are normal, caller-handleable
+ * conditions (mirrors {@link cajeta.math.BroadcastException}'s discipline).
+ */
+public class LinAlgException extends RecoverableException {
+    public LinAlgException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

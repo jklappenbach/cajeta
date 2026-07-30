@@ -16,15 +16,24 @@ import cajeta.math.Tensor;
 public final class LinAlg {
 
     /**
-     * Solve the square linear system `A·x = b` (numpy `linalg.solve`) by Gaussian
-     * elimination with partial pivoting + back-substitution. `A` is `(n,n)`, `b` is
-     * `(n,)`; returns the solution vector `x` `(n,)`. The inputs are not modified
-     * (works on copies).
+     * Solve the square linear system `A·X = B` (numpy `linalg.solve`) by Gaussian
+     * elimination with partial pivoting + back-substitution. `A` is `(n,n)`; `B` is
+     * `(n,)` or `(n,k)` (multi-RHS — one elimination, `k` back-substitutions); the
+     * result has `B`'s shape. The inputs are not modified (works on copies). Throws
+     * {@link LinAlgException} on a non-square `A` or a row-count mismatch.
      *
      * @EntryPoint
      */
     public static #Tensor<E> solve<E extends Floating>(Tensor<E> a, Tensor<E> b) {
+        if (a.ndim() != 2 || a.shapeAt(0) != a.shapeAt(1)) {
+            throw heap LinAlgException("solve: a must be square (n,n)");
+        }
         int64 n = a.shapeAt(0);
+        if (b.ndim() < 1 || b.ndim() > 2 || b.shapeAt(0) != n) {
+            throw heap LinAlgException("solve: b must be (n,) or (n,k) with rows matching a");
+        }
+        int64 k = 1;
+        if (b.ndim() == 2) { k = b.shapeAt(1); }
         Tensor<E> m = a.copy();
         Tensor<E> x = b.copy();
         int64 col = 0;
@@ -40,10 +49,14 @@ public final class LinAlg {
             }
             if (piv != col) {
                 LinAlg.swapRows<E>(m, n, piv, col);
-                E xp = x.get1(piv);
-                E xc = x.get1(col);
-                x.set1(piv, xc);
-                x.set1(col, xp);
+                int64 sc = 0;
+                while (sc < k) {
+                    E xp = x.flatGet(piv * k + sc);
+                    E xc = x.flatGet(col * k + sc);
+                    x.flatSet(piv * k + sc, xc);
+                    x.flatSet(col * k + sc, xp);
+                    sc = sc + 1;
+                }
             }
             E diag = m.get2(col, col);
             r = col + 1;
@@ -55,24 +68,109 @@ public final class LinAlg {
                     m.flatSet(r * n + c, v);
                     c = c + 1;
                 }
-                E xv = x.get1(r) - factor * x.get1(col);
-                x.set1(r, xv);
+                int64 rc = 0;
+                while (rc < k) {
+                    E xv = x.flatGet(r * k + rc) - factor * x.flatGet(col * k + rc);
+                    x.flatSet(r * k + rc, xv);
+                    rc = rc + 1;
+                }
                 r = r + 1;
             }
             col = col + 1;
         }
-        // back-substitution
-        int64 i = n - 1;
-        while (i >= 0) {
-            E s = x.get1(i);
-            int64 c = i + 1;
-            while (c < n) {
-                s = s - m.get2(i, c) * x.get1(c);
-                c = c + 1;
+        // back-substitution, per RHS column
+        int64 bc = 0;
+        while (bc < k) {
+            int64 i = n - 1;
+            while (i >= 0) {
+                E s = x.flatGet(i * k + bc);
+                int64 c = i + 1;
+                while (c < n) {
+                    s = s - m.get2(i, c) * x.flatGet(c * k + bc);
+                    c = c + 1;
+                }
+                E xi = s / m.get2(i, i);
+                x.flatSet(i * k + bc, xi);
+                i = i - 1;
             }
-            E xi = s / m.get2(i, i);
-            x.set1(i, xi);
-            i = i - 1;
+            bc = bc + 1;
+        }
+        return #x;
+    }
+
+    /**
+     * Solve the triangular system `T·x = b` (scipy `solve_triangular`) by forward or
+     * back substitution — the factor-application primitive `choSolve`/`luSolve` and
+     * QR-based `lstsq` stand on. `t` is `(n,n)` with its significant triangle chosen
+     * by `lower`; `b` is `(n,)` or `(n,k)` (multi-RHS); the result has `b`'s shape.
+     * `unitDiag` treats the diagonal as 1 (stored diagonal values are ignored);
+     * `transposed` solves `Tᵀ·x = b` without materializing the transpose. Inputs are
+     * not modified. Throws {@link LinAlgException} on a non-square `t`, a row-count
+     * mismatch, or — unless `unitDiag` — a zero diagonal (singular).
+     *
+     * @EntryPoint
+     */
+    public static #Tensor<E> solveTriangular<E extends Floating>(
+            Tensor<E> t, Tensor<E> b, boolean lower, boolean unitDiag, boolean transposed) {
+        if (t.ndim() != 2 || t.shapeAt(0) != t.shapeAt(1)) {
+            throw heap LinAlgException("solveTriangular: t must be square (n,n)");
+        }
+        int64 n = t.shapeAt(0);
+        if (b.ndim() < 1 || b.ndim() > 2 || b.shapeAt(0) != n) {
+            throw heap LinAlgException("solveTriangular: b must be (n,) or (n,k) with rows matching t");
+        }
+        if (!unitDiag) {
+            int64 dc = 0;
+            while (dc < n) {
+                if (t.get2(dc, dc) == (E) 0) {
+                    throw heap LinAlgException("solveTriangular: zero diagonal (singular)");
+                }
+                dc = dc + 1;
+            }
+        }
+        int64 k = 1;
+        if (b.ndim() == 2) { k = b.shapeAt(1); }
+        // Transposing swaps the roles of the triangles: solving Lᵀx=b is an
+        // upper-triangular (backward) pass reading t[j,i] in place of t[i,j].
+        boolean effLower = lower;
+        if (transposed) { effLower = !lower; }
+        Tensor<E> x = b.copy();
+        int64 c = 0;
+        while (c < k) {
+            if (effLower) {
+                // forward substitution
+                int64 i = 0;
+                while (i < n) {
+                    E s = x.flatGet(i * k + c);
+                    int64 j = 0;
+                    while (j < i) {
+                        E tij = t.get2(i, j);
+                        if (transposed) { tij = t.get2(j, i); }
+                        s = s - tij * x.flatGet(j * k + c);
+                        j = j + 1;
+                    }
+                    if (!unitDiag) { s = s / t.get2(i, i); }
+                    x.flatSet(i * k + c, s);
+                    i = i + 1;
+                }
+            } else {
+                // back substitution
+                int64 i = n - 1;
+                while (i >= 0) {
+                    E s = x.flatGet(i * k + c);
+                    int64 j = i + 1;
+                    while (j < n) {
+                        E tij = t.get2(i, j);
+                        if (transposed) { tij = t.get2(j, i); }
+                        s = s - tij * x.flatGet(j * k + c);
+                        j = j + 1;
+                    }
+                    if (!unitDiag) { s = s / t.get2(i, i); }
+                    x.flatSet(i * k + c, s);
+                    i = i - 1;
+                }
+            }
+            c = c + 1;
         }
         return #x;
     }
@@ -126,33 +224,17 @@ public final class LinAlg {
     }
 
     /**
-     * Inverse of a square `A` (numpy `linalg.inv`) — solve `A·X = I` column by column.
-     * Returns the `(n,n)` inverse.
+     * Inverse of a square `A` (numpy `linalg.inv`) — one multi-RHS solve of
+     * `A·X = I` (one elimination, `n` back-substitutions; formerly `n` full
+     * per-column solves). Returns the `(n,n)` inverse.
      *
      * @EntryPoint
      */
     public static #Tensor<E> inv<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
-        int64[] sh = heap int64[2];
-        sh[0] = n;
-        sh[1] = n;
-        Tensor<E> out = Tensor.zeros<E>(sh);
-        int64[] bsh = heap int64[1];
-        bsh[0] = n;
-        int64 j = 0;
-        while (j < n) {
-            Tensor<E> e = Tensor.zeros<E>(bsh);
-            e.set1(j, (E) 1);
-            Tensor<E> colx = LinAlg.solve<E>(a, e);
-            int64 i = 0;
-            while (i < n) {
-                E v = colx.get1(i);
-                out.flatSet(i * n + j, v);
-                i = i + 1;
-            }
-            j = j + 1;
-        }
-        return #out;
+        Tensor<E> ident = Tensor.eye<E>(n);
+        Tensor<E> x = LinAlg.solve<E>(a, ident);
+        return #x;
     }
 
     /**
