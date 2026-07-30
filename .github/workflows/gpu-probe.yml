@@ -73,29 +73,19 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-          if (-not $python) {
-            $candidates = @(
-              "$env:LOCALAPPDATA\Programs\Python\Python3*\python.exe",
-              'C:\Python3*\python.exe',
-              'C:\Program Files\Python3*\python.exe',
-              "$env:USERPROFILE\miniconda3\python.exe",
-              "$env:USERPROFILE\anaconda3\python.exe"
-            ) | ForEach-Object { Get-Item $_ -ErrorAction SilentlyContinue } | Select-Object -First 1
-            if ($candidates) { $python = $candidates.FullName }
-          }
-          if (-not $python) {
-            Write-Host '!! no python found; PATH is:'
-            $env:Path -split ';' | Write-Host
-            throw 'no python on PHOENIX'
-          }
-          Write-Host ">> python: $python"
+          # The runner service (NetworkService) sees no python install, so
+          # bootstrap uv INTO THE WORKSPACE — nothing lands outside $PWD.
+          Invoke-WebRequest -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' -OutFile uv.zip
+          Expand-Archive uv.zip -DestinationPath uvbin -Force
+          $env:UV_PYTHON_INSTALL_DIR = "$PWD\uv-pythons"
+          $env:UV_CACHE_DIR = "$PWD\uv-cache"
+          & uvbin\uv.exe python install 3.12
           New-Item -ItemType Directory -Force -Path captures | Out-Null
           foreach ($v in '3.1.2', '3.3.0') {
             Write-Host ">> xgboost $v"
-            & $python -m venv "xgbenv-$v"
-            & "xgbenv-$v/Scripts/python" -m pip install --quiet "xgboost==$v" numpy
-            & "xgbenv-$v/Scripts/python" tools/gpuprobe/train_repro.py tools/fixtures/tiny_reg_mcw10 `
+            & uvbin\uv.exe venv "xgbenv-$v" --python 3.12
+            & uvbin\uv.exe pip install --python "xgbenv-$v\Scripts\python.exe" --quiet "xgboost==$v" numpy
+            & "xgbenv-$v\Scripts\python.exe" tools/gpuprobe/train_repro.py tools/fixtures/tiny_reg_mcw10 `
               2>&1 | Tee-Object -FilePath "captures/train-repro-$v.txt"
             if ($LASTEXITCODE -ne 0) { throw "train-repro failed for $v" }
           }
