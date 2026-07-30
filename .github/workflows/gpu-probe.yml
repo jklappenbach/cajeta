@@ -66,6 +66,13 @@ jobs:
       # train-repro needs no nvcc: it retrains the fixture with the real pip
       # wheel on the real GPU, once per version, and reports the picked splits
       # (gpu-numeric-fidelity 2.2.1 — node 14 selection investigation).
+      # PHOENIX has no `py` launcher, so python comes from setup-python.
+      - name: Set up python
+        if: ${{ inputs.probe == 'train-repro' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Retrain with the real wheels
         if: ${{ inputs.probe == 'train-repro' }}
         shell: powershell
@@ -74,7 +81,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path captures | Out-Null
           foreach ($v in '3.1.2', '3.3.0') {
             Write-Host ">> xgboost $v"
-            py -3 -m venv "xgbenv-$v"
+            python -m venv "xgbenv-$v"
             & "xgbenv-$v/Scripts/python" -m pip install --quiet "xgboost==$v" numpy
             & "xgbenv-$v/Scripts/python" tools/gpuprobe/train_repro.py tools/fixtures/tiny_reg_mcw10 `
               2>&1 | Tee-Object -FilePath "captures/train-repro-$v.txt"
