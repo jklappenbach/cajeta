@@ -45,6 +45,12 @@ on:
         description: 'evaluate-gain only: dump dir under tools/gpuprobe'
         required: false
         default: 'node14'
+      instrument:
+        description: 'instrumented-eval only: which probe prints to build in (tiles -> tiny_reg_mcw10, sketch -> large_reg)'
+        required: false
+        type: choice
+        options: [tiles, sketch]
+        default: tiles
 
 jobs:
   probe:
@@ -85,7 +91,7 @@ jobs:
           $env:UV_CACHE_DIR = "$PWD\uv-cache"
           & uvbin\uv.exe python install 3.12
           & uvbin\uv.exe venv xgbenv --python 3.12
-          & xgbenv\Scripts\python.exe tools/gpuprobe/apply_instrumentation.py xgboost-src
+          & xgbenv\Scripts\python.exe tools/gpuprobe/apply_instrumentation.py xgboost-src "${{ inputs.instrument }}"
           if ($LASTEXITCODE -ne 0) { throw 'instrumentation failed to apply' }
           # cmake ships inside VS; the service PATH has no cmake.
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -107,7 +113,8 @@ jobs:
           Write-Host ">> replacing wheel dll: $($wheeldll.FullName)"
           Copy-Item $dll.FullName $wheeldll.FullName -Force
           New-Item -ItemType Directory -Force -Path captures | Out-Null
-          & xgbenv\Scripts\python.exe tools/gpuprobe/train_repro.py tools/fixtures/tiny_reg_mcw10 `
+          $fixture = if ('${{ inputs.instrument }}' -eq 'sketch') { 'large_reg' } else { 'tiny_reg_mcw10' }
+          & xgbenv\Scripts\python.exe tools/gpuprobe/train_repro.py "tools/fixtures/$fixture" `
             2>&1 | Tee-Object -FilePath captures/instrumented-eval.txt
           if ($LASTEXITCODE -ne 0) { throw 'instrumented run failed' }
 
