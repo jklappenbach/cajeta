@@ -348,56 +348,140 @@ public final class LinAlg {
     }
 
     /**
-     * QR factorization (numpy `linalg.qr`, reduced/`'reduced'` for square `A`): returns
-     * `[Q, R]` with `A = Q·R`, `Q` having orthonormal columns and `R` upper-triangular.
-     * Native modified Gram-Schmidt in place over a copy (numerically the stable MGS
-     * variant). Sign of the diagonal is not normalized (matches numpy's free sign).
+     * QR factorization (numpy `linalg.qr`, reduced mode) of a `(m,n)` matrix via
+     * Householder reflections. Returns `[Q, R]` with `A = Q·R`: `Q (m,r)` has
+     * orthonormal columns, `R (r,n)` is upper-triangular, `r = min(m,n)`. Householder
+     * (LAPACK's algorithm) replaces the earlier modified Gram-Schmidt body: MGS loses
+     * orthogonality in proportion to `cond(A)`; Householder keeps `‖QᵀQ−I‖ ~ m·ε`
+     * regardless. The diagonal of `R` is normalized non-negative (this function's
+     * historical convention — MGS produced positive norms; numpy leaves signs free,
+     * so compare against numpy up to a per-column sign). Throws
+     * {@link LinAlgException} if `a` is not 2-D.
      */
     public static #Tensor<E>[] qr<E extends Floating>(Tensor<E> a) {
-        int64 n = a.shapeAt(0);
-        int64[] sh = heap int64[2];
-        sh[0] = n;
-        sh[1] = n;
-        Tensor<E>[] out = heap Tensor<E>[2];
-        out[0] = a.copy();                               // Q (orthogonalized in place)
-        out[1] = Tensor.zeros<E>(sh);                    // R
+        if (a.ndim() != 2) {
+            throw heap LinAlgException("qr: a must be 2-D (m,n)");
+        }
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        int64 rk = m;
+        if (n < m) { rk = n; }
+        Tensor<E> w = a.copy();
+        int64[] tsh = heap int64[1];
+        tsh[0] = rk;
+        Tensor<E> tau = Tensor.zeros<E>(tsh);
+        // Factor: reflector j (H = I - tau·v·vᵀ, v[j] = 1) zeroes w[j+1.., j].
+        // v's tail is stored below the diagonal of column j; R accumulates in
+        // the upper triangle of w.
         int64 j = 0;
-        while (j < n) {
-            int64 i = 0;
-            while (i < j) {
-                // r_ij = q_i · (current) col_j, then subtract the projection (MGS)
-                E dot = (E) 0;
-                int64 k = 0;
-                while (k < n) {
-                    dot = dot + out[0].get2(k, i) * out[0].get2(k, j);
-                    k = k + 1;
-                }
-                out[1].flatSet(i * n + j, dot);
-                k = 0;
-                while (k < n) {
-                    E v = out[0].get2(k, j) - dot * out[0].get2(k, i);
-                    out[0].flatSet(k * n + j, v);
-                    k = k + 1;
-                }
+        while (j < rk) {
+            E ss = (E) 0;
+            int64 i = j;
+            while (i < m) {
+                E xv = w.get2(i, j);
+                ss = ss + xv * xv;
                 i = i + 1;
             }
-            // normalize column j → q_j, R[j][j] = ‖col_j‖
-            E ss = (E) 0;
-            int64 k2 = 0;
-            while (k2 < n) {
-                E qv = out[0].get2(k2, j);
-                ss = ss + qv * qv;
-                k2 = k2 + 1;
-            }
             E nrm = Math.sqrt(ss);
-            out[1].flatSet(j * n + j, nrm);
-            k2 = 0;
-            while (k2 < n) {
-                E qn = out[0].get2(k2, j) / nrm;
-                out[0].flatSet(k2 * n + j, qn);
-                k2 = k2 + 1;
+            if (nrm != (E) 0) {
+                E x0 = w.get2(j, j);
+                E alpha = nrm;
+                if (x0 >= (E) 0) { alpha = (E) 0 - nrm; }   // avoid cancellation in v0
+                E v0 = x0 - alpha;
+                E tj = ((E) 0 - v0) / alpha;                 // tau = (alpha - x0)/alpha
+                tau.set1(j, tj);
+                i = j + 1;
+                while (i < m) {
+                    w.flatSet(i * n + j, w.get2(i, j) / v0); // store v (v[j]=1 implicit)
+                    i = i + 1;
+                }
+                w.flatSet(j * n + j, alpha);                 // R[j,j] pre-normalization
+                // apply H_j to the trailing columns
+                int64 c = j + 1;
+                while (c < n) {
+                    E s = w.get2(j, c);
+                    i = j + 1;
+                    while (i < m) {
+                        s = s + w.get2(i, j) * w.get2(i, c);
+                        i = i + 1;
+                    }
+                    s = s * tj;
+                    w.flatSet(j * n + c, w.get2(j, c) - s);
+                    i = j + 1;
+                    while (i < m) {
+                        w.flatSet(i * n + c, w.get2(i, c) - s * w.get2(i, j));
+                        i = i + 1;
+                    }
+                    c = c + 1;
+                }
             }
             j = j + 1;
+        }
+        int64[] qsh = heap int64[2];
+        qsh[0] = m;
+        qsh[1] = rk;
+        int64[] rsh = heap int64[2];
+        rsh[0] = rk;
+        rsh[1] = n;
+        Tensor<E>[] out = heap Tensor<E>[2];
+        out[0] = Tensor.zeros<E>(qsh);                       // Q
+        out[1] = Tensor.zeros<E>(rsh);                       // R
+        int64 ri = 0;
+        while (ri < rk) {
+            int64 rc = ri;
+            while (rc < n) {
+                out[1].flatSet(ri * n + rc, w.get2(ri, rc));
+                rc = rc + 1;
+            }
+            ri = ri + 1;
+        }
+        // Q = H_0 · … · H_{rk-1} applied to the first rk columns of I(m):
+        // reflectors in reverse order over the growing identity block.
+        int64 qc = 0;
+        while (qc < rk) {
+            out[0].flatSet(qc * rk + qc, (E) 1);
+            qc = qc + 1;
+        }
+        j = rk - 1;
+        while (j >= 0) {
+            E tj = tau.get1(j);
+            if (tj != (E) 0) {
+                int64 c = 0;
+                while (c < rk) {
+                    E s = out[0].flatGet(j * rk + c);
+                    int64 i = j + 1;
+                    while (i < m) {
+                        s = s + w.get2(i, j) * out[0].flatGet(i * rk + c);
+                        i = i + 1;
+                    }
+                    s = s * tj;
+                    out[0].flatSet(j * rk + c, out[0].flatGet(j * rk + c) - s);
+                    i = j + 1;
+                    while (i < m) {
+                        out[0].flatSet(i * rk + c, out[0].flatGet(i * rk + c) - s * w.get2(i, j));
+                        i = i + 1;
+                    }
+                    c = c + 1;
+                }
+            }
+            j = j - 1;
+        }
+        // normalize diag(R) >= 0: flip R's row j and Q's column j together
+        int64 dj = 0;
+        while (dj < rk) {
+            if (out[1].get2(dj, dj) < (E) 0) {
+                int64 rc = dj;
+                while (rc < n) {
+                    out[1].flatSet(dj * n + rc, (E) 0 - out[1].get2(dj, rc));
+                    rc = rc + 1;
+                }
+                int64 qi = 0;
+                while (qi < m) {
+                    out[0].flatSet(qi * rk + dj, (E) 0 - out[0].get2(qi, dj));
+                    qi = qi + 1;
+                }
+            }
+            dj = dj + 1;
         }
         return #out;
     }

@@ -196,6 +196,139 @@ TEST(LinAlgSolversTests, solveMultiRhsMatchesNumpyAndThrowsOnShape) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 2.1.1 — Householder QR on tall (5,3), wide (3,5), square (3,3): reduced
+// shapes (Q (m,r), R (r,n), r=min(m,n)), R upper-triangular with diag >= 0,
+// Q·R reconstructs A, QᵀQ = I. Invariant-based: for full-rank A these
+// properties determine the factorization uniquely, so agreement with
+// (sign-normalized) numpy is implied. f64 at 1e-12 + one f32 case at 1e-3.
+TEST(LinAlgSolversTests, qrRectangularInvariantsHold) {
+    std::string src = std::string(PRE) + HELPERS +
+        // checkQr: returns 0 on success, else a negative code offset by `base`.
+        "    public static int32 checkQr(Tensor<float64> a, int32 base) {\n"
+        "        int64 m = a.shapeAt(0);\n"
+        "        int64 n = a.shapeAt(1);\n"
+        "        int64 rk = m; if (n < m) { rk = n; }\n"
+        "        Tensor<float64>[] f = LinAlg.qr<float64>(a);\n"
+        "        Tensor<float64> q = f[0];\n"
+        "        Tensor<float64> r = f[1];\n"
+        "        if (q.shapeAt(0) != m || q.shapeAt(1) != rk) { return base; }\n"
+        "        if (r.shapeAt(0) != rk || r.shapeAt(1) != n) { return base - 1; }\n"
+        "        int64 i = 0;\n"
+        "        while (i < rk) {\n"
+        "            if (r.get2(i, i) < 0.0) { return base - 2; }\n"
+        "            int64 j = 0;\n"
+        "            while (j < i) {\n"
+        "                if (r.get2(i, j) != 0.0) { return base - 3; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float64> rec = Tensor.matmul<float64>(q, r);\n"
+        "        i = 0;\n"
+        "        while (i < m) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < n) {\n"
+        "                if (!D.close(rec.get2(i, j), a.get2(i, j))) { return base - 4; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        Tensor<float64> qtq = Tensor.matmul<float64>(q.transpose(), q);\n"
+        "        i = 0;\n"
+        "        while (i < rk) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < rk) {\n"
+        "                float64 want = 0.0; if (i == j) { want = 1.0; }\n"
+        "                if (!D.close(qtq.get2(i, j), want)) { return base - 5; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        float64[] dt = [ 2.0, -1.0, 3.0, 1.0, 4.0, 0.0, -2.0, 1.0, 2.0, 3.0, 0.0, -1.0, 1.0, 2.0, 1.0 ];\n"
+        "        int64[] s53 = heap int64[2]; s53[0] = 5; s53[1] = 3;\n"
+        "        Tensor<float64> tall = Tensor.of<float64>(dt, s53);\n"
+        "        int32 rcTall = D.checkQr(tall, -10);\n"
+        "        if (rcTall != 0) { return rcTall; }\n"
+        "        float64[] dw = [ 1.0, 2.0, 0.0, -1.0, 3.0, 2.0, -1.0, 1.0, 0.0, 1.0, 0.0, 3.0, -2.0, 1.0, 2.0 ];\n"
+        "        int64[] s35 = heap int64[2]; s35[0] = 3; s35[1] = 5;\n"
+        "        Tensor<float64> wide = Tensor.of<float64>(dw, s35);\n"
+        "        int32 rcWide = D.checkQr(wide, -20);\n"
+        "        if (rcWide != 0) { return rcWide; }\n"
+        "        float64[] dq = [ 4.0, 1.0, 0.0, 1.0, 3.0, 1.0, 0.0, 1.0, 2.0 ];\n"
+        "        int64[] s33 = heap int64[2]; s33[0] = 3; s33[1] = 3;\n"
+        "        Tensor<float64> sq = Tensor.of<float64>(dq, s33);\n"
+        "        int32 rcSq = D.checkQr(sq, -30);\n"
+        "        if (rcSq != 0) { return rcSq; }\n"
+        // f32 tall: reconstruction at the f32 tolerance
+        "        float32[] dtf = [ 2.0f, -1.0f, 1.0f, 4.0f, -2.0f, 1.0f, 3.0f, 0.0f ];\n"
+        "        int64[] s42 = heap int64[2]; s42[0] = 4; s42[1] = 2;\n"
+        "        Tensor<float32> tf = Tensor.of<float32>(dtf, s42);\n"
+        "        Tensor<float32>[] ff = LinAlg.qr<float32>(tf);\n"
+        "        Tensor<float32> recf = Tensor.matmul<float32>(ff[0], ff[1]);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 4) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 2) {\n"
+        "                if (!D.closeF(recf.get2(i, j), tf.get2(i, j))) { return -40; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 2.1.2 — Läuchli matrix [[1,1,1],[e,0,0],[0,e,0],[0,0,e]] with e = 1e-8 at
+// f64 (cond ~ 1.7e8): modified Gram-Schmidt loses orthogonality at the
+// cond(A)·eps ~ 1e-8 level here; Householder must hold the m·eps-class bound
+// ‖QᵀQ − I‖max < 10·eps·m ≈ 8.9e-15.
+TEST(LinAlgSolversTests, qrLauchliOrthogonalityHouseholderBound) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        "        float64 e = 0.00000001;\n"
+        "        float64[] dl = [ 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 ];\n"
+        "        int64[] s43 = heap int64[2]; s43[0] = 4; s43[1] = 3;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(dl, s43);\n"
+        "        a.flatSet(3, e); a.flatSet(7, e); a.flatSet(11, e);\n"  // rows 1..3 diagonal of eps
+        "        Tensor<float64>[] f = LinAlg.qr<float64>(a);\n"
+        "        Tensor<float64> q = f[0];\n"
+        "        Tensor<float64> qtq = Tensor.matmul<float64>(q.transpose(), q);\n"
+        "        float64 worst = 0.0;\n"
+        "        int64 i = 0;\n"
+        "        while (i < 3) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 3) {\n"
+        "                float64 want = 0.0; if (i == j) { want = 1.0; }\n"
+        "                float64 d = qtq.get2(i, j) - want;\n"
+        "                if (d < 0.0) { d = -d; }\n"
+        "                if (d > worst) { worst = d; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (worst > 0.0000000000000089) { return -1; }\n"  // 10*eps*m, m=4
+        // and the factorization still reconstructs the Lauchli matrix
+        "        Tensor<float64> rec = Tensor.matmul<float64>(q, f[1]);\n"
+        "        i = 0;\n"
+        "        while (i < 4) {\n"
+        "            int64 j = 0;\n"
+        "            while (j < 3) {\n"
+        "                if (!D.close(rec.get2(i, j), a.get2(i, j))) { return -2; }\n"
+        "                j = j + 1;\n"
+        "            }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 1.1.4 — a zero diagonal in a non-unit triangular solve throws (no NaN
 // propagation); the SAME matrix under unitDiag is legal (diagonal ignored).
 TEST(LinAlgSolversTests, solveTriangularSingularThrowsUnitDiagIgnores) {
