@@ -77,17 +77,22 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          # Git for Windows materializes CRLF by default; the patch is LF.
-          git -C xgboost-src config core.autocrlf false
-          git -C xgboost-src rm -q -rf --cached .
-          git -C xgboost-src reset --hard HEAD
+          # Git for Windows materializes CRLF; the patch is LF. Convert just
+          # the target file, then apply.
+          $target = 'xgboost-src\src\tree\gpu_hist\evaluate_splits.cu'
+          [IO.File]::WriteAllText($target, [IO.File]::ReadAllText($target).Replace("`r`n", "`n"))
           git -C xgboost-src apply ..\tools\gpuprobe\instrument_eval_3.1.2.patch
+          if ($LASTEXITCODE -ne 0) { throw 'instrumentation patch failed to apply' }
+          Select-String -Path $target -Pattern '\[tile\]' -Quiet | Out-Null
           # cmake ships inside VS; the service PATH has no cmake.
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
           $vspath = & $vswhere -latest -property installationPath
           $cmake = Join-Path $vspath 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
+          # USE_OPENMP=OFF: FindOpenMP's CUDA component fails under the VS
+          # generator here, and the probe needs no host parallelism (the
+          # fixture pins nthread=1; evaluation is device-side).
           & $cmake -S xgboost-src -B xgboost-src/build -A x64 `
-            -DUSE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DBUILD_DEPRECATED_CLI=OFF
+            -DUSE_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89 -DBUILD_DEPRECATED_CLI=OFF -DUSE_OPENMP=OFF
           if ($LASTEXITCODE -ne 0) { throw 'cmake configure failed' }
           & $cmake --build xgboost-src/build --config Release --parallel
           if ($LASTEXITCODE -ne 0) { throw 'build failed' }
