@@ -675,6 +675,63 @@ TEST(LinAlgSolversTests, lstsqRankDeficientAndUnderdeterminedMinNorm) {
     EXPECT_EQ(runI32(src), 1);
 }
 
+// 5.1.1 — slogdet vs numpy: [[1,2],[3,4]] -> (-1, log 2); singular
+// [[1,2],[2,4]] -> (0, -inf); diag(1e6) at (60,60), where det overflows f64
+// to inf, slogdet = 60*log(1e6) = 828.9306334778564 exactly to 1e-9.
+TEST(LinAlgSolversTests, slogdetMatchesNumpyIncludingOverflow) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        "        float64[] da = [ 1.0, 2.0, 3.0, 4.0 ];\n"
+        "        int64[] s22 = heap int64[2]; s22[0] = 2; s22[1] = 2;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(da, s22);\n"
+        "        Tensor<float64> sd = LinAlg.slogdet<float64>(a);\n"
+        "        if (!D.close(sd.get1(0), -1.0)) { return -1; }\n"
+        "        if (!D.close(sd.get1(1), 0.6931471805599453)) { return -2; }\n"
+        "        float64[] ds = [ 1.0, 2.0, 2.0, 4.0 ];\n"
+        "        Tensor<float64> sing = Tensor.of<float64>(ds, s22);\n"
+        "        Tensor<float64> sds = LinAlg.slogdet<float64>(sing);\n"
+        "        if (sds.get1(0) != 0.0) { return -3; }\n"
+        "        if (sds.get1(1) > -100000000000.0) { return -4; }\n"   // -inf
+        "        int64[] s60 = heap int64[2]; s60[0] = 60; s60[1] = 60;\n"
+        "        Tensor<float64> big = Tensor.zeros<float64>(s60);\n"
+        "        int64 i = 0;\n"
+        "        while (i < 60) { big.flatSet(i * 60 + i, 1000000.0); i = i + 1; }\n"
+        "        Tensor<float64> sdb = LinAlg.slogdet<float64>(big);\n"
+        "        if (!D.close(sdb.get1(0), 1.0)) { return -5; }\n"
+        "        float64 dv = sdb.get1(1) - 828.9306334778564;\n"
+        "        if (dv < 0.0) { dv = -dv; }\n"
+        "        if (dv > 0.000000001) { return -6; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+// 5.1.2 — norms vs numpy: vector [3,-4,2,-1] -> 1-norm 10, 2-norm sqrt(30),
+// inf-norm 4, 3-norm 100^(1/3); matrix (2,3) [[1,-2,3],[-4,5,-6]] ->
+// fro sqrt(91), induced-1 9, induced-inf 15.
+TEST(LinAlgSolversTests, normsMatchNumpy) {
+    std::string src = std::string(PRE) + HELPERS +
+        "    public static int32 run() {\n"
+        "        float64[] dx = [ 3.0, -4.0, 2.0, -1.0 ];\n"
+        "        int64[] s4 = heap int64[1]; s4[0] = 4;\n"
+        "        Tensor<float64> x = Tensor.of<float64>(dx, s4);\n"
+        "        if (!D.close(LinAlg.normVec<float64>(x, 1.0), 10.0)) { return -1; }\n"
+        "        if (!D.close(LinAlg.normVec<float64>(x, 2.0), 5.477225575051661)) { return -2; }\n"
+        "        if (!D.close(LinAlg.normVec<float64>(x, 3.0), 4.641588833612779)) { return -3; }\n"
+        "        if (!D.close(LinAlg.normInfVec<float64>(x), 4.0)) { return -4; }\n"
+        "        float64[] dm = [ 1.0, -2.0, 3.0, -4.0, 5.0, -6.0 ];\n"
+        "        int64[] s23 = heap int64[2]; s23[0] = 2; s23[1] = 3;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(dm, s23);\n"
+        "        if (!D.close(LinAlg.normFro<float64>(a), 9.539392014169456)) { return -5; }\n"
+        "        if (!D.close(LinAlg.norm1<float64>(a), 9.0)) { return -6; }\n"
+        "        if (!D.close(LinAlg.normInf<float64>(a), 15.0)) { return -7; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
 // 1.1.4 — a zero diagonal in a non-unit triangular solve throws (no NaN
 // propagation); the SAME matrix under unitDiag is legal (diagonal ignored).
 TEST(LinAlgSolversTests, solveTriangularSingularThrowsUnitDiagIgnores) {

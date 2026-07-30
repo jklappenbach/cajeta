@@ -1375,14 +1375,15 @@ public final class LinAlg {
     }
 
     /**
-     * Frobenius norm of a square `A` (numpy `linalg.norm` default for matrices):
-     * `sqrt(Σ aᵢⱼ²)`. No factorization needed.
+     * Frobenius norm of a `(m,n)` matrix (numpy `linalg.norm` default for
+     * matrices): `sqrt(Σ aᵢⱼ²)`. No factorization needed.
      */
     public static E normFro<E extends Floating>(Tensor<E> a) {
-        int64 n = a.shapeAt(0);
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
         E acc = (E) 0;
         int64 i = 0;
-        while (i < n) {
+        while (i < m) {
             int64 j = 0;
             while (j < n) {
                 E v = a.get2(i, j);
@@ -1392,6 +1393,152 @@ public final class LinAlg {
             i = i + 1;
         }
         return Math.sqrt(acc);
+    }
+
+    /**
+     * Sign and natural log of the determinant (numpy `linalg.slogdet`): a `(2,)`
+     * tensor `[sign, log|det|]`, `det = sign·exp(log|det|)`. LU pivots accumulated
+     * in log space — exact where `det` itself over/underflows (`det(diag(1e6)₆₀)`
+     * is inf in f64; the slogdet is 828.93…). Singular input yields `[0, -inf]`
+     * (numpy convention).
+     *
+     * @EntryPoint
+     */
+    public static #Tensor<E> slogdet<E extends Floating>(Tensor<E> a) {
+        if (a.ndim() != 2 || a.shapeAt(0) != a.shapeAt(1)) {
+            throw heap LinAlgException("slogdet: a must be square (n,n)");
+        }
+        int64 n = a.shapeAt(0);
+        Tensor<E> m = a.copy();
+        E sign = (E) 1;
+        E logsum = (E) 0;
+        int64 col = 0;
+        while (col < n) {
+            int64 piv = col;
+            E maxv = LinAlg.absE<E>(m.get2(col, col));
+            int64 r = col + 1;
+            while (r < n) {
+                E av = LinAlg.absE<E>(m.get2(r, col));
+                if (av > maxv) { maxv = av; piv = r; }
+                r = r + 1;
+            }
+            if (piv != col) {
+                LinAlg.swapRows<E>(m, n, piv, col);
+                sign = (E) 0 - sign;
+            }
+            E diag = m.get2(col, col);
+            if (diag == (E) 0) {
+                sign = (E) 0;
+            } else if (diag < (E) 0) {
+                sign = (E) 0 - sign;
+            }
+            logsum = logsum + Math.log(LinAlg.absE<E>(diag));   // log(0) = -inf
+            r = col + 1;
+            while (r < n) {
+                if (diag != (E) 0) {
+                    E factor = m.get2(r, col) / diag;
+                    int64 c = col;
+                    while (c < n) {
+                        m.flatSet(r * n + c, m.get2(r, c) - factor * m.get2(col, c));
+                        c = c + 1;
+                    }
+                }
+                r = r + 1;
+            }
+            col = col + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = 2;
+        Tensor<E> out = Tensor.zeros<E>(sh);
+        out.set1(0, sign);
+        out.set1(1, logsum);
+        return #out;
+    }
+
+    /**
+     * Vector p-norm (numpy `linalg.norm(x, p)`, 1-D `x`, finite `p ≥ 1`):
+     * `(Σ|xᵢ|^p)^(1/p)`; the p=1 and p=2 cases compute directly (sum of |x|,
+     * `sqrt(Σx²)`). For p=∞ use {@link #normInfVec}.
+     */
+    public static E normVec<E extends Floating>(Tensor<E> x, E p) {
+        int64 n = x.shapeAt(0);
+        if (p == (E) 1) {
+            E a1 = (E) 0;
+            int64 i1 = 0;
+            while (i1 < n) {
+                a1 = a1 + LinAlg.absE<E>(x.get1(i1));
+                i1 = i1 + 1;
+            }
+            return a1;
+        }
+        if (p == (E) 2) {
+            E a2 = (E) 0;
+            int64 i2 = 0;
+            while (i2 < n) {
+                E v = x.get1(i2);
+                a2 = a2 + v * v;
+                i2 = i2 + 1;
+            }
+            return Math.sqrt(a2);
+        }
+        E acc = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            acc = acc + Math.pow(LinAlg.absE<E>(x.get1(i)), p);
+            i = i + 1;
+        }
+        return Math.pow(acc, (E) 1 / p);
+    }
+
+    /** Vector ∞-norm (numpy `linalg.norm(x, inf)`): `max|xᵢ|`. */
+    public static E normInfVec<E extends Floating>(Tensor<E> x) {
+        int64 n = x.shapeAt(0);
+        E best = (E) 0;
+        int64 i = 0;
+        while (i < n) {
+            E v = LinAlg.absE<E>(x.get1(i));
+            if (v > best) { best = v; }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /** Induced matrix 1-norm (numpy `linalg.norm(a, 1)`): max absolute column sum. */
+    public static E norm1<E extends Floating>(Tensor<E> a) {
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        E best = (E) 0;
+        int64 j = 0;
+        while (j < n) {
+            E s = (E) 0;
+            int64 i = 0;
+            while (i < m) {
+                s = s + LinAlg.absE<E>(a.get2(i, j));
+                i = i + 1;
+            }
+            if (s > best) { best = s; }
+            j = j + 1;
+        }
+        return best;
+    }
+
+    /** Induced matrix ∞-norm (numpy `linalg.norm(a, inf)`): max absolute row sum. */
+    public static E normInf<E extends Floating>(Tensor<E> a) {
+        int64 m = a.shapeAt(0);
+        int64 n = a.shapeAt(1);
+        E best = (E) 0;
+        int64 i = 0;
+        while (i < m) {
+            E s = (E) 0;
+            int64 j = 0;
+            while (j < n) {
+                s = s + LinAlg.absE<E>(a.get2(i, j));
+                j = j + 1;
+            }
+            if (s > best) { best = s; }
+            i = i + 1;
+        }
+        return best;
     }
 
     /** Absolute value of a `Floating` scalar (local helper — `Math.abs` per `E`). */
