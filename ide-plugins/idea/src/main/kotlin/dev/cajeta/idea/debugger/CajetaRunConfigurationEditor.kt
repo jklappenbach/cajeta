@@ -82,20 +82,23 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
     private fun loadCandidates(configuration: CajetaRunConfiguration, attempt: Int = 0) {
         val project = configuration.project
         ApplicationManager.getApplication().executeOnPooledThread {
+            // Phase 1 — DECLARED candidates, from manifest file reads alone.
+            // No index, no read action, so a manifest project shows its entry
+            // method immediately even while indexing is still running. This
+            // coupling is what left samples/tour empty (2026-07-30).
+            if (attempt == 0) {
+                val declared = runCatching { EntryMethodCandidates.declaredForProject(project) }
+                    .getOrDefault(emptyList())
+                if (declared.isNotEmpty()) {
+                    ApplicationManager.getApplication().invokeLater { publish(declared) }
+                }
+            }
+
+            // Phase 2 — merge in what the index discovered.
             val result = runCatching { EntryMethodCandidates.forProject(project) }
                 .getOrNull()
             ApplicationManager.getApplication().invokeLater {
-                if (result != null) {
-                    val keep = editorText
-                    entryMethodCombo.model =
-                        DefaultComboBoxModel(result.candidates.map { it.fqn }.toTypedArray())
-                    editorText = keep.ifBlank {
-                        // Nothing chosen yet: preselect the first DECLARED candidate,
-                        // so a manifest project launches with no typing (spec 2.2.1).
-                        result.candidates.firstOrNull { it.declared }?.fqn
-                            ?: result.candidates.firstOrNull()?.fqn.orEmpty()
-                    }
-                }
+                if (result != null) publish(result.candidates)
                 if (EntryMethodCandidates.needsRetry(result, attempt)) {
                     entryMethodHint.text = "Scanning for entry methods…"
                     rescanAlarm.cancelAllRequests()
@@ -110,6 +113,21 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Swap the dropdown's offers on the EDT, preserving whatever is typed —
+     * an in-flight edit must not be clobbered when candidates arrive. With the
+     * field still empty, preselect the first DECLARED candidate so a manifest
+     * project launches with no typing (spec 2.2.1).
+     */
+    private fun publish(candidates: List<EntryMethodCandidates.Candidate>) {
+        val keep = editorText
+        entryMethodCombo.model = DefaultComboBoxModel(candidates.map { it.fqn }.toTypedArray())
+        editorText = keep.ifBlank {
+            candidates.firstOrNull { it.declared }?.fqn
+                ?: candidates.firstOrNull()?.fqn.orEmpty()
         }
     }
 

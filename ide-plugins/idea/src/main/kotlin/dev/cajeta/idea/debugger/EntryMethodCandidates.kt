@@ -3,8 +3,10 @@ package dev.cajeta.idea.debugger
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.project.Project
 import dev.cajeta.idea.buildtool.CajetaManifest
+import dev.cajeta.idea.buildtool.ManifestScan
 import dev.cajeta.idea.xref.CajetaXrefFreshness
 import dev.cajeta.idea.xref.XrefQuery
+import java.io.File
 
 /**
  * Entry-method candidates for the debug run configuration
@@ -73,19 +75,37 @@ object EntryMethodCandidates {
         manifest: CajetaManifest.BuildSettings,
         indexRecords: List<Json.Obj>,
         indexAvailable: Boolean,
-    ): Result {
-        val out = LinkedHashMap<String, Candidate>()
+    ): Result = merge(listOf(manifest), indexRecords, indexAvailable)
 
-        // Declared first (spec 2.1.4). Normalize here too rather than trusting
-        // the caller: BuildSettings is constructible directly, and spec 1.4.5
-        // asks every consumer to route through the one normalizer. It is
-        // idempotent, so re-normalizing a parsed value costs nothing.
+    /**
+     * Everything a project's manifests DECLARE, in order, de-duplicated. Pure
+     * and index-free — a manifest project must offer its entry method the
+     * instant the dialog opens, whatever the index is doing (2026-07-30).
+     */
+    fun declaredCandidates(manifests: List<CajetaManifest.BuildSettings>): List<Candidate> {
+        val out = LinkedHashMap<String, Candidate>()
+        // Normalize here rather than trusting the caller: BuildSettings is
+        // constructible directly, and spec 1.4.5 asks every consumer to route
+        // through the one normalizer. Idempotent, so re-normalizing is free.
         fun declare(raw: String) {
             val fqn = CajetaManifest.normalizeEntryMethod(raw)
             if (fqn.isNotBlank()) out.getOrPut(fqn) { Candidate(fqn, declared = true) }
         }
-        manifest.entryMethod?.let(::declare)
-        manifest.binaries.values.forEach(::declare)
+        for (m in manifests) {
+            m.entryMethod?.let(::declare)
+            m.binaries.values.forEach(::declare)
+        }
+        return out.values.toList()
+    }
+
+    /** Merge across every manifest the project holds, then discovery. */
+    fun merge(
+        manifests: List<CajetaManifest.BuildSettings>,
+        indexRecords: List<Json.Obj>,
+        indexAvailable: Boolean,
+    ): Result {
+        val out = LinkedHashMap<String, Candidate>()
+        declaredCandidates(manifests).forEach { out[it.fqn] = it }   // declared first (2.1.4)
 
         // Then discovered. getOrPut keeps a declared entry declared.
         for (rec in indexRecords) {
@@ -106,11 +126,27 @@ object EntryMethodCandidates {
     }
 
     /**
+     * Every manifest in the project: its own, plus sub-project manifests a
+     * bounded scan finds (a repo opened at its root still has entry points in
+     * `samples/…`, `tools/…`). File reads only — no index, no read action.
+     */
+    fun manifestsFor(project: Project): List<CajetaManifest.BuildSettings> {
+        val base = project.basePath ?: return emptyList()
+        return ManifestScan.findManifests(File(base)).mapNotNull { f ->
+            runCatching { CajetaManifest.parseBuildSettings(f.readText()) }.getOrNull()
+        }
+    }
+
+    /** Declared candidates alone — the fast, index-free first paint (3.2.7). */
+    fun declaredForProject(project: Project): List<Candidate> =
+        declaredCandidates(manifestsFor(project))
+
+    /**
      * Gather the inputs for [project] and merge. Touches the index, so call it
      * off the EDT (3.2.5).
      */
     fun forProject(project: Project): Result {
-        val manifest = CajetaManifest.buildSettings(project)
+        val manifests = manifestsFor(project)
         // Only UNAVAILABLE means we cannot look. STALE still has data, and a
         // stale candidate is a fine offer — the developer edits the field, and
         // an out-of-date list is far better than pretending there are none.
@@ -127,6 +163,6 @@ object EntryMethodCandidates {
                         .flatMap { XrefQuery.declarationsOf(project, it) }
                 }
             }.getOrDefault(emptyList())
-        return merge(manifest, records, available)
+        return merge(manifests, records, available)
     }
 }

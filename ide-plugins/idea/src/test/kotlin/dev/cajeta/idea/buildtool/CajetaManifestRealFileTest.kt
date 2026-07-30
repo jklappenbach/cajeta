@@ -59,4 +59,18 @@ class CajetaManifestRealFileTest {
         assertNotNull("source-root should be read despite // comments", b.sourceRoot)
         assertFalse("entry method must be normalized", b.entryMethod!!.contains("::"))
     }
+    /**
+     * Julian 2026-07-30: opening cajeta-logging samples/tour, the run-config
+     * dialog offered no main even though its manifest DECLARES one. Pin the
+     * declared-candidate path against that exact manifest.
+     */
+    @Test
+    fun readsCajetaLoggingTourManifest() {
+        val f = File(System.getProperty("user.home"),
+            "code/cpp/cajeta-logging/samples/tour/cajeta.json")
+        assumeTrue("tour manifest not found at ${f.absolutePath}", f.isFile)
+
+        val b = CajetaManifest.parseBuildSettings(f.readText())
+        assertEquals("tour.LoggingTour.main", b.entryMethod)
+    }
 }

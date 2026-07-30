@@ -134,6 +134,32 @@ class EntryMethodCandidatesTest {
             out.emptyMessage() != cold.emptyMessage())
     }
 
+    // 2026-07-30 — DECLARED candidates must never depend on the index. The
+    // manifest is a local file read; coupling it to discovery is what left a
+    // manifest project (cajeta-logging samples/tour) with an empty dropdown.
+    @Test
+    fun declaredCandidatesComeFromManifestsAloneAcrossSubprojects() {
+        val root = CajetaManifest.BuildSettings()                       // library: no entry
+        val tour = CajetaManifest.BuildSettings(entryMethod = "tour.LoggingTour::main")
+        val other = CajetaManifest.BuildSettings(
+            binaries = mapOf("cli" to "app.Cli::main"))
+
+        val declared = EntryMethodCandidates.declaredCandidates(listOf(root, tour, other))
+        assertEquals(listOf("tour.LoggingTour.main", "app.Cli.main"), declared.map { it.fqn })
+        assertTrue(declared.all { it.declared })
+    }
+
+    // The multi-manifest merge keeps every declared entry and still de-dupes.
+    @Test
+    fun mergeAcceptsSeveralManifests() {
+        val a = CajetaManifest.BuildSettings(entryMethod = "x.A::main")
+        val b = CajetaManifest.BuildSettings(entryMethod = "x.A.main")  // same, other spelling
+        val c = CajetaManifest.BuildSettings(entryMethod = "y.B::main")
+
+        val out = EntryMethodCandidates.merge(listOf(a, b, c), emptyList(), indexAvailable = true)
+        assertEquals(listOf("x.A.main", "y.B.main"), out.candidates.map { it.fqn })
+    }
+
     // First-open fix (Julian, 2026-07-30): the dialog must keep looking while
     // the index warms instead of settling on an empty dropdown — retry while
     // the scan failed or found nothing, up to the budget; stop the moment a
