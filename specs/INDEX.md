@@ -55,3 +55,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
+| [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect, tour-quality unit 5; gdb signature in spec; fiber wakeup lost under CPU contention) | draft |
