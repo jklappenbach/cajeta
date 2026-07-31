@@ -25,6 +25,8 @@ public class QuaternionDemo extends DemoClass {
         Vector<float32,3> a = qz90 * xAxis;
         System.stdout.println("  rotate (1,0,0) by 90deg/z = ("
             + r(a.x) + "," + r(a.y) + "," + r(a.z) + ")   (expect (0,1,0))");
+        this.check(r(a.x) == 0 && r(a.y) == 1 && r(a.z) == 0,
+            "90deg z-rotation maps x-axis to y-axis");
 
         // 2. Compose: two 45-degree rotations about z make one 90-degree.
         Quaternion<float32> qz45 = heap Quaternion<float32>(0.92387953f, 0.0f, 0.0f, 0.38268343f);
@@ -32,11 +34,14 @@ public class QuaternionDemo extends DemoClass {
         Vector<float32,3> b = composed * xAxis;
         System.stdout.println("  (45deg * 45deg) on (1,0,0) = ("
             + r(b.x) + "," + r(b.y) + "," + r(b.z) + ")   (expect (0,1,0))");
+        this.check(r(b.x) == 0 && r(b.y) == 1, "two 45s compose to 90");
 
         // 3. conjugate() is the inverse rotation — it undoes qz90.
         Vector<float32,3> back = qz90.conjugate() * a;
         System.stdout.println("  conjugate undoes it -> ("
             + r(back.x) + "," + r(back.y) + "," + r(back.z) + ")   (expect (1,0,0))");
+        this.check(r(back.x) == 1 && r(back.y) == 0,
+            "conjugate is the inverse rotation");
 
         // 4. nlerp endpoints: nlerp(id, q, 0) = id (no rotation); ...1) = q.
         Quaternion<float32> id = heap Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);
@@ -45,17 +50,23 @@ public class QuaternionDemo extends DemoClass {
         System.stdout.println("  nlerp(id,q90,0)->(" + r(n0.x) + "," + r(n0.y)
             + ")  nlerp(id,q90,1)->(" + r(n1.x) + "," + r(n1.y)
             + ")   (expect (1,0) and (0,1))");
+        this.check(r(n0.x) == 1 && r(n0.y) == 0 && r(n1.x) == 0 && r(n1.y) == 1,
+            "nlerp endpoints are the inputs");
 
         // 4b. slerp halfway = a 45deg rotation: (1,0,0) -> (cos45, sin45, 0); the
         // two equal components each round to 1.  (slerp uses acos/sin.)
         Vector<float32,3> sMid = id.slerp(qz90, 0.5f) * xAxis;   // (0.707, 0.707, 0)
         System.stdout.println("  slerp(id,q90,0.5) on (1,0,0) -> (" + r(sMid.x)
             + "," + r(sMid.y) + ")   (expect (1,1) — 45deg, both ~0.707)");
+        this.check(r(sMid.x) == 1 && r(sMid.y) == 1,
+            "slerp halfway is the 45deg rotation");
 
         // 5. A unit quaternion has length 1; normalize re-units a scaled one.
         Quaternion<float32> scaled = heap Quaternion<float32>(2.0f, 0.0f, 0.0f, 0.0f);
         System.stdout.println("  |qz90| = " + r(qz90.length())
             + " ;  |normalize((2,0,0,0))| = " + r(scaled.normalize().length())
             + "   (expect 1 and 1)");
+        this.check(r(qz90.length()) == 1 && r(scaled.normalize().length()) == 1,
+            "unit length holds; normalize restores it");
     }
 }

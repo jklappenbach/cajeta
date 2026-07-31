@@ -84,6 +84,9 @@ public class ViewsDemo extends DemoClass {
         System.stdout.println("  @BigEndian PacketHeader.magic    = " + hdr.magic);
         System.stdout.println("  @BigEndian PacketHeader.version  = " + hdr.version);
         System.stdout.println("  @BigEndian PacketHeader.payload  = " + hdr.payloadLength);
+        this.check(hdr.magic == 51966 && hdr.version == 1
+            && hdr.payloadLength == 256,
+            "@BigEndian fields read back through the bswap");
 
         // 2. Fixed-size cache entry — no annotation, so host order.
         uint32[] cacheBuf = heap uint32[4];   // i64 + i32 + i32 = 16 bytes
@@ -93,6 +96,8 @@ public class ViewsDemo extends DemoClass {
         e.lastTouchTick = 42;
         System.stdout.println("  @HostEndian CacheEntry.key       = " + e.key);
         System.stdout.println("  @HostEndian CacheEntry.hits      = " + e.hits);
+        this.check(e.key == 100L && e.hits == 7 && e.lastTouchTick == 42,
+            "host-order view round-trips native layout");
 
         // 3. @LittleEndian variable-size record. Hand-laid layout:
         //    bytes[0] = id              (i32)
@@ -112,6 +117,9 @@ public class ViewsDemo extends DemoClass {
         System.stdout.println("  @LittleEndian UserRecord.id      = " + u.id);
         System.stdout.println("  @LittleEndian UserRecord.name    = " + u.name);
         System.stdout.println("  @LittleEndian UserRecord.email   = " + u.email);
+        this.check(u.id == 9001 && u.name.equals("Alex")
+            && u.email.equals("a@e."),
+            "variable-size LE record decodes the hand-laid bytes");
 
         // 4. Nested views. Line composes two Points inline — total
         // 16 bytes, no indirection.
@@ -125,5 +133,6 @@ public class ViewsDemo extends DemoClass {
         int32 dy = ln.b.y - ln.a.y;
         System.stdout.println("  nested Line  dx,dy            = "
             + dx + "," + dy);
+        this.check(dx == 3 && dy == 4, "nested views lay out inline");
     }
 }

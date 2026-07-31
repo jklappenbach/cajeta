@@ -151,6 +151,7 @@ public class AspectsDiDemo extends DemoClass {
         System.stdout.println("  @Before + @After:");
         int32 r = AspectTarget.work();
         System.stdout.println("    result = " + r);
+        this.check(r == 7, "advice leaves the body's return intact");
     }
 
     // 2. @Around with @Original proceed. The advice triples the
@@ -163,6 +164,7 @@ public class AspectsDiDemo extends DemoClass {
         System.stdout.println("  @Around with proceed:");
         int32 r = AspectTarget.compute(5);
         System.stdout.println("    final result = " + r);
+        this.check(r == 31, "@Around transformed args (x*3) and return (+1)");
     }
 
     // 3. DI bootstrap. Registry has no dependencies, so its
@@ -176,6 +178,7 @@ public class AspectsDiDemo extends DemoClass {
         System.stdout.println("  DI singleton identity:");
         System.stdout.println("    a == b cached singleton -> b.entries = "
             + b.entries);
+        this.check(b.entries == 250, "both handles are the one singleton");
     }
 
     // 4. Transitive resolution. Requesting Service from cold builds
@@ -189,5 +192,9 @@ public class AspectsDiDemo extends DemoClass {
         System.stdout.println("  DI transitive resolution:");
         System.stdout.println("    Service.used()  = " + used);
         System.stdout.println("    Service.spare() = " + spare);
+        // spare = entries - audits = 250 - 3: the SAME Registry singleton
+        // diBootstrap mutated is the one @Inject'd here.
+        this.check(used == 3 && spare == 247,
+            "transitive graph shares the mutated singleton");
     }
 }

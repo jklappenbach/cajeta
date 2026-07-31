@@ -91,6 +91,8 @@ public class WildcardsDemo extends DemoClass {
         WildBox<? extends Animal> b2 = bCat;
         System.stdout.println("  ? extends Animal . value.tag() = "
             + b2.value.tag() + "  (Cat::tag at runtime)");
+        this.check(tag == 2 && b2.value.tag() == 3,
+            "upper-bound reads dispatch to the concrete override");
     }
 
     // 2. `? super Dog` — consumer side (write-contravariant).
@@ -111,6 +113,8 @@ public class WildcardsDemo extends DemoClass {
         b.value = d;
         System.stdout.println("  after  super write: bAnimal.value.tag() = "
             + bAnimal.value.tag() + "  (Dog landed in Animal slot)");
+        this.check(bAnimal.value.tag() == 2,
+            "contravariant write lands in the Animal slot");
     }
 
     // 3. Capture conversion. `b.set(b.get())` on a Box<? extends Animal>
@@ -128,6 +132,7 @@ public class WildcardsDemo extends DemoClass {
         b.set(b.get());
         System.stdout.println("  capture read-back: b.set(b.get()) accepted; "
             + "b.value.tag() = " + b.value.tag());
+        this.check(b.value.tag() == 2, "capture identity permits read-back");
     }
 
     // 4. Wildcard parameter polymorphism. A static method declared
@@ -149,6 +154,8 @@ public class WildcardsDemo extends DemoClass {
         int32 catTag = WildcardsDemo.inspect(bCat);
         System.stdout.println("  inspect(WildBox<Dog>) = " + dogTag
             + "; inspect(WildBox<Cat>) = " + catTag);
+        this.check(dogTag == 2 && catTag == 3,
+            "one wildcard signature serves every subtype box");
     }
 
     public static int32 inspect(WildBox<? extends Animal> b) {
