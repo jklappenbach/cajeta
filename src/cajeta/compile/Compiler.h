@@ -146,10 +146,12 @@ namespace cajeta {
         llvm::TargetOptions opt;
         std::optional<llvm::Reloc::Model> RM;
         list<CajetaModulePtr> modules;
-        // One compile per source file (normalized path). Entries are marked at
-        // Compiler::compile(module) entry; materializeUserClass consults and
-        // contributes, so on-demand and driver-loop compiles never collide.
-        std::set<std::string> compiledSourcePaths;
+        // Files materializeUserClass force-compiled on demand (normalized
+        // paths). Compiler::compile(module) skips these so the driver loop's
+        // later visit doesn't redeclare their classes. Deliberately NOT a
+        // general once-per-path mark: the lint server's warm resweep
+        // re-compiles unchanged files through compile() legitimately.
+        std::set<std::string> materializedSourcePaths;
         // materializeUserClass recursion guard (record A ↔ record B cycles).
         std::set<std::string> materializeInFlight;
         // Roots from the most recent createModule — the layout mapping

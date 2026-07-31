@@ -16,7 +16,8 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [resident-debug-server](resident-debug-server-spec.md) | [plan](../agents/resident-debug-server-plan.md) | active — Units 1-5+8 delivered 2026-07-21 (tour via one resident server: cold 41.3s / no-edit 0.65s / one-edit 34.8s); next: Unit 6 design review (stdlib digest churn first), Unit 7 live pass |
 | [debugger-variable-inspection](debugger-variable-inspection-spec.md) | [plan](../agents/debugger-variable-inspection-plan.md) | active — spec+plan approved 2026-07-22; 7 units (bridge → arrays → objects → DAP/render → edit → hover → collections); Unit 1 next |
 | [cajeta-xgboost](cajeta-xgboost-spec.md) | [plan](../agents/cajeta-xgboost-plan.md) | active |
-| [table-fit](table-fit-spec.md) | [plan](../agents/table-fit-plan.md) | active — loader materialization fix → fromCsv → v0.12.1 → ml Frames bridge; U1 repros written 2026-07-30 |
+| [table-fit](table-fit-spec.md) | [plan](../agents/table-fit-plan.md) | active — loader materialization fix → fromCsv → v0.12.1 → ml Frames bridge; U1/U2/U4-dev done 2026-07-31, U3 release in flight |
+| [cajeta-ml-v2](cajeta-ml-v2-spec.md) | [plan](../agents/cajeta-ml-v2-plan.md) | active — Lasso/ElasticNet, softmax, Pipeline, nucleo.sparse (v0.13.0), KMeans/kNN/PCA; spec+plan drafted 2026-07-31 |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
@@ -46,6 +47,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
 | [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Unit 1 (coverage gate) + Unit 2 (six-way review, findings in agents/tour-quality/findings/) done 2026-07-30; remediation scope awaiting developer confirmation (plan 2.3.1) |
+| [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; fix scheduled cajeta-ml-v2 U7 / v0.13.0; workaround in dev.cajeta.ml) | draft |
 | [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
 | [float64-tostring-roundtrip](float64-tostring-roundtrip-spec.md) | — (defect, tour-quality logging review) | draft |
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |

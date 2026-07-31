@@ -1340,14 +1340,16 @@ namespace cajeta {
     }
 
     void Compiler::compile(CajetaModulePtr module) {
-        // One compile per source file. materializeUserClass may have already
-        // compiled this path on demand (a synthesizer needed one of its
-        // classes mid-walk of an earlier module); compiling the caller's
-        // fresh module object for the same file would redeclare every class
-        // in it. Marked at entry so the on-demand path also guards itself.
+        // Skip ONLY files materializeUserClass already force-compiled on
+        // demand — the driver loop's later visit would redeclare every class
+        // in them. Scoped to materialized paths on purpose: an unconditional
+        // once-per-path mark breaks the lint server, whose warm resweep
+        // legitimately re-compiles unchanged sibling files through this
+        // entry (the LintServerSibling batch caught exactly that).
         std::string normPath = std::filesystem::path(
             module->getSourcePath()).lexically_normal().string();
-        if (!compiledSourcePaths.insert(normPath).second) {
+        if (materializedSourcePaths.count(normPath)
+                && !materializeInFlight.count(normPath)) {
             return;
         }
         ensureStdlibModule();
@@ -1377,7 +1379,7 @@ namespace cajeta {
         if (path.empty()) return false;          // not an on-disk user class
         std::string normPath =
             std::filesystem::path(path).lexically_normal().string();
-        if (compiledSourcePaths.count(normPath)) return false;   // already real
+        if (materializedSourcePaths.count(normPath)) return false; // already done
         // Cycle guard: two records whose Tables reference each other degrade
         // to the placeholder behavior instead of recursing forever.
         if (!materializeInFlight.insert(normPath).second) return false;
@@ -1394,6 +1396,7 @@ namespace cajeta {
             throw;   // the declaring file's own errors are real — report them
         }
         materializeInFlight.erase(normPath);
+        materializedSourcePaths.insert(normPath);
         return true;
     }
 
