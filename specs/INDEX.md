@@ -45,7 +45,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-5 done; Unit 3 residue: nucleo.frame demo [~] on table-fit; Unit 5 (http) 2026-07-31: tour 17→150 checks, 128/128 coverage, HTTP/3 de-advertised, CI green on v0.12.1 (cajeta-http e500802); discovery: runtime-lost-wakeup-under-load; next: unit 6 logging |
+| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-6 done; Unit 3 residue: nucleo.frame demo [~] on table-fit; Unit 6 (logging) 2026-07-31: tour 0→25 checks x3 DI profiles, 17/17 coverage, CI green (cajeta-logging 77bfc2c); next: unit 7 cajeta-unit |
 | [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; FIXED 2026-07-31 — cross-module vtable constant; pins live; ml co-location workaround stays until the fix releases in v0.13.0) | draft |
 | [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; FIXED 2026-07-31, pin live; noted follow-up: fat-aware interface `== null`) | draft |
 | [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
