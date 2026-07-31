@@ -34,6 +34,11 @@ class CajetaDebugSession(private val client: DapClient) {
         /** Ask the server to keep its compiled world across sessions
          *  (resident-debug-server 4.2.1). */
         val resident: Boolean = false,
+        /** Resolved dependency `.cja` archives for the launch — the JIT's
+         *  --classpath. Without them a project that declares dependencies
+         *  fails to compile at launch with CAJETA_ERROR_UNRESOLVED_TYPE.
+         *  Empty stays off the wire (absence = no dependencies). */
+        val classpath: List<String> = emptyList(),
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -257,6 +262,11 @@ class CajetaDebugSession(private val client: DapClient) {
         // Blank stays off the wire (absence = unspecified, like env above).
         if (p.cacheDir.isNotBlank()) args["cacheDir"] = Json.of(p.cacheDir)
         if (p.resident) args["resident"] = Json.of(true)
+        if (p.classpath.isNotEmpty()) {
+            val cp = Json.arr()
+            p.classpath.forEach { cp.add(Json.of(it)) }
+            args["classpath"] = cp
+        }
         return args
     }
 

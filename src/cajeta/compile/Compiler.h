@@ -252,13 +252,6 @@ namespace cajeta {
         // (XPU-N01) or a missing ptxas are skipped with a diagnostic.
         void emitXpuKernels(const std::string& archiveRootPath);
 
-        // Walk every archive on `classpath`, re-parse each ClassSource
-        // entry into a fresh CajetaModule, and register the resulting
-        // CajetaClass objects in the canonical-name map. Called once,
-        // immediately after the stdlib parse and before user-source
-        // prescan, so user imports can resolve against classpath
-        // classes during their own parse. No-op when classpath empty.
-        void ingestClasspath();
 
         // Archive emit (--emit=cja or --emit=uber). Bundles every
         // module's LLVM bitcode into a single .cja file. Cja form
@@ -406,6 +399,19 @@ namespace cajeta {
         // point (compile(module), compile(entryMethod, ...)) so any
         // caller order works.
         CajetaModulePtr ensureStdlibModule();
+
+        // Walk every archive on `classpath`, re-parse each ClassSource
+        // entry into a fresh CajetaModule, and register the resulting
+        // CajetaClass objects in the canonical-name map. Called once,
+        // immediately after the stdlib parse and before user-source
+        // prescan, so user imports can resolve against classpath
+        // classes during their own parse. No-op when classpath empty.
+        //
+        // PUBLIC because the JIT host drives the compile phases by hand
+        // (it already calls ensureStdlibModule) rather than going through
+        // an AOT entry point — without this a debug launch cannot resolve
+        // dependency types at all.
+        void ingestClasspath();
 
         // Lazy stdlib instrumentation / control. The set of stdlib packages
         // actually parsed (eager + on-demand) and the lazy bookkeeping are
@@ -581,6 +587,19 @@ namespace cajeta {
 
         list<CajetaModulePtr> getModules() {
             return modules;
+        }
+
+        // Promote ingested classpath modules into the main module list so every
+        // downstream stage (codegen, merge, JIT link) treats them like any other
+        // module. The JIT needs dependency DEFINITIONS, not just declarations —
+        // ingestClasspath alone leaves every dep symbol unresolved at
+        // materialization ("Symbols not found: dev.cajeta.logging..."). This is
+        // the JIT's equivalent of the Obj/Exe path's classpath re-drive, where
+        // deps join `codegenModules`; archive emit still keeps them external,
+        // which is why this is opt-in rather than done inside ingestClasspath.
+        // Idempotent: the list is spliced once and left empty.
+        void linkClasspathModules() {
+            modules.splice(modules.end(), externalModules);
         }
     };
 } // code

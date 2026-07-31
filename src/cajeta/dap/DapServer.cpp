@@ -492,6 +492,31 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.resident = args.at("resident").isBool()
                                    ? args.at("resident").asBool()
                                    : false;
+        // DI profile for @Profile providers (absence = the compiler default).
+        launchOpts_.profile = args.at("profile").asString();
+        // DI profile for @Profile providers (absence = the compiler default).
+        launchOpts_.profile = args.at("profile").asString();
+        // Dependency archives for the launch (the JIT's --classpath). Absence
+        // = no dependencies, as every pre-feature client sends. Accepts an
+        // array of paths, or one comma-separated string like the CLI flag.
+        launchOpts_.classpath.clear();
+        const Json& cp = args.at("classpath");
+        if (cp.isArray()) {
+            for (const auto& e : cp.elements())
+                if (!e.asString().empty())
+                    launchOpts_.classpath.push_back(e.asString());
+        } else if (!cp.asString().empty()) {
+            std::string all = cp.asString();
+            size_t start = 0;
+            while (start <= all.size()) {
+                size_t comma = all.find(',', start);
+                std::string one = all.substr(
+                    start, comma == std::string::npos ? std::string::npos : comma - start);
+                if (!one.empty()) launchOpts_.classpath.push_back(one);
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        }
         stopOnEntry_ = args.at("stopOnEntry").asBool();
         // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
         // "empty environment" — every launch sent before this feature existed

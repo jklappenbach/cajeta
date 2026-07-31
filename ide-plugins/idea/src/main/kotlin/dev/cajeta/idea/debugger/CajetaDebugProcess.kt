@@ -155,6 +155,14 @@ class CajetaDebugProcess(
                 // resident-debug-server 5.2.1/4.2.1: identity + residency.
                 compilerPath = binary,
                 resident = true,
+                // The project's resolved dependency archives, so the launch
+                // compile resolves dependency types instead of dying at
+                // CAJETA_ERROR_UNRESOLVED_TYPE (Julian, 2026-07-30). Covers
+                // sub-project layouts — the archive lives wherever the
+                // consumer resolved it, not necessarily at the project root.
+                classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
+                    .dependencyArchives(session.project.basePath)
+                    .map { it.toString() },
             )
             ds.launch(
                 params,

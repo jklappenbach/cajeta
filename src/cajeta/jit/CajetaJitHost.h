@@ -42,6 +42,18 @@ namespace cajeta::jit {
         // process. Set by the DAP server when the launch request asks;
         // one-shot paths (jit-run) leave it off and keep full isolation.
         bool resident = false;
+        // Dependency archives (`.cja`) whose ClassSource entries are ingested
+        // before user sources are parsed — the JIT equivalent of the CLI's
+        // --classpath. Without these a debug launch of a project that declares
+        // dependencies fails to resolve their types ("unresolved type
+        // 'Logger'"), because the JIT builds its modules by hand and never ran
+        // ingestClasspath. Empty = no dependencies, today's behavior.
+        std::vector<std::string> classpath;
+        // DI profile for @Profile-selected providers. Empty = the AOT default
+        // ("prod"), so a debug launch resolves the same graph `cajeta build`
+        // does. The JIT previously hardcoded "debug", which no provider
+        // declares — every project with DI components failed to launch.
+        std::string profile;
         // Whole-program JIT cache root (fast-debug-launch 4.2.1). Non-empty
         // enables the cache: a slot keyed on compiler version+flags+entry+
         // source digests holds the MERGED program bitcode + sidecars, and a

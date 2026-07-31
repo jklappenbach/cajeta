@@ -491,6 +491,21 @@ std::string wholeProgramKey(const JitRunOptions& opts,
     in << "mode=debug\n"
        << "debugInfo=" << (opts.debugInfo ? 1 : 0) << '\n'
        << "entry=" << opts.entryMethod << '\n';
+    // Dependency archives are part of the compiled world: a slot built without
+    // them (or against a different version) must NOT satisfy a launch that has
+    // them. Content-hash each, sorted, so order on the wire is irrelevant.
+    {
+        std::vector<std::string> deps;
+        deps.reserve(opts.classpath.size());
+        for (const auto& cp : opts.classpath) {
+            std::ifstream f(cp, std::ios::binary);
+            std::stringstream bytes;
+            bytes << f.rdbuf();
+            deps.push_back(cajeta::buildtool::sha256Hex(bytes.str()));
+        }
+        std::sort(deps.begin(), deps.end());
+        for (const auto& d : deps) in << "dep=" << d << '\n';
+    }
     std::vector<std::pair<std::string, std::string>> entries;
     entries.reserve(sources.size());
     for (const auto& p : sources) {
@@ -1054,6 +1069,33 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         out.phases.parseStdlibSeconds +=
             std::chrono::duration<double>(Clock::now() - s).count();
     }
+    // Dependency archives, ingested after the stdlib parse and BEFORE any user
+    // source is parsed — the same ordering the AOT entry points use, so user
+    // imports resolve against classpath classes during their own parse. Without
+    // this a debug launch of a project with dependencies dies at
+    // CAJETA_ERROR_UNRESOLVED_TYPE (Julian, 2026-07-30: `Logger` from
+    // dev.cajeta.logging). No-op when the launch carried no classpath.
+    if (!opts.classpath.empty()) {
+        for (const auto& cp : opts.classpath) compiler->addClasspath(cp);
+        // A broken/incompatible archive must fail the LAUNCH, not abort the
+        // server process: an uncaught cajeta::Exception here reaches
+        // std::terminate and takes the resident server down with it.
+        try {
+            compiler->ingestClasspath();
+            // Definitions, not just declarations: the JIT links what it runs.
+            compiler->linkClasspathModules();
+        } catch (cajeta::Exception& e) {
+            std::cerr << "cajeta jit: [" << e.getErrorId() << "] classpath ingest failed: "
+                      << e.getMessage() << "\n";
+            out.errorCode = 1;
+            return out;
+        } catch (std::exception& e) {
+            std::cerr << "cajeta jit: classpath ingest failed: " << e.what() << "\n";
+            out.errorCode = 1;
+            return out;
+        }
+    }
+
     static thread_local double stdlibHookSeconds;
     stdlibHookSeconds = 0;
     if (auto inner = cajeta::CajetaModule::stdlibImportHook) {
@@ -1103,10 +1145,32 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     }
 
 
-    cajeta::CajetaModule::validatePlaceholders();
-    cajeta::CajetaModule::resolveAdviceMatches();
-    cajeta::CajetaModule::setActiveProfile("debug");
-    cajeta::CajetaModule::resolveDependencyGraph();
+    // DI profile. The JIT used to hardcode "debug" — a profile NOTHING
+    // declares (@Profile carries dev/prod/test in practice), so every project
+    // with DI components failed to launch under the debugger with
+    // CAJETA_ERROR_MISSING_COMPONENT while the identical AOT build succeeded.
+    // Default to the AOT default ("prod", CajetaModule.cpp) so a debug launch
+    // resolves the same graph the build does; a launch may name another.
+    cajeta::CajetaModule::setActiveProfile(
+        opts.profile.empty() ? "prod" : opts.profile);
+    // These run the DI/advice/placeholder resolution and THROW on a bad graph
+    // (missing provider, ambiguity). Uncaught, that reached std::terminate and
+    // killed the resident server outright — a project misconfiguration must
+    // fail this LAUNCH and leave the server alive (Julian, 2026-07-30: SIGABRT
+    // "likely heap corruption" was really an unguarded DI error).
+    try {
+        cajeta::CajetaModule::validatePlaceholders();
+        cajeta::CajetaModule::resolveAdviceMatches();
+        cajeta::CajetaModule::resolveDependencyGraph();
+    } catch (cajeta::Exception& e) {
+        std::cerr << "cajeta jit: [" << e.getErrorId() << "] " << e.getMessage() << "\n";
+        out.errorCode = 1;
+        return out;
+    } catch (std::exception& e) {
+        std::cerr << "cajeta jit: dependency resolution failed: " << e.what() << "\n";
+        out.errorCode = 1;
+        return out;
+    }
     out.phases.parseStdlibSeconds += stdlibHookSeconds;
     if (opts.debugInfo) {
         // Ranged loc ids (3.2.1): every module parsed by now. Modules that

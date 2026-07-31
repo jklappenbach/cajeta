@@ -685,4 +685,36 @@ class CajetaDebugSessionTest {
         assertEquals("int", vars[0].type)
         assertEquals(0, vars[0].variablesReference)
     }
+    /**
+     * Dependency archives ride the launch (2026-07-30): without them the
+     * server's JIT compile cannot resolve a dependency type and the launch
+     * dies at CAJETA_ERROR_UNRESOLVED_TYPE. Absence stays absence — every
+     * dependency-free launch must send exactly what it sent before.
+     */
+    @Test
+    fun launchCarriesClasspathWhenPresentAndOmitsItWhenEmpty() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                classpath = listOf("/deps/a.cja", "/deps/b.cja"),
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        val cp = lastRequestByCommand["launch"]!!.at("arguments").at("classpath")
+        assertEquals(2, cp.size)
+        assertEquals("/deps/a.cja", cp[0].asString())
+        assertEquals("/deps/b.cja", cp[1].asString())
+
+        session.launch(
+            CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"),
+        ).get(5, TimeUnit.SECONDS)
+        assertTrue(
+            "no classpath must stay off the wire",
+            lastRequestByCommand["launch"]!!.at("arguments").opt("classpath") == null,
+        )
+    }
 }
