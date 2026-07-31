@@ -1,6 +1,6 @@
 ---
 id: cajeta-driver-compile
-applies-to: [cajeta-driver/compile]
+applies-to: [cajeta/toolchain/compile, cajeta-driver/compile]
 title: cajeta AOT compile invocation
 description: Direct cajeta compiler invocation — three positionals, --emit/--mode/safety/-o flags, exit codes.
 ---

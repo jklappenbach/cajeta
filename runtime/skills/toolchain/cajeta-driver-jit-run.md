@@ -1,6 +1,6 @@
 ---
 id: cajeta-driver-jit-run
-applies-to: [cajeta-driver/jit-run]
+applies-to: [cajeta/toolchain/jit-run, cajeta-driver/jit-run]
 title: cajeta jit-run — compile a source tree and JIT-run an entry method in-process
 description: Compiles every .cajeta under a source root to in-memory IR and runs a static no-arg entry method inside the cajeta process; the entry's int32 return becomes the exit code.
 ---

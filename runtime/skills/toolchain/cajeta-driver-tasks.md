@@ -1,6 +1,6 @@
 ---
 id: cajeta-driver-tasks
-applies-to: [cajeta-driver/build, cajeta-driver/run, cajeta-driver/clean, cajeta-driver/test]
+applies-to: [cajeta/toolchain/tasks, cajeta-driver/build, cajeta-driver/run, cajeta-driver/clean, cajeta-driver/test]
 title: cajeta task invocation (build/run/clean/test and any manifest task)
 description: How `cajeta <name>` resolves and runs a task defined in ./cajeta.json, with property/param/flavor/profile overrides and cross-member form.
 ---

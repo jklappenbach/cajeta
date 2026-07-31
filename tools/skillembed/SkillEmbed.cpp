@@ -1,6 +1,7 @@
 // SkillEmbed — build-time codegen for the cajeta stdlib skill corpus.
 //
-// Packs every runtime/src/cajeta/<pkg>/skills/*.md into a single
+// Packs every runtime/src/cajeta/<pkg>/skills/*.md and
+// runtime/skills/<domain>/*.md into a single
 // zstd-compressed blob and emits a .cpp defining
 // cajeta::stdlib::g_stdlibSkillsCompressed (+ lengths). The compiler/build-tool
 // decompresses it on first skill access (EmbeddedStdlibSkills.cpp) so the
@@ -71,20 +72,27 @@ int main(int argc, char** argv) {
     }
     const std::string manifest = argv[1], root = argv[2], out = argv[3];
 
-    std::vector<std::string> paths;
+    // Manifest line: `<path>` (library derived from the path under root) or
+    // `<library>\t<path>` (explicit — runtime/skills/<domain> corpus entries).
+    std::vector<std::pair<std::string, std::string>> entries; // {lib, path}
     {
         std::ifstream in(manifest);
         std::string line;
         while (std::getline(in, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (!line.empty()) paths.push_back(line);
+            if (line.empty()) continue;
+            auto tab = line.find('\t');
+            if (tab == std::string::npos) {
+                entries.emplace_back(libFromRel(relativeTo(root, line)), line);
+            } else {
+                entries.emplace_back(line.substr(0, tab), line.substr(tab + 1));
+            }
         }
     }
 
     std::string blob;
-    putU32(blob, (uint32_t) paths.size());
-    for (const auto& p : paths) {
-        const std::string lib = libFromRel(relativeTo(root, p));
+    putU32(blob, (uint32_t) entries.size());
+    for (const auto& [lib, p] : entries) {
         const std::string content = readFile(p);
         putU32(blob, (uint32_t) lib.size());
         blob += lib;

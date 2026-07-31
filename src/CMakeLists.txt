@@ -704,20 +704,35 @@ target_link_libraries(skillembed PRIVATE zstd::libzstd_shared)
 file(GLOB CAJETA_STDLIB_SKILLS CONFIGURE_DEPENDS
      ${CAJETA_STDLIB_ROOT}/cajeta/*/skills/*.md)
 list(SORT CAJETA_STDLIB_SKILLS)
+# Domain corpus (compiler-mcp spec §4.2): runtime/skills/<domain>/*.md embeds
+# as pseudo-library cajeta.<domain>, written to the manifest as `lib\tpath`.
+file(GLOB CAJETA_DOMAIN_SKILLS CONFIGURE_DEPENDS
+     ${PROJECT_SOURCE_DIR}/runtime/skills/*/*.md)
+list(SORT CAJETA_DOMAIN_SKILLS)
 list(LENGTH CAJETA_STDLIB_SKILLS CAJETA_STDLIB_SKILLS_COUNT)
+list(LENGTH CAJETA_DOMAIN_SKILLS CAJETA_DOMAIN_SKILLS_COUNT)
+math(EXPR CAJETA_SKILLS_TOTAL
+     "${CAJETA_STDLIB_SKILLS_COUNT} + ${CAJETA_DOMAIN_SKILLS_COUNT}")
 set(CAJETA_STDLIB_SKILLS_EMBED ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_skills_embedded.cpp)
 set(CAJETA_STDLIB_SKILLS_MANIFEST ${CMAKE_CURRENT_BINARY_DIR}/cajeta_stdlib_skills_manifest.txt)
 file(WRITE "${CAJETA_STDLIB_SKILLS_MANIFEST}" "")
 foreach(skill_path ${CAJETA_STDLIB_SKILLS})
     file(APPEND "${CAJETA_STDLIB_SKILLS_MANIFEST}" "${skill_path}\n")
 endforeach()
+foreach(skill_path ${CAJETA_DOMAIN_SKILLS})
+    get_filename_component(skill_domain_dir ${skill_path} DIRECTORY)
+    get_filename_component(skill_domain ${skill_domain_dir} NAME)
+    file(APPEND "${CAJETA_STDLIB_SKILLS_MANIFEST}"
+         "cajeta.${skill_domain}\t${skill_path}\n")
+endforeach()
 
 add_custom_command(
     OUTPUT ${CAJETA_STDLIB_SKILLS_EMBED}
     COMMAND skillembed ${CAJETA_STDLIB_SKILLS_MANIFEST} ${CAJETA_STDLIB_ROOT}
             ${CAJETA_STDLIB_SKILLS_EMBED}
-    DEPENDS skillembed ${CAJETA_STDLIB_SKILLS} ${CAJETA_STDLIB_SKILLS_MANIFEST}
-    COMMENT "Embedding ${CAJETA_STDLIB_SKILLS_COUNT} stdlib skills (zstd) into ${CAJETA_STDLIB_SKILLS_EMBED}"
+    DEPENDS skillembed ${CAJETA_STDLIB_SKILLS} ${CAJETA_DOMAIN_SKILLS}
+            ${CAJETA_STDLIB_SKILLS_MANIFEST}
+    COMMENT "Embedding ${CAJETA_SKILLS_TOTAL} skills (stdlib + domain, zstd) into ${CAJETA_STDLIB_SKILLS_EMBED}"
     VERBATIM
 )
 set_source_files_properties(${CAJETA_STDLIB_SKILLS_EMBED} PROPERTIES GENERATED TRUE)

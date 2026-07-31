@@ -1,6 +1,6 @@
 ---
 id: cajeta-driver-skill-discovery
-applies-to: [cajeta-driver/search-skill, cajeta-driver/list-skills, cajeta-driver/get-skills]
+applies-to: [cajeta/toolchain/skill-discovery, cajeta-driver/search-skill, cajeta-driver/list-skills, cajeta-driver/get-skills]
 title: Skill discovery — search, list, get
 description: Find and fetch the implementation skills shipped inside resolved cajeta dependencies, offline.
 ---

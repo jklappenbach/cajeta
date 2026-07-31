@@ -1,6 +1,6 @@
 ---
 id: cajeta-driver-overview
-applies-to: [cajeta-driver]
+applies-to: [cajeta.toolchain, cajeta/toolchain, cajeta-driver]
 title: cajeta front-end binary — dispatch, config precedence, command routing
 description: What the `cajeta` umbrella binary is and how to route a task to the right subcommand (archive / build-tool / jit-run / doc / ide / version) before it falls through to a raw compile.
 ---
