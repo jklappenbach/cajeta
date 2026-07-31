@@ -45,7 +45,6 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-8 done + unit-3 residue cleared (frame demo, 500 stdlib checks, entry-point gate 38/38); Unit 9 sweep 2026-07-31 on v0.13.0: 5 of 6 repos fully green, all 6 gates green (stdlib 38/38, codec 52/52, http 128/128, logging 17/17, unit 21/21, xgboost 22/22); ARCHIVE HELD — cajeta-http's tour is CI-green but wedges locally 6/6 on runtime-lost-wakeup-under-load; awaiting a call on whether CI-green satisfies spec 6.1 |
 | [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; FIXED 2026-07-31 — cross-module vtable constant; pins live; ml co-location workaround stays until the fix releases in v0.13.0) | draft |
 | [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; FIXED 2026-07-31, pin live; noted follow-up: fat-aware interface `== null`) | draft |
 | [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
@@ -55,5 +54,5 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
-| [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect, tour-quality unit 5; gdb signature in spec) | draft — SEVERITY RAISED 2026-07-31: reproduces 6/6 on an IDLE box, both 0.12.0 and 0.13.0 builds; not load-gated, not a regression; wedges every server shutdown+await teardown; blocks running the cajeta-http tour locally |
+| [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect) | FIXED 2026-07-31 (18a78057 + 7d8cfd8c): closing a descriptor neither woke nor serialized against the fibers parked on it in the reactor — both interleavings fixed; http tour 0/6 -> 40/40. Open only for acceptance 2.2's >=100-run loop |
 | [field-store-title-trap](field-store-title-trap-spec.md) | — (defect, silent UAF; fresh rvalue -> plain formal -> plain field store is freed at callee exit. RE-DIAGNOSED: not template-specific, not a missing borrow check; fix is a semantic change awaiting sign-off, spec §4) | draft |
