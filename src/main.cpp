@@ -11,6 +11,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/DiagnosticEngine.h"
+#include "cajeta/buildtool/mcp/CompilerMcpServer.h"
 #include "cajeta/cli/ArchiveCommands.h"
 #include "cajeta/cli/DocCommand.h"
 #include "cajeta/cli/IdeCommands.h"
@@ -291,6 +292,20 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "dap") {
         cajeta::dap::DapServer server;
         return server.runOverStdio();
+    }
+
+    // `cajeta compiler-mcp` — MCP stdio server for skill discovery
+    // (specs/compiler-mcp-spec.md). stdout is the protocol channel;
+    // diagnostics go to stderr.
+    if (argc >= 2 && std::string(argv[1]) == "compiler-mcp") {
+        auto server = cajeta::buildtool::mcp::CompilerMcpServer::create(
+            CAJETA_VERSION, ".");
+        if (!server) {
+            std::cerr << "cajeta compiler-mcp: "
+                      << llvm::toString(server.takeError()) << "\n";
+            return 1;
+        }
+        return server->run(std::cin, std::cout);
     }
 
 
