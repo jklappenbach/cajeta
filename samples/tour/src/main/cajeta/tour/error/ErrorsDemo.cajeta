@@ -2,21 +2,141 @@ package tour.error;
 
 import tour.DemoClass;
 import cajeta.error.Exception;
+import cajeta.error.Throwable;
+import cajeta.error.RecoverableException;
+import cajeta.lang.Optional;
 
-// try / catch / finally with the Exception hierarchy. Recoverable
-// (catchable, propagates normally) vs Unrecoverable (alarm — SIGABRTs
-// at the uncaught boundary). `throw` accepts any value; the catch
-// clause type-narrows.
+// try / catch / finally with the real Exception hierarchy
+// (docs/specification/error/ErrorModel.md):
+//
+//   Throwable                    — root; carries `message`
+//     Exception                  — adds the `cause` chain
+//       RecoverableException     — catch, recover, keep going
+//       UnrecoverableException   — an alarm: SIGABRTs at an uncaught
+//                                  boundary, so it is thrown for states no
+//                                  caller can meaningfully handle (not
+//                                  demoed live — a green tour can't crash).
+//
+// The scenario: loading a service's listen-port from config. A domain
+// exception type names the failure, catch clauses narrow BY TYPE (most
+// specific first), lower-level causes are wrapped rather than lost, and
+// `finally` releases resources on success and failure alike.
+
+/** The domain error: config was present but unusable. Subclass ctors write
+ *  the inherited fields directly (`super(...)` is not yet supported). */
+class ConfigException extends RecoverableException {
+    public String key;
+
+    public ConfigException(#String key, #String message) {
+        this.message = message;
+        this.cause = null;
+        this.key = key;
+    }
+}
+
 public class ErrorsDemo extends DemoClass {
+
+    // Parse a port from raw config text: reject non-digits and the
+    // privileged/out-of-range values with messages an operator can act on.
+    static int32 parsePort(String raw) {
+        int32 v = 0;
+        int32 i = 0;
+        int32 n = (int32) raw.count();
+        if (n == 0) {
+            throw heap ConfigException("port", "port is empty");
+        }
+        while (i < n) {
+            int8 c = raw.charAt(i);
+            if (c < 48 || c > 57) {
+                throw heap ConfigException("port",
+                    "port must be numeric, got \"" + raw + "\"");
+            }
+            v = v * 10 + (int32)(c - 48);
+            i = i + 1;
+        }
+        if (v < 1024 || v > 65535) {
+            throw heap ConfigException("port",
+                "port " + v + " outside the unprivileged range 1024-65535");
+        }
+        return v;
+    }
+
     public void execute() {
         System.stdout.println("");
-        System.stdout.println("-- Errors --");
-        int32 caught = 0;
+        System.stdout.println("-- Errors (hierarchy, narrowing, cause, finally) --");
+
+        // 1. The happy path throws nothing.
+        int32 port = ErrorsDemo.parsePort("8080");
+        this.check(port == 8080, "valid config parses clean");
+
+        // 2. Catch narrows by TYPE, most specific first: a ConfigException
+        //    lands in the first clause with its message intact; anything
+        //    else would fall through to the broader Exception clause.
+        String seen = "";
+        String key = "";
         try {
-            throw 99;
+            ErrorsDemo.parsePort("http");
+        } catch (ConfigException e) {
+            seen = e.message;
+            key = e.key;
         } catch (Exception e) {
-            caught = (int32) e;
+            seen = "wrong clause";
         }
-        System.stdout.println("  caught throw value = " + caught);
+        System.stdout.println("  bad value  -> ConfigException: " + seen);
+        this.check(key.equals("port") && seen.contains("must be numeric"),
+            "specific clause catches, message survives");
+
+        // 3. Wrap, don't swallow: a low-level failure becomes the CAUSE of
+        //    the higher-level error, so the operator sees both layers.
+        //    getCause() returns Optional<Throwable> — empty when unchained.
+        String outer = "";
+        String inner = "";
+        try {
+            try {
+                ErrorsDemo.parsePort("80");        // privileged -> throws
+            } catch (ConfigException e) {
+                throw heap Exception("service startup aborted", #e);
+            }
+        } catch (Exception e) {
+            outer = e.message;
+            Optional<Throwable> cause = e.getCause();
+            if (cause.isPresent()) {
+                inner = cause.get().message;
+            }
+        }
+        System.stdout.println("  wrapped    -> " + outer + " <- caused by: " + inner);
+        this.check(outer.equals("service startup aborted")
+            && inner.contains("1024-65535"),
+            "cause chain preserves the root failure");
+
+        // 4. finally runs on BOTH paths — the cleanup slot. Model a lock
+        //    that must be released whether parsing succeeds or throws.
+        boolean releasedOnSuccess = false;
+        boolean releasedOnThrow = false;
+        try {
+            ErrorsDemo.parsePort("9090");
+        } finally {
+            releasedOnSuccess = true;
+        }
+        try {
+            try {
+                ErrorsDemo.parsePort("");
+            } finally {
+                releasedOnThrow = true;            // runs BEFORE the catch below
+            }
+        } catch (ConfigException e) {
+            // recovery: fall back to the default port.
+            port = 8080;
+        }
+        this.check(releasedOnSuccess && releasedOnThrow,
+            "finally runs on success and on throw");
+
+        // 5. Recoverable is a CONTRACT, not just a name: this whole demo
+        //    catches RecoverableExceptions and keeps running — that is the
+        //    recovery half of the hierarchy. UnrecoverableException is the
+        //    other half: invariant-violation alarms meant to SIGABRT at an
+        //    uncaught boundary rather than be handled — throw it only where
+        //    continuing would corrupt state.
+        this.check(port == 8080, "recovered to the default and kept going");
     }
 }
