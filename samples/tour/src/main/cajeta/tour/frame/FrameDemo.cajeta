@@ -1,0 +1,238 @@
+package tour.frame;
+
+import tour.DemoClass;
+import cajeta.lang.Utf8;
+import cajeta.time.Instant;
+import cajeta.nucleo.frame.Table;
+import cajeta.nucleo.frame.Pred;
+import cajeta.nucleo.frame.Sels;
+import cajeta.nucleo.frame.Aggs;
+import cajeta.nucleo.frame.Sorts;
+import cajeta.nucleo.frame.Join;
+import cajeta.nucleo.frame.FrameException;
+import cajeta.nucleo.column.Column;
+import cajeta.nucleo.column.StringColumn;
+import cajeta.nucleo.column.NullableColumn;
+
+// cajeta.nucleo.frame — the typed dataframe. `Table<R>` is a COLUMNAR
+// table whose schema is a record type: declare the record, and the
+// compiler synthesizes the columns, a typed column-reference companion
+// (`<Record>Cols`), a row iterator, and the query verbs.
+//
+//   t.lazy()      -> a plan handle; nothing executes yet
+//    .filter(...)  .select(...)  .groupBy(...).agg(...)  .sort(...)  .join(...)
+//   t.collect()   -> forces the plan, once, and caches the result
+//
+// The verbs take LAMBDAS over the typed column companion, so `c.price()`
+// is checked against the record — a typo is a compile error, not a
+// runtime "no such column". The planner pushes filters and projections
+// into the scan, which the demo verifies by reading scanRows/scanCols
+// back off the handle.
+//
+// Two rules worth learning before the first query:
+//   1. HANDLES ARE LINEAR. Chaining consumes the handle; reusing one
+//      throws. Start each pipeline from a fresh `t.lazy()`.
+//   2. `collect()` returns a BORROW cached on the handle — keep the
+//      handle alive while you read the result, and never `#=` it.
+//
+// The scenario: a trading tape — ticks by venue — aggregated to VWAP.
+
+// support: the schema. A record's fields ARE the columns, in order;
+// @Nullable marks a column that can carry nulls.
+public record Tick {
+    Instant ts;
+    float64 price;
+    float64 size;
+    Utf8 venue;
+}
+
+// support: the shape a VWAP-by-venue aggregation lands in.
+public record VenueVwap {
+    Utf8 venue;
+    float64 vwap;
+}
+
+public class FrameDemo extends DemoClass {
+
+    // support: the tape, built column-wise. The synthesized constructor
+    // takes one column per record field, in declaration order, and
+    // CONSUMES each — pass fresh Column.of(...) results.
+    static #Table<Tick> tape() {
+        int64[] tsv = heap int64[6];
+        tsv[0] = (int64) 1000000000; tsv[1] = (int64) 2000000000;
+        tsv[2] = (int64) 3000000000; tsv[3] = (int64) 4000000000;
+        tsv[4] = (int64) 5000000000; tsv[5] = (int64) 6000000000;
+        float64[] pv = heap float64[6];
+        pv[0] = 10.0; pv[1] = 20.0; pv[2] = 30.0;
+        pv[3] = 40.0; pv[4] = 50.0; pv[5] = 60.0;
+        float64[] sv = heap float64[6];
+        sv[0] = 100.0; sv[1] = 200.0; sv[2] = 300.0;
+        sv[3] = 100.0; sv[4] = 200.0; sv[5] = 300.0;
+        String[] vv = heap String[6];
+        vv[0] = "ARCA"; vv[1] = "NYSE"; vv[2] = "ARCA";
+        vv[3] = "NYSE"; vv[4] = "ARCA"; vv[5] = "NYSE";
+        return heap Table<Tick>(Column.of<int64>(tsv), Column.of<float64>(pv),
+                                Column.of<float64>(sv), StringColumn.of(vv));
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- cajeta.nucleo.frame: the typed dataframe --");
+
+        Table<Tick> t = FrameDemo.tape();
+        this.check(t.rowCount() == (int64) 6, "six ticks on the tape");
+        this.check(t.colCount() == 4 && t.colNameAt(1).equals("price"),
+            "the record's fields ARE the schema (name and order)");
+        System.stdout.println("  " + t.describe());
+
+        // 1. Typed column access, straight off the table: the synthesized
+        //    fields are real columns with reductions on them.
+        this.check(t.price.max() == 60.0 && t.price.min() == 10.0,
+            "typed columns carry reductions (max/min/sum/mean)");
+        this.check(t.venue.get(0).equals("ARCA"),
+            "string columns read back by row");
+
+        // 2. Lazy plan + filter. Nothing runs until collect(); the
+        //    predicate is built from the typed companion, so `c.price()`
+        //    is checked against the record.
+        //    (Inside a lambda body, compose predicates with Pred.and /
+        //    Pred.or — the `&`/`|` overloads don't resolve there yet.)
+        Table<Tick> big = t.lazy().filter((TickCols c) -> {
+            Pred a = c.price() >= 30.0;
+            Pred b = c.size() >= 200.0;
+            return Pred.and(#a, #b);
+        });
+        this.check(big.executions() == (int64) 0,
+            "lazy(): the plan has not executed yet");
+        Table<Tick> bigRows = big.collect();
+        System.stdout.println("  price>=30 AND size>=200: " + bigRows.rowCount()
+            + " ticks (of 6)");
+        this.check(bigRows.rowCount() == (int64) 3,
+            "the filter selected exactly the qualifying ticks");
+        this.check(big.executions() == (int64) 1,
+            "collect() forced the plan exactly once");
+
+        // 3. select + computed columns. Anything computed must be
+        //    .alias()-named — an unnamed expression is refused loudly.
+        Table<?> proj = t.lazy().select((TickCols c, Sels s) -> {
+            s.add(c.venue());
+            s.add((c.price() * c.size()).alias("notional"));
+        });
+        Table<?> projRows = proj.collect();
+        this.check(projRows.width() == 2,
+            "select projects to just the requested columns");
+        this.check(projRows.f64At("notional", (int64) 0) == 1000.0,
+            "computed columns are evaluated per row (10.0 * 100.0)");
+
+        // 4. groupBy + agg — VWAP per venue, the whole point of the tape.
+        //    The result is erased (Table<?>); .as<R>() names it again.
+        Table<VenueVwap> vwapPlan = t.lazy()
+            .groupBy((TickCols c, Sels s) -> {
+                s.add(c.venue());
+            })
+            .agg((TickCols c, Aggs ag) -> {
+                ag.add(((c.price() * c.size()).sum() / c.size().sum())
+                    .alias("vwap"));
+            })
+            .as<VenueVwap>()
+            .sort((VenueVwapCols c, Sorts s) -> {
+                s.add(c.vwap().desc());
+            });
+        Table<VenueVwap> vwap = vwapPlan.collect();
+        int64 v = (int64) 0;
+        while (v < vwap.rowCount()) {
+            System.stdout.println("  " + vwap.venue.get(v) + " vwap = "
+                + vwap.vwap.get(v));
+            v = v + (int64) 1;
+        }
+        this.check(vwap.rowCount() == (int64) 2,
+            "two venues on the tape, two aggregated rows");
+        // ARCA: (10*100 + 30*300 + 50*200) / 600 = 20000/600 = 33.33...
+        // NYSE: (20*200 + 40*100 + 60*300) / 600 = 26000/600 = 43.33...
+        this.check(vwap.venue.get((int64) 0).equals("NYSE"),
+            "sorted by vwap descending: NYSE (43.3) outranks ARCA (33.3)");
+        this.check(vwap.vwap.get((int64) 0) > vwap.vwap.get((int64) 1),
+            "the aggregate really is ordered by the sort key");
+
+        // 5. The planner PUSHED the work down: the scan counters prove the
+        //    filter and projection reached the scan instead of running
+        //    after a full materialization.
+        Table<Tick> pushed = t.lazy()
+            .filter((TickCols c) -> c.venue() == "ARCA")
+            .select((TickCols c, Sels s) -> {
+                s.add(c.price());
+            });
+        this.check(pushed.scanRows() == (int64) 0 - (int64) 1,
+            "an unforced plan has no scan statistics yet");
+        Table<?> pushedRows = pushed.collect();
+        System.stdout.println("  after collect: scanned " + pushed.scanRows()
+            + " rows x " + pushed.scanCols() + " cols; " + pushedRows.rowCount()
+            + " rows out");
+        this.check(pushedRows.rowCount() == (int64) 3,
+            "three ARCA ticks survived the filter");
+        this.check(pushed.scanCols() < (int64) 4,
+            "projection pushdown: the scan touched fewer columns than the table has");
+
+        // 6. Rows, when you want them: a typed iterator and random access.
+        TickRows it = t.rows();
+        float64 notional = (float64) 0.0;
+        int64 seen = (int64) 0;
+        while (it.hasNext()) {
+            Tick row = it.next();
+            notional = notional + row.price * row.size;
+            seen = seen + (int64) 1;
+        }
+        // 1000 + 4000 + 9000 + 4000 + 10000 + 18000 = 46000
+        this.check(seen == (int64) 6 && notional == 46000.0,
+            "the row iterator walks every tick (total notional 46000)");
+        Tick third = t.rowAt((int64) 2);
+        this.check(third.price == 30.0,
+            "rowAt(i) is random access into the typed rows");
+
+        // 7. head(n) — the "show me the top" terminal (there is no limit()).
+        Table<Tick> topPlan = t.lazy().sort((TickCols c, Sorts s) -> {
+            s.add(c.price().desc());
+        });
+        Table<Tick> sorted = topPlan.collect();
+        this.check(sorted.price.get((int64) 0) == 60.0,
+            "sort(desc) puts the largest price first");
+
+        // 8. CSV in one call: Table.fromCsv<R> binds columns BY HEADER
+        //    NAME (order-free), ignoring columns the record doesn't
+        //    declare — the everyday ingest path.
+        String csv = "venue,ignored,price,size,ts\n"
+            + "IEX,x,15.0,400.0,7000000000\n"
+            + "IEX,y,25.0,600.0,8000000000\n";
+        Table<Tick> loaded = Table.fromCsv<Tick>(csv);
+        this.check(loaded.rowCount() == (int64) 2,
+            "fromCsv parsed both data rows");
+        this.check(loaded.price.get((int64) 1) == 25.0
+            && loaded.venue.get((int64) 0).equals("IEX"),
+            "columns bound by header name, extra columns ignored");
+
+        // 9. Failures are loud and typed: a CSV missing a declared column
+        //    raises FrameException rather than filling a silent default.
+        boolean raised = false;
+        try {
+            Table<Tick> bad = Table.fromCsv<Tick>("price\n1.0\n");
+        } catch (FrameException fe) {
+            raised = true;
+        }
+        this.check(raised,
+            "a CSV lacking a declared column raises FrameException");
+
+        // 10. Handles are LINEAR — the rule that surprises people. A
+        //     chained handle is spent; reusing it throws instead of
+        //     silently re-running the plan.
+        Table<Tick> once = t.lazy();
+        Table<Tick> chained = once.filter((TickCols c) -> c.price() > 10.0);
+        boolean reuseRefused = false;
+        try {
+            Table<Tick> again = once.filter((TickCols c) -> c.price() > 20.0);
+        } catch (FrameException fe) {
+            reuseRefused = true;
+        }
+        this.check(reuseRefused,
+            "a spent handle refuses reuse — start each pipeline from lazy()");
+    }
+}

@@ -181,6 +181,7 @@ public class Table<T> {
      * materialize the result, and cache it — re-forcing the same handle
      * returns the cached result without re-executing. On a materialized
      * source table this is the identity.
+     * @EntryPoint
      */
     public Table<T> collect() {
         if (this.cached != null) {
@@ -347,7 +348,9 @@ public class Table<T> {
     }
 
     /** A plan handle whose scan reads a zero-copy snapshot of this
-     *  materialized table (building it reads no data). */
+     *  materialized table (building it reads no data).
+     * @EntryPoint
+     */
     public #Table<T> lazy() {
         if (this.plan != null) {
             throw heap FrameException("Table.lazy: already a plan handle");
@@ -815,7 +818,9 @@ public class Table<T> {
      *  synthesizer) replaces this failsafe per R with an inline typed parse
      *  over `CsvReader` that constructs the table through the synthesized
      *  `fromColumns` constructor — fresh `Column.of` builds, so ownership is
-     *  the same as hand-written construction (no aliasing seam). */
+     *  the same as hand-written construction (no aliasing seam).
+     * @EntryPoint
+     */
     public static final #Table<R> fromCsv<R>(String text) {
         throw heap FrameException(
             "Table.fromCsv<R>: synthesizer not engaged");

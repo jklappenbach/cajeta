@@ -116,7 +116,9 @@ public class Column<T> {
         return heap Column<E>(#root, off, n);
     }
 
-    /** Aligned column holding a copy of `data` (spec 2.1). */
+    /** Aligned column holding a copy of `data` (spec 2.1).
+     * @EntryPoint
+     */
     public static #Column<E> of<E>(E[] data) {
         int64 n = (int64) data.count();
         Column<E> c = Column.zeros<E>(n);

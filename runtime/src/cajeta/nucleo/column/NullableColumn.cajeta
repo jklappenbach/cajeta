@@ -39,7 +39,9 @@ public class NullableColumn<T> {
         return heap NullableColumn<E>(#vals, #bits, n);
     }
 
-    /** Column of `vals` with per-element validity `valid`. */
+    /** Column of `vals` with per-element validity `valid`.
+     * @EntryPoint
+     */
     public static #NullableColumn<E> of<E>(E[] vals, boolean[] valid) {
         int64 n = (int64) vals.count();
         NullableColumn<E> c = NullableColumn.nulls<E>(n);

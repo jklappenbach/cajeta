@@ -61,7 +61,9 @@ public class StringColumn {
         }
     }
 
-    /** Build from `values` — offsets/data laid out per Arrow "u". */
+    /** Build from `values` — offsets/data laid out per Arrow "u".
+     * @EntryPoint
+     */
     public static #StringColumn of(String[] values) {
         int64 n = (int64) values.count();
         int64 total = 0;
