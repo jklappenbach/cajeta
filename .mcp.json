@@ -1,0 +1,10 @@
+{
+    "mcpServers": {
+        "cajeta-skills": {
+            "type": "stdio",
+            "command": "build/src/cajeta",
+            "args": ["compiler-mcp"],
+            "env": {}
+        }
+    }
+}

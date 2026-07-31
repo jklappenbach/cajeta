@@ -1,5 +1,5 @@
 //
-// compiler-mcp — the in-compiler MCP stdio server (specs/compiler-mcp-spec.md).
+// compiler-mcp — the in-compiler MCP stdio server (specs/archive/compiler-mcp-spec.md).
 // Serves searchSkills / listSkills / getSkills over JSON-RPC 2.0 by calling the
 // skill-discovery cores in-process; the corpus is whatever the compiler embeds
 // plus lockfile archives when a project is present. Stateless and read-only.

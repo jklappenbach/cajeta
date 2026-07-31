@@ -90,8 +90,24 @@ manifest's tasks (that's how `cajeta run` works when a `run` task exists —
 | `cajeta coverage / verify / verify-reproducible / trust` | Quality and provenance |
 | `cajeta workspace / members / toolchain / which / sandbox-info` | Environment |
 | `cajeta ide / dap / jit-run` | IDE plugin, debug server, quick runs |
+| `cajeta compiler-mcp` | MCP server (stdio) serving those skills to a coding agent |
 
 `cajeta --help` shows the same list.
+
+## Skills, for AI coding agents
+
+The same skills the `search-skill` / `get-skills` commands return are also
+served over the [Model Context Protocol](https://modelcontextprotocol.io) by
+`cajeta compiler-mcp` — a stdio server built into the compiler, exposing
+`searchSkills`, `listSkills`, and `getSkills`. Register it with your agent
+(this repo ships a `.mcp.json` doing exactly that) and the agent can look up
+authoritative guidance for a class, package, or language topic **before** it
+writes code, instead of guessing.
+
+The corpus is embedded in the binary, so it works with no project, no
+lockfile, and no network — and it covers the language itself
+(`cajeta.language`), the toolchain (`cajeta.toolchain`), and every stdlib
+package.
 
 For the longer walk — dependencies, publishing, uber-archives end to end — see
 the [build tool reference](../specification/buildtool/BuildTool.md).

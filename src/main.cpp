@@ -295,7 +295,7 @@ int main(int argc, const char* argv[]) {
     }
 
     // `cajeta compiler-mcp` — MCP stdio server for skill discovery
-    // (specs/compiler-mcp-spec.md). stdout is the protocol channel;
+    // (specs/archive/compiler-mcp-spec.md). stdout is the protocol channel;
     // diagnostics go to stderr.
     if (argc >= 2 && std::string(argv[1]) == "compiler-mcp") {
         auto server = cajeta::buildtool::mcp::CompilerMcpServer::create(
