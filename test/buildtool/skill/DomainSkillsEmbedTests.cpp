@@ -148,3 +148,40 @@ TEST(DomainSkillsEmbedTests, cliServesToolchainSkillsWithNoProject) {
 }
 
 #endif // !_WIN32
+
+// ---- compiler-mcp Unit 4+ — the minimal expert skill catalog (spec §5-§7).
+// Extended as catalog batches land; each id must resolve by payload and be
+// reachable through search via its primary applies-to binding.
+
+struct CatalogEntry {
+    const char* library;
+    const char* id;
+    const char* binding; // primary applies-to name
+};
+
+static const CatalogEntry kCatalog[] = {
+    // Unit 4 — language batch 1
+    {"cajeta.language", "language-overview", "cajeta.language"},
+    {"cajeta.language", "language-types-and-allocation", "cajeta/language/types"},
+    {"cajeta.language", "language-ownership", "cajeta/language/ownership"},
+};
+
+TEST(CatalogSkillsTests, catalogIdsResolveAndBindingsSearchable) {
+    auto ctx = loadSkillSearchContext(
+        std::vector<ResolvedPackageEntry>{},
+        [](llvm::StringRef) -> std::optional<std::string> { return std::nullopt; });
+    ASSERT_TRUE((bool) ctx);
+
+    for (const auto& e : kCatalog) {
+        auto p = embeddedStdlibSkillPayload(e.library, e.id);
+        ASSERT_TRUE((bool) p) << e.id << " must be embedded in " << e.library;
+        EXPECT_NE(p->find(std::string("id: ") + e.id), std::string::npos) << e.id;
+
+        auto results = searchSkills(e.binding, std::nullopt, std::nullopt, *ctx);
+        bool found = false;
+        for (const auto& r : results)
+            if (r.uri.find(std::string("/") + e.id) != std::string::npos)
+                found = true;
+        EXPECT_TRUE(found) << e.binding << " must surface " << e.id;
+    }
+}
