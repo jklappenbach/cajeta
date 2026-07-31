@@ -805,6 +805,22 @@ public class Table<T> {
      *  mismatch throws), like `.as<R>()`'s materialized branch. An unknown
      *  extension type degrades to its physical column (§10.4). A static factory
      *  (like `Column.of<T>`); the schema is the method type parameter R. */
+    /** Parse CSV text into a typed `Table<R>` (the U16 CSV boundary,
+     *  resurrected by the table-fit materialization fix): the header binds
+     *  columns BY NAME to R's fields (order-free; extra CSV columns are
+     *  ignored), physicals come from R's schema (v1: float64 / int64 /
+     *  Instant epoch-nanos / Utf8, non-nullable), and malformed input —
+     *  missing column, row-arity mismatch — throws `FrameException`, never
+     *  silent nulls. A Tier-1 synthesized body (the compiler's frame-csv
+     *  synthesizer) replaces this failsafe per R with an inline typed parse
+     *  over `CsvReader` that constructs the table through the synthesized
+     *  `fromColumns` constructor — fresh `Column.of` builds, so ownership is
+     *  the same as hand-written construction (no aliasing seam). */
+    public static final #Table<R> fromCsv<R>(String text) {
+        throw heap FrameException(
+            "Table.fromCsv<R>: synthesizer not engaged");
+    }
+
     public static final #Table<R> importArrow<R>(int64[] schemas,
                                                  int64[] arrays, int32 n) {
         DynFrame df = DynFrame.fromArrow(schemas, arrays, n);

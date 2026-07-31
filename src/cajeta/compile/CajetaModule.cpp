@@ -43,6 +43,7 @@ namespace cajeta {
     thread_local uint64_t CajetaModule::reuseEpoch = 0;
     thread_local CajetaModulePtr CajetaModule::stdlibModule;
     thread_local std::function<void(const std::string&)> CajetaModule::stdlibImportHook;
+    thread_local std::function<bool(const std::string&)> CajetaModule::userMaterializeHook;
     thread_local map<string, CajetaModulePtr> CajetaModule::moduleVariables;
     thread_local vector<CajetaClassPtr> CajetaModule::aspectClasses;
     thread_local vector<CajetaModule::ComponentDescriptorPtr> CajetaModule::componentClasses;

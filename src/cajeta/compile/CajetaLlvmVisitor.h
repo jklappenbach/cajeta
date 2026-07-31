@@ -258,6 +258,16 @@ namespace cajeta {
             };
             for (auto& [label, res] : claimed) {
                 for (auto& imp : res.imports) {
+                    // Prescan + enqueue the package BEFORE binding the name —
+                    // the companion path (runCompanionSynthesizers) has done
+                    // this all along; without it a member-synthesis import
+                    // from a not-yet-noted lazy package (DynCol from
+                    // cajeta.nucleo.column) is name-bound with no archive
+                    // entry behind it, and the synthesized body's reference
+                    // resolves to null (table-fit spec §2.5).
+                    if (CajetaModule::stdlibImportHook) {
+                        CajetaModule::stdlibImportHook(imp.second);
+                    }
                     cajeta::synth::injectImportIfUnbound(pModule, imp.first, imp.second);
                 }
                 // Synthesized members have no source file; mask the parse and the

@@ -159,6 +159,14 @@ namespace cajeta {
         string templateSource;
     };
     static thread_local map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
+    // canonical → declaring source file, recorded by the whole-root prescan
+    // (only for on-disk user sources; stdlib content units register nothing).
+    // Read by the user-class materialization hook (Compiler::
+    // materializeUserClass) so a synthesizer that needs a cross-file class's
+    // REAL declaration (record flags + fields, not a placeholder) can compile
+    // the declaring module on demand — the user-source analog of the lazy
+    // stdlib drain. Lifecycle mirrors g_archive exactly.
+    static thread_local map<string, string> g_archiveSourcePaths;
     // Wildcard feature-flag override (Step 1). Set by tests via
     // CajetaType::setWildcardsEnabledForTest. Null means "fall back
     // to the CAJETA_WILDCARDS env var" (the production path).
@@ -210,6 +218,7 @@ namespace cajeta {
         g_valueTypeArchive.clear();
         g_interfaceArchive.clear();
         g_archiveTemplateMeta.clear();
+        g_archiveSourcePaths.clear();
         g_wildcardInfo.clear();
         // Test override survives resetGlobals on purpose — a test
         // turning the feature on expects the next Compiler instance
@@ -235,6 +244,7 @@ namespace cajeta {
             set<string> g_valueTypeArchive;
             set<string> g_interfaceArchive;
             map<string, ArchiveTemplateMeta> g_archiveTemplateMeta;
+            map<string, string> g_archiveSourcePaths;
             map<string, WildcardInfoEntry> g_wildcardInfo;
         };
         TypeGlobalsBaseline g_typeBaseline;
@@ -260,6 +270,7 @@ namespace cajeta {
             b.g_valueTypeArchive = g_valueTypeArchive;
             b.g_interfaceArchive = g_interfaceArchive;
             b.g_archiveTemplateMeta = g_archiveTemplateMeta;
+            b.g_archiveSourcePaths = g_archiveSourcePaths;
             b.g_wildcardInfo = g_wildcardInfo;
             b.valid = true;
         }
@@ -287,6 +298,7 @@ namespace cajeta {
         g_valueTypeArchive = g_typeContextBaseline.g_valueTypeArchive;
         g_interfaceArchive = g_typeContextBaseline.g_interfaceArchive;
         g_archiveTemplateMeta = g_typeContextBaseline.g_archiveTemplateMeta;
+        g_archiveSourcePaths = g_typeContextBaseline.g_archiveSourcePaths;
         g_wildcardInfo = g_typeContextBaseline.g_wildcardInfo;
     }
 
@@ -344,6 +356,7 @@ namespace cajeta {
         g_valueTypeArchive = g_typeBaseline.g_valueTypeArchive;
         g_interfaceArchive = g_typeBaseline.g_interfaceArchive;
         g_archiveTemplateMeta = g_typeBaseline.g_archiveTemplateMeta;
+        g_archiveSourcePaths = g_typeBaseline.g_archiveSourcePaths;
         g_wildcardInfo = g_typeBaseline.g_wildcardInfo;
     }
 
@@ -371,6 +384,17 @@ namespace cajeta {
 
     bool CajetaType::isArchiveValueType(const string& canonical) {
         return g_valueTypeArchive.count(canonical) > 0;
+    }
+
+    void CajetaType::registerArchiveSourcePath(const string& canonical,
+                                               const string& sourcePath) {
+        // First-write-wins, like registerArchive — re-prescans are idempotent.
+        g_archiveSourcePaths.emplace(canonical, sourcePath);
+    }
+
+    string CajetaType::lookupArchiveSourcePath(const string& canonical) {
+        auto it = g_archiveSourcePaths.find(canonical);
+        return it == g_archiveSourcePaths.end() ? string() : it->second;
     }
 
     void CajetaType::markArchiveInterface(const string& canonical) {
@@ -1543,6 +1567,12 @@ namespace cajeta {
         // (stored inline in the enclosing object, no heap); an empty `[]` or a
         // non-constant size stays a heap reference (size is then an
         // allocation-time concern that doesn't change the type).
+        //
+        // An unresolved ELEMENT type must exit here as null, same as the
+        // non-array miss path — wrapping null in CajetaArray dereferences it
+        // in the ctor (toCanonical), turning a reportable
+        // CAJETA_ERROR_UNRESOLVED_TYPE into a segfault.
+        if (!type) return nullptr;
         int bracketPairs = static_cast<int>(ctx->LBRACK().size());
         for (int i = 0; i < bracketPairs; i++) {
             int32_t fixedLength = -1;

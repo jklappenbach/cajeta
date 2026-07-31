@@ -7,6 +7,7 @@
 #include <mutex>
 #include <set>
 
+#include "cajeta/compile/CajetaModule.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaMatrix.h"
@@ -20,6 +21,23 @@
 #include "cajeta/codec/AvroSynthesizer.h"
 
 namespace cajeta::synth {
+
+    namespace {
+        // table-fit spec §2: a synthesizer must never read schema facts
+        // (record flag, field list) off an unfilled cross-file placeholder —
+        // force the declaring module to compile first via the Compiler's
+        // materialization hook. The placeholder is the same shared_ptr the
+        // real declaration fills (visitClassDeclaration's placeholder reuse),
+        // so the caller's reference upgrades in place. A null hook (no
+        // Compiler installed) degrades to the prior placeholder behavior.
+        void materializeIfPlaceholder(const CajetaClassPtr& cls) {
+            if (cls && cls->isPlaceholder() && cls->getQName()
+                    && CajetaModule::userMaterializeHook) {
+                CajetaModule::userMaterializeHook(
+                    cls->getQName()->toCanonical());
+            }
+        }
+    }
 
     SynthesizerRegistry& SynthesizerRegistry::instance() {
         static SynthesizerRegistry inst;
@@ -327,6 +345,199 @@ namespace cajeta::synth {
         reg.registerBody("ion",      wrapCodec(synthesizeIonMethodSource));
         reg.registerBody("avro",     wrapCodec(synthesizeAvroMethodSource));
 
+        // Table.fromCsv<R> (nucleo-frame 16.1.1, resurrected by table-fit U2):
+        // replace the failsafe throw-body with a per-R schema-descriptor
+        // bridge — literal name/tag/nullability arrays in RECORD SCHEMA order
+        // (mirroring the "table" member synthesizer's field walk exactly,
+        // since __rebindOwned validates positionally) driving the concrete
+        // DynFrame.fromCsv parser, then the same probe + rebind airlock
+        // importArrow<R> uses. R stays symbolic in the emitted source — the
+        // method-template wrapper walk pins R -> the concrete record via
+        // pushTypeSubstitution.
+        reg.registerBody("frameCsv",
+                [](const SynthesisContext& c) -> std::optional<std::string> {
+            if (c.method) return std::nullopt;   // instantiation path only
+            if (c.methodName != "fromCsv") return std::nullopt;
+            auto parent = c.parent;
+            if (!parent || !parent->getQName()) return std::nullopt;
+            const std::string pc = parent->getQName()->toCanonical();
+            if (pc != "cajeta.nucleo.frame.Table"
+                    && pc.rfind("cajeta.nucleo.frame.Table<", 0) != 0) {
+                return std::nullopt;
+            }
+            if (c.typeArgs.size() != 1) return std::nullopt;
+            if (c.paramTypes.size() != 1 || !c.paramTypes[0]
+                    || !c.paramTypes[0]->getQName()
+                    || c.paramTypes[0]->getQName()->toCanonical()
+                        != "cajeta.lang.String") {
+                return std::nullopt;
+            }
+            auto record = std::dynamic_pointer_cast<CajetaClass>(c.typeArgs[0]);
+            materializeIfPlaceholder(record);
+            if (!record || !record->getQName()
+                    || record->getQName()->getPackageName().empty()  // T-var
+                    || !record->isRecordType()) {
+                // Non-record R fails loudly at Table<R>'s own member
+                // synthesis; keep the failsafe here.
+                return std::nullopt;
+            }
+
+            // Schema fields in LAYOUT order: inherited (supers-first,
+            // recursively) then own — must mirror the "table" member
+            // synthesizer's walk.
+            std::vector<StructurePropertyPtr> fields;
+            std::function<void(CajetaClassPtr)> collect =
+                [&](CajetaClassPtr k) {
+                    if (!k) return;
+                    for (auto& s : k->getSuperClasses()) collect(s);
+                    for (auto& p : k->getPropertyList()) {
+                        if (p && !p->isStatic()) fields.push_back(p);
+                    }
+                };
+            collect(record);
+
+            const std::string schema = record->getQName()->toCanonical();
+            struct CsvCol { std::string name; int tag; };
+            std::vector<CsvCol> cols;
+            for (auto& prop : fields) {
+                const std::string fieldName = prop->getName();
+                auto ft = prop->getType();
+                const std::string tn = (ft && ft->getQName())
+                    ? ft->getQName()->getTypeName() : std::string();
+                if (prop->findAnnotation("Nullable")) {
+                    throw Exception(
+                        "Table<" + schema + ">.fromCsv: field '" + fieldName
+                            + "' is @Nullable - the CSV boundary has no "
+                              "nullable physical yet (import via Arrow "
+                              "instead)",
+                        "CAJETA_ERROR_FRAME_UNMAPPED_FIELD");
+                }
+                int tag;
+                if (tn == "float64") { tag = 10; }
+                else if (tn == "int64" || tn == "Instant") { tag = 4; }
+                else if (tn == "Utf8") { tag = 11; }
+                else {
+                    throw Exception(
+                        "Table<" + schema + ">.fromCsv: field '" + fieldName
+                            + "' has type '"
+                            + (ft ? ft->toCanonical()
+                                  : std::string("<unresolved>"))
+                            + "' - the CSV boundary parses float64, int64, "
+                              "Instant (epoch-nanos), and Utf8 (v1)",
+                        "CAJETA_ERROR_FRAME_UNMAPPED_FIELD");
+                }
+                cols.push_back({fieldName, tag});
+            }
+            // Emit an INLINE typed parse (the CsvSynthesizer's model): header
+            // pass binds each schema field to a CSV column by name (loud when
+            // absent; extra CSV columns ignored), a counting pass arity-checks
+            // every data row, a fill pass parses per-field typed arrays, and
+            // the table is built through the synthesized `fromColumns` ctor
+            // from fresh `Column.of` / `StringColumn.of` builds — the same
+            // ownership shape as hand-written construction. (An earlier cut
+            // routed through an intermediate owned DynFrame + __rebindOwned;
+            // the rebind ALIASES the frame's storage and the frame then
+            // drops — safe for Arrow imports whose buffers are externally
+            // owned, a use-after-free for frame-owned columns.)
+            std::string b;
+            b += "public static final #Table<R> fromCsv(String text) {\n";
+            b += "    int8[] __b = text.toBytes();\n";
+            b += "    int64 __len = (int64) __b.count();\n";
+            b += "    CsvReader __rh = heap CsvReader(__b, __len);\n";
+            b += "    if (!__rh.nextRow()) {\n";
+            b += "        throw heap FrameException(\"Table.fromCsv: empty "
+                 "input (no header row)\");\n";
+            b += "    }\n";
+            b += "    int32 __hc = __rh.fieldCount();\n";
+            for (std::size_t i = 0; i < cols.size(); ++i) {
+                b += "    int32 __c" + std::to_string(i) + " = -1;\n";
+            }
+            b += "    int32 __hi = 0;\n";
+            b += "    while (__hi < __hc) {\n";
+            b += "        int8[] __hb = __rh.field(__hi);\n";
+            b += "        String __hn = heap String(#__hb, (int32) "
+                 "__hb.count());\n";
+            for (std::size_t i = 0; i < cols.size(); ++i) {
+                const std::string ix = std::to_string(i);
+                b += "        if (__c" + ix + " < 0 && __hn.equals(\""
+                    + cols[i].name + "\")) { __c" + ix + " = __hi; }\n";
+            }
+            b += "        __hi = __hi + 1;\n";
+            b += "    }\n";
+            for (std::size_t i = 0; i < cols.size(); ++i) {
+                const std::string ix = std::to_string(i);
+                b += "    if (__c" + ix + " < 0) {\n";
+                b += "        throw heap FrameException(\"Table.fromCsv: "
+                     "required column '" + cols[i].name
+                    + "' not found in the header\");\n";
+                b += "    }\n";
+            }
+            b += "    int64 __rows = 0;\n";
+            b += "    boolean __m = __rh.nextRow();\n";
+            b += "    while (__m) {\n";
+            b += "        if (__rh.fieldCount() != __hc) {\n";
+            b += "            int64 __bad = __rows + 2;\n";
+            b += "            throw heap FrameException(\"Table.fromCsv: row "
+                 "\" + __bad + \" has \" + (int64) __rh.fieldCount() + \" "
+                 "fields, header has \" + (int64) __hc);\n";
+            b += "        }\n";
+            b += "        __rows = __rows + 1;\n";
+            b += "        __m = __rh.nextRow();\n";
+            b += "    }\n";
+            for (std::size_t i = 0; i < cols.size(); ++i) {
+                const std::string ix = std::to_string(i);
+                if (cols[i].tag == 11) {
+                    b += "    String[] __a" + ix
+                        + " = heap String[__rows];\n";
+                } else if (cols[i].tag == 4) {
+                    b += "    int64[] __a" + ix
+                        + " = heap int64[__rows];\n";
+                } else {
+                    b += "    float64[] __a" + ix
+                        + " = heap float64[__rows];\n";
+                }
+            }
+            b += "    CsvReader __rd = heap CsvReader(__b, __len);\n";
+            b += "    boolean __sk = __rd.nextRow();\n";
+            b += "    int64 __r = 0;\n";
+            b += "    boolean __m2 = __rd.nextRow();\n";
+            b += "    while (__m2) {\n";
+            for (std::size_t i = 0; i < cols.size(); ++i) {
+                const std::string ix = std::to_string(i);
+                b += "        int8[] __f" + ix + " = __rd.field(__c" + ix
+                    + ");\n";
+                if (cols[i].tag == 11) {
+                    b += "        __a" + ix + "[__r] = heap String(#__f" + ix
+                        + ", (int32) __f" + ix + ".count());\n";
+                } else if (cols[i].tag == 4) {
+                    b += "        __a" + ix + "[__r] = CsvReader.parseI64(__f"
+                        + ix + ");\n";
+                } else {
+                    b += "        __a" + ix + "[__r] = CsvReader.parseF64(__f"
+                        + ix + ");\n";
+                }
+            }
+            b += "        __r = __r + 1;\n";
+            b += "        __m2 = __rd.nextRow();\n";
+            b += "    }\n";
+            b += "    Table<R> __t = heap Table<R>(";
+            for (std::size_t i = 0; i < cols.size(); ++i) {
+                const std::string ix = std::to_string(i);
+                if (i) b += ", ";
+                if (cols[i].tag == 11) {
+                    b += "StringColumn.of(__a" + ix + ")";
+                } else if (cols[i].tag == 4) {
+                    b += "Column.of<int64>(__a" + ix + ")";
+                } else {
+                    b += "Column.of<float64>(__a" + ix + ")";
+                }
+            }
+            b += ");\n";
+            b += "    return #__t;\n";
+            b += "}\n";
+            return b;
+        });
+
         // @Einsum (Unit 6, spec §4.1-4.2): declaration-time body synthesis. A
         // bodyless method annotated @Einsum("ij,jk->ik") gets a fused loop-nest
         // body over Tensor's checked primitives. Claims only declaration-time
@@ -444,6 +655,7 @@ namespace cajeta::synth {
                 boundedHandle = true;
             }
             auto record = std::dynamic_pointer_cast<CajetaClass>(arg);
+            materializeIfPlaceholder(record);
             if ((arg->getTypeFlags() & PRIMITIVE_FLAG) != 0
                     || (record && !record->isRecordType())) {
                 throw Exception(
@@ -956,6 +1168,7 @@ namespace cajeta::synth {
             const auto& args = structure->getTypeArguments();
             if (args.size() != 1) return std::nullopt;
             auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            materializeIfPlaceholder(record);
             if (!record || !record->isRecordType()) return std::nullopt;
 
             std::vector<StructurePropertyPtr> fields;
@@ -1032,6 +1245,7 @@ namespace cajeta::synth {
             const auto& args = structure->getTypeArguments();
             if (args.size() != 1) return std::nullopt;
             auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            materializeIfPlaceholder(record);
             if (!record || !record->isRecordType()) return std::nullopt;
             SynthesizerRegistry::CompanionSynthesisResult r;
             const std::string recName = record->getQName()->getTypeName();
@@ -1084,6 +1298,7 @@ namespace cajeta::synth {
             const auto& args = structure->getTypeArguments();
             if (args.size() != 1) return std::nullopt;
             auto record = std::dynamic_pointer_cast<CajetaClass>(args[0]);
+            materializeIfPlaceholder(record);
             if (!record || !record->isRecordType()) return std::nullopt;
             SynthesizerRegistry::CompanionSynthesisResult r;
             r.className = record->getQName()->getTypeName() + "Cols";

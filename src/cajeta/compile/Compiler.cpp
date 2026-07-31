@@ -230,6 +230,10 @@ namespace cajeta {
     public:
         std::string package;
         std::vector<std::string> enclosingStack;
+        // Declaring file for this unit's classes, when the prescan came from
+        // an on-disk source (empty for stdlib content units). Recorded per
+        // canonical so materializeUserClass can compile the file on demand.
+        std::string sourcePath;
 
         std::any visitPackageDeclaration(
                 CajetaParser::PackageDeclarationContext* ctx) override {
@@ -413,6 +417,9 @@ namespace cajeta {
             if (!canonical.empty()) canonical += ".";
             canonical += shortName;
             CajetaType::registerArchive(canonical, shortName);
+            if (!sourcePath.empty()) {
+                CajetaType::registerArchiveSourcePath(canonical, sourcePath);
+            }
             if (markEnum) CajetaType::markArchiveEnum(canonical);
             if (markValueType) CajetaType::markArchiveValueType(canonical);
             if (markInterface) CajetaType::markArchiveInterface(canonical);
@@ -492,7 +499,8 @@ namespace cajeta {
     // leak "line L:col msg" text into the machine-readable stream — the
     // authoritative parseSource pass re-reports the same syntax errors as NDJSON.
     static void prescanSource(antlr4::ANTLRInputStream& input,
-                              bool suppressConsole = false) {
+                              bool suppressConsole = false,
+                              const std::string& sourcePath = std::string()) {
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
@@ -503,6 +511,7 @@ namespace cajeta {
         }
         antlr4::tree::ParseTree* tree = parser.compilationUnit();
         ArchivePrescanVisitor v;
+        v.sourcePath = sourcePath;
         tree->accept(&v);
     }
 
@@ -519,7 +528,8 @@ namespace cajeta {
             std::ifstream in(entry.path());
             if (!in) continue;
             antlr4::ANTLRInputStream input(in);
-            prescanSource(input, suppressConsole);
+            prescanSource(input, suppressConsole,
+                          entry.path().lexically_normal().string());
         }
     }
 
@@ -1096,6 +1106,12 @@ namespace cajeta {
         if (!fileExists(sourcePath))
             throw FileNotFoundException(sourcePath);
 
+        // Remember the roots so materializeUserClass can create sibling
+        // modules with the same layout mapping. Every driver path funnels
+        // through here before any on-demand materialization can fire.
+        lastSourceRoot = sourceRootPath;
+        lastTargetRoot = targetRootPath;
+
         auto module = make_shared<CajetaModule>(activeContext,
             sourcePath,
             sourceRootPath,
@@ -1221,6 +1237,13 @@ namespace cajeta {
         CajetaModule::stdlibImportHook = [](const std::string& pkg) {
             noteStdlibImportImpl(pkg);
         };
+        // On-demand USER-class materialization (table-fit spec §2): lets a
+        // synthesizer force a cross-file class's declaring module to compile
+        // when it needs the real declaration, not a placeholder. Rebound per
+        // Compiler for the same reason as the import hook above.
+        CajetaModule::userMaterializeHook = [this](const std::string& canonical) {
+            return this->materializeUserClass(canonical);
+        };
 
         auto existing = CajetaModule::getStdlibModule();
         if (existing) return existing;
@@ -1317,6 +1340,16 @@ namespace cajeta {
     }
 
     void Compiler::compile(CajetaModulePtr module) {
+        // One compile per source file. materializeUserClass may have already
+        // compiled this path on demand (a synthesizer needed one of its
+        // classes mid-walk of an earlier module); compiling the caller's
+        // fresh module object for the same file would redeclare every class
+        // in it. Marked at entry so the on-demand path also guards itself.
+        std::string normPath = std::filesystem::path(
+            module->getSourcePath()).lexically_normal().string();
+        if (!compiledSourcePaths.insert(normPath).second) {
+            return;
+        }
         ensureStdlibModule();
         modules.push_back(module);
         parse(module);
@@ -1331,6 +1364,37 @@ namespace cajeta {
         // emitted by ensureStdlibModule, so no per-user-module emit
         // is required.
         CajetaModule::buildPendingPrototypes();
+    }
+
+    bool Compiler::materializeUserClass(const std::string& canonical) {
+        // The user-source analog of the lazy stdlib drain: compile the module
+        // that DECLARES `canonical` right now, so a synthesizer that needs the
+        // class's real declaration (record flag, fields) mid-walk of another
+        // module gets it regardless of file compile order. Placeholder fill
+        // happens on the same shared_ptr (visitClassDeclaration's placeholder
+        // reuse), so the caller's reference upgrades in place.
+        std::string path = CajetaType::lookupArchiveSourcePath(canonical);
+        if (path.empty()) return false;          // not an on-disk user class
+        std::string normPath =
+            std::filesystem::path(path).lexically_normal().string();
+        if (compiledSourcePaths.count(normPath)) return false;   // already real
+        // Cycle guard: two records whose Tables reference each other degrade
+        // to the placeholder behavior instead of recursing forever.
+        if (!materializeInFlight.insert(normPath).second) return false;
+        if (getenv("CAJETA_DBG_MATERIALIZE")) {
+            std::cerr << "[materialize-user] " << canonical
+                      << " <- " << normPath << "\n";
+        }
+        try {
+            CajetaModulePtr m = createModule(normPath, lastSourceRoot,
+                                             lastTargetRoot);
+            compile(m);
+        } catch (...) {
+            materializeInFlight.erase(normPath);
+            throw;   // the declaring file's own errors are real — report them
+        }
+        materializeInFlight.erase(normPath);
+        return true;
     }
 
     void Compiler::lint(const string& file, const string& sourceRoot,

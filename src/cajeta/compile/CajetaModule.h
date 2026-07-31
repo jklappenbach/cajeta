@@ -189,6 +189,14 @@ namespace cajeta {
         // Per-compile (each thread installs its own during setup); thread_local
         // so concurrent compiles don't race on the std::function.
         static thread_local std::function<void(const std::string&)> stdlibImportHook;
+
+        // On-demand USER-class materialization (table-fit spec §2): given a
+        // canonical name, compile its declaring module NOW so the caller sees
+        // the real declaration (record flag, fields) instead of a placeholder.
+        // Installed by Compiler beside the import hook; lives here for the
+        // same no-Compiler-dependency reason. Returns true when a module was
+        // compiled. Null until installed; callers must null-check.
+        static thread_local std::function<bool(const std::string&)> userMaterializeHook;
     private:
         static thread_local vector<ComponentDescriptorPtr> componentClasses;
         static thread_local vector<FactoryDescriptorPtr> factoryClasses;

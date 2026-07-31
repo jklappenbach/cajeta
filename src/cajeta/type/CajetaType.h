@@ -455,6 +455,16 @@ class CajetaType : public Modifiable, public Annotatable,
         static void markArchiveValueType(const string& canonical);
         static bool isArchiveValueType(const string& canonical);
 
+        // canonical → declaring source file for on-disk user sources, recorded
+        // by the whole-root prescan. Lets Compiler::materializeUserClass (the
+        // user-source analog of the lazy stdlib drain) compile a cross-file
+        // class's declaring module on demand when a synthesizer needs its REAL
+        // declaration — record flags and fields, not a placeholder. Empty
+        // string when the canonical has no recorded source (stdlib, synthetic).
+        static void registerArchiveSourcePath(const string& canonical,
+                                              const string& sourcePath);
+        static string lookupArchiveSourcePath(const string& canonical);
+
         // Mark a previously-registered archive entry as an INTERFACE
         // declaration. Read by fromContext's placeholder-synthesis path
         // so a cross-file field/param/local declared at a forward-

@@ -146,6 +146,16 @@ namespace cajeta {
         llvm::TargetOptions opt;
         std::optional<llvm::Reloc::Model> RM;
         list<CajetaModulePtr> modules;
+        // One compile per source file (normalized path). Entries are marked at
+        // Compiler::compile(module) entry; materializeUserClass consults and
+        // contributes, so on-demand and driver-loop compiles never collide.
+        std::set<std::string> compiledSourcePaths;
+        // materializeUserClass recursion guard (record A ↔ record B cycles).
+        std::set<std::string> materializeInFlight;
+        // Roots from the most recent createModule — the layout mapping
+        // materializeUserClass reuses for its on-demand sibling modules.
+        string lastSourceRoot;
+        string lastTargetRoot;
         // Compiler mode + per-feature toggle struct (docs/CompilerModes.md).
         // CLI flavor flags (--debug, --release, ...) set `mode` and reset `flags`
         // to that mode's defaults; per-feature flags (--bounds=, --source-tags=, ...)
@@ -366,6 +376,14 @@ namespace cajeta {
         void compile(string entryMethod, string sourceRootPath, string archiveRootPath);
 
         void compile(CajetaModulePtr module);
+
+        // Compile the module that declares `canonical` on demand (table-fit
+        // spec §2) — the user-source analog of the lazy stdlib drain, invoked
+        // via CajetaModule::userMaterializeHook when a synthesizer needs a
+        // cross-file class's real declaration rather than a placeholder.
+        // Returns true when a module was compiled; false when the canonical
+        // has no recorded user source, was already compiled, or is in flight.
+        bool materializeUserClass(const std::string& canonical);
 
         // Single-file diagnostics (compiler-lint-mode-spec): stdlib + this one
         // file through the semantic/validation/DI passes, then STOP before
