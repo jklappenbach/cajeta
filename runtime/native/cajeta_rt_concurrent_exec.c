@@ -1909,8 +1909,8 @@ int64_t __cajeta_eventfd_consume(int32_t fd) {
 // library turns that into the expected NetException. Detaching them also
 // closes the fd-number aliasing window, so a recycled descriptor can no
 // longer deliver a stale fiber a wakeup that was never meant for it.
-void __cajeta_io_close_wake(int32_t fd) {
-    if (fd < 0) return;
+int32_t __cajeta_io_close_fd(int32_t fd) {
+    if (fd < 0) return 0;
     struct cajeta_fiber* to_publish = NULL;
     pthread_mutex_lock(&__cajeta_task_mutex);
     if (__cajeta_reactor_started) {
@@ -1937,22 +1937,33 @@ void __cajeta_io_close_wake(int32_t fd) {
             p = &w->next;
         }
     }
+    // THE CLOSE ITSELF HAPPENS UNDER task_mutex — that is the whole point.
+    // __cajeta_io_wait registers its waiter and parks while holding this same
+    // mutex, so the two orderings are now the only ones possible:
+    //   - waiter first: we are here afterwards, so the walk above found it and
+    //     the fiber is on `to_publish` — it wakes, retries, gets EBADF.
+    //   - close first: the descriptor is already gone when io_wait runs, so its
+    //     epoll_ctl(ADD) fails EBADF and it returns -1 WITHOUT parking.
+    // Closing outside the lock left a third, fatal interleaving: a waiter armed
+    // between the walk and the close(2) was orphaned on a descriptor that no
+    // longer exists, and nothing could ever wake it.
+    int r = close(fd);
     pthread_mutex_unlock(&__cajeta_task_mutex);
     while (to_publish) {
         struct cajeta_fiber* next = to_publish->next;
         __cajeta_publish_ready(to_publish);
         to_publish = next;
     }
+    return (int32_t) r;
 }
 
 int32_t __cajeta_fd_close(int32_t fd) {
-    __cajeta_io_close_wake(fd);
-    return close(fd);
+    return __cajeta_io_close_fd(fd);
 }
 
 #else /* !__linux__ */
 
-void __cajeta_io_close_wake(int32_t fd) { (void) fd; }
+int32_t __cajeta_io_close_fd(int32_t fd) { (void) fd; return -1; }
 
 
 int32_t __cajeta_io_wait(int32_t fd, int32_t events) {

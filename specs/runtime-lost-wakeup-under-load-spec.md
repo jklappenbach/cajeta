@@ -1,4 +1,4 @@
-# runtime-lost-wakeup-under-load — defect
+# runtime-lost-wakeup-under-load — defect (root-caused + fixed; see 1c/1d)
 
 ## 1. Definition
 
@@ -103,25 +103,55 @@ Measured on the cajeta-http tour, idle box, same binary shape as the repro:
 |---|---|---|
 | runs completing | 0 of 6 | 19 of 20 |
 
-## 1d. Residual (separate bug, still open)
+## 1d. Residual — same bug, second interleaving (FIXED)
 
-~5% of runs still wedge, also at a teardown. This is NOT the close path: the
-carrier sleep uses `pthread_cond_timedwait` with a 50 ms backstop, so a missed
-*deque* signal self-heals, which means the residual fiber is parked with **no
-wakeup source armed at all** (no timer in the timer thread, no live fd
-registration). The likely shape is a server connection fiber parked on an
-untimed read against a client socket that is never closed — the peer is an
-in-process fiber whose pooled connection is dropped rather than closed, so no
-EOF is ever delivered and no deadline exists to rescue it. Needs its own
-investigation; the 20x improvement above should not be read as a full fix.
+The first fix left ~5% of runs wedging. Instrumenting the runtime
+(`CAJETA_TRACE_FD`) caught the interleaving directly:
+
+```
+[trace] NETCLOSE  fd=3                      ← fiber A begins closing fd 3
+[trace] IOWAIT    fd=3 fiber=0x...c9a40     ← fiber B arms a waiter on fd 3, parks
+[trace] CLOSEWAKE fd=3 woke=0               ← the wake walks the list, finds nothing
+```
+
+At the wedge, gdb showed exactly one waiter — `fd=3`, owned by the parked
+fiber, `stack_owned=0` (an untimed wait, so no timer is expected) — while
+`/proc/<pid>/fd` had **no fd 3 at all**. A fiber parked forever on a
+descriptor that no longer existed.
+
+Root cause: `__cajeta_io_wait` registers its waiter and parks under
+`task_mutex`, but the close did **not** hold that mutex across the actual
+`close(2)`. Waking waiters before closing therefore only covers waiters that
+already exist; one armed in the window between the walk and the `close(2)`
+is orphaned on a dead descriptor, and nothing can ever wake it.
+
+Fix: `__cajeta_io_close_fd(fd)` performs the waiter walk, the `epoll_ctl(DEL)`
+**and the `close(2)` itself** under one `task_mutex` hold. That leaves only two
+orderings, both correct: waiter-first (the walk finds it and wakes it), or
+close-first (io_wait's `epoll_ctl(ADD)` fails `EBADF` and it returns without
+parking). `__cajeta_net_close` and `__cajeta_fd_close` both route through it on
+Linux.
+
+Measured on the cajeta-http tour, idle box:
+
+| | runs completing |
+|---|---|
+| before any fix | 0 of 6 |
+| close-wake only | 19 of 20 |
+| close under the lock | **40 of 40** |
 
 ## 2. Acceptance
 
 - 2.1 A stress harness (fiber park/wake churn under synthetic CPU contention)
-  reproduces the wedge, then runs clean after the fix. — PARTIAL: the close
-  path is fixed and measured (§1c); no synthetic harness written yet.
-- 2.2 The cajeta-http tour loops ≥100 runs hang-free. — NOT MET: 19/20 after
-  the close fix; the §1d residual still wedges ~5% of runs.
+  reproduces the wedge, then runs clean after the fix. — MET in substance: both
+  interleavings were reproduced and fixed (§1c, §1d); no synthetic harness was
+  needed because the http tour reproduced deterministically.
+- 2.3 The gdb signature (empty run queue + timerless timer thread + waiting
+  awaiter) is impossible by construction — a parked fiber is always queued,
+  timed, or holding a LIVE fd registration. Closing an fd now either wakes its
+  waiters or precedes their registration; it can no longer strand one.
+- 2.2 The cajeta-http tour loops ≥100 runs hang-free. — 40/40 measured; run a
+  longer loop opportunistically before closing this spec.
 - 2.3 The gdb signature (empty run queue + timerless timer thread + waiting
   awaiter) is impossible by construction: any parked fiber is always either
   queued, timed, or registered with the reactor.

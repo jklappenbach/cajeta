@@ -426,7 +426,7 @@ int64_t __cajeta_net_recvfrom(int32_t fd, void* buf, int64_t len, int32_t flags,
 // Linux). Closing an fd removes it from the epoll interest list without
 // delivering an event, so without this a parked fiber is never resumed —
 // the shutdown-and-await hang. See the comment on the definition.
-extern void __cajeta_io_close_wake(int32_t fd);
+extern int32_t __cajeta_io_close_fd(int32_t fd);
 
 // Close the socket. Idempotent at the cajeta layer (it nulls its fd field).
 // Returns 0 / -1.
@@ -435,9 +435,15 @@ int32_t __cajeta_net_close(int32_t fd) {
     // Order matters: publish the waiters while `fd` is still valid, then
     // close. A fiber woken this way retries its I/O, gets EBADF, and the
     // library maps that to the NetException its accept loop expects.
-    __cajeta_io_close_wake(fd);
+#if defined(__linux__)
+    // Wake the fd's reactor waiters AND close it under one lock — see the
+    // definition. A socket fd is an ordinary descriptor here, so close(2) is
+    // the right closer; the atomicity is what matters.
+    return __cajeta_io_close_fd(fd);
+#else
     int r = cajeta_closesocket(cajeta_net_from_fd(fd));
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
+#endif
 }
 
 // Shut down part of a full-duplex connection. `how`: 0 = read (SHUT_RD),
