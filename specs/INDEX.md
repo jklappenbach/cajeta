@@ -45,7 +45,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-8 done; Unit 3 residue: nucleo.frame demo [~] on table-fit; Unit 8 (xgboost) 2026-07-31: re-baselined on ml 0.3.0 + v0.13.0, tour 11→82 checks, 22/22 coverage, CI green (cajeta-xgboost b73febf); multiclass demo still blocked on xgboost plan D1; next: unit 9 close-out sweep |
+| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-8 done + unit-3 residue cleared (frame demo, 500 stdlib checks, entry-point gate 38/38); Unit 9 sweep 2026-07-31 on v0.13.0: 5 of 6 repos fully green, all 6 gates green (stdlib 38/38, codec 52/52, http 128/128, logging 17/17, unit 21/21, xgboost 22/22); ARCHIVE HELD — cajeta-http's tour is CI-green but wedges locally 6/6 on runtime-lost-wakeup-under-load; awaiting a call on whether CI-green satisfies spec 6.1 |
 | [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; FIXED 2026-07-31 — cross-module vtable constant; pins live; ml co-location workaround stays until the fix releases in v0.13.0) | draft |
 | [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; FIXED 2026-07-31, pin live; noted follow-up: fat-aware interface `== null`) | draft |
 | [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
@@ -55,5 +55,5 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
-| [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect, tour-quality unit 5; gdb signature in spec; fiber wakeup lost under CPU contention) | draft |
+| [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect, tour-quality unit 5; gdb signature in spec) | draft — SEVERITY RAISED 2026-07-31: reproduces 6/6 on an IDLE box, both 0.12.0 and 0.13.0 builds; not load-gated, not a regression; wedges every server shutdown+await teardown; blocks running the cajeta-http tour locally |
 | [template-field-borrow-escape](template-field-borrow-escape-spec.md) | — (defect, silent UAF; borrow stored via template-typed field; 24-line repro in spec; found by compiler-mcp U5 example verification) | draft |

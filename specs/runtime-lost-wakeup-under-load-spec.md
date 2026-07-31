@@ -2,14 +2,20 @@
 
 ## 1. Definition
 
-Under CPU contention, a cajeta program whose fibers park and wake through the
-task scheduler can wedge permanently: a parked fiber's wakeup is lost, the
-task never completes, and every awaiter blocks forever. Observed 2026-07-31
-while running the rewritten cajeta-http tour (10 sequential loopback
-client/server demos in one process) on a machine concurrently running a heavy
-GPU/CPU sweep; roughly a third to half of runs wedged. The same binary also
-completed 150/150 checks cleanly on other runs, including several in a row —
-the failure is a race whose window widens under load.
+A cajeta program whose fibers park and wake through the task scheduler can
+wedge permanently: a parked fiber's wakeup is lost, the task never completes,
+and every awaiter blocks forever. Observed 2026-07-31 in the rewritten
+cajeta-http tour (10 sequential loopback client/server demos in one process).
+
+**Severity corrected 2026-07-31 (later the same day).** The first
+characterization here blamed CPU contention, because the initial ~30-50% hit
+rate coincided with a heavy GPU/CPU sweep on the same box, and some runs
+passed. A re-measurement on an IDLE machine (load 1.5 on 32 cores, no stray
+processes, no socket pressure, zero TIME_WAIT) wedged **6 runs out of 6**, and
+the same 6/6 reproduces with binaries built by BOTH cajeta 0.12.0 and 0.13.0 —
+so this is neither load-gated nor a v0.13.0 regression. Load may widen the
+window; it is not the cause. Treat this as a frequent, reliably reproducible
+hang, not an occasional flake.
 
 - 1.1 **Signature (gdb, all threads, wedged process).** Main thread blocked in
   `__futex_abstimed_wait` on `__cajeta_task_done_cond` (an `await` that never
@@ -26,14 +32,21 @@ the failure is a race whose window widens under load.
   it is a general park/wake race (task-done signaling or timer arming) that
   the teardown's burst of fiber transitions makes likely.
 - 1.3 **Repro.** `cajeta-http` @ the unit-5 tour rewrite:
-  `CAJETA_BIN=<cajeta> RUN=0 ./samples/tour/run.sh` then loop
-  `./samples/tour/build/http-tour` under concurrent CPU load; ~30-50% of runs
-  hang (>90s, normally ~15s). On an idle machine the hang was not reproduced
-  in the runs observed, but the small sample and the load confound mean the
-  idle-machine rate is unmeasured, not zero.
-- 1.4 **Impact.** Any long-running fiber-heavy service on a busy host can
-  freeze. CI processes with timeouts fail spuriously. The http test suite's
-  own flake-hunting loop mode (`run-tests.sh N`) suggests related history.
+  `CAJETA_BIN=<cajeta> RUN=0 ./samples/tour/run.sh`, then loop
+  `./samples/tour/build/http-tour`. Measured 2026-07-31 on an idle 32-core
+  box: **6/6 wedged** (3 with a 0.13.0-built binary, 3 with 0.12.0), each
+  hanging >120s against a normal ~15s runtime. Every wedge stopped at a
+  `srv.shutdown(deadline)` + `await serveFiber` teardown — ServerDemo's or
+  BodiesDemo's — never mid-request.
+- 1.3a **Why CI is green.** The same tour passes in GitHub Actions (two runs,
+  cajeta-http e500802 and its follow-up). Whatever the race needs, the runner
+  does not provide it — so CI is NOT evidence the bug is rare, and a green CI
+  badge should not be read as one.
+- 1.4 **Impact.** Serious. Any program that shuts a fiber-based server down
+  and awaits its accept loop can hang forever on a quiet machine — that is
+  the ordinary teardown path, not an exotic one. The cajeta-http tour cannot
+  currently be run to completion locally (tour-quality plan 9.1.1 records
+  this); only CI gets through it.
 - 1.5 **Non-goals.** The http library's shutdown/drain logic itself appears
   correct (deadline-bounded poll; listener close wakes the accept fiber); this
   spec targets the runtime's scheduler/timer wakeup path.
