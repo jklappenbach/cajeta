@@ -22,5 +22,7 @@ public class TemplatesDemo extends DemoClass {
         int32 dblSumI = (int32) dbls.stream().reduce(0.0, (a, b) -> a + b);
         System.stdout.println("  Stream<int32>  sum = " + intSum);
         System.stdout.println("  Stream<float64> sum (truncated) = " + dblSumI);
+        this.check(bi.get() == 42 && intSum == 15 && dblSumI == 7,
+            "two monomorphizations coexist in one scope");
     }
 }

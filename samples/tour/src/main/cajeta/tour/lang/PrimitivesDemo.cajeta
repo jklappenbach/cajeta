@@ -36,5 +36,11 @@ public class PrimitivesDemo extends DemoClass {
         System.stdout.println("  0b1010_0101          = " + bin);
         System.stdout.println("  boolean = " + t);
         System.stdout.println("  char    = " + (int32) c);
+        this.check((int32) i8 == 7 && (int32) i16 == 30000 && i32 == 1000000
+            && i64 / 1_000_000L == 9000L, "integer widths hold their values");
+        this.check((int32)(f32 * 100.0f) == 314 && (int32)(f64 * 100.0) == 271,
+            "float widths hold their values");
+        this.check((hex & 0xFFFF) == 0xBABE && bin == 165 && t
+            && (int32) c == 90, "hex/binary literals, boolean, char");
     }
 }

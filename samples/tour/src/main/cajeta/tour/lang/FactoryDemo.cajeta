@@ -88,5 +88,8 @@ public class FactoryDemo extends DemoClass {
         // compiler splices the @Inject DbPool. id*100 + poolSize.
         int32 r = s.makeWithId(7);
         System.stdout.println("  assisted make(7) -> id*100+poolSize = " + r);
+        this.check(s.sharedPoolSize() == 10,
+            "provider product built with the injected collaborator");
+        this.check(r == 710, "assisted call threads the pool, takes the id");
     }
 }

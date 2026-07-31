@@ -15,5 +15,6 @@ public class LambdasDemo extends DemoClass {
         Counter accum = stack Counter();
         xs.stream().forEach((x) -> accum.bumpBy(x));
         System.stdout.println("  sum via forEach + captured Counter = " + accum.value());
+        this.check(accum.value() == 10, "borrow capture mutates the outer local");
     }
 }

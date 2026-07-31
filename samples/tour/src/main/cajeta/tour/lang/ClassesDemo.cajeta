@@ -15,5 +15,6 @@ public class ClassesDemo extends DemoClass {
         c.bump();
         c.bump();
         System.stdout.println("  Counter after 3 bumps = " + c.value());
+        this.check(c.value() == 3, "field state accumulates across calls");
     }
 }

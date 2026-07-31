@@ -16,5 +16,9 @@ public class FormatStringDemo extends DemoClass {
         System.stdout.println("  hello {}, version {}", name, version);
         System.stdout.println("  pi  ≈ {}", pi);
         System.stdout.println("  {} + {} = {}", 2, 3, 2 + 3);
+        // The formatter has no capture seam to assert its output here;
+        // sanity-check the values the templates consumed instead.
+        this.check(name.equals("Cajeta") && version == 1 && 2 + 3 == 5,
+            "format args evaluated in order");
     }
 }

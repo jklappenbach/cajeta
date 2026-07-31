@@ -15,5 +15,7 @@ public class InheritanceDemo extends DemoClass {
         // Polymorphic call through the Shape ref — vtable picks the override.
         System.stdout.println("  Square(5).area() = " + sq.area());
         System.stdout.println("  Circle(3).area() = " + ci.area());
+        this.check(sq.area() == 25 && ci.area() == 27,
+            "vtable dispatch picks each override");
     }
 }

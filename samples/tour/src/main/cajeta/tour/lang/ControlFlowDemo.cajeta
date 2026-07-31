@@ -38,5 +38,7 @@ public class ControlFlowDemo extends DemoClass {
             sqSum = sqSum + x * x;
         }
         System.stdout.println("  for-each: sum of squares = " + sqSum);
+        this.check(evenSum == 6 && oddSum == 9 && fact == 120 && sqSum == 30,
+            "while / for / enhanced-for all computed right");
     }
 }

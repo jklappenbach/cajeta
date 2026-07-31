@@ -37,5 +37,11 @@ public class NamedArgsDemo extends DemoClass {
 
         // Positional prefix + named suffix (suffix order free): a=1, b=2, c=3 → 123.
         System.stdout.println("  combine(1, c: 3, b: 2) = " + this.combine(1, c: 3, b: 2));
+        this.check(p.distSq() == 25 && q.x == 1 && q.y == 2,
+            "constructor args bind by name in any order");
+        this.check(this.diff(a: 10, b: 3) == 7 && this.diff(b: 3, a: 10) == 7,
+            "method args bind by name in any order");
+        this.check(this.combine(1, c: 3, b: 2) == 123,
+            "positional prefix + named suffix binds right");
     }
 }

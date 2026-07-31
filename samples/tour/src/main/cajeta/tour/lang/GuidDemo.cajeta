@@ -34,13 +34,22 @@ public class GuidDemo extends DemoClass {
         Guid d = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
         System.stdout.println("  b.equals(d)    = " + b.equals(d));   // true
         System.stdout.println("  a.equals(b)    = " + a.equals(b));   // false
+        this.check(b.equals(d) && !a.equals(b),
+            "equals is the exact 128-bit compare, case-insensitive parse");
+        this.check(b.toString().equals("01234567-89ab-cdef-fedc-ba9876543210"),
+            "toString normalizes to lowercase canonical form");
+        this.check((int32) c.high() == 255 && (int32) c.low() == 1,
+            "fromHalves round-trips both 64-bit halves");
 
         // Malformed input raises a recoverable GuidFormatException.
+        boolean rejected = false;
         try {
             Guid bad = Guid.parse("not-a-valid-guid");
             System.stdout.println("  parse(bad)     = " + bad.toString());
         } catch (GuidFormatException e) {
+            rejected = true;
             System.stdout.println("  parse(bad)     -> GuidFormatException (caught)");
         }
+        this.check(rejected, "malformed input raises GuidFormatException");
     }
 }

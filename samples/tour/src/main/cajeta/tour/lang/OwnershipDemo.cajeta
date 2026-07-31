@@ -16,6 +16,7 @@ public class OwnershipDemo extends DemoClass {
         // longer readable — a use here would be CAJETA_ERROR_USE_AFTER_MOVE.
         int32 hypoSq = this.consume(#owner);
         System.stdout.println("  consume(#Point(7,24)).distSq() = " + hypoSq);
+        this.check(hypoSq == 625, "ownership transferred, value computed");
     }
 
     // Helper that takes ownership of `p` (it's destroyed when this

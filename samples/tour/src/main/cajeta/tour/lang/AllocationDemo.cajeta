@@ -15,5 +15,7 @@ public class AllocationDemo extends DemoClass {
         Point onHeap  = heap  Point(5, 12);     // malloc'd; freed by drop chain
         System.stdout.println("  stack Point(3,4).distSq() = " + onStack.distSq());
         System.stdout.println("  heap  Point(5,12).distSq() = " + onHeap.distSq());
+        this.check(onStack.distSq() == 25 && onHeap.distSq() == 169,
+            "same type, same behavior, either storage");
     }
 }
