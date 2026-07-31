@@ -125,6 +125,22 @@ namespace cajeta {
 
         // Bounds check — same shape as class-template instantiation. Each
         // declared bound must hold for the supplied arg.
+        //
+        // wildcardStubBody: set when a BOUNDED parameter receives a wildcard
+        // sentinel — the generic pre-pass of a templated body forwarding its
+        // own (still-unsubstituted) type variable, e.g. `Tensor.add<E>(...)`
+        // inside `class GradTape<E extends Floating>`. The pre-pass needs the
+        // instantiation's SIGNATURE for type flow, but the body cannot compile
+        // at `?` (numeric kernels fail overload resolution on `?` elements) —
+        // and it never needs to: each concrete instantiation re-walks the
+        // templated body under the substitution stack and requests its own
+        // fully-typed instantiation. The wildcard instantiation gets a
+        // throw-stub body below (same shape as the Json failsafe throw-body),
+        // so it registers, codegens, and is loud in the impossible case it is
+        // ever reached at runtime. Before this path existed, bounded-at-
+        // wildcard was a hard instantiation error, so no code depends on such
+        // bodies being real.
+        bool wildcardStubBody = false;
         for (size_t i = 0; i < methodTypeParameters.size(); ++i) {
             const auto& param = methodTypeParameters[i];
             // Parameter-kind check — mirrors the class-level guard in
@@ -148,6 +164,13 @@ namespace cajeta {
                     "CAJETA_ERROR_TYPE_PARAMETER_KIND");
             }
             if (param.bounds.empty()) continue;
+            // An unsubstituted type variable (wildcard sentinel) on a bounded
+            // parameter: defer the bound check (nothing concrete to test) and
+            // flag the instantiation for a stub body — see wildcardStubBody.
+            if (args[i] && args[i]->isWildcard()) {
+                wildcardStubBody = true;
+                continue;
+            }
             auto argClass = std::dynamic_pointer_cast<CajetaClass>(args[i]);
             for (auto& bound : param.bounds) {
                 // Numeric marker bound (Numeric/Floating/Integral/Complex): a
@@ -361,6 +384,22 @@ namespace cajeta {
                                   << ">:\n" << effectiveSource << "\n";
                     }
                 }
+            }
+        }
+
+        // Bounded-at-wildcard pre-pass instantiation: keep the signature,
+        // replace the body with a throw stub (see wildcardStubBody above).
+        // The signature text never contains '{' — the first brace opens the
+        // body. Applied AFTER synthesizer dispatch so a synthesized body is
+        // stubbed the same way (it would fail at `?` identically).
+        if (wildcardStubBody) {
+            auto brace = effectiveSource.find('{');
+            if (brace != std::string::npos) {
+                effectiveSource = effectiveSource.substr(0, brace)
+                    + "{ throw heap Exception(#(\"\" + \"method template '"
+                    + name
+                    + "' instantiated at wildcard (generic pre-pass) — "
+                    + "never executable\")); }";
             }
         }
 

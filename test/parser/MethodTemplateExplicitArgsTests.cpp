@@ -125,3 +125,39 @@ TEST(MethodTemplateExplicitArgsTests, instanceExplicitTypeArg) {
         "}\n";
     EXPECT_EQ(runI32(src), 99);
 }
+
+// A templated CLASS forwarding its own type param into a BOUNDED method
+// template: `Kern.scale2<E>` inside `class Pair<E extends Floating>`. The
+// generic pre-pass instantiates scale2 at the wildcard sentinel — which
+// must register signature-only with a throw-stub body (the bound check
+// defers), while each concrete instantiation (float32, float64) re-walks
+// under substitution and gets a real, correctly-typed body. Regression pin
+// for the CAJETA_ERROR_METHOD_TEMPLATE_BOUND false positive this used to
+// throw ("argument '?' does not satisfy numeric bound").
+TEST(MethodTemplateExplicitArgsTests, classParamForwardsIntoBoundedTemplate) {
+    auto src =
+        "package test;\n"
+        "public final class Kern {\n"
+        "    public static E scale2<E extends Floating>(E v) {\n"
+        "        return v + v;\n"
+        "    }\n"
+        "}\n"
+        "public final class Pair<E extends Floating> {\n"
+        "    E val;\n"
+        "    public Pair(E v) { this.val = v; return; }\n"
+        "    public E doubled() {\n"
+        "        return Kern.scale2<E>(this.val);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Pair<float32> a = heap Pair<float32>(2.5f);\n"
+        "        float32 r = a.doubled();\n"
+        "        Pair<float64> b = heap Pair<float64>(1.25);\n"
+        "        float64 s = b.doubled();\n"
+        "        if (r == 5.0f && s == 2.5) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
