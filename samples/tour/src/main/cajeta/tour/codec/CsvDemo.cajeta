@@ -2,6 +2,7 @@ package tour.codec;
 
 import tour.DemoClass;
 import cajeta.codec.csv.Csv;
+import cajeta.codec.csv.CsvWriter;
 import cajeta.lang.String;
 
 // CSV codec — Tier 1 (`Csv.parse<T>`), the typed bind.
@@ -66,5 +67,37 @@ public class CsvDemo extends DemoClass {
             "rows[1] bound independently (id 8, open false)");
         this.check(rows[1].symbol.equals("GLOBEX"),
             "unmapped venue column projected away, symbol still binds");
+
+        // The WRITE half: CsvWriter emits RFC-4180 — its quoting is the
+        // exact inverse of the reader's, so writer -> parse<T> round-trips.
+        // A symbol containing a comma forces the quoted path.
+        CsvWriter cw = heap CsvWriter();
+        String h0 = "id";
+        String h1 = "price";
+        String h2 = "symbol";
+        String h3 = "open";
+        cw.writeField(h0.toBytes());
+        cw.writeField(h1.toBytes());
+        cw.writeField(h2.toBytes());
+        cw.writeField(h3.toBytes());
+        cw.endRow();
+        String f0 = "9";
+        String f1 = "250.75";
+        String f2 = "ACME, INC";       // embedded comma -> writer must quote
+        String f3 = "true";
+        cw.writeField(f0.toBytes());
+        cw.writeField(f1.toBytes());
+        cw.writeField(f2.toBytes());
+        cw.writeField(f3.toBytes());
+        cw.endRow();
+        int8[] out = cw.toBytes();
+        CsvTrade[] back = Csv.parse<CsvTrade[]>(out, (int64) out.count());
+        System.stdout.println("  CsvWriter round-trip     = id " + back[0].id
+            + ", symbol '" + back[0].symbol + "'");
+        this.check(back.count() == 1L && back[0].id == 9
+            && back[0].price == 250.75 && back[0].open,
+            "writer output parses back through the same schema");
+        this.check(back[0].symbol.equals("ACME, INC"),
+            "embedded comma survived the writer's quoting");
     }
 }

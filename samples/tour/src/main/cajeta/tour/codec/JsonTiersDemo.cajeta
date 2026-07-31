@@ -1,0 +1,98 @@
+package tour.codec;
+
+import tour.DemoClass;
+import cajeta.codec.json.Json;
+import cajeta.codec.json.JsonReader;
+import cajeta.codec.json.JsonWriter;
+import cajeta.codec.json.JsonToken;
+import cajeta.codec.json.JsonValue;
+import cajeta.codec.json.JsonObject;
+import cajeta.codec.json.JsonArray;
+
+// JSON Tiers 2 and 3 — the two surfaces JsonDemo's header points at:
+//
+//   Tier 2: `JsonReader` (pull tokenizer) / `JsonWriter` (fluent emitter).
+//           Streaming, no tree, no per-record allocation — the shape for
+//           long event streams and hand-built responses.
+//   Tier 3: `JsonValue` / `JsonObject` / `JsonArray` — the ad-hoc tree,
+//           for payloads whose shape you don't know at compile time
+//           (config files, webhooks). Slowest tier; reach for it last.
+//
+// Tier 1 (`Json.parse<T>` / `toBytes<T>`) remains the default for typed
+// payloads — JsonDemo covers it; scenario 2 here round-trips a Tier-2
+// write through the Tier-1 parser to prove the tiers agree on the wire.
+
+// support: the Tier-1 target scenario 2 parses the hand-written bytes into.
+public class LatencySummary {
+    public int32 p50;
+    public int32 p95;
+    public boolean healthy;
+}
+
+public class JsonTiersDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- JSON Tiers 2-3 (pull reader, fluent writer, tree) --");
+
+        // 1. Tier-2 pull read: aggregate a latency event stream without
+        //    materializing anything. The token protocol: next() advances
+        //    and returns the token; KEY precedes each value; END closes.
+        String events = "[{\"ms\":12},{\"ms\":45},{\"ms\":30}]";
+        JsonReader r = heap JsonReader(events.toBytes(),
+            (int64) events.byteLength());
+        int32 records = 0;
+        int32 totalMs = 0;
+        JsonToken t = r.next();
+        while (t != JsonToken.END) {
+            if (t == JsonToken.START_OBJECT) {
+                records = records + 1;
+            }
+            if (t == JsonToken.NUMBER) {
+                totalMs = totalMs + r.currentNumberAsInt32();
+            }
+            t = r.next();
+        }
+        System.stdout.println("  Tier-2 read: " + records + " events, "
+            + totalMs + " ms total, zero tree allocations");
+        this.check(records == 3 && totalMs == 87,
+            "pull tokenizer aggregates the stream");
+
+        // 2. Tier-2 fluent write, verified through the Tier-1 parser —
+        //    the writer's bytes are exactly what parse<T> expects.
+        JsonWriter w = heap JsonWriter();
+        w.beginObject()
+         .key("p50").writeNumber((int64) 29)
+         .key("p95").writeNumber((int64) 44)
+         .key("healthy").writeBoolean(true)
+         .endObject();
+        int8[] wire = w.toBytes();
+        LatencySummary s = Json.parse<LatencySummary>(wire,
+            (int64) wire.count());
+        System.stdout.println("  Tier-2 write -> Tier-1 parse: p50=" + s.p50
+            + " p95=" + s.p95 + " healthy=" + s.healthy);
+        this.check(s.p50 == 29 && s.p95 == 44 && s.healthy,
+            "tiers agree on the wire format");
+
+        // 3. Tier-3 tree: an unknown-shape config. readValue() builds the
+        //    JsonValue tree; navigation is by key/index with kind checks —
+        //    the right tool exactly when no class describes the payload.
+        String cfg = "{\"service\":\"api\",\"limits\":{\"rps\":100,"
+            + "\"burst\":250},\"tags\":[\"edge\",\"beta\"]}";
+        JsonReader cr = heap JsonReader(cfg.toBytes(),
+            (int64) cfg.byteLength());
+        JsonValue root = cr.readValue();
+        JsonObject obj = root.asObject();
+        JsonValue limits = obj.get("limits");
+        int32 rps = limits.asObject().get("rps").asInt32();
+        JsonArray tags = obj.get("tags").asArray();
+        String firstTag = tags.get(0).asString();
+        System.stdout.println("  Tier-3 tree: limits.rps=" + rps + ", "
+            + tags.count() + " tags, first=" + firstTag);
+        this.check(root.kind() == JsonValue.OBJECT && obj.containsKey("service"),
+            "tree reports its kind and keys");
+        this.check(rps == 100 && limits.asObject().get("burst").asInt32() == 250,
+            "nested object navigation by key");
+        this.check(tags.count() == 2 && firstTag.equals("edge"),
+            "array access by index");
+    }
+}
