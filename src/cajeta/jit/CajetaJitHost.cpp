@@ -1063,6 +1063,13 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     compiler->setMode(CompilerMode::Debug);
     // Statement-boundary safepoint emission (CP2). Reset the global loc table
     // so this compile's loc_ids start at 0.
+    // The JIT never set a diagnostic format, so every parse used ANTLR's
+    // CONSOLE listener: a syntax error in a debug launch surfaced as raw
+    // `line 37:22 no viable alternative ...` with no file name and no record,
+    // while JsonSyntaxErrorListener — which emits a properly located
+    // diagnostic — was never installed (Julian, 2026-07-31).
+    compiler->getMutableFlags().diagFormat =
+        cajeta::jsonProgressEnabled() ? DiagFormat::Json : DiagFormat::Text;
     compiler->getMutableFlags().debugInfo = opts.debugInfo;
     // Keep the level in step with the bool the JIT host sets directly, so the
     // cache flag set and any level-driven codegen see the same world.
@@ -1088,7 +1095,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                          / ("cajeta_jitrun_" + sourceRoot.filename().string());
     fs::create_directories(archiveRoot, ec);
 
-    cajeta::prescanSourceRoot(sourceRoot.string());
+    // Suppress the prescan's console listener under json: the real parse
+    // reports the same syntax error as a record, and leaving this on
+    // printed the raw ANTLR line a SECOND time.
+    cajeta::prescanSourceRoot(sourceRoot.string(),
+                              cajeta::jsonProgressEnabled());
     endPhase(out.phases.collectSeconds);
 
     // Parse split (7.2.1): the initial stdlib parse is triggered explicitly

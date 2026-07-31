@@ -376,6 +376,33 @@ TEST(DiagFormatJson, JitRunHonoursTheFlagAndEmitsTheEnvelope) {
 }
 
 // jit-run in TEXT mode keeps its narration exactly as it was.
+// A syntax error under jit-run must arrive as a LOCATED diagnostic record,
+// not as ANTLR's raw "line L:col ..." console text. Julian, 2026-07-31: a
+// debug launch of a file with a stray token showed
+// `line 37:22 no viable alternative at input 'asdf...'` twice, with no file
+// name, no structured record, and a launch failure reading "request failed".
+TEST(DiagFormatJson, JitRunSyntaxErrorIsALocatedDiagnosticRecord) {
+    auto root = freshTempDir("jitsyn");
+    auto srcRoot = writeTest(root, "int x = ;");
+    std::string err;
+    int rc = jitRunCapturingStderr(srcRoot, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(err.find("\"code\":\"syntax\""), std::string::npos)
+        << "syntax error never became a diagnostic record; stderr:\n" << err;
+    EXPECT_NE(err.find("\"line\":4"), std::string::npos)
+        << "the diagnostic carries no location; stderr:\n" << err;
+    EXPECT_NE(err.find("Test.cajeta"), std::string::npos)
+        << "the diagnostic names no file; stderr:\n" << err;
+    // ANTLR's console listener must be off: its raw text is what the record
+    // replaces, and leaving both means the stream is not machine-readable.
+    EXPECT_EQ(err.find("no viable alternative"), std::string::npos)
+        << "raw ANTLR console text leaked; stderr:\n" << err;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "free text in the json stream:\n" << err;
+}
+
 // 3.1.2 — a dependency graph that cannot be resolved reports as a levelled
 // record too, not as a bare line the console cannot classify.
 TEST(DiagFormatJson, JitDependencyResolutionFailureIsALevelledLogRecord) {

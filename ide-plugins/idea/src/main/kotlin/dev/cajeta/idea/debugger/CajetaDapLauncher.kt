@@ -17,7 +17,13 @@ class CajetaDapLauncher(
     private val binaryPath: String,
     private val dllDir: String? = null,
 ) {
-    fun command(): List<String> = listOf(binaryPath, "dap")
+    // `--diag-format=json` so the server's stderr is the structured stream
+    // rather than prose. The DAP protocol itself rides STDOUT, so this cannot
+    // disturb it. Without the flag the compiler emits records for nobody:
+    // Julian, 2026-07-31 saw a failed launch report a raw
+    // `line 37:22 no viable alternative ...` twice and "request failed" once,
+    // with no located diagnostic anywhere (compiler-jsonl 5.1.2).
+    fun command(): List<String> = listOf(binaryPath, "dap", "--diag-format=json")
 
     /** PATH for the child: dllDir prepended to [basePath] when set. */
     fun childPath(basePath: String?): String = when {

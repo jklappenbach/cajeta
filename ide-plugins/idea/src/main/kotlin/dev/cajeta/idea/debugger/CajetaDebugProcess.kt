@@ -368,7 +368,11 @@ class CajetaDebugProcess(
         // Silence here is what made a non-stopping run indistinguishable from
         // a broken debugger — Julian, 2026-07-31.
         ds.onBreakpointUnverified = { file, line, message ->
-            processHandler.emitError("cajeta: breakpoint not set — $message\n")
+            // A record, not prose: this shares a console with the compiler's
+            // stream, and a bare line would sit outside every level filter.
+            processHandler.emitError(
+                dev.cajeta.idea.jsonl.PluginNotice.log(
+                    "warn", "cajeta: breakpoint not set — $message"))
             breakpointHandler.find(file, line)?.let { bp ->
                 com.intellij.openapi.application.ApplicationManager.getApplication()
                     .invokeLater(

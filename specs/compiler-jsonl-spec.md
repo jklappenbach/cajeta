@@ -102,7 +102,11 @@ lint-server and plugin-runtime protocols where they overlap.
 ### 3.1 Requirements
 - **3.1.1 `diagnostic`** — the existing payload (`severity`, `code`,
   `message`, `file`, `line`, `column`) gains `kind`. Every existing field keeps
-  its name and meaning (1.4.2).
+  its name and meaning (1.4.2). Every compile path must set a diagnostic
+  format: `buildJit` set none, so every JIT parse used ANTLR's console listener
+  and a syntax error in a debug launch surfaced as raw `line L:col …` text with
+  no file and no record, while the located-diagnostic listener was never
+  installed.
 - **3.1.2 `progress`** — `phase`, `state` (`start`|`finish`), `label`,
   `elapsedMs` on finish. Already this shape; it keeps it.
 - **3.1.3 `cache`** — `state`, `artifact`. Already this shape.
@@ -149,7 +153,10 @@ lint-server and plugin-runtime protocols where they overlap.
 
 ### 5.1 Requirements
 - **5.1.1** `--diag-format=json|text` remains the single switch; text is the
-  default. No new flag (1.5).
+  default. No new flag (1.5). A verb honouring the flag is worth nothing until
+  a CONSUMER sets it: the IDE plugin spawned `cajeta dap` without it, so the
+  stream existed and nobody asked for it. The plugin passes it (DAP itself
+  rides stdout, so the flag cannot disturb the protocol).
 - **5.1.2** The flag means the SAME thing for every verb. It does not today:
   `dispatchJitRun` accepts `--diag-format=json` but only exports
   `CAJETA_DIAG_FORMAT` for the runtime's uncaught-throw emitter, and never
@@ -207,6 +214,12 @@ lint-server and plugin-runtime protocols where they overlap.
   renders `kind`-less third-party JSONL through the field probe (6.1.2).
 - **8.5** Every ad-hoc `std::cerr` narration site listed in §1.2 has a
   structured form under the flag.
+- **8.6** The IDE debug console is one format end to end. Three writers share
+  it and each had to be brought in separately: the compiler's stderr stream,
+  the DAP server's build narration (which travels as `output` EVENTS, not on
+  stderr, and so stayed prose long after the stream was structured), and the
+  plugin's own notices. The debuggee's stdout is excluded by 1.5 and stays as
+  the program wrote it.
 
 ## 9. Decisions (with Julian, 2026-07-31)
 

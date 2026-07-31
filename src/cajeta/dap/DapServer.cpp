@@ -12,6 +12,7 @@
 #endif
 
 #include "cajeta/dap/DapProtocol.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/ValueInspector.h"
 
@@ -29,6 +30,13 @@ Json makeResponse(int seq, int requestSeq, const std::string& command,
     r["request_seq"] = requestSeq;
     r["command"] = command;
     r["success"] = success;
+    // DAP's ErrorResponse puts the human-readable reason in a TOP-LEVEL
+    // `message`, and that is where clients look. We only ever set `body`, so a
+    // failed launch reached the IDE as the generic "request failed" while the
+    // real cause — "compile/JIT failed", a syntax error — sat in a body field
+    // nobody reads (Julian, 2026-07-31). Lift a plain-string body up.
+    if (!success && body.isString() && !body.asString().empty())
+        r["message"] = body.asString();
     r["body"] = std::move(body);
     return r;
 }
@@ -633,6 +641,27 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 line = detail == "cached" ? "cajeta: using cached build\n"
                                           : "cajeta: preparing JIT\n";
             if (line.empty()) return;
+            // This narration reaches the console over the DAP `output` channel,
+            // not over stderr — which is why it stayed prose while everything
+            // on the stream became records (Julian, 2026-07-31: "some output is
+            // in json, not all is"). Keep the DAP event (that is how a client
+            // is meant to receive progress) but carry a RECORD as its text when
+            // the flag is on, so the one console rendering both channels sees
+            // one format. Text mode is untouched.
+            if (cajeta::jsonProgressEnabled()) {
+                while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+                    line.pop_back();
+                Json rec = Json::object();
+                rec["kind"] = std::string("progress");
+                rec["phase"] = phase;
+                rec["state"] = std::string(phase == "jit" ? "finish" : "start");
+                rec["label"] = line;
+                if (total > 0) {
+                    rec["current"] = current;
+                    rec["total"] = total;
+                }
+                line = rec.dump() + "\n";
+            }
             Json body = Json::object();
             body["category"] = "console";
             body["output"] = std::move(line);
@@ -648,7 +677,18 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         if (ok) {
             Json body = Json::object();
             body["category"] = "console";
-            body["output"] = "cajeta: compile finished\n";
+            // Same channel, same rule as the phase narration above: a record
+            // under the flag, the identical line without it.
+            if (cajeta::jsonProgressEnabled()) {
+                Json rec = Json::object();
+                rec["kind"] = std::string("progress");
+                rec["phase"] = std::string("compile");
+                rec["state"] = std::string("finish");
+                rec["label"] = std::string("cajeta: compile finished");
+                body["output"] = rec.dump() + "\n";
+            } else {
+                body["output"] = "cajeta: compile finished\n";
+            }
             emit(makeEvent(seq_++, "output", std::move(body)));
             // The program is compiled, so the loc table now says which
             // breakpoints can actually bind. Downgrade the ones that matched

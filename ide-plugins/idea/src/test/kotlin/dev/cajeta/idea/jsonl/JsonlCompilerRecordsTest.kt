@@ -97,4 +97,30 @@ class JsonlCompilerRecordsTest {
         assertNull(r.level)
         assertEquals(RowTint.NORMAL, JsonlEngine.tintOf(r))
     }
+
+    // The plugin's OWN console lines share the console with the compiler's
+    // stream, so they must share its format too — otherwise one prose line
+    // sits in a column of records and escapes every filter. Julian,
+    // 2026-07-31: "one line not in jsonl".
+    @Test
+    fun pluginNoticesAreRecordsToo() {
+        val line = PluginNotice.log(
+            "warn",
+            "cajeta: breakpoint not set \u2014 no statement compiled at " +
+                "LoggingTour.cajeta:38 \u2014 the program cannot stop here")
+        val r = row(line)
+        assertEquals("log", r.kind)
+        assertEquals("warn", r.level)
+        assertEquals(RowTint.WARN, JsonlEngine.tintOf(r))
+        assertTrue(JsonlEngine.atOrAboveLevel("warn")(r))
+    }
+
+    // A message carrying quotes or backslashes must not produce a line the
+    // console then fails to parse — hand-built JSON is where that goes wrong.
+    @Test
+    fun pluginNoticesEscapeTheirPayload() {
+        val r = row(PluginNotice.log("error", """he said "hi" \ bye"""))
+        assertEquals("error", r.level)
+        assertEquals("""he said "hi" \ bye""", (r.fields["message"] as dev.cajeta.idea.debugger.Json.Str).value)
+    }
 }

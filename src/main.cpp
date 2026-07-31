@@ -299,6 +299,9 @@ int main(int argc, const char* argv[]) {
     // `cajeta dap` — Debug Adapter Protocol server over stdio (docs/
     // Debugging.md). The IDE plugin spawns this and drives the debug session.
     if (argc >= 2 && std::string(argv[1]) == "dap") {
+        // Announce the stream before the server says anything, so its
+        // stderr is a well-formed stream and not records with no version.
+        cajeta::emitStreamRecordOnce();
         cajeta::dap::DapServer server;
         return server.runOverStdio();
     }
