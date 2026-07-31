@@ -6,25 +6,36 @@ import cajeta.math.Tensor;
 import cajeta.math.stats.Stats;
 
 // cajeta.math.stats.Stats — descriptive statistics with numpy's exact
-// bucket semantics:
+// semantics, plus the special functions every test statistic is built from.
 //
+// Buckets and order statistics:
 //   * histogram — equal-width bins over [lo, hi]; out-of-range values drop,
 //     and a value EQUAL to hi lands in the last bin (numpy's closed-right
 //     final edge).
 //   * bincount  — counts of each non-negative integer, length max+1.
 //   * digitize  — out[i] = number of edges <= t[i] (numpy right=False).
-//   * median    — order statistic with linear interpolation.
+//   * median / quantile / percentile — order statistics with numpy's linear
+//     interpolation at q·(n-1).
+//   * cov / corrcoef — (variables, observations) in, unbiased ddof=1
+//     covariance / Pearson correlation out.
 //
-// All counts here are exact integers on a small fixed array.
+// Special functions (float64, 0.12.0): gammaLn, erf/erfc, expit, betainc,
+// normalCdf, tCdf — pinned here against scipy reference values, shown doing
+// their real jobs: log-space factorials, z-test and t-test p-values,
+// logistic probabilities.
 public class StatsDemo extends DemoClass {
     static boolean close(float32 a, float32 b) {
         float32 d = Math.abs(a - b);
         return d < 0.0001f;
     }
 
+    static boolean closeD(float64 a, float64 b, float64 eps) {
+        return Math.abs(a - b) < eps;
+    }
+
     public void execute() {
         System.stdout.println("");
-        System.stdout.println("-- cajeta.math.stats (histogram / bincount / digitize) --");
+        System.stdout.println("-- cajeta.math.stats (buckets, order stats, cov, special fns) --");
 
         // histogram: 7 samples into 4 bins over [0,4]. 0.5 -> bin0;
         // 1.5, 1.7 -> bin1; 2.5 -> bin2; 3.2, 3.9 -> bin3; and 4.0 (== hi)
@@ -80,5 +91,101 @@ public class StatsDemo extends DemoClass {
         Tensor<float32> m = Tensor.of<float32>(md, s5);
         float32 med = Stats.median<float32>(m);
         this.check(close(med, 3.0f), "median([5,1,3,2,4]) == 3");
+
+        // quantile / percentile: the SLO question — "what latency do 95% of
+        // requests beat?" 12 request latencies in ms; p50 is the median by
+        // definition, p95 interpolates at 0.95·(n-1) = position 10.45
+        // between the two slowest-but-one values (numpy linear rule).
+        float32[] lat = [12.0f, 14.0f, 15.0f, 15.0f, 16.0f, 17.0f,
+                         18.0f, 21.0f, 24.0f, 30.0f, 45.0f, 250.0f];
+        int64[] s12 = heap int64[1];
+        s12[0] = 12;
+        Tensor<float32> latency = Tensor.of<float32>(lat, s12);
+        float32 p50 = Stats.percentile<float32>(latency, 50.0f);
+        float32 p95 = Stats.quantile<float32>(latency, 0.95f);
+        System.stdout.println("  latency p50 = " + p50 + " ms, p95 = " + p95
+            + " ms (mean is dragged to "
+            + (Tensor.sum<float32,float32>(latency) / 12.0f)
+            + " by the 250 ms outlier)");
+        this.check(close(p50, Stats.median<float32>(latency)),
+            "percentile(50) == median");
+        // position 10.45: 45 + 0.45 * (250 - 45) = 137.25
+        this.check(close(p95, 137.25f), "p95 interpolates numpy-style");
+
+        // cov / corrcoef: rows are VARIABLES, columns observations (numpy
+        // rowvar=True). Six days of (temperature °C, iced-drink sales):
+        // sales here are exactly 30 + 15·temp, so the correlation must come
+        // out 1.0 and the sales variance 15² times the temperature variance
+        // — the unbiased ddof=1 estimator in both cells.
+        int64[] cs = [2, 6];
+        Tensor<float32> obs = Tensor.zeros<float32>(cs);
+        float32[] temp = [18.0f, 21.0f, 24.0f, 27.0f, 31.0f, 34.0f];
+        int64 i = 0;
+        while (i < 6) {
+            obs.set2(0, i, temp[i]);
+            obs.set2(1, i, 30.0f + 15.0f * temp[i]);
+            i = i + 1;
+        }
+        Tensor<float32> cov = Stats.cov<float32>(obs);
+        Tensor<float32> corr = Stats.corrcoef<float32>(obs);
+        System.stdout.println("  cov(temp,sales) = " + cov.get2(0, 1)
+            + ", corr = " + corr.get2(0, 1));
+        this.check(close(cov.get2(0, 1), cov.get2(1, 0)), "cov is symmetric");
+        this.check(Math.abs(cov.get2(1, 1) - 225.0f * cov.get2(0, 0)) < 0.5f,
+            "var(30 + 15·t) == 15² · var(t)");
+        this.check(close(corr.get2(0, 0), 1.0f) && close(corr.get2(0, 1), 1.0f),
+            "exact linear relation -> Pearson r == 1");
+
+        // Special functions (float64), pinned against scipy.
+        System.stdout.println("  special functions:");
+
+        // gammaLn: factorials overflow fast — 21! already exceeds int64 —
+        // so real code works with ln(n!) = gammaLn(n+1). ln(4!) = ln 24.
+        float64 ln24 = Stats.gammaLn(5.0);
+        System.stdout.println("    gammaLn(5) = " + ln24 + " (ln 24)");
+        this.check(closeD(ln24, 3.1780538303479458, 0.000001),
+            "gammaLn(5) == ln(4!)");
+        this.check(closeD(Stats.gammaLn(0.5), 0.5723649429247001, 0.000001),
+            "gammaLn(1/2) == ln sqrt(pi)");
+
+        // erf / erfc: the Gaussian error integral and its complement —
+        // erfc exists because 1 - erf(x) loses all precision in the tail.
+        this.check(closeD(Stats.erf(1.0), 0.8427007929497149, 0.000001),
+            "erf(1) pinned vs scipy");
+        this.check(closeD(Stats.erf(1.0) + Stats.erfc(1.0), 1.0, 0.0000001),
+            "erf + erfc == 1");
+
+        // expit: the logistic sigmoid 1/(1+e^-x) — a logistic-regression
+        // score of +2 log-odds is an 88% probability.
+        this.check(closeD(Stats.expit(0.0), 0.5, 0.0000001),
+            "expit(0) == 1/2");
+        this.check(closeD(Stats.expit(2.0), 0.8807970779778823, 0.000001),
+            "expit(2) pinned vs scipy");
+        this.check(closeD(Stats.expit(2.0) + Stats.expit(-2.0), 1.0, 0.0000001),
+            "expit symmetry");
+
+        // normalCdf: the z-test. |z| = 1.96 is the classic two-sided 5%
+        // threshold: p = 2·(1 - normalCdf(1.96)) ≈ 0.05.
+        float64 pTwoSided = 2.0 * (1.0 - Stats.normalCdf(1.96));
+        System.stdout.println("    z = 1.96 -> two-sided p = " + pTwoSided);
+        this.check(closeD(Stats.normalCdf(1.96), 0.9750021048517795, 0.000001),
+            "normalCdf(1.96) pinned vs scipy");
+        this.check(closeD(pTwoSided, 0.05, 0.0001), "the 1.96 rule");
+
+        // tCdf: Student's t for small samples. At df=1 it IS the Cauchy
+        // distribution, whose CDF at 1 is exactly 3/4; and as df grows the
+        // t thickens toward the normal from below.
+        this.check(closeD(Stats.tCdf(0.0, 7.0), 0.5, 0.0000001),
+            "tCdf(0, df) == 1/2");
+        this.check(closeD(Stats.tCdf(1.0, 1.0), 0.75, 0.000001),
+            "tCdf(1, df=1) == Cauchy CDF == 3/4");
+        this.check(Stats.tCdf(1.96, 8.0) < Stats.normalCdf(1.96),
+            "small-sample t has fatter tails than the normal");
+
+        // betainc: the regularized incomplete beta — the machinery under
+        // both the t CDF and binomial tail probabilities. I_0.5(2,3) is
+        // exactly 11/16.
+        this.check(closeD(Stats.betainc(2.0, 3.0, 0.5), 0.6875, 0.000001),
+            "betainc(2,3,1/2) == 11/16 exactly");
     }
 }

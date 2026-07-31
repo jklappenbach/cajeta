@@ -7,12 +7,23 @@ import cajeta.math.linalg.LinAlg;
 
 // cajeta.math.linalg.LinAlg — factorizations and solvers, NATIVE cajeta over
 // the Tensor core (no foreign BLAS/LAPACK). Matrices are 2-D row-major
-// Tensor<E> with E Floating. This demo verifies each factorization by its
+// Tensor<E> with E Floating. This demo verifies each routine by its
 // defining property on a tiny matrix:
 //
 //   * solve/det — Gaussian elimination with partial pivoting.
-//   * lu        — A == P.L.U (L unit lower, U upper, P a permutation).
+//   * lu        — A == P.L.U (L unit lower, U upper, P a permutation);
+//                 luSolve reuses the factors.
 //   * qr        — A == Q.R with Q's columns orthonormal (Qt.Q == I).
+//   * cholesky/choSolve — L.Lt == A for SPD A; factor once, solve many.
+//   * solveTriangular   — the substitution primitive under all of the above.
+//   * lstsq     — least-squares regression (Householder QR; the sklearn
+//                 LinearRegression path), with exact hand-checkable shifts.
+//   * svd       — A == U.diag(S).Vt, S descending; feeds pinv, matrixRank,
+//                 cond.
+//   * eigh      — A.V == V.diag(w) for symmetric A, ascending w.
+//   * eigvals   — general (non-symmetric) eigenvalues, interleaved complex.
+//   * slogdet   — log-space determinant where det itself overflows.
+//   * norms     — normFro / norm1 / normInf and the vector p-norms.
 //
 // Reconstruction uses Tensor.matmul and an elementwise tolerance sweep.
 public class LinAlgDemo extends DemoClass {
@@ -86,5 +97,168 @@ public class LinAlgDemo extends DemoClass {
         Tensor<float32> ai = LinAlg.inv<float32>(a);
         Tensor<float32> aai = Tensor.matmul<float32>(a, ai);
         this.check(sameMatrix(aai, eye), "inv: A.inv(A) == I");
+
+        // Cholesky: for a symmetric positive-definite A (every covariance
+        // and normal-equations matrix), L.Lt == A at HALF the cost of LU —
+        // and choSolve reuses the factor: factor once, solve many.
+        float32[] spdD = [4.0f, 2.0f, 2.0f, 3.0f];
+        Tensor<float32> spd = Tensor.of<float32>(spdD, s22);
+        Tensor<float32> l = LinAlg.cholesky<float32>(spd);
+        Tensor<float32> ltV = l.transpose();
+        Tensor<float32> lt = ltV.copy();
+        this.check(sameMatrix(Tensor.matmul<float32>(l, lt), spd),
+            "cholesky: L.Lt reconstructs SPD A");
+        this.check(close(l.get2(0, 1), 0.0f), "cholesky: L is lower-triangular");
+        Tensor<float32> xc = LinAlg.choSolve<float32>(l, b);
+        Tensor<float32> xg = LinAlg.solve<float32>(spd, b);
+        this.check(close(xc.get1(0), xg.get1(0)) && close(xc.get1(1), xg.get1(1)),
+            "choSolve(L, b) == solve(A, b)");
+
+        // luSolve: same reuse story for a general A — the [P, L, U] bag from
+        // lu() solves fresh right-hand sides without re-factoring.
+        Tensor<float32> xl = LinAlg.luSolve<float32>(plu[0], plu[1], plu[2], b);
+        this.check(close(xl.get1(0), 2.0f) && close(xl.get1(1), 3.0f),
+            "luSolve(P,L,U, b) == solve(A, b)");
+
+        // solveTriangular: the substitution primitive itself. Forward-solve
+        // [[2,0],[1,3]]·x = [4, 11]: x0 = 2, then x1 = (11 - 1·2)/3 = 3.
+        float32[] ltriD = [2.0f, 0.0f, 1.0f, 3.0f];
+        Tensor<float32> ltri = Tensor.of<float32>(ltriD, s22);
+        float32[] tb = [4.0f, 11.0f];
+        Tensor<float32> tbT = Tensor.of<float32>(tb, s2);
+        Tensor<float32> xt = LinAlg.solveTriangular<float32>(ltri, tbT, true, false, false);
+        this.check(close(xt.get1(0), 2.0f) && close(xt.get1(1), 3.0f),
+            "solveTriangular forward-substitutes");
+
+        // lstsq: least-squares regression — fit a sensor-calibration line
+        // through 5 readings. On the exact line y = 1 + 2x the recovery is
+        // exact; perturb the last reading by +0.5 and the QR solution moves
+        // by the textbook amounts (slope +0.5·(x4-x̄)/Σ(x-x̄)² = +0.1,
+        // intercept -0.1) — hand-checkable, no tolerance fudging.
+        int64[] s52 = heap int64[2];
+        s52[0] = 5;
+        s52[1] = 2;
+        Tensor<float32> design = Tensor.zeros<float32>(s52);
+        int64[] s5v = heap int64[1];
+        s5v[0] = 5;
+        Tensor<float32> ys = Tensor.zeros<float32>(s5v);
+        int64 ri = 0;
+        while (ri < 5) {
+            design.set2(ri, 0, 1.0f);                    // intercept column
+            design.set2(ri, 1, (float32) ri);            // reading
+            ys.set1(ri, 1.0f + 2.0f * (float32) ri);     // exact line
+            ri = ri + 1;
+        }
+        Tensor<float32> coefExact = LinAlg.lstsq<float32>(design, ys);
+        this.check(close(coefExact.get1(0), 1.0f) && close(coefExact.get1(1), 2.0f),
+            "lstsq recovers the exact line");
+        ys.set1(4, 9.5f);                                // one drifted reading
+        Tensor<float32> coefNoisy = LinAlg.lstsq<float32>(design, ys);
+        System.stdout.println("  lstsq with one +0.5 outlier: intercept "
+            + coefNoisy.get1(0) + ", slope " + coefNoisy.get1(1)
+            + "   (expect 0.9, 2.1)");
+        this.check(close(coefNoisy.get1(0), 0.9f) && close(coefNoisy.get1(1), 2.1f),
+            "lstsq shifts by the textbook amounts");
+
+        // svd: A == U.diag(S).Vt with S descending. [[3,0],[4,5]] has
+        // AtA eigenvalues {45, 5}, so the singular values are their roots.
+        float32[] svdD = [3.0f, 0.0f, 4.0f, 5.0f];
+        Tensor<float32> sm = Tensor.of<float32>(svdD, s22);
+        Tensor<float32>[] usv = LinAlg.svd<float32>(sm);
+        this.check(close(usv[1].get1(0), 6.7082f) && close(usv[1].get1(1), 2.2361f),
+            "svd: singular values sqrt(45), sqrt(5), descending");
+        Tensor<float32> sdiag = Tensor.zeros<float32>(s22);
+        sdiag.set2(0, 0, usv[1].get1(0));
+        sdiag.set2(1, 1, usv[1].get1(1));
+        Tensor<float32> us = Tensor.matmul<float32>(usv[0], sdiag);
+        this.check(sameMatrix(Tensor.matmul<float32>(us, usv[2]), sm),
+            "svd: U.diag(S).Vt reconstructs A");
+
+        // rank / cond / pinv ride the svd. A rank-deficient matrix gets
+        // rank 1 and still a usable pseudo-inverse: A.A+.A == A is the
+        // Moore-Penrose property that survives singularity.
+        this.check(LinAlg.matrixRank<float32>(sm) == 2, "full rank == 2");
+        float32[] defD = [1.0f, 2.0f, 2.0f, 4.0f];
+        Tensor<float32> def = Tensor.of<float32>(defD, s22);
+        this.check(LinAlg.matrixRank<float32>(def) == 1,
+            "matrixRank sees the dependent row");
+        Tensor<float32> dp = LinAlg.pinv<float32>(def);
+        Tensor<float32> ada = Tensor.matmul<float32>(
+            Tensor.matmul<float32>(def, dp), def);
+        this.check(sameMatrix(ada, def), "pinv: A.A+.A == A despite rank 1");
+        this.check(close(LinAlg.cond<float32>(eye), 1.0f),
+            "cond(I) == 1 (perfectly conditioned)");
+        float32[] illD = [1.0f, 0.0f, 0.0f, 0.001f];
+        Tensor<float32> ill = Tensor.of<float32>(illD, s22);
+        this.check(Math.abs(LinAlg.cond<float32>(ill) - 1000.0f) < 1.0f,
+            "cond(diag(1, 0.001)) == 1000 (ill-conditioned)");
+
+        // eigh: symmetric eigendecomposition, ascending eigenvalues.
+        // [[2,1],[1,2]] -> w = [1, 3]; check the definition A.v_k == w_k.v_k.
+        float32[] symD = [2.0f, 1.0f, 1.0f, 2.0f];
+        Tensor<float32> sym = Tensor.of<float32>(symD, s22);
+        Tensor<float32>[] wv = LinAlg.eigh<float32>(sym);
+        this.check(close(wv[0].get1(0), 1.0f) && close(wv[0].get1(1), 3.0f),
+            "eigh: eigenvalues [1, 3], ascending");
+        Tensor<float32> av = Tensor.matmul<float32>(sym, wv[1]);
+        boolean eigOk = true;
+        int64 kk = 0;
+        while (kk < 2) {
+            int64 rr = 0;
+            while (rr < 2) {
+                if (!close(av.get2(rr, kk), wv[0].get1(kk) * wv[1].get2(rr, kk))) {
+                    eigOk = false;
+                }
+                rr = rr + 1;
+            }
+            kk = kk + 1;
+        }
+        this.check(eigOk, "eigh: A.v_k == w_k.v_k column by column");
+
+        // eigvals: GENERAL (non-symmetric) eigenvalues as interleaved
+        // complex float64. A rotation matrix has no real eigenvalues at all
+        // — eigvals reports the conjugate pair ±i.
+        float64[] rotD = [0.0, -1.0, 1.0, 0.0];
+        int64[] s22d = heap int64[2];
+        s22d[0] = 2;
+        s22d[1] = 2;
+        Tensor<float64> rot = Tensor.of<float64>(rotD, s22d);
+        Tensor<float64> ev = LinAlg.eigvals(rot);
+        boolean realsZero = Math.abs(ev.get1(0)) < 0.000001
+            && Math.abs(ev.get1(2)) < 0.000001;
+        float64 imSum = ev.get1(1) + ev.get1(3);
+        float64 imAbs = Math.abs(ev.get1(1));
+        this.check(realsZero && Math.abs(imSum) < 0.000001
+            && Math.abs(imAbs - 1.0) < 0.000001,
+            "eigvals(rotation) == the conjugate pair +/- i");
+
+        // slogdet: the determinant in log space. det(diag(1e20, 1e20))
+        // overflows float32 to inf, but sign + log|det| stay exact —
+        // the form every log-likelihood actually needs.
+        float32[] bigD = [1.0e20f, 0.0f, 0.0f, 1.0e20f];
+        Tensor<float32> big = Tensor.of<float32>(bigD, s22);
+        Tensor<float32> sld = LinAlg.slogdet<float32>(big);
+        System.stdout.println("  det(diag(1e20,1e20)) overflows to "
+            + LinAlg.det<float32>(big) + "; slogdet = [" + sld.get1(0)
+            + ", " + sld.get1(1) + "]");
+        this.check(close(sld.get1(0), 1.0f)
+            && Math.abs(sld.get1(1) - 92.1034f) < 0.01f,
+            "slogdet == [1, 40·ln(10)] where det is inf");
+
+        // Norms: Frobenius (all elements), 1-norm (max column sum),
+        // inf-norm (max row sum); vector p-norms on a 3-4-5 triangle.
+        float32[] nmD = [3.0f, 4.0f, 0.0f, 0.0f];
+        Tensor<float32> nm = Tensor.of<float32>(nmD, s22);
+        this.check(close(LinAlg.normFro<float32>(nm), 5.0f), "normFro == 5");
+        this.check(close(LinAlg.norm1<float32>(nm), 4.0f),
+            "norm1 == max column abs sum");
+        this.check(close(LinAlg.normInf<float32>(nm), 7.0f),
+            "normInf == max row abs sum");
+        float32[] vD = [3.0f, -4.0f];
+        Tensor<float32> vec = Tensor.of<float32>(vD, s2);
+        this.check(close(LinAlg.normVec<float32>(vec, 2.0f), 5.0f)
+            && close(LinAlg.normVec<float32>(vec, 1.0f), 7.0f)
+            && close(LinAlg.normInfVec<float32>(vec), 4.0f),
+            "vector p-norms: ||.||2 = 5, ||.||1 = 7, ||.||inf = 4");
     }
 }
