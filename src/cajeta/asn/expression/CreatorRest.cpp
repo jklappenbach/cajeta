@@ -45,6 +45,29 @@ namespace cajeta {
         if (!targetType) {
             return nullptr;
         }
+        // placeholder-owned-field defect (table-fit §2's discipline extended
+        // to codegen): CONSTRUCTION must never build against an unfilled
+        // placeholder — its getLlvmType() is a bare `ptr`, so the alloc
+        // size, instance layout, ctor set, and drop symbol all come out
+        // wrong (malformed IR; the AOT flavor called a garbage pointer).
+        // Materialize the declaring user module on demand — the placeholder
+        // fills in place (same shared_ptr) — and fail LOUDLY if it cannot.
+        if (auto phk = dynamic_pointer_cast<CajetaClass>(targetType)) {
+            if (phk->isPlaceholder() && phk->getQName()
+                    && CajetaModule::userMaterializeHook) {
+                CajetaModule::userMaterializeHook(
+                    phk->getQName()->toCanonical());
+            }
+            if (phk->isPlaceholder()) {
+                throw Exception(
+                    "cannot construct '"
+                        + (phk->getQName() ? phk->getQName()->toCanonical()
+                                           : std::string("<unknown>"))
+                        + "': its declaration has not been compiled "
+                          "(unresolved placeholder)",
+                    "CAJETA_ERROR_UNRESOLVED_PLACEHOLDER");
+            }
+        }
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
         llvm::Type* structTy = targetType->getLlvmType();

@@ -5436,6 +5436,17 @@ namespace cajeta {
             bool isConstructor, bool floatingParams,
             const vector<CajetaTypePtr>& explicitMethodTypeArgs,
             CajetaModulePtr activeModule) {
+        // placeholder-owned-field defect: resolving against an UNFILLED
+        // placeholder's (empty) method set fabricates a phantom
+        // declaration whose symbol never materializes ("Symbols not
+        // found: test.X::X(...)" / missing drop thunks downstream).
+        // Materialize the declaring user module first — the placeholder
+        // fills in place (same shared_ptr) and resolution proceeds
+        // against the real members. No-op for stdlib/synthetic names
+        // (no recorded source path) and outside a Compiler (null hook).
+        if (isPlaceholder() && getQName() && CajetaModule::userMaterializeHook) {
+            CajetaModule::userMaterializeHook(getQName()->toCanonical());
+        }
         MethodPtr resolved = resolveMethodImpl(methodName, parameters, isConstructor,
                                                floatingParams, explicitMethodTypeArgs,
                                                activeModule);

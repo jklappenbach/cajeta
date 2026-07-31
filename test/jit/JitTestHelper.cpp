@@ -19,6 +19,7 @@
 #include "cajeta/buildtool/PrimeCache.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/StdlibReuseCore.h"
+#include "cajeta/compile/DropBackfill.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/type/CajetaType.h"
@@ -950,6 +951,24 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     // OverrideFromSrc workaround). The Linker resolves each extern
     // decl to the single definition it finds across all donors.
     auto modulesList = compiler->getModules();
+    // jit-drop-backfill parity (spec §2/§3, the buildJit pipeline's exact
+    // pair): synthesize any drop thunks left as bare extern declarations
+    // (a consumer codegen'd before the owner's module existed), then
+    // promote every drop-thunk definition off linkonce_odr so the
+    // in-process linkModules merge below can't lazy-discard one that no
+    // already-linked module references yet. Without the pin, a multi-file
+    // test whose owner module links after its consumer loses the thunk —
+    // "Symbols not found: __cajeta_<type>_drop" at LLJIT materialization
+    // (PlaceholderOwnedFieldTests pins the shape).
+    {
+        std::vector<cajeta::CajetaModulePtr> scanModules(modulesList.begin(),
+                                                         modulesList.end());
+        if (reuseStdlib && stdlibCache.stdlibModule) {
+            scanModules.push_back(stdlibCache.stdlibModule);
+        }
+        cajeta::backfillDropFunctions(scanModules, scanModules);
+        cajeta::pinDropFunctionDefinitions(scanModules);
+    }
     for (auto& m : modulesList) {
         if (m == primary) continue;
         std::unique_ptr<llvm::Module> donor(m->getLlvmModule());

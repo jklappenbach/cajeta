@@ -1382,10 +1382,23 @@ namespace cajeta {
         // happens on the same shared_ptr (visitClassDeclaration's placeholder
         // reuse), so the caller's reference upgrades in place.
         std::string path = CajetaType::lookupArchiveSourcePath(canonical);
-        if (path.empty()) return false;          // not an on-disk user class
+        const bool dbg = getenv("CAJETA_DBG_MATERIALIZE") != nullptr;
+        if (path.empty()) {
+            if (dbg) {
+                std::cerr << "[materialize-user] " << canonical
+                          << ": no recorded source path — skip\n";
+            }
+            return false;                        // not an on-disk user class
+        }
         std::string normPath =
             std::filesystem::path(path).lexically_normal().string();
-        if (materializedSourcePaths.count(normPath)) return false; // already done
+        if (materializedSourcePaths.count(normPath)) {
+            if (dbg) {
+                std::cerr << "[materialize-user] " << canonical
+                          << ": already materialized — skip\n";
+            }
+            return false;
+        }
         // Cycle guard: two records whose Tables reference each other degrade
         // to the placeholder behavior instead of recursing forever.
         if (!materializeInFlight.insert(normPath).second) return false;
