@@ -2,6 +2,7 @@ package dev.cajeta.idea.debugger
 
 import com.intellij.execution.configuration.EnvironmentVariablesComponent
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBCheckBox
@@ -61,6 +62,22 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
         stopOnEntryCheck.isSelected = configuration.stopOnEntry
         environmentComponent.envs = configuration.envVars
         environmentComponent.isPassParentEnvs = configuration.inheritSystemEnv
+
+        // Paint the manifest's declared entry methods SYNCHRONOUSLY, here on
+        // the EDT, before the dialog is shown (3.2.8). Everything published
+        // from a background thread goes through invokeLater, which is DEFERRED
+        // while a modal dialog is open — the Run/Debug Configurations dialog is
+        // modal, so those updates only landed after it closed, which is why the
+        // dropdown was empty on first open and populated on reopen (Julian,
+        // 2026-07-30). One small file read; the wider scan stays async.
+        val declared = runCatching {
+            EntryMethodCandidates.declaredFromRootManifest(configuration.project)
+        }.getOrDefault(emptyList())
+        if (declared.isNotEmpty()) {
+            publish(declared)
+            entryMethodHint.text = declaredHintFor(declared.size, 0)
+        }
+
         loadCandidates(configuration)
     }
 
@@ -90,14 +107,14 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
                 val declared = runCatching { EntryMethodCandidates.declaredForProject(project) }
                     .getOrDefault(emptyList())
                 if (declared.isNotEmpty()) {
-                    ApplicationManager.getApplication().invokeLater { publish(declared) }
+                    onUi { publish(declared) }
                 }
             }
 
             // Phase 2 — merge in what the index discovered.
             val result = runCatching { EntryMethodCandidates.forProject(project) }
                 .getOrNull()
-            ApplicationManager.getApplication().invokeLater {
+            onUi {
                 if (result != null) publish(result.candidates)
                 if (EntryMethodCandidates.needsRetry(result, attempt)) {
                     entryMethodHint.text = "Scanning for entry methods…"
@@ -117,6 +134,17 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
     }
 
     /**
+     * Run [block] on the EDT with `ModalityState.any()`. The default modality
+     * for an `invokeLater` issued from a pooled thread is NON_MODAL, and those
+     * runnables DO NOT RUN while a modal dialog is open — this editor lives in
+     * the modal Run/Debug Configurations dialog, so a default `invokeLater`
+     * silently waits for the dialog to close (3.2.8). Only Swing state is
+     * touched here, which is what `any()` permits.
+     */
+    private fun onUi(block: () -> Unit) =
+        ApplicationManager.getApplication().invokeLater(block, ModalityState.any())
+
+    /**
      * Swap the dropdown's offers on the EDT, preserving whatever is typed —
      * an in-flight edit must not be clobbered when candidates arrive. With the
      * field still empty, preselect the first DECLARED candidate so a manifest
@@ -132,14 +160,14 @@ class CajetaRunConfigurationEditor : SettingsEditor<CajetaRunConfiguration>() {
     }
 
     /** Marks which offers are the project's own declarations (spec 2.1.4). */
-    private fun declaredHint(result: EntryMethodCandidates.Result): String {
-        val declared = result.candidates.count { it.declared }
-        val found = result.candidates.size - declared
-        return buildString {
-            if (declared > 0) append("$declared declared in cajeta.json")
-            if (declared > 0 && found > 0) append(", ")
-            if (found > 0) append("$found found in index")
-        }
+    private fun declaredHint(result: EntryMethodCandidates.Result): String =
+        declaredHintFor(result.candidates.count { it.declared },
+                        result.candidates.count { !it.declared })
+
+    private fun declaredHintFor(declared: Int, found: Int): String = buildString {
+        if (declared > 0) append("$declared declared in cajeta.json")
+        if (declared > 0 && found > 0) append(", ")
+        if (found > 0) append("$found found in index")
     }
 
     override fun applyEditorTo(configuration: CajetaRunConfiguration) {

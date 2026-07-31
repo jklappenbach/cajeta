@@ -142,6 +142,17 @@ object EntryMethodCandidates {
         declaredCandidates(manifestsFor(project))
 
     /**
+     * The project's OWN manifest only — ONE small file read, cheap enough to
+     * run on the EDT inside [SettingsEditor.resetEditorFrom]. That matters:
+     * everything published from a background thread lands via `invokeLater`,
+     * which is deferred while a modal dialog is open, so the Run/Debug
+     * Configurations dialog would show an empty dropdown no matter how fast
+     * the background scan was (3.2.8).
+     */
+    fun declaredFromRootManifest(project: Project): List<Candidate> =
+        declaredCandidates(listOf(CajetaManifest.buildSettings(project)))
+
+    /**
      * Gather the inputs for [project] and merge. Touches the index, so call it
      * off the EDT (3.2.5).
      */
