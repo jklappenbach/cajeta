@@ -51,12 +51,77 @@ hang, not an occasional flake.
   correct (deadline-bounded poll; listener close wakes the accept fiber); this
   spec targets the runtime's scheduler/timer wakeup path.
 
+## 1b. Root cause (found 2026-07-31)
+
+**Closing a descriptor never wakes the fibers parked on it.**
+
+`__cajeta_io_wait` (runtime/native/cajeta_rt_concurrent_exec.c) registers a
+waiter, arms `epoll_ctl(ADD, fd, …|EPOLLONESHOT)`, and parks the fiber on
+`__cajeta_parked_head`. The only thing that republishes it is the reactor
+thread matching an epoll event for that fd.
+
+`__cajeta_net_close` (runtime/native/cajeta_net_socket.c) was a bare
+`close(fd)`. On Linux, closing the last reference to an open file description
+removes it from every epoll interest list **silently** — epoll(7) Q6/A6 — so
+no event is ever delivered for it. The parked fiber is therefore never
+published: it stays on `parked_head` forever, the pool drains empty, no timer
+is armed, and every awaiter of that fiber's task blocks permanently. That is
+exactly the captured signature.
+
+The failure is deterministic, which is why it presented at server teardown:
+`Server.shutdown()` closes the listener while the accept fiber is parked on
+listener-readability, then joins that fiber. `cajeta.io.net.Server.serve()`
+is written against the opposite promise — its own doc says *"when shutdown
+closes the listener, the parked acceptAsync unblocks with a NetException"* —
+so the library was relying on a runtime guarantee that did not exist.
+
+**Why it ever appeared to work, and why it looked load-dependent.** The
+reactor matches waiters by **fd number**:
+`if ((*p)->fd == fd) { … publish … }`. Once the listener's fd is closed its
+number is free for reuse; if a later socket happened to be assigned that same
+number and then produced an event, the stale waiter matched and the accept
+fiber was published *by accident*. Runs with heavy connection churn recycled
+descriptors often enough to unwedge themselves; a quiet teardown never did.
+Load did not widen a race — it supplied the accidental rescue. (That aliasing
+is a latent correctness bug in its own right: a recycled descriptor could
+deliver a wakeup to a fiber that never asked for it.)
+
+## 1c. Fix
+
+`__cajeta_io_close_wake(int32_t fd)`, called from `__cajeta_net_close` (and
+`__cajeta_fd_close`) **before** the `close(2)`. Under `task_mutex` it drops
+the epoll registration while the descriptor is still valid, detaches every
+waiter for that fd, and publishes their fibers with the same protocol the
+reactor's ready path uses (`fired = 1`; free only heap-owned waiters). A woken
+fiber retries its accept/read, gets `EBADF`, and the library maps that to the
+`NetException` its accept loop already expects. Detaching the waiters also
+closes the fd-number aliasing window.
+
+Measured on the cajeta-http tour, idle box, same binary shape as the repro:
+
+| | before | after |
+|---|---|---|
+| runs completing | 0 of 6 | 19 of 20 |
+
+## 1d. Residual (separate bug, still open)
+
+~5% of runs still wedge, also at a teardown. This is NOT the close path: the
+carrier sleep uses `pthread_cond_timedwait` with a 50 ms backstop, so a missed
+*deque* signal self-heals, which means the residual fiber is parked with **no
+wakeup source armed at all** (no timer in the timer thread, no live fd
+registration). The likely shape is a server connection fiber parked on an
+untimed read against a client socket that is never closed — the peer is an
+in-process fiber whose pooled connection is dropped rather than closed, so no
+EOF is ever delivered and no deadline exists to rescue it. Needs its own
+investigation; the 20x improvement above should not be read as a full fix.
+
 ## 2. Acceptance
 
 - 2.1 A stress harness (fiber park/wake churn under synthetic CPU contention)
-  reproduces the wedge, then runs clean after the fix.
-- 2.2 The cajeta-http tour loops ≥100 runs hang-free under the same synthetic
-  load.
+  reproduces the wedge, then runs clean after the fix. — PARTIAL: the close
+  path is fixed and measured (§1c); no synthetic harness written yet.
+- 2.2 The cajeta-http tour loops ≥100 runs hang-free. — NOT MET: 19/20 after
+  the close fix; the §1d residual still wedges ~5% of runs.
 - 2.3 The gdb signature (empty run queue + timerless timer thread + waiting
   awaiter) is impossible by construction: any parked fiber is always either
   queued, timed, or registered with the reactor.

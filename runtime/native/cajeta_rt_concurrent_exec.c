@@ -1886,11 +1886,74 @@ int64_t __cajeta_eventfd_consume(int32_t fd) {
     return (n == (ssize_t) sizeof(buf)) ? (int64_t) buf : -1;
 }
 
+// Wake every fiber parked on `fd` because the descriptor is about to be
+// CLOSED. Must be called BEFORE the close(2).
+//
+// WHY THIS EXISTS (the lost-wakeup hang): closing a descriptor removes it
+// from the epoll interest list SILENTLY — the kernel delivers no event for
+// it (epoll(7) Q6/A6). A fiber parked in __cajeta_io_wait on that fd was
+// therefore never published: it sat on __cajeta_parked_head forever, the
+// run queue drained empty, no timer was armed, and every awaiter of that
+// fiber's task blocked permanently. The observed shape was a server
+// `shutdown()` (which closes the listener) followed by `await serveFiber`:
+// the accept fiber parked on listener-readability never came back, so the
+// join never completed. cajeta.io.net.Server.serve() is written against the
+// opposite promise — "when shutdown closes the listener, the parked
+// acceptAsync unblocks with a NetException" — which only held by accident,
+// when the freed fd NUMBER was recycled by another socket whose event
+// matched the stale waiter (the reactor matches waiters by fd number). That
+// accident is also why the hang looked load-dependent and intermittent.
+//
+// Publishing the waiters here restores the documented contract: the fiber
+// resumes, retries its accept/read on a now-closed fd, gets EBADF, and the
+// library turns that into the expected NetException. Detaching them also
+// closes the fd-number aliasing window, so a recycled descriptor can no
+// longer deliver a stale fiber a wakeup that was never meant for it.
+void __cajeta_io_close_wake(int32_t fd) {
+    if (fd < 0) return;
+    struct cajeta_fiber* to_publish = NULL;
+    pthread_mutex_lock(&__cajeta_task_mutex);
+    if (__cajeta_reactor_started) {
+        // Drop the registration while the descriptor is still valid; after
+        // close(2) this would fail with EBADF and leave nothing behind
+        // anyway, but doing it here keeps the interest list exact.
+        epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, fd, NULL);
+    }
+    struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
+    while (*p) {
+        struct cajeta_io_waiter* w = *p;
+        if (w->fd == fd) {
+            *p = w->next;
+            // Same protocol the reactor's ready path uses: mark fired so a
+            // stack-owned (timed) waiter's fiber can tell it was woken, and
+            // only free the heap-owned ones.
+            w->fired = 1;
+            if (__cajeta_parked_remove_locked(w->fiber)) {
+                w->fiber->next = to_publish;
+                to_publish = w->fiber;
+            }
+            if (!w->stack_owned) free(w);
+        } else {
+            p = &w->next;
+        }
+    }
+    pthread_mutex_unlock(&__cajeta_task_mutex);
+    while (to_publish) {
+        struct cajeta_fiber* next = to_publish->next;
+        __cajeta_publish_ready(to_publish);
+        to_publish = next;
+    }
+}
+
 int32_t __cajeta_fd_close(int32_t fd) {
+    __cajeta_io_close_wake(fd);
     return close(fd);
 }
 
 #else /* !__linux__ */
+
+void __cajeta_io_close_wake(int32_t fd) { (void) fd; }
+
 
 int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     (void) fd; (void) events;

@@ -421,10 +421,21 @@ int64_t __cajeta_net_recvfrom(int32_t fd, void* buf, int64_t len, int32_t flags,
     return (int64_t) n;
 }
 
+// Wake any fiber parked on this descriptor in the I/O reactor before the
+// descriptor goes away (defined in cajeta_rt_concurrent_exec.c; a no-op off
+// Linux). Closing an fd removes it from the epoll interest list without
+// delivering an event, so without this a parked fiber is never resumed —
+// the shutdown-and-await hang. See the comment on the definition.
+extern void __cajeta_io_close_wake(int32_t fd);
+
 // Close the socket. Idempotent at the cajeta layer (it nulls its fd field).
 // Returns 0 / -1.
 int32_t __cajeta_net_close(int32_t fd) {
     if (fd < 0) return 0;   // already closed — no-op success
+    // Order matters: publish the waiters while `fd` is still valid, then
+    // close. A fiber woken this way retries its I/O, gets EBADF, and the
+    // library maps that to the NetException its accept loop expects.
+    __cajeta_io_close_wake(fd);
     int r = cajeta_closesocket(cajeta_net_from_fd(fd));
     return r == CAJETA_SOCKET_ERROR ? -1 : 0;
 }
