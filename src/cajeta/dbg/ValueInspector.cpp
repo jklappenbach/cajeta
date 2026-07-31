@@ -44,6 +44,18 @@ ValueInspector::ValueInspector(const llvm::DataLayout& dl,
                                const ResolvedTypeSymbols* symbols)
     : dl_(dl), table_(table), symbols_(symbols) {}
 
+namespace {
+// Could this word be a real heap/stack instance pointer? Rejects the null
+// page (0x2 and friends) and misaligned words. Not a proof of validity — no
+// portable probe is — but it turns the common "slot held data, not a pointer"
+// case from a fatal fault into a declared-type fallback row.
+bool plausibleInstance(const void* p) {
+    auto v = reinterpret_cast<uintptr_t>(p);
+    constexpr uintptr_t kNullPage = 0x10000;   // first 64K is never mapped
+    return v >= kNullPage && (v % alignof(void*)) == 0;
+}
+} // namespace
+
 // The one narrowing seam (§2.1.3/2.1.5). Applies only to Pointer-storage
 // object/collection rows: value types have no vtable word and their declared
 // type is exact; leaves (String included) never narrow. The slot deref is the
@@ -61,6 +73,17 @@ ValueInspector::resolveObject(const std::string& declared, void* addr) {
 
     out.inst = out.rec->isValueType ? addr : *reinterpret_cast<void**>(addr);
     if (!out.inst || out.rec->isValueType || !symbols_) return out;
+    // The word we just read is DATA, not a vouched pointer: an uninitialized
+    // slot, a mis-typed row, or a field whose recorded layout does not match
+    // the object yields garbage, and dereferencing it took the whole debug
+    // server down with a SIGSEGV (fault addr 0x2, Julian 2026-07-30, expanding
+    // a dependency-typed value). Refuse to deref anything that cannot be a
+    // real instance; the row then renders under its declared type, which is
+    // exactly the documented silent-fallback behavior (§2.1.4).
+    if (!plausibleInstance(out.inst)) {
+        out.inst = nullptr;
+        return out;
+    }
 
     uint64_t slot0 = *reinterpret_cast<uint64_t*>(out.inst);
     auto it = symbols_->vtableByAddr.find(slot0);
