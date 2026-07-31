@@ -52,6 +52,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
 | [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
+| [typeparam-cast-of-paren](typeparam-cast-of-paren-spec.md) | — (defect; `(E) (expr)` parses as a postfix call, not a cast — primitive destinations and unparenthesized operands are fine; workaround: hoist to a named local, 17 sites in ml/grad/StructKernels) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [codegen-many-param-f32-truncate](codegen-many-param-f32-truncate-spec.md) | — (defect, found while closing xgboost D2) | draft — `Cannot select: f32 = truncate i64` at ~23 params; 22 compiles; repro + acceptance in spec |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
