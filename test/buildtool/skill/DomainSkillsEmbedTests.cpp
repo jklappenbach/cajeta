@@ -174,6 +174,10 @@ static const CatalogEntry kCatalog[] = {
     {"cajeta.language", "language-concurrency", "cajeta/language/concurrency"},
     {"cajeta.language", "language-errors", "cajeta/language/errors"},
     {"cajeta.language", "language-annotations", "cajeta/language/annotations"},
+    // Unit 7 — toolchain gap-fill + stdlib router
+    {"cajeta.toolchain", "toolchain-project", "cajeta/toolchain/project"},
+    {"cajeta.toolchain", "toolchain-testing", "cajeta/toolchain/testing"},
+    {"cajeta.stdlib", "stdlib-overview", "cajeta.stdlib"},
 };
 
 TEST(CatalogSkillsTests, catalogIdsResolveAndBindingsSearchable) {
