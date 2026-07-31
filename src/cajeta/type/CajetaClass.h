@@ -147,6 +147,13 @@ namespace cajeta {
         // synthesis for exactly these classes once per pass.
         bool pendingIfaceVTables = false;
         bool recordType = false;
+        // True while the declaration walk (buildClassLike: body members,
+        // ctor registration) is still in flight for this class. A nested
+        // compile (materializeUserClass mid-walk) must not prototype it —
+        // generatePrototype on a bodyless class fabricates the auto-default
+        // constructor, which then collides with the declared one when the
+        // outer walk resumes (CAJETA_ERROR_DUPLICATE_CONSTRUCTOR).
+        bool declWalkInFlight = false;
         CajetaModulePtr module;
 
         // `declaringFile` / `declLine` / `declColumn` now live on CajetaType — an
@@ -981,6 +988,8 @@ namespace cajeta {
         // instantiator; plain @ValueType classes stay mutable.
         void setRecordType(bool v) { recordType = v; }
         bool isRecordType() const { return recordType; }
+        void setDeclWalkInFlight(bool v) { declWalkInFlight = v; }
+        bool isDeclWalkInFlight() const { return declWalkInFlight; }
 
         // Synthesize a per-(class, interface) vtable global for every
         // interface this class implements. Called from generatePrototype

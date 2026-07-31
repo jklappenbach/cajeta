@@ -742,6 +742,10 @@ namespace cajeta {
                 packageAdj.append(structure->getQName()->getTypeName());
             }
             QualifiedNamePtr qName = QualifiedName::getOrInsert(name, pModule->getQName()->getPackageName() + packageAdj);
+            if (getenv("CAJETA_DBG_MATERIALIZE")) {
+                std::cerr << "[walk] buildClassLike " << qName->toCanonical()
+                          << " (module=" << pModule->getSourcePath() << ")\n";
+            }
             list<QualifiedNamePtr> qExtended;
             list<QualifiedNamePtr> qImplemented;
             // Type arguments per implements entry (parallel to qImplemented;
@@ -1040,6 +1044,10 @@ namespace cajeta {
             }
 
             pModule->getStructureStack().push_back(structure);
+            // Mid-walk marker (see CajetaClass::declWalkInFlight): a nested
+            // materialize compile's prototype sweep must leave this class
+            // pending until the walk below completes.
+            structure->setDeclWalkInFlight(true);
             // Aspect registration (AspectModel.md § A2). A class
             // annotated `@Aspect` joins the process-global aspect
             // registry, which A3's pointcut-matching pass walks at
@@ -1426,6 +1434,7 @@ namespace cajeta {
                 structure->addTypeFlags(VALUE_TYPE_FLAG | BY_VALUE_FLAG);
             }
             pModule->getStructureStack().pop_back();
+            structure->setDeclWalkInFlight(false);
             CajetaModule::getStructureToModule()[structure->getQName()->toCanonical()] = pModule;
             return structure;
         }

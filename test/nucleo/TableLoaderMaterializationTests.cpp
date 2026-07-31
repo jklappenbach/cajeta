@@ -124,6 +124,45 @@ TEST(TableLoaderMaterializationTests, crossFileRecordUsingFileSortsAfter) {
     EXPECT_EQ(fn(), 42);
 }
 
+// Nested-materialize prototype hazard (the ml v0.2.0 CI failure): the
+// consumer sorts FIRST and declares an EXPLICIT no-arg ctor; its walk hits
+// Table<Rec3> mid-body, the nested materialize compile runs, and any
+// prototype sweep inside that nested compile (drainLazyStdlib's tail) used
+// to prototype the still-BODYLESS consumer — fabricating its auto-default
+// ctor, which collided with the declared one when the walk resumed
+// (CAJETA_ERROR_DUPLICATE_CONSTRUCTOR). The declWalkInFlight marker keeps
+// mid-walk classes out of every sweep.
+TEST(TableLoaderMaterializationTests, explicitCtorConsumerBeforeRecord) {
+    std::map<std::string, std::string> sources;
+    sources["test.AConsumer"] =
+        "package test;\n"
+        "import cajeta.nucleo.frame.Table;\n"
+        "import cajeta.nucleo.column.Column;\n"
+        "public class AConsumer {\n"
+        "    public AConsumer() { return; }\n"
+        "    static #Tensorish helper() { return null; }\n"
+        "    public static int32 run() {\n"
+        "        float64[] pv = heap float64[2];\n"
+        "        pv[0] = 1.5; pv[1] = 2.5;\n"
+        "        Table<Rec3> t = heap Table<Rec3>(Column.of<float64>(pv));\n"
+        "        if (t.price.get(1) == 2.5) { return 42; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"
+        "class Tensorish {\n"
+        "    public Tensorish() { return; }\n"
+        "}\n";
+    sources["test.Rec3"] =
+        "package test;\n"
+        "public record Rec3 {\n"
+        "    float64 price;\n"
+        "}\n";
+    auto jit = CajetaJit::compile(sources, "test.AConsumer");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 42);
+}
+
 // Negative control: materializing cross-file types must NOT soften the schema
 // contract — a cross-file NON-record argument still fails loudly.
 TEST(TableLoaderMaterializationTests, crossFileNonRecordStillRejected) {

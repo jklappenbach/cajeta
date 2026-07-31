@@ -1322,6 +1322,7 @@ namespace cajeta {
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
                 if (!klass) continue;
                 if (klass->isPlaceholder()) continue;       // wait for fill-in
+                if (klass->isDeclWalkInFlight()) continue;  // mid-declaration (nested materialize) — later sweep
                 if (klass->isAnnotation()) continue;        // type token only, no layout
                 if (klass->isPrototypeBuilt()) continue;
                 if (klass->isTemplate()) continue;          // templates lay out only on instantiate

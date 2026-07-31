@@ -483,7 +483,14 @@ namespace cajeta {
         if (method->isConstructor()) {
             map<string, MethodPtr> canonical = unlabeledConstructorMap[method->toGeneric(false)];
             if (canonical.find(method->getMapKey(false)) != canonical.end()) {
-                throw "Constructor already exists";
+                // A raw char-const* throw here terminate()s the process
+                // (nothing catches it) with no class/signature named —
+                // name both, as a real exception.
+                throw Exception(
+                    "constructor `" + method->getMapKey(false)
+                        + "` already exists on `" + toCanonical()
+                        + "` — the class declaration was processed twice",
+                    "CAJETA_ERROR_DUPLICATE_CONSTRUCTOR");
             }
             mapMethod(method, labeledConstructorMap, true);
             mapMethod(method, unlabeledConstructorMap, false);
@@ -491,7 +498,11 @@ namespace cajeta {
             if (method->isStatic()) {
                 map<string, MethodPtr> canonical = unlabeledMethodMap[method->toGeneric(false)];
                 if (canonical.find(method->getMapKey(false)) != canonical.end()) {
-                    throw "A static method with this signature already exists.  Static methods can not be overridden.";
+                    throw Exception(
+                        "static method `" + method->getMapKey(false)
+                            + "` already exists on `" + toCanonical()
+                            + "` — static methods cannot be overridden",
+                        "CAJETA_ERROR_DUPLICATE_STATIC_METHOD");
                 }
                 staticMethods[method->getMapKey()] = method;
             }

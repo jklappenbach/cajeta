@@ -1354,8 +1354,17 @@ namespace cajeta {
         // entry (the LintServerSibling batch caught exactly that).
         std::string normPath = std::filesystem::path(
             module->getSourcePath()).lexically_normal().string();
+        if (getenv("CAJETA_DBG_MATERIALIZE")) {
+            std::cerr << "[compile] " << normPath
+                      << " (inflight=" << materializeInFlight.size()
+                      << ", materialized=" << materializedSourcePaths.size()
+                      << ")\n";
+        }
         if (materializedSourcePaths.count(normPath)
                 && !materializeInFlight.count(normPath)) {
+            if (getenv("CAJETA_DBG_MATERIALIZE")) {
+                std::cerr << "[compile] skip (already materialized)\n";
+            }
             return;
         }
         ensureStdlibModule();
@@ -1371,7 +1380,18 @@ namespace cajeta {
         // too, but the marker now lives in the stdlib module and is
         // emitted by ensureStdlibModule, so no per-user-module emit
         // is required.
-        CajetaModule::buildPendingPrototypes();
+        //
+        // EXCEPT during an on-demand materialization: the nested compile
+        // runs MID-WALK of the requesting class, whose CajetaClass exists
+        // but has no body yet — sweeping it here prototypes an EMPTY class
+        // (fabricating its auto-default constructor, which then collides
+        // with the declared one when the outer walk resumes:
+        // CAJETA_ERROR_DUPLICATE_CONSTRUCTOR on the readdir order where a
+        // consumer file precedes its record). The outer compile runs the
+        // sweep at its own tail, when every mid-walk class is whole.
+        if (materializeInFlight.empty()) {
+            CajetaModule::buildPendingPrototypes();
+        }
     }
 
     bool Compiler::materializeUserClass(const std::string& canonical) {
