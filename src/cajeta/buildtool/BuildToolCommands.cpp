@@ -2780,54 +2780,18 @@ namespace cajeta::buildtool {
             return false;
         }
 
-        const char* skillTierName(skill::MatchTier t) {
-            switch (t) {
-                case skill::MatchTier::Exact:            return "exact";
-                case skill::MatchTier::Descendant:       return "descendant";
-                case skill::MatchTier::AncestorOverview: return "ancestorOverview";
-            }
-            return "unknown";
-        }
-
+        // JSON shapes live in SkillCli (shared with compiler-mcp for parity).
         std::string searchResultsJson(
                 llvm::ArrayRef<skill::SkillSearchResult> rs) {
-            cajeta::dap::Json arr = cajeta::dap::Json::array();
-            for (const auto& r : rs) {
-                cajeta::dap::Json o = cajeta::dap::Json::object();
-                o["uri"] = r.uri;
-                o["matchedName"] = r.matchedName;
-                o["tier"] = std::string(skillTierName(r.tier));
-                o["distance"] = r.distance;
-                arr.push_back(o);
-            }
-            return arr.dump();
+            return skill::searchResultsJsonValue(rs).dump();
         }
 
         std::string listEntriesJson(llvm::ArrayRef<skill::SkillListEntry> es) {
-            cajeta::dap::Json arr = cajeta::dap::Json::array();
-            for (const auto& e : es) {
-                cajeta::dap::Json o = cajeta::dap::Json::object();
-                o["uri"] = e.uri;
-                o["title"] = e.title;
-                cajeta::dap::Json names = cajeta::dap::Json::array();
-                for (const auto& n : e.names) names.push_back(n);
-                o["names"] = names;
-                arr.push_back(o);
-            }
-            return arr.dump();
+            return skill::listEntriesJsonValue(es).dump();
         }
 
         std::string getResultsJson(llvm::ArrayRef<skill::SkillGetResult> rs) {
-            cajeta::dap::Json arr = cajeta::dap::Json::array();
-            for (const auto& r : rs) {
-                cajeta::dap::Json o = cajeta::dap::Json::object();
-                o["uri"] = r.uri;
-                o["ok"] = r.ok();
-                if (r.ok()) o["payload"] = r.payload;
-                else o["error"] = r.error;
-                arr.push_back(o);
-            }
-            return arr.dump();
+            return skill::getResultsJsonValue(rs).dump();
         }
 
         int searchSkillCommand(int argc, const char* argv[]) {

@@ -154,4 +154,57 @@ namespace cajeta::buildtool::skill {
         return ctx;
     }
 
+
+    namespace {
+        const char* skillTierName(MatchTier t) {
+            switch (t) {
+                case MatchTier::Exact:            return "exact";
+                case MatchTier::Descendant:       return "descendant";
+                case MatchTier::AncestorOverview: return "ancestorOverview";
+            }
+            return "unknown";
+        }
+    } // namespace
+
+    cajeta::dap::Json searchResultsJsonValue(
+            llvm::ArrayRef<SkillSearchResult> results) {
+        cajeta::dap::Json arr = cajeta::dap::Json::array();
+        for (const auto& r : results) {
+            cajeta::dap::Json o = cajeta::dap::Json::object();
+            o["uri"] = r.uri;
+            o["matchedName"] = r.matchedName;
+            o["tier"] = std::string(skillTierName(r.tier));
+            o["distance"] = r.distance;
+            arr.push_back(o);
+        }
+        return arr;
+    }
+
+    cajeta::dap::Json listEntriesJsonValue(llvm::ArrayRef<SkillListEntry> entries) {
+        cajeta::dap::Json arr = cajeta::dap::Json::array();
+        for (const auto& e : entries) {
+            cajeta::dap::Json o = cajeta::dap::Json::object();
+            o["uri"] = e.uri;
+            o["title"] = e.title;
+            cajeta::dap::Json names = cajeta::dap::Json::array();
+            for (const auto& n : e.names) names.push_back(n);
+            o["names"] = names;
+            arr.push_back(o);
+        }
+        return arr;
+    }
+
+    cajeta::dap::Json getResultsJsonValue(llvm::ArrayRef<SkillGetResult> results) {
+        cajeta::dap::Json arr = cajeta::dap::Json::array();
+        for (const auto& r : results) {
+            cajeta::dap::Json o = cajeta::dap::Json::object();
+            o["uri"] = r.uri;
+            o["ok"] = r.ok();
+            if (r.ok()) o["payload"] = r.payload;
+            else o["error"] = r.error;
+            arr.push_back(o);
+        }
+        return arr;
+    }
+
 } // namespace cajeta::buildtool::skill

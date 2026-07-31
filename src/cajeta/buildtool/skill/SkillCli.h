@@ -17,7 +17,9 @@
 #include <llvm/Support/Error.h>
 
 #include "cajeta/buildtool/Lockfile.h"
+#include "cajeta/buildtool/skill/SkillGet.h"
 #include "cajeta/buildtool/skill/SkillSearch.h"
+#include "cajeta/dap/Json.h"
 
 namespace cajeta::buildtool::skill {
 
@@ -54,6 +56,15 @@ namespace cajeta::buildtool::skill {
     std::string formatSearchResults(llvm::ArrayRef<SkillSearchResult> results);
     // One line per entry: "<uri>\t<title>".
     std::string formatListEntries(llvm::ArrayRef<SkillListEntry> entries);
+
+    // The `--json` shapes, shared verbatim by the CLI subcommands and the
+    // compiler-mcp tools (parity is a spec requirement, compiler-mcp §3.1.4):
+    // search → [{uri, matchedName, tier, distance}], list → [{uri, title,
+    // names}], get → [{uri, ok, payload|error}].
+    cajeta::dap::Json searchResultsJsonValue(
+        llvm::ArrayRef<SkillSearchResult> results);
+    cajeta::dap::Json listEntriesJsonValue(llvm::ArrayRef<SkillListEntry> entries);
+    cajeta::dap::Json getResultsJsonValue(llvm::ArrayRef<SkillGetResult> results);
 
     // Usage strings.
     std::string searchSkillUsage();

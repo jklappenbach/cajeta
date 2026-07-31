@@ -95,8 +95,9 @@ discovery spec reserved (§1.5.1 there).
 
 ### 3.1 Requirements
 - **3.1.1** `searchSkills { name, version?, from?, exact? }` → ranked matches,
-  each carrying `uri`, `matchedName`, and `title` — the core's results, shaped as
-  the external server shapes them.
+  each carrying `uri`, `matchedName`, `tier`, and `distance` — the CLI `--json`
+  shape, exactly as the external server wraps it (titles come from
+  `listSkills`/`getSkills`).
 - **3.1.2** `listSkills { scope?, version?, from? }` → `uri` + `title` (+
   `applies-to`) rows.
 - **3.1.3** `getSkills { uris: [...] }` → each URI's Markdown payload, or a

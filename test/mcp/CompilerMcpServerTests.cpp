@@ -120,3 +120,115 @@ TEST_F(CompilerMcpServerTest, contextSeededFromEmbeddedCorpusWithNoProject) {
     EXPECT_GE(server_->archiveCount(), 16u)   // 15 stdlib + cajeta.toolchain
         << "embedded corpora must seed the context without a lockfile";
 }
+
+// ---- Unit 3 — skill tools wired in-process (spec §3) ----
+
+// 3.1.1 — typo-tolerant search through tools/call, CLI --json item shape.
+TEST_F(CompilerMcpServerTest, searchSkillsToolResolvesTypoedName) {
+    Json r = call(
+        R"({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"searchSkills","arguments":{"name":"cajeta/io/file/Fiel"}}})");
+    const Json& results = r.at("result").at("results");
+    ASSERT_TRUE(results.isArray()) << "result must carry a results array";
+    bool sawFile = false;
+    for (size_t i = 0; i < results.size(); ++i) {
+        const Json& m = results[i];
+        EXPECT_TRUE(m.has("uri") && m.has("matchedName") && m.has("tier") &&
+                    m.has("distance"));
+        if (m.at("uri").asString().find("io-file-File") != std::string::npos)
+            sawFile = true;
+    }
+    EXPECT_TRUE(sawFile) << "typo'd query must resolve io-file-File";
+}
+
+// 3.1.2 — scoped list; batch get with partial success.
+TEST_F(CompilerMcpServerTest, listAndGetSkillsTools) {
+    Json r = call(
+        R"({"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"listSkills","arguments":{"scope":"cajeta/toolchain"}}})");
+    const Json& skills = r.at("result").at("skills");
+    ASSERT_TRUE(skills.isArray());
+    EXPECT_GE(skills.size(), 5u);
+    EXPECT_TRUE(skills[0].has("uri") && skills[0].has("title") &&
+                skills[0].has("names"));
+
+    Json g = call(
+        R"({"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"getSkills","arguments":{"uris":["cja-skill://cajeta.toolchain@1.0/cajeta-driver-overview","cja-skill://cajeta.toolchain@1.0/no-such-skill"]}}})");
+    const Json& got = g.at("result").at("skills");
+    ASSERT_TRUE(got.isArray());
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_TRUE(got[0].at("ok").asBool());
+    EXPECT_NE(got[0].at("payload").asString().find("id: cajeta-driver-overview"),
+              std::string::npos);
+    EXPECT_FALSE(got[1].at("ok").asBool(true));
+    EXPECT_FALSE(got[1].at("error").asString().empty());
+}
+
+// 3.1.3 — no match is an empty result, not an error; bad args are -32602.
+TEST_F(CompilerMcpServerTest, searchNoMatchEmptyAndBadArgsRejected) {
+    Json r = call(
+        R"({"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"searchSkills","arguments":{"name":"zz/qq/xxyyzz9"}}})");
+    ASSERT_TRUE(r.has("result"));
+    EXPECT_FALSE(r.has("error"));
+    EXPECT_EQ(r.at("result").at("results").size(), 0u);
+
+    Json e1 = call(
+        R"({"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"searchSkills","arguments":{}}})");
+    EXPECT_EQ(e1.at("error").at("code").asInt(), -32602);
+    Json e2 = call(
+        R"({"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"getSkills","arguments":{"uris":"not-an-array"}}})");
+    EXPECT_EQ(e2.at("error").at("code").asInt(), -32602);
+}
+
+#ifndef _WIN32
+
+#include "cajeta/buildtool/Subprocess.h"
+
+namespace {
+    std::string mcpCajetaExe() {
+        auto build = fs::canonical("/proc/self/exe").parent_path().parent_path();
+        return (build / "src" / "cajeta").string();
+    }
+
+    // Run `cajeta <args...> --json` in `cwd`; return parsed stdout JSON.
+    Json runCliJson(const std::vector<std::string>& args, const std::string& cwd) {
+        std::vector<std::string> argv = {mcpCajetaExe()};
+        for (auto& a : args) argv.push_back(a);
+        argv.push_back("--json");
+        std::string out, err;
+        cajeta::buildtool::SubprocessOptions opt;
+        opt.argv = argv;
+        opt.cwd = &cwd;
+        opt.outData = &out;
+        opt.errData = &err;
+        auto r = cajeta::buildtool::runSubprocess(opt);
+        EXPECT_TRUE(r.launched) << "spawn failed: " << err;
+        bool ok = false;
+        Json j = Json::parse(out, &ok);
+        EXPECT_TRUE(ok) << "CLI --json must parse: " << out;
+        return j;
+    }
+}
+
+// 3.1.4 — field-for-field parity between the MCP tools and the CLI --json.
+TEST_F(CompilerMcpServerTest, toolResultsMatchCliJson) {
+    if (!fs::exists(mcpCajetaExe())) GTEST_SKIP() << "cajeta binary not built";
+    const std::string cwd = dir_.string();
+
+    Json s = call(
+        R"({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"searchSkills","arguments":{"name":"cajeta/toolchain"}}})");
+    EXPECT_EQ(s.at("result").at("results").dump(),
+              runCliJson({"search-skill", "cajeta/toolchain"}, cwd).dump());
+
+    Json l = call(
+        R"({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"listSkills","arguments":{"scope":"cajeta/toolchain"}}})");
+    EXPECT_EQ(l.at("result").at("skills").dump(),
+              runCliJson({"list-skills", "cajeta/toolchain"}, cwd).dump());
+
+    Json g = call(
+        R"({"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"getSkills","arguments":{"uris":["cja-skill://cajeta.toolchain@1.0/cajeta-driver-overview"]}}})");
+    EXPECT_EQ(g.at("result").at("skills").dump(),
+              runCliJson({"get-skills",
+                          "cja-skill://cajeta.toolchain@1.0/cajeta-driver-overview"},
+                         cwd).dump());
+}
+
+#endif // !_WIN32

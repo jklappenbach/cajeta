@@ -9,10 +9,12 @@
 #include <iosfwd>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Support/Error.h>
 
+#include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/skill/SkillSearch.h"
 
 namespace cajeta::dap { class Json; }
@@ -39,10 +41,18 @@ namespace cajeta::buildtool::mcp {
         size_t archiveCount() const { return ctx_.archives.size(); }
 
     private:
-        CompilerMcpServer(std::string version, skill::SkillSearchContext ctx)
-            : version_(std::move(version)), ctx_(std::move(ctx)) {}
+        CompilerMcpServer(std::string version, std::string projectDir,
+                          std::vector<ResolvedPackageEntry> packages,
+                          skill::SkillSearchContext ctx)
+            : version_(std::move(version)), projectDir_(std::move(projectDir)),
+              packages_(std::move(packages)), ctx_(std::move(ctx)) {}
+
+        std::string handleToolCall(const cajeta::dap::Json& id,
+                                   const cajeta::dap::Json& params);
 
         std::string version_;
+        std::string projectDir_;                   // getSkills archive lookups
+        std::vector<ResolvedPackageEntry> packages_;
         skill::SkillSearchContext ctx_;
     };
 

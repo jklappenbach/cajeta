@@ -6,6 +6,7 @@
 #include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/skill/SkillCli.h"
+#include "cajeta/buildtool/skill/SkillGet.h"
 #include "cajeta/dap/Json.h"
 
 #include <filesystem>
@@ -148,7 +149,8 @@ namespace cajeta::buildtool::mcp {
         auto ctx = skill::loadSkillSearchContext(
             packages, [&](llvm::StringRef s) { return cache.lookup(s.str()); });
         if (!ctx) return ctx.takeError();
-        return CompilerMcpServer(std::move(version), std::move(*ctx));
+        return CompilerMcpServer(std::move(version), std::move(projectDir),
+                                 std::move(packages), std::move(*ctx));
     }
 
     llvm::StringRef CompilerMcpServer::instructions() { return kInstructions; }
@@ -185,14 +187,66 @@ namespace cajeta::buildtool::mcp {
             return resultResponse(id, std::move(result));
         }
         if (method == "tools/list") return resultResponse(id, toolsList());
-        if (method == "tools/call") {
-            const std::string& tool = req.at("params").at("name").asString();
-            if (!isKnownTool(tool))
-                return errorResponse(id, -32602, "unknown tool: " + tool);
-            return errorResponse(id, -32603,
-                                 "tool not yet wired: " + tool); // Unit 3
-        }
+        if (method == "tools/call")
+            return handleToolCall(id, req.at("params"));
         return errorResponse(id, -32601, "method not found: " + method);
+    }
+
+    std::string CompilerMcpServer::handleToolCall(const Json& id,
+                                                  const Json& params) {
+        if (!params.isObject())
+            return errorResponse(id, -32602, "tools/call requires params");
+        const std::string& tool = params.at("name").asString();
+        if (!isKnownTool(tool))
+            return errorResponse(id, -32602, "unknown tool: " + tool);
+        const Json& args = params.at("arguments");
+
+        auto optString = [&](const char* key) -> std::optional<std::string> {
+            if (args.isObject() && args.at(key).isString())
+                return args.at(key).asString();
+            return std::nullopt;
+        };
+
+        if (tool == "searchSkills") {
+            if (!args.isObject() || !args.at("name").isString())
+                return errorResponse(id, -32602,
+                                     "searchSkills requires a string 'name'");
+            skill::MatchOptions opts;
+            opts.exact = args.at("exact").asBool(false);
+            auto results =
+                skill::searchSkills(args.at("name").asString(),
+                                    optString("version"), optString("from"),
+                                    ctx_, opts);
+            Json result = Json::object();
+            result["results"] = skill::searchResultsJsonValue(results);
+            return resultResponse(id, std::move(result));
+        }
+        if (tool == "listSkills") {
+            auto entries = skill::listSkills(optString("scope"),
+                                             optString("version"),
+                                             optString("from"), ctx_);
+            Json result = Json::object();
+            result["skills"] = skill::listEntriesJsonValue(entries);
+            return resultResponse(id, std::move(result));
+        }
+        // getSkills
+        if (!args.isObject() || !args.at("uris").isArray())
+            return errorResponse(id, -32602,
+                                 "getSkills requires a 'uris' array");
+        std::vector<std::string> uris;
+        const Json& arr = args.at("uris");
+        for (size_t i = 0; i < arr.size(); ++i)
+            if (arr[i].isString()) uris.push_back(arr[i].asString());
+        if (uris.empty())
+            return errorResponse(id, -32602,
+                                 "getSkills requires at least one string URI");
+        ArtifactCache cache(projectDir_);
+        auto results = skill::getSkills(
+            uris, packages_,
+            [&](llvm::StringRef s) { return cache.lookup(s.str()); });
+        Json result = Json::object();
+        result["skills"] = skill::getResultsJsonValue(results);
+        return resultResponse(id, std::move(result));
     }
 
     int CompilerMcpServer::run(std::istream& in, std::ostream& out) {
