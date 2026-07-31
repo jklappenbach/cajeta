@@ -17,11 +17,15 @@
 //    copied the fat body from a raw null pointer). FIXED 2026-07-31: the
 //    invokeMethod arg coercion now spills a ZEROED fat body for a null
 //    constant bound to an interface formal — the pin is live.
-//  - ownedFieldOfLaterParsedClass stays DISABLED_: with the harness
-//    backfill fix it is FLAKY (alternating green / verifier-print crash on
-//    identical input) — nondeterministic codegen emits a sometimes-
-//    malformed constant; same character as the AOT wild jump. The
-//    remaining 7.2.0 hunt.
+//  - ownedFieldOfLaterParsedClass: FIXED 2026-07-31, two layers —
+//    (1) the harness now runs the buildJit backfill/pin pair before its
+//    linkModules merge (drop thunks survive lazy linking); (2) the real
+//    compiler defect: synthesizeInterfaceVTables pushed RAW Function*
+//    entries into the vtable initializer — on the deferred re-synthesis
+//    pass (interface was a placeholder at declaration walk) those live in
+//    a DIFFERENT llvm::Module, and the dangling cross-module constant
+//    became the flaky verifier-print crash here and the AOT wild jump.
+//    Entries now route through ensureFunctionInModule. Both pins live.
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -37,7 +41,7 @@ namespace {
 // placeholder-owned-field: a class whose OWNED field types a user class
 // that is still a placeholder at the declaring class's walk, heap-built in
 // a ctor. AWrap sorts before both the interface and the inner class.
-TEST(PlaceholderOwnedFieldTests, DISABLED_ownedFieldOfLaterParsedClass) {
+TEST(PlaceholderOwnedFieldTests, ownedFieldOfLaterParsedClass) {
     std::map<std::string, std::string> sources;
     sources["test.AWrap"] =
         "package test;\n"

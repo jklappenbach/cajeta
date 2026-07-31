@@ -1819,7 +1819,17 @@ namespace cajeta {
             // (__cajeta_iface_drop) reads this slot when kind ==
             // OWNED_CLASS. Method entries follow at slots 1..N; the
             // dispatch path adds +1 to its interface-method index.
-            if (llvm::Function* dropFn = this->getOrCreateDropFunction()) {
+            // Every function entry is pinned into THIS vtable's module via
+            // ensureFunctionInModule: the deferred re-synthesis pass (an
+            // interface that was a placeholder at declaration walk fills in
+            // during the codegen fixed-point) runs when the implementer's
+            // functions may live in a DIFFERENT llvm::Module than `lmod` —
+            // a raw foreign Function* in the initializer becomes a dangling
+            // constant once Linker::linkModules consumes the donor
+            // (placeholder-owned-field spec: the flaky verifier-print crash
+            // / the AOT wild jump).
+            if (llvm::Function* dropFn = CajetaModule::ensureFunctionInModule(
+                    lmod, this->getOrCreateDropFunction())) {
                 entries.push_back(dropFn);
             } else {
                 entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
@@ -1848,7 +1858,8 @@ namespace cajeta {
                     entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
                     continue;
                 }
-                entries.push_back(concrete->getLlvmFunction());
+                entries.push_back(CajetaModule::ensureFunctionInModule(
+                    lmod, concrete->getLlvmFunction()));
             }
 
             llvm::ArrayType* arrTy = llvm::ArrayType::get(

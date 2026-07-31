@@ -42,9 +42,33 @@ multi-source harness (map order is deterministic) or a forced parse order.
 - 2.4 Ships with cajeta v0.13.0 (scheduled: cajeta-ml-v2 plan U7 alongside
   `nucleo.sparse`).
 
-## 3. Workaround (in place, recorded)
+## 3. Status: FIXED 2026-07-31 (root cause found via the deterministic pin)
 
-Co-locate the wrapper AFTER its inner class in one compilation unit —
-same-file declaration order is deterministic. Applied in
-`dev.cajeta.ml/ElasticNet.cajeta` (Lasso lives below ElasticNet, with a
-comment naming this spec).
+Root cause — a CROSS-MODULE CONSTANT: `synthesizeInterfaceVTables` pushed
+raw `Function*` entries (the implementer's methods and its drop thunk) into
+the per-(impl, iface) vtable initializer. On the DEFERRED re-synthesis pass
+(the interface was a lazy/archive placeholder at the implementer's
+declaration walk, so `pendingIfaceVTables` re-runs synthesis during the
+codegen fixed-point) those functions live in a DIFFERENT `llvm::Module`
+than the vtable's — and once `Linker::linkModules` consumed the donor, the
+initializer held a dangling constant. Symptoms explained: the JIT's flaky
+verifier crash (the Verifier faulted PRINTING the freed value), the LLJIT
+"Symbols not found: __cajeta_<type>_drop" (a second layer: the test harness
+also lacked the buildJit backfill/pin pair before its own merge — added),
+and the AOT wild jump (the emitted binary called through the dangling
+pointer). Order/hash dependence made it look readdir-flaky.
+
+Fix: vtable entries route through `CajetaModule::ensureFunctionInModule`
+(local extern decl instead of a foreign pointer), plus the harness
+backfill/pin parity, plus two defensive placeholder-at-use guards
+(resolveMethod / ClassCreatorRest materialize-or-fail-loud). Pins LIVE:
+`PlaceholderOwnedFieldTests.{ownedFieldOfLaterParsedClass,
+nullIntoOwnedInterfaceFormal}`; the AOT split-pair shape builds 3/3; ASAN
+2/2.
+
+## 4. Workaround (still in place downstream until the fix RELEASES)
+
+Co-locate the wrapper AFTER its inner class in one compilation unit.
+`dev.cajeta.ml/ElasticNet.cajeta` keeps Lasso co-located until the ml
+toolchain pin reaches a release carrying this fix (v0.13.0) — CI builds on
+the released .deb, not this tree.
