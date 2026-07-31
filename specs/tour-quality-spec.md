@@ -110,9 +110,12 @@ of 1.4, coverage tooling of §3 installed in each repo.
   realistic round-trip demos: schema definition, encode/decode, streaming
   where the format supports it, and error/corrupt-input handling.
 - 5.2 **cajeta-http** — as a junior developer, when I read the http tour, then
-  client and server sides are each demonstrated for HTTP/1.1, HTTP/2, HTTP/3,
+  client and server sides are each demonstrated for HTTP/1.1, HTTP/2,
   WebSocket, and SSE — realistic handlers (routing, headers, status codes,
   timeouts, TLS configuration where applicable), not a single echo round trip.
+  (HTTP/3 was advertised but is unimplemented in the library; decision
+  2026-07-30: de-advertise — the remediation unit drops the claim from the
+  library's manifest/README rather than demoing vaporware.)
 - 5.3 **cajeta-logging** — as a junior developer, when I read the logging tour,
   then levels, appenders, pattern layouts, and the DI-wired LoggerFactory are
   each demonstrated in a realistic service-logging scenario (per-module
