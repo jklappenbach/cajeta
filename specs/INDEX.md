@@ -44,3 +44,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
+| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — approved 2026-07-30; Unit 1 (coverage script) next |
