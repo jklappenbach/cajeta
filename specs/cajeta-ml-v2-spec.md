@@ -87,6 +87,10 @@ Use cases:
 - 5.2 SpMV/SpMVT match dense matmul on random patterns.
 - 5.3 `Lasso.fitSparse` == `Lasso.fit` coefficients on identical data;
   memory-proportional-to-nnz is the point (documented, not asserted).
+  NOTE (as built): v1 `fitSparse` requires `fitIntercept = false` — that is
+  what makes the agreement BIT-FOR-BIT (skipping exact zeros is bitwise
+  neutral; implicit-mean centering is not). sklearn's sparse centering
+  variant is deferred; center densely or add a constant column.
 - 5.4 Toolchain lifecycle: sparse ships in a cajeta stdlib release
   (v0.13.0); the ml pin bumps.
 

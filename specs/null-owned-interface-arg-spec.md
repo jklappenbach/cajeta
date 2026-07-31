@@ -11,6 +11,19 @@ null, null, 0, #fin)` crashed inside `Pipeline.of` on the v0.12.1-dev
 toolchain; padding the slots with real `IdentityTransformer` instances
 fixed it (the shipped workaround, commented at the site).
 
+## 1a. Mechanism (narrowed 2026-07-31)
+
+Interface-typed params cross the call boundary as `ptr` TO the 24-byte fat
+struct `{data, vtable, kind}` (CajetaFunctionType::toCallingConvType /
+Method::generatePrototype; see MethodCallExpression's
+`spillAggregateForByPointerArg`). A literal `null` argument lowers to a raw
+null POINTER — the callee then copies the fat struct from address 0
+(`this.f #= f` reads null+16 for `kind` → the observed fault 0x10). Fix
+shape: at argument coercion, a null constant bound to an interface formal
+must spill a ZEROED fat struct and pass its address (matching what a null
+interface FIELD read produces), plus the transfer/drop paths treating an
+all-null fat value as a no-op.
+
 ## 2. Requirements
 
 - 2.1 Minimal repro: interface `I`, class with `#I` ctor formal, call with
