@@ -1,0 +1,146 @@
+package tour.gfx;
+
+import tour.DemoClass;
+import cajeta.gfx.RenderGraph;
+import cajeta.gfx.SwapchainConfig;
+import cajeta.gfx.FrameSync;
+import cajeta.gfx.PipelineConfig;
+
+// cajeta.gfx host-side render policy — one frame of a deferred renderer
+// planned entirely on the CPU, no GPU required:
+//
+//   RenderGraph     — pass dependency + hazard set-logic (RAW/WAR/WAW),
+//                     Kahn topological ordering, barrier-kind decisions.
+//   SwapchainConfig — the Vulkan swapchain negotiation policy (present
+//                     mode, surface format, image count, extent).
+//   FrameSync       — frames-in-flight slot arithmetic.
+//   PipelineConfig  — vertex layout math + depth/blend/cull presets.
+//
+// `Swapchain` itself is the DEVICE noun these policies feed (its ctor
+// needs a live Surface), exercised by the gfx device suites — everything
+// decidable without a device is what this demo covers.
+//
+// The frame: shadow and gbuffer passes are independent; lighting consumes
+// both; post consumes lighting and writes the backbuffer.
+public class RenderGraphDemo extends DemoClass {
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- gfx render policy (graph, swapchain, sync, pipeline) --");
+
+        // Resources as bitmask bits.
+        int32 shadowMap = RenderGraph.resourceBit(0);
+        int32 gbuffer = RenderGraph.resourceBit(1);
+        int32 hdr = RenderGraph.resourceBit(2);
+        int32 backbuffer = RenderGraph.resourceBit(3);
+
+        // The four passes' read/write sets, declaration order.
+        int32[] reads = heap int32[4];
+        int32[] writes = heap int32[4];
+        reads[0] = 0;                    writes[0] = shadowMap;   // shadow
+        reads[1] = 0;                    writes[1] = gbuffer;     // gbuffer
+        reads[2] = shadowMap | gbuffer;  writes[2] = hdr;         // lighting
+        reads[3] = hdr;                  writes[3] = backbuffer;  // post
+
+        // 1. Hazard classification. Lighting reads what gbuffer wrote —
+        //    a RAW hazard; shadow and gbuffer touch disjoint resources —
+        //    independent, free to reorder or overlap.
+        int32 h = RenderGraph.hazardMask(reads[1], writes[1], reads[2], writes[2]);
+        this.check(h == RenderGraph.hazardRaw(),
+            "lighting-after-gbuffer is read-after-write");
+        this.check(!RenderGraph.dependsOn(reads[0], writes[0], reads[1], writes[1]),
+            "shadow and gbuffer are independent");
+
+        // 2. Barrier kind: RAW needs a MEMORY barrier (flush the producer's
+        //    writes); a WAR-only hazard needs execution ordering ONLY —
+        //    the prior pass merely read, nothing to flush.
+        int32 war = RenderGraph.hazardMask(gbuffer, 0, 0, gbuffer);
+        this.check(RenderGraph.needsMemoryBarrier(h)
+            && war == RenderGraph.hazardWar()
+            && !RenderGraph.needsMemoryBarrier(war),
+            "RAW takes a memory barrier, WAR only execution order");
+
+        // 3. Dependencies + topological order. dependenciesOf builds each
+        //    pass's prerequisite mask; Kahn's algorithm emits a stable
+        //    execution order (lowest ready index first).
+        int32[] deps = heap int32[4];
+        int32 j = 0;
+        while (j < 4) {
+            deps[j] = RenderGraph.dependenciesOf(reads, writes, 4, j);
+            j = j + 1;
+        }
+        int32[] order = heap int32[4];
+        int32 n = RenderGraph.topologicalOrder(deps, 4, order);
+        System.stdout.println("  frame order: shadow(" + order[0] + ") gbuffer("
+            + order[1] + ") lighting(" + order[2] + ") post(" + order[3] + ")");
+        this.check(deps[2] == 3 && deps[3] == 4,
+            "lighting needs passes 0+1; post needs pass 2");
+        this.check(n == 4 && order[0] == 0 && order[1] == 1
+            && order[2] == 2 && order[3] == 3,
+            "Kahn order runs producers before consumers");
+
+        // A cyclic graph is detected, not silently mis-ordered.
+        int32[] cyc = heap int32[2];
+        cyc[0] = 2;                      // pass 0 waits on pass 1...
+        cyc[1] = 1;                      // ...and pass 1 waits on pass 0
+        int32[] cycOrder = heap int32[2];
+        this.check(RenderGraph.topologicalOrder(cyc, 2, cycOrder) == -1,
+            "a dependency cycle reports -1");
+
+        // 4. SwapchainConfig — the negotiation every renderer does at
+        //    startup. Prefer Mailbox(1) for low latency; fall back to the
+        //    always-supported FIFO(2) when the driver lacks it.
+        int32[] modes = heap int32[2];
+        modes[0] = 2;
+        modes[1] = 1;
+        this.check(SwapchainConfig.choosePresentMode(modes, 2, 1) == 1,
+            "preferred Mailbox chosen when the driver has it");
+        int32[] fifoOnly = heap int32[1];
+        fifoOnly[0] = 2;
+        this.check(SwapchainConfig.choosePresentMode(fifoOnly, 1, 1) == 2,
+            "missing preference falls back to FIFO");
+        // Surface format: exact (format, colorSpace) pair wins; else keep
+        // the requested color space; else the driver's first pair.
+        int32[] fmts = heap int32[3];
+        int32[] spaces = heap int32[3];
+        fmts[0] = 44; spaces[0] = 0;
+        fmts[1] = 50; spaces[1] = 9;
+        fmts[2] = 37; spaces[2] = 9;
+        this.check(SwapchainConfig.chooseSurfaceFormat(fmts, spaces, 3, 50, 9) == 1
+            && SwapchainConfig.chooseSurfaceFormat(fmts, spaces, 3, 99, 9) == 1
+            && SwapchainConfig.chooseSurfaceFormat(fmts, spaces, 3, 99, 7) == 0,
+            "format choice: exact pair, then color space, then first");
+        // Image count clamps into the surface's window; max 0 = unbounded.
+        this.check((int32) SwapchainConfig.chooseImageCount(2, 3, 4) == 3
+            && (int32) SwapchainConfig.chooseImageCount(2, 0, 5) == 5,
+            "image count clamps; max 0 means unbounded");
+        // Extent: a defined currentExtent is mandatory; the 0xFFFFFFFF
+        // sentinel hands sizing to the app, clamped to the surface range.
+        uint32 undef = 4294967295;
+        this.check((int32) SwapchainConfig.chooseExtentWidth(1920, 1280, 640, 3840) == 1920
+            && (int32) SwapchainConfig.chooseExtentWidth(undef, 1280, 640, 3840) == 1280,
+            "extent honors the driver, clamps only when undefined");
+
+        // 5. FrameSync — 2 frames in flight: slots alternate 0,1,0,1; a
+        //    third acquire must wait for a fence.
+        this.check((int32) FrameSync.slotForFrame(7, 2) == 1
+            && (int32) FrameSync.nextSlot(1, 2) == 0,
+            "slot arithmetic wraps modulo frames-in-flight");
+        this.check(FrameSync.canAcquire(1, 2) && !FrameSync.canAcquire(2, 2),
+            "acquire gates on frames already in flight");
+
+        // 6. PipelineConfig — vertex layout math for pos3f/normal3f/uv2f
+        //    (12 + 12 + 8 bytes) and the depth/cull presets.
+        int32[] attrs = heap int32[3];
+        attrs[0] = 12;
+        attrs[1] = 12;
+        attrs[2] = 8;
+        this.check(PipelineConfig.vertexStride(attrs, 3) == 32
+            && PipelineConfig.vertexAttributeOffset(attrs, 3, 2) == 24,
+            "stride and per-attribute offsets sum the layout");
+        this.check(PipelineConfig.depthCompareOp(true) == 6
+            && PipelineConfig.depthWriteEnabled(0)
+            && !PipelineConfig.depthWriteEnabled(1)
+            && PipelineConfig.cullModeFor(false) == 2,
+            "reverse-Z compare, opaque-only depth write, back-face cull");
+    }
+}

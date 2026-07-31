@@ -10,6 +10,7 @@ import tour.lang.*;
 import tour.collection.*;
 import tour.concurrent.*;
 import tour.math.*;
+import tour.gfx.*;
 import tour.error.*;
 import tour.wire.*;
 import tour.time.*;
@@ -75,6 +76,7 @@ public final class Tour {
         demos.add(heap AutogradDemo());
         demos.add(heap TrainingLoopDemo());
         demos.add(heap JsonTiersDemo());
+        demos.add(heap RenderGraphDemo());
         demos.add(heap FormatStringDemo());
         demos.add(heap ViewsDemo());
         demos.add(heap ParallelStreamsDemo());

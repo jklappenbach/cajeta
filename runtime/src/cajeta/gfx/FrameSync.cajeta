@@ -21,6 +21,7 @@ public class FrameSync {
      * The next ring slot after `slot`, wrapping at `framesInFlight`. The loop
      * advances its slot once per presented frame: 0→1→0 for double buffering,
      * 0→1→2→0 for triple.
+     * @EntryPoint
      */
     public static uint32 nextSlot(uint32 slot, uint32 framesInFlight) {
         uint32 n = slot + 1;
@@ -42,6 +43,7 @@ public class FrameSync {
      * fewer than `framesInFlight` frames are still outstanding (submitted but not
      * yet finished/presented). When `inFlight == framesInFlight` the loop must
      * first wait on the oldest frame's fence.
+     * @EntryPoint
      */
     public static boolean canAcquire(uint32 inFlight, uint32 framesInFlight) {
         return inFlight < framesInFlight;

@@ -31,6 +31,7 @@ public class SwapchainConfig {
      * first `count` entries of `available`, otherwise FIFO (2) — the always-
      * supported mode. (Common picks: Mailbox(1) for low-latency triple buffering,
      * FIFO(2) for vsync.)
+     * @EntryPoint
      */
     public static int32 choosePresentMode(int32[] available, int32 count, int32 preferred) {
         int32 i = 0;
@@ -49,6 +50,7 @@ public class SwapchainConfig {
      * matches `prefColorSpace` (keep the requested color space, take whatever
      * format carries it); else index 0 (the spec guarantees at least one pair).
      * Returns -1 when `count <= 0` (a surface with no formats — caller errors).
+     * @EntryPoint
      */
     public static int32 chooseSurfaceFormat(int32[] formats, int32[] colorSpaces,
                                             int32 count, int32 prefFormat,
@@ -74,6 +76,7 @@ public class SwapchainConfig {
      * [minImageCount, maxImageCount]. A `maxImageCount` of 0 means "no upper
      * bound" (the Vulkan convention), so only the lower bound applies. Callers
      * pick `desired = minImageCount + 1` for the usual double/triple buffering.
+     * @EntryPoint
      */
     public static uint32 chooseImageCount(uint32 minImageCount, uint32 maxImageCount,
                                           uint32 desired) {

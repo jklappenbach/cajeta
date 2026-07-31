@@ -42,6 +42,7 @@ public class RenderGraph {
      *   WAW (4) — both write the same resource (the writes must be ordered).
      * Returns 0 when the passes are independent (disjoint, or both read-only on the
      * shared resources).
+     * @EntryPoint
      */
     public static int32 hazardMask(int32 priorReads, int32 priorWrites,
                                    int32 nextReads, int32 nextWrites) {
@@ -103,6 +104,7 @@ public class RenderGraph {
      * for each pass, then sorts. (A read sees the most recent earlier write, so
      * dependencies only point backward; the resulting graph is acyclic by
      * construction.)
+     * @EntryPoint
      */
     public static int32 dependenciesOf(int32[] passReads, int32[] passWrites,
                                        int32 passCount, int32 j) {
@@ -136,6 +138,7 @@ public class RenderGraph {
      * Returns the number of passes ordered (== `passCount` on success), or -1 if
      * the graph has a CYCLE (some pass's prerequisites can never all be met).
      * v1 addresses up to 31 passes (the bitmask width).
+     * @EntryPoint
      */
     public static int32 topologicalOrder(int32[] deps, int32 passCount,
                                          int32[] outOrder) {

@@ -50,6 +50,7 @@ public class PipelineConfig {
      * The vertex binding STRIDE for a packed interleaved layout: the total of
      * the first `count` attribute byte sizes (so the next vertex begins exactly
      * after this one).
+     * @EntryPoint
      */
     public static int32 vertexStride(int32[] attrBytes, int32 count) {
         int32 stride = 0;
@@ -90,6 +91,7 @@ public class PipelineConfig {
      * The depth {@code VkCompareOp}: GREATER_OR_EQUAL (6) for a reverse-Z depth
      * buffer (the better-precision convention), LESS_OR_EQUAL (3) for a standard
      * [0,1] depth buffer.
+     * @EntryPoint
      */
     public static int32 depthCompareOp(boolean reverseZ) {
         if (reverseZ) { return 6; }   // VK_COMPARE_OP_GREATER_OR_EQUAL
