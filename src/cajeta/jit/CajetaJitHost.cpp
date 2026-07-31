@@ -685,8 +685,11 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
             std::chrono::duration<double>(SplitClock::now() - reparseStart)
                 .count();
         if (!parsed) {
-            std::cerr << "cajeta jit: bitcode reparse failed: "
+            {
+                std::ostringstream m; m << "cajeta jit: bitcode reparse failed: "
                       << cajeta::jit::toString(parsed.takeError()) << "\n";
+                cajeta::logLine("error", m.str());
+            }
             out.errorCode = 1;
             return false;
         }
@@ -712,8 +715,11 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
     }
     auto jitOrErr = builder.create();
     if (!jitOrErr) {
-        std::cerr << "cajeta jit: LLJIT create failed: "
+        {
+            std::ostringstream m; m << "cajeta jit: LLJIT create failed: "
                   << cajeta::jit::toString(jitOrErr.takeError()) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return false;
     }
@@ -721,15 +727,21 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
 
     if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
         if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {
-            std::cerr << "cajeta jit: GDB symbolization unavailable: "
+            {
+                std::ostringstream m; m << "cajeta jit: GDB symbolization unavailable: "
                       << cajeta::jit::toString(std::move(err)) << "\n";
+                cajeta::logLine("warn", m.str());
+            }
         }
     }
 
     for (auto& tsm : tsms) {
         if (auto err = out.jit->addIRModule(std::move(tsm))) {
-            std::cerr << "cajeta jit: addIRModule failed: "
+            {
+                std::ostringstream m; m << "cajeta jit: addIRModule failed: "
                       << cajeta::jit::toString(std::move(err)) << "\n";
+                cajeta::logLine("error", m.str());
+            }
             out.jit.reset();
             out.errorCode = 1;
             return false;
@@ -740,8 +752,11 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
     auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         out.jit->getDataLayout().getGlobalPrefix());
     if (!generator) {
-        std::cerr << "cajeta jit: process-symbol generator failed: "
+        {
+            std::ostringstream m; m << "cajeta jit: process-symbol generator failed: "
                   << cajeta::jit::toString(generator.takeError()) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.jit.reset();
         out.errorCode = 1;
         return false;
@@ -778,24 +793,33 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
                 auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
                     out.jit->getObjLinkingLayer(), art->path.c_str());
                 if (gen) mainDylib.addGenerator(std::move(*gen));
-                else std::cerr << "cajeta jit: native lib '" << lib
+                else {
+                    std::ostringstream m; m << "cajeta jit: native lib '" << lib
                                << "' load failed: "
                                << cajeta::jit::toString(gen.takeError()) << "\n";
+                    cajeta::logLine("warn", m.str());
+                }
             } else {
                 auto gen = llvm::orc::DynamicLibrarySearchGenerator::Load(
                     art->path.c_str(), prefix);
                 if (gen) mainDylib.addGenerator(std::move(*gen));
-                else std::cerr << "cajeta jit: native lib '" << lib
+                else {
+                    std::ostringstream m; m << "cajeta jit: native lib '" << lib
                                << "' load failed: "
                                << cajeta::jit::toString(gen.takeError()) << "\n";
+                    cajeta::logLine("warn", m.str());
+                }
             }
         }
     }
 
     SplitClock::time_point matStart = SplitClock::now();
     if (auto err = out.jit->initialize(out.jit->getMainJITDylib())) {
-        std::cerr << "cajeta jit: LLJIT initialize failed: "
+        {
+            std::ostringstream m; m << "cajeta jit: LLJIT initialize failed: "
                   << cajeta::jit::toString(std::move(err)) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.jit.reset();
         out.errorCode = 1;
         return false;
@@ -880,15 +904,21 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     std::error_code ec;
     fs::path sourceRoot = fs::absolute(opts.sourceRoot, ec);
     if (ec || !fs::is_directory(sourceRoot)) {
-        std::cerr << "cajeta jit: source root is not a directory: "
+        {
+            std::ostringstream m; m << "cajeta jit: source root is not a directory: "
                   << opts.sourceRoot << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 2;
         return out;
     }
 
     std::vector<fs::path> sourcePaths = collectSources(sourceRoot);
     if (sourcePaths.empty()) {
-        std::cerr << "cajeta jit: no .cajeta files under " << sourceRoot << "\n";
+        {
+            std::ostringstream m; m << "cajeta jit: no .cajeta files under " << sourceRoot << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 2;
         return out;
     }
@@ -1020,8 +1050,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         } catch (...) {
             Compiler::setSharedContext(nullptr);
             residentStdlib.reset();
-            std::cerr << "cajeta jit: resident reuse unavailable, "
+            {
+                std::ostringstream m; m << "cajeta jit: resident reuse unavailable, "
                          "falling back to a full build\n";
+                cajeta::logLine("warn", m.str());
+            }
         }
     }
 
@@ -1138,13 +1171,19 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             compiler->compile(m);
         }
     } catch (cajeta::Exception& e) {
-        std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
+        {
+            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] "
                   << e.getMessage() << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
     if (!primary) {
-        std::cerr << "cajeta jit: no modules compiled\n";
+        {
+            std::ostringstream m; m << "cajeta jit: no modules compiled\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
@@ -1168,7 +1207,10 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         cajeta::CajetaModule::resolveAdviceMatches();
         cajeta::CajetaModule::resolveDependencyGraph();
     } catch (cajeta::Exception& e) {
-        std::cerr << "cajeta jit: [" << e.getErrorId() << "] " << e.getMessage() << "\n";
+        {
+            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] " << e.getMessage() << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     } catch (std::exception& e) {
@@ -1255,8 +1297,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                     if (klass) klass->generateStaticInitializers();
             });
     } catch (cajeta::Exception& e) {
-        std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
+        {
+            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] "
                   << e.getMessage() << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
@@ -1318,9 +1363,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         }
     }
     if (out.entryName.empty()) {
-        std::cerr << "cajeta jit: could not find static entry `"
+        {
+            std::ostringstream m; m << "cajeta jit: could not find static entry `"
                   << opts.entryMethod
                   << "` — expected `main()` or `main(String[] args)`\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
@@ -1348,9 +1396,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             std::string verifyErr;
             llvm::raw_string_ostream verifyStream(verifyErr);
             if (llvm::verifyModule(*lm, &verifyStream)) {
-                std::cerr << "cajeta jit: IR verify failed ("
+                {
+                    std::ostringstream m; m << "cajeta jit: IR verify failed ("
                           << lm->getModuleIdentifier() << "): " << verifyErr
                           << "\n";
+                    cajeta::logLine("warn", m.str());
+                }
                 out.errorCode = 1;
                 return out;
             }
@@ -1502,8 +1553,11 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
 
     auto entrySym = jit->lookup(built.entryName);
     if (!entrySym) {
-        std::cerr << "cajeta jit-run: entry symbol lookup failed: "
+        {
+            std::ostringstream m; m << "cajeta jit-run: entry symbol lookup failed: "
                   << cajeta::jit::toString(entrySym.takeError()) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         return 1;
     }
 
@@ -1517,9 +1571,12 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     if (built.entryTakesArgs) {
         entryArgs = makeEntryArgs(jit, opts.programArgs, built.entryArgsABI);
         if (!entryArgs) {
-            std::cerr << "cajeta jit: entry `" << opts.entryMethod
+            {
+                std::ostringstream m; m << "cajeta jit: entry `" << opts.entryMethod
                       << "` takes String[] but the args array could not be "
                          "materialized\n";
+                cajeta::logLine("error", m.str());
+            }
             return 1;
         }
     }
@@ -1854,6 +1911,10 @@ static void setEnvVar(const char* name, const char* value) {
 
 int dispatchJitRun(int argc, const char* argv[]) {
     // argv: cajeta jit-run [-g|--debug-info] <sourceRoot> <entryMethod> [args...]
+    // main resolved --diag-format before dispatching here (compiler-jsonl
+    // 5.1.2), so this verb announces its stream and closes it with a terminal
+    // result exactly as a compile does.
+    cajeta::emitStreamRecordOnce();
     JitRunOptions opts;
     std::vector<std::string> positional;
     for (int i = 2; i < argc; ++i) {
@@ -1879,6 +1940,7 @@ int dispatchJitRun(int argc, const char* argv[]) {
     if (positional.size() < 2) {
         std::cerr << "usage: cajeta jit-run [-g] <sourceRoot>"
                      " <package.Class.method> [args...]\n";
+        cajeta::emitJsonResult("error", "usage");
         return 2;
     }
     opts.sourceRoot = positional[0];
@@ -1890,11 +1952,17 @@ int dispatchJitRun(int argc, const char* argv[]) {
     // through, as plain stderr lines (stdout stays the program's).
     opts.onProgress = [](const std::string& phase, const std::string& detail,
                          int current, int total) {
+        // Debug-level narration under the flag, the same plain lines without
+        // it (compiler-jsonl 3.1.5 / 9.2). Real `progress` records come from
+        // the compile path's ProgressPhase markers; this callback is per-source
+        // chatter, so it stays a log line rather than pretending to be one.
+        std::ostringstream m;
         if (phase == "parse" && total > 0)
-            std::cerr << "[jit] parse " << current << "/" << total
-                      << " " << detail << "\n";
+            m << "[jit] parse " << current << "/" << total
+              << " " << detail << "\n";
         else if (total == 0)
-            std::cerr << "[jit] " << phase << "\n";
+            m << "[jit] " << phase << "\n";
+        if (!m.str().empty()) cajeta::logLine("debug", m.str());
     };
 
     // CAJETA_JIT_PHASES=1: dump the build-phase wall-clock breakdown to stderr
@@ -1915,9 +1983,13 @@ int dispatchJitRun(int argc, const char* argv[]) {
                   << "s reparse=" << ph.jitReparseSeconds
                   << "s mat=" << ph.jitMaterializeSeconds
                   << "s) total=" << ph.totalSeconds << "s\n";
+        cajeta::emitJsonResult(code == 0 ? "ok" : "error");
         return code;
     }
-    return runJit(opts);
+    const int code = runJit(opts);
+    // One terminal record, last (compiler-jsonl 9.4).
+    cajeta::emitJsonResult(code == 0 ? "ok" : "error");
+    return code;
 }
 
 } // namespace cajeta::jit

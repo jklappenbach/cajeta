@@ -139,19 +139,62 @@ namespace cajeta {
     void setJsonProgressEnabled(bool enabled) { g_jsonProgress = enabled; }
     bool jsonProgressEnabled() { return g_jsonProgress; }
 
-    void emitStreamRecordOnce(const std::string& producer) {
+    namespace {
+        // Build provenance, not an argv-derived value: the producer identifies
+        // the compiler that wrote the stream, so it must be the same whether
+        // the emitter is the `cajeta` binary or anything else linking this
+        // library (the lint reuse tests run the driver IN-PROCESS and compare
+        // byte-for-byte against a fresh subprocess — a producer that depended
+        // on main() having run made those two disagree). CAJETA_VERSION is a
+        // global compile definition, so it is available here.
+#ifndef CAJETA_VERSION
+#define CAJETA_VERSION "0.0.0-unknown"
+#endif
+        std::string g_jsonProducer = std::string("cajeta ") + CAJETA_VERSION;
+    }
+
+    void setJsonProducer(const std::string& producer) {
+        if (!producer.empty()) g_jsonProducer = producer;
+    }
+    const std::string& jsonProducer() { return g_jsonProducer; }
+
+    bool resolveDiagFormatFromArgv(int argc, const char* argv[]) {
+        // Only the `--diag-format=<value>` form exists (main.cpp's `match`
+        // takes no space-separated variant), so an exact token compare is the
+        // whole grammar. Text stays the default: anything else, including a
+        // malformed value, leaves the gate alone for the verb's own parser to
+        // reject with a usage message.
+        bool json = false;
+        for (int i = 1; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--diag-format=json") json = true;
+            else if (a == "--diag-format=text") json = false;
+        }
+        if (json) setJsonProgressEnabled(true);
+        return json;
+    }
+
+    void emitStreamRecord() {
         // Text mode emits nothing structured, ever (spec 1.4.1).
         if (!jsonProgressEnabled()) return;
-        // At most once per process: the record announces the STREAM, and a
-        // second one would read as a second stream starting.
-        static bool emitted = false;
-        if (emitted) return;
-        emitted = true;
         std::string o = openRecord("stream");
         o += "\"major\":"; o += std::to_string(kJsonlSchemaMajor); o += ",";
         o += "\"minor\":"; o += std::to_string(kJsonlSchemaMinor); o += ",";
-        strOrNull(o, "producer", producer);
+        strOrNull(o, "producer", jsonProducer());
         writeRecord(o);
+    }
+
+    void emitStreamRecordOnce() {
+        // At most once per process: for a verb whose whole run is ONE stream
+        // (a compile, a jit-run). The lint driver uses the unlatched form
+        // instead — each lint response is its own stream, and the warm server
+        // replays a payload that must match a fresh one-shot process byte for
+        // byte (lint-server-spec 1.4.1), which a process-lifetime latch would
+        // break from the second request on.
+        static bool emitted = false;
+        if (emitted) return;
+        emitted = true;
+        emitStreamRecord();
     }
 
     void emitJsonProgress(const std::string& phase,

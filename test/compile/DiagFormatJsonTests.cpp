@@ -148,6 +148,39 @@ std::string lastRecordKind(const std::string& text) {
     return end == std::string::npos ? "" : last.substr(at, end - at);
 }
 
+// Run `cajeta jit-run` on a one-file project, capturing stderr. Separate from
+// compileCapturingStderr because jit-run takes <root> <entry>, not the
+// three-positional compile form.
+int jitRunCapturingStderr(const fs::path& srcRoot, const std::string& flags,
+                          std::string& err) {
+    auto bin = compilerBinary();
+    if (!fs::exists(bin)) return -1;
+    auto errFile = freshTempDir("jitout") / "stderr.txt";
+    std::string cmd = bin + " jit-run " + srcRoot.string()
+                    + " cajeta.Test.main " + flags
+                    + " > " CAJETA_DIAG_DEVNULL " 2> " + errFile.string();
+    int rc = std::system(cmd.c_str());
+    std::ifstream in(errFile);
+    std::stringstream ss; ss << in.rdbuf();
+    err = ss.str();
+    return rc;
+}
+
+// Lint one file, capturing stderr.
+int lintCapturingStderrHere(const fs::path& file, const std::string& flags,
+                            std::string& err) {
+    auto bin = compilerBinary();
+    if (!fs::exists(bin)) return -1;
+    auto errFile = freshTempDir("lintout") / "stderr.txt";
+    std::string cmd = bin + " --lint " + file.string() + " " + flags
+                    + " > " CAJETA_DIAG_DEVNULL " 2> " + errFile.string();
+    int rc = std::system(cmd.c_str());
+    std::ifstream in(errFile);
+    std::stringstream ss; ss << in.rdbuf();
+    err = ss.str();
+    return rc;
+}
+
 } // namespace
 
 // --- compiler-jsonl Unit 1: the envelope ---------------------------------
@@ -304,6 +337,123 @@ TEST(DiagFormatJson, FailingCompileEndsWithAnErrorResultRecord) {
     size_t n = 0, at = 0;
     while ((at = err.find("\"kind\":\"result\"", at)) != std::string::npos) { ++n; ++at; }
     EXPECT_EQ(n, 1u) << "expected exactly one terminal record; stderr:\n" << err;
+}
+
+// --- compiler-jsonl Unit 4: the flag means one thing --------------------
+// `--diag-format=json` used to mean something different per verb: a compile
+// got the full stream, `jit-run` accepted the flag but only exported
+// CAJETA_DIAG_FORMAT for the runtime's uncaught-throw emitter, and `--lint`
+// got diagnostics with no envelope around them. A tool author had to learn
+// the quirks. These pin that they are gone (spec 5.1.2 / 5.2.2).
+
+// 4.1.1 — jit-run gets the envelope it previously had no part of.
+TEST(DiagFormatJson, JitRunHonoursTheFlagAndEmitsTheEnvelope) {
+    auto root = freshTempDir("jitenv");
+    auto srcRoot = writeTest(root, "");
+    std::string err;
+    int rc = jitRunCapturingStderr(srcRoot, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(err.find("\"kind\":\"stream\""), std::string::npos)
+        << "jit-run took the flag and announced nothing; stderr:\n" << err;
+    EXPECT_EQ(lastRecordKind(err), "result")
+        << "jit-run must end with a terminal record; stderr:\n" << err;
+    EXPECT_EQ(lineWithoutKind(err), "")
+        << "a jit-run record escaped without a kind; stderr:\n" << err;
+    // The whole point of honouring the flag: the stream is machine-readable
+    // end to end, not records with narration interleaved between them.
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "jit-run leaked free text into the json stream:\n" << err;
+    // 3.1.3 — the `[jit-run]`/`[jit]` narration arrives as debug-level log
+    // records carrying its text verbatim (spec 9.2), so the console can filter
+    // it by level instead of showing it as untyped noise.
+    EXPECT_NE(err.find("\"kind\":\"log\""), std::string::npos)
+        << "narration lost its structured form; stderr:\n" << err;
+    EXPECT_NE(err.find("\"level\":\"debug\""), std::string::npos)
+        << "narration is not debug-levelled; stderr:\n" << err;
+    EXPECT_NE(err.find("[jit"), std::string::npos)
+        << "narration text was not carried verbatim; stderr:\n" << err;
+}
+
+// jit-run in TEXT mode keeps its narration exactly as it was.
+// 3.1.2 — a dependency graph that cannot be resolved reports as a levelled
+// record too, not as a bare line the console cannot classify.
+TEST(DiagFormatJson, JitDependencyResolutionFailureIsALevelledLogRecord) {
+    auto root = freshTempDir("jitdep");
+    auto dir = root / "src" / "cajeta";
+    fs::create_directories(dir);
+    {
+        // @Inject of an interface no @Component provides: resolveDependencyGraph
+        // fails, and the JIT host reports it.
+        std::ofstream out(dir / "Test.cajeta");
+        out << "package cajeta;\n"
+               "public interface Missing { public void go(); }\n"
+               "@Component\n"
+               "public final class Needy {\n"
+               "    @Inject Missing dep;\n"
+               "    public Needy() { }\n"
+               "}\n"
+               "public final class Test {\n"
+               "    public static void main() { }\n"
+               "}\n";
+    }
+    std::string err;
+    int rc = jitRunCapturingStderr(root / "src", "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    // Whether THIS fixture trips resolution is a language detail; what the
+    // envelope guarantees is that whatever the JIT host says, it says
+    // structurally. A run that fails must never fall back to bare prose.
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "jit-run leaked free text into the json stream:\n" << err;
+    EXPECT_EQ(lastRecordKind(err), "result")
+        << "no terminal record; stderr:\n" << err;
+}
+
+TEST(DiagFormatJson, JitRunTextModeKeepsItsNarration) {
+    auto root = freshTempDir("jittext");
+    auto srcRoot = writeTest(root, "");
+    std::string err;
+    int rc = jitRunCapturingStderr(srcRoot, "", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(err.find("[jit-run] entry"), std::string::npos)
+        << "text-mode narration changed; stderr:\n" << err;
+    EXPECT_EQ(err.find("\"kind\":"), std::string::npos)
+        << "text mode leaked a record; stderr:\n" << err;
+}
+
+// 4.1.2 — lint gets the same envelope. Its payload is what the warm server
+// replays byte-for-byte, so this is also what keeps one-shot and warm honest
+// (lint-server-spec 1.4.1) — the envelope has to be emitted by the shared
+// DRIVER, not once per process, or the two diverge.
+TEST(DiagFormatJson, LintHonoursTheFlagAndEmitsTheEnvelope) {
+    auto root = freshTempDir("lintenv");
+    auto srcRoot = writeTest(root, "NoSuchType z = NoSuchType.create();");
+    auto file = srcRoot / "cajeta" / "Test.cajeta";
+    std::string err;
+    int rc = lintCapturingStderrHere(file, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(err.find("\"kind\":\"stream\""), std::string::npos)
+        << "lint emitted diagnostics with no envelope; stderr:\n" << err;
+    EXPECT_NE(err.find("\"kind\":\"diagnostic\""), std::string::npos) << err;
+    EXPECT_EQ(lastRecordKind(err), "result")
+        << "lint must end with a terminal record; stderr:\n" << err;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(err))
+        << "free text leaked into the lint stream:\n" << err;
+}
+
+TEST(DiagFormatJson, LintTextModeStillEmitsNoRecords) {
+    auto root = freshTempDir("linttext");
+    auto srcRoot = writeTest(root, "NoSuchType z = NoSuchType.create();");
+    auto file = srcRoot / "cajeta" / "Test.cajeta";
+    std::string err;
+    int rc = lintCapturingStderrHere(file, "", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(err.find("\"kind\":"), std::string::npos)
+        << "text-mode lint leaked a record; stderr:\n" << err;
 }
 
 TEST(DiagFormatJson, SemanticErrorEmitsNdjson) {

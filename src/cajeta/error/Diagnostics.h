@@ -101,15 +101,35 @@ namespace cajeta {
     void setJsonProgressEnabled(bool enabled);
     bool jsonProgressEnabled();
 
+    // Who is emitting, for the `stream` record's `producer`. Defaults to
+    // "cajeta <CAJETA_VERSION>" from build provenance — NOT from argv — so a
+    // stream written in-process (the lint reuse harness) names the same
+    // producer as one written by the `cajeta` binary. Override only if some
+    // other tool ever emits this format.
+    void setJsonProducer(const std::string& producer);
+    const std::string& jsonProducer();
+
+    // Resolve `--diag-format=json` from a raw argv, BEFORE any verb dispatches
+    // (compiler-jsonl 5.1.2). `jit-run` and `dap` return long before the main
+    // flag-parse loop, which is exactly why the flag used to mean something
+    // different depending on the verb. Returns true when JSON was selected.
+    bool resolveDiagFormatFromArgv(int argc, const char* argv[]);
+
     // Announce the stream: one `{"kind":"stream","major":M,"minor":N,
     // "producer":"…"}` record, emitted BEFORE any other record and at most once
     // per process (compiler-jsonl 2.1.3). It is emitted even when the run has
     // nothing else to say, so a consumer can tell "clean" from "the process
     // died before producing anything" (spec 2.2.4). No-op in text mode, and
-    // no-op on a second call. `producer` identifies the emitting binary (the
-    // version macros are file-scope to main.cpp, so it is passed in rather
-    // than read here — this stays free of the build stamping).
-    void emitStreamRecordOnce(const std::string& producer);
+    // no-op on a second call. The producer comes from setJsonProducer, so this
+    // stays free of the build-stamped version macros.
+    void emitStreamRecordOnce();
+
+    // The unlatched form: announces a stream every time it is called. Used by
+    // the lint driver, where each response is its own stream and the warm
+    // server must replay a payload byte-identical to a fresh one-shot process
+    // (lint-server-spec 1.4.1) — a process-lifetime latch would silently drop
+    // the record from the second request onward.
+    void emitStreamRecord();
 
     // The stream's schema version (compiler-jsonl 2.1.3/2.1.4). MAJOR bumps on
     // any breaking change and consumers are required to REFUSE an unknown one

@@ -2,6 +2,8 @@
 
 #include "cajeta/compile/LintService.h"
 
+#include "cajeta/error/Diagnostics.h"
+
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -47,6 +49,24 @@ namespace cajeta::lintservice {
                       const std::function<void()>& afterContextRegistration) {
         const bool jsonDiag =
             compiler.getFlags().diagFormat == DiagFormat::Json;
+        // The envelope emitters gate on a PROCESS-wide switch, but a lint's
+        // format is a per-run decision: the warm server sets it per request,
+        // and an in-process caller (the reuse tests) never touches the process
+        // gate at all. Scope the gate to this run so the driver's own decision
+        // governs everything it emits — otherwise warm output would silently
+        // lose the envelope that a one-shot subprocess emits, and the byte
+        // parity the whole lint-server design rests on (spec 1.4.1) would
+        // break in exactly the place no test looks.
+        struct JsonGateScope {
+            bool prev;
+            explicit JsonGateScope(bool on) : prev(jsonProgressEnabled()) {
+                setJsonProgressEnabled(on);
+            }
+            ~JsonGateScope() { setJsonProgressEnabled(prev); }
+        } gate(jsonDiag);
+        // Each lint response is its OWN stream — the unlatched form, so the
+        // warm server's Nth request looks like a fresh process's first.
+        emitStreamRecord();
         // Collect-and-continue: recoverable semantic errors report to the
         // engine (multiple, located) instead of aborting; un-migrated throw
         // sites are caught and folded in. All emitted at the end
@@ -63,6 +83,7 @@ namespace cajeta::lintservice {
             // signal for the plugin to KEEP its previous index for this file
             // (a stale answer beats a wrong one; ide-symbol-index §7).
             compiler.emitLintXrefStream(file, sourceRoot, shadow);
+            emitJsonResult("error", "syntax errors");
             return 1;  // syntax diagnostics already emitted during parsing
         } catch (Exception& e) {
             engine.report("error", e.getErrorId(), e.getMessage(),
@@ -73,7 +94,10 @@ namespace cajeta::lintservice {
         DiagnosticEngine::setActive(nullptr);
         engine.emit(jsonDiag);
         compiler.emitLintXrefStream(file, sourceRoot, shadow);
-        return engine.hasErrors() ? 1 : 0;
+        // Terminal record closes the response (compiler-jsonl 9.4).
+        const int rc = engine.hasErrors() ? 1 : 0;
+        emitJsonResult(rc == 0 ? "ok" : "error");
+        return rc;
     }
 
     int warmLint(const LintRequest& req) {

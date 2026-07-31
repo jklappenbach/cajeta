@@ -250,6 +250,16 @@ static void emitException(cajeta::Exception& e, bool jsonDiag) {
 }
 
 int main(int argc, const char* argv[]) {
+    // Resolve --diag-format BEFORE any verb dispatches (compiler-jsonl 5.1.2).
+    // `jit-run` and `dap` return from this function long before the flag-parse
+    // loop below ever runs, which is precisely why the same flag used to mean
+    // different things depending on the verb: a compile got the full stream,
+    // jit-run got only a CAJETA_DIAG_FORMAT export for the runtime's
+    // uncaught-throw emitter, and nothing else got anything. Resolving here
+    // makes it one flag with one meaning; the loop below still parses it for
+    // the compile path's own flags struct, and agrees by construction.
+    cajeta::resolveDiagFormatFromArgv(argc, argv);
+
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (docs/ArchiveManagement.md);
     // `cajeta info` (and eventually `build`, `test`, ...) routes to
@@ -827,7 +837,7 @@ int main(int argc, const char* argv[]) {
     // (lint-server-spec 1.4.1), and a record added to the one-shot payload but
     // not the warm one would break that parity. Unit 4 extends the envelope to
     // every verb deliberately.
-    cajeta::emitStreamRecordOnce(std::string("cajeta ") + CAJETA_VERSION);
+    cajeta::emitStreamRecordOnce();
     // One terminal record, last, on every exit path (compiler-jsonl 9.4): "did
     // it work" must be answerable from the stream alone, never inferred from an
     // exit code plus silence — the failure mode this whole format exists to
