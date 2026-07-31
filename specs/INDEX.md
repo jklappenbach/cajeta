@@ -46,7 +46,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-2 done; Unit 3 (stdlib remediation) 2026-07-31: tour 233→478 self-checks, all findings items done except nucleo.frame demo ([~] on table-fit) + capacity-permitting small gaps; next: unit 4 codec |
+| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Units 1-4 done; Unit 3 residue: nucleo.frame demo [~] on table-fit; Unit 4 (codec) 2026-07-31: tour 11→113 checks, 52/52 coverage, CI green on v0.12.1 (cajeta-codec 80831b1); next: unit 5 http |
 | [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; FIXED 2026-07-31 — cross-module vtable constant; pins live; ml co-location workaround stays until the fix releases in v0.13.0) | draft |
 | [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; FIXED 2026-07-31, pin live; noted follow-up: fat-aware interface `== null`) | draft |
 | [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
