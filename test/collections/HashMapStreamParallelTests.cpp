@@ -250,13 +250,17 @@ TEST(HashMapStreamParallelTests, parallelValuesNoneMatchTrue) {
 // effects into a shared static counter via atomic add. The visit
 // order is unspecified across workers, but every element must be
 // visited exactly once, so the final sum matches the sequential
-// total.
+// total. The accumulator MUST be AtomicInt32.fetchAdd: the first cut
+// wrote a plain `total = total + v`, whose lost updates never showed
+// on x86 (TSO + partitioning luck) and then failed the v0.12.1
+// release's aarch64-apple-darwin leg by exactly a dropped chunk —
+// a racy test, not a stream defect.
 TEST(HashMapStreamParallelTests, parallelValuesForEachSumsCorrectly) {
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public class Tag { public Tag() { return; } }\n"
-        "public class Acc { public static int32 total = 0; }\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(256);\n"
@@ -265,8 +269,9 @@ TEST(HashMapStreamParallelTests, parallelValuesForEachSumsCorrectly) {
         "            m.put(heap Tag(), i + 1);\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        m.values().parallel().forEach((int32 v) -> Acc.total = Acc.total + v);\n"
-        "        return Acc.total;\n"
+        "        AtomicInt32 total = heap AtomicInt32(0);\n"
+        "        m.values().parallel().forEach((int32 v) -> total.fetchAdd(v));\n"
+        "        return total.load();\n"
         "    }\n"
         "}\n";
     // sum(1..64) = 2080
