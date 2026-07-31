@@ -11,6 +11,7 @@
 //
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -143,6 +144,15 @@ namespace cajeta::jit {
         std::string file;   // e.g. "Calc.cajeta"
         int line = 0;
     };
+
+    // Every emitted safepoint whose file BASENAME + line match `bp` — the
+    // locations startDebugSession would arm for it. Empty means the breakpoint
+    // cannot bind: no statement was compiled at that line of that file, so the
+    // program can never stop there. Only meaningful once a session has been
+    // built (the loc table is populated by the compile). Exposed so the DAP
+    // server can answer "why didn't it stop?" instead of leaving the IDE with
+    // a breakpoint that looks armed. Reads the global loc table.
+    std::vector<int32_t> matchingLocIds(const Breakpoint& bp);
 
     // A running debug session: the program is compiled with --debug-info,
     // breakpoints are armed, and the entry runs on a BACKGROUND thread wired to

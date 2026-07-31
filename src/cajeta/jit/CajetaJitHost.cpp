@@ -1666,6 +1666,21 @@ std::vector<JitDebugSession::FiberSnapshot> JitDebugSession::liveFibers() {
     return out;
 }
 
+std::vector<int32_t> matchingLocIds(const Breakpoint& bp) {
+    namespace fs = std::filesystem;
+    std::vector<int32_t> out;
+    const auto& table = cajeta::dbg::globalDbgLocTable();
+    // assignedIds, not 0..size(): the ranged allocator leaves the id space
+    // sparse, so a dense walk would read unassigned slots.
+    for (int32_t id : table.assignedIds()) {
+        const auto& loc = table.at(id);
+        if (loc.line != bp.line) continue;
+        std::string base = fs::path(loc.file).filename().string();
+        if (base == bp.file || loc.file == bp.file) out.push_back(id);
+    }
+    return out;
+}
+
 std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
@@ -1684,20 +1699,12 @@ std::unique_ptr<JitDebugSession> startDebugSession(
         return nullptr;
     }
 
-    // Arm: match each breakpoint against the loc table by file BASENAME + line.
-    namespace fs = std::filesystem;
-    const auto& table = cajeta::dbg::globalDbgLocTable();
-    const std::vector<int32_t> ids = table.assignedIds();  // sparse ranges:
-    for (const auto& bp : breakpoints) {                   // never 0..size()
-        for (int32_t id : ids) {
-            const auto& loc = table.at(id);
-            if (loc.line != bp.line) continue;
-            std::string base = fs::path(loc.file).filename().string();
-            if (base == bp.file || loc.file == bp.file) {
-                impl->controller.arm(id);
-            }
-        }
-    }
+    // Arm: match each breakpoint against the loc table by file BASENAME +
+    // line. The match itself lives in matchingLocIds so the DAP server's
+    // "can this bind?" answer and what is actually armed cannot drift apart.
+    for (const auto& bp : breakpoints)
+        for (int32_t id : matchingLocIds(bp))
+            impl->controller.arm(id);
     // CP6f-3: arm break-on-throw BEFORE the program thread starts (below), so a
     // program that throws immediately can't race past the arm.
     if (armExceptions) impl->controller.armException();

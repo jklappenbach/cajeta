@@ -1192,6 +1192,20 @@ namespace cajeta {
                 // `Type.method(:NN)`. entry.name is already the archive-relative
                 // path (`<pkg>/<Class>.cajeta`) — exactly the remapped form.
                 extMod->setCurrentSourceFile(entryName);
+                // ...and its IDENTITY, not just its declaring file. The JIT's
+                // debug loc-id ranges (assignDbgLocRanges) key on
+                // remappedSourcePath(), which reads sourcePath — left EMPTY by
+                // the synthetic ctor. Every dependency module therefore hashed
+                // to the same registry slot, took the same dbgLocBase, and
+                // restarted at dbgLocUsed 0, overwriting the previous one's
+                // entries in the global loc table. Last writer won: exactly one
+                // dependency class resolved, every other one's safepoints
+                // reported ITS file and line, and a breakpoint in any of them
+                // never matched (Julian, 2026-07-31: `Logger.cajeta` never
+                // fired; every dependency frame claimed `LogFmt.cajeta`).
+                // entryName is already machine-independent, so this stays
+                // reproducible across build roots.
+                extMod->setSourcePath(entryName);
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();

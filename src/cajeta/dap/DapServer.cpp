@@ -545,6 +545,16 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         std::string path = args.at("source").at("path").asString();
         if (path.empty()) path = args.at("source").at("name").asString();
         std::string base = std::filesystem::path(path).filename().string();
+        // Whole-file REPLACE, per the DAP spec: drop this source's previous
+        // breakpoints (and their ids) before recording the new set. Appending
+        // left stale copies behind on every re-send — which the plugin does
+        // each time a breakpoint is added or removed mid-session.
+        for (size_t i = breakpoints_.size(); i-- > 0; ) {
+            if (breakpoints_[i].file != base) continue;
+            breakpoints_.erase(breakpoints_.begin() + i);
+            if (i < breakpointIds_.size())
+                breakpointIds_.erase(breakpointIds_.begin() + i);
+        }
         Json verified = Json::array();
         const Json& bps = args.at("breakpoints");
         for (size_t i = 0; i < bps.size(); ++i) {
@@ -555,7 +565,13 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             std::string cond = bps[i].at("condition").asString();
             if (!cond.empty()) conditions_[{base, line}] = cond;
             else conditions_.erase({base, line});
+            // Optimistic: nothing is compiled yet, so whether this location
+            // carries a safepoint is unknowable here. The id is what lets
+            // configurationDone come back and say otherwise.
+            const int id = nextBreakpointId_++;
+            breakpointIds_.push_back(id);
             Json b = Json::object();
+            b["id"] = id;
             b["verified"] = true;
             b["line"] = line;
             verified.push_back(std::move(b));
@@ -634,6 +650,32 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             body["category"] = "console";
             body["output"] = "cajeta: compile finished\n";
             emit(makeEvent(seq_++, "output", std::move(body)));
+            // The program is compiled, so the loc table now says which
+            // breakpoints can actually bind. Downgrade the ones that matched
+            // no safepoint: without this the IDE shows them as armed and the
+            // run just ends with no explanation (Julian, 2026-07-31).
+            for (size_t i = 0; i < breakpoints_.size(); ++i) {
+                if (!cajeta::jit::matchingLocIds(breakpoints_[i]).empty())
+                    continue;
+                Json bp = Json::object();
+                if (i < breakpointIds_.size()) bp["id"] = breakpointIds_[i];
+                bp["verified"] = false;
+                bp["line"] = breakpoints_[i].line;
+                // Carry the source too: the client correlates by (file, line)
+                // without having to remember the ids it was handed.
+                Json bpSrc = Json::object();
+                bpSrc["name"] = breakpoints_[i].file;
+                bpSrc["path"] = breakpoints_[i].file;
+                bp["source"] = std::move(bpSrc);
+                bp["message"] =
+                    "no statement compiled at " + breakpoints_[i].file + ":"
+                    + std::to_string(breakpoints_[i].line)
+                    + " — the program cannot stop here";
+                Json ev = Json::object();
+                ev["reason"] = "changed";
+                ev["breakpoint"] = std::move(bp);
+                emit(makeEvent(seq_++, "breakpoint", std::move(ev)));
+            }
             // dap-stepping: give the controller its depth/line seams. Depth is
             // the carrier's own frame-chain length at the safepoint (the
             // carrier is executing the chase, so the chain is stable); line is

@@ -362,6 +362,21 @@ class CajetaDebugProcess(
             stoppedThreadId = tid
             onStopped(ds, tid)
         }
+        // A breakpoint the compile could not bind. Say so BOTH ways: grey the
+        // gutter marker (the durable signal, right next to the code) and print
+        // to the console (the signal you actually see when a run just ends).
+        // Silence here is what made a non-stopping run indistinguishable from
+        // a broken debugger — Julian, 2026-07-31.
+        ds.onBreakpointUnverified = { file, line, message ->
+            processHandler.emitError("cajeta: breakpoint not set — $message\n")
+            breakpointHandler.find(file, line)?.let { bp ->
+                com.intellij.openapi.application.ApplicationManager.getApplication()
+                    .invokeLater(
+                        { session.setBreakpointInvalid(bp, message) },
+                        com.intellij.openapi.application.ModalityState.any(),
+                    )
+            }
+        }
     }
 
     override fun stop() {

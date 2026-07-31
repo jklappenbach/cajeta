@@ -1129,6 +1129,148 @@ TEST(DapServerSession, NoBreakpointsRunsToTermination) {
     EXPECT_EQ(countEvent(log, "terminated"), 1);
 }
 
+// --- unbindable breakpoints report themselves --------------------------
+// setBreakpoints is answered BEFORE the program is compiled, so the server
+// cannot know then whether a location will carry a safepoint; it answers
+// optimistically. Once configurationDone has built the session the answer IS
+// known, and a location that matched nothing must be downgraded through a DAP
+// `breakpoint` event. Without this the IDE paints a solid, bound breakpoint
+// over code that can never stop and gives no reason for running straight
+// through (Julian, 2026-07-31: "it never hit a breakpoint, and didn't show
+// compilation or any other reason for not hitting a breakpoint").
+
+// Find the first event of a given name.
+static const Json* findEvent(const std::vector<Json>& log,
+                             const std::string& ev) {
+    for (const auto& m : log)
+        if (m.at("type").asString() == "event" &&
+            m.at("event").asString() == ev) return &m;
+    return nullptr;
+}
+
+TEST(DapServerSession, UnbindableBreakpointIsReportedUnverified) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    // Line 2 is `public class Calc {` — a declaration, never a statement, so
+    // no safepoint is ever emitted for it.
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Calc.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 2;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+    // The optimistic answer carries an id so a later event can name it.
+    const Json* sbResp = findResponse(log, "setBreakpoints");
+    ASSERT_NE(sbResp, nullptr);
+    const Json& answered = sbResp->at("body").at("breakpoints")[0];
+    ASSERT_TRUE(answered.has("id")) << "no id to correlate a later update to";
+    const int bpId = answered.at("id").asInt();
+
+    log.clear();
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+
+    const Json* ev = findEvent(log, "breakpoint");
+    ASSERT_NE(ev, nullptr)
+        << "no breakpoint event: an unbindable location stayed 'verified'";
+    const Json& body = ev->at("body");
+    EXPECT_EQ(body.at("reason").asString(), "changed");
+    EXPECT_EQ(body.at("breakpoint").at("id").asInt(), bpId);
+    EXPECT_FALSE(body.at("breakpoint").at("verified").asBool());
+    EXPECT_FALSE(body.at("breakpoint").at("message").asString().empty())
+        << "an unverified breakpoint must say WHY";
+
+    // The program still runs; an unbindable breakpoint is not an error.
+    EXPECT_EQ(countEvent(log, "terminated"), 1);
+}
+
+// The converse: a location that DOES bind must not be downgraded. Without
+// this the feature could "pass" by marking everything unverified.
+TEST(DapServerSession, BindableBreakpointIsNotDowngraded) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Calc.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 5;                 // a real statement
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(srv, req(3, "setBreakpoints", bpArgs), log);
+
+    log.clear();
+    drive(srv, req(4, "configurationDone", Json::object()), log);
+
+    EXPECT_EQ(countEvent(log, "breakpoint"), 0)
+        << "a bindable breakpoint was downgraded";
+    EXPECT_EQ(countEvent(log, "stopped"), 1);
+
+    // Resume: the program is PARKED at the breakpoint, and tearing the server
+    // down while a thread waits on resume() hangs the target rather than
+    // failing it.
+    drive(srv, req(5, "continue", Json::object()), log);
+}
+
+// DAP defines setBreakpoints as a whole-file REPLACE. The server appended
+// instead, so re-sending a file's breakpoints (which the plugin does whenever
+// one is added or removed mid-session) accumulated duplicates. Arming was
+// idempotent so it went unnoticed — until an unbindable location started
+// reporting itself once per stale copy.
+TEST(DapServerSession, ResendingAFilesBreakpointsReplacesRatherThanAccumulates) {
+    TempProgram p("demo", "Calc.cajeta", kProg);
+    DapServer srv;
+    std::vector<Json> log;
+
+    drive(srv, req(1, "initialize", Json::object()), log);
+    Json launchArgs = Json::object();
+    launchArgs["entry-method"] = "demo.Calc.main";
+    launchArgs["sourceRoot"] = p.sourceRoot();
+    drive(srv, req(2, "launch", launchArgs), log);
+
+    auto sendBp = [&](int seq, int line) {
+        Json bpArgs = Json::object();
+        Json src = Json::object();
+        src["path"] = "Calc.cajeta";
+        bpArgs["source"] = src;
+        Json bps = Json::array();
+        Json bp = Json::object();
+        bp["line"] = line;
+        bps.push_back(bp);
+        bpArgs["breakpoints"] = bps;
+        drive(srv, req(seq, "setBreakpoints", bpArgs), log);
+    };
+    sendBp(3, 2);   // unbindable (a class declaration)
+    sendBp(4, 2);   // the same file again — a replace, not a second copy
+
+    log.clear();
+    drive(srv, req(5, "configurationDone", Json::object()), log);
+
+    EXPECT_EQ(countEvent(log, "breakpoint"), 1)
+        << "stale breakpoints from the previous setBreakpoints survived";
+}
+
 // Contract CHANGED by resident-debug-server 1.2.1 (2026-07-21): disconnect
 // ends the SESSION and keeps the request loop alive for the next one; the
 // PROCESS ends at stdin EOF (run()'s read loop) or when the launcher kills

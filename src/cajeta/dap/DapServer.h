@@ -149,6 +149,13 @@ namespace cajeta::dap {
         // never ends cleanly.
         cajeta::util::EnvironmentScope envScope_;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
+        // DAP ids for breakpoints_, parallel by index. setBreakpoints answers
+        // before the program is compiled, so it cannot know yet whether a
+        // location will carry a safepoint; it answers `verified: true` and
+        // hands back an id, and configurationDone downgrades the ones that
+        // matched nothing through a `breakpoint` event naming that id.
+        std::vector<int> breakpointIds_;
+        int nextBreakpointId_ = 1;
         // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
         // or absent entry means an unconditional breakpoint.
         std::map<std::pair<std::string, int>, std::string> conditions_;
