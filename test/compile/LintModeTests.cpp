@@ -157,7 +157,11 @@ TEST(LintMode, SemanticErrorJsonEmitsNdjson) {
     if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
 
     EXPECT_NE(rc, 0) << "a semantic error must fail the lint";
-    EXPECT_TRUE(hasLineStartingWith(err, "{\"severity\":\"error\""))
+    // Fields, not a byte prefix: `kind` leads every record now
+    // (compiler-jsonl 2.1.1) and JSON key order was never contractual.
+    EXPECT_NE(err.find("\"kind\":\"diagnostic\""), std::string::npos)
+        << "stderr:\n" << err;
+    EXPECT_NE(err.find("\"severity\":\"error\""), std::string::npos)
         << "stderr:\n" << err;
     EXPECT_NE(err.find("NoSuchType"), std::string::npos) << "stderr:\n" << err;
 }

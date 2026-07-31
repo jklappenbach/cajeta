@@ -92,6 +92,25 @@ namespace cajeta {
             if (v.empty()) out += "null";
             else { out += "\""; out += jsonEscape(v); out += "\""; }
         }
+
+        // The one place a record is opened (compiler-jsonl 2.1.1): every record
+        // leads with its `kind`, so a consumer dispatches on the discriminator
+        // instead of inferring the type from which payload fields happen to be
+        // present. Callers append their own fields and close with `}`.
+        std::string openRecord(const char* kind) {
+            std::string o = "{\"kind\":\"";
+            o += kind;
+            o += "\",";
+            return o;
+        }
+
+        // The one place a record is written: one line, one flush, so a consumer
+        // reading the pipe sees each record when it happens rather than at
+        // process exit (spec 1.4.3).
+        void writeRecord(std::string& o) {
+            o += "}\n";
+            std::cerr << o << std::flush;
+        }
     } // namespace
 
     void emitJsonDiagnostic(const std::string& severity,
@@ -100,17 +119,17 @@ namespace cajeta {
                             const std::string& file,
                             int line,
                             int column) {
-        std::string o = "{";
+        // `kind` leads; every field that was here before is unchanged, in the
+        // same order, with the same meaning (compiler-jsonl 1.4.2 — a new
+        // compiler must not break an installed plugin).
+        std::string o = openRecord("diagnostic");
         strOrNull(o, "severity", severity); o += ",";
         strOrNull(o, "code", code);         o += ",";
         strOrNull(o, "message", message);   o += ",";
         strOrNull(o, "file", file);         o += ",";
         o += "\"line\":";   o += (line   > 0 ? std::to_string(line)   : "null"); o += ",";
         o += "\"column\":"; o += (column > 0 ? std::to_string(column) : "null");
-        o += "}\n";
-        // stderr, unbuffered-friendly: one write per line so consumers reading
-        // the pipe see each diagnostic as it is produced.
-        std::cerr << o << std::flush;
+        writeRecord(o);
     }
 
     namespace {
@@ -120,11 +139,26 @@ namespace cajeta {
     void setJsonProgressEnabled(bool enabled) { g_jsonProgress = enabled; }
     bool jsonProgressEnabled() { return g_jsonProgress; }
 
+    void emitStreamRecordOnce(const std::string& producer) {
+        // Text mode emits nothing structured, ever (spec 1.4.1).
+        if (!jsonProgressEnabled()) return;
+        // At most once per process: the record announces the STREAM, and a
+        // second one would read as a second stream starting.
+        static bool emitted = false;
+        if (emitted) return;
+        emitted = true;
+        std::string o = openRecord("stream");
+        o += "\"major\":"; o += std::to_string(kJsonlSchemaMajor); o += ",";
+        o += "\"minor\":"; o += std::to_string(kJsonlSchemaMinor); o += ",";
+        strOrNull(o, "producer", producer);
+        writeRecord(o);
+    }
+
     void emitJsonProgress(const std::string& phase,
                           const std::string& state,
                           const std::string& label,
                           long long elapsedMs) {
-        std::string o = "{\"kind\":\"progress\",";
+        std::string o = openRecord("progress");
         strOrNull(o, "phase", phase); o += ",";
         strOrNull(o, "state", state); o += ",";
         strOrNull(o, "label", label);
@@ -132,19 +166,14 @@ namespace cajeta {
             o += ",\"elapsedMs\":";
             o += std::to_string(elapsedMs);
         }
-        o += "}\n";
-        // Same stream + flush discipline as emitJsonDiagnostic: one write per
-        // line so the IDE's pipe reader sees a phase the moment it starts,
-        // instead of when the process exits.
-        std::cerr << o << std::flush;
+        writeRecord(o);
     }
 
     void emitJsonCacheHit(const std::string& artifact) {
-        std::string o = "{\"kind\":\"cache\",";
+        std::string o = openRecord("cache");
         strOrNull(o, "state", "hit");     o += ",";
         strOrNull(o, "artifact", artifact);
-        o += "}\n";
-        std::cerr << o << std::flush;
+        writeRecord(o);
     }
 
     ProgressPhase::ProgressPhase(std::string phase, std::string label)

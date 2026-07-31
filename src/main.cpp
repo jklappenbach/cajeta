@@ -820,6 +820,14 @@ int main(int argc, const char* argv[]) {
     }
 
     bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+    // Announce the stream before the compile says anything (compiler-jsonl
+    // 2.1.3). Emitted here rather than at the flag parse because the earlier
+    // verbs return before this point and each needs its own treatment: `--lint`
+    // and `--lint-server` must stay byte-identical to each OTHER
+    // (lint-server-spec 1.4.1), and a record added to the one-shot payload but
+    // not the warm one would break that parity. Unit 4 extends the envelope to
+    // every verb deliberately.
+    cajeta::emitStreamRecordOnce(std::string("cajeta ") + CAJETA_VERSION);
     try {
         compiler.compile(positional[0], positional[1], positional[2]);
     } catch (cajeta::SyntaxErrorException&) {

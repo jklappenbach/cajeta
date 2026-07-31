@@ -101,11 +101,28 @@ namespace cajeta {
     void setJsonProgressEnabled(bool enabled);
     bool jsonProgressEnabled();
 
+    // Announce the stream: one `{"kind":"stream","major":M,"minor":N,
+    // "producer":"…"}` record, emitted BEFORE any other record and at most once
+    // per process (compiler-jsonl 2.1.3). It is emitted even when the run has
+    // nothing else to say, so a consumer can tell "clean" from "the process
+    // died before producing anything" (spec 2.2.4). No-op in text mode, and
+    // no-op on a second call. `producer` identifies the emitting binary (the
+    // version macros are file-scope to main.cpp, so it is passed in rather
+    // than read here — this stays free of the build stamping).
+    void emitStreamRecordOnce(const std::string& producer);
+
+    // The stream's schema version (compiler-jsonl 2.1.3/2.1.4). MAJOR bumps on
+    // any breaking change and consumers are required to REFUSE an unknown one
+    // rather than guess; MINOR bumps when a record kind or field is ADDED,
+    // which existing consumers skip or ignore (2.1.5/2.1.6).
+    constexpr int kJsonlSchemaMajor = 1;
+    constexpr int kJsonlSchemaMinor = 0;
+
     // Emit one compile-phase progress record as an NDJSON line to stderr, on the
     // SAME stream as the diagnostics above and only under `--diag-format=json`.
-    // Fields: kind ("progress" — the discriminator; a diagnostic record has no
-    // `kind` and always has `severity`, so the two never collide and an older
-    // consumer that keys on `severity` simply ignores these), phase (stable id:
+    // Fields: kind ("progress" — the discriminator, which EVERY record now
+    // carries, diagnostics included, so consumers dispatch instead of sniffing
+    // for a `severity` field), phase (stable id:
     // "prescan" | "parse" | "resolve" | "codegen" | "emit" | "link"), state
     // ("start" | "finish"), label (human-readable phase name), and, on finish,
     // elapsedMs. One line per call, flushed, so the IDE sees each phase as it
