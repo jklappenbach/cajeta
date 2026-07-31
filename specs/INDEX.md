@@ -25,7 +25,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint + full-compile collect-and-continue landed 2026-07-29; codegen-in-collect-mode is the open follow-up; remaining scope unverified) | active |
 | [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10; re-open trigger HIT 2026-07-31: plan D1 — warm-cache build drops newly-required template instantiations, link failure; cold build fine) |
 | [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
-| [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (docs-refactor 15.4) | draft |
+| [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (defect; **FIXED** 2026-07-31 — CAJETA_ERROR_STACK_RETURN_ESCAPES now covers `return stack X()` and `return #stackLocal` under a `#` return; was an IR-verifier crash / silent clobber) | draft |
 | [net-server-shutdown-wake](net-server-shutdown-wake-spec.md) | — (docs-refactor 15.6) | draft |
 | [matrix-element-callarg](matrix-element-callarg-spec.md) | — (docs-refactor 15.8) | draft |
 | [kernel-device-call-diagnostic](kernel-device-call-diagnostic-spec.md) | — (docs-refactor 15.9) | draft |
@@ -56,4 +56,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
 | [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect, tour-quality unit 5; gdb signature in spec) | draft — SEVERITY RAISED 2026-07-31: reproduces 6/6 on an IDLE box, both 0.12.0 and 0.13.0 builds; not load-gated, not a regression; wedges every server shutdown+await teardown; blocks running the cajeta-http tour locally |
-| [template-field-borrow-escape](template-field-borrow-escape-spec.md) | — (defect, silent UAF; borrow stored via template-typed field; 24-line repro in spec; found by compiler-mcp U5 example verification) | draft |
+| [field-store-title-trap](field-store-title-trap-spec.md) | — (defect, silent UAF; fresh rvalue -> plain formal -> plain field store is freed at callee exit. RE-DIAGNOSED: not template-specific, not a missing borrow check; fix is a semantic change awaiting sign-off, spec §4) | draft |

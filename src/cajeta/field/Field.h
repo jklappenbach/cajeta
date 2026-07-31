@@ -58,6 +58,7 @@ namespace cajeta {
         llvm::AllocaInst* alloca;
         llvm::Value* dropEntry = nullptr;
         bool runtimeConditionalOwner = false;
+        bool stackInstance = false;
         bool ownershipAudited = false;
         // slices 9.2.1 — for OWNING String-element array locals: the stack
         // sidecar shared by the element-store helpers and the element-walk
@@ -184,6 +185,15 @@ namespace cajeta {
         // when the owner pushes onto the chain.
         llvm::Value* getDropEntry() const { return dropEntry; }
         void setDropEntry(llvm::Value* e) { dropEntry = e; }
+
+        // True when this local was initialized by a `stack` construction
+        // (`Cell c = stack Cell(...)`). Storage class lives on the
+        // construction, not the type, so the declaration site is the only
+        // place that knows — it records the fact here for later analyses.
+        // Consumed by the `#`-return escape check
+        // (stack-return-transfer-error-spec §2.1).
+        bool isStackInstance() const { return stackInstance; }
+        void setStackInstance(bool v) { stackInstance = v; }
         // title-stores 6.2.1 — this local/formal's drop entry is armed from a
         // RUNTIME bit (transfer word, return flag, or forwarded slot bit), so
         // a plain retaining store of it is the loud-plain-store hazard.

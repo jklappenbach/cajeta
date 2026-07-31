@@ -1757,6 +1757,57 @@ namespace cajeta {
             if (auto m = module->getCurrentMethod()) m->emitOwnerDrops(module);
             return builder->CreateRetVoid();
         }
+        // stack-return-transfer-error-spec §2.1: a `#T` return type promises
+        // the caller an OWNED value that outlives this frame, but a `stack`
+        // instance dies with the frame. The pairing is always wrong — the
+        // caller registers a drop entry over reclaimed stack memory. Before
+        // this check the direct shape reached codegen and blew up in the IR
+        // verifier ("return type does not match operand type"), and the
+        // named-local shape (`Cell c = stack Cell(); return #c;`) compiled
+        // clean and returned clobbered memory. Both are now one diagnostic;
+        // the fix for both is `heap`.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->isReturnsOwnership() && expression) {
+                // Unwrap `return #c` to reach the moved-from identifier.
+                ExpressionPtr inner = expression;
+                if (auto mv = dynamic_pointer_cast<MoveExpression>(expression)) {
+                    auto& mch = mv->getChildren();
+                    if (!mch.empty()) {
+                        inner = dynamic_pointer_cast<Expression>(mch[0]);
+                        if (!inner) inner = expression;
+                    }
+                }
+                bool stackReturn = Method::exprIsStackConstruction(inner);
+                std::string what = "a `stack` construction";
+                if (!stackReturn) {
+                    if (auto idExpr =
+                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
+                        if (auto scope = module->getScopeStack().peek()) {
+                            FieldPtr f = scope->getField(idExpr->getTextValue());
+                            if (f && f->isStackInstance()) {
+                                stackReturn = true;
+                                what = "local '" + idExpr->getTextValue()
+                                     + "', a `stack` value,";
+                            }
+                        }
+                    }
+                }
+                if (stackReturn) {
+                    throw Exception(
+                        "method `" + m->toCanonical(false) + "` returns " + what
+                        + " through a `#` (ownership-transfer) return type. The "
+                        "stack instance is reclaimed when this frame exits, but "
+                        "`#` promises the caller an owned value that outlives "
+                        "the call — the caller would register a drop over freed "
+                        "stack memory. Fix: allocate with `heap` (the value "
+                        "must outlive the frame), or drop the `#` from the "
+                        "return type if you meant to return by value. See "
+                        "docs/specification/lang/MemoryModel.md § Function "
+                        "signatures.",
+                        "CAJETA_ERROR_STACK_RETURN_ESCAPES");
+                }
+            }
+        }
         // Memory-model § Function signatures: returning a fresh
         // allocation (`return heap X(...)`, `return new X(...)`,
         // `return heap X { ... }`) requires the enclosing method's

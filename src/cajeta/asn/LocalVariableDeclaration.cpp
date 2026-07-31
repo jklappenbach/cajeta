@@ -1698,6 +1698,11 @@ namespace cajeta {
                 // and reachable: they live in vtable.drop_fn and the
                 // dispatcher routes through them.
                 if (initIsStackAlloc) {
+                    // Record the storage class for later analyses — the `#`
+                    // return escape check needs it (stack-return-transfer-error
+                    // spec §2.1) and this declaration is the only site that
+                    // knows: storage lives on the construction, not the type.
+                    field->setStackInstance(true);
                     // Skip the drop entry entirely when the stack drop is a
                     // no-op (primitive-only value types like Instant/LocalDate):
                     // registering + running an empty drop per scope is the whole

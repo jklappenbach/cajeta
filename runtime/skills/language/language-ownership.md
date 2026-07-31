@@ -84,10 +84,16 @@ placement keyword).
 
 ## Sharp edges
 
-- **`return #p` where `p` is `stack`-allocated compiles today and returns
-  clobbered memory** — silent UB, tracked as
-  `specs/stack-return-transfer-error-spec.md`. Anything that escapes a frame
-  must be `heap`.
+- **Returning a `stack` value through a `#` return type is rejected** —
+  `CAJETA_ERROR_STACK_RETURN_ESCAPES`, for both `return stack X(...)` and
+  `Cell c = stack Cell(); return #c;`. Anything that escapes a frame must be
+  `heap`. (This was silent UB before 2026-07-31.)
+- **Storing a fresh value into a field through a plain formal dangles.**
+  `Box(T v) { this.value = v; }` called as `heap Box(heap Cell(1))` frees the
+  value at constructor exit — the formal received the title and never consumed
+  it. Declare `#T` and store with `#=` when the field must outlive the call;
+  passing a *named local* instead lends and aliases correctly
+  (`specs/field-store-title-trap-spec.md`).
 - Ownership at a call site is directional: a plain `T` parameter can *accept*
   an offered `#x` (the value then drops in the callee) — but a `#T` parameter
   never accepts a plain borrow.

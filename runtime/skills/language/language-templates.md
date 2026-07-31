@@ -23,13 +23,16 @@ public class Box<T> {
 }
 ```
 
-**Hazard (silent UAF, tracked:** `specs/template-field-borrow-escape-spec.md`**)**:
-the borrowing shape `Box(T v) { this.value = v; }` compiles without
-diagnostic, works for primitive `T`, and **use-after-frees for class `T`** —
-`heap Box<Dog>(heap Dog())` leaves `value` dangling (the unowned temp drops
-after construction; the next `value` use SIGSEGVs). The borrow checker does
-not yet catch borrow-escape through template-typed fields. Default to the
-owning ctor (`#T` + `#=`) for any `T` that may be a class.
+**Hazard (silent UAF, tracked:** `specs/field-store-title-trap-spec.md`**)**:
+the plain shape `Box(T v) { this.value = v; }` compiles without diagnostic and
+**dangles when the caller passes a fresh value** —
+`heap Box<Dog>(heap Dog())` surrenders the title to a formal that never
+consumes it, so it is freed at constructor exit and the field points at freed
+memory. (Passing a *named local* instead lends, and the field aliases
+correctly.) This is **not** template-specific — a concrete `Dog value;` field
+behaves identically — and it is the transfer ABI working as specified, not a
+missing check. Default to the owning ctor (`#T` + `#=`) whenever the field
+should outlive the call.
 
 ## Method templates
 

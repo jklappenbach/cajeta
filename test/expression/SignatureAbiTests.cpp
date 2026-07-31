@@ -956,3 +956,144 @@ TEST(SignatureAbiTests, tailCallThroughPlainReturnForwardsBorrow) {
         "}\n";
     EXPECT_EQ(runI32(src), 5);
 }
+
+// ---------------------------------------------------------------------------
+// Defect fixes found by compiler-mcp skill-example verification (2026-07-31).
+// Both are SILENT UB today: the program compiles clean and misbehaves at run
+// time. Specs: specs/stack-return-transfer-error-spec.md and
+// specs/template-field-borrow-escape-spec.md.
+// ---------------------------------------------------------------------------
+
+// stack-return-transfer §2.1 — `return stack X(...)` under a `#X` return type.
+// The stack instance dies with the frame while `#` promises the caller an owned,
+// outliving value: the caller registers a drop on freed stack memory.
+TEST(SignatureAbiTests, stackConstructionReturnedUnderTransferRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() {\n"
+        "        return stack Cell(1);\n"        // stack value escaping via #
+        "    }\n"
+        "    public static int32 run() { return make().n; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_STACK_RETURN_ESCAPES");
+}
+
+// stack-return-transfer §2.1 — same hazard through a named local: the local is
+// `stack`-constructed and handed out with `#`.
+TEST(SignatureAbiTests, stackLocalReturnedUnderTransferRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() {\n"
+        "        Cell c = stack Cell(1);\n"
+        "        return #c;\n"                   // transfer of a stack value
+        "    }\n"
+        "    public static int32 run() { return make().n; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_STACK_RETURN_ESCAPES");
+}
+
+// stack-return-transfer — the legitimate shapes must keep compiling: `heap`
+// under `#`, and a plain (non-`#`) stack return of a by-value type.
+TEST(SignatureAbiTests, heapReturnUnderTransferStillCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() {\n"
+        "        return heap Cell(41);\n"
+        "    }\n"
+        "    public static int32 run() { return make().n + 1; }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// title-tracking / FieldOwnership — the field-store title trap (see
+// specs/field-store-title-trap-spec.md). A fresh owned rvalue surrendered to a
+// PLAIN formal that stores it into a field without consuming the title is freed
+// at callee exit (the specified "unconsumed flag-true formal drops in the
+// callee" rule), leaving the field dangling. NOT template-specific and NOT a
+// missing borrow-escape check — fields legitimately alias (FieldOwnership.md
+// rejected the static rule). Pinned DISABLED until the semantic call is made:
+// today it reads freed memory rather than the 2 it should.
+TEST(SignatureAbiTests, DISABLED_freshRvalueIntoPlainFormalFieldStoreDangles) {
+    std::string src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag;\n"
+        "    public Animal(int32 t) { this.tag = t; }\n"
+        "}\n"
+        "public class BoxA {\n"
+        "    public Animal value;\n"
+        "    public BoxA(Animal v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        BoxA b = heap BoxA(heap Animal(2));\n"
+        "        return b.value.tag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// The LEND path is correct today and must stay correct: a named local passed
+// plainly lends, the field aliases, and the source still owns. This is the
+// ratified aliasing behavior the stdlib depends on (ArrayStream.data,
+// Optional.value) — any future fix to the trap above must not disturb it.
+TEST(SignatureAbiTests, lentLocalIntoPlainFormalFieldStoreAliases) {
+    std::string src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag;\n"
+        "    public Animal(int32 t) { this.tag = t; }\n"
+        "}\n"
+        "public class BoxA {\n"
+        "    public Animal value;\n"
+        "    public BoxA(Animal v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Animal a = heap Animal(2);\n"
+        "        BoxA b = heap BoxA(a);\n"
+        "        return b.value.tag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// template-field-borrow-escape §3 — the owning shape (`#T` param + `#=` store)
+// is the documented fix and must compile and run correctly.
+TEST(SignatureAbiTests, owningTemplateFieldStoreCompilesAndRuns) {
+    std::string src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag;\n"
+        "    public Animal(int32 t) { this.tag = t; }\n"
+        "}\n"
+        "public class Box<T> {\n"
+        "    public T value;\n"
+        "    public Box(#T v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<Animal> b = heap Box<Animal>(heap Animal(42));\n"
+        "        return b.value.tag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
+
+// template-field-borrow-escape — a PRIMITIVE instantiation stores by copy and
+// must stay legal with the plain (non-`#`) ctor.
+TEST(SignatureAbiTests, primitiveTemplateFieldStoreStillCompiles) {
+    std::string src =
+        "package test;\n"
+        "public class Box<T> {\n"
+        "    public T value;\n"
+        "    public Box(T v) { this.value = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b = heap Box<int32>(42);\n"
+        "        return b.value;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}

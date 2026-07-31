@@ -41,3 +41,38 @@ conservative side (diagnose).
 ## 3. Non-goals
 Automatic promotion of `stack` to `heap` at the return site (silent
 allocation changes are worse than the error); lifetime extension.
+
+## 4. Status — SHIPPED 2026-07-31
+
+Implemented in `ReturnStatement::generateCode`
+(`src/cajeta/asn/Statement.cpp`), gated on `Method::isReturnsOwnership()`.
+`CAJETA_ERROR_STACK_RETURN_ESCAPES` is the id, as proposed in §2.1.
+
+**Covered** (both were silent before — the direct form reached codegen and
+died in the LLVM IR verifier with "return type does not match operand type";
+the local form compiled clean and returned clobbered memory):
+
+- `#X f() { return stack X(...); }` — direct construction, and the stack
+  aggregate-initializer form (`Method::exprIsStackConstruction`).
+- `#X f() { X c = stack X(...); return #c; }` — named local. The declaration
+  site records the storage class on the field (`Field::setStackInstance`,
+  set where `initIsStackAlloc` is already computed in
+  `LocalVariableDeclaration`); the return unwraps `MoveExpression` to reach
+  the identifier.
+
+**Deliberately untouched** — the check fires only when the return type is
+`#`, so non-`#` by-value returns (`@ValueType`, builtin by-value aggregates
+like `Vector`/`Matrix`, NRVO sret) are unaffected. Verified: a non-`#`
+`return stack Vec2(2, 4)` still compiles and runs. Lambdas cannot trip it
+(their `(T) -> R` type syntax carries no `#`, so `isReturnsOwnership()` is
+false). A stdlib scan found no site that the new error would newly reject.
+
+**Known limitation** — the local form tracks only a direct
+`X c = stack X(...)` declaration. Laundering through another local
+(`X c = stack X(); X d = c; return #d;`) is not diagnosed; §2.2's
+conditional-arm conservatism is likewise not implemented. Both are
+false-negative gaps, never false positives.
+
+Tests: `SignatureAbiTests.stackConstructionReturnedUnderTransferRejected`,
+`stackLocalReturnedUnderTransferRejected`, and
+`heapReturnUnderTransferStillCompiles` (the must-keep-working shape).
