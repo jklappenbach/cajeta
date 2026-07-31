@@ -134,6 +134,20 @@ std::string lineWithoutKind(const std::string& text) {
     return "";
 }
 
+// The `kind` of the last record on the stream, or "" when there is none.
+std::string lastRecordKind(const std::string& text) {
+    std::istringstream ss(text);
+    std::string line, last;
+    while (std::getline(ss, line))
+        if (!line.empty() && line[0] == '{') last = line;
+    const std::string key = "\"kind\":\"";
+    auto at = last.find(key);
+    if (at == std::string::npos) return "";
+    at += key.size();
+    auto end = last.find('"', at);
+    return end == std::string::npos ? "" : last.substr(at, end - at);
+}
+
 } // namespace
 
 // --- compiler-jsonl Unit 1: the envelope ---------------------------------
@@ -218,6 +232,78 @@ TEST(DiagFormatJson, TextModeEmitsNoRecordsAtAll) {
     EXPECT_EQ(err.find("\"kind\":"), std::string::npos)
         << "text mode leaked a structured record:\n" << err;
     EXPECT_TRUE(hasLineStartingWith(err, "cajeta:")) << "stderr:\n" << err;
+}
+
+// --- compiler-jsonl Unit 3: narration + terminal result -------------------
+// Output that had no structured form reached the IDE console as opaque text a
+// structured console cannot filter, tint, or navigate from. Julian, 2026-07-31:
+// a run "never hit a breakpoint, and didn't show compilation or any other
+// reason". These give the reason a level and a kind.
+
+// 3.1.1 — an unreadable classpath archive reports as a levelled record under
+// the flag. The same failure in text mode keeps its exact wording.
+TEST(DiagFormatJson, ClasspathReadFailureIsALevelledLogRecord) {
+    auto root = freshTempDir("cplog");
+    auto srcRoot = writeTest(root, "");
+    // A file that is not an archive at all: ingestClasspath must report, not
+    // silently continue with a dependency it never read.
+    auto bogus = root / "not-an-archive.cja";
+    { std::ofstream o(bogus); o << "this is not a cja archive\n"; }
+
+    std::string jsonErr, textErr;
+    int jrc = compileCapturingStderr(
+        srcRoot, "--diag-format=json --classpath=" + bogus.string(), jsonErr);
+    if (jrc == -1) GTEST_SKIP() << "compiler binary unavailable";
+    compileCapturingStderr(srcRoot, "--classpath=" + bogus.string(), textErr);
+
+    EXPECT_NE(jsonErr.find("\"kind\":\"log\""), std::string::npos)
+        << "the failure had no structured form; stderr:\n" << jsonErr;
+    EXPECT_NE(jsonErr.find("\"level\""), std::string::npos)
+        << "a log record must carry a level so the console can filter it:\n"
+        << jsonErr;
+    EXPECT_TRUE(everyNonEmptyLineIsJson(jsonErr))
+        << "free text leaked into the json stream:\n" << jsonErr;
+    // Text mode keeps the wording it has always had.
+    EXPECT_NE(textErr.find("--classpath read failed"), std::string::npos)
+        << "text mode wording changed:\n" << textErr;
+    EXPECT_EQ(textErr.find("\"kind\":"), std::string::npos)
+        << "text mode leaked a record:\n" << textErr;
+}
+
+// 3.1.4 — one terminal `result`, last, so "did it work" is answerable from the
+// stream alone rather than inferred from an exit code plus silence (spec 9.4).
+TEST(DiagFormatJson, SuccessfulCompileEndsWithAnOkResultRecord) {
+    auto root = freshTempDir("resok");
+    auto srcRoot = writeTest(root, "");
+    std::string err;
+    int rc = compileCapturingStderr(srcRoot, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "stderr:\n" << err;
+    EXPECT_NE(err.find("\"kind\":\"result\""), std::string::npos)
+        << "no terminal record; stderr:\n" << err;
+    EXPECT_NE(err.find("\"status\":\"ok\""), std::string::npos) << err;
+    EXPECT_NE(lastRecordKind(err), "") << err;
+    EXPECT_EQ(lastRecordKind(err), "result")
+        << "the result must come LAST; stderr:\n" << err;
+}
+
+TEST(DiagFormatJson, FailingCompileEndsWithAnErrorResultRecord) {
+    auto root = freshTempDir("reserr");
+    auto srcRoot = writeTest(root, "NoSuchType z = NoSuchType.create();");
+    std::string err;
+    int rc = compileCapturingStderr(srcRoot, "--diag-format=json", err);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0);
+    EXPECT_NE(err.find("\"status\":\"error\""), std::string::npos)
+        << "a failed compile must say so structurally; stderr:\n" << err;
+    EXPECT_EQ(lastRecordKind(err), "result")
+        << "the result must come LAST; stderr:\n" << err;
+    // Exactly one — a second would read as a second run ending.
+    size_t n = 0, at = 0;
+    while ((at = err.find("\"kind\":\"result\"", at)) != std::string::npos) { ++n; ++at; }
+    EXPECT_EQ(n, 1u) << "expected exactly one terminal record; stderr:\n" << err;
 }
 
 TEST(DiagFormatJson, SemanticErrorEmitsNdjson) {

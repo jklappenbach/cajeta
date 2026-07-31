@@ -13,6 +13,8 @@
 //
 #include "cajeta/jit/CajetaJitHost.h"
 
+#include "cajeta/error/Diagnostics.h"
+
 #include "cajeta/jit/CajetaJitErrorShim.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
@@ -1085,12 +1087,15 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             // Definitions, not just declarations: the JIT links what it runs.
             compiler->linkClasspathModules();
         } catch (cajeta::Exception& e) {
-            std::cerr << "cajeta jit: [" << e.getErrorId() << "] classpath ingest failed: "
-                      << e.getMessage() << "\n";
+            cajeta::logLine("error",
+                std::string("cajeta jit: [") + e.getErrorId()
+                + "] classpath ingest failed: " + e.getMessage() + "\n");
             out.errorCode = 1;
             return out;
         } catch (std::exception& e) {
-            std::cerr << "cajeta jit: classpath ingest failed: " << e.what() << "\n";
+            cajeta::logLine("error",
+                std::string("cajeta jit: classpath ingest failed: ")
+                + e.what() + "\n");
             out.errorCode = 1;
             return out;
         }
@@ -1167,7 +1172,9 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         out.errorCode = 1;
         return out;
     } catch (std::exception& e) {
-        std::cerr << "cajeta jit: dependency resolution failed: " << e.what() << "\n";
+        cajeta::logLine("error",
+            std::string("cajeta jit: dependency resolution failed: ")
+            + e.what() + "\n");
         out.errorCode = 1;
         return out;
     }
@@ -1523,13 +1530,13 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
         rc = built.entryTakesArgs
                  ? reinterpret_cast<int(*)(void*)>(addr)(entryArgs)
                  : reinterpret_cast<int(*)()>(addr)();
-        std::cerr << "[jit-run] entry " << opts.entryMethod
-                  << " returned " << rc << "\n";
+        cajeta::logLine("debug", "[jit-run] entry " + opts.entryMethod
+                                 + " returned " + std::to_string(rc) + "\n");
     } else {
         if (built.entryTakesArgs) reinterpret_cast<void(*)(void*)>(addr)(entryArgs);
         else reinterpret_cast<void(*)()>(addr)();
-        std::cerr << "[jit-run] entry " << opts.entryMethod
-                  << " completed (void)\n";
+        cajeta::logLine("debug", "[jit-run] entry " + opts.entryMethod
+                                 + " completed (void)\n");
     }
 
     if (result) {

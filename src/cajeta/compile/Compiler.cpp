@@ -1146,8 +1146,11 @@ namespace cajeta {
                     prescanSource(input);
                 }
             } catch (const std::exception& e) {
-                std::cerr << "cajeta: --classpath read failed for `"
-                          << cpPath << "`: " << e.what() << std::endl;
+                // compiler-jsonl 3.1.5: a levelled record under the flag, the
+                // identical wording without it. A dependency that failed to
+                // load is the kind of reason a run needs to be able to state.
+                logLine("error", "cajeta: --classpath read failed for `"
+                                 + cpPath + "`: " + e.what() + "\n");
                 throw;
             }
         }

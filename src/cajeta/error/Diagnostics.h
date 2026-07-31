@@ -132,6 +132,25 @@ namespace cajeta {
                           const std::string& label,
                           long long elapsedMs = -1);
 
+    // Narration that is not a diagnostic: progress notes, failure explanations,
+    // debugger chatter (compiler-jsonl 3.1.5). `level` is "info" | "warn" |
+    // "debug". The message is carried VERBATIM (spec 9.2) — these lines are
+    // read by people, and typed records for e.g. `[step-armed]` would be schema
+    // surface with no consumer.
+    void emitJsonLog(const std::string& level, const std::string& message);
+    // The same narration, routed: under `--diag-format=json` it becomes a `log`
+    // record; otherwise `text` goes to stderr exactly as it always has. This is
+    // what keeps text mode byte-identical (spec 1.4.1) while giving the JSON
+    // console something it can filter and tint. `text` must include its own
+    // trailing newline, matching the `std::cerr` it replaces.
+    void logLine(const std::string& level, const std::string& text);
+
+    // Terminal record: exactly one, last, so "did it work" is answerable from
+    // the stream alone rather than inferred from an exit code plus silence
+    // (compiler-jsonl 3.1.6 / 9.4). `status` is "ok" | "error"; `message`
+    // explains a failure and is omitted when empty.
+    void emitJsonResult(const std::string& status, const std::string& message = "");
+
     // Emit one cache-hit record as an NDJSON line to stderr, on the same stream
     // as the diagnostics and phase records. A cached build runs no compiler at
     // all, so it emits no phases — without this the IDE shows an instant green

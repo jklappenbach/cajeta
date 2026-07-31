@@ -169,6 +169,34 @@ namespace cajeta {
         writeRecord(o);
     }
 
+    void emitJsonLog(const std::string& level, const std::string& message) {
+        std::string o = openRecord("log");
+        strOrNull(o, "level", level); o += ",";
+        strOrNull(o, "message", message);
+        writeRecord(o);
+    }
+
+    void logLine(const std::string& level, const std::string& text) {
+        if (jsonProgressEnabled()) {
+            // Strip the trailing newline: it belongs to the line-oriented text
+            // form, not to the message a consumer renders.
+            std::string msg = text;
+            while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
+                msg.pop_back();
+            emitJsonLog(level, msg);
+        } else {
+            std::cerr << text;
+        }
+    }
+
+    void emitJsonResult(const std::string& status, const std::string& message) {
+        if (!jsonProgressEnabled()) return;
+        std::string o = openRecord("result");
+        strOrNull(o, "status", status);
+        if (!message.empty()) { o += ","; strOrNull(o, "message", message); }
+        writeRecord(o);
+    }
+
     void emitJsonCacheHit(const std::string& artifact) {
         std::string o = openRecord("cache");
         strOrNull(o, "state", "hit");     o += ",";

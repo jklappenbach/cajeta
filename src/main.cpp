@@ -828,19 +828,27 @@ int main(int argc, const char* argv[]) {
     // not the warm one would break that parity. Unit 4 extends the envelope to
     // every verb deliberately.
     cajeta::emitStreamRecordOnce(std::string("cajeta ") + CAJETA_VERSION);
+    // One terminal record, last, on every exit path (compiler-jsonl 9.4): "did
+    // it work" must be answerable from the stream alone, never inferred from an
+    // exit code plus silence — the failure mode this whole format exists to
+    // remove. No-op in text mode.
     try {
         compiler.compile(positional[0], positional[1], positional[2]);
     } catch (cajeta::SyntaxErrorException&) {
         // Per-error syntax diagnostics were already emitted during parsing
         // (NDJSON or console); fail the compile without re-reporting.
+        cajeta::emitJsonResult("error", "syntax errors");
         return 1;
     } catch (cajeta::Exception& e) {
         emitException(e, jsonDiag);
+        cajeta::emitJsonResult("error", e.getMessage());
         return 1;
     } catch (const std::exception& e) {
         if (jsonDiag) cajeta::emitJsonDiagnostic("error", "", e.what());
         else std::cerr << "cajeta: " << e.what() << "\n";
+        cajeta::emitJsonResult("error", e.what());
         return 1;
     }
+    cajeta::emitJsonResult("ok");
     return 0;
 }
