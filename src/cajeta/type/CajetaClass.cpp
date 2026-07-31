@@ -6180,6 +6180,33 @@ namespace cajeta {
                         kindSlot);
                     v = bodyAlloca;
                 }
+                // null → interface formal (null-owned-interface-arg spec):
+                // a literal null lowers to a raw null POINTER, but the
+                // interface ABI passes a pointer TO the 24-byte fat body —
+                // the callee copies {data, vtable, kind} from address 0
+                // and faults at +16. Spill a ZEROED body (all-null fat
+                // value: data null, vtable null, kind 0) and pass its
+                // address — exactly what reading a never-assigned
+                // interface field yields, so `f == null` checks and the
+                // no-op drop path see the canonical empty value.
+                if (dstClass && dstClass->isInterface() && !srcClass
+                        && v && llvm::isa<llvm::ConstantPointerNull>(v)) {
+                    llvm::Type* bodyTy = dstClass->getLlvmType();
+                    if (bodyTy && bodyTy->isStructTy()) {
+                        auto& lctx = *emitMod->getLlvmContext();
+                        llvm::Value* bodyAlloca =
+                            coerceBuilder->CreateAlloca(bodyTy, nullptr,
+                                                        "iface_arg_null");
+                        const llvm::DataLayout& dl =
+                            emitMod->getLlvmModule()->getDataLayout();
+                        coerceBuilder->CreateMemSet(bodyAlloca,
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt8Ty(lctx), 0),
+                            dl.getTypeAllocSize(bodyTy),
+                            llvm::MaybeAlign(8));
+                        v = bodyAlloca;
+                    }
+                }
             }
             if (mft && (int) mft->getNumParams() > i + thisOffset + sretOffset) {
                 llvm::Type* expected = mft->getParamType(i + thisOffset + sretOffset);

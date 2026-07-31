@@ -36,7 +36,16 @@ all-null fat value as a no-op.
 - 2.3 Regression pins either way.
 - 2.4 Ships with cajeta v0.13.0 (cajeta-ml-v2 plan U7).
 
-## 3. Workaround (in place)
+## 3. Status
 
-Never store null in an owned interface slot — use a real no-op conformer
-(`Pipeline`'s unused stage slots hold `IdentityTransformer`).
+FIXED 2026-07-31 (requirement 2.2, "legal empty value" option):
+`CajetaClass::invokeMethod`'s argument coercion spills a ZEROED 24-byte fat
+body for a null constant bound to an interface formal and passes its
+address — the canonical all-null fat value a never-assigned interface field
+reads as. Pin: `PlaceholderOwnedFieldTests.nullIntoOwnedInterfaceFormal`
+(live). Out of scope, noted: `f == null` on an interface-typed field has no
+fat-aware compare lowering — nulls are observable only via dispatch guards;
+a fat-aware `==` is a candidate follow-up.
+
+The `Pipeline` IdentityTransformer padding stays (it is also semantically
+cleaner than nullable stages).
