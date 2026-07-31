@@ -1,8 +1,8 @@
 package tour.concurrent;
 
 import tour.DemoClass;
-import tour.Counter;
 import cajeta.collection.ArrayList;
+import cajeta.concurrent.AtomicInt32;
 
 // Parallel streams — fork/join over the existing pull protocol. The
 // stream source (`ArrayStream<T>`, `ArrayList<T>.stream()`,
@@ -67,6 +67,8 @@ public class ParallelStreamsDemo extends DemoClass {
         int32 par = xs.stream().parallel().count();
         int32 seq = xs.stream().count();
         System.stdout.println("  count          par=" + par + "  seq=" + seq);
+        this.check(par == 1000 && seq == 1000,
+            "parallel and sequential agree on count");
     }
 
     // 2. Reduce — workers run the accumulator on disjoint shares;
@@ -78,6 +80,7 @@ public class ParallelStreamsDemo extends DemoClass {
         int32 total = xs.stream().parallel()
                        .reduce(0, (a, b) -> a + b);
         System.stdout.println("  reduce sum     1..1000 = " + total);
+        this.check(total == 500500, "parallel reduce sums 1..1000");
     }
 
     // 3. fold<R> with combiner — the cross-type reduction shape.
@@ -94,6 +97,7 @@ public class ParallelStreamsDemo extends DemoClass {
                             (int64 acc, int32 x) -> acc + (int64) x,
                             (int64 a, int64 b) -> a + b);
         System.stdout.println("  fold combiner  1..1000 widened = " + total);
+        this.check(total == 500500L, "combiner merges widened partials");
     }
 
     // 4. Predicate terminals — anyMatch / allMatch / noneMatch
@@ -123,6 +127,8 @@ public class ParallelStreamsDemo extends DemoClass {
                               .parallel()
                               .allMatch((x) -> x % 2 == 0);
         System.stdout.println("  filter+parallel allMatch(evens) = " + allEvensOk);
+        this.check(anyOver500 && allPositive && noneNegative && allEvensOk,
+            "predicate terminals hold across workers");
     }
 
     // 5. findFirst under .parallel() = findAny. Workers race; the
@@ -147,15 +153,18 @@ public class ParallelStreamsDemo extends DemoClass {
         Optional<int32> miss = xs.stream().parallel()
                                  .findFirst((x) -> x > 9999);
         System.stdout.println("  findFirst(>9999) miss isPresent = " + miss.isPresent());
+        boolean foundInRange = hit.isPresent() && hit.get() > 500
+            && hit.get() <= 1000;
+        this.check(foundInRange && miss.isEmpty(),
+            "findAny lands in the match set; a miss is empty");
     }
 
     // 6. forEach with a shared accumulator. Order across workers is
-    // unspecified — same as Java. The lambda mutates a shared
-    // counter through capture-by-borrow; cajeta's atomic semantics
-    // for the counter increment are the user's responsibility (here
-    // we use a single-field class so the field race is benign for
-    // demonstration; production code should pick an atomic
-    // primitive or accumulate via fold).
+    // unspecified — same as Java — and a plain field increment from
+    // concurrent workers is a DATA RACE. The correct shared
+    // accumulator is an atomic (or better: accumulate via fold and
+    // skip sharing entirely); AtomicInt32.fetchAdd makes the tally
+    // deterministic under any scheduling.
     public void parallelForEachAccumulate() {
         ArrayList<int32> ints = heap ArrayList<int32>();
         int32 i = 0;
@@ -163,9 +172,12 @@ public class ParallelStreamsDemo extends DemoClass {
             ints.add(i + 1);
             i = i + 1;
         }
-        Counter c = heap Counter();
+        AtomicInt32 tally = heap AtomicInt32(0);
         ints.stream().parallel()
-            .forEach((int32 x) -> c.bump());
-        System.stdout.println("  forEach bump count over 100 elements = " + c.value());
+            .forEach((int32 x) -> tally.fetchAdd(1));
+        System.stdout.println("  forEach atomic tally over 100 elements = "
+            + tally.load());
+        this.check(tally.load() == 100,
+            "atomic accumulator counts every element exactly once");
     }
 }

@@ -149,11 +149,13 @@ public class AsyncDemo extends DemoClass {
         // proves the async-fn surface compiles end-to-end.
         int32 bareAwait = await leaf();
         System.stdout.println("  await leaf()                    = " + bareAwait);
+        this.check(bareAwait == 21, "bare await unwraps the async result");
 
         // 2. await spawn — enqueues the call as a fiber, parks the
         // caller fiber until done, returns the unwrapped result.
         int32 viaSpawn = await spawn leaf();
         System.stdout.println("  await spawn leaf()              = " + viaSpawn);
+        this.check(viaSpawn == 21, "await spawn round-trips the fiber");
 
         // 3. spawn with primitive args. Args evaluate at the call
         // site (so x, y read locally) and capture into the worker.
@@ -161,11 +163,13 @@ public class AsyncDemo extends DemoClass {
         int32 y = 25;
         int32 sum = await spawn add(x, y);
         System.stdout.println("  await spawn add(17, 25)         = " + sum);
+        this.check(sum == 42, "spawn-site args capture into the worker");
 
         // 4. Nested async/await — outer awaits inner. Cooperative
         // scheduler handles the parking dance; both fibers complete.
         int32 nestedVal = await spawn nested();
         System.stdout.println("  await spawn nested() = leaf()*2 = " + nestedVal);
+        this.check(nestedVal == 42, "nested async parks and resumes");
 
         // 5. Three independent spawn-awaits. Each fiber has its own
         // Task<int32> with its own done flag; the awaits pair each
@@ -175,6 +179,8 @@ public class AsyncDemo extends DemoClass {
         int32 c = await spawn add(40, 2);
         System.stdout.println("  three independent spawn-awaits  = "
             + a + ", " + b + ", " + c);
+        this.check(a == 21 && b == 30 && c == 42,
+            "each await pairs with its own task");
 
         // 6. Explicit `scope { }` block. Three bare spawns share a
         // mutable Counter via borrow capture; the scope's closing
@@ -187,6 +193,8 @@ public class AsyncDemo extends DemoClass {
             spawn bumpWorker(tally, 100);
         }
         System.stdout.println("  scope { 3 bumpWorkers } tally   = " + tally.value());
+        this.check(tally.value() == 111,
+            "scope joins all three workers before the read");
 
         // 7. Implicit function-body scope. Even WITHOUT a `scope { }`
         // block, the surrounding function body is itself a scope —
@@ -205,6 +213,7 @@ public class AsyncDemo extends DemoClass {
             spawn bumpWorker(probe, 999);
         }
         System.stdout.println("  inner scope join — probe        = " + probe.value());
+        this.check(probe.value() == 999, "inner scope is a join checkpoint");
 
         // 8. detach — fire-and-forget. The detached call enqueues a
         // fiber that is NOT registered with execute()'s scope, so
@@ -229,6 +238,7 @@ public class AsyncDemo extends DemoClass {
         }
         System.stdout.println("  Channel<int32> producer/consumer = "
             + chOut[0]);
+        this.check(chOut[0] == 60, "consumer drained 10+20+30 after close");
 
         // 10. spawn-of-lambda — `runOnFiber` takes a `() -> int32`
         // body parameter and spawns it internally. The user side just
@@ -238,6 +248,7 @@ public class AsyncDemo extends DemoClass {
         int32 lambdaResult = runOnFiber(fortyTwo);
         System.stdout.println("  spawn-of-lambda runOnFiber(...)  = "
             + lambdaResult);
+        this.check(lambdaResult == 42, "spawn-of-lambda returns through the helper");
 
         // 11. Tasks.withTimeout — wait on a pre-spawned task with a
         // deadline; reports present(value) on completion, empty on
@@ -253,6 +264,8 @@ public class AsyncDemo extends DemoClass {
             } else {
                 System.stdout.println("  withTimeout(60s, fast)         = (timeout)");
             }
+            this.check(r.isPresent() && r.get() == 21,
+                "fast task completes inside the deadline");
         }
 
         // 12. Tasks.withTimeout — timeout path. slowBody's CPU loop
@@ -270,6 +283,7 @@ public class AsyncDemo extends DemoClass {
             } else {
                 System.stdout.println("  withTimeout(1ns, slow)         = (timeout)");
             }
+            this.check(r.isEmpty(), "1ns deadline reports the timeout as empty");
         }
 
         // 13. Channel.select — multiplex over multiple Channel<T>. Two
@@ -289,6 +303,8 @@ public class AsyncDemo extends DemoClass {
             cajeta.concurrent.SelectResult<int32> srRes = sel.get();
             System.stdout.println("  selectReceive(2 chs) idx/value  = "
                 + srRes.index + "/" + srRes.value);
+            this.check(srRes.index == 0 && srRes.value == 7,
+                "select returns the lowest-index ready channel");
         } else {
             System.stdout.println("  selectReceive(2 chs)            = (empty)");
         }

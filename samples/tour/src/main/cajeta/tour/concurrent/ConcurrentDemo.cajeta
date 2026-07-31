@@ -46,6 +46,8 @@ public class ConcurrentDemo extends DemoClass {
         }
         System.stdout.println("  Channel sent 10/20/30, drained sum = " + sum
             + " (closed = " + ch.isClosed() + ")");
+        this.check(sum == 60 && ch.isClosed(),
+            "closed channel drains to empty, nothing lost");
 
         // AtomicInt32 — fetchAdd returns the prior value; CAS swaps on match.
         AtomicInt32 a = heap AtomicInt32(7);
@@ -53,11 +55,14 @@ public class ConcurrentDemo extends DemoClass {
         boolean swapped = a.compareAndSet(12, 100);
         System.stdout.println("  AtomicInt32 fetchAdd(5) prior = " + prior
             + ", after CAS(12->100) = " + a.load() + " (swapped = " + swapped + ")");
+        this.check(prior == 7 && swapped && a.load() == 100,
+            "fetchAdd returns prior; CAS lands on the expected value");
 
         // AtomicInt64 — same, 64-bit.
         AtomicInt64 big = heap AtomicInt64(1000000000000L);
         big.fetchAdd(1L);
         System.stdout.println("  AtomicInt64 load = " + big.load());
+        this.check(big.load() == 1000000000001L, "64-bit fetchAdd");
 
         // Mutex<T> — withLock's closure is the critical section; its result
         // becomes the new protected value.
@@ -65,11 +70,13 @@ public class ConcurrentDemo extends DemoClass {
         m.withLock((int32 v) -> v + 5);
         m.withLock((int32 v) -> v + 37);
         System.stdout.println("  Mutex after withLock +5 +37 = " + m.get());
+        this.check(m.get() == 42, "withLock results become the protected value");
 
         // RwLock<T> — read() takes the shared lock; withWrite the exclusive one.
         RwLock<int32> rw = heap RwLock<int32>(5);
         rw.withWrite((int32 v) -> v + 9);
         System.stdout.println("  RwLock read after withWrite(+9) = " + rw.read());
+        this.check(rw.read() == 14, "read() sees the exclusive write");
 
         // Semaphore — acquire one of two permits, observe the count, release.
         Semaphore sem = heap Semaphore(2);
@@ -78,6 +85,8 @@ public class ConcurrentDemo extends DemoClass {
         sem.release();
         System.stdout.println("  Semaphore avail after 1 acquire = " + avail
             + ", after release = " + sem.availablePermits());
+        this.check(avail == 1 && sem.availablePermits() == 2,
+            "acquire/release move the permit count");
 
         // Lock + LockGuard — the RAII guard releases when this method returns.
         Lock gate = heap Lock();
@@ -92,5 +101,7 @@ public class ConcurrentDemo extends DemoClass {
         gate2.releaseLock();
         System.stdout.println("  Lock.tryAcquire / release / tryAcquire = "
             + t1 + " / " + t2);
+        this.check(t1 == 1 && t2 == 1,
+            "tryAcquire succeeds when the lock is free");
     }
 }
