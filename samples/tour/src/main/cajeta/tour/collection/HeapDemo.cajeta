@@ -3,24 +3,42 @@ package tour.collection;
 import tour.DemoClass;
 import cajeta.collection.Heap;
 
-// Binary min-heap (priority queue). `push(v)` sifts up, `pop()`
-// removes and returns the current minimum, `peek()` looks without
-// removing. Popping repeatedly yields ascending order.
+// Binary min-heap (priority queue). `push(v)` sifts up, `pop()` removes
+// and returns the current minimum, `peek()` looks without removing.
+//
+// The scenario: a triage queue. Work arrives in arrival order with a
+// priority (1 = page-someone-now, 9 = someday); the dispatcher always
+// takes the lowest number next, regardless of when it arrived. Draining
+// the heap MUST yield ascending priorities — that ordering is the whole
+// contract, so the demo asserts it across the full drain.
 public class HeapDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- Heap (min priority queue) --");
 
-        Heap<int32> h = heap Heap<int32>();
-        h.push(5);
-        h.push(1);
-        h.push(9);
-        h.push(3);
+        // Tickets arrive out of priority order.
+        int32[] arrivals = [5, 1, 9, 3, 7, 2];
+        Heap<int32> triage = heap Heap<int32>();
+        int32 i = 0;
+        while (i < 6) {
+            triage.push(arrivals[i]);
+            i = i + 1;
+        }
+        System.stdout.println("  6 tickets queued; peek = " + triage.peek()
+            + " (the critical one, despite arriving second)");
+        this.check((int32) triage.count() == 6, "all tickets queued");
+        this.check(triage.peek() == 1, "peek sees the minimum without removing");
 
-        System.stdout.println("  count   = " + (int32) h.count());
-        System.stdout.println("  peek    = " + h.peek());
-        int32 a = h.pop();
-        int32 b = h.pop();
-        System.stdout.println("  pop, pop = " + a + ", " + b);
+        // Drain: every pop must be >= the one before it.
+        int32 prev = triage.pop();
+        boolean ascending = true;
+        while (!triage.isEmpty()) {
+            int32 next = triage.pop();
+            if (next < prev) { ascending = false; }
+            prev = next;
+        }
+        this.check(ascending && prev == 9,
+            "drain yields ascending priorities, ending at the someday ticket");
+        this.check(triage.isEmpty(), "heap is empty after the drain");
     }
 }

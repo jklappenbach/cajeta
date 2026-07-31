@@ -54,3 +54,4 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
 | [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
+| [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |

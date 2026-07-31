@@ -1,25 +1,56 @@
 package tour.collection;
 
 import tour.DemoClass;
+import cajeta.collection.ArrayList;
 import cajeta.collection.RedBlackTree;
 
-// Self-balancing ordered map (red-black tree). Insertions rebalance
-// to keep height O(log n), so `get` / `min` stay fast even with
-// sorted-order inserts (the degenerate case for an unbalanced BST).
+// Self-balancing ordered map (red-black tree). Insertions rebalance to
+// keep height O(log n) even under SORTED-order inserts — exactly what a
+// timestamp-keyed index receives, and the degenerate case that turns an
+// unbalanced BST into a linked list.
+//
+// The scenario: an event index keyed by timestamp (seconds). Events
+// arrive in time order; the index answers "earliest / latest" (min/max)
+// and "what happened between t1 and t2" (keysInOrder + bounds) — the
+// queries a hash map cannot answer without a full scan and sort.
 public class RedBlackTreeDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- RedBlackTree (ordered map) --");
 
-        RedBlackTree<int32, int32> t = heap RedBlackTree<int32, int32>();
+        // 100 events, one every 30 s from t = 1000: the sorted-insert case.
+        RedBlackTree<int32, int32> byTime = heap RedBlackTree<int32, int32>();
         int32 i = 0;
         while (i < 100) {
-            t.put(i, i * 2);
+            byTime.put(1000 + i * 30, 7000 + i);       // ts -> event id
             i = i + 1;
         }
+        System.stdout.println("  100 timestamped events; earliest = "
+            + byTime.min() + ", latest = " + byTime.max());
+        this.check((int32) byTime.count() == 100
+            && byTime.min() == 1000 && byTime.max() == 3970,
+            "min/max answer earliest/latest in O(log n)");
+        this.check(byTime.get(2500) == 7050 && byTime.containsKey(2500),
+            "point lookup by timestamp");
 
-        System.stdout.println("  count   = " + (int32) t.count());
-        System.stdout.println("  get(50) = " + t.get(50));
-        System.stdout.println("  min     = " + t.min());
+        // Range scan: events in the window [2000, 2300] via the ordered
+        // key walk. keysInOrder() is ascending BY CONTRACT — checked.
+        ArrayList<int32> keys = byTime.keysInOrder();
+        boolean ascending = true;
+        int32 inWindow = 0;
+        int32 k = 1;
+        while (k < keys.count()) {
+            if (keys[k] <= keys[k - 1]) { ascending = false; }
+            k = k + 1;
+        }
+        k = 0;
+        while (k < keys.count()) {
+            if (keys[k] >= 2000 && keys[k] <= 2300) { inWindow = inWindow + 1; }
+            k = k + 1;
+        }
+        System.stdout.println("  window [2000, 2300] holds " + inWindow
+            + " events");
+        this.check(ascending, "keysInOrder is ascending after 100 sorted inserts");
+        this.check(inWindow == 10, "range scan finds the 10 events in the window");
     }
 }

@@ -21,6 +21,20 @@ defect). The defect is therefore element-access-in-argument-position
 lowering generally, not Matrix-specific; 2.1's soundness requirement
 covers `f(arr[i])` for ordinary arrays as well.
 
+**2026-07-31 extension 2: ArrayList elements too (14-line repro).** On the
+0.12.0 toolchain, `m.get(ks[k])` — an `ArrayList<int32>` `operator[]`
+result passed directly as the argument of a `BPlusTree<int32,int32>.get`
+call inside a while loop — aborts compile-time with `LLVM ERROR: Cannot
+emit physreg copy instruction` (SIGABRT, exit 134). Found by tour-quality
+unit 3 (BPlusTreeDemo realism rewrite; the identical shape with the element
+in a COMPARISON — `ks[k] <= ks[k-1]` — compiles fine, as does the same
+element-as-arg via plain `String[]`/`int32[]`/`float32[]` in
+HashMapDemo/StatsDemo). Same extract-to-local workaround applied with a
+comment naming this spec. So the affected argument-position sources now
+span Matrix `m[r][c]`, plain arrays, and `ArrayList.operator[]`; the
+failure mode varies (runtime SIGSEGV, isel `Cannot select`, physreg-copy
+abort) but the position is always argument.
+
 Suspected shape: the host-side lowering of a value-type element access in
 ARGUMENT position takes the address of a transient (or mis-sizes the load)
 where statement/condition positions materialize correctly.

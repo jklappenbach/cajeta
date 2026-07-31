@@ -1,26 +1,58 @@
 package tour.collection;
 
 import tour.DemoClass;
+import cajeta.collection.ArrayList;
 import cajeta.collection.BPlusTree;
 
 // In-memory B+ tree ordered map. Wide nodes (order 32) keep the tree
 // shallow and cache-friendly; values live in the leaves, chained for
 // in-order traversal. Inserting past the order forces leaf and
-// internal-node splits that cascade toward the root.
+// internal-node splits that cascade toward the root — 200 keys is
+// several splits deep.
+//
+// The scenario: an order book's bid ladder — price level (cents) ->
+// resting quantity. The book's questions are ordered ones: best price
+// (min on the ask side shown here), the depth near the top of book
+// (ordered walk), and point lookups when an order lands on a level.
 public class BPlusTreeDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- BPlusTree (in-memory) --");
 
-        BPlusTree<int32, int32> t = heap BPlusTree<int32, int32>();
+        // 200 ask levels: price 10000 + 5*i cents, deeper = larger size.
+        BPlusTree<int32, int32> asks = heap BPlusTree<int32, int32>();
         int32 i = 0;
         while (i < 200) {
-            t.put(i, i * 3);
+            asks.put(10000 + i * 5, 100 + i * 3);      // price -> quantity
             i = i + 1;
         }
+        int32 best = asks.min();
+        System.stdout.println("  200 price levels; best ask = " + best
+            + " with qty " + asks.get(best));
+        this.check((int32) asks.count() == 200, "200 levels across node splits");
+        this.check(best == 10000 && asks.get(best) == 100,
+            "min() is the best ask, its quantity intact");
+        this.check(asks.get(10500) == 400, "point lookup mid-ladder (level 100)");
 
-        System.stdout.println("  count    = " + (int32) t.count());
-        System.stdout.println("  get(150) = " + t.get(150));
-        System.stdout.println("  min      = " + t.min());
+        // Top-of-book depth: quantity resting within 20 cents of the best
+        // ask, via the ordered key walk (ascending by contract — checked).
+        ArrayList<int32> prices = asks.keysInOrder();
+        boolean ascending = true;
+        int32 depth = 0;
+        int32 k = 0;
+        while (k < prices.count()) {
+            if (k > 0 && prices[k] <= prices[k - 1]) { ascending = false; }
+            // Hoist the element before the call: `asks.get(prices[k])`
+            // trips the element-as-call-argument codegen defect
+            // (specs/matrix-element-callarg-spec.md — physreg-copy abort;
+            // the comparison position above is fine).
+            int32 price = prices[k];
+            if (price <= 10020) { depth = depth + asks.get(price); }
+            k = k + 1;
+        }
+        System.stdout.println("  depth within 20c of top: " + depth + " shares");
+        this.check(ascending, "keysInOrder ascends leaf-chain order");
+        this.check(depth == 100 + 103 + 106 + 109 + 112,
+            "top-of-book depth sums the 5 nearest levels");
     }
 }

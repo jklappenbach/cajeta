@@ -3,20 +3,46 @@ package tour.collection;
 import tour.DemoClass;
 import cajeta.collection.LinkedList;
 
-// Doubly-linked list. Indexed get() is O(n) but uniform iteration via
-// add()/contains() is constant-time per element.
+// Doubly-linked list — and therefore a deque: O(1) at BOTH ends
+// (addHead/addTail, popHead/popTail), O(n) anywhere else (get(i),
+// contains, remove-by-value walk the links).
+//
+// The scenario: an editor's undo history. Edit IDs append at the tail;
+// undo pops from the tail (LIFO); and when the history cap is reached
+// the oldest edit falls off the head — the pattern arrays do badly
+// (front removal shifts everything) and linked lists do for free.
+//
+// The IDs index an edit log elsewhere; storing the description Strings
+// directly is gated on the class-typed pop defect
+// (specs/linkedlist-class-pop-spec.md — popTail() on LinkedList<String>
+// SIGSEGVs; primitive elements are unaffected).
 public class LinkedListDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
-        System.stdout.println("-- LinkedList --");
-        LinkedList<int32> list = heap LinkedList<int32>();
-        list.add(7);
-        list.add(11);
-        list.add(13);
-        boolean has11 = list.contains(11);
-        boolean has99 = list.contains(99);
-        System.stdout.println("  count        = " + (int32) list.count());
-        System.stdout.println("  contains(11) = " + has11);
-        System.stdout.println("  contains(99) = " + has99);
+        System.stdout.println("-- LinkedList (deque) --");
+
+        LinkedList<int32> undo = heap LinkedList<int32>();
+        undo.addTail(101);          // insert 'a'
+        undo.addTail(102);          // insert 'b'
+        undo.addTail(103);          // delete line 3
+        undo.addTail(104);          // paste block
+        this.check((int32) undo.count() == 4 && undo.tail() == 104,
+            "edits append at the tail");
+
+        // Undo = pop the most recent edit.
+        int32 undone = undo.popTail();
+        System.stdout.println("  undo -> edit " + undone
+            + "; most recent is now " + undo.tail());
+        this.check(undone == 104 && undo.tail() == 103, "undo pops LIFO");
+
+        // History cap: drop the OLDEST from the head — O(1), no shifting.
+        int32 expired = undo.popHead();
+        this.check(expired == 101 && (int32) undo.count() == 2,
+            "cap evicts from the head in O(1)");
+
+        // Membership + targeted removal still walk the links.
+        this.check(undo.contains(103), "contains walks the list");
+        this.check(undo.remove(102) && (int32) undo.count() == 1,
+            "remove-by-value unlinks mid-list");
     }
 }

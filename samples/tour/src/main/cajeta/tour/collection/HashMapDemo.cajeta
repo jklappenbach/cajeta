@@ -4,18 +4,45 @@ import tour.DemoClass;
 import cajeta.collection.HashMap;
 
 // Open-addressing hash map. Primitive-typed keys lower their `.hash()`
-// to a runtime intrinsic — no boxing required. `count()` returns the
-// live-entry count (int64).
+// to a runtime intrinsic — no boxing — and String keys hash their bytes.
+//
+// The scenario: a word-frequency count, the canonical map job. It shows
+// the whole daily surface: `operator[]=` / `operator[]` sugar (same slots
+// as put/get), containsKey for the absent case, remove (returns the
+// evicted value), and the keys()/values() streams for aggregation.
 public class HashMapDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- HashMap --");
-        HashMap<int32, int32> map = heap HashMap<int32, int32>(16);
-        map.put(1, 100);
-        map.put(2, 200);
-        map.put(3, 300);
-        int32 v2 = map.get(2);
-        System.stdout.println("  count    = " + (int32) map.count());
-        System.stdout.println("  get(2)   = " + v2);
+
+        // "the quick fox jumps over the lazy fox" — 8 words, 6 distinct.
+        String[] words = ["the", "quick", "fox", "jumps",
+                          "over", "the", "lazy", "fox"];
+        HashMap<String, int32> freq = heap HashMap<String, int32>(16);
+        int32 i = 0;
+        while (i < 8) {
+            String w = words[i];
+            if (freq.containsKey(w)) {
+                freq[w] = freq[w] + 1;     // operator[] read + []= write
+            } else {
+                freq[w] = 1;
+            }
+            i = i + 1;
+        }
+        System.stdout.println("  8 words -> " + (int32) freq.count()
+            + " distinct; freq[\"the\"] = " + freq["the"]);
+        this.check((int32) freq.count() == 6, "6 distinct words counted");
+        this.check(freq["the"] == 2 && freq["fox"] == 2 && freq["lazy"] == 1,
+            "operator[] reads the tallies");
+        this.check(!freq.containsKey("dog"), "absent key is absent, not 0");
+
+        // values() streams the tallies: their sum must equal the input size.
+        int32 total = freq.values().reduce(0, (a, b) -> a + b);
+        this.check(total == 8, "values() stream sums back to 8 words");
+
+        // remove returns the evicted value and shrinks the live count.
+        int32 evicted = freq.remove("the");
+        this.check(evicted == 2 && (int32) freq.count() == 5
+            && !freq.containsKey("the"), "remove evicts and returns the value");
     }
 }

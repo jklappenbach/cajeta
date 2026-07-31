@@ -27,6 +27,13 @@ public class ArrayListDemo extends DemoClass {
         int32 total = ints.stream().reduce(0, (a, b) -> a + b);
         System.stdout.println("  ArrayList<int32> count = " + ints.count());
         System.stdout.println("  ArrayList<int32> sum   = " + total);
+        this.check(ints.count() == 3 && total == 60,
+            "primitive list: add/count/stream-reduce");
+
+        // operator[] sugar reads and writes the same slots as get/set.
+        ints[1] = 25;
+        this.check(ints[1] == 25 && ints.get(1) == 25,
+            "operator[] and get/set share the slot");
 
         // Class-typed elements. add() / count() / stream() all
         // dispatch on the instantiated `ArrayList<Point>`.
@@ -38,5 +45,7 @@ public class ArrayListDemo extends DemoClass {
             (acc, p) -> acc + p.x);
         System.stdout.println("  ArrayList<Point> count = " + pts.count());
         System.stdout.println("  ArrayList<Point> xSum  = " + xSum);
+        this.check(pts.count() == 3 && xSum == 9,
+            "class-typed list: fold over fields");
     }
 }

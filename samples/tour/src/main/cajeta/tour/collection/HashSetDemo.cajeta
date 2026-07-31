@@ -3,21 +3,43 @@ package tour.collection;
 import tour.DemoClass;
 import cajeta.collection.HashSet;
 
-// HashSet<T> = HashMap<T, bool> wrapper. Adding the same key twice is a
-// no-op (set semantics).
+// HashSet<T> = HashMap<T, bool> wrapper: membership only, duplicates
+// absorbed.
+//
+// The scenario: request de-duplication — a retrying client delivers the
+// same request IDs more than once, and the set is what makes processing
+// idempotent: `contains` before work, `add` after, `remove` to allow a
+// deliberate reprocess.
 public class HashSetDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- HashSet --");
-        HashSet<int32> set = heap HashSet<int32>(16);
-        set.add(10);
-        set.add(20);
-        set.add(20);   // duplicate; set absorbs it
-        set.add(30);
-        boolean has20 = set.contains(20);
-        boolean has99 = set.contains(99);
-        System.stdout.println("  count        = " + (int32) set.count());
-        System.stdout.println("  contains(20) = " + has20);
-        System.stdout.println("  contains(99) = " + has99);
+
+        // 7 deliveries, 2 of them retries of already-seen requests.
+        int32[] deliveries = [4001, 4002, 4003, 4002, 4004, 4001, 4005];
+        HashSet<int32> seen = heap HashSet<int32>(16);
+        int32 processed = 0;
+        int32 skipped = 0;
+        int32 i = 0;
+        while (i < 7) {
+            if (seen.contains(deliveries[i])) {
+                skipped = skipped + 1;         // retry — already handled
+            } else {
+                seen.add(deliveries[i]);
+                processed = processed + 1;     // first sighting — do the work
+            }
+            i = i + 1;
+        }
+        System.stdout.println("  7 deliveries -> " + processed
+            + " processed, " + skipped + " duplicate retries skipped");
+        this.check(processed == 5 && skipped == 2,
+            "dedup processed each request exactly once");
+        this.check((int32) seen.count() == 5, "set holds the 5 unique IDs");
+
+        // A deliberate reprocess: remove re-opens exactly that ID.
+        boolean removed = seen.remove(4003);
+        this.check(removed && !seen.contains(4003) && (int32) seen.count() == 4,
+            "remove re-opens one ID for reprocessing");
+        this.check(!seen.remove(9999), "removing an absent ID reports false");
     }
 }
