@@ -57,6 +57,10 @@ public class CacheDemo extends DemoClass {
         Cache<int32, String> ttl = heap Cache<int32, String>(3);
         ttl.setMaxAge(Duration.ofNanos(1));
         ttl.put(7, "ephemeral");
+        // A hot spin, deliberately: this demo is synchronous (no fiber to
+        // sleep on) and needs ~1us to pass a 1ns TTL deterministically.
+        // Don't copy this as a wait idiom — real code sleeps on a fiber or
+        // injects a clock; Cache has no fake-clock seam today.
         int64 t0 = Cajeta.currentTimeNanos();
         int32 spin = 0;
         while (Cajeta.currentTimeNanos() - t0 < 1000L) {

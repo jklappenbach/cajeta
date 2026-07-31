@@ -79,6 +79,8 @@ public class JsonDemo extends DemoClass {
         System.stdout.println("    score  = " + m.score);
         System.stdout.println("    active = " + m.active);
         System.stdout.println("    name   = " + m.name);
+        this.check(m.id == 42 && m.score == 1000000L && m.active
+            && m.name.equals("alice"), "parse fills every field incl. String");
     }
 
     // 2. Same parser, but only the int32 / int64 / boolean fields —
@@ -97,6 +99,8 @@ public class JsonDemo extends DemoClass {
         // Reporting presence rather than printing the null reference.
         boolean nameSet = m.name != null;
         System.stdout.println("    name (missing)  set? " + nameSet);
+        this.check(m.id == 7 && m.score == 99L && !m.active && !nameSet,
+            "missing key stays default-initialized");
     }
 
     // 3. Round-trip — populate a class, serialize to bytes, parse
@@ -122,6 +126,8 @@ public class JsonDemo extends DemoClass {
         System.stdout.println("    parsed.id         = " + b.id);
         System.stdout.println("    parsed.score      = " + b.score);
         System.stdout.println("    parsed.active     = " + b.active);
+        this.check(len > 0 && b.id == 99 && b.score == 123456789L && b.active,
+            "primitives round-trip losslessly");
     }
 
     // 4. Nested class parse. The synthesizer walks JsonOuter's
@@ -135,6 +141,8 @@ public class JsonDemo extends DemoClass {
         System.stdout.println("    id      = " + o.id);
         System.stdout.println("    point.x = " + o.point.x);
         System.stdout.println("    point.y = " + o.point.y);
+        this.check(o.id == 1 && o.point.x == 10 && o.point.y == 20,
+            "nested parse descends into the class field");
     }
 
     // 5. Round-trip nested. Construct the tree manually, write,
@@ -158,5 +166,7 @@ public class JsonDemo extends DemoClass {
         System.stdout.println("    parsed.id         = " + parsed.id);
         System.stdout.println("    parsed.point.x    = " + parsed.point.x);
         System.stdout.println("    parsed.point.y    = " + parsed.point.y);
+        this.check(parsed.id == 5 && parsed.point.x == 100
+            && parsed.point.y == 200, "nested round-trip is lossless");
     }
 }

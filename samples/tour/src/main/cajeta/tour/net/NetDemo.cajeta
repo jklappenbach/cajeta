@@ -33,6 +33,7 @@ public class NetDemo extends DemoClass {
         int32 port = listener.boundPort();
         System.stdout.println("  bound 127.0.0.1 on an ephemeral port (port > 0 = "
             + (port > 0) + ")");
+        this.check(port > 0, "bind(0) yields a kernel-assigned port");
 
         // Client: connect to that port; server accepts the connection.
         IpAddress clientAddr = IpAddress.loopbackV4();
@@ -61,6 +62,8 @@ public class NetDemo extends DemoClass {
             && echo[2] == (int8) 110 && echo[3] == (int8) 103;
         System.stdout.println("  echoed " + echoGot
             + " bytes; round-trip matches \"ping\" = " + match);
+        this.check(got == (int64) 4, "server read the full ping");
+        this.check(match, "echo round-trip is byte-identical");
 
         client.close();
         server.close();

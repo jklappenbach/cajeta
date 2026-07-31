@@ -45,6 +45,8 @@ public class TimeDemo extends DemoClass {
         Duration d = mins.plus(secs);
         System.stdout.println("  Duration 90m+30s = " + d.toSeconds()
             + "s (" + d.toMinutes() + "m truncated)");
+        this.check(d.toSeconds() == 5430L && d.toMinutes() == 90L,
+            "Duration arithmetic + truncating toMinutes");
 
         // Instant — a fixed epoch point, plus a Duration, and the gap between.
         Instant t0 = Instant.ofEpochSecond(1000L);
@@ -54,6 +56,8 @@ public class TimeDemo extends DemoClass {
         boolean before = t0.isBefore(t1);
         System.stdout.println("  Instant 1000s +1h: gap = " + gap.toMinutes()
             + "m, t0.isBefore(t1) = " + before);
+        this.check(gap.toMinutes() == 60L && before,
+            "Instant.between measures the added hour");
 
         // LocalDate — calendar math, leap-year aware.
         LocalDate date = LocalDate.of(2024, 2, 28);
@@ -62,18 +66,24 @@ public class TimeDemo extends DemoClass {
         System.stdout.println("  LocalDate 2024-02-28 +1d = " + next.getYear()
             + "-" + next.getMonthValue() + "-" + next.getDayOfMonth()
             + " (2024 leap = " + leap + ")");
+        this.check(leap && next.getMonthValue() == 2 && next.getDayOfMonth() == 29,
+            "leap-year +1d lands on Feb 29");
 
         // LocalTime — wall-clock arithmetic that wraps past midnight.
         LocalTime base = LocalTime.ofHms(23, 30, 0);
         LocalTime tm = base.plusMinutes(45L);
         System.stdout.println("  LocalTime 23:30 +45m = " + tm.getHour()
             + ":" + tm.getMinute());
+        this.check(tm.getHour() == 0 && tm.getMinute() == 15,
+            "wall clock wraps past midnight to 00:15");
 
         // LocalDateTime — date + time together.
         LocalDateTime dt = LocalDateTime.of(2026, 6, 8, 14, 30);
         LocalDateTime dt2 = dt.plusHours(12L);
         System.stdout.println("  LocalDateTime 2026-06-08 14:30 +12h: day = "
             + dt2.getDayOfMonth() + ", hour = " + dt2.getHour());
+        this.check(dt2.getDayOfMonth() == 9 && dt2.getHour() == 2,
+            "+12h carries into the next day");
 
         // Period — a calendar span, normalized to total months.
         Period p = Period.of(1, 2, 10);
@@ -81,6 +91,7 @@ public class TimeDemo extends DemoClass {
         System.stdout.println("  Period 1y2m10d = " + p.getYears() + "y "
             + p.getMonths() + "m " + p.getDays() + "d ("
             + totalMonths + " total months)");
+        this.check(totalMonths == 14L, "1y2m normalizes to 14 months");
 
         // ZoneOffset / ZoneId / ZonedDateTime — offsets and zones.
         ZoneOffset minus5 = ZoneOffset.ofHours(-5);
@@ -92,15 +103,21 @@ public class TimeDemo extends DemoClass {
         System.stdout.println("  ZoneId 'UTC' offset = " + utcOff.getTotalSeconds()
             + "s; ZonedDateTime year = " + zdt.getYear()
             + ", offset = " + zdtOff.getTotalSeconds() + "s");
+        this.check(minus5.getTotalSeconds() == -18000
+            && utcOff.getTotalSeconds() == 0 && zdtOff.getTotalSeconds() == 0
+            && zdt.getYear() == 1970, "offsets and the UTC zone resolve");
 
         // DateTimeFormatter — strftime-style pattern formatting.
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
         String formatted = fmt.formatDateTime(dt);
         System.stdout.println("  DateTimeFormatter = " + formatted);
+        this.check(formatted.equals("2026-06-08 14:30:00"),
+            "strftime pattern renders the exact string");
 
         // Clock — the system clock (value varies run-to-run; just prove it ticks).
         Instant now = Clock.now();
         int64 nowEpoch = now.getEpochSecond();
         System.stdout.println("  Clock.now() is after the epoch = " + (nowEpoch > 0L));
+        this.check(nowEpoch > 0L, "the system clock ticks");
     }
 }
