@@ -1,0 +1,344 @@
+package cajeta.nucleo.sparse;
+
+import cajeta.lang.String;
+import cajeta.math.Tensor;
+
+/**
+ * A float64 sparse matrix in compressed-sparse-row form (cajeta-ml-v2 spec
+ * §5; doctrine §4.7: the TYPE and its primitives live in the stdlib, the
+ * algorithms that consume it live in external libraries — the first
+ * consumer is dev.cajeta.ml's sparse coordinate descent).
+ *
+ * Storage: `rowPtr (n+1)`, `colIdx (nnz)`, `values (nnz)`, columns
+ * ascending within each row, no explicit zeros stored by the builders.
+ * Builders COPY their inputs (the `Column.of` convention). An optional CSC
+ * mirror (`buildCsc`, idempotent) serves per-column consumers: column
+ * walks in ascending row order and cached column norms.
+ */
+public final class CsrMatrix {
+
+    int64[] rowPtr;     // (n+1)
+    int64[] colIdx;     // (nnz) ascending within a row
+    float64[] values;   // (nnz)
+    int64 nRows;
+    int64 nCols;
+    // CSC mirror (buildCsc): colPtr (p+1), row indices + values in column
+    // order, plus per-column squared norms.
+    int64[] colPtr;
+    int64[] cscRow;
+    float64[] cscVal;
+    float64[] colN2;
+    boolean hasCsc;
+
+    CsrMatrix(#int64[] rowPtr, #int64[] colIdx, #float64[] values,
+              int64 nRows, int64 nCols) {
+        this.rowPtr #= rowPtr;
+        this.colIdx #= colIdx;
+        this.values #= values;
+        this.nRows = nRows;
+        this.nCols = nCols;
+        this.hasCsc = false;
+    }
+
+    public int64 rowCount() { return this.nRows; }
+    public int64 colCount() { return this.nCols; }
+    public int64 nnz() { return this.rowPtr[this.nRows]; }
+
+    /** CSR from a dense `(n, p)` tensor — nonzeros in row-major order. */
+    public static #CsrMatrix fromDense(Tensor<float64> a) {
+        if (a.ndim() != 2) {
+            throw heap SparseException("CsrMatrix.fromDense: a must be 2-D");
+        }
+        int64 n = a.shapeAt(0);
+        int64 p = a.shapeAt(1);
+        int64 count = 0;
+        int64 i = 0;
+        while (i < n) {
+            int64 j = 0;
+            while (j < p) {
+                if (a.get2(i, j) != 0.0) { count = count + 1; }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        int64[] rp = heap int64[n + (int64) 1];
+        int64[] ci = heap int64[count];
+        float64[] vv = heap float64[count];
+        int64 at = 0;
+        i = 0;
+        while (i < n) {
+            rp[i] = at;
+            int64 j = 0;
+            while (j < p) {
+                float64 v = a.get2(i, j);
+                if (v != 0.0) {
+                    ci[at] = j;
+                    vv[at] = v;
+                    at = at + 1;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        rp[n] = at;
+        return heap CsrMatrix(#rp, #ci, #vv, n, p);
+    }
+
+    /**
+     * CSR from COO triplets (first `nnz` entries of `rows`/`cols`/`vals`):
+     * any order; duplicate `(row, col)` entries are SUMMED (scipy's rule);
+     * an exact-zero sum still occupies its slot (no re-sparsification).
+     */
+    public static #CsrMatrix fromCoo(int64[] rows, int64[] cols,
+                                     float64[] vals, int64 nnz,
+                                     int64 n, int64 p) {
+        int64 t = 0;
+        while (t < nnz) {
+            int64 r = rows[t];
+            int64 c = cols[t];
+            if (r < 0 || r >= n || c < 0 || c >= p) {
+                throw heap SparseException(
+                    "CsrMatrix.fromCoo: index out of range");
+            }
+            t = t + 1;
+        }
+        // Count per row, prefix-sum, scatter in input order.
+        int64[] cnt = heap int64[n];
+        t = 0;
+        while (t < nnz) {
+            int64 r = rows[t];
+            cnt[r] = cnt[r] + 1;
+            t = t + 1;
+        }
+        int64[] rp = heap int64[n + (int64) 1];
+        int64 acc = 0;
+        int64 i = 0;
+        while (i < n) {
+            rp[i] = acc;
+            acc = acc + cnt[i];
+            i = i + 1;
+        }
+        rp[n] = acc;
+        int64[] ci = heap int64[nnz];
+        float64[] vv = heap float64[nnz];
+        int64[] fill = heap int64[n];
+        t = 0;
+        while (t < nnz) {
+            int64 r = rows[t];
+            int64 slot = rp[r] + fill[r];
+            ci[slot] = cols[t];
+            vv[slot] = vals[t];
+            fill[r] = fill[r] + 1;
+            t = t + 1;
+        }
+        // Per-row insertion sort by column (rows are short in practice).
+        i = 0;
+        while (i < n) {
+            int64 lo = rp[i];
+            int64 hi = rp[i + (int64) 1];
+            int64 a = lo + 1;
+            while (a < hi) {
+                int64 keyC = ci[a];
+                float64 keyV = vv[a];
+                int64 b = a - 1;
+                while (b >= lo && ci[b] > keyC) {
+                    ci[b + (int64) 1] = ci[b];
+                    vv[b + (int64) 1] = vv[b];
+                    b = b - 1;
+                }
+                ci[b + (int64) 1] = keyC;
+                vv[b + (int64) 1] = keyV;
+                a = a + 1;
+            }
+            i = i + 1;
+        }
+        // Merge duplicates by compaction.
+        int64[] rp2 = heap int64[n + (int64) 1];
+        int64[] ci2 = heap int64[nnz];
+        float64[] vv2 = heap float64[nnz];
+        int64 out = 0;
+        i = 0;
+        while (i < n) {
+            rp2[i] = out;
+            int64 a = rp[i];
+            int64 hi = rp[i + (int64) 1];
+            while (a < hi) {
+                int64 c = ci[a];
+                float64 sum = vv[a];
+                int64 b = a + 1;
+                while (b < hi && ci[b] == c) {
+                    sum = sum + vv[b];
+                    b = b + 1;
+                }
+                ci2[out] = c;
+                vv2[out] = sum;
+                out = out + 1;
+                a = b;
+            }
+            i = i + 1;
+        }
+        rp2[n] = out;
+        // Trim to the merged size.
+        int64[] ciF = heap int64[out];
+        float64[] vvF = heap float64[out];
+        int64 z = 0;
+        while (z < out) {
+            ciF[z] = ci2[z];
+            vvF[z] = vv2[z];
+            z = z + 1;
+        }
+        return heap CsrMatrix(#rp2, #ciF, #vvF, n, p);
+    }
+
+    /** Dense `(n, p)` tensor with the stored entries placed. */
+    public #Tensor<float64> toDense() {
+        int64[] sh = heap int64[2];
+        sh[0] = this.nRows;
+        sh[1] = this.nCols;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < this.nRows) {
+            int64 t = this.rowPtr[i];
+            while (t < this.rowPtr[i + (int64) 1]) {
+                out.flatSet(i * this.nCols + this.colIdx[t], this.values[t]);
+                t = t + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** `A·x`: `(p,)` in, `(n,)` out. */
+    public #Tensor<float64> matVec(Tensor<float64> x) {
+        if (x.ndim() != 1 || x.shapeAt(0) != this.nCols) {
+            throw heap SparseException("CsrMatrix.matVec: x must be (p,)");
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = this.nRows;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < this.nRows) {
+            float64 acc = 0.0;
+            int64 t = this.rowPtr[i];
+            while (t < this.rowPtr[i + (int64) 1]) {
+                int64 c = this.colIdx[t];
+                acc = acc + this.values[t] * x.get1(c);
+                t = t + 1;
+            }
+            out.set1(i, acc);
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /** `Aᵀ·x`: `(n,)` in, `(p,)` out. */
+    public #Tensor<float64> matVecT(Tensor<float64> x) {
+        if (x.ndim() != 1 || x.shapeAt(0) != this.nRows) {
+            throw heap SparseException("CsrMatrix.matVecT: x must be (n,)");
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = this.nCols;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < this.nRows) {
+            float64 xi = x.get1(i);
+            int64 t = this.rowPtr[i];
+            while (t < this.rowPtr[i + (int64) 1]) {
+                int64 c = this.colIdx[t];
+                out.set1(c, out.get1(c) + this.values[t] * xi);
+                t = t + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Build the CSC mirror + cached column norms (idempotent). CSR is
+     * row-sorted, so the column-order scatter is naturally ascending in
+     * row within each column.
+     */
+    public void buildCsc() {
+        if (this.hasCsc) { return; }
+        int64 p = this.nCols;
+        int64 m = this.nnz();
+        int64[] cnt = heap int64[p];
+        int64 t = 0;
+        while (t < m) {
+            int64 c = this.colIdx[t];
+            cnt[c] = cnt[c] + 1;
+            t = t + 1;
+        }
+        int64[] cp = heap int64[p + (int64) 1];
+        int64 acc = 0;
+        int64 j = 0;
+        while (j < p) {
+            cp[j] = acc;
+            acc = acc + cnt[j];
+            j = j + 1;
+        }
+        cp[p] = acc;
+        int64[] cr = heap int64[m];
+        float64[] cv = heap float64[m];
+        int64[] fill = heap int64[p];
+        float64[] n2 = heap float64[p];
+        int64 i = 0;
+        while (i < this.nRows) {
+            t = this.rowPtr[i];
+            while (t < this.rowPtr[i + (int64) 1]) {
+                int64 c = this.colIdx[t];
+                float64 v = this.values[t];
+                int64 slot = cp[c] + fill[c];
+                cr[slot] = i;
+                cv[slot] = v;
+                fill[c] = fill[c] + 1;
+                n2[c] = n2[c] + v * v;
+                t = t + 1;
+            }
+            i = i + 1;
+        }
+        this.colPtr #= cp;
+        this.cscRow #= cr;
+        this.cscVal #= cv;
+        this.colN2 #= n2;
+        this.hasCsc = true;
+        return;
+    }
+
+    /** First CSC slot of column `j` (requires {@link #buildCsc}). */
+    public int64 colStart(int64 j) {
+        this.__requireCsc("colStart");
+        return this.colPtr[j];
+    }
+
+    /** One past the last CSC slot of column `j`. */
+    public int64 colEnd(int64 j) {
+        this.__requireCsc("colEnd");
+        return this.colPtr[j + (int64) 1];
+    }
+
+    /** Row index at CSC slot `t` (ascending within a column). */
+    public int64 cscRowAt(int64 t) {
+        this.__requireCsc("cscRowAt");
+        return this.cscRow[t];
+    }
+
+    /** Value at CSC slot `t`. */
+    public float64 cscValAt(int64 t) {
+        this.__requireCsc("cscValAt");
+        return this.cscVal[t];
+    }
+
+    /** `‖column j‖²` (cached by {@link #buildCsc}). */
+    public float64 colNorm2(int64 j) {
+        this.__requireCsc("colNorm2");
+        return this.colN2[j];
+    }
+
+    void __requireCsc(String op) {
+        if (!this.hasCsc) {
+            throw heap SparseException(
+                "CsrMatrix." + op + ": call buildCsc() first");
+        }
+    }
+}

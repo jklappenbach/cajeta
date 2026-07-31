@@ -734,6 +734,12 @@ namespace cajeta {
                 || pkg.rfind("cajeta.nucleo.optim.", 0) == 0) {
             return true;
         }
+        // cajeta.nucleo.sparse (CsrMatrix, cajeta-ml-v2 U7) imports
+        // cajeta.math (Tensor) — same lazy shape.
+        if (pkg == "cajeta.nucleo.sparse"
+                || pkg.rfind("cajeta.nucleo.sparse.", 0) == 0) {
+            return true;
+        }
         // cajeta.nucleo.frame (the typed dataframe + DSL nodes) — lazy for
         // the same reason (pulls columns/math when used).
         return pkg == "cajeta.nucleo.frame"
