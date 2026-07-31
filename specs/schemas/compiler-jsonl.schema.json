@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.dev/schemas/compiler-jsonl-v1.json",
+  "title": "cajeta compiler NDJSON stream",
+  "version": { "major": 1, "minor": 0 },
+
+  "description": "One JSON object per line on stderr under --diag-format=json. Every record carries a `kind`; the stream opens with a `stream` record announcing this version. Text mode (the default) emits none of this. See specs/compiler-jsonl-spec.md.",
+
+  "versionPolicy": {
+    "major": "Bumped on any breaking change. A consumer that does not recognise the major MUST refuse the whole stream rather than parse the records it happens to recognise — the point of the bump is that recognition is no longer reliable.",
+    "minor": "Bumped when a record kind or a field is ADDED. Consumers skip unknown kinds and ignore unknown fields, so a minor bump never breaks a reader.",
+    "removal": "A field or kind is never removed in the same major that adds its replacement. The compiler and the IDE plugin ship separately, so both directions must keep working: new compiler with old plugin, and old compiler with new plugin.",
+    "legacy": "A stream with no `stream` record predates this format and is still readable: its diagnostics carry no `kind` and are recognised by having a `severity`."
+  },
+
+  "type": "object",
+  "required": ["kind"],
+  "properties": { "kind": { "type": "string" } },
+  "oneOf": [
+    { "$ref": "#/$defs/stream" },
+    { "$ref": "#/$defs/diagnostic" },
+    { "$ref": "#/$defs/progress" },
+    { "$ref": "#/$defs/cache" },
+    { "$ref": "#/$defs/log" },
+    { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/xref" }
+  ],
+
+  "$defs": {
+    "stream": {
+      "title": "stream — the version announcement",
+      "description": "First record of every stream, emitted even when the run has nothing else to say so a consumer can tell a clean run from a process that died before producing output.",
+      "type": "object",
+      "required": ["kind", "major", "minor"],
+      "properties": {
+        "kind": { "const": "stream" },
+        "major": { "type": "integer", "description": "Refuse the stream if unrecognised." },
+        "minor": { "type": "integer" },
+        "producer": {
+          "type": ["string", "null"],
+          "description": "Build provenance, e.g. \"cajeta 0.10.0\". Identifies the compiler that wrote the stream, not the process — it is the same whether the emitter is the cajeta binary or anything else linking the compiler library."
+        }
+      }
+    },
+
+    "diagnostic": {
+      "title": "diagnostic — a compiler error, warning or note",
+      "description": "Carried every field it had before `kind` was added, with the same names and meanings.",
+      "type": "object",
+      "required": ["kind", "severity", "message"],
+      "properties": {
+        "kind": { "const": "diagnostic" },
+        "severity": { "enum": ["error", "warning", "note"] },
+        "code": { "type": ["string", "null"], "description": "Compiler error id, e.g. CAJETA_ERROR_UNRESOLVED_TYPE. Null when unclassified." },
+        "message": { "type": ["string", "null"] },
+        "file": { "type": ["string", "null"] },
+        "line": { "type": ["integer", "null"], "description": "1-based; null when unlocated." },
+        "column": { "type": ["integer", "null"], "description": "1-based; null when unlocated." }
+      }
+    },
+
+    "progress": {
+      "title": "progress — a compile phase boundary",
+      "description": "Emitted in start/finish pairs. `finish` carries the elapsed time, so a consumer can render real build timings rather than a spinner.",
+      "type": "object",
+      "required": ["kind", "phase", "state"],
+      "properties": {
+        "kind": { "const": "progress" },
+        "phase": { "type": ["string", "null"], "description": "Stable id: prescan | parse | resolve | codegen | emit | link." },
+        "state": { "enum": ["start", "finish"] },
+        "label": { "type": ["string", "null"], "description": "Human-readable phase name." },
+        "elapsedMs": { "type": "integer", "description": "Present on finish only." }
+      }
+    },
+
+    "cache": {
+      "title": "cache — a build served from cache",
+      "description": "A cached build runs no compiler and so emits no phases; without this a consumer sees an instant success and an empty phase tree, which reads as \"the build did nothing\".",
+      "type": "object",
+      "required": ["kind", "state"],
+      "properties": {
+        "kind": { "const": "cache" },
+        "state": { "enum": ["hit"] },
+        "artifact": { "type": ["string", "null"], "description": "The re-published output path." }
+      }
+    },
+
+    "log": {
+      "title": "log — narration that is not a diagnostic",
+      "description": "Failure explanations and tool chatter. The message is the text the compiler would have printed in text mode, verbatim: these lines are read by people, and typed records for e.g. `[step-armed]` would be schema surface with no consumer.",
+      "type": "object",
+      "required": ["kind", "level", "message"],
+      "properties": {
+        "kind": { "const": "log" },
+        "level": { "enum": ["debug", "info", "warn", "error"] },
+        "message": { "type": ["string", "null"] }
+      }
+    },
+
+    "result": {
+      "title": "result — the terminal record",
+      "description": "Exactly one per run, last. Whether the run succeeded must be answerable from the stream alone, never inferred from an exit code plus silence.",
+      "type": "object",
+      "required": ["kind", "status"],
+      "properties": {
+        "kind": { "const": "result" },
+        "status": { "enum": ["ok", "error"] },
+        "message": { "type": ["string", "null"], "description": "Why it failed; omitted on success." }
+      }
+    },
+
+    "xref": {
+      "title": "xref — a cross-reference record",
+      "description": "The --emit-xref sub-stream riding the diagnostic channel (ide-symbol-index §2.0.2). It predates the shared emitter and still carries its own `rel: \"version\"` record; that folds into the `stream` record at the next major (spec 3.1.4).",
+      "type": "object",
+      "required": ["kind", "rel", "record"],
+      "properties": {
+        "kind": { "const": "xref" },
+        "rel": { "type": "string", "description": "Relation name: declarations | inheritance | references | overrides | calls | version. An unknown relation is data to ignore at use time, not a parse failure." },
+        "record": { "type": "object", "description": "The relation's record, verbatim — the same shape the whole-root xref document carries." }
+      }
+    }
+  }
+}
