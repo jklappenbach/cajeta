@@ -6,21 +6,32 @@ import cajeta.collection.ImmutableMap;
 import cajeta.lang.Pair;
 
 // Immutable key/value map, built from a snapshot list of Pair<K,V>.
-// `get(key)` returns the value; `containsKey(key)` tests membership.
-// Like the other immutables it has no mutators once constructed.
+// `get(key)` / `containsKey(key)`; no mutators once constructed.
+//
+// The scenario: per-tenant rate limits (tenant id -> requests/min)
+// frozen at config load. Handlers on every thread read it without a
+// lock precisely BECAUSE nothing can write it.
 public class ImmutableMapDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- ImmutableMap --");
 
-        ArrayList<Pair<int32, int32>> src = heap ArrayList<Pair<int32, int32>>();
-        src.add(heap Pair<int32, int32>(1, 100));
-        src.add(heap Pair<int32, int32>(2, 200));
-        src.add(heap Pair<int32, int32>(3, 300));
+        ArrayList<Pair<int32, int32>> cfg = heap ArrayList<Pair<int32, int32>>();
+        cfg.add(heap Pair<int32, int32>(7001, 100));   // free tier
+        cfg.add(heap Pair<int32, int32>(7002, 1000));  // pro tier
+        cfg.add(heap Pair<int32, int32>(7003, 50));    // trial
 
-        ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(src);
-        System.stdout.println("  count       = " + (int32) m.count());
-        System.stdout.println("  get(2)      = " + m.get(2));
-        System.stdout.println("  containsKey(3) = " + m.containsKey(3));
+        ImmutableMap<int32, int32> limits = heap ImmutableMap<int32, int32>(cfg);
+        System.stdout.println("  " + (int32) limits.count()
+            + " tenants; limit(7002) = " + limits.get(7002) + " req/min");
+        this.check((int32) limits.count() == 3 && limits.get(7002) == 1000,
+            "frozen limits read back");
+        this.check(limits.containsKey(7003) && !limits.containsKey(7999),
+            "membership distinguishes configured tenants");
+
+        // Later config edits build a NEW map; the frozen one never moves.
+        cfg.add(heap Pair<int32, int32>(7004, 500));
+        this.check((int32) limits.count() == 3 && !limits.containsKey(7004),
+            "source edits never reach the frozen copy");
     }
 }

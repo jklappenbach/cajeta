@@ -5,22 +5,34 @@ import cajeta.collection.ArrayList;
 import cajeta.collection.ImmutableList;
 
 // Immutable, index-addressable list. Built once from a mutable
-// ArrayList snapshot; afterwards it has no mutators, so it can be
-// shared freely without defensive copies. `get(i)` is O(1); `count()`
-// returns the element count (int64).
+// ArrayList SNAPSHOT; afterwards it has no mutators, so it can be
+// shared freely without defensive copies. `get(i)` is O(1).
+//
+// The scenario: a service freezes its fallback-endpoint order at
+// startup. The frozen copy is what makes sharing safe — later edits to
+// the source list must NOT reach it, and that property is the check.
 public class ImmutableListDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- ImmutableList --");
 
-        ArrayList<int32> src = heap ArrayList<int32>();
-        src.add(10);
-        src.add(20);
-        src.add(30);
+        ArrayList<int32> ports = heap ArrayList<int32>();
+        ports.add(8080);
+        ports.add(8081);
+        ports.add(9090);
 
-        ImmutableList<int32> il = heap ImmutableList<int32>(src);
-        System.stdout.println("  count  = " + (int32) il.count());
-        System.stdout.println("  get(1) = " + il.get(1));
-        System.stdout.println("  contains(30) = " + il.contains(30));
+        ImmutableList<int32> frozen = heap ImmutableList<int32>(ports);
+        System.stdout.println("  frozen " + (int32) frozen.count()
+            + " fallback ports; first = " + frozen.get(0));
+        this.check((int32) frozen.count() == 3 && frozen.get(0) == 8080
+            && frozen.contains(9090), "snapshot captures the startup order");
+
+        // The property that earns the name: mutating the SOURCE after the
+        // freeze changes nothing in the snapshot.
+        ports.add(6666);
+        ports[0] = 1;
+        this.check((int32) frozen.count() == 3 && frozen.get(0) == 8080
+            && !frozen.contains(6666),
+            "source edits never reach the frozen copy");
     }
 }

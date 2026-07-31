@@ -1,24 +1,80 @@
 package tour.lang;
 
 import tour.DemoClass;
+import cajeta.lang.StringBuilder;
 
-// String surface: equals, contains, substring, trim, replace, length-
-// like ops. Methods that return a heap String (substring / trim /
-// replace) return an owned `#String` — bind to a local to take it.
+// The String surface, exercised on the spec's own example: dissecting a
+// service's access-log line. Finding methods (indexOf / indexOfFrom /
+// startsWith / endsWith / contains), slicing (substring — owned copy —
+// vs substringView — zero-copy window over the same bytes), case folding,
+// equals vs operator==, and StringBuilder for assembling output without
+// quadratic concatenation.
+//
+// Ownership: methods returning `#String` (trim / substring / replace /
+// toUpperCase / ...) hand the caller an OWNED string — bind to a local.
 public class StringDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- Strings --");
-        String s = "  Hello, Cajeta!  ";
-        String trimmed = s.trim();
-        boolean hasCajeta = trimmed.contains("Cajeta");
-        String sub = trimmed.substring(7, 13);          // "Cajeta"
-        String swapped = trimmed.replace("Cajeta", "World");
 
-        System.stdout.println("  original   = '" + s + "'");
-        System.stdout.println("  trim()     = '" + trimmed + "'");
-        System.stdout.println("  contains   = " + hasCajeta);
-        System.stdout.println("  substring  = '" + sub + "'");
-        System.stdout.println("  replace    = '" + swapped + "'");
+        // The raw line arrives padded; trim() first, always.
+        String raw = "  GET /api/orders?id=42 HTTP/1.1 200  ";
+        String line = raw.trim();
+        this.check(line.startsWith("GET") && line.endsWith("200"),
+            "trim + startsWith/endsWith orient the parse");
+
+        // Split by finding the spaces: method, url, protocol, status.
+        int32 sp1 = (int32) line.indexOf(" ");
+        int32 sp2 = (int32) line.indexOfFrom(" ", (int64)(sp1 + 1));
+        int32 sp3 = (int32) line.indexOfFrom(" ", (int64)(sp2 + 1));
+        String method = line.substring(0, sp1);
+        String url = line.substring(sp1 + 1, sp2);
+        String status = line.substring(sp3 + 1, (int32) line.count());
+        System.stdout.println("  method = " + method + ", url = " + url
+            + ", status = " + status);
+        this.check(method.equals("GET") && status.equals("200"),
+            "indexOf-driven fields parse out");
+
+        // The query splits off the path at '?'.
+        int32 q = (int32) url.indexOf("?");
+        String path = url.substring(0, q);
+        String query = url.substring(q + 1, (int32) url.count());
+        this.check(path.equals("/api/orders") && query.equals("id=42")
+            && url.contains("?id="), "path/query split at the '?'");
+
+        // equals and operator== agree (both compare content).
+        this.check(method == "GET" && !(method == "POST"),
+            "operator== is content equality");
+
+        // Case folding for canonical comparisons.
+        String proto = line.substring(sp2 + 1, sp3);
+        String protoLower = proto.toLowerCase();
+        this.check(protoLower.equals("http/1.1")
+            && proto.toUpperCase().equals("HTTP/1.1"),
+            "toLowerCase/toUpperCase fold ASCII");
+
+        // substringView: the same window with ZERO copy — it shares the
+        // parent's bytes, so prefer it for transient slices on hot paths.
+        String pathView = url.substringView(0, q);
+        this.check(pathView.equals(path), "substringView reads the same slice");
+
+        // replace produces the redacted variant for logs.
+        String redacted = line.replace("id=42", "id=***");
+        this.check(redacted.contains("id=***") && !redacted.contains("id=42"),
+            "replace redacts the query value");
+
+        // StringBuilder assembles the summary in O(n) — string `+` in a
+        // loop would re-copy the prefix every pass.
+        StringBuilder out = heap StringBuilder();
+        out.append(method);
+        out.append(" ");
+        out.append(path);
+        out.append(" -> ");
+        out.append(status);
+        String summary = out.toString();
+        System.stdout.println("  summary: " + summary);
+        this.check(summary.equals("GET /api/orders -> 200")
+            && out.count() == (int32) summary.count(),
+            "StringBuilder assembles the summary");
     }
 }

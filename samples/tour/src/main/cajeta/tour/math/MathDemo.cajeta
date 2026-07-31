@@ -5,21 +5,34 @@ import cajeta.lang.Math;
 
 // `Math.max` / `min` / `clamp` are method-level templates — each
 // monomorphizes per T at the call site with zero dispatch cost.
-// `Math.max(3, 7)` produces a max<int32>; `Math.max(1.5, 2.5)`
-// produces a max<float64>. Primitives only for v1.
+// `Math.max(3, 7)` produces a max<int32>; `Math.max(1.5, 2.5)` a
+// max<float64>. Primitives only for v1.
+//
+// The values are real ones: clamping an audio gain into its legal range
+// and capping a retry backoff — the two places clamp shows up first in
+// any service.
 public class MathDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- Math --");
-        int32 a = Math.max(3, 7);
-        int32 b = Math.min(3, 7);
-        int32 c = Math.clamp(15, 0, 10);    // 10 — clamped to upper bound
-        int32 d = Math.clamp(-5, 0, 10);    // 0  — clamped to lower bound
-        int32 e = Math.clamp(5, 0, 10);     // 5  — in range
-        System.stdout.println("  max(3, 7)        = " + a);
-        System.stdout.println("  min(3, 7)        = " + b);
-        System.stdout.println("  clamp(15, 0, 10) = " + c);
-        System.stdout.println("  clamp(-5, 0, 10) = " + d);
-        System.stdout.println("  clamp(5, 0, 10)  = " + e);
+
+        // A user-supplied gain slider must land in [0, 100] percent.
+        int32 tooLoud = Math.clamp(150, 0, 100);
+        int32 tooQuiet = Math.clamp(-20, 0, 100);
+        int32 fine = Math.clamp(65, 0, 100);
+        System.stdout.println("  gain 150% -> " + tooLoud
+            + ", -20% -> " + tooQuiet + ", 65% -> " + fine);
+        this.check(tooLoud == 100 && tooQuiet == 0 && fine == 65,
+            "clamp pins both bounds, passes in-range through");
+
+        // Exponential backoff capped at 30 s: min(2^attempt, 30).
+        int32 attempt4 = Math.min(16, 30);      // 2^4
+        int32 attempt6 = Math.min(64, 30);      // 2^6 hits the cap
+        this.check(attempt4 == 16 && attempt6 == 30,
+            "min caps the backoff curve");
+
+        // Same templates at float64 — a fresh monomorphization, same code.
+        float64 worst = Math.max(0.87, 0.91);
+        this.check(worst == 0.91, "max<float64> picks the worse p99");
     }
 }
