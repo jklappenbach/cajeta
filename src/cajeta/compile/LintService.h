@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace cajeta {
     class Compiler;
@@ -27,6 +28,11 @@ namespace cajeta::lintservice {
         std::string shadow;       // empty = no --shadow
         bool jsonDiagnostics = true;
         bool emitXref = false;    // bare --emit-xref: stream on the diagnostic channel
+        // Dependency archives, the warm equivalent of `--classpath=a.cja,b.cja`.
+        // Server-level in practice (the loop copies ServerOptions::classpath
+        // into every request), but carried per-request so warmLint is drivable
+        // standalone. Empty = no dependencies.
+        std::vector<std::string> classpath;
     };
 
     // The one-shot lint driver: collect-and-continue engine, exception
@@ -52,6 +58,11 @@ namespace cajeta::lintservice {
         std::string root;
         std::set<std::string> excluded;
         std::map<std::string, std::pair<std::int64_t, std::uintmax_t>> stamps;
+        // The classpath the context baseline was captured under. A server
+        // fixes it at startup, so this normally never changes; comparing it
+        // anyway keeps a direct caller from serving a context whose dependency
+        // declarations belong to a different classpath.
+        std::vector<std::string> classpath;
         bool valid = false;
     };
 
@@ -82,6 +93,10 @@ namespace cajeta::lintservice {
 
     struct ServerOptions {
         std::string sourceRoot;   // --source-root: shared across requests
+        // --classpath dependency archives: shared across requests, like the
+        // source root. The plugin keys one server per (compiler, root,
+        // classpath), so this is fixed for the process's life.
+        std::vector<std::string> classpath;
         bool jsonDiagnostics = true;
     };
 

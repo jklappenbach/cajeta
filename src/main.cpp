@@ -688,6 +688,12 @@ int main(int argc, const char* argv[]) {
         }
         cajeta::lintservice::ServerOptions opts;
         opts.sourceRoot = lintSourceRoot;
+        // --classpath is start-time context here, like --source-root: the
+        // server builds a fresh Compiler per request and each one needs the
+        // dependency archives, or every reference into a dependency lints as
+        // an unknown type (Julian, 2026-07-31 — `Logger` red-underlined while
+        // one-shot lint of the same buffer was clean).
+        opts.classpath = compiler.getClasspath();
         opts.jsonDiagnostics = jsonDiag;
         return cajeta::lintservice::runLintServer(opts);
     }

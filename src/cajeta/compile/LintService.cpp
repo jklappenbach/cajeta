@@ -99,6 +99,7 @@ namespace cajeta::lintservice {
         compiler.getMutableFlags().diagFormat =
             req.jsonDiagnostics ? DiagFormat::Json : DiagFormat::Text;
         compiler.getMutableFlags().emitXref = req.emitXref ? "-" : "";
+        for (const auto& cp : req.classpath) compiler.addClasspath(cp);
 
         int rc = runLintDriver(compiler, req.file, req.sourceRoot, req.shadow);
 
@@ -171,6 +172,7 @@ namespace cajeta::lintservice {
             compiler.getMutableFlags().diagFormat =
                 req.jsonDiagnostics ? DiagFormat::Json : DiagFormat::Text;
             compiler.getMutableFlags().emitXref = req.emitXref ? "-" : "";
+            for (const auto& cp : req.classpath) compiler.addClasspath(cp);
             std::function<void()> afterContext;
             if (!warm) {
                 // Resweep: snapshot the context baseline right after the sweep
@@ -199,7 +201,7 @@ namespace cajeta::lintservice {
 
         const bool hot = core.contextBaselineValid() && ctx.valid
             && ctx.root == req.sourceRoot && ctx.excluded == excluded
-            && ctx.stamps == stamps;
+            && ctx.classpath == req.classpath && ctx.stamps == stamps;
 
         if (hot) {
             core.restoreContextBaseline();
@@ -217,6 +219,7 @@ namespace cajeta::lintservice {
                 ctx.root = req.sourceRoot;
                 ctx.excluded = std::move(excluded);
                 ctx.stamps = std::move(stamps);
+                ctx.classpath = req.classpath;
                 ctx.valid = true;
             } else {
                 ctx.valid = false;
@@ -355,6 +358,7 @@ namespace cajeta::lintservice {
             LintRequest req;
             req.file = filePath;
             req.sourceRoot = opts.sourceRoot;
+            req.classpath = opts.classpath;
             if (auto sh = obj->getString("shadow")) req.shadow = sh->str();
             req.jsonDiagnostics = opts.jsonDiagnostics;
             req.emitXref = obj->getBoolean("emitXref").value_or(false);

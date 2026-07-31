@@ -57,7 +57,8 @@ pristine-stdlib surface is exercised.
 
 ## 2. Server lifecycle and protocol
 
-`cajeta --lint-server --source-root <root> --diag-format=json` reads NDJSON
+`cajeta --lint-server --source-root <root> --diag-format=json
+[--classpath=a.cja,b.cja]` reads NDJSON
 requests on **stdin** and writes NDJSON responses on **stdout** (stderr is
 uncontrolled: crash traces, logging). Responses for a request are contiguous
 (serial server), bracketed by markers, and the payload lines between markers
@@ -87,6 +88,13 @@ construction, testable by slice comparison.
   immediately, and respawns with backoff.
 - 2.6 Protocol major mismatch: the plugin never sends a request; it falls back
   to one-shot and surfaces one notification.
+- 2.7 Dependency archives are start-time context, like the source root: the
+  plugin keys one server per (compiler, root, classpath), so `--classpath`
+  applies to every request the server serves. A buffer that references a
+  dependency type lints exactly as one-shot `--lint --classpath=...` does; a
+  server started without it reports every dependency type as unknown, and the
+  xref stream it returns — which overwrites the whole-root shard — loses every
+  dependency navigation target.
 
 ## 3. Warm stdlib between requests
 
@@ -112,6 +120,11 @@ construction, testable by slice comparison.
   file that references it (no stale cross-file resolution).
 - 4.4 When invalidation cannot be trusted (rename storms, root moved), the
   plugin's recourse is cheap: kill and respawn (1.4.4).
+- 4.5 The context baseline is captured after both the sibling sweep and the
+  `--classpath` ingest, so a warm hit skips both. Re-ingesting on a hit would
+  register every dependency `@Component` twice and the dependency's own
+  `@Inject` sites would resolve as ambiguous — a diagnostic the first lint of
+  the same buffer, and the one-shot binary, do not produce.
 
 ## 5. Plugin integration and fallback
 

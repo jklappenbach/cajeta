@@ -1367,7 +1367,15 @@ namespace cajeta {
         // would then CLOBBER the good whole-root shard with one missing every
         // dependency reference. Armed after capture is on so the dependency
         // declarations are emitted as xref targets too.
-        ingestClasspath();
+        //
+        // Gated by skipContextRegistration for the same reason the sibling
+        // sweep below is: on a warm-hit lint (lint-server §4) the restored
+        // context baseline was captured AFTER this ingest, so it already holds
+        // every dependency declaration. Re-ingesting would register each one a
+        // second time and the dependency's own @Inject sites would then see two
+        // candidate providers (CAJETA_ERROR_DI_AMBIGUOUS on the second lint of
+        // an unchanged buffer).
+        if (!skipContextRegistration) ingestClasspath();
 
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 

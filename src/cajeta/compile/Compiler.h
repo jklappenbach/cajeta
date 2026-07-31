@@ -367,7 +367,8 @@ namespace cajeta {
         // cajeta::Exception caught by the caller).
         // skipContextRegistration (lint-server §4): the sibling context is
         // already warm in the global registries (restored from the context
-        // baseline), so skip the registerLintContext sweep and lint only the
+        // baseline), so skip the registerLintContext sweep AND the --classpath
+        // ingest — the baseline was captured after both — and lint only the
         // target. afterContextRegistration, when set, is invoked right after a
         // sweep actually runs and BEFORE the target is parsed — the warm-lint
         // resweep path captures the context baseline there so the snapshot
