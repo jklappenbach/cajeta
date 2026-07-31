@@ -14,6 +14,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace cajeta {
     class Compiler;
@@ -27,6 +28,12 @@ namespace cajeta::lintservice {
         std::string shadow;       // empty = no --shadow
         bool jsonDiagnostics = true;
         bool emitXref = false;    // bare --emit-xref: stream on the diagnostic channel
+        // --classpath archives, shared across requests (set once from the
+        // server argv). The warm compilers must ingest these exactly as the
+        // one-shot --lint does (d3631571's dependency-Ctrl-click guarantee) —
+        // dropping them streams a dependency-free xref that clobbers the
+        // file's use-site shard in the IDE index.
+        std::vector<std::string> classpath;
     };
 
     // The one-shot lint driver: collect-and-continue engine, exception
@@ -83,6 +90,7 @@ namespace cajeta::lintservice {
     struct ServerOptions {
         std::string sourceRoot;   // --source-root: shared across requests
         bool jsonDiagnostics = true;
+        std::vector<std::string> classpath;   // --classpath: shared across requests
     };
 
     // The `cajeta --lint-server` loop (spec §2). Prime the stdlib once,

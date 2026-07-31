@@ -689,6 +689,7 @@ int main(int argc, const char* argv[]) {
         cajeta::lintservice::ServerOptions opts;
         opts.sourceRoot = lintSourceRoot;
         opts.jsonDiagnostics = jsonDiag;
+        opts.classpath = compiler.getClasspath();
         return cajeta::lintservice::runLintServer(opts);
     }
 

@@ -391,3 +391,59 @@ TEST(LintServer, MissingFileYieldsErrorRecordAndKeepsServing) {
     EXPECT_TRUE(payloadSlice(r.out, 2, slice))
         << "server stopped after a missing-file request:\n" << r.out;
 }
+
+// lint-server + ide-symbol-index §8.3.1: --classpath must reach the WARM
+// per-request compilers exactly as it reaches the one-shot `--lint`
+// (d3631571's guarantee). Regression: the server accepted --classpath on its
+// argv and dropped it (ServerOptions/LintRequest carried no field), so every
+// per-edit re-lint streamed a dependency-free xref that clobbered the file's
+// use-site shard — dependency Ctrl-click went dark in the IDE while the
+// freshness widget stayed green.
+TEST(LintServer, ClasspathReachesTheWarmCompilers) {
+    SKIP_WITHOUT_BINARY();
+
+    // A library .cja carrying dep.DepType (the XrefLint classpath fixture).
+    auto lib = freshTempDir("srvdepcja");
+    {
+        auto dir = lib / "src" / "dep";
+        fs::create_directories(dir);
+        std::ofstream out(dir / "DepType.cajeta");
+        out << "package dep;\n"
+               "public class DepType {\n"
+               "    public int32 answer() { return 42; }\n"
+               "}\n";
+    }
+    auto arc = lib / "arc";
+    fs::create_directories(arc);
+    std::string build = compilerBinary() + " dep.DepType " + (lib / "src").string()
+                      + " " + arc.string() + " --emit=cja > " CAJETA_LSRV_DEVNULL " 2>&1";
+    ASSERT_EQ(std::system(build.c_str()) == 0 ? 0 : -1, 0) << "lib .cja build failed";
+    fs::path cja;
+    for (auto& e : fs::directory_iterator(arc))
+        if (e.path().extension() == ".cja") { cja = e.path(); break; }
+    ASSERT_FALSE(cja.empty()) << "no .cja produced";
+
+    // A consumer buffer referencing the dependency.
+    auto root = freshTempDir("srvdepuse") / "src";
+    auto file = writeUnit(root, "UsesDep",
+        "import dep.DepType;\n"
+        "public final class UsesDep {\n"
+        "    DepType d;\n"
+        "    public static void main() { }\n"
+        "}");
+
+    std::string flags = "--diag-format=json --classpath=" + cja.string();
+    auto r = runServer(flags, lintRequest(1, file, /*emitXref=*/true));
+    ASSERT_EQ(r.rc, 0) << r.err;
+
+    std::string slice;
+    ASSERT_TRUE(payloadSlice(r.out, 1, slice)) << r.out;
+    EXPECT_FALSE(has(slice, "unresolved type"))
+        << "the warm compiler did not ingest the classpath:\n" << slice;
+    EXPECT_TRUE(has(slice, "dep.DepType"))
+        << "no dependency reference in the xref stream:\n" << slice;
+
+    // Byte parity with the one-shot oracle under the same classpath (1.4.1).
+    std::string oracle = oneShotStderr(file, flags + " --emit-xref");
+    EXPECT_EQ(slice, oracle);
+}

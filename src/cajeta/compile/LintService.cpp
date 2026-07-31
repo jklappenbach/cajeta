@@ -99,6 +99,7 @@ namespace cajeta::lintservice {
         compiler.getMutableFlags().diagFormat =
             req.jsonDiagnostics ? DiagFormat::Json : DiagFormat::Text;
         compiler.getMutableFlags().emitXref = req.emitXref ? "-" : "";
+        for (const auto& p : req.classpath) compiler.addClasspath(p);
 
         int rc = runLintDriver(compiler, req.file, req.sourceRoot, req.shadow);
 
@@ -171,6 +172,7 @@ namespace cajeta::lintservice {
             compiler.getMutableFlags().diagFormat =
                 req.jsonDiagnostics ? DiagFormat::Json : DiagFormat::Text;
             compiler.getMutableFlags().emitXref = req.emitXref ? "-" : "";
+            for (const auto& p : req.classpath) compiler.addClasspath(p);
             std::function<void()> afterContext;
             if (!warm) {
                 // Resweep: snapshot the context baseline right after the sweep
@@ -358,6 +360,7 @@ namespace cajeta::lintservice {
             if (auto sh = obj->getString("shadow")) req.shadow = sh->str();
             req.jsonDiagnostics = opts.jsonDiagnostics;
             req.emitXref = obj->getBoolean("emitXref").value_or(false);
+            req.classpath = opts.classpath;
 
             // The captured stderr IS the payload; markers bracket it on stdout.
             // The sibling context (siblings kept warm across requests) is
