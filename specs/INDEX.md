@@ -44,4 +44,9 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — approved 2026-07-30; Unit 1 (coverage script) next |
+| [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Unit 1 (coverage gate) + Unit 2 (six-way review, findings in agents/tour-quality/findings/) done 2026-07-30; remediation scope awaiting developer confirmation (plan 2.3.1) |
+| [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
+| [float64-tostring-roundtrip](float64-tostring-roundtrip-spec.md) | — (defect, tour-quality logging review) | draft |
+| [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
+| [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
+| [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
