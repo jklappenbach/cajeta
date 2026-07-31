@@ -48,7 +48,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
 | [tour-quality](tour-quality-spec.md) | [plan](../agents/tour-quality-plan.md) | active — Unit 1 (coverage gate) + Unit 2 (six-way review, findings in agents/tour-quality/findings/) done 2026-07-30; remediation scope awaiting developer confirmation (plan 2.3.1) |
 | [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; fix scheduled cajeta-ml-v2 U7 / v0.13.0; workaround in dev.cajeta.ml) | draft |
-| [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; fix scheduled cajeta-ml-v2 U7 / v0.13.0; workaround: IdentityTransformer padding in Pipeline) | draft |
+| [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; FIXED 2026-07-31, pin live; noted follow-up: fat-aware interface `== null`) | draft |
 | [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
 | [float64-tostring-roundtrip](float64-tostring-roundtrip-spec.md) | — (defect, tour-quality logging review) | draft |
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
