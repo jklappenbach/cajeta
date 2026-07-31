@@ -53,5 +53,6 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [float64-tostring-roundtrip](float64-tostring-roundtrip-spec.md) | — (defect, tour-quality logging review) | draft |
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
 | [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
+| [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
