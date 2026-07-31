@@ -91,11 +91,15 @@ public class MultiInheritanceDemo extends DemoClass {
         System.stdout.println("  Two behavior bases (no boilerplate):");
         System.stdout.println("    Event.describe() = " + ev.describe()
             + "   Event.age(150) = " + ev.age(150));
+        this.check(ev.describe().equals("<launch>") && ev.age(150) == 50L,
+            "both bases' behavior inherited untouched");
 
         // 2. Collision resolved by override + super<Base>.
         DualView dv = stack DualView();
         System.stdout.println("  Collision (both parents declare emit()); child picks via super<Base>:");
         System.stdout.println("    DualView.emit() = " + dv.emit());
+        this.check(dv.emit().equals("html+text"),
+            "collision resolved via super<Base> selection");
 
         // 3. Templates x MI — one generic type, mixins for free across all T.
         Crate<int32> ci = stack Crate<int32>();
@@ -107,5 +111,8 @@ public class MultiInheritanceDemo extends DemoClass {
             + "  " + ci.idTag() + "  v" + ci.version());
         System.stdout.println("    Crate<String>: value=" + cs.get()
             + "  " + cs.idTag() + "  v" + cs.version());
+        this.check(ci.get() == 42 && ci.idTag().equals("#100")
+            && ci.version() == 2 && cs.get().equals("hi"),
+            "mixins ride every instantiation of the template");
     }
 }

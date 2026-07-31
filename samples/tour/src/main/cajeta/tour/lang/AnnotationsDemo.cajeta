@@ -20,5 +20,8 @@ public class AnnotationsDemo extends DemoClass {
         // because of @Builder.Default on the field.
         Book d = Book.builder().title("Untitled").build();
         System.stdout.println("  default pages = " + d.pages);
+        this.check(b.title.equals("The Mythical Man-Month") && b.pages == 322,
+            "builder sets every field");
+        this.check(d.pages == 100, "@Builder.Default fills the unset field");
     }
 }

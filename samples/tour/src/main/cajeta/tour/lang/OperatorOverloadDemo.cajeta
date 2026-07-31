@@ -157,6 +157,8 @@ public class OperatorOverloadDemo extends DemoClass {
         System.stdout.println("  after  acc + b - c:");
         System.stdout.println("    acc    = (" + acc.x    + ", " + acc.y    + ")  (unchanged)");
         System.stdout.println("    result = (" + result.x + ", " + result.y + ")");
+        this.check(result.x == 2 && result.y == 5 && acc.x == 1 && acc.y == 2,
+            "chained ops build fresh values, operands untouched");
     }
 
     // 2. Static equality. `a == b` lowers to Vec2.operator==(a, b),
@@ -177,6 +179,7 @@ public class OperatorOverloadDemo extends DemoClass {
         } else {
             System.stdout.println("  p == r? no (y differs)");
         }
+        this.check(p == q && !(p == r), "operator== compares fields");
     }
 
     // 4. Mutating unary `++`/`--` on a Ticker class. Both x++ and ++x
@@ -188,6 +191,7 @@ public class OperatorOverloadDemo extends DemoClass {
         t++;
         t--;
         System.stdout.println("  Ticker after 3 ++ then 1 -- = " + t.count);
+        this.check(t.count == 2, "mutating unaries hit the receiver");
     }
 
     // 5. Compound assignment `+=` derives from binary `+`. Vec2 only
@@ -199,6 +203,8 @@ public class OperatorOverloadDemo extends DemoClass {
         acc += b;                     // acc = (1+10, 2+20) = (11, 22)
         acc += b;                     // acc = (21, 42)
         System.stdout.println("  Vec2 after acc += b twice = (" + acc.x + ", " + acc.y + ")");
+        this.check(acc.x == 21 && acc.y == 42,
+            "+= derives from the static operator+");
     }
 
     // 3. Instance subscript get + set. Both forms route through the
@@ -216,5 +222,7 @@ public class OperatorOverloadDemo extends DemoClass {
         System.stdout.println("  g[0] = " + g[i0]);
         System.stdout.println("  g[1] = " + g[i1]);
         System.stdout.println("  g[2] = " + g[i2]);
+        this.check(g[i0] == 10 && g[i1] == 20 && g[i2] == 30,
+            "[] and []= route through the instance operators");
     }
 }

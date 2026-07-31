@@ -55,6 +55,7 @@ public class SwitchTernaryDemo extends DemoClass {
         }
         System.stdout.println("  statement switch(3) = " + result
             + "  (case 2/3 fall-through arm)");
+        this.check(result == 23, "multi-label arm catches case 3");
     }
 
     // 2. Switch expression — arrow form. Each arm is a single
@@ -88,6 +89,8 @@ public class SwitchTernaryDemo extends DemoClass {
             default -> 0;
         };
         System.stdout.println("  1000 + expr switch(2) = " + sum);
+        this.check(r == 200 && grouped == 50 && sum == 1007,
+            "arrow-form switch works assigned, grouped, and embedded");
     }
 
     // 3. Ternary expression. Only the selected branch's side
@@ -118,6 +121,8 @@ public class SwitchTernaryDemo extends DemoClass {
         boolean cond = false;
         float64 mixed = cond ? 1.5 : 2;
         System.stdout.println("  cond=false ? 1.5 : 2 (coerced f64) = " + mixed);
+        this.check(minAb == 5 && minThree == 3 && x == 100 && mixed == 2.0,
+            "ternary selects, nests, gates side effects, widens");
     }
 
     // 4. instanceof — static-type match against the operand's
@@ -135,5 +140,7 @@ public class SwitchTernaryDemo extends DemoClass {
         String tag = pi instanceof float64 ? "f64" : "other";
         System.stdout.println("  pi instanceof float64 ? \"f64\" : \"other\" = "
             + tag);
+        this.check(isInt32 && !isFloat64 && tag.equals("f64"),
+            "instanceof matches the static type");
     }
 }
