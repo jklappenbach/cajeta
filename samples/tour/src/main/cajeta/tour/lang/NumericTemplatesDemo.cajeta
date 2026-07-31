@@ -32,6 +32,9 @@ public class NumericTemplatesDemo extends DemoClass {
         Vec3<float64> wd = heap Vec3<float64>(0.25, 0.5, 0.75);
         Vec3<float64> sd = vd.add(wd);
         System.stdout.println("  Vec3<float64>(0.5,1.5,2.5) + Vec3<float64>(0.25,0.5,0.75) = (" + sd.x + "," + sd.y + "," + sd.z + ")");
+        this.check(si.x == 11 && si.y == 22 && si.z == 33
+            && sd.x == 0.75 && sd.y == 2.0 && sd.z == 3.25,
+            "Numeric bound adds per-T with primitive layout");
 
         // Integral bound: bitwise ops legal only when T is an integer type.
         // `Bitset<int64>` instantiates; `Bitset<float64>` would fail at
@@ -41,12 +44,14 @@ public class NumericTemplatesDemo extends DemoClass {
         bs.set(7);
         // (1 << 3) | (1 << 7) = 8 + 128 = 136
         System.stdout.println("  Bitset<int64> after set(3) + set(7) = " + bs.value + " (bits 3,7)");
+        this.check(bs.value == 136L, "Integral bound admits the bitwise ops");
 
         // Floating bound: float-only operations like a normalize that
         // needs division by the L2-norm. `Vec3F<int32>` would be rejected.
         Vec3F<float64> u = heap Vec3F<float64>(3.0, 0.0, 4.0);
         float64 mag = u.magnitude();
         System.stdout.println("  Vec3F<float64>(3,0,4).magnitude() = " + mag);
+        this.check(mag == 5.0, "Floating bound powers sqrt-based magnitude");
     }
 }
 

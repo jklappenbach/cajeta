@@ -36,6 +36,7 @@ public class LinearAlgebraDemo extends DemoClass {
         int32 dot = (int32) v.dot(w);     // 4 + 10 + 12 = 26
         System.stdout.println("  v=(1,2,2): length=" + len + "  v.dot((4,5,6))="
                             + dot + "   (expect 3, 26)");
+        this.check(len == 3 && dot == 26, "length and dot");
 
         // `*` is matrix multiply, NOT element-wise: [1 2;3 4] * [5 6;7 8].
         Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);
@@ -45,6 +46,9 @@ public class LinearAlgebraDemo extends DemoClass {
                             + (int32) c[0][0] + " " + (int32) c[0][1] + "; "
                             + (int32) c[1][0] + " " + (int32) c[1][1]
                             + "]   (expect [19 22; 43 50])");
+        this.check((int32) c[0][0] == 19 && (int32) c[0][1] == 22
+            && (int32) c[1][0] == 43 && (int32) c[1][1] == 50,
+            "* is true matrix multiply");
 
         // Matrix * Vector (matVec): [1 2 3;4 5 6] * (1,2,3) = (14, 32).
         Matrix<float32,2,3> m = stack Matrix<float32,2,3>(
@@ -54,11 +58,13 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("  [1 2 3;4 5 6] * (1,2,3) = ("
                             + (int32) mv[0] + ", " + (int32) mv[1]
                             + ")   (expect (14, 32))");
+        this.check((int32) mv[0] == 14 && (int32) mv[1] == 32, "matVec");
 
         // transpose: a 2x3 becomes a 3x2; element (1,0) of mᵀ is element (0,1) of m.
         Matrix<float32,3,2> mt = m.transpose();
         System.stdout.println("  transpose([1 2 3;4 5 6])[1][0] = "
                             + (int32) mt[1][0] + "   (expect 2)");
+        this.check((int32) mt[1][0] == 2, "transpose swaps (r,c)");
 
         // `==` yields a per-lane mask (the value-type comparison rule); reduce
         // with .all() for whole-matrix equality, .any() for "any lane equal".
@@ -69,6 +75,8 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("  (a == a).all() -> " + aa
                             + " ;  (a == b).all() -> " + ab
                             + "   (expect true, false)");
+        this.check((a == a).all() && !((a == b).all()),
+            "per-lane masks reduce with .all()");
 
         // determinant: 2x2 [1 2;3 4] = -2; 3x3 diagonal(2,3,4) = 24.
         Matrix<float32,3,3> diag = stack Matrix<float32,3,3>(
@@ -76,6 +84,8 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("  det([1 2;3 4]) = " + (int32) a.determinant()
                             + " ;  det(diag(2,3,4)) = " + (int32) diag.determinant()
                             + "   (expect -2 and 24)");
+        this.check((int32) a.determinant() == -2
+            && (int32) diag.determinant() == 24, "determinants");
 
         // inverse round-trip: A * A^-1 == I (its diagonal sums to 2 for 2x2).
         Matrix<float32,2,2> g = stack Matrix<float32,2,2>(4.0f, 7.0f, 2.0f, 6.0f);
@@ -84,6 +94,8 @@ public class LinearAlgebraDemo extends DemoClass {
         System.stdout.println("  (g * g.inverse()) diagonal = "
                             + (int32)(prod[0][0] + prod[1][1])
                             + "   (expect 2 — identity)");
+        this.check((int32)(prod[0][0] + prod[1][1]) == 2,
+            "A * inv(A) round-trips to identity");
 
         // inverse solves a linear system: g * x = rhs  ->  x = g^-1 * rhs.
         // g=[4 7;2 6], rhs=(18,16): x = (1,2) since 4*1+7*2=18, 2*1+6*2=14? -> use (1,2).
@@ -91,5 +103,7 @@ public class LinearAlgebraDemo extends DemoClass {
         Vector<float32,2> x = gi * rhs;   // solves g*x = rhs
         System.stdout.println("  solve g*x=(18,14): x = (" + (int32)(x[0] + 0.5f)
                             + "," + (int32)(x[1] + 0.5f) + ")   (expect (1,2))");
+        this.check((int32)(x[0] + 0.5f) == 1 && (int32)(x[1] + 0.5f) == 2,
+            "inverse solves the linear system");
     }
 }

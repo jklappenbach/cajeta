@@ -34,6 +34,8 @@ public class ReflectionDemo extends DemoClass {
         System.stdout.println("  fields       = " + c.getFieldCount());
         System.stdout.println("  methods      = " + c.getMethodCount());
         System.stdout.println("  constructors = " + c.getConstructorCount());
+        this.check(c.getName().contains("Counter") && c.getFieldCount() == 1
+            && c.getConstructorCount() == 1, "RTTI identity reads back");
 
         // Enumerate declared fields by name.
         int32 fcount = c.getFieldCount();
@@ -72,6 +74,8 @@ public class ReflectionDemo extends DemoClass {
         Field vf = c.getField(0);
         vf.setInt32(obj, 40);
         System.stdout.println("  reflective set v = " + vf.getInt32(obj));
+        this.check(c.getFieldName(0).equals("v") && vf.getInt32(obj) == 40,
+            "reflective field write lands");
 
         // Reflective call: find the one-parameter method (bumpBy) and invoke it
         // on the constructed instance with a packed argument. v: 40 -> 42.
@@ -86,6 +90,7 @@ public class ReflectionDemo extends DemoClass {
             k = k + 1;
         }
         System.stdout.println("  after reflective bumpBy(2), v = " + vf.getInt32(obj));
+        this.check(vf.getInt32(obj) == 42, "reflective invoke mutated the instance");
 
         // Annotation reflection (REFL-6a). Every annotatable owner — the class,
         // its fields, methods, constructors, and parameters — reports the
@@ -101,6 +106,8 @@ public class ReflectionDemo extends DemoClass {
             ai = ai + 1;
         }
         System.stdout.println("  field v @Metric?  = " + vf.hasAnnotation("code.Metric"));
+        this.check(vf.hasAnnotation("code.Metric"),
+            "field annotation is visible at runtime");
 
         // Down to a method's annotation: bumpBy carries @Mutates.
         int32 mj = 0;
@@ -121,6 +128,9 @@ public class ReflectionDemo extends DemoClass {
         System.stdout.println("  @Tracked(value)   = " + (int32) tracked.getInt("value"));
         Annotation metric = vf.getAnnotation(0);
         System.stdout.println("  @Metric(value)    = " + metric.getString("value"));
+        this.check((int32) tracked.getInt("value") == 2
+            && metric.getString("value").equals("count"),
+            "annotation ARGUMENT values read back typed");
 
         // List-valued arguments: @Labels({"hot","live"}) on the class. Locate
         // the argument by key, then read each element.
