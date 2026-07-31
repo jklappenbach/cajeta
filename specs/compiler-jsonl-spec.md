@@ -23,8 +23,9 @@ settle:
 
 - **Self-description.** `progress`, `cache`, `xref`, and every plugin-runtime
   record carry `kind`. Diagnostics do not — they are recognised by *having* a
-  `severity` field. Consumers therefore sniff: `JsonlEngine.classifyLenient`
-  guesses at a line's type instead of dispatching on it.
+  `severity` field. Consumers therefore sniff: the IDE console derives a row's
+  level as `fields["level"] ?: fields["severity"]`, probing field names because
+  there is no discriminator to dispatch on.
 - **Versioning.** The xref sub-stream carries `{major, minor}` and requires
   consumers to REFUSE an unknown major. Diagnostics, progress and cache carry
   no version at all. One careful sub-stream inside three unversioned ones.
@@ -169,8 +170,12 @@ lint-server and plugin-runtime protocols where they overlap.
 - **6.1.1** Major 1 is what ships today plus `kind` on diagnostics and the
   `stream` record. Both are additive: an existing consumer that ignores
   unknown fields keeps working unchanged.
-- **6.1.2** The plugin reads `kind` when present and falls back to the current
-  sniff for one release, then drops the fallback.
+- **6.1.2** The plugin reads `kind` when present and falls back to the field
+  probe when absent. The fallback is PERMANENT, not a one-release bridge: the
+  console also renders third-party JSONL that has no `kind` and never will —
+  cajeta-logging's own output is `{"ts":…,"level":"INFO","logger":…,"msg":…}`.
+  What `kind` buys is principled dispatch for records the COMPILER emits, not
+  the removal of tolerance for everyone else's.
 - **6.1.3** Removals (xref's private version record, plugin-runtime's `warn`)
   land in major 2, not alongside their replacements.
 
@@ -198,7 +203,8 @@ lint-server and plugin-runtime protocols where they overlap.
   by a golden comparison.
 - **8.3** A consumer fed an unknown major refuses the stream; one fed an
   unknown `kind` skips it and keeps parsing. Both tested directly.
-- **8.4** The IDE console dispatches on `kind` with the sniffing path removed.
+- **8.4** The IDE console dispatches on `kind` for compiler records, and still
+  renders `kind`-less third-party JSONL through the field probe (6.1.2).
 - **8.5** Every ad-hoc `std::cerr` narration site listed in §1.2 has a
   structured form under the flag.
 

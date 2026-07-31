@@ -111,7 +111,10 @@ object JsonlEngine {
         return { row ->
             when (row) {
                 is JsonlRow.Raw -> true
-                is JsonlRow.Record -> {
+                // A failed run's terminal record always survives: it is the
+                // reason the run ended, and filtering it out would reproduce
+                // the silence this format exists to remove.
+                is JsonlRow.Record -> if (row.resultStatus == "error") true else {
                     val r = rank(row.level)
                     r >= 0 && r >= floor
                 }
@@ -133,10 +136,16 @@ object JsonlEngine {
      *  including raw passthrough — renders normally. */
     fun tintOf(row: JsonlRow): RowTint = when (row) {
         is JsonlRow.Raw -> RowTint.NORMAL
-        is JsonlRow.Record -> when (row.level) {
-            "error", "fatal" -> RowTint.ERROR
-            "warn", "warning" -> RowTint.WARN
-            else -> RowTint.NORMAL
+        is JsonlRow.Record -> when {
+            // A failed run's terminal record carries neither `level` nor
+            // `severity`, so level-only tinting left the single row a
+            // developer most needs to see rendering as ordinary text.
+            row.resultStatus == "error" -> RowTint.ERROR
+            else -> when (row.level) {
+                "error", "fatal" -> RowTint.ERROR
+                "warn", "warning" -> RowTint.WARN
+                else -> RowTint.NORMAL
+            }
         }
     }
 
