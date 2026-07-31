@@ -5,6 +5,7 @@ import cajeta.io.file.File;
 import cajeta.io.file.FileReader;
 import cajeta.io.file.FileWriter;
 import cajeta.io.file.OpenMode;
+import cajeta.io.file.Path;
 
 // File I/O — `cajeta.io.file` ships three layers:
 //
@@ -14,9 +15,10 @@ import cajeta.io.file.OpenMode;
 //   2. Streaming reader / writer — `File.openRead(path)` returns a
 //      `#FileReader` carrying its own fd; `r.read(buf, max)` pulls
 //      up to `max` bytes into a caller-owned buffer and returns
-//      the count actually read. `File.openWrite(path, mode)`
-//      mirrors the shape; `w.writeString(String)` is a convenience
-//      that pumps the String's bytes directly.
+//      the count actually read (0 at EOF — ALWAYS loop; a single
+//      read is not a contract for the whole file).
+//      `File.openWrite(path, mode)` mirrors the shape, with
+//      `OpenMode.WRITE` (truncate-or-create) vs `APPEND`.
 //   3. Random-access — `File.open(path, mode)` returns a `#File`
 //      with `read / write / seek / position / size`; used for
 //      memory-mapped-record style access. (Not exercised here;
@@ -26,24 +28,29 @@ import cajeta.io.file.OpenMode;
 // caller. The drop chain reclaims them at scope exit — including
 // closing the fd through the user-defined destructor. Forgetting
 // `close()` doesn't leak: leaving scope IS close-and-free.
+//
+// The scenario is a little service log: write it, append to it,
+// stream it back in chunks, handle the file that isn't there, and
+// leave /tmp exactly as we found it.
 
 public class FileIoDemo extends DemoClass {
+
+    static String LOG = "/tmp/cajeta_tour_service.log";
+
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- File I/O --");
 
         this.oneShotRoundTrip();
-        this.streamingWriter();
-        this.streamingReader();
+        this.writeThenAppend();
+        this.streamingReaderEofLoop();
+        this.missingFile();
+        this.cleanup();
     }
 
-    // 1. One-shot write + read. Both helpers go through the C
-    // runtime's `__cajeta_io_*` calls; the bytes-in is a plain
-    // `int8[]` literal here.
+    // 1. One-shot write + read: the whole payload in one call each way,
+    //    verified byte-for-byte.
     public void oneShotRoundTrip() {
-        String path = "/tmp/cajeta_tour_oneshot.txt";
-
-        // "Hello" — five bytes, ASCII so the int8 literals match.
         int8[] data = heap int8[5];
         data[0] = (int8) 72;   // 'H'
         data[1] = (int8) 101;  // 'e'
@@ -51,45 +58,74 @@ public class FileIoDemo extends DemoClass {
         data[3] = (int8) 108;  // 'l'
         data[4] = (int8) 111;  // 'o'
 
-        File.writeAllBytes(path, data, 5);
-        int8[] back = File.readAllBytes(path);
-        System.stdout.println("  oneShot: wrote 5 bytes, readAllBytes returned "
-            + back.count() + " bytes");
+        File.writeAllBytes(FileIoDemo.LOG, data, 5);
+        int8[] back = File.readAllBytes(FileIoDemo.LOG);
+        boolean same = (int32) back.count() == 5;
+        int32 i = 0;
+        while (same && i < 5) {
+            if (back[i] != data[i]) { same = false; }
+            i = i + 1;
+        }
+        System.stdout.println("  oneShot: wrote 5 bytes, read " + back.count());
+        this.check(same, "one-shot round trip is byte-identical");
     }
 
-    // 2. Streaming writer. openWrite returns a FileWriter; the
-    // caller writes incrementally, then either calls close()
-    // explicitly OR lets the drop chain call it. Using OpenMode for
-    // truncate-or-create semantics.
-    public void streamingWriter() {
-        String path = "/tmp/cajeta_tour_streaming.txt";
-
-        FileWriter w = File.openWrite(path, OpenMode.WRITE);
-        w.writeString("first line\n");
-        w.writeString("second line\n");
+    // 2. WRITE truncates-or-creates; APPEND adds at EOF. A log file is the
+    //    canonical APPEND customer — reopening with WRITE would erase it.
+    public void writeThenAppend() {
+        FileWriter w = File.openWrite(FileIoDemo.LOG, OpenMode.WRITE);
+        w.writeString("INFO  service started\n");     // 22 bytes
         w.flush();
         w.close();
 
-        // Read back via one-shot to verify the writer landed bytes
-        // on disk.
-        int8[] back = File.readAllBytes(path);
-        System.stdout.println("  streamingWriter: wrote 2 lines, total bytes = "
-            + back.count());
+        FileWriter a = File.openWrite(FileIoDemo.LOG, OpenMode.APPEND);
+        a.writeString("WARN  disk 87% full\n");       // 20 bytes
+        a.flush();
+        a.close();
+
+        int8[] back = File.readAllBytes(FileIoDemo.LOG);
+        System.stdout.println("  writeThenAppend: " + back.count()
+            + " bytes after WRITE + APPEND");
+        this.check((int32) back.count() == 42,
+            "APPEND added to the file instead of truncating it");
     }
 
-    // 3. Streaming reader. openRead returns a FileReader; read into
-    // a fixed-size buffer in chunks until the read returns 0
-    // (EOF). The reader's `position()` tracks the cumulative bytes
-    // pulled.
-    public void streamingReader() {
-        String path = "/tmp/cajeta_tour_streaming.txt";
-        FileReader r = File.openRead(path);
-        int8[] buf = heap int8[64];
-        int32 n = r.read(buf, 64);
+    // 3. The streaming reader's REAL contract: read(buf, max) returns up to
+    //    max bytes and 0 at EOF — so the loop, not one call, is the idiom.
+    //    A 16-byte buffer over a 42-byte file must take 3 reads.
+    public void streamingReaderEofLoop() {
+        FileReader r = File.openRead(FileIoDemo.LOG);
+        int8[] buf = heap int8[16];
+        int64 total = 0;
+        int32 reads = 0;
+        int32 n = r.read(buf, 16);
+        while (n > 0) {
+            total = total + (int64) n;         // consume buf[0..n) here
+            reads = reads + 1;
+            n = r.read(buf, 16);
+        }
         int64 pos = r.position();
         r.close();
+        System.stdout.println("  streamingReader: " + total + " bytes in "
+            + reads + " chunked reads (buffer 16)");
+        this.check(total == 42 && reads == 3,
+            "EOF loop drains the file across multiple reads");
+        this.check(pos == 42, "position() tracks cumulative bytes");
+    }
 
-        System.stdout.println("  streamingReader: read " + n
-            + " bytes; position after read = " + pos);
+    // 4. The file that isn't there: readAllBytes yields null-or-empty —
+    //    guard BOTH before trusting the bytes (the TlsTour idiom). No
+    //    exception on this path; absence is a normal case for a reader.
+    public void missingFile() {
+        int8[] ghost = File.readAllBytes("/tmp/cajeta_tour_no_such_file");
+        boolean absent = ghost == null || (int32) ghost.count() == 0;
+        this.check(absent, "missing file reads as null-or-empty, not garbage");
+    }
+
+    // 5. The tour leaves no droppings (the NpyDemo pattern).
+    public void cleanup() {
+        Path p = Path.of(FileIoDemo.LOG);
+        p.delete();
+        this.check(!p.exists(), "temp log deleted");
     }
 }

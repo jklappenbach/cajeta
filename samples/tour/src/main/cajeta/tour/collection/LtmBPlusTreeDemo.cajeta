@@ -2,6 +2,7 @@ package tour.collection;
 
 import tour.DemoClass;
 import cajeta.collection.ltm.LtmBPlusTree;
+import cajeta.io.file.Path;
 import cajeta.wire.Encoder;
 
 // Larger-than-memory B+ tree. Same ordered-map surface as the
@@ -25,6 +26,10 @@ public class LtmBPlusTreeDemo extends DemoClass {
 
         String path = "/tmp/cajeta_tour_ltm_bplus.idx";
 
+        // A previous failed run must not poison this one: start clean.
+        Path stale = Path.of(path);
+        stale.delete();
+
         Encoder<int32> ke = heap Int32Encoder();
         Encoder<int32> ve = heap Int32Encoder();
         LtmBPlusTree<int32, int32> t = heap LtmBPlusTree<int32, int32>(path, ke, ve, 4, 8);
@@ -36,6 +41,8 @@ public class LtmBPlusTreeDemo extends DemoClass {
         t.flush();
         System.stdout.println("  wrote 200 entries; count = " + (int32) t.count());
         System.stdout.println("  get(150) = " + t.get(150));
+        this.check((int32) t.count() == 200 && t.get(150) == 450,
+            "200 entries paged through an 8-frame pool");
         t.close();
 
         // Reopen from a cold pool — every lookup pages in from disk.
@@ -45,6 +52,13 @@ public class LtmBPlusTreeDemo extends DemoClass {
         System.stdout.println("  reopened; count = " + (int32) t2.count());
         System.stdout.println("  get(75) after reopen = " + t2.get(75));
         System.stdout.println("  min = " + t2.min());
+        this.check((int32) t2.count() == 200 && t2.get(75) == 225
+            && t2.min() == 0, "cold reopen recovers the tree from disk");
         t2.close();
+
+        // The tour leaves no droppings.
+        Path p = Path.of(path);
+        p.delete();
+        this.check(!p.exists(), "index file deleted");
     }
 }
