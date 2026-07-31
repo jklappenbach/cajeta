@@ -1,0 +1,234 @@
+package tour.math;
+
+import tour.DemoClass;
+import cajeta.lang.Math;
+import cajeta.math.Tensor;
+import cajeta.nucleo.nn.Module;
+import cajeta.nucleo.nn.Parameter;
+import cajeta.nucleo.nn.Linear;
+import cajeta.nucleo.nn.Losses;
+import cajeta.nucleo.nn.Dropout;
+import cajeta.nucleo.nn.Modes;
+import cajeta.nucleo.optim.Optimizer;
+import cajeta.nucleo.optim.SGD;
+import cajeta.nucleo.optim.Adam;
+import cajeta.nucleo.optim.LrSchedule;
+import cajeta.nucleo.transform.GradResult;
+import cajeta.collection.ArrayList;
+
+// The training loop — cajeta.nucleo.nn + cajeta.nucleo.optim end to end
+// (docs/stdlib/nucleo/NN.md, Optim.md; AutogradDemo shows the Grad drivers
+// these build on).
+//
+// The scenario is a taxi-fare model: fare = base + per-km * distance +
+// per-minute * duration. A `Linear` layer IS this equation (`y = x·W + b`
+// with the bias as the base fare), so fitting one on ride records recovers
+// interpretable coefficients — and the workflow is the real one: scale the
+// features, fit with a functional gradient step, validate on a ride the
+// model never saw.
+//
+// The pieces, in order of appearance:
+//   * `Module` / `Linear` / `Parameter` — the model tree; `parameters()` is
+//     a reflection walk in declared order, `parameterNames()` the dotted
+//     paths a serializer keys on. The module OWNS its parameters;
+//     optimizers borrow them.
+//   * `GradAll<K>` — one backward pass, K parameters: the model's params
+//     are the LEADING lambda args (parameters() order), data follows;
+//     `r.grads` feeds `opt.step` directly. No `.grad` fields, no zeroGrad.
+//   * `SGD` / `Adam` — `step(grads)` writes the updated values in place.
+//   * `LrSchedule` — a thin mutating wrapper over the pure `Schedules`
+//     functions; `sched.step()` advances and applies.
+//   * `Losses.mse/mseSum/mseNone` — reduction is selected by FUNCTION.
+//   * `Dropout` + `Modes.train/eval` — mode-sensitive layers: masked and
+//     rescaled in train, identity in eval.
+public class TrainingLoopDemo extends DemoClass {
+
+    static boolean close(float32 a, float32 b, float32 eps) {
+        return Math.abs(a - b) < eps;
+    }
+
+    // 8 ride records, features scaled to unit range (the first thing a
+    // practitioner does): x0 = km/10, x1 = minutes/30. Ground truth:
+    // fare = 2.00 base + 2.50/km + 0.50/min  ->  in scaled space
+    // fare = 2.0 + 25.0*x0 + 15.0*x1.
+    static #Tensor<float32> rides() {
+        int64[] xs = [8, 2];
+        Tensor<float32> x = Tensor.zeros<float32>(xs);
+        float32[] km  = [1.2f, 3.5f, 0.8f, 5.0f, 2.1f, 7.4f, 4.2f, 6.3f];
+        float32[] min = [6.0f, 14.0f, 5.0f, 22.0f, 9.0f, 28.0f, 16.0f, 24.0f];
+        int64 i = 0;
+        while (i < 8) {
+            x.set2(i, 0, km[i] / 10.0f);
+            x.set2(i, 1, min[i] / 30.0f);
+            i = i + 1;
+        }
+        return #x;
+    }
+
+    static #Tensor<float32> fares(Tensor<float32> x) {
+        int64[] ts = [8, 1];
+        Tensor<float32> t = Tensor.zeros<float32>(ts);
+        int64 i = 0;
+        while (i < 8) {
+            t.set2(i, 0, 2.0f + 25.0f * x.get2(i, 0) + 15.0f * x.get2(i, 1));
+            i = i + 1;
+        }
+        return #t;
+    }
+
+    // Dropout runs inside Modes.train(() -> ...); the lambda is `() -> void`,
+    // so the train-mode output comes back through a static stash.
+    static Tensor<float32> dropStash;
+
+    static void dropPass(Dropout d, Tensor<float32> x) {
+        TrainingLoopDemo.dropStash #= d.forward(x);
+    }
+
+    public void execute() {
+        System.stdout.println("");
+        System.stdout.println("-- Training loop (nn + optim) --");
+
+        // 1. The model: Linear(2 -> 1) is fare = x·W + b. Parameters are
+        //    reflected off the fields in declared order — weight, then bias
+        //    — with no registration list.
+        Linear fare = heap Linear(2, 1, 42);
+        Parameter[] ps = fare.parameters();
+        ArrayList<String> names = fare.parameterNames();
+        System.stdout.println("  1. Linear(2,1): " + ps.count()
+            + " parameters, declared order: " + names.get(0) + ", " + names.get(1));
+        this.check(ps.count() == 2, "Linear owns weight + bias");
+        this.check(names.get(0).equals("weight") && names.get(1).equals("bias"),
+            "parameterNames reflect declared order");
+
+        // 2. The functional step: GradAll<2> differentiates the loss with
+        //    respect to the two LEADING args (w, b) in parameters() order;
+        //    the ride data rides behind them. One call = value + all grads.
+        Tensor<float32> x = TrainingLoopDemo.rides();
+        Tensor<float32> t = TrainingLoopDemo.fares(x);
+        (Tensor<float32>, Tensor<float32>, Tensor<float32>, Tensor<float32>)
+                -> GradResult<float32, Tensor<float32>[]> step =
+            GradAll<2>((Tensor<float32> w, Tensor<float32> b,
+                        Tensor<float32> xi, Tensor<float32> ti) ->
+                Losses.mse(Tensor.add<float32>(
+                    Tensor.matmul<float32>(xi, w), b), ti));
+
+        // 3. Fit with SGD + momentum. grads[i] belongs to ps[i] — the
+        //    GradResult feeds the optimizer with no glue.
+        Optimizer sgd = heap SGD(fare.parameters(), 0.3f, 0.9f);
+        float32 first = -1.0f;
+        float32 last = -1.0f;
+        int32 k = 0;
+        while (k < 300) {
+            GradResult<float32, Tensor<float32>[]> r =
+                step(ps[0].get(), ps[1].get(), x, t);
+            if (k == 0) { first = r.value; }
+            last = r.value;
+            sgd.step(r.grads);
+            k = k + 1;
+        }
+        System.stdout.println("  2. SGD(lr 0.3, momentum 0.9), 300 steps: mse "
+            + first + " -> " + last);
+        this.check(last < first * 0.01f, "SGD drives the loss down 100x");
+
+        // 4. Validate on a ride the model never saw: 3.0 km, 11 minutes.
+        //    True fare = 2.00 + 2.50*3.0 + 0.50*11 = 15.00.
+        int64[] vs = [1, 2];
+        Tensor<float32> ride = Tensor.zeros<float32>(vs);
+        ride.set2(0, 0, 3.0f / 10.0f);
+        ride.set2(0, 1, 11.0f / 30.0f);
+        Tensor<float32> pred = fare.forward(ride);
+        System.stdout.println("  3. held-out ride (3.0 km, 11 min): predicted $"
+            + pred.get2(0, 0) + ", true $15.00");
+        this.check(close(pred.get2(0, 0), 15.0f, 0.5f),
+            "held-out prediction within $0.50");
+
+        // 5. Reduction is selected by function, not a mode flag:
+        //    mseSum == mse * n, and mseNone sums to mseSum.
+        Tensor<float32> p0 = fare.forward(x);
+        float32 mean = Losses.mse(p0, t);
+        float32 sum = Losses.mseSum(p0, t);
+        float32 none = Tensor.sum<float32,float32>(Losses.mseNone(p0, t));
+        this.check(close(sum, mean * 8.0f, 0.001f + sum * 0.001f)
+            && close(none, sum, 0.001f + sum * 0.001f),
+            "mse / mseSum / mseNone agree");
+
+        // 6. Adam + a cosine schedule, same data, fresh layer. LrSchedule
+        //    wraps the optimizer's get/setLr seam: step() advances the count
+        //    and writes the scheduled rate before each update.
+        Linear fare2 = heap Linear(2, 1, 7);
+        Parameter[] ps2 = fare2.parameters();
+        Optimizer adam = heap Adam(fare2.parameters(), 0.5f);
+        LrSchedule sched = LrSchedule.cosine(adam, 0.5f, 300);
+        float32 first2 = -1.0f;
+        float32 last2 = -1.0f;
+        k = 0;
+        while (k < 300) {
+            sched.step();
+            GradResult<float32, Tensor<float32>[]> r =
+                step(ps2[0].get(), ps2[1].get(), x, t);
+            if (k == 0) { first2 = r.value; }
+            last2 = r.value;
+            adam.step(r.grads);
+            k = k + 1;
+        }
+        System.stdout.println("  4. Adam + cosine(base 0.5, tMax 300): mse "
+            + first2 + " -> " + last2 + ", final lr " + sched.getLr());
+        this.check(last2 < first2 * 0.01f, "Adam + schedule converges too");
+        this.check(sched.getLr() < 0.01f, "cosine decayed the lr to ~0");
+
+        // 7. Mode-sensitive layers. Outside Modes.train the default is EVAL:
+        //    Dropout.forward is the identity. Inside, elements drop with
+        //    probability p and survivors scale by 1/(1-p) — same seed, same
+        //    mask (explicit Generator, no global RNG).
+        int64[] ds = [4, 8];
+        Tensor<float32> ones = Tensor.zeros<float32>(ds);
+        int64 r0 = 0;
+        while (r0 < 4) {
+            int64 c0 = 0;
+            while (c0 < 8) {
+                ones.set2(r0, c0, 1.0f);
+                c0 = c0 + 1;
+            }
+            r0 = r0 + 1;
+        }
+        Dropout drop = heap Dropout(0.5f, 99);
+        Tensor<float32> evalOut = drop.forward(ones);
+        boolean evalIdentity = true;
+        int64 rr = 0;
+        while (rr < 4) {
+            int64 cc = 0;
+            while (cc < 8) {
+                if (!close(evalOut.get2(rr, cc), 1.0f, 0.0001f)) {
+                    evalIdentity = false;
+                }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        this.check(evalIdentity, "eval-mode dropout is the identity");
+
+        Modes.train(() -> TrainingLoopDemo.dropPass(drop, ones));
+        Tensor<float32> trainOut = TrainingLoopDemo.dropStash;
+        int32 zeroed = 0;
+        boolean scaledRight = true;
+        rr = 0;
+        while (rr < 4) {
+            int64 cc = 0;
+            while (cc < 8) {
+                float32 v = trainOut.get2(rr, cc);
+                if (close(v, 0.0f, 0.0001f)) {
+                    zeroed = zeroed + 1;
+                } else if (!close(v, 2.0f, 0.0001f)) {
+                    scaledRight = false;      // survivors must be 1/(1-0.5) = 2
+                }
+                cc = cc + 1;
+            }
+            rr = rr + 1;
+        }
+        System.stdout.println("  5. Dropout(p=0.5) in train mode: " + zeroed
+            + "/32 zeroed, survivors scaled to 2.0");
+        this.check(zeroed > 0 && zeroed < 32 && scaledRight,
+            "train-mode dropout masks and rescales");
+        this.check(!Modes.isTraining(), "mode restored to eval after the block");
+    }
+}

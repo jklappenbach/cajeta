@@ -24,7 +24,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [embedded-targets](embedded-targets-spec.md) | [plan](../agents/embedded-targets-plan.md) | active |
 | [memory-viewer](memory-viewer-spec.md) | [plan](../agents/memory-viewer-plan.md) | active |
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint + full-compile collect-and-continue landed 2026-07-29; codegen-in-collect-mode is the open follow-up; remaining scope unverified) | active |
-| [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10 — prime now ~8% of sweep CPU; re-open triggers in plan) |
+| [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10; re-open trigger HIT 2026-07-31: plan D1 — warm-cache build drops newly-required template instantiations, link failure; cold build fine) |
 | [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
 | [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (docs-refactor 15.4) | draft |
 | [net-server-shutdown-wake](net-server-shutdown-wake-spec.md) | — (docs-refactor 15.6) | draft |
