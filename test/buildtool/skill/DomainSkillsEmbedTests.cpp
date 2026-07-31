@@ -164,6 +164,12 @@ static const CatalogEntry kCatalog[] = {
     {"cajeta.language", "language-overview", "cajeta.language"},
     {"cajeta.language", "language-types-and-allocation", "cajeta/language/types"},
     {"cajeta.language", "language-ownership", "cajeta/language/ownership"},
+    // Unit 5 — language batch 2
+    {"cajeta.language", "language-classes", "cajeta/language/classes"},
+    {"cajeta.language", "language-classes", "cajeta/language/operators"},
+    {"cajeta.language", "language-classes", "cajeta/language/inheritance"},
+    {"cajeta.language", "language-templates", "cajeta/language/templates"},
+    {"cajeta.language", "language-lambdas", "cajeta/language/lambdas"},
 };
 
 TEST(CatalogSkillsTests, catalogIdsResolveAndBindingsSearchable) {
