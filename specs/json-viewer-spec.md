@@ -149,7 +149,10 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   layout for that configuration's next session.
   - **3.1.9.1** The key is the run/debug configuration, not the project or
     the IDE: a build console and a debug session of the same project keep
-    separate layouts, because they carry different record shapes.
+    separate layouts, because they carry different record shapes. This is
+    what makes a remembered layout meaningful at all — a profile runs one
+    specific main, so its logging keeps one schema run after run, and the
+    columns that suited it yesterday suit it today.
   - **3.1.9.2** A remembered layout is authoritative over the defaults of
     3.1.7: it arrives pinned, so a field the reader switched off stays off
     even when later records carry it.
@@ -157,8 +160,11 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
     A column the viewer sized to content is not pinned by that, so
     content-sizing (3.1.8) keeps working on the columns nobody has touched.
   - **3.1.9.4** A remembered column that a later run never emits is kept in
-    the layout, not dropped — the run that lacks it may be the anomaly, and
-    silently forgetting it would make the setting feel unreliable.
+    the layout, not dropped. Given 3.1.9.1 the schema is stable across a
+    profile's runs, so a missing field is the ANOMALY — a path not taken, a
+    stage that failed early — and an empty column showing that is more
+    informative than a layout that quietly rearranges itself. Silently
+    forgetting the column would also make the setting feel unreliable.
   - **3.1.9.5** Corrupt or unreadable stored layout degrades to the 3.1.7
     defaults. Layout is a convenience; it never blocks a console.
 
