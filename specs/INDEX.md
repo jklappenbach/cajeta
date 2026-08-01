@@ -16,7 +16,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [resident-debug-server](resident-debug-server-spec.md) | [plan](../agents/resident-debug-server-plan.md) | active — Units 1-5+8 delivered 2026-07-21 (tour via one resident server: cold 41.3s / no-edit 0.65s / one-edit 34.8s); next: Unit 6 design review (stdlib digest churn first), Unit 7 live pass |
 | [debugger-variable-inspection](debugger-variable-inspection-spec.md) | [plan](../agents/debugger-variable-inspection-plan.md) | active — spec+plan approved 2026-07-22; 7 units (bridge → arrays → objects → DAP/render → edit → hover → collections); Unit 1 next |
 | [cajeta-xgboost](cajeta-xgboost-spec.md) | [plan](../agents/cajeta-xgboost-plan.md) | active |
-| [cajeta-ml-v3](cajeta-ml-v3-spec.md) | [plan](../agents/cajeta-ml-v3-plan.md) | active — approved 2026-07-31 ("Looks good"); 12 units; U1 consolidation in progress |
+| [cajeta-ml-v3](cajeta-ml-v3-spec.md) | [plan](../agents/cajeta-ml-v3-plan.md) | active — approved 2026-07-31 ("Looks good"); 12 units; U1-U6 delivered (consolidation, ml.grad tape+seam, structured ops, module tree + layer zoo + Predictor wrap, optim re-pin + BackpropTrainer + ml.data, reference architectures; suite 151/151, torch-pinned); U7 SpelaTrainer core next |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
@@ -52,6 +52,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
 | [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
+| [typeparam-cast-of-paren](typeparam-cast-of-paren-spec.md) | — (defect; `(E) (expr)` parses as a postfix call, not a cast — primitive destinations and unparenthesized operands are fine; workaround: hoist to a named local, 17 sites in ml/grad/StructKernels) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
 | [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect) | FIXED 2026-07-31 (18a78057 + 7d8cfd8c): closing a descriptor neither woke nor serialized against the fibers parked on it in the reactor — both interleavings fixed; http tour 0/6 -> 40/40. Open only for acceptance 2.2's >=100-run loop |
