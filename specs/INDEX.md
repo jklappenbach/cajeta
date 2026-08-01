@@ -53,7 +53,6 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
-| [codegen-many-param-f32-truncate](codegen-many-param-f32-truncate-spec.md) | — (defect, found while closing xgboost D2) | draft — `Cannot select: f32 = truncate i64` at ~23 params; 22 compiles; repro + acceptance in spec |
 | [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
 | [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect) | FIXED 2026-07-31 (18a78057 + 7d8cfd8c): closing a descriptor neither woke nor serialized against the fibers parked on it in the reactor — both interleavings fixed; http tour 0/6 -> 40/40. Open only for acceptance 2.2's >=100-run loop |
 | [field-store-title-trap](field-store-title-trap-spec.md) | — (defect, silent UAF; fresh rvalue -> plain formal -> plain field store is freed at callee exit. RE-DIAGNOSED: not template-specific, not a missing borrow check; fix is a semantic change awaiting sign-off, spec §4) | draft |

@@ -38,6 +38,23 @@ namespace cajeta {
         return allocaToField[alloca];
     }
 
+    FieldPtr Scope::localBinding(const string& fieldName) {
+        auto it = fields.find(fieldName);
+        return it == fields.end() ? nullptr : it->second;
+    }
+
+    void Scope::restoreBinding(const string& fieldName, FieldPtr prior) {
+        // Callers only track names that genuinely shadowed a prior binding, so
+        // prior is never null here; guard rather than erase, since unbinding a
+        // name is visible to analyses that run after the block (see Block.cpp).
+        if (prior != nullptr) {
+            fields[fieldName] = prior;
+        }
+        // fieldList and allocaToField are intentionally left alone: each field
+        // owns a distinct alloca, so the shadowing entry never displaced
+        // anything there, and both are consulted by alloca (not by name).
+    }
+
     void Scope::markMoved(const string& name) {
         markMoved(name, "");
     }
