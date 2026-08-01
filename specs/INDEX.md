@@ -16,7 +16,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [resident-debug-server](resident-debug-server-spec.md) | [plan](../agents/resident-debug-server-plan.md) | active — Units 1-5+8 delivered 2026-07-21 (tour via one resident server: cold 41.3s / no-edit 0.65s / one-edit 34.8s); next: Unit 6 design review (stdlib digest churn first), Unit 7 live pass |
 | [debugger-variable-inspection](debugger-variable-inspection-spec.md) | [plan](../agents/debugger-variable-inspection-plan.md) | active — spec+plan approved 2026-07-22; 7 units (bridge → arrays → objects → DAP/render → edit → hover → collections); Unit 1 next |
 | [cajeta-xgboost](cajeta-xgboost-spec.md) | [plan](../agents/cajeta-xgboost-plan.md) | active |
-| [cajeta-ml-v3](cajeta-ml-v3-spec.md) | [plan](../agents/cajeta-ml-v3-plan.md) | active — approved 2026-07-31 ("Looks good"); 12 units; U1-U4 delivered (consolidation, ml.grad tape+seam, structured ops, module tree + layer zoo + Predictor wrap; suite 130/130, torch-pinned); U5 optim re-pin + BackpropTrainer + ml.data next |
+| [cajeta-ml-v3](cajeta-ml-v3-spec.md) | [plan](../agents/cajeta-ml-v3-plan.md) | active — approved 2026-07-31 ("Looks good"); 12 units; U1-U5 delivered (consolidation, ml.grad tape+seam, structured ops, module tree + layer zoo + Predictor wrap, optim re-pin + BackpropTrainer + ml.data; suite 144/144, torch-pinned); U6 reference architectures next |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
