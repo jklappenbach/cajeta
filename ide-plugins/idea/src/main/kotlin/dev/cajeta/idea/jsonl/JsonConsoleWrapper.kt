@@ -6,6 +6,7 @@ import com.intellij.execution.process.ProcessListener
 import com.intellij.execution.ui.ConsoleView
 import com.intellij.execution.ui.ConsoleViewContentType
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionGroup
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -64,7 +65,10 @@ class JsonConsoleWrapper(
     private val tableModel = JsonlRowsTableModel()
     private val table = JBTable(tableModel).apply {
         setDefaultRenderer(Any::class.java, TintRenderer(tableModel))
-        autoResizeMode = JTable.AUTO_RESIZE_LAST_COLUMN
+        // No width ceiling (§3.1.8): columns size to content and the scroll pane
+        // scrolls horizontally, instead of every column being squeezed into the
+        // viewport and a long message ending in an ellipsis.
+        autoResizeMode = JTable.AUTO_RESIZE_OFF
         installRowNavigation(this)
     }
 
@@ -127,9 +131,10 @@ class JsonConsoleWrapper(
 
     private fun refresh() {
         val (columns, visible) = synchronized(controller) {
-            controller.model().columns to controller.visibleRows()
+            controller.visibleColumns() to controller.visibleRows()
         }
         tableModel.update(columns, visible)
+        synchronized(controller) { JsonlTableSupport.applyWidths(table, columns, controller.columns) }
     }
 
     // --- toolbar: platform ActionToolbar so the flip reads like any other
@@ -139,7 +144,8 @@ class JsonConsoleWrapper(
     private var minLevel: String = "all"
 
     private fun buildToolbar(): JComponent {
-        val group = DefaultActionGroup(JsonToggleAction(), Separator.getInstance(), LevelFilterGroup())
+        val group = DefaultActionGroup(
+            JsonToggleAction(), Separator.getInstance(), FieldsGroup(), LevelFilterGroup())
         val toolbar = ActionManager.getInstance()
             .createActionToolbar("CajetaJsonConsole", group, true)
         toolbar.targetComponent = cardPanel
@@ -160,6 +166,49 @@ class JsonConsoleWrapper(
             synchronized(controller) { controller.setStructured(state) }
             showCard()
             if (state) refresh()
+        }
+    }
+
+    /** The column chooser (§3.1.7): children are computed at popup time from
+     *  the live discovery list, so a field the run only revealed a moment ago
+     *  is there without a reload. */
+    private inner class FieldsGroup : ActionGroup("Fields", true), DumbAware {
+        init {
+            templatePresentation.icon = AllIcons.Actions.ShowImportStatements
+            templatePresentation.description = "Choose which JSON fields are shown as columns"
+        }
+
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+        override fun getChildren(e: AnActionEvent?): Array<AnAction> {
+            val fields = synchronized(controller) { controller.columns.available() }
+            if (fields.isEmpty()) return arrayOf(disabledItem("No fields discovered yet"))
+            val items = ArrayList<AnAction>(fields.size + 2)
+            for (field in fields) items += FieldToggle(field)
+            items += Separator.getInstance()
+            items += object : AnAction("Reset to Defaults"), DumbAware {
+                override fun actionPerformed(e: AnActionEvent) {
+                    synchronized(controller) { controller.columns.resetToDefaults() }
+                    refresh()
+                }
+            }
+            return items.toTypedArray()
+        }
+
+        private fun disabledItem(text: String): AnAction = object : AnAction(text), DumbAware {
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+            override fun update(e: AnActionEvent) { e.presentation.isEnabled = false }
+            override fun actionPerformed(e: AnActionEvent) {}
+        }
+    }
+
+    private inner class FieldToggle(private val field: String) : ToggleAction(field), DumbAware {
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+        override fun isSelected(e: AnActionEvent): Boolean =
+            synchronized(controller) { controller.columns.isVisible(field) }
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            synchronized(controller) { controller.columns.setFieldVisible(field, state) }
+            refresh()
         }
     }
 
@@ -252,8 +301,12 @@ class JsonConsoleWrapper(
             table: JTable, value: Any?, isSelected: Boolean, hasFocus: Boolean, row: Int, column: Int,
         ): Component {
             val c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+            val modelRow = table.convertRowIndexToModel(row)
+            // A raw passthrough line doesn't widen its column (§3.1.8.1), so
+            // hovering is how a long one is read without flipping to raw.
+            toolTipText = if (model.rowAt(modelRow) is JsonlRow.Raw && column == 1)
+                model.lineTextAt(modelRow) else null
             if (!isSelected) {
-                val modelRow = table.convertRowIndexToModel(row)
                 c.foreground = when (model.rowAt(modelRow)?.let { JsonlEngine.tintOf(it) }) {
                     RowTint.ERROR -> JBColor.RED
                     RowTint.WARN -> JBColor.ORANGE

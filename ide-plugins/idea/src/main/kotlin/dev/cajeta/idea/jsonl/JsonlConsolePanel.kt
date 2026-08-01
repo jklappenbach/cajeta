@@ -10,8 +10,10 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
 import java.awt.CardLayout
+import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JPanel
+import javax.swing.JTable
 import javax.swing.JTextField
 import javax.swing.JToggleButton
 import javax.swing.JToolBar
@@ -30,7 +32,8 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
     private val controller = JsonlConsoleController(structuredByDefault)
 
     private val tableModel = JsonlRowsTableModel()
-    private val table = JBTable(tableModel)
+    // No width ceiling (§3.1.8): content-sized columns, horizontal scrolling.
+    private val table = JBTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
     private val rawArea = JBTextArea().apply { isEditable = false }
 
     private val cards = CardLayout()
@@ -66,6 +69,14 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
         add(fieldFilter)
         add(JToggleButton("Filter field").apply {
             addActionListener { applyFieldFilter(); refresh() }
+        })
+        // The column chooser (§3.1.7): rebuilt at every click from the fields
+        // discovered so far, so a mid-run arrival is selectable immediately.
+        add(JButton("Fields").apply {
+            addActionListener {
+                JsonlTableSupport.fieldsPopup(controller.columns) { refresh() }
+                    .show(this, 0, height)
+            }
         })
     }
 
@@ -103,7 +114,9 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
     private fun refresh() {
         showCard()
         if (controller.isStructured) {
-            tableModel.update(controller.model().columns, controller.visibleRows())
+            val columns = controller.visibleColumns()
+            tableModel.update(columns, controller.visibleRows())
+            JsonlTableSupport.applyWidths(table, columns, controller.columns)
         } else {
             rawArea.text = controller.rawText()
         }

@@ -117,6 +117,31 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   lint output emit) is clickable and navigates to the location, like a
   console file link — the payoff of tools encoding output as JSONL.
 
+- **3.1.7** **Column selection.** The table opens on a SUBSET of the
+  discovered fields — the first few of the deterministic column order
+  (preferred log keys first) — so a wide record shape does not present as an
+  unreadable wall of columns. A **Fields** control lists every field
+  discovered so far and toggles each column on or off.
+  - **3.1.7.1** The available list is discovery-driven and grows with the
+    stream: a field first seen at line 10,000 joins the chooser with no
+    reload, and the list never shrinks within a session.
+  - **3.1.7.2** Until the reader makes an explicit choice, the visible set is
+    the default RECOMPUTED over everything discovered so far, so a stream
+    whose first lines carry only metadata does not fix a poor column set.
+    The first explicit toggle pins the selection; fields discovered after
+    that are listed but stay off until chosen.
+  - **3.1.7.3** Deselecting every field is allowed and renders a single
+    line-text column, so raw passthrough rows stay visible (3.1.4).
+- **3.1.8** **No column width ceiling.** No column is clamped to a maximum
+  width: a column sizes to its widest rendered cell and the table scrolls
+  horizontally, so a long `message` is read in full rather than clipped to
+  the viewport. Widths only ever grow as content arrives — a streaming
+  console never reflows narrower under the reader.
+  - **3.1.8.1** Width is measured over RECORD cells only. A raw passthrough
+    row's text renders in the first data column and carries a full-text
+    tooltip, but does not stretch that column — one long stack-trace line
+    must not push every structured column off-screen.
+
 ### 3.2 Use cases
 - **3.2.1** As a developer debugging the tour, I flip the running console to
   JSON view and watch structured rows stream; flipping back loses nothing.
@@ -124,6 +149,11 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   and clear the filter afterwards; raw rows reappear.
 - **3.2.3** As a developer whose build fails, I click the structured
   diagnostic row and land on the offending line.
+- **3.2.4** As a developer watching a wide record shape, I get a few readable
+  columns rather than every field, then open **Fields** and switch on `file`
+  once I care about it — including a field that only showed up mid-run.
+- **3.2.5** As a developer reading a long `message`, I scroll right and see
+  all of it instead of an ellipsis at the viewport edge.
 
 ---
 
@@ -149,6 +179,10 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   codecs, or the file is marked read-only with the reason shown.
 - **4.1.5** Large files: the windowed reader path (existing) for JSONL;
   documents above a size threshold open read-only structured with a banner.
+- **4.1.6** The editor's table view carries the same column chooser and width
+  rule as the console (3.1.7, 3.1.8). Across paged windows the available
+  field list ACCUMULATES — paging forward may reveal fields the first window
+  never had, and paging back does not retract them.
 
 ### 4.2 Use cases
 - **4.2.1** As a developer, I open a `.jsonl` log from `.cajeta/logs`, sort

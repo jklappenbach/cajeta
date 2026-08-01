@@ -23,6 +23,11 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
     private val rows = ArrayList<JsonlRow>()
     private var lineNumber = 0
 
+    /** Column discovery + selection + widths (spec §3.1.7, §3.1.8), fed as
+     *  lines complete so the chooser fills during the run. Owned here so the
+     *  selection survives filter changes and structured/raw flips. */
+    val columns = JsonlColumns()
+
     var isStructured: Boolean = structuredByDefault
         private set
 
@@ -39,7 +44,10 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
             completed.append(pending, 0, nl + 1)   // include the newline
             pending.delete(0, nl + 1)
             lineNumber++
-            JsonlEngine.parseLine(lineNumber, line)?.let { rows += it }
+            JsonlEngine.parseLine(lineNumber, line)?.let {
+                rows += it
+                columns.observe(it)
+            }
             nl = pending.indexOf("\n")
         }
     }
@@ -52,8 +60,13 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
 
     fun clearFilter() { filter = null }
 
-    /** The full render model over everything completed so far (structured view). */
-    fun model(): JsonlModel = JsonlModel(rows.toList(), JsonlEngine.columnsOf(rows))
+    /** The full render model over everything completed so far — columns are the
+     *  complete deterministic order, which is what a chooser must offer. What
+     *  the table actually renders is [visibleColumns]. */
+    fun model(): JsonlModel = JsonlModel(rows.toList(), columns.available())
+
+    /** The columns to render: the reader's selection, or the default subset. */
+    fun visibleColumns(): List<String> = columns.visible()
 
     /** Rows to display in structured mode, after the active filter. */
     fun visibleRows(): List<JsonlRow> =
@@ -69,5 +82,8 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
         pending.setLength(0)
         rows.clear()
         lineNumber = 0
+        // Discovery and the reader's column choice deliberately SURVIVE a
+        // Clear: the console is emptied, not reconfigured, and a selection
+        // silently resetting mid-session is the behavior this unit removes.
     }
 }

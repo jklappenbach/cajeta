@@ -74,6 +74,24 @@ class JsonlConsoleControllerTest {
         assertEquals(listOf("level", "action", "msg"), c.model().columns)
     }
 
+    // json-viewer §3.1.7 (7.1.6): streaming feeds column discovery, so the
+    // chooser's list fills as the run goes. `model()` keeps the FULL
+    // deterministic order — the chooser needs every field, not the shown ones —
+    // while `visibleColumns()` is what the table renders.
+    @Test
+    fun streamingFeedsColumnDiscoveryAndSelection() {
+        val c = JsonlConsoleController(structuredByDefault = true)
+        c.columns.defaultCount = 2
+        c.append("""{"level":"info","msg":"a"}""" + "\n")
+        c.append("""{"level":"warn","action":"link","msg":"b","file":"A.cajeta"}""" + "\n")
+
+        assertEquals(listOf("level", "action", "msg", "file"), c.model().columns)
+        assertEquals(listOf("level", "action"), c.visibleColumns())
+
+        c.columns.setFieldVisible("file", true)
+        assertEquals(listOf("level", "action", "file"), c.visibleColumns())
+    }
+
     // A field filter narrows to matching records; raw passthrough still shown.
     @Test
     fun fieldFilterNarrowsToMatchingRecords() {

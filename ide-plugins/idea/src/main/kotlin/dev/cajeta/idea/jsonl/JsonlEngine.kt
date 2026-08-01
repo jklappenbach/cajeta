@@ -85,14 +85,22 @@ object JsonlEngine {
      *  way as the console (spec §8.2.3, §15.5). */
     fun columnsOf(rows: List<JsonlRow>): List<String> = deriveColumns(rows)
 
+    /** The same ordering applied to an already-collected key set: preferred log
+     *  keys first, then first-appearance. [JsonlColumns] orders its discovered
+     *  fields through here so the chooser, the console table and the windowed
+     *  editor all agree on column order. */
+    fun orderColumns(keys: Collection<String>): List<String> {
+        val preferred = PREFERRED.filter { it in keys }
+        val rest = keys.filter { it !in preferred }
+        return preferred + rest
+    }
+
     private fun deriveColumns(rows: List<JsonlRow>): List<String> {
         val seen = LinkedHashSet<String>()
         for (row in rows) {
             if (row is JsonlRow.Record) seen.addAll(row.fields.keys)
         }
-        val preferred = PREFERRED.filter { it in seen }
-        val rest = seen.filter { it !in preferred }
-        return preferred + rest
+        return orderColumns(seen)
     }
 
     // --- filters (spec §7.2.2). A Raw passthrough row always survives a filter
