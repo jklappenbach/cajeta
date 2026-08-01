@@ -42,6 +42,14 @@ object JsonlTableSupport {
             return
         }
         for ((i, name) in columns.withIndex()) {
+            val chosen = tracked.userWidth(name)
+            if (chosen != null) {
+                // A width the reader set by hand is final (§3.1.9.3): content
+                // growth must not creep it back open, or narrowing a noisy
+                // column would never stick.
+                if (i + 1 < model.columnCount) model.getColumn(i + 1).preferredWidth = chosen
+                continue
+            }
             val widest = tracked.widestCell(name)
             grow(i + 1, if (widest.length > name.length) widest else name)
         }

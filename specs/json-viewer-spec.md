@@ -142,6 +142,26 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
     tooltip, but does not stretch that column — one long stack-trace line
     must not push every structured column off-screen.
 
+- **3.1.9** **Layout persists per run/debug profile.** A reader who has set
+  up the table once should not set it up again. The chosen columns, their
+  ORDER, and any width they resized by hand are remembered against the
+  run/debug configuration the console belongs to, and are the starting
+  layout for that configuration's next session.
+  - **3.1.9.1** The key is the run/debug configuration, not the project or
+    the IDE: a build console and a debug session of the same project keep
+    separate layouts, because they carry different record shapes.
+  - **3.1.9.2** A remembered layout is authoritative over the defaults of
+    3.1.7: it arrives pinned, so a field the reader switched off stays off
+    even when later records carry it.
+  - **3.1.9.3** Only widths the reader set by DRAGGING are remembered.
+    A column the viewer sized to content is not pinned by that, so
+    content-sizing (3.1.8) keeps working on the columns nobody has touched.
+  - **3.1.9.4** A remembered column that a later run never emits is kept in
+    the layout, not dropped — the run that lacks it may be the anomaly, and
+    silently forgetting it would make the setting feel unreliable.
+  - **3.1.9.5** Corrupt or unreadable stored layout degrades to the 3.1.7
+    defaults. Layout is a convenience; it never blocks a console.
+
 ### 3.2 Use cases
 - **3.2.1** As a developer debugging the tour, I flip the running console to
   JSON view and watch structured rows stream; flipping back loses nothing.
@@ -154,6 +174,11 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   once I care about it — including a field that only showed up mid-run.
 - **3.2.5** As a developer reading a long `message`, I scroll right and see
   all of it instead of an ellipsis at the viewport edge.
+- **3.2.6** As a developer who set up `level`, `message`, `file` in that
+  order with a wide `message` column, when I debug that configuration again
+  tomorrow, then the console opens exactly that way without my touching it.
+- **3.2.7** As a developer who tuned my debug console, when I run a
+  different configuration, then its console is untouched by my choices.
 
 ---
 

@@ -58,6 +58,10 @@ class JsonConsoleWrapper(
     structuredByDefault: Boolean = true,
     private val project: Project? = null,
     private val navigationRoots: List<String> = emptyList(),
+    /** Run/debug profile this console belongs to (§3.1.9.1). Blank disables
+     *  layout persistence, which is what a console with no owning
+     *  configuration wants. Build with [JsonConsoleLayoutStore.keyFor]. */
+    private val profileKey: String = "",
 ) : ConsoleView by delegate {
 
     private val controller = JsonlConsoleController(structuredByDefault)
@@ -70,12 +74,32 @@ class JsonConsoleWrapper(
         // viewport and a long message ending in an ellipsis.
         autoResizeMode = JTable.AUTO_RESIZE_OFF
         installRowNavigation(this)
+        installLayoutCapture(this)
     }
 
     private val cards = CardLayout()
     private val cardPanel = JPanel(cards)
     private var panel: JPanel? = null
     private val refreshQueued = AtomicBoolean(false)
+
+    private val layoutStore: JsonConsoleLayoutStore? =
+        if (profileKey.isBlank() || project == null) null
+        else JsonConsoleLayoutStore.getInstance(project)
+
+    init {
+        // Restore this profile's layout before any output arrives, so the
+        // first refresh already renders the reader's arrangement (§3.1.9).
+        layoutStore?.load(profileKey)?.let { controller.columns.applyLayout(it) }
+    }
+
+    /** Persist the live arrangement. Called on every explicit change — a
+     *  field toggle, a header drag, a resize — because any of them may be the
+     *  last thing that happens before the session ends. */
+    private fun saveLayout() {
+        val store = layoutStore ?: return
+        val layout = synchronized(controller) { controller.columns.currentLayout() }
+        store.save(profileKey, layout)
+    }
 
     override fun getComponent(): JComponent {
         panel?.let { return it }
@@ -190,6 +214,7 @@ class JsonConsoleWrapper(
                 override fun actionPerformed(e: AnActionEvent) {
                     synchronized(controller) { controller.columns.resetToDefaults() }
                     refresh()
+                    saveLayout()
                 }
             }
             return items.toTypedArray()
@@ -209,6 +234,7 @@ class JsonConsoleWrapper(
         override fun setSelected(e: AnActionEvent, state: Boolean) {
             synchronized(controller) { controller.columns.setFieldVisible(field, state) }
             refresh()
+            saveLayout()
         }
     }
 
@@ -278,6 +304,46 @@ class JsonConsoleWrapper(
                     else Cursor.getDefaultCursor()
             }
         })
+    }
+
+    // --- layout capture (§3.1.9): the reader's own gestures, and only those.
+    //     A drag on the header is what marks a width as reader-set (§3.1.9.3);
+    //     the viewer's own content sizing must never pin a column, or every
+    //     column would freeze at whatever the first burst happened to need. ---
+
+    private fun installLayoutCapture(table: JBTable) {
+        if (layoutStore == null) return
+        val header = table.tableHeader ?: return
+        header.reorderingAllowed = true
+        header.addMouseListener(object : MouseAdapter() {
+            override fun mouseReleased(e: MouseEvent) {
+                // Read the arrangement AFTER the gesture completes: mid-drag
+                // the column model is still moving.
+                captureColumnOrder()
+                captureResizedWidth()
+                saveLayout()
+            }
+        })
+    }
+
+    /** The visible columns in the order the header now shows them. */
+    private fun captureColumnOrder() {
+        val model = table.columnModel
+        val names = ArrayList<String>(model.columnCount)
+        for (i in 0 until model.columnCount) {
+            // Column 0 is the `#` line column, which is not a field.
+            val name = model.getColumn(i).headerValue?.toString() ?: continue
+            if (name != "#" && name != "line") names += name
+        }
+        if (names.isNotEmpty()) synchronized(controller) { controller.columns.setOrder(names) }
+    }
+
+    /** The width of whichever column the reader was dragging, if any. */
+    private fun captureResizedWidth() {
+        val resized = table.tableHeader?.resizingColumn ?: return
+        val name = resized.headerValue?.toString() ?: return
+        if (name == "#" || name == "line") return
+        synchronized(controller) { controller.columns.setUserWidth(name, resized.width) }
     }
 
     private fun resolvedLocationAt(viewRow: Int): Pair<String, RowLocation>? {

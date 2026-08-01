@@ -36,6 +36,16 @@ class JsonlColumns(defaultCount: Int = DEFAULT_COUNT) {
     /** The reader's explicit selection, or null while the default applies. */
     private var pinned: LinkedHashSet<String>? = null
 
+    /** Display order from a restored layout (§3.1.9), or null to use the
+     *  engine's deterministic order. Columns absent from it follow, ordered
+     *  deterministically, so a field discovered after the layout was saved
+     *  still has a defined place. */
+    private var order: List<String>? = null
+
+    /** Widths the reader set by dragging (§3.1.9.3). Content-sized columns
+     *  are deliberately absent: sizing one must not pin it. */
+    private val userWidths = LinkedHashMap<String, Int>()
+
     /** Register one row's fields and cell widths. Raw passthrough rows carry
      *  neither, so they are ignored (§3.1.8.1). */
     fun observe(row: JsonlRow) {
@@ -59,10 +69,18 @@ class JsonlColumns(defaultCount: Int = DEFAULT_COUNT) {
     fun available(): List<String> =
         ordered ?: JsonlEngine.orderColumns(discovered).also { ordered = it }
 
-    /** The columns to render, in that same order — never the toggle order. */
+    /** The columns to render. Order is the restored layout's when there is
+     *  one, otherwise the engine's deterministic order — never the order the
+     *  reader happened to toggle things in. */
     fun visible(): List<String> {
         val chosen = pinned ?: return available().take(defaultCount)
-        return available().filter { it in chosen }
+        val byDiscovery = available().filter { it in chosen }
+        val explicit = order ?: return byDiscovery
+        // A remembered column this run never emitted still shows (§3.1.9.4):
+        // the run may be the anomaly, and dropping it silently would make the
+        // setting feel unreliable.
+        val ordered = explicit.filter { it in chosen }
+        return ordered + byDiscovery.filter { it !in ordered }
     }
 
     fun isVisible(field: String): Boolean = field in visible()
@@ -77,8 +95,45 @@ class JsonlColumns(defaultCount: Int = DEFAULT_COUNT) {
         if (show) chosen.add(field) else chosen.remove(field)
     }
 
-    /** Drop the explicit selection and track the default again. */
-    fun resetToDefaults() { pinned = null }
+    /** Reorder the visible columns (a header drag). Pins the selection, as
+     *  any explicit arrangement does. */
+    fun setOrder(columns: List<String>) {
+        if (pinned == null) pinned = LinkedHashSet(visible())
+        order = columns.toList()
+    }
+
+    /** Record a width the reader set by dragging. */
+    fun setUserWidth(field: String, px: Int) {
+        if (px > 0) userWidths[field] = px else userWidths.remove(field)
+    }
+
+    /** That width, or null when this column has never been resized by hand
+     *  and so still sizes to content (§3.1.8). */
+    fun userWidth(field: String): Int? = userWidths[field]
+
+    /** Drop the explicit selection, the order and the widths, and track the
+     *  default again. */
+    fun resetToDefaults() {
+        pinned = null
+        order = null
+        userWidths.clear()
+    }
+
+    /** Capture what is on screen right now, for persistence (§3.1.9). Safe
+     *  before the reader has touched anything: it captures the default, which
+     *  is exactly what they are looking at. */
+    fun currentLayout(): JsonlColumnLayout =
+        JsonlColumnLayout(visible(), LinkedHashMap(userWidths))
+
+    /** Restore a saved layout: the selection and its order arrive PINNED
+     *  (§3.1.9.2), so a field switched off stays off however many later
+     *  records carry it. */
+    fun applyLayout(layout: JsonlColumnLayout) {
+        pinned = LinkedHashSet(layout.columns)
+        order = layout.columns.toList()
+        userWidths.clear()
+        userWidths.putAll(layout.widths.filterValues { it > 0 })
+    }
 
     /** The longest rendered cell seen for [field] (""; never null), the basis
      *  for an uncapped column width. */

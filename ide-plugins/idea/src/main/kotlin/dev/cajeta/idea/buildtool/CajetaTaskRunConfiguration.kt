@@ -15,6 +15,7 @@ import com.intellij.execution.ui.ConsoleView
 import com.intellij.openapi.options.SettingsEditor
 import com.intellij.openapi.project.Project
 import dev.cajeta.idea.debugger.CajetaDebugLaunchSpec
+import dev.cajeta.idea.jsonl.JsonConsoleLayoutStore
 import dev.cajeta.idea.jsonl.JsonConsoleWrapper
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
@@ -101,6 +102,10 @@ class CajetaTaskRunConfiguration(
                             manifestPath.ifBlank { null }?.let { m -> File(m).parent },
                             project.basePath,
                         ),
+                        // Remembered per profile (§3.1.9.1), and separately
+                        // from a debug session of the same configuration —
+                        // build output and program output are different shapes.
+                        profileKey = JsonConsoleLayoutStore.keyFor("run", name),
                     )
                 }
 

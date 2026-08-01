@@ -12,6 +12,7 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpointHandler
 import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
 import com.intellij.xdebugger.frame.XSuspendContext
+import dev.cajeta.idea.jsonl.JsonConsoleLayoutStore
 import dev.cajeta.idea.jsonl.JsonConsoleWrapper
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
@@ -85,6 +86,9 @@ class CajetaDebugProcess(
                 .console,
             project = session.project,
             navigationRoots = listOfNotNull(session.project.basePath, configuration.sourceRoot.ifBlank { null }),
+            // Column layout is remembered per run/debug profile (§3.1.9.1);
+            // the session name IS the configuration's name.
+            profileKey = JsonConsoleLayoutStore.keyFor("debug", session.sessionName),
         )
         processHandler.attachConsole(console)
         return console
