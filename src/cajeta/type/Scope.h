@@ -130,6 +130,23 @@ namespace cajeta {
 
         FieldPtr getField(llvm::AllocaInst* alloca);
 
+        // Block-scoped name bindings. There is one Scope per method, so a
+        // local declared inside a nested `{ ... }` lands in the same map as
+        // the method's parameters and would otherwise clobber a same-named
+        // parameter or outer local for the REST of the method — including
+        // after the closing brace, where the name must resolve to the outer
+        // binding again. Block::generateCode snapshots the prior binding of
+        // every name a block directly declares and puts it back at the `}`.
+        //
+        // localBinding looks only at THIS scope (never the parent chain) and
+        // never inserts: getField's `fields[name]` default-constructs a null
+        // entry on a miss, so a plain lookup could not tell "unbound" from
+        // "bound to null" and would spuriously report a shadow. A null return
+        // means nothing was shadowed and the block leaves the binding alone.
+        FieldPtr localBinding(const string& fieldName);
+
+        void restoreBinding(const string& fieldName, FieldPtr prior);
+
         void setParent(ScopePtr parent) {
             this->parent = parent;
         }

@@ -140,6 +140,45 @@ namespace cajeta {
         // retract (their moves can reach post-loop code).
         auto linScope = module->getScopeStack().peek();
         size_t moveMark = linScope ? linScope->moveLogSize() : 0;
+        // Block-scoped NAMES. There is one Scope per method, so a local
+        // declared in here is putField'd into the same map that holds the
+        // method's parameters — permanently rebinding the name for the rest
+        // of the method. When the shadowed outer binding has a different type
+        // the result is malformed IR rather than a diagnostic: given a
+        // `float32[] v` parameter and a `float32 v` declared inside an `if`,
+        // a later `v[i] = ...` indexes the scalar, emitting a GEP/load whose
+        // base operand is a float. Archives are unverified bitcode, so that
+        // ships silently and only surfaces at instruction selection in the
+        // eventual --emit=exe ("Cannot select: f32 = truncate i64"), pointing
+        // at a function far from the declaration that caused it.
+        //
+        // Snapshot the prior binding of every name this block DIRECTLY
+        // declares and restore it at the closing brace. Nested blocks compose
+        // (each restores its own), and sibling blocks that reuse a name no
+        // longer leak into one another.
+        //
+        // Only names that ACTUALLY shadow something are tracked. A declaration
+        // that introduces a fresh name is left bound after the `}` exactly as
+        // before, because analyses that run past the method body look names up
+        // in this map: Method::destroyScope's launch-borrow gate (XPU-K02)
+        // resolves each pending borrow with containsField/getField to find its
+        // drop entry, so unbinding a block-local device buffer would silently
+        // skip the diagnostic. Shadowing is the whole defect — an unshadowed
+        // name has no prior binding to corrupt.
+        vector<pair<string, FieldPtr>> shadowed;
+        if (linScope) {
+            for (auto& child : children) {
+                auto lvd = std::dynamic_pointer_cast<LocalVariableDeclaration>(child);
+                if (!lvd) continue;
+                for (auto& d : lvd->getVariableDeclarators()) {
+                    if (!d) continue;
+                    const string& name = d->getIdentifier();
+                    if (FieldPtr prior = linScope->localBinding(name)) {
+                        shadowed.emplace_back(name, prior);
+                    }
+                }
+            }
+        }
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
             // anything after a return / throw / break / continue is
@@ -203,6 +242,15 @@ namespace cajeta {
                 }
             }
             m->popDropFrame();
+        }
+        // Undo this block's name bindings last, after the drop/arena teardown
+        // above has finished consulting the scope. Restored in reverse so a
+        // block that declares the same name twice unwinds to the outermost
+        // prior binding.
+        if (linScope) {
+            for (auto it = shadowed.rbegin(); it != shadowed.rend(); ++it) {
+                linScope->restoreBinding(it->first, it->second);
+            }
         }
         return nullptr;
     }
