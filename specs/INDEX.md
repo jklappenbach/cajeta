@@ -16,7 +16,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [resident-debug-server](resident-debug-server-spec.md) | [plan](../agents/resident-debug-server-plan.md) | active — Units 1-5+8 delivered 2026-07-21 (tour via one resident server: cold 41.3s / no-edit 0.65s / one-edit 34.8s); next: Unit 6 design review (stdlib digest churn first), Unit 7 live pass |
 | [debugger-variable-inspection](debugger-variable-inspection-spec.md) | [plan](../agents/debugger-variable-inspection-plan.md) | active — spec+plan approved 2026-07-22; 7 units (bridge → arrays → objects → DAP/render → edit → hover → collections); Unit 1 next |
 | [cajeta-xgboost](cajeta-xgboost-spec.md) | [plan](../agents/cajeta-xgboost-plan.md) | active |
-| [cajeta-ml-v3](cajeta-ml-v3-spec.md) | [plan](../agents/cajeta-ml-v3-plan.md) | active — approved 2026-07-31 ("Looks good"); 12 units; U1-U6 delivered (consolidation, ml.grad tape+seam, structured ops, module tree + layer zoo + Predictor wrap, optim re-pin + BackpropTrainer + ml.data, reference architectures; suite 151/151, torch-pinned); U7 SpelaTrainer core next |
+| [cajeta-ml-v3](cajeta-ml-v3-spec.md) | [plan](../agents/cajeta-ml-v3-plan.md) | active — approved 2026-07-31 ("Looks good"); 12 units; U1-U7 delivered (through SpelaTrainer core: paper-exact + modernized recipes, detached handoff, early exit; suite 166/166); U8 SPELA production surface next |
 | [silent-resolution-diagnostics](silent-resolution-diagnostics-spec.md) | [plan](../agents/silent-resolution-diagnostics-plan.md) | active |
 | [docs-refactor](docs-refactor-spec.md) | [plan](../agents/docs-refactor-plan.md) | active |
 | [cja-source-view](cja-source-view-spec.md) | [plan](../agents/cja-source-view-plan.md) | active |
@@ -52,6 +52,7 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
 | [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
+| [owned-interface-return-fault](owned-interface-return-fault-spec.md) | — (defect, SIGSEGV; a `#<Interface>` return faults on first use once stored in a container field — container/index/ownership all ruled out in the spec; workaround: build inline or return the concrete type) | draft |
 | [typeparam-cast-of-paren](typeparam-cast-of-paren-spec.md) | — (defect; `(E) (expr)` parses as a postfix call, not a cast — primitive destinations and unparenthesized operands are fine; workaround: hoist to a named local, 17 sites in ml/grad/StructKernels) | draft |
 | [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
 | [codegen-many-param-f32-truncate](codegen-many-param-f32-truncate-spec.md) | — (defect, found while closing xgboost D2) | draft — `Cannot select: f32 = truncate i64` at ~23 params; 22 compiles; repro + acceptance in spec |
