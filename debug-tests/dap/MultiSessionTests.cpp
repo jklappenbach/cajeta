@@ -7,8 +7,12 @@
 //
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdlib>
+#include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "cajeta/dap/DapServer.h"
@@ -212,4 +216,52 @@ TEST(DapMultiSession, FailedSessionThenCleanSessionWithOtherProgram) {
     EXPECT_EQ(exitCodeOf(log), 42);
     EXPECT_EQ(countEvent(log, "stopped"), 0);
     drive(srv, req(8, "disconnect", Json::object()), log);
+}
+
+// Spec §4.1 (plan 10.2.1). A session ends when the client says so — but a
+// client can also just go away, and the server is then destroyed with the
+// debuggee still PARKED at a breakpoint. ~DapServer joined the program
+// thread outright, and a parked thread is waiting for a resume that will
+// now never come: the process hung forever, holding the terminal.
+//
+// Found as the LambdaStep "parallel step-over hang": that test asserts on
+// the step and returns without continuing, so teardown deadlocked. The
+// stepping itself was fine — the shutdown path was not.
+//
+// The destruction runs on its own thread so a regression FAILS here in
+// bounded time instead of wedging the whole binary.
+TEST(DapMultiSession, DestroyingAServerWhileParkedDoesNotHang) {
+    TempProgram p("demo", "Calc.cajeta", kCalcProg);
+    auto srv = std::make_unique<DapServer>();
+
+    std::vector<Json> log;
+    drive(*srv, req(1, "initialize", Json::object()), log);
+    drive(*srv, req(2, "launch", launchArgs(p, "demo.Calc.main")), log);
+    Json bpArgs = Json::object();
+    Json src = Json::object();
+    src["path"] = "Calc.cajeta";
+    bpArgs["source"] = src;
+    Json bps = Json::array();
+    Json bp = Json::object();
+    bp["line"] = 4;
+    bps.push_back(bp);
+    bpArgs["breakpoints"] = bps;
+    drive(*srv, req(3, "setBreakpoints", bpArgs), log);
+    drive(*srv, req(4, "configurationDone", Json::object()), log);
+    ASSERT_EQ(countEvent(log, "stopped"), 1) << "expected to be parked";
+
+    std::atomic<bool> destroyed{false};
+    std::thread teardown([&] {
+        srv.reset();               // no disconnect: the client vanished
+        destroyed.store(true);
+    });
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::seconds(60);
+    while (!destroyed.load() && std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    EXPECT_TRUE(destroyed.load())
+        << "~DapServer is joining a parked debuggee — it must let the "
+           "program run out first";
+    if (destroyed.load()) teardown.join(); else teardown.detach();
 }

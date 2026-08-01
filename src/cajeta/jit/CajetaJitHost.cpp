@@ -987,7 +987,18 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         try {
             auto& core = cajeta::StdlibReuseCore::instance();
             core.ensurePrimed();
-            cajeta::CajetaType::releaseThrownTransientStructNames();
+            // Release the prior build's transient struct names ONLY when that
+            // build shared this world. A non-resident session owns its own
+            // LLVMContext and takes every llvm::Type and llvm::Module with it
+            // when it dies, while the thread-local registries still name them:
+            // reading those is a use-after-free, and it faulted exactly here
+            // (getIdentifiedStructTypes on the freed stdlib module, SIGSEGV
+            // addr 0x18) whenever a plain session preceded a resident one.
+            // Nothing needs releasing in that case — the names died with the
+            // context — and restoreBaseline below replaces the registries
+            // wholesale regardless.
+            if (cajeta::CajetaModule::getStdlibModule() == core.getStdlibModule())
+                cajeta::CajetaType::releaseThrownTransientStructNames();
             core.restoreBaseline();
             core.ensureCodegenLayer([](Compiler& prime) {
                 // Debug-flavored stdlib codegen, once: every resident

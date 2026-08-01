@@ -300,7 +300,35 @@ bool DapServer::verifyCompilerIdentity(const Json& args, const Emit& emit,
 DapServer::DapServer() = default;
 
 DapServer::~DapServer() {
-    if (session_) session_->join();
+    drainToExit();
+}
+
+// End the debuggee cleanly from either exit — an explicit `disconnect`, or
+// destruction because the client vanished.
+//
+// Joining outright is wrong whenever the program is PARKED: nothing is left
+// to service its stop, so it waits for a resume that will never come and the
+// join never returns (the process hangs holding the terminal). Disarm every
+// stop source FIRST — a bare resume would only park again at the next armed
+// safepoint — then release the program and let it run to its own end.
+void DapServer::drainToExit() {
+    if (!session_) return;
+    auto& controller = session_->controller();
+    controller.clearArmed();
+    controller.disarmException();
+    controller.disarmEntry();
+    controller.resume();
+    // A stop already in flight when the arms were cleared can still park once.
+    // Nudge it, briefly, rather than assuming: the cost of being wrong here is
+    // a hang, and the cost of the extra resumes is nothing.
+    const auto deadline = std::chrono::steady_clock::now()
+                        + std::chrono::seconds(2);
+    while (!session_->isFinished()
+               && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        controller.resume();
+    }
+    session_->join();
 }
 
 void DapServer::runToStopOrExit(const Emit& emit) {
@@ -1102,11 +1130,10 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     }
 
     if (command == "disconnect" || command == "terminate") {
-        if (session_) {
-            // Let the program finish if it's parked.
-            if (!terminated_) session_->controller().resume();
-            session_->join();  // also detaches handlers + active controller
-        }
+        // Let the program finish if it's parked, and disarm first so it
+        // cannot park again on the way out (join also detaches handlers +
+        // the active controller).
+        drainToExit();
         // The program thread has joined, so nothing can read the environment
         // any more: put back what the launch displaced (spec 4.1.4). The scope
         // also restores from its destructor, which covers the abnormal exits

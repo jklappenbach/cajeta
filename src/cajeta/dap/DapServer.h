@@ -111,6 +111,11 @@ namespace cajeta::dap {
         // desyncs. Also guards seq_ for pump-emitted events.
         std::mutex emitMutex_;
 
+        // End the debuggee and join its thread, from `disconnect` or from
+        // destruction: disarm every stop source, resume, then join. A plain
+        // join hangs forever when the program is PARKED (spec §4.1).
+        void drainToExit();
+
         // Drive the running program until it next stops at a breakpoint or
         // terminates; emit the matching `stopped` / `terminated` event.
         void runToStopOrExit(const Emit& emit);

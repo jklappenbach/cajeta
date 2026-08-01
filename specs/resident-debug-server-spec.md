@@ -96,6 +96,20 @@ and environment overlays start clean every session; nothing observable leaks
 from session N into session N+1. Server-side per-session state
 (DebugController, loc-table view, breakpoint arming) resets on `disconnect`.
 
+Isolation holds at the IR level too. The persistent stdlib module is part of
+the resident world, and a session ADDS to it: a stdlib template instantiated
+over a user type emits into the USER's module, leaving `external global`
+declarations of those symbols behind in the stdlib's. Such declarations must
+not outlive the session that justified them. What a session emitted that the
+stdlib genuinely adopted — a drop thunk backfilled into a baseline vtable —
+stays; what only the session itself referred to goes.
+
+Ending a session must be possible from both sides. The client may
+disconnect, or simply vanish and leave the server to be destroyed, and in
+either case the debuggee may be PARKED at a breakpoint. Teardown disarms
+every stop source and lets the program run out — it never waits on a parked
+thread for a resume no one will send.
+
 ### 4.2 Use cases
 - 4.2.1 As a developer whose program mutates a static and exits, when I
   relaunch, then the static has its initial value again.
@@ -108,6 +122,13 @@ from session N into session N+1. Server-side per-session state
   server. Recovery is the plugin respawn (§2.2.2) at the cost of residency;
   armed break-on-throw parks instead and is unaffected. Making the uncaught
   path session-scoped is future work, out of scope here.
+- 4.2.4 As a developer whose session used `ArrayList<MyType>`, when I launch
+  again with a program that names no generic at all, then the launch
+  succeeds — it does not fail to materialize symbols only the previous
+  session's module ever defined.
+- 4.2.5 As a developer (or a test) who closes the debugger while stopped at
+  a breakpoint, when the server shuts down, then it terminates promptly
+  instead of hanging on the parked debuggee.
 
 ## 5 Staleness and failure
 
