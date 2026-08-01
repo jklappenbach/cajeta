@@ -57,4 +57,41 @@ class JsonDiagnosticParserTest {
         assertEquals("a\"b\\c\nd", d.message)
         assertEquals("/p/with space/A.cajeta", d.file)
     }
+
+    // --- compiler-jsonl Unit 1 (1.1.5): the additive claim, tested ---------
+    // A new compiler must not break an INSTALLED plugin: the two ship
+    // separately. `kind` is added ahead of the existing fields, so this pins
+    // both that the parser ignores it and that JSON key order was never part
+    // of the contract.
+
+    @Test
+    fun recordWithKindStillParsesWithEveryFieldIntact() {
+        val e = JsonDiagnosticParser.parse(
+            """{"kind":"diagnostic","severity":"error","code":"CJ1","message":"bad type","file":"/p/A.cajeta","line":10,"column":5}""")!!
+        assertEquals(Diagnostic.Severity.ERROR, e.severity)
+        assertEquals("CJ1", e.code)
+        assertEquals("bad type", e.message)
+        assertEquals("/p/A.cajeta", e.file)
+        assertEquals(10, e.line)
+        assertEquals(5, e.column)
+    }
+
+    @Test
+    fun streamAndOtherRecordKindsAreNotDiagnostics() {
+        // The version record opens every stream now. It carries no severity,
+        // so the diagnostic parser must decline it rather than invent one.
+        assertNull(JsonDiagnosticParser.parse(
+            """{"kind":"stream","major":1,"minor":0,"producer":"cajeta 0.9.1"}"""))
+        assertNull(JsonDiagnosticParser.parse(
+            """{"kind":"progress","phase":"parse","state":"start","label":"Parsing"}"""))
+    }
+
+    @Test
+    fun unknownFieldsOnADiagnosticAreIgnored() {
+        // spec 2.1.6 — adding a field is a minor bump, not a break.
+        val d = JsonDiagnosticParser.parse(
+            """{"kind":"diagnostic","severity":"warning","message":"m","futureField":{"a":1}}""")!!
+        assertEquals(Diagnostic.Severity.WARNING, d.severity)
+        assertEquals("m", d.message)
+    }
 }

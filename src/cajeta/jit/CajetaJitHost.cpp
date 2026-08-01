@@ -13,6 +13,8 @@
 //
 #include "cajeta/jit/CajetaJitHost.h"
 
+#include "cajeta/error/Diagnostics.h"
+
 #include "cajeta/jit/CajetaJitErrorShim.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
@@ -43,6 +45,7 @@
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/DebugTypeTable.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/method/Method.h"
 
@@ -458,6 +461,7 @@ struct WholeProgramSlot {
     std::filesystem::path dir;   // <cacheDir>/jit/<program-key>/
     std::filesystem::path meta() const { return dir / "program.meta"; }
     std::filesystem::path dbgloc() const { return dir / "program.dbgloc"; }
+    std::filesystem::path typeinfo() const { return dir / "program.typeinfo"; }
     std::filesystem::path bcPool() const {
         return dir.parent_path() / "bcpool";
     }
@@ -489,6 +493,21 @@ std::string wholeProgramKey(const JitRunOptions& opts,
     in << "mode=debug\n"
        << "debugInfo=" << (opts.debugInfo ? 1 : 0) << '\n'
        << "entry=" << opts.entryMethod << '\n';
+    // Dependency archives are part of the compiled world: a slot built without
+    // them (or against a different version) must NOT satisfy a launch that has
+    // them. Content-hash each, sorted, so order on the wire is irrelevant.
+    {
+        std::vector<std::string> deps;
+        deps.reserve(opts.classpath.size());
+        for (const auto& cp : opts.classpath) {
+            std::ifstream f(cp, std::ios::binary);
+            std::stringstream bytes;
+            bytes << f.rdbuf();
+            deps.push_back(cajeta::buildtool::sha256Hex(bytes.str()));
+        }
+        std::sort(deps.begin(), deps.end());
+        for (const auto& d : deps) in << "dep=" << d << '\n';
+    }
     std::vector<std::pair<std::string, std::string>> entries;
     entries.reserve(sources.size());
     for (const auto& p : sources) {
@@ -556,12 +575,20 @@ void writeWholeProgramSlot(const WholeProgramSlot& slot, const BuiltJit& built,
             return cajeta::dbg::writeDbgLocSidecar(
                 p.string(), cajeta::dbg::globalDbgLocTable());
         });
+        // The type-layout sidecar rides beside dbgloc for the same reason it
+        // exists (a hit has no type world) under the same all-or-nothing rule
+        // (debug-type-sidecar 4.2.1).
+        ok = ok && place(slot.typeinfo(), [&](const fs::path& p) {
+            return cajeta::dbg::writeTypeSidecar(
+                p.string(), cajeta::dbg::globalDebugTypeTable());
+        });
     }
     if (!ok) {
         // No half-manifest: without meta the slot MISSES; pooled files are
         // content-addressed and harmless to leave.
         fs::remove(slot.meta(), ec);
         fs::remove(slot.dbgloc(), ec);
+        fs::remove(slot.typeinfo(), ec);
     }
 }
 
@@ -658,8 +685,11 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
             std::chrono::duration<double>(SplitClock::now() - reparseStart)
                 .count();
         if (!parsed) {
-            std::cerr << "cajeta jit: bitcode reparse failed: "
+            {
+                std::ostringstream m; m << "cajeta jit: bitcode reparse failed: "
                       << cajeta::jit::toString(parsed.takeError()) << "\n";
+                cajeta::logLine("error", m.str());
+            }
             out.errorCode = 1;
             return false;
         }
@@ -685,8 +715,11 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
     }
     auto jitOrErr = builder.create();
     if (!jitOrErr) {
-        std::cerr << "cajeta jit: LLJIT create failed: "
+        {
+            std::ostringstream m; m << "cajeta jit: LLJIT create failed: "
                   << cajeta::jit::toString(jitOrErr.takeError()) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return false;
     }
@@ -694,15 +727,21 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
 
     if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
         if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {
-            std::cerr << "cajeta jit: GDB symbolization unavailable: "
+            {
+                std::ostringstream m; m << "cajeta jit: GDB symbolization unavailable: "
                       << cajeta::jit::toString(std::move(err)) << "\n";
+                cajeta::logLine("warn", m.str());
+            }
         }
     }
 
     for (auto& tsm : tsms) {
         if (auto err = out.jit->addIRModule(std::move(tsm))) {
-            std::cerr << "cajeta jit: addIRModule failed: "
+            {
+                std::ostringstream m; m << "cajeta jit: addIRModule failed: "
                       << cajeta::jit::toString(std::move(err)) << "\n";
+                cajeta::logLine("error", m.str());
+            }
             out.jit.reset();
             out.errorCode = 1;
             return false;
@@ -713,8 +752,11 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
     auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         out.jit->getDataLayout().getGlobalPrefix());
     if (!generator) {
-        std::cerr << "cajeta jit: process-symbol generator failed: "
+        {
+            std::ostringstream m; m << "cajeta jit: process-symbol generator failed: "
                   << cajeta::jit::toString(generator.takeError()) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.jit.reset();
         out.errorCode = 1;
         return false;
@@ -751,24 +793,33 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
                 auto gen = llvm::orc::StaticLibraryDefinitionGenerator::Load(
                     out.jit->getObjLinkingLayer(), art->path.c_str());
                 if (gen) mainDylib.addGenerator(std::move(*gen));
-                else std::cerr << "cajeta jit: native lib '" << lib
+                else {
+                    std::ostringstream m; m << "cajeta jit: native lib '" << lib
                                << "' load failed: "
                                << cajeta::jit::toString(gen.takeError()) << "\n";
+                    cajeta::logLine("warn", m.str());
+                }
             } else {
                 auto gen = llvm::orc::DynamicLibrarySearchGenerator::Load(
                     art->path.c_str(), prefix);
                 if (gen) mainDylib.addGenerator(std::move(*gen));
-                else std::cerr << "cajeta jit: native lib '" << lib
+                else {
+                    std::ostringstream m; m << "cajeta jit: native lib '" << lib
                                << "' load failed: "
                                << cajeta::jit::toString(gen.takeError()) << "\n";
+                    cajeta::logLine("warn", m.str());
+                }
             }
         }
     }
 
     SplitClock::time_point matStart = SplitClock::now();
     if (auto err = out.jit->initialize(out.jit->getMainJITDylib())) {
-        std::cerr << "cajeta jit: LLJIT initialize failed: "
+        {
+            std::ostringstream m; m << "cajeta jit: LLJIT initialize failed: "
                   << cajeta::jit::toString(std::move(err)) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.jit.reset();
         out.errorCode = 1;
         return false;
@@ -794,6 +845,14 @@ bool tryLoadWholeProgramSlot(const WholeProgramSlot& slot,
             table.clear();
             return false;
         }
+        // Type-layout sidecar (debug-type-sidecar 4.2.2): the hit decodes
+        // variables through this table alone. Missing or unreadable — a slot
+        // written before the feature, or torn — is a MISS, so the slot heals
+        // by recompiling once. loadTypeSidecar leaves the table EMPTY on
+        // failure, never partial.
+        if (!cajeta::dbg::loadTypeSidecar(slot.typeinfo().string(),
+                                          cajeta::dbg::globalDebugTypeTable()))
+            return false;
     }
     std::vector<ModuleBC> modules;
     modules.reserve(digests.size());
@@ -845,15 +904,21 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     std::error_code ec;
     fs::path sourceRoot = fs::absolute(opts.sourceRoot, ec);
     if (ec || !fs::is_directory(sourceRoot)) {
-        std::cerr << "cajeta jit: source root is not a directory: "
+        {
+            std::ostringstream m; m << "cajeta jit: source root is not a directory: "
                   << opts.sourceRoot << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 2;
         return out;
     }
 
     std::vector<fs::path> sourcePaths = collectSources(sourceRoot);
     if (sourcePaths.empty()) {
-        std::cerr << "cajeta jit: no .cajeta files under " << sourceRoot << "\n";
+        {
+            std::ostringstream m; m << "cajeta jit: no .cajeta files under " << sourceRoot << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 2;
         return out;
     }
@@ -914,6 +979,10 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // wiped by each session's table clear below; snapshot once, replay each
     // session so stdlib frames keep resolving.
     static thread_local cajeta::dbg::DbgLocTable residentLayerLocs;
+    // Same story for the debug type roots the layer's locals registered: the
+    // per-session clear drops them, so a stop inside a stdlib frame would have
+    // no record for its locals' types. Snapshot once, replay each session.
+    static thread_local std::vector<std::string> residentLayerTypeRoots;
     if (opts.resident) {
         try {
             auto& core = cajeta::StdlibReuseCore::instance();
@@ -941,6 +1010,7 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                     m->setFlags(f);
                 }
                 cajeta::dbg::globalDbgLocTable().clear();
+                cajeta::dbg::globalDebugTypeTable().clear();
                 size_t prev = 0;
                 while (true) {
                     size_t count = 0;
@@ -969,6 +1039,8 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                 const auto& t = cajeta::dbg::globalDbgLocTable();
                 for (int32_t id : t.assignedIds())
                     residentLayerLocs.setAt(id, t.at(id));
+                residentLayerTypeRoots =
+                    cajeta::dbg::globalDebugTypeTable().roots();
             });
             residentStdlib = core.getStdlibModule();
             Compiler::setSharedContext(core.context());
@@ -978,8 +1050,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         } catch (...) {
             Compiler::setSharedContext(nullptr);
             residentStdlib.reset();
-            std::cerr << "cajeta jit: resident reuse unavailable, "
+            {
+                std::ostringstream m; m << "cajeta jit: resident reuse unavailable, "
                          "falling back to a full build\n";
+                cajeta::logLine("warn", m.str());
+            }
         }
     }
 
@@ -988,6 +1063,13 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     compiler->setMode(CompilerMode::Debug);
     // Statement-boundary safepoint emission (CP2). Reset the global loc table
     // so this compile's loc_ids start at 0.
+    // The JIT never set a diagnostic format, so every parse used ANTLR's
+    // CONSOLE listener: a syntax error in a debug launch surfaced as raw
+    // `line 37:22 no viable alternative ...` with no file name and no record,
+    // while JsonSyntaxErrorListener — which emits a properly located
+    // diagnostic — was never installed (Julian, 2026-07-31).
+    compiler->getMutableFlags().diagFormat =
+        cajeta::jsonProgressEnabled() ? DiagFormat::Json : DiagFormat::Text;
     compiler->getMutableFlags().debugInfo = opts.debugInfo;
     // Keep the level in step with the bool the JIT host sets directly, so the
     // cache flag set and any level-driven codegen see the same world.
@@ -995,12 +1077,17 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         opts.debugInfo ? DebugInfo::Full : DebugInfo::Line;
     if (opts.debugInfo) {
         cajeta::dbg::globalDbgLocTable().clear();
+        // The type table is per-program too: records resolved against a
+        // previous run's world must never answer this one's lookups.
+        cajeta::dbg::globalDebugTypeTable().clear();
         if (residentActive) {
             // Restore the stdlib's layer-time loc entries (dense ids; user
             // module ranges start at 1<<20, so the spaces never collide).
             auto& t = cajeta::dbg::globalDbgLocTable();
             for (int32_t id : residentLayerLocs.assignedIds())
                 t.setAt(id, residentLayerLocs.at(id));
+            for (const auto& root : residentLayerTypeRoots)
+                cajeta::dbg::globalDebugTypeTable().addRoot(root);
         }
     }
 
@@ -1008,7 +1095,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                          / ("cajeta_jitrun_" + sourceRoot.filename().string());
     fs::create_directories(archiveRoot, ec);
 
-    cajeta::prescanSourceRoot(sourceRoot.string());
+    // Suppress the prescan's console listener under json: the real parse
+    // reports the same syntax error as a record, and leaving this on
+    // printed the raw ANTLR line a SECOND time.
+    cajeta::prescanSourceRoot(sourceRoot.string(),
+                              cajeta::jsonProgressEnabled());
     endPhase(out.phases.collectSeconds);
 
     // Parse split (7.2.1): the initial stdlib parse is triggered explicitly
@@ -1024,6 +1115,36 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         out.phases.parseStdlibSeconds +=
             std::chrono::duration<double>(Clock::now() - s).count();
     }
+    // Dependency archives, ingested after the stdlib parse and BEFORE any user
+    // source is parsed — the same ordering the AOT entry points use, so user
+    // imports resolve against classpath classes during their own parse. Without
+    // this a debug launch of a project with dependencies dies at
+    // CAJETA_ERROR_UNRESOLVED_TYPE (Julian, 2026-07-30: `Logger` from
+    // dev.cajeta.logging). No-op when the launch carried no classpath.
+    if (!opts.classpath.empty()) {
+        for (const auto& cp : opts.classpath) compiler->addClasspath(cp);
+        // A broken/incompatible archive must fail the LAUNCH, not abort the
+        // server process: an uncaught cajeta::Exception here reaches
+        // std::terminate and takes the resident server down with it.
+        try {
+            compiler->ingestClasspath();
+            // Definitions, not just declarations: the JIT links what it runs.
+            compiler->linkClasspathModules();
+        } catch (cajeta::Exception& e) {
+            cajeta::logLine("error",
+                std::string("cajeta jit: [") + e.getErrorId()
+                + "] classpath ingest failed: " + e.getMessage() + "\n");
+            out.errorCode = 1;
+            return out;
+        } catch (std::exception& e) {
+            cajeta::logLine("error",
+                std::string("cajeta jit: classpath ingest failed: ")
+                + e.what() + "\n");
+            out.errorCode = 1;
+            return out;
+        }
+    }
+
     static thread_local double stdlibHookSeconds;
     stdlibHookSeconds = 0;
     if (auto inner = cajeta::CajetaModule::stdlibImportHook) {
@@ -1061,22 +1182,55 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             compiler->compile(m);
         }
     } catch (cajeta::Exception& e) {
-        std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
+        {
+            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] "
                   << e.getMessage() << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
     if (!primary) {
-        std::cerr << "cajeta jit: no modules compiled\n";
+        {
+            std::ostringstream m; m << "cajeta jit: no modules compiled\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
 
 
-    cajeta::CajetaModule::validatePlaceholders();
-    cajeta::CajetaModule::resolveAdviceMatches();
-    cajeta::CajetaModule::setActiveProfile("debug");
-    cajeta::CajetaModule::resolveDependencyGraph();
+    // DI profile. The JIT used to hardcode "debug" — a profile NOTHING
+    // declares (@Profile carries dev/prod/test in practice), so every project
+    // with DI components failed to launch under the debugger with
+    // CAJETA_ERROR_MISSING_COMPONENT while the identical AOT build succeeded.
+    // Default to the AOT default ("prod", CajetaModule.cpp) so a debug launch
+    // resolves the same graph the build does; a launch may name another.
+    cajeta::CajetaModule::setActiveProfile(
+        opts.profile.empty() ? "prod" : opts.profile);
+    // These run the DI/advice/placeholder resolution and THROW on a bad graph
+    // (missing provider, ambiguity). Uncaught, that reached std::terminate and
+    // killed the resident server outright — a project misconfiguration must
+    // fail this LAUNCH and leave the server alive (Julian, 2026-07-30: SIGABRT
+    // "likely heap corruption" was really an unguarded DI error).
+    try {
+        cajeta::CajetaModule::validatePlaceholders();
+        cajeta::CajetaModule::resolveAdviceMatches();
+        cajeta::CajetaModule::resolveDependencyGraph();
+    } catch (cajeta::Exception& e) {
+        {
+            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] " << e.getMessage() << "\n";
+            cajeta::logLine("error", m.str());
+        }
+        out.errorCode = 1;
+        return out;
+    } catch (std::exception& e) {
+        cajeta::logLine("error",
+            std::string("cajeta jit: dependency resolution failed: ")
+            + e.what() + "\n");
+        out.errorCode = 1;
+        return out;
+    }
     out.phases.parseStdlibSeconds += stdlibHookSeconds;
     if (opts.debugInfo) {
         // Ranged loc ids (3.2.1): every module parsed by now. Modules that
@@ -1154,8 +1308,11 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                     if (klass) klass->generateStaticInitializers();
             });
     } catch (cajeta::Exception& e) {
-        std::cerr << "cajeta jit: [" << e.getErrorId() << "] "
+        {
+            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] "
                   << e.getMessage() << "\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
@@ -1217,9 +1374,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         }
     }
     if (out.entryName.empty()) {
-        std::cerr << "cajeta jit: could not find static entry `"
+        {
+            std::ostringstream m; m << "cajeta jit: could not find static entry `"
                   << opts.entryMethod
                   << "` — expected `main()` or `main(String[] args)`\n";
+            cajeta::logLine("error", m.str());
+        }
         out.errorCode = 1;
         return out;
     }
@@ -1247,9 +1407,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             std::string verifyErr;
             llvm::raw_string_ostream verifyStream(verifyErr);
             if (llvm::verifyModule(*lm, &verifyStream)) {
-                std::cerr << "cajeta jit: IR verify failed ("
+                {
+                    std::ostringstream m; m << "cajeta jit: IR verify failed ("
                           << lm->getModuleIdentifier() << "): " << verifyErr
                           << "\n";
+                    cajeta::logLine("warn", m.str());
+                }
                 out.errorCode = 1;
                 return out;
             }
@@ -1274,6 +1437,16 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     // ABI for makeEntryArgs, derived while the type world is still alive; it
     // rides the slot meta so a HIT launch never needs CajetaType (4.2.4).
     out.entryArgsABI = deriveEntryArgsABI(out.jit.get());
+
+    // Same window, same reason, for variable inspection: resolve every
+    // debug-reachable type's layout (roots registered by emitDbgLocal during
+    // the codegen above) while the world is still up. ValueInspector decodes
+    // ONLY through this table, so a cold stop exercises the identical path a
+    // cache hit will take once the sidecar loads it (debug-type-sidecar §4.1).
+    if (opts.debugInfo && out.jit) {
+        cajeta::dbg::globalDebugTypeTable().buildFromTypeWorld(
+            out.jit->getDataLayout());
+    }
 
     // Persist the manifest + any pool bitcodes not already present; objects
     // were persisted by PoolObjectCache as they compiled.
@@ -1391,8 +1564,11 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
 
     auto entrySym = jit->lookup(built.entryName);
     if (!entrySym) {
-        std::cerr << "cajeta jit-run: entry symbol lookup failed: "
+        {
+            std::ostringstream m; m << "cajeta jit-run: entry symbol lookup failed: "
                   << cajeta::jit::toString(entrySym.takeError()) << "\n";
+            cajeta::logLine("error", m.str());
+        }
         return 1;
     }
 
@@ -1406,9 +1582,12 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     if (built.entryTakesArgs) {
         entryArgs = makeEntryArgs(jit, opts.programArgs, built.entryArgsABI);
         if (!entryArgs) {
-            std::cerr << "cajeta jit: entry `" << opts.entryMethod
+            {
+                std::ostringstream m; m << "cajeta jit: entry `" << opts.entryMethod
                       << "` takes String[] but the args array could not be "
                          "materialized\n";
+                cajeta::logLine("error", m.str());
+            }
             return 1;
         }
     }
@@ -1419,13 +1598,13 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
         rc = built.entryTakesArgs
                  ? reinterpret_cast<int(*)(void*)>(addr)(entryArgs)
                  : reinterpret_cast<int(*)()>(addr)();
-        std::cerr << "[jit-run] entry " << opts.entryMethod
-                  << " returned " << rc << "\n";
+        cajeta::logLine("debug", "[jit-run] entry " + opts.entryMethod
+                                 + " returned " + std::to_string(rc) + "\n");
     } else {
         if (built.entryTakesArgs) reinterpret_cast<void(*)(void*)>(addr)(entryArgs);
         else reinterpret_cast<void(*)()>(addr)();
-        std::cerr << "[jit-run] entry " << opts.entryMethod
-                  << " completed (void)\n";
+        cajeta::logLine("debug", "[jit-run] entry " + opts.entryMethod
+                                 + " completed (void)\n");
     }
 
     if (result) {
@@ -1446,6 +1625,7 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
 
 struct JitDebugSession::Impl {
     BuiltJit built;
+    cajeta::dbg::ResolvedTypeSymbols resolvedTypeSymbols;
     cajeta::dbg::DebugController controller;
     std::thread thread;
     std::atomic<bool> finished{false};
@@ -1482,6 +1662,11 @@ int JitDebugSession::join() {
         installExceptionHandler(impl_->built.jit.get(), nullptr);
     }
     return impl_->exitCode;
+}
+
+const cajeta::dbg::ResolvedTypeSymbols&
+JitDebugSession::resolvedTypeSymbols() const {
+    return impl_->resolvedTypeSymbols;
 }
 
 const llvm::DataLayout& JitDebugSession::dataLayout() const {
@@ -1556,6 +1741,21 @@ std::vector<JitDebugSession::FiberSnapshot> JitDebugSession::liveFibers() {
     return out;
 }
 
+std::vector<int32_t> matchingLocIds(const Breakpoint& bp) {
+    namespace fs = std::filesystem;
+    std::vector<int32_t> out;
+    const auto& table = cajeta::dbg::globalDbgLocTable();
+    // assignedIds, not 0..size(): the ranged allocator leaves the id space
+    // sparse, so a dense walk would read unassigned slots.
+    for (int32_t id : table.assignedIds()) {
+        const auto& loc = table.at(id);
+        if (loc.line != bp.line) continue;
+        std::string base = fs::path(loc.file).filename().string();
+        if (base == bp.file || loc.file == bp.file) out.push_back(id);
+    }
+    return out;
+}
+
 std::unique_ptr<JitDebugSession> startDebugSession(
         const JitRunOptions& opts,
         const std::vector<Breakpoint>& breakpoints,
@@ -1574,20 +1774,12 @@ std::unique_ptr<JitDebugSession> startDebugSession(
         return nullptr;
     }
 
-    // Arm: match each breakpoint against the loc table by file BASENAME + line.
-    namespace fs = std::filesystem;
-    const auto& table = cajeta::dbg::globalDbgLocTable();
-    const std::vector<int32_t> ids = table.assignedIds();  // sparse ranges:
-    for (const auto& bp : breakpoints) {                   // never 0..size()
-        for (int32_t id : ids) {
-            const auto& loc = table.at(id);
-            if (loc.line != bp.line) continue;
-            std::string base = fs::path(loc.file).filename().string();
-            if (base == bp.file || loc.file == bp.file) {
-                impl->controller.arm(id);
-            }
-        }
-    }
+    // Arm: match each breakpoint against the loc table by file BASENAME +
+    // line. The match itself lives in matchingLocIds so the DAP server's
+    // "can this bind?" answer and what is actually armed cannot drift apart.
+    for (const auto& bp : breakpoints)
+        for (int32_t id : matchingLocIds(bp))
+            impl->controller.arm(id);
     // CP6f-3: arm break-on-throw BEFORE the program thread starts (below), so a
     // program that throws immediately can't race past the arm.
     if (armExceptions) impl->controller.armException();
@@ -1630,6 +1822,38 @@ std::unique_ptr<JitDebugSession> startDebugSession(
     void* entryAddr = reinterpret_cast<void*>(entrySym->getValue());
     bool returnsInt32 = impl->built.returnsInt32;
     bool takesArgs = impl->built.entryTakesArgs;
+
+    // runtime-type-inspection Unit 2: resolve the debug type table's symbols
+    // to this run's addresses, ONCE — the same seam as the entry/vtable
+    // lookups above, identical cold (table from the world) and warm (table
+    // from the sidecar). A symbol that does not resolve is skipped: the row
+    // it served degrades to declared-type decode / no static row, never a
+    // launch failure (spec 2.1.2, 4.1.2).
+    {
+        const auto& table = cajeta::dbg::globalDebugTypeTable();
+        auto& rs = impl->resolvedTypeSymbols;
+        for (const auto& [sym, entry] : table.vtables()) {
+            if (auto a = jit->lookup(sym)) {
+                rs.vtableByAddr[a->getValue()] = entry;
+            } else {
+                cajeta::jit::consumeError(a.takeError());
+            }
+        }
+        std::set<std::string> seenStatics;
+        for (const auto& name : table.names()) {
+            const auto* rec = table.find(name);
+            if (!rec) continue;
+            for (const auto& sf : rec->statics) {
+                if (!seenStatics.insert(sf.symbol).second) continue;
+                if (auto a = jit->lookup(sf.symbol)) {
+                    rs.staticAddrs[sf.symbol] =
+                        reinterpret_cast<void*>(a->getValue());
+                } else {
+                    cajeta::jit::consumeError(a.takeError());
+                }
+            }
+        }
+    }
 
     // Materialize args BEFORE the program thread starts, so a failure here is a
     // clean launch failure rather than a crash inside the debuggee.
@@ -1698,6 +1922,10 @@ static void setEnvVar(const char* name, const char* value) {
 
 int dispatchJitRun(int argc, const char* argv[]) {
     // argv: cajeta jit-run [-g|--debug-info] <sourceRoot> <entryMethod> [args...]
+    // main resolved --diag-format before dispatching here (compiler-jsonl
+    // 5.1.2), so this verb announces its stream and closes it with a terminal
+    // result exactly as a compile does.
+    cajeta::emitStreamRecordOnce();
     JitRunOptions opts;
     std::vector<std::string> positional;
     for (int i = 2; i < argc; ++i) {
@@ -1723,6 +1951,7 @@ int dispatchJitRun(int argc, const char* argv[]) {
     if (positional.size() < 2) {
         std::cerr << "usage: cajeta jit-run [-g] <sourceRoot>"
                      " <package.Class.method> [args...]\n";
+        cajeta::emitJsonResult("error", "usage");
         return 2;
     }
     opts.sourceRoot = positional[0];
@@ -1734,11 +1963,17 @@ int dispatchJitRun(int argc, const char* argv[]) {
     // through, as plain stderr lines (stdout stays the program's).
     opts.onProgress = [](const std::string& phase, const std::string& detail,
                          int current, int total) {
+        // Debug-level narration under the flag, the same plain lines without
+        // it (compiler-jsonl 3.1.5 / 9.2). Real `progress` records come from
+        // the compile path's ProgressPhase markers; this callback is per-source
+        // chatter, so it stays a log line rather than pretending to be one.
+        std::ostringstream m;
         if (phase == "parse" && total > 0)
-            std::cerr << "[jit] parse " << current << "/" << total
-                      << " " << detail << "\n";
+            m << "[jit] parse " << current << "/" << total
+              << " " << detail << "\n";
         else if (total == 0)
-            std::cerr << "[jit] " << phase << "\n";
+            m << "[jit] " << phase << "\n";
+        if (!m.str().empty()) cajeta::logLine("debug", m.str());
     };
 
     // CAJETA_JIT_PHASES=1: dump the build-phase wall-clock breakdown to stderr
@@ -1759,9 +1994,13 @@ int dispatchJitRun(int argc, const char* argv[]) {
                   << "s reparse=" << ph.jitReparseSeconds
                   << "s mat=" << ph.jitMaterializeSeconds
                   << "s) total=" << ph.totalSeconds << "s\n";
+        cajeta::emitJsonResult(code == 0 ? "ok" : "error");
         return code;
     }
-    return runJit(opts);
+    const int code = runJit(opts);
+    // One terminal record, last (compiler-jsonl 9.4).
+    cajeta::emitJsonResult(code == 0 ? "ok" : "error");
+    return code;
 }
 
 } // namespace cajeta::jit

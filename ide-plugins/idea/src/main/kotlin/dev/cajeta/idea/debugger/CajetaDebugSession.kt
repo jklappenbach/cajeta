@@ -34,6 +34,11 @@ class CajetaDebugSession(private val client: DapClient) {
         /** Ask the server to keep its compiled world across sessions
          *  (resident-debug-server 4.2.1). */
         val resident: Boolean = false,
+        /** Resolved dependency `.cja` archives for the launch — the JIT's
+         *  --classpath. Without them a project that declares dependencies
+         *  fails to compile at launch with CAJETA_ERROR_UNRESOLVED_TYPE.
+         *  Empty stays off the wire (absence = no dependencies). */
+        val classpath: List<String> = emptyList(),
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -53,6 +58,15 @@ class CajetaDebugSession(private val client: DapClient) {
     @Volatile var onOutput: ((String, String) -> Unit)? = null
     @Volatile var onClosed: (() -> Unit)? = null
 
+    /**
+     * A breakpoint the server could NOT bind, reported once the program is
+     * compiled: (source file as sent, 1-based line, reason). setBreakpoints is
+     * answered before the compile, so the server says `verified: true` there
+     * and corrects itself here. Without surfacing this the run just ends and
+     * the gutter still shows an armed breakpoint (Julian, 2026-07-31).
+     */
+    @Volatile var onBreakpointUnverified: ((String, Int, String) -> Unit)? = null
+
     fun start() {
         client.onEvent("stopped") { ev -> onStopped?.invoke(ev.opt("body") ?: Json.obj()) }
         client.onEvent("terminated") { onTerminated?.invoke() }
@@ -65,6 +79,17 @@ class CajetaDebugSession(private val client: DapClient) {
             body?.opt("output")?.let {
                 val category = body.opt("category")?.asString() ?: "console"
                 onOutput?.invoke(it.asString(), category)
+            }
+        }
+        client.onEvent("breakpoint") { ev ->
+            val bp = ev.opt("body")?.opt("breakpoint")
+            if (bp != null && (bp.opt("verified") as? Json.Bool)?.value == false) {
+                val file = bp.opt("source")?.opt("path")?.asString()
+                    ?: bp.opt("source")?.opt("name")?.asString() ?: ""
+                val line = bp.opt("line")?.asInt() ?: 0
+                val message = bp.opt("message")?.asString()
+                    ?: "the program cannot stop here"
+                if (line > 0) onBreakpointUnverified?.invoke(file, line, message)
             }
         }
         client.onClosed = { onClosed?.invoke() }
@@ -257,6 +282,11 @@ class CajetaDebugSession(private val client: DapClient) {
         // Blank stays off the wire (absence = unspecified, like env above).
         if (p.cacheDir.isNotBlank()) args["cacheDir"] = Json.of(p.cacheDir)
         if (p.resident) args["resident"] = Json.of(true)
+        if (p.classpath.isNotEmpty()) {
+            val cp = Json.arr()
+            p.classpath.forEach { cp.add(Json.of(it)) }
+            args["classpath"] = cp
+        }
         return args
     }
 

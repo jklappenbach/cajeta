@@ -125,6 +125,24 @@ everything, silently, at the cost of one cold start.
   stale artifacts.
 - 5.2.2 As a developer with two projects open, then each has its own server
   and neither sees the other's modules.
+- 5.2.3 As a developer whose breakpoint could not be bound, when the session
+  starts, then I am told — in the gutter and in the console — rather than
+  watching the program run to completion with no explanation.
+
+### 5.3 Breakpoint verification
+`setBreakpoints` is answered BEFORE the program is compiled, so whether a
+location carries a safepoint is unknowable then; the server answers
+`verified: true` and returns an id. Once `configurationDone` has built the
+session the answer is known, and every breakpoint that matched no safepoint is
+downgraded through a DAP `breakpoint` event carrying that id, `verified: false`,
+its source, and a human-readable reason. The plugin greys the gutter marker and
+prints the reason to the console.
+
+The bind test is the SAME code path that arms (`matchingLocIds`), so what the
+server reports and what it actually armed cannot disagree. `setBreakpoints` is
+a whole-file replace, per DAP: re-sending a source's breakpoints — which the
+plugin does on every add/remove — must not leave stale copies behind, or one
+unbindable location reports itself once per copy.
 
 ## 6 Regression coverage
 

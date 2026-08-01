@@ -11,7 +11,10 @@ class CajetaDapLauncherTest {
     @Test
     fun commandIsBinaryThenDapVerb() {
         val launcher = CajetaDapLauncher("/opt/cajeta/cajeta")
-        assertEquals(listOf("/opt/cajeta/cajeta", "dap"), launcher.command())
+        // The flag rides along so the server's stderr is the structured stream
+        // (compiler-jsonl 5.1.2); the DAP protocol is on stdout and unaffected.
+        assertEquals(listOf("/opt/cajeta/cajeta", "dap", "--diag-format=json"),
+                     launcher.command())
     }
 
     @Test

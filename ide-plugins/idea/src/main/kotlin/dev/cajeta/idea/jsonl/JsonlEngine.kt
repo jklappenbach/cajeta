@@ -22,13 +22,7 @@ object JsonlEngine {
         var lineNumber = 0
         for (line in text.split('\n')) {
             lineNumber++
-            if (line.isEmpty() || line.isBlank()) continue   // blank lines carry nothing
-            val obj = parseObjectOrNull(line)
-            rows += if (obj != null) {
-                JsonlRow.Record(lineNumber, obj, line)
-            } else {
-                JsonlRow.Raw(lineNumber, line)
-            }
+            parseLine(lineNumber, line)?.let { rows += it }
         }
         return JsonlModel(rows, deriveColumns(rows))
     }
@@ -36,11 +30,41 @@ object JsonlEngine {
     /** Parse one physical line into a row (spec §8 windowing reuse): a JSON object
      *  becomes a [JsonlRow.Record], any other non-blank line a [JsonlRow.Raw]
      *  passthrough; a blank line carries nothing and returns null. Same rule as
-     *  [parse], exposed so the windowed viewer renders identically to the console. */
+     *  [parse], exposed so the windowed viewer renders identically to the console.
+     *
+     *  Strict-first (json-viewer spec §2.1.6): a well-formed JSONL stream pays only
+     *  the strict parse. Only on a strict miss does classification try, in order,
+     *  ANSI stripping, JSONC leniency, and a trailing JSON object behind a
+     *  plain-text prefix; anything still unmatched is a raw passthrough. */
     fun parseLine(lineNumber: Int, line: String): JsonlRow? {
         if (line.isEmpty() || line.isBlank()) return null
         val obj = parseObjectOrNull(line)
-        return if (obj != null) JsonlRow.Record(lineNumber, obj, line) else JsonlRow.Raw(lineNumber, line)
+        if (obj != null) return JsonlRow.Record(lineNumber, obj, line)
+        return classifyLenient(lineNumber, line)
+    }
+
+    private val ANSI = Regex("\u001B\\[[0-9;?]*[ -/]*[@-~]")
+
+    private fun classifyLenient(lineNumber: Int, line: String): JsonlRow {
+        val stripped = if ('\u001B' in line) ANSI.replace(line, "") else line
+        if ('{' !in stripped) return JsonlRow.Raw(lineNumber, line)
+        if (stripped !== line) {
+            parseObjectOrNull(stripped)?.let { return JsonlRow.Record(lineNumber, it, line) }
+        }
+        lenientObjectOrNull(stripped)?.let { return JsonlRow.Record(lineNumber, it, line) }
+        // a trailing JSON object after a plain-text prefix (logger prefixes)
+        var idx = stripped.indexOf('{')
+        while (idx >= 0) {
+            if (idx > 0) {
+                val tail = stripped.substring(idx)
+                val fields = parseObjectOrNull(tail) ?: lenientObjectOrNull(tail)
+                if (fields != null) {
+                    return JsonlRow.Record(lineNumber, fields, line, prefix = stripped.substring(0, idx))
+                }
+            }
+            idx = stripped.indexOf('{', idx + 1)
+        }
+        return JsonlRow.Raw(lineNumber, line)
     }
 
     /** Parse a single line as a JSON object; null for non-JSON or non-object. */
@@ -48,6 +72,12 @@ object JsonlEngine {
         (Json.parse(line) as? Json.Obj)?.entries
     } catch (_: Exception) {
         null
+    }
+
+    /** JSONC-lenient object parse (comments, trailing commas); null on any miss. */
+    private fun lenientObjectOrNull(text: String): Map<String, Json>? {
+        val ok = JsonDocModel.parse(text, lenient = true) as? JsonDocResult.Ok ?: return null
+        return (ok.root.toJson() as? Json.Obj)?.entries
     }
 
     /** Deterministic column order for a set of rows (preferred keys first, then
@@ -81,7 +111,10 @@ object JsonlEngine {
         return { row ->
             when (row) {
                 is JsonlRow.Raw -> true
-                is JsonlRow.Record -> {
+                // A failed run's terminal record always survives: it is the
+                // reason the run ended, and filtering it out would reproduce
+                // the silence this format exists to remove.
+                is JsonlRow.Record -> if (row.resultStatus == "error") true else {
                     val r = rank(row.level)
                     r >= 0 && r >= floor
                 }
@@ -95,6 +128,24 @@ object JsonlEngine {
             is JsonlRow.Raw -> true
             is JsonlRow.Record ->
                 (row.fields[key] as? Json.Str)?.value == value
+        }
+    }
+
+    /** Row tint for level-based coloring (json-viewer spec §3.1.3): error/fatal
+     *  and warn/warning records tint like the platform console; everything else —
+     *  including raw passthrough — renders normally. */
+    fun tintOf(row: JsonlRow): RowTint = when (row) {
+        is JsonlRow.Raw -> RowTint.NORMAL
+        is JsonlRow.Record -> when {
+            // A failed run's terminal record carries neither `level` nor
+            // `severity`, so level-only tinting left the single row a
+            // developer most needs to see rendering as ordinary text.
+            row.resultStatus == "error" -> RowTint.ERROR
+            else -> when (row.level) {
+                "error", "fatal" -> RowTint.ERROR
+                "warn", "warning" -> RowTint.WARN
+                else -> RowTint.NORMAL
+            }
         }
     }
 

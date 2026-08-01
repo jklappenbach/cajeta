@@ -251,6 +251,16 @@ static void emitException(cajeta::Exception& e, bool jsonDiag) {
 }
 
 int main(int argc, const char* argv[]) {
+    // Resolve --diag-format BEFORE any verb dispatches (compiler-jsonl 5.1.2).
+    // `jit-run` and `dap` return from this function long before the flag-parse
+    // loop below ever runs, which is precisely why the same flag used to mean
+    // different things depending on the verb: a compile got the full stream,
+    // jit-run got only a CAJETA_DIAG_FORMAT export for the runtime's
+    // uncaught-throw emitter, and nothing else got anything. Resolving here
+    // makes it one flag with one meaning; the loop below still parses it for
+    // the compile path's own flags struct, and agrees by construction.
+    cajeta::resolveDiagFormatFromArgv(argc, argv);
+
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (docs/ArchiveManagement.md);
     // `cajeta info` (and eventually `build`, `test`, ...) routes to
@@ -290,6 +300,9 @@ int main(int argc, const char* argv[]) {
     // `cajeta dap` — Debug Adapter Protocol server over stdio (docs/
     // Debugging.md). The IDE plugin spawns this and drives the debug session.
     if (argc >= 2 && std::string(argv[1]) == "dap") {
+        // Announce the stream before the server says anything, so its
+        // stderr is a well-formed stream and not records with no version.
+        cajeta::emitStreamRecordOnce();
         cajeta::dap::DapServer server;
         return server.runOverStdio();
     }
@@ -703,6 +716,12 @@ int main(int argc, const char* argv[]) {
         }
         cajeta::lintservice::ServerOptions opts;
         opts.sourceRoot = lintSourceRoot;
+        // --classpath is start-time context here, like --source-root: the
+        // server builds a fresh Compiler per request and each one needs the
+        // dependency archives, or every reference into a dependency lints as
+        // an unknown type (Julian, 2026-07-31 — `Logger` red-underlined while
+        // one-shot lint of the same buffer was clean).
+        opts.classpath = compiler.getClasspath();
         opts.jsonDiagnostics = jsonDiag;
         opts.classpath = compiler.getClasspath();
         return cajeta::lintservice::runLintServer(opts);
@@ -830,6 +849,14 @@ int main(int argc, const char* argv[]) {
     }
 
     bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+    // Announce the stream before the compile says anything (compiler-jsonl
+    // 2.1.3). Emitted here rather than at the flag parse because the earlier
+    // verbs return before this point and each needs its own treatment:
+    // `--lint` and `--lint-server` must stay byte-identical to EACH OTHER
+    // (lint-server-spec 1.4.1), so their envelope is emitted by the shared
+    // driver instead.
+    cajeta::emitStreamRecordOnce();
+
     // Collect-and-continue for full compile too: migrated resolution sites report
     // to the engine (recovering) instead of aborting; the codegen loop + emit are
     // gated on the engine having no errors (Compiler::compile). All diagnostics
@@ -840,6 +867,7 @@ int main(int argc, const char* argv[]) {
         compiler.compile(positional[0], positional[1], positional[2]);
     } catch (cajeta::SyntaxErrorException&) {
         cajeta::DiagnosticEngine::setActive(nullptr);
+        cajeta::emitJsonResult("error", "syntax errors");
         return 1;  // syntax diagnostics already emitted during parsing
     } catch (cajeta::Exception& e) {
         engine.report("error", e.getErrorId(), e.getMessage(),
@@ -849,5 +877,12 @@ int main(int argc, const char* argv[]) {
     }
     cajeta::DiagnosticEngine::setActive(nullptr);
     engine.emit(jsonDiag);
-    return engine.hasErrors() ? 1 : 0;
+    // One terminal record, last, on every exit path (compiler-jsonl 9.4): "did
+    // it work" must be answerable from the stream alone, never inferred from an
+    // exit code plus silence. No-op in text mode. Emitted AFTER engine.emit so
+    // it is genuinely the last record, and keyed on the engine's verdict —
+    // collect-and-continue means a failure can arrive without an exception.
+    const bool failed = engine.hasErrors();
+    cajeta::emitJsonResult(failed ? "error" : "ok");
+    return failed ? 1 : 0;
 }

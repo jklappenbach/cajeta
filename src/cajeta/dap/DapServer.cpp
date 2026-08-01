@@ -1,5 +1,6 @@
 #include "cajeta/dap/DapServer.h"
 
+#include <cctype>
 #include <chrono>
 #include <filesystem>
 #include <cstdio>
@@ -12,7 +13,9 @@
 #endif
 
 #include "cajeta/dap/DapProtocol.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/ValueInspector.h"
 
 namespace cajeta::dap {
 
@@ -28,6 +31,13 @@ Json makeResponse(int seq, int requestSeq, const std::string& command,
     r["request_seq"] = requestSeq;
     r["command"] = command;
     r["success"] = success;
+    // DAP's ErrorResponse puts the human-readable reason in a TOP-LEVEL
+    // `message`, and that is where clients look. We only ever set `body`, so a
+    // failed launch reached the IDE as the generic "request failed" while the
+    // real cause — "compile/JIT failed", a syntax error — sat in a body field
+    // nobody reads (Julian, 2026-07-31). Lift a plain-string body up.
+    if (!success && body.isString() && !body.asString().empty())
+        r["message"] = body.asString();
     r["body"] = std::move(body);
     return r;
 }
@@ -91,6 +101,84 @@ Json variableJson(const cajeta::dbg::DbgVar& v, const std::string& renderedValue
     }
     return var;
 }
+
+// variable-inspection Unit 4: a child row (array element / object field). Unlike
+// a frame local it carries no facets — those are a property of a declared
+// binding, not of a slot reached by drilling. `ref` is 0 for a leaf, or a minted
+// aggregate handle for an expandable child.
+static Json childVariableJson(const std::string& name, const std::string& type,
+                              const std::string& value, int ref,
+                              bool isStatic = false) {
+    Json var = Json::object();
+    var["name"] = name;
+    var["value"] = value;
+    var["type"] = type;
+    var["variablesReference"] = ref;
+    if (isStatic) {
+        // runtime-type-inspection 4.1.2: the DAP presentation hint the plugin
+        // styles static rows by (italics etc.). Additive — a client that
+        // ignores presentationHint renders the row like any other.
+        Json hint = Json::object();
+        Json attrs = Json::array();
+        attrs.push_back(Json("static"));
+        hint["attributes"] = std::move(attrs);
+        var["presentationHint"] = std::move(hint);
+    }
+    return var;
+}
+
+// variable-inspection Unit 6: one step of a simple evaluate path — a `.field`
+// or a `[index]`.
+namespace {
+    struct PathStep {
+        bool isField;
+        std::string field;
+        size_t index = 0;
+    };
+
+    bool isIdentStart(char c) {
+        return std::isalpha(static_cast<unsigned char>(c)) || c == '_';
+    }
+    bool isIdentChar(char c) {
+        return std::isalnum(static_cast<unsigned char>(c)) || c == '_';
+    }
+
+    // Parse a bare identifier followed only by `.field` / `[digits]` segments
+    // (spec §7.2). Anything else — an operator, a call, whitespace inside, an
+    // assignment — returns false so the caller reports "unsupported" rather than
+    // guessing. Read-only by construction: it never evaluates, only navigates.
+    bool parseSimplePath(const std::string& in, std::string& root,
+                         std::vector<PathStep>& steps) {
+        size_t a = 0, b = in.size();
+        while (a < b && std::isspace(static_cast<unsigned char>(in[a]))) a++;
+        while (b > a && std::isspace(static_cast<unsigned char>(in[b - 1]))) b--;
+        const std::string s = in.substr(a, b - a);
+        if (s.empty() || !isIdentStart(s[0])) return false;
+        size_t i = 0;
+        while (i < s.size() && isIdentChar(s[i])) i++;
+        root = s.substr(0, i);
+        while (i < s.size()) {
+            if (s[i] == '.') {
+                i++;
+                if (i >= s.size() || !isIdentStart(s[i])) return false;
+                size_t fs = i;
+                while (i < s.size() && isIdentChar(s[i])) i++;
+                steps.push_back(PathStep{true, s.substr(fs, i - fs), 0});
+            } else if (s[i] == '[') {
+                i++;
+                size_t ds = i;
+                while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) i++;
+                if (i == ds || i >= s.size() || s[i] != ']') return false;
+                PathStep step{false, "", static_cast<size_t>(std::stoull(s.substr(ds, i - ds)))};
+                i++;   // consume ']'
+                steps.push_back(step);
+            } else {
+                return false;   // operator / call / stray char → unsupported
+            }
+        }
+        return true;
+    }
+} // namespace
 
 // dap-stepping: chain-length accessor from the C runtime — a pure pointer
 // chase, cheap enough to run per candidate safepoint while a step is pending
@@ -289,6 +377,7 @@ void DapServer::runToStopOrExit(const Emit& emit) {
             haveStop_ = false;
             frameTable_.clear();
             varRefToFrame_.clear();
+            varRefToAggregate_.clear();
             Json body = Json::object();
             body["exitCode"] = exitCode_;
             emit(makeEvent(seq_++, "exited", body));
@@ -317,10 +406,18 @@ bool DapServer::shouldStopAt(const StopEvent& stop,
                                           &err);
 }
 
+int DapServer::mintAggregateRef(const std::string& type, void* addr,
+                                size_t start) {
+    int ref = nextVarRef_++;
+    varRefToAggregate_[ref] = AggregateRef{type, addr, start};
+    return ref;
+}
+
 void DapServer::rebuildFrameTable(
         std::vector<cajeta::dbg::DbgFrameInfo> stoppedFrames) {
     frameTable_.clear();
     varRefToFrame_.clear();
+    varRefToAggregate_.clear();
     nextVarRef_ = 1;
     const int stoppedTid = static_cast<int>(currentStop_.fiberId);
 
@@ -363,6 +460,8 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         Json caps = Json::object();
         caps["supportsConfigurationDoneRequest"] = true;
         caps["supportsSetVariable"] = true;
+        // variable-inspection Unit 6: identifier/path evaluation, incl. hover.
+        caps["supportsEvaluateForHovers"] = true;
         // CP6f-3: advertise an "all throws" exception filter so the client can
         // offer break-on-throw. Single filter for now (no type filtering yet).
         Json filter = Json::object();
@@ -402,6 +501,31 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         launchOpts_.resident = args.at("resident").isBool()
                                    ? args.at("resident").asBool()
                                    : false;
+        // DI profile for @Profile providers (absence = the compiler default).
+        launchOpts_.profile = args.at("profile").asString();
+        // DI profile for @Profile providers (absence = the compiler default).
+        launchOpts_.profile = args.at("profile").asString();
+        // Dependency archives for the launch (the JIT's --classpath). Absence
+        // = no dependencies, as every pre-feature client sends. Accepts an
+        // array of paths, or one comma-separated string like the CLI flag.
+        launchOpts_.classpath.clear();
+        const Json& cp = args.at("classpath");
+        if (cp.isArray()) {
+            for (const auto& e : cp.elements())
+                if (!e.asString().empty())
+                    launchOpts_.classpath.push_back(e.asString());
+        } else if (!cp.asString().empty()) {
+            std::string all = cp.asString();
+            size_t start = 0;
+            while (start <= all.size()) {
+                size_t comma = all.find(',', start);
+                std::string one = all.substr(
+                    start, comma == std::string::npos ? std::string::npos : comma - start);
+                if (!one.empty()) launchOpts_.classpath.push_back(one);
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
+        }
         stopOnEntry_ = args.at("stopOnEntry").asBool();
         // Environment (spec §4). Absence of "env" means UNSPECIFIED, not
         // "empty environment" — every launch sent before this feature existed
@@ -415,6 +539,12 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         inheritSystemEnv_ = args.at("inheritSystemEnv").isBool()
                                 ? args.at("inheritSystemEnv").asBool()
                                 : true;
+        // variable-inspection §3.1.4: elements per page when expanding an array.
+        // A missing or non-positive value keeps the built-in default, so every
+        // pre-feature launch behaves unchanged.
+        int reqPage = args.at("pageSize").asInt();
+        if (reqPage <= 0) reqPage = args.at("page-size").asInt();
+        if (reqPage > 0) pageSize_ = static_cast<size_t>(reqPage);
         emit(makeResponse(seq_++, requestSeq, command, true, Json::object()));
         return true;
     }
@@ -424,6 +554,16 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         std::string path = args.at("source").at("path").asString();
         if (path.empty()) path = args.at("source").at("name").asString();
         std::string base = std::filesystem::path(path).filename().string();
+        // Whole-file REPLACE, per the DAP spec: drop this source's previous
+        // breakpoints (and their ids) before recording the new set. Appending
+        // left stale copies behind on every re-send — which the plugin does
+        // each time a breakpoint is added or removed mid-session.
+        for (size_t i = breakpoints_.size(); i-- > 0; ) {
+            if (breakpoints_[i].file != base) continue;
+            breakpoints_.erase(breakpoints_.begin() + i);
+            if (i < breakpointIds_.size())
+                breakpointIds_.erase(breakpointIds_.begin() + i);
+        }
         Json verified = Json::array();
         const Json& bps = args.at("breakpoints");
         for (size_t i = 0; i < bps.size(); ++i) {
@@ -434,7 +574,13 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             std::string cond = bps[i].at("condition").asString();
             if (!cond.empty()) conditions_[{base, line}] = cond;
             else conditions_.erase({base, line});
+            // Optimistic: nothing is compiled yet, so whether this location
+            // carries a safepoint is unknowable here. The id is what lets
+            // configurationDone come back and say otherwise.
+            const int id = nextBreakpointId_++;
+            breakpointIds_.push_back(id);
             Json b = Json::object();
+            b["id"] = id;
             b["verified"] = true;
             b["line"] = line;
             verified.push_back(std::move(b));
@@ -496,6 +642,27 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 line = detail == "cached" ? "cajeta: using cached build\n"
                                           : "cajeta: preparing JIT\n";
             if (line.empty()) return;
+            // This narration reaches the console over the DAP `output` channel,
+            // not over stderr — which is why it stayed prose while everything
+            // on the stream became records (Julian, 2026-07-31: "some output is
+            // in json, not all is"). Keep the DAP event (that is how a client
+            // is meant to receive progress) but carry a RECORD as its text when
+            // the flag is on, so the one console rendering both channels sees
+            // one format. Text mode is untouched.
+            if (cajeta::jsonProgressEnabled()) {
+                while (!line.empty() && (line.back() == '\n' || line.back() == '\r'))
+                    line.pop_back();
+                Json rec = Json::object();
+                rec["kind"] = std::string("progress");
+                rec["phase"] = phase;
+                rec["state"] = std::string(phase == "jit" ? "finish" : "start");
+                rec["label"] = line;
+                if (total > 0) {
+                    rec["current"] = current;
+                    rec["total"] = total;
+                }
+                line = rec.dump() + "\n";
+            }
             Json body = Json::object();
             body["category"] = "console";
             body["output"] = std::move(line);
@@ -511,8 +678,45 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         if (ok) {
             Json body = Json::object();
             body["category"] = "console";
-            body["output"] = "cajeta: compile finished\n";
+            // Same channel, same rule as the phase narration above: a record
+            // under the flag, the identical line without it.
+            if (cajeta::jsonProgressEnabled()) {
+                Json rec = Json::object();
+                rec["kind"] = std::string("progress");
+                rec["phase"] = std::string("compile");
+                rec["state"] = std::string("finish");
+                rec["label"] = std::string("cajeta: compile finished");
+                body["output"] = rec.dump() + "\n";
+            } else {
+                body["output"] = "cajeta: compile finished\n";
+            }
             emit(makeEvent(seq_++, "output", std::move(body)));
+            // The program is compiled, so the loc table now says which
+            // breakpoints can actually bind. Downgrade the ones that matched
+            // no safepoint: without this the IDE shows them as armed and the
+            // run just ends with no explanation (Julian, 2026-07-31).
+            for (size_t i = 0; i < breakpoints_.size(); ++i) {
+                if (!cajeta::jit::matchingLocIds(breakpoints_[i]).empty())
+                    continue;
+                Json bp = Json::object();
+                if (i < breakpointIds_.size()) bp["id"] = breakpointIds_[i];
+                bp["verified"] = false;
+                bp["line"] = breakpoints_[i].line;
+                // Carry the source too: the client correlates by (file, line)
+                // without having to remember the ids it was handed.
+                Json bpSrc = Json::object();
+                bpSrc["name"] = breakpoints_[i].file;
+                bpSrc["path"] = breakpoints_[i].file;
+                bp["source"] = std::move(bpSrc);
+                bp["message"] =
+                    "no statement compiled at " + breakpoints_[i].file + ":"
+                    + std::to_string(breakpoints_[i].line)
+                    + " — the program cannot stop here";
+                Json ev = Json::object();
+                ev["reason"] = "changed";
+                ev["breakpoint"] = std::move(bp);
+                emit(makeEvent(seq_++, "breakpoint", std::move(ev)));
+            }
             // dap-stepping: give the controller its depth/line seams. Depth is
             // the carrier's own frame-chain length at the safepoint (the
             // carrier is executing the chase, so the chain is stable); line is
@@ -636,14 +840,70 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
     if (command == "variables") {
         int ref = args.at("variablesReference").asInt();
         Json vars = Json::array();
+        // The bridge needs the live DataLayout; it only exists while stopped.
+        const bool haveDl = session_ != nullptr;
+
+        // Case A: a frame's Locals scope. Each local is rendered through the
+        // bridge (String text, array/object summaries — replacing the old
+        // <type@ptr>), and an aggregate local carries a fresh expansion handle.
         auto it = varRefToFrame_.find(ref);
         if (it != varRefToFrame_.end() &&
                 static_cast<size_t>(it->second) < frameTable_.size()) {
             for (const auto& v : frameTable_[it->second].info.locals) {
-                vars.push_back(variableJson(
-                    v, cajeta::dbg::formatValue(v.type, v.addr)));
+                std::string rendered = cajeta::dbg::formatValue(v.type, v.addr);
+                int childRef = 0;
+                // A moved-out binding is consumed: never deep-decode it (the
+                // instance may be gone). Keep the shallow render and no children.
+                const bool consumed =
+                    v.lifetime == cajeta::dbg::LifetimeState::MovedOut;
+                std::string shownType = v.type;
+                if (haveDl && !consumed) {
+                    cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
+                    auto dec = insp.inspect(v.type, v.addr);
+                    rendered = dec.summary;
+                    // The type COLUMN shows the runtime type (runtime-type-
+                    // inspection §2.1.5); expansion handles keep the declared
+                    // name — the bridge re-narrows on every decode, so a
+                    // mutated slot never serves a stale narrowing.
+                    shownType = insp.runtimeType(v.type, v.addr);
+                    if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
+                        childRef = mintAggregateRef(v.type, v.addr);
+                }
+                Json var = variableJson(v, rendered);
+                var["type"] = shownType;
+                var["variablesReference"] = childRef;
+                vars.push_back(std::move(var));
             }
         }
+
+        // Case B: an aggregate-expansion handle — array elements or object
+        // fields, one page at a time. A remaining count becomes a "more" node
+        // that carries a handle resuming at the next offset.
+        auto ait = varRefToAggregate_.find(ref);
+        if (haveDl && ait != varRefToAggregate_.end()) {
+            const AggregateRef ag = ait->second;  // copy: the map may re-hash.
+            cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
+            auto page = insp.children(ag.typeName, ag.addr, ag.start, pageSize_);
+            for (const auto& child : page.children) {
+                auto dec = insp.inspect(child.type, child.addr);
+                int childRef = 0;
+                if (dec.kind == cajeta::dbg::ValueKind::Aggregate)
+                    childRef = mintAggregateRef(child.type, child.addr);
+                vars.push_back(childVariableJson(child.name, child.type,
+                                                 dec.summary, childRef,
+                                                 child.isStatic));
+            }
+            if (page.remaining > 0) {
+                int moreRef = mintAggregateRef(ag.typeName, ag.addr,
+                                               page.nextStart);
+                vars.push_back(childVariableJson(
+                    "[" + std::to_string(page.remaining) + " more…]", "", "",
+                    moreRef));
+            }
+        }
+
         Json body = Json::object();
         body["variables"] = std::move(vars);
         emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
@@ -662,11 +922,35 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
                 static_cast<size_t>(it->second) < frameTable_.size()) {
             for (const auto& v : frameTable_[it->second].info.locals) {
                 if (v.name != name) continue;
+                // A moved-out binding is consumed — read-only (§6.1.3).
+                if (v.lifetime == cajeta::dbg::LifetimeState::MovedOut) {
+                    err = "cannot edit a moved-out value: " + name;
+                    break;
+                }
                 ok = cajeta::dbg::writeValue(v.type, v.addr, value, &err);
                 if (ok) rendered = cajeta::dbg::formatValue(v.type, v.addr);
                 break;
             }
         }
+
+        // variable-inspection Unit 5: a child reached by expansion — an array
+        // element ("[i]") or object field — resolved through the aggregate
+        // handle. Only a primitive leaf is writable; writeValue itself refuses a
+        // non-primitive target, so a String/object/array child is read-only.
+        auto ait = varRefToAggregate_.find(ref);
+        if (!ok && session_ && ait != varRefToAggregate_.end()) {
+            const AggregateRef ag = ait->second;
+            cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
+            auto page = insp.children(ag.typeName, ag.addr, ag.start, pageSize_);
+            for (const auto& child : page.children) {
+                if (child.name != name) continue;
+                ok = cajeta::dbg::writeValue(child.type, child.addr, value, &err);
+                if (ok) rendered = cajeta::dbg::formatValue(child.type, child.addr);
+                break;
+            }
+        }
+
         if (ok) {
             Json body = Json::object();
             body["value"] = rendered;
@@ -675,6 +959,86 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         } else {
             emit(makeResponse(seq_++, requestSeq, command, false, Json(err)));
         }
+        return true;
+    }
+
+    if (command == "evaluate") {
+        // variable-inspection Unit 6 (spec §7): resolve a bare identifier or a
+        // simple `.field`/`[i]` path against the frame's locals, decode it
+        // through the bridge, and return its value plus an expansion reference
+        // when it is an aggregate. Read-only — it navigates, never evaluates a
+        // call or operator. An unparsable expression is "unsupported"; a name
+        // that doesn't resolve is "not available" — both handled, never a crash.
+        const std::string expr = args.at("expression").asString();
+        const int fid = args.has("frameId") ? args.at("frameId").asInt() : 0;
+
+        if (!session_) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json(std::string("not available: no stopped frame"))));
+            return true;
+        }
+        if (fid < 0 || static_cast<size_t>(fid) >= frameTable_.size()) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json(std::string("not available: no such frame"))));
+            return true;
+        }
+
+        std::string root;
+        std::vector<PathStep> steps;
+        if (!parseSimplePath(expr, root, steps)) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json("unsupported expression: " + expr)));
+            return true;
+        }
+
+        std::string curType;
+        void* curAddr = nullptr;
+        bool found = false;
+        for (const auto& v : frameTable_[fid].info.locals) {
+            if (v.name == root) { curType = v.type; curAddr = v.addr; found = true; break; }
+        }
+        if (!found) {
+            emit(makeResponse(seq_++, requestSeq, command, false,
+                              Json("not available: " + root)));
+            return true;
+        }
+
+        cajeta::dbg::ValueInspector insp(session_->dataLayout(),
+                                            &session_->resolvedTypeSymbols());
+        for (const auto& step : steps) {
+            bool stepOk = false;
+            if (step.isField) {
+                auto page = insp.children(curType, curAddr, 0, pageSize_);
+                for (const auto& c : page.children) {
+                    if (c.name == step.field) {
+                        curType = c.type; curAddr = c.addr; stepOk = true; break;
+                    }
+                }
+            } else {
+                // One element window at the requested index.
+                auto page = insp.children(curType, curAddr, step.index, 1);
+                const std::string want = "[" + std::to_string(step.index) + "]";
+                for (const auto& c : page.children) {
+                    if (c.name == want) {
+                        curType = c.type; curAddr = c.addr; stepOk = true; break;
+                    }
+                }
+            }
+            if (!stepOk) {
+                emit(makeResponse(seq_++, requestSeq, command, false,
+                                  Json("not available: " + expr)));
+                return true;
+            }
+        }
+
+        auto dec = insp.inspect(curType, curAddr);
+        int ref = (dec.kind == cajeta::dbg::ValueKind::Aggregate)
+                      ? mintAggregateRef(curType, curAddr) : 0;
+        Json body = Json::object();
+        body["result"] = dec.summary;
+        body["type"] = curType;
+        body["variablesReference"] = ref;
+        emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
         return true;
     }
 
@@ -764,6 +1128,7 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         currentStop_ = {};
         frameTable_.clear();
         varRefToFrame_.clear();
+        varRefToAggregate_.clear();
         nextVarRef_ = 1;
         haveStop_ = false;
         terminated_ = false;

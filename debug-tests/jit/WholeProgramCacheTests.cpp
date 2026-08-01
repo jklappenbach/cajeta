@@ -15,6 +15,7 @@
 
 #include "../TempProgram.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/DebugTypeTable.h"
 #include "cajeta/jit/CajetaJitHost.h"
 
 namespace fs = std::filesystem;
@@ -130,6 +131,108 @@ TEST(WholeProgramCache, ColdVsWarmDebugEquivalence) {
     EXPECT_EQ(cajeta::dbg::globalDbgLocTable().at(stop.locId).line, 5);
     session->controller().resume();
     EXPECT_EQ(session->join(), 42);
+}
+
+namespace {
+
+// Every `program.typeinfo` under the cache dir (a fresh fixture dir holds at
+// most one slot per flag set, so callers assert on the count they expect).
+std::vector<fs::path> typeinfoFiles(const fs::path& cacheDir) {
+    std::vector<fs::path> out;
+    for (auto& entry : fs::recursive_directory_iterator(cacheDir))
+        if (entry.is_regular_file() &&
+            entry.path().filename() == "program.typeinfo")
+            out.push_back(entry.path());
+    return out;
+}
+
+// Record-for-record equality of two type tables (the sidecar round-trip
+// contract, asserted across a real miss→hit pair).
+void expectTypeTablesEqual(const cajeta::dbg::DebugTypeTable& a,
+                           const cajeta::dbg::DebugTypeTable& b) {
+    ASSERT_EQ(a.size(), b.size());
+    EXPECT_EQ(a.stringAbi().valid, b.stringAbi().valid);
+    EXPECT_EQ(a.stringAbi().offLenTag, b.stringAbi().offLenTag);
+    for (const auto& name : a.names()) {
+        const auto* ra = a.find(name);
+        const auto* rb = b.find(name);
+        ASSERT_NE(rb, nullptr) << "missing warm: " << name;
+        EXPECT_EQ(ra->canonical, rb->canonical) << name;
+        EXPECT_EQ(ra->kind, rb->kind) << name;
+        EXPECT_EQ(ra->isValueType, rb->isValueType) << name;
+        EXPECT_EQ(ra->elem.stride, rb->elem.stride) << name;
+        ASSERT_EQ(ra->fields.size(), rb->fields.size()) << name;
+        for (size_t i = 0; i < ra->fields.size(); i++) {
+            EXPECT_EQ(ra->fields[i].name, rb->fields[i].name) << name;
+            EXPECT_EQ(ra->fields[i].offset, rb->fields[i].offset) << name;
+            EXPECT_EQ(ra->fields[i].storage, rb->fields[i].storage) << name;
+        }
+    }
+}
+
+} // namespace
+
+// debug-type-sidecar 4.1.1 + 4.1.2 — a cold -g build writes program.typeinfo
+// beside dbgloc, and the hit loads the global table back IDENTICAL to the one
+// the cold build produced.
+TEST(WholeProgramCache, TypeSidecarWrittenColdLoadedWarm) {
+    CachedProgram p;
+
+    JitRunResult cold;
+    ASSERT_EQ(runJit(p.opts(true), &cold), 42);
+    ASSERT_FALSE(cold.cacheHit);
+    ASSERT_EQ(typeinfoFiles(p.cacheDir).size(), 1u)
+        << "cold -g build did not write the type sidecar";
+    // Snapshot the table the cold build populated from the live type world.
+    cajeta::dbg::DebugTypeTable coldTable = cajeta::dbg::globalDebugTypeTable();
+    ASSERT_FALSE(coldTable.empty());
+    ASSERT_NE(coldTable.find("int32"), nullptr);   // Prog's locals root it
+
+    JitRunResult warm;
+    ASSERT_EQ(runJit(p.opts(true), &warm), 42);
+    ASSERT_TRUE(warm.cacheHit);
+    expectTypeTablesEqual(coldTable, cajeta::dbg::globalDebugTypeTable());
+}
+
+// debug-type-sidecar 4.1.3 — a slot without the type sidecar (pre-feature) is
+// a MISS under -g and heals in exactly one recompile; with -g off the sidecar
+// is neither written nor required.
+TEST(WholeProgramCache, MissingTypeSidecarMissesUnderDebugOnly) {
+    CachedProgram p;
+
+    // Populate the -g slot, then delete its sidecar (a pre-feature slot).
+    JitRunResult r1;
+    ASSERT_EQ(runJit(p.opts(true), &r1), 42);
+    ASSERT_FALSE(r1.cacheHit);
+    auto files = typeinfoFiles(p.cacheDir);
+    ASSERT_EQ(files.size(), 1u);
+    fs::remove(files[0]);
+
+    // -g relaunch: the slot MISSES (one recompile) and regains the sidecar…
+    JitRunResult r2;
+    ASSERT_EQ(runJit(p.opts(true), &r2), 42);
+    EXPECT_FALSE(r2.cacheHit) << "pre-feature slot must miss under -g";
+    ASSERT_EQ(typeinfoFiles(p.cacheDir).size(), 1u) << "slot did not heal";
+
+    // …and the launch after that is warm again.
+    JitRunResult r3;
+    ASSERT_EQ(runJit(p.opts(true), &r3), 42);
+    EXPECT_TRUE(r3.cacheHit);
+}
+
+// -g off: no type sidecar written, none required, hit unaffected.
+TEST(WholeProgramCache, NoTypeSidecarWithoutDebug) {
+    CachedProgram p;
+
+    JitRunResult r1;
+    ASSERT_EQ(runJit(p.opts(false), &r1), 42);
+    ASSERT_FALSE(r1.cacheHit);
+    EXPECT_TRUE(typeinfoFiles(p.cacheDir).empty())
+        << "non-debug build wrote a type sidecar";
+
+    JitRunResult r2;
+    ASSERT_EQ(runJit(p.opts(false), &r2), 42);
+    EXPECT_TRUE(r2.cacheHit);
 }
 
 // 4.1.3 — an edit changes the key: full compile, then the NEW content is a

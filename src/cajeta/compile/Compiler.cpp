@@ -1167,8 +1167,11 @@ namespace cajeta {
                     prescanSource(input);
                 }
             } catch (const std::exception& e) {
-                std::cerr << "cajeta: --classpath read failed for `"
-                          << cpPath << "`: " << e.what() << std::endl;
+                // compiler-jsonl 3.1.5: a levelled record under the flag, the
+                // identical wording without it. A dependency that failed to
+                // load is the kind of reason a run needs to be able to state.
+                logLine("error", "cajeta: --classpath read failed for `"
+                                 + cpPath + "`: " + e.what() + "\n");
                 throw;
             }
         }
@@ -1213,6 +1216,20 @@ namespace cajeta {
                 // `Type.method(:NN)`. entry.name is already the archive-relative
                 // path (`<pkg>/<Class>.cajeta`) — exactly the remapped form.
                 extMod->setCurrentSourceFile(entryName);
+                // ...and its IDENTITY, not just its declaring file. The JIT's
+                // debug loc-id ranges (assignDbgLocRanges) key on
+                // remappedSourcePath(), which reads sourcePath — left EMPTY by
+                // the synthetic ctor. Every dependency module therefore hashed
+                // to the same registry slot, took the same dbgLocBase, and
+                // restarted at dbgLocUsed 0, overwriting the previous one's
+                // entries in the global loc table. Last writer won: exactly one
+                // dependency class resolved, every other one's safepoints
+                // reported ITS file and line, and a breakpoint in any of them
+                // never matched (Julian, 2026-07-31: `Logger.cajeta` never
+                // fired; every dependency frame claimed `LogFmt.cajeta`).
+                // entryName is already machine-independent, so this stays
+                // reproducible across build roots.
+                extMod->setSourcePath(entryName);
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();
@@ -1472,7 +1489,15 @@ namespace cajeta {
         // would then CLOBBER the good whole-root shard with one missing every
         // dependency reference. Armed after capture is on so the dependency
         // declarations are emitted as xref targets too.
-        ingestClasspath();
+        //
+        // Gated by skipContextRegistration for the same reason the sibling
+        // sweep below is: on a warm-hit lint (lint-server §4) the restored
+        // context baseline was captured AFTER this ingest, so it already holds
+        // every dependency declaration. Re-ingesting would register each one a
+        // second time and the dependency's own @Inject sites would then see two
+        // candidate providers (CAJETA_ERROR_DI_AMBIGUOUS on the second lint of
+        // an unchanged buffer).
+        if (!skipContextRegistration) ingestClasspath();
 
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 

@@ -149,6 +149,13 @@ namespace cajeta::dap {
         // never ends cleanly.
         cajeta::util::EnvironmentScope envScope_;
         std::vector<cajeta::jit::Breakpoint> breakpoints_;
+        // DAP ids for breakpoints_, parallel by index. setBreakpoints answers
+        // before the program is compiled, so it cannot know yet whether a
+        // location will carry a safepoint; it answers `verified: true` and
+        // hands back an id, and configurationDone downgrades the ones that
+        // matched nothing through a `breakpoint` event naming that id.
+        std::vector<int> breakpointIds_;
+        int nextBreakpointId_ = 1;
         // CP6f: per-breakpoint condition keyed by (file basename, line). Empty
         // or absent entry means an unconditional breakpoint.
         std::map<std::pair<std::string, int>, std::string> conditions_;
@@ -165,9 +172,27 @@ namespace cajeta::dap {
         // CP6f-2b-ii: opaque variablesReference handle table. DAP reserves ref 0
         // for "no children", so handles count up from 1 — no `frameId+1` trick.
         // Each maps to a frameTable_ index (that frame's Locals scope).
-        // Object-expansion handles will join this same table in CP7.
         std::map<int, int> varRefToFrame_;
+        // variable-inspection Unit 4: aggregate-expansion handles share the same
+        // ref space as varRefToFrame_ (nextVarRef_ hands out both). Each names an
+        // aggregate to drill into — its canonical type, the slot address, and the
+        // page offset to resume element enumeration from (0 for the first page; a
+        // "more" node stores the next offset). Minted on `variables`, cleared on
+        // resume/terminate alongside frameTable_.
+        struct AggregateRef {
+            std::string typeName;
+            void* addr = nullptr;
+            size_t start = 0;
+        };
+        std::map<int, AggregateRef> varRefToAggregate_;
         int nextVarRef_ = 1;
+        // Elements returned per page when expanding an array (launch `pageSize`;
+        // a missing or non-positive value falls back to this default).
+        size_t pageSize_ = 100;
+
+        // Mint a fresh variablesReference for an aggregate at (type, addr, start).
+        int mintAggregateRef(const std::string& type, void* addr,
+                             size_t start = 0);
         bool haveStop_ = false;
         bool terminated_ = false;
         int exitCode_ = 0;

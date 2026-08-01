@@ -12,7 +12,9 @@ using cajeta_test::CajetaJit;
 
 namespace {
 // int8[] literal initializer for a field value, e.g. lit("a,b"). Bracket form —
-// the array-`{…}` initializer was retired by collection-literals 5.
+// the array-`{…}` initializer was retired by collection-literals 5. This helper
+// generated braces programmatically, so that migration's tree-wide snippet
+// rewrite could not see it.
 std::string lit(const std::string& s) {
     std::string r = "[";
     for (size_t i = 0; i < s.size(); ++i) {

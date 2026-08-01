@@ -20,11 +20,23 @@ class CajetaBreakpointHandler(
     private val onFileChanged: (file: String) -> Unit,
 ) : XBreakpointHandler<XLineBreakpoint<XBreakpointProperties<*>>>(CajetaLineBreakpointType::class.java) {
 
+    // Live breakpoints by (file BASENAME, 1-based line) — the key the server
+    // matches on, so a `verified: false` report can be mapped back to the
+    // gutter marker that has to change. Basename, not full path: the server
+    // arms by basename and echoes that back.
+    private val tracked =
+        java.util.concurrent.ConcurrentHashMap<
+            Pair<String, Int>, XLineBreakpoint<XBreakpointProperties<*>>>()
+
+    private fun key(file: String, line: Int) =
+        java.io.File(file).name to line
+
     override fun registerBreakpoint(breakpoint: XLineBreakpoint<XBreakpointProperties<*>>) {
         val position = breakpoint.sourcePosition ?: return
         val file = position.file.path
         val condition = breakpoint.conditionExpression?.expression ?: ""
         registry.add(file, position.line + 1, condition) // DAP lines are 1-based
+        tracked[key(file, position.line + 1)] = breakpoint
         onFileChanged(file)
     }
 
@@ -35,6 +47,11 @@ class CajetaBreakpointHandler(
         val position = breakpoint.sourcePosition ?: return
         val file = position.file.path
         registry.remove(file, position.line + 1)
+        tracked.remove(key(file, position.line + 1))
         onFileChanged(file)
     }
+
+    /** The live breakpoint at [file] (path or basename) and 1-based [line]. */
+    fun find(file: String, line: Int): XLineBreakpoint<XBreakpointProperties<*>>? =
+        tracked[key(file, line)]
 }

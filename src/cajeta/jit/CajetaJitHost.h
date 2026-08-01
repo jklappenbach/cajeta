@@ -11,6 +11,7 @@
 //
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -19,6 +20,8 @@
 #include "cajeta/dbg/DebugController.h"
 
 namespace llvm { class DataLayout; }
+
+#include "cajeta/dbg/DebugTypeTable.h"
 
 namespace cajeta::jit {
 
@@ -40,6 +43,18 @@ namespace cajeta::jit {
         // process. Set by the DAP server when the launch request asks;
         // one-shot paths (jit-run) leave it off and keep full isolation.
         bool resident = false;
+        // Dependency archives (`.cja`) whose ClassSource entries are ingested
+        // before user sources are parsed — the JIT equivalent of the CLI's
+        // --classpath. Without these a debug launch of a project that declares
+        // dependencies fails to resolve their types ("unresolved type
+        // 'Logger'"), because the JIT builds its modules by hand and never ran
+        // ingestClasspath. Empty = no dependencies, today's behavior.
+        std::vector<std::string> classpath;
+        // DI profile for @Profile-selected providers. Empty = the AOT default
+        // ("prod"), so a debug launch resolves the same graph `cajeta build`
+        // does. The JIT previously hardcoded "debug", which no provider
+        // declares — every project with DI components failed to launch.
+        std::string profile;
         // Whole-program JIT cache root (fast-debug-launch 4.2.1). Non-empty
         // enables the cache: a slot keyed on compiler version+flags+entry+
         // source digests holds the MERGED program bitcode + sidecars, and a
@@ -130,6 +145,15 @@ namespace cajeta::jit {
         int line = 0;
     };
 
+    // Every emitted safepoint whose file BASENAME + line match `bp` — the
+    // locations startDebugSession would arm for it. Empty means the breakpoint
+    // cannot bind: no statement was compiled at that line of that file, so the
+    // program can never stop there. Only meaningful once a session has been
+    // built (the loc table is populated by the compile). Exposed so the DAP
+    // server can answer "why didn't it stop?" instead of leaving the IDE with
+    // a breakpoint that looks armed. Reads the global loc table.
+    std::vector<int32_t> matchingLocIds(const Breakpoint& bp);
+
     // A running debug session: the program is compiled with --debug-info,
     // breakpoints are armed, and the entry runs on a BACKGROUND thread wired to
     // an in-process DebugController. The caller (the DAP server, or a test)
@@ -152,6 +176,12 @@ namespace cajeta::jit {
         // ValueInspector decodes stopped-state values against this
         // (debugger-variable-inspection §1.5). Valid for the session's life.
         const llvm::DataLayout& dataLayout() const;
+
+        // Per-session symbol resolution for the debug type table
+        // (runtime-type-inspection Unit 2): every vtable/static symbol the
+        // table carries, resolved to this run's addresses once at launch.
+        // Empty when the table is (e.g. -g off). Valid for the session's life.
+        const cajeta::dbg::ResolvedTypeSymbols& resolvedTypeSymbols() const;
 
         // True once the program thread has finished.
         bool isFinished() const;

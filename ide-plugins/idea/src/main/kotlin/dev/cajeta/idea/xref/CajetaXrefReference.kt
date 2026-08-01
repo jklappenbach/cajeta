@@ -113,19 +113,35 @@ class CajetaXrefReference(element: CajetaIdentifier) :
             val col = intOf(decl, "col") ?: return null
             val base = rel.substringAfterLast('/')
             val scope = GlobalSearchScope.allScope(project)
-            val vFile = FilenameIndex.getVirtualFilesByName(base, scope)
-                .firstOrNull { it.path.endsWith("/$rel") || it.path == rel }
-                ?: return null
+            val expected = strOf(decl, "fqn")?.substringAfterLast('.')
+            // EVERY file whose path ends in the exported relative path, not just
+            // the first: one relative path routinely exists in several places —
+            // a stdlib mount per compiler build, the same archive extracted for
+            // two sub-projects, a checkout beside its own extracted sources.
+            // Taking the first and giving up when it failed validation silently
+            // lost the resolution that a later candidate would have satisfied
+            // (found by probe, 2026-07-30; CajetaMountedLibraryTest covers it).
+            return FilenameIndex.getVirtualFilesByName(base, scope)
+                .filter { it.path.endsWith("/$rel") || it.path == rel }
+                .firstNotNullOfOrNull { vFile -> validated(project, vFile, line, col, expected) }
+        }
+
+        /** The named element at (line, col) in [vFile], or null if what sits
+         *  there no longer matches [expected] — a moved declaration must not
+         *  produce a confident wrong jump (9.2.1). */
+        private fun validated(
+            project: com.intellij.openapi.project.Project,
+            vFile: com.intellij.openapi.vfs.VirtualFile,
+            line: Int, col: Int, expected: String?,
+        ): PsiElement? {
             val psi = PsiManager.getInstance(project).findFile(vFile) ?: return null
-            val doc = PsiDocumentManager.getInstance(project).getDocument(psi)
-                ?: return null
+            val doc = PsiDocumentManager.getInstance(project).getDocument(psi) ?: return null
             if (line > doc.lineCount) return null
             val offset = doc.getLineStartOffset(line - 1) + col
             if (offset > doc.textLength) return null
             val at = psi.findElementAt(offset) ?: return null
             val named = PsiTreeUtil.getParentOfType(
                 at, CajetaNamedElement::class.java, false) ?: return null
-            val expected = strOf(decl, "fqn")?.substringAfterLast('.')
             if (expected != null && named.name != expected) return null
             return named
         }
