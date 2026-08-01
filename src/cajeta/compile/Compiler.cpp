@@ -726,14 +726,6 @@ namespace cajeta {
                 || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
             return true;
         }
-        // cajeta.nucleo.nn + cajeta.nucleo.optim (the neural-net core) import
-        // cajeta.math too — same lazy shape (nucleo-nn-optim plan).
-        if (pkg == "cajeta.nucleo.nn"
-                || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
-                || pkg == "cajeta.nucleo.optim"
-                || pkg.rfind("cajeta.nucleo.optim.", 0) == 0) {
-            return true;
-        }
         // cajeta.nucleo.sparse (CsrMatrix, cajeta-ml-v2 U7) imports
         // cajeta.math (Tensor) — same lazy shape.
         if (pkg == "cajeta.nucleo.sparse"

@@ -75,7 +75,6 @@ public final class Tour {
         demos.add(heap ControlFlowDemo());
         demos.add(heap MathDemo());
         demos.add(heap AutogradDemo());
-        demos.add(heap TrainingLoopDemo());
         demos.add(heap JsonTiersDemo());
         demos.add(heap RenderGraphDemo());
         demos.add(heap FrameDemo());
