@@ -188,6 +188,17 @@
     </extensions>
 
     <actions>
+        <!-- Julian, 2026-08-02: hierarchy from the right-click menu, beside
+             Find Usages. These REFERENCE the platform's own actions rather
+             than defining new ones, so they keep their keymap bindings
+             (Ctrl+H, Alt+F7) and their enable/disable logic. -->
+        <reference ref="TypeHierarchy">
+            <add-to-group group-id="EditorPopupMenu" anchor="after"
+                relative-to-action="FindUsages"/>
+        </reference>
+        <reference ref="FindUsages">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+        </reference>
         <group id="dev.cajeta.idea.toolsGroup" text="Cajeta" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action

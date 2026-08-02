@@ -14,6 +14,9 @@ import com.intellij.psi.util.PsiTreeUtil
 import dev.cajeta.idea.psi.CajetaTypeDeclaration
 import dev.cajeta.idea.usages.CajetaUsagesSearch
 import dev.cajeta.idea.xref.XrefQuery
+import com.intellij.openapi.diagnostic.Logger
+import com.intellij.openapi.roots.ui.util.CompositeAppearance
+import com.intellij.ui.SimpleTextAttributes
 import java.util.Comparator
 import javax.swing.JTree
 
@@ -113,16 +116,53 @@ class CajetaTypeHierarchyStructure(
         val names =
             if (upward) CajetaInheritance.parentsOf(edges).map { it.parent }
             else CajetaInheritance.childrenOf(edges).map { it.child }
-        return names.mapNotNull { name ->
+        val resolved = names.mapNotNull { name ->
             CajetaHierarchyLookup.declarationOf(myProject, name)?.let {
                 CajetaTypeNodeDescriptor(myProject, descriptor, it)
             }
-        }.toTypedArray()
+        }
+        // An empty tree has three different causes — no edges indexed, edges
+        // whose types will not resolve, or a stale shard set — and they are
+        // indistinguishable on screen.
+        LOG.debug("hierarchy " + (if (upward) "up" else "down") + " of " + fqn +
+                  ": " + edges.size + " edge(s), " + names.size + " name(s), " +
+                  resolved.size + " resolved")
+        return resolved.toTypedArray()
     }
 }
 
+/**
+ * A node in the tree. The text is built here explicitly: the base descriptor
+ * renders from a language's own presentation support, which Cajeta has none
+ * of, so a node left to the default draws NOTHING — an empty tree that looks
+ * like a failed search (Julian, live 2026-08-02).
+ */
 class CajetaTypeNodeDescriptor(
     project: Project,
     parent: HierarchyNodeDescriptor?,
     element: PsiElement,
-) : HierarchyNodeDescriptor(project, parent, element, parent == null)
+    private val base: Boolean = parent == null,
+) : HierarchyNodeDescriptor(project, parent, element, base) {
+
+    override fun update(): Boolean {
+        val changed = super.update()
+        val element = psiElement
+        val fqn = element?.let { CajetaUsagesSearch.fqnOf(it) } ?: ""
+        val simple = fqn.substringAfterLast('.').ifBlank { "?" }
+        val pkg = fqn.substringBeforeLast('.', "")
+        val text = CompositeAppearance()
+        // The searched-for type reads bold, the way Java's browser marks it.
+        val main = if (base) SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES
+                   else SimpleTextAttributes.REGULAR_ATTRIBUTES
+        text.ending.addText(simple, main.toTextAttributes())
+        if (pkg.isNotBlank() && pkg != fqn) {
+            text.ending.addText("  ($pkg)",
+                SimpleTextAttributes.GRAYED_ATTRIBUTES.toTextAttributes())
+        }
+        myHighlightedText = text
+        myName = simple
+        return changed || true
+    }
+}
+
+private val LOG = Logger.getInstance(CajetaTypeHierarchyStructure::class.java)
