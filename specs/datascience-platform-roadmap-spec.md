@@ -135,25 +135,6 @@ Distances are pure functions over tensors with no estimator semantics.
 > Update `ml-unsupervised` §10.1 and `ml-recsys` §10.2 when their plans are
 > written.
 
-### 5.8 `dev.cajeta.ml.dist` — the one package name still unsettled
-
-The mechanical derivation gives `cajeta-ml-dist` → `dev.cajeta.ml.dist`. Two
-things to check before it is committed:
-
-1. **Nesting across archives.** `dev.cajeta.ml` is a separate archive. Whether
-   cajeta permits `dev.cajeta.ml.dist` to ship in a *different* archive — a
-   split package — is a toolchain question, not a style one. Java modules
-   forbid it; classpath Java merely discourages it. Verify before adopting.
-2. **Collision with distributed neural training.** `research-platform-roadmap`
-   §6.1's `distributed-training-spec` is the natural other claimant of "ml.dist",
-   and the two are deliberately separate libraries (`cajeta-ml-dist` §1.5.2).
-   This spec exists and that one does not, so it takes the name — but the
-   neural one must then be named for what it does (parallelism strategy) rather
-   than for being distributed, and **must not** land under `dev.cajeta.ml.*`.
-
-Resolve both when `cajeta-ml-dist`'s plan opens. If nesting is disallowed, the
-fallback is `dev.cajeta.mldist`, which is uglier but unambiguous.
-
 ### 5.2 `cajeta-docs` absorbs text processing — revised 2026-08-01
 
 An earlier draft split text handling into a separate `dev.cajeta.text`. **That
@@ -302,9 +283,28 @@ broken on the first resharding.
   Kafka's codec set. The compression half is done.
 - Sequence it **last**. Nothing else depends on it.
 
-### 5.8 *(resolved — see §5.5.)* `cajeta-dqe` avoids consensus entirely.
+### 5.8 `dev.cajeta.ml.dist` — the one package name still unsettled
 
-### 5.8 Codec placement — stdlib vs `dev.cajeta.codec` (corrected 2026-08-01)
+The mechanical derivation gives `cajeta-ml-dist` → `dev.cajeta.ml.dist`. Two
+things to check before it is committed:
+
+1. **Nesting across archives.** `dev.cajeta.ml` is a separate archive. Whether
+   cajeta permits `dev.cajeta.ml.dist` to ship in a *different* archive — a
+   split package — is a toolchain question, not a style one. Java modules
+   forbid it; classpath Java merely discourages it. Verify before adopting.
+2. **Collision with distributed neural training.** `research-platform-roadmap`
+   §6.1's `distributed-training-spec` is the natural other claimant of "ml.dist",
+   and the two are deliberately separate libraries (`cajeta-ml-dist` §1.5.2).
+   This spec exists and that one does not, so it takes the name — but the
+   neural one must then be named for what it does (parallelism strategy) rather
+   than for being distributed, and **must not** land under `dev.cajeta.ml.*`.
+
+Resolve both when `cajeta-ml-dist`'s plan opens. If nesting is disallowed, the
+fallback is `dev.cajeta.mldist`, which is uglier but unambiguous.
+
+### 5.9 *(resolved — see §5.5.)* `cajeta-dqe` avoids consensus entirely.
+
+### 5.10 Codec placement — stdlib vs `dev.cajeta.codec` (corrected 2026-08-01)
 
 An earlier draft put the XML parser in stdlib `cajeta.codec`. **Corrected: it
 goes to `dev.cajeta.codec`.**
@@ -332,7 +332,7 @@ row-group statistics are exactly what §7.3's column pruning and §7.4's partiti
 skipping require. Arrow stays the *in-memory* interchange; Parquet is the
 *on-disk* format.
 
-### 5.9 Fragmentation is real but consistent with the project
+### 5.11 Fragmentation is real but consistent with the project
 
 Ten new libraries is a lot. Two mitigations: the ecosystem already works this way
 (cajeta-ml, -xgboost, -gossip, -cluster, -cloud-objectstore, -primavera, -olla,
