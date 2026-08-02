@@ -20,8 +20,10 @@ class CajetaProfileCandidatesTest {
         assertTrue(r.queried)
         assertEquals(listOf("dev", "prod", "test"), r.profiles)
         assertNull(r.emptyMessage())
-        // The AOT default leads, and is not repeated when also declared.
-        assertEquals(listOf("prod", "dev", "test"), r.offered())
+        // What the project declares, in order — no synthetic entry ahead of
+        // them, and the first is what an unconfigured field selects.
+        assertEquals(listOf("dev", "prod", "test"), r.offered())
+        assertEquals("dev", r.defaultSelection())
     }
 
     @Test
@@ -30,8 +32,10 @@ class CajetaProfileCandidatesTest {
         assertTrue(r.queried)
         assertTrue(r.profiles.isEmpty())
         assertEquals("This project declares no @Profile annotations.", r.emptyMessage())
-        // ...and the default is still offered, so the field is never empty.
+        // ...and the AOT default is the sole fallback, so the field is never
+        // empty and never offers a profile that selects nothing.
         assertEquals(listOf("prod"), r.offered())
+        assertEquals("prod", r.defaultSelection())
     }
 
     @Test
@@ -56,6 +60,13 @@ class CajetaProfileCandidatesTest {
     }
 
     @Test
+    fun aFailedQueryFallsBackToTheAotDefault() {
+        val r = CajetaProfileCandidates.parse("boom")
+        assertEquals("prod", r.defaultSelection())
+        assertEquals(listOf("prod"), r.offered())
+    }
+
+    @Test
     fun blanksAndDuplicatesAreCleanedUp() {
         val r = CajetaProfileCandidates.parse("""{"profiles":["b","","a","b"]}""")
         assertEquals(listOf("a", "b"), r.profiles)
@@ -66,5 +77,43 @@ class CajetaProfileCandidatesTest {
         assertEquals(
             listOf("/usr/bin/cajeta", "--lint", "/proj/src", "--list-profiles"),
             CajetaProfileCandidates.argvFor("/usr/bin/cajeta", "/proj/src"))
+    }
+}
+
+/**
+ * The per-configuration memory's own rules, exercised through a plain map so
+ * the precedence is pinned without a live project.
+ */
+class CajetaProfileMemoryRulesTest {
+
+    /** The precedence the selector applies: remembered, then what is already
+     *  in the box, then the first discovered profile. */
+    private fun resolve(remembered: String?, typed: String, discovered: List<String>): String {
+        val result = CajetaProfileCandidates.Result(discovered, queried = true)
+        return remembered?.ifBlank { null }
+            ?: typed.ifBlank { null }
+            ?: result.defaultSelection()
+    }
+
+    @Test
+    fun aRememberedChoiceWins() {
+        assertEquals("test", resolve("test", "dev", listOf("dev", "prod", "test")))
+    }
+
+    @Test
+    fun withoutMemoryTheFirstDiscoveredProfileIsUsed() {
+        assertEquals("dev", resolve(null, "", listOf("dev", "prod", "test")))
+    }
+
+    @Test
+    fun discoveryNeverOverridesWhatIsAlreadyInTheBox() {
+        // The developer typed something the scan does not know; it stays.
+        assertEquals("staging", resolve(null, "staging", listOf("dev", "prod")))
+    }
+
+    @Test
+    fun withNothingAnywhereTheAotDefaultApplies() {
+        assertEquals("prod", resolve(null, "", emptyList()))
+        assertEquals("prod", resolve("", "", emptyList()))
     }
 }

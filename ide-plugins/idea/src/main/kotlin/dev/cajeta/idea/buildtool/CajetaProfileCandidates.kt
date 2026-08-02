@@ -42,10 +42,22 @@ object CajetaProfileCandidates {
             else -> "This project declares no @Profile annotations."
         }
 
-        /** What the dropdown shows: the default first, then the declared ones,
-         *  never duplicated. */
+        /**
+         * What the dropdown shows: the profiles this project actually
+         * declares. `prod` appears only when it was declared, or as the sole
+         * fallback when nothing was discovered — offering an undeclared
+         * profile alongside real ones invites picking a name that selects no
+         * providers at all.
+         */
         fun offered(): List<String> =
-            (listOf(DEFAULT_PROFILE) + profiles).distinct()
+            if (profiles.isNotEmpty()) profiles else listOf(DEFAULT_PROFILE)
+
+        /**
+         * What to select when this configuration has no remembered choice: the
+         * FIRST discovered profile (Julian, 2026-08-02), falling back to the
+         * AOT default when discovery found nothing.
+         */
+        fun defaultSelection(): String = profiles.firstOrNull() ?: DEFAULT_PROFILE
     }
 
     /** Parse `{"profiles":[...]}`. Any other shape is a failed query, not an

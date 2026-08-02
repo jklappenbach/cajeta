@@ -157,11 +157,19 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
             isEditable = true
             toolTipText = "Active --profile for runs"
             addItem(CajetaProfileCandidates.DEFAULT_PROFILE)
-            val current = CajetaSettings.instance.defaultProfile
+            // What this configuration was last set to, else the global default
+            // until discovery supplies a better one.
+            val remembered = CajetaProfileMemory.getInstance(project)
+                .profileFor(CajetaProfileMemory.currentConfigurationName(project))
+            val current = remembered ?: CajetaSettings.instance.defaultProfile
             editor?.item = current
             selectedItem = current
             addActionListener {
                 val text = (editor?.item ?: selectedItem)?.toString()?.trim() ?: ""
+                // Both: the per-configuration memory is what restores this
+                // selector, the global default is what launches still read.
+                CajetaProfileMemory.getInstance(project).remember(
+                    CajetaProfileMemory.currentConfigurationName(project), text)
                 CajetaSettings.instance.defaultProfile = text
             }
         }
@@ -499,11 +507,22 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
                 com.intellij.openapi.application.ApplicationManager.getApplication()
                     .invokeLater {
                         val typed = (selector.editor?.item ?: selector.selectedItem)
-                            ?.toString() ?: ""
+                            ?.toString()?.trim() ?: ""
                         selector.removeAllItems()
                         for (p in result.offered()) selector.addItem(p)
-                        selector.editor?.item = typed
-                        selector.selectedItem = typed
+                        // Precedence: what this configuration remembers, then
+                        // whatever was already in the box, then the FIRST
+                        // discovered profile. Discovery only fills a vacuum —
+                        // it never overrides a choice already made.
+                        val config = CajetaProfileMemory.currentConfigurationName(project)
+                        val chosen = CajetaProfileMemory.getInstance(project)
+                            .profileFor(config)
+                            ?: typed.ifBlank { null }
+                            ?: result.defaultSelection()
+                        selector.editor?.item = chosen
+                        selector.selectedItem = chosen
+                        if (CajetaSettings.instance.defaultProfile.isBlank())
+                            CajetaSettings.instance.defaultProfile = chosen
                         selector.toolTipText =
                             result.emptyMessage() ?: "Active --profile for runs"
                     }
