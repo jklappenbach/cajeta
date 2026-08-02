@@ -148,10 +148,24 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
      *  edits the defaults double-click runs use, so changing them retargets
      *  subsequent runs. */
     private fun buildToolbarComponent(): JComponent {
-        val profileSelector = javax.swing.JTextField(CajetaSettings.instance.defaultProfile, 8).apply {
+        // Editable combo, filled from the compiler's own answer (--list-profiles).
+        // Editable is the whole safety of it: discovery suggests, and a profile
+        // the query never saw is still typeable. Until the answer arrives — or
+        // if it never does — this behaves exactly like the text field it
+        // replaced.
+        val profileSelector = com.intellij.openapi.ui.ComboBox<String>().apply {
+            isEditable = true
             toolTipText = "Active --profile for runs"
-            addActionListener { CajetaSettings.instance.defaultProfile = text.trim() }
+            addItem(CajetaProfileCandidates.DEFAULT_PROFILE)
+            val current = CajetaSettings.instance.defaultProfile
+            editor?.item = current
+            selectedItem = current
+            addActionListener {
+                val text = (editor?.item ?: selectedItem)?.toString()?.trim() ?: ""
+                CajetaSettings.instance.defaultProfile = text
+            }
         }
+        loadProfilesInto(profileSelector)
         val flavorSelector = javax.swing.JTextField(CajetaSettings.instance.defaultFlavor, 8).apply {
             toolTipText = "Active flavor (--release/--debug/--fast or a name)"
             addActionListener { CajetaSettings.instance.defaultFlavor = text.trim() }
@@ -457,5 +471,53 @@ class CajetaBuildToolPanel(private val project: Project) : SimpleToolWindowPanel
         private const val GROUP_FAVORITES = "Favorites"
         /** Coalesce a burst of manifest edits into one reload (spec §13.1). */
         private const val DEBOUNCE_MS = 400
+    }
+
+    /**
+     * Fill the profile selector from `cajeta --lint <root> --list-profiles`,
+     * off the EDT. Every failure — no compiler configured, no manifest yet
+     * discovered, a non-zero exit, unreadable output — leaves the selector as
+     * the editable field it already is, so nothing here can stop a build being
+     * launched. What the developer has typed is never replaced.
+     */
+    private fun loadProfilesInto(selector: com.intellij.openapi.ui.ComboBox<String>) {
+        val compiler = CajetaSettings.instance.buildToolPath
+        if (compiler.isBlank()) return
+        com.intellij.openapi.application.ApplicationManager.getApplication()
+            .executeOnPooledThread {
+                val root = profileQueryRoot() ?: return@executeOnPooledThread
+                val result = try {
+                    val proc = ProcessBuilder(
+                        CajetaProfileCandidates.argvFor(compiler, root)).start()
+                    val out = proc.inputStream.bufferedReader().readText()
+                    proc.waitFor()
+                    CajetaProfileCandidates.parse(out)
+                } catch (t: Throwable) {
+                    CajetaProfileCandidates.Result(emptyList(), queried = false,
+                        error = t.message)
+                }
+                com.intellij.openapi.application.ApplicationManager.getApplication()
+                    .invokeLater {
+                        val typed = (selector.editor?.item ?: selector.selectedItem)
+                            ?.toString() ?: ""
+                        selector.removeAllItems()
+                        for (p in result.offered()) selector.addItem(p)
+                        selector.editor?.item = typed
+                        selector.selectedItem = typed
+                        selector.toolTipText =
+                            result.emptyMessage() ?: "Active --profile for runs"
+                    }
+            }
+    }
+
+    /** The source root to ask about: the first discovered manifest's directory,
+     *  falling back to the project base. */
+    private fun profileQueryRoot(): String? {
+        val manifest = rootModels.keys.firstOrNull()
+        val dir = if (manifest != null) java.io.File(manifest).parentFile
+                  else project.basePath?.let { java.io.File(it) }
+        if (dir == null || !dir.isDirectory) return null
+        val src = java.io.File(dir, "src")
+        return if (src.isDirectory) src.absolutePath else dir.absolutePath
     }
 }
