@@ -4,12 +4,11 @@ import com.intellij.lang.refactoring.RefactoringSupportProvider
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiReference
-import com.intellij.psi.search.SearchScope
 import com.intellij.refactoring.rename.RenamePsiElementProcessor
 import com.intellij.refactoring.safeDelete.NonCodeUsageSearchInfo
 import com.intellij.refactoring.safeDelete.SafeDeleteProcessorDelegate
 import com.intellij.usageView.UsageInfo
-import com.intellij.util.IncorrectOperationException
+import com.intellij.util.containers.MultiMap
 import dev.cajeta.idea.psi.CajetaNamedElement
 import dev.cajeta.idea.usages.CajetaUsageRecords
 import dev.cajeta.idea.usages.CajetaUsagesSearch
@@ -38,31 +37,38 @@ class CajetaRenameProcessor : RenamePsiElementProcessor() {
     override fun canProcessElement(element: PsiElement): Boolean =
         element is CajetaNamedElement && element.name != null
 
-    override fun findReferences(
+    /**
+     * Staleness is a CONFLICT, not an exception.
+     *
+     * This first refused by throwing from findReferences, which the platform
+     * swallows during the preflight: the Refactor button did nothing and the
+     * dialog would not close (Julian, live 2026-08-02). Worse, the gate is
+     * closed by default — freshness starts STALE until a lint export is
+     * ingested — so rename was dead in the common case.
+     *
+     * A conflict is the mechanism built for this: the platform shows it,
+     * names what it cannot guarantee, and lets the developer decide. The
+     * refactoring stays possible; what changes is that it is never silent.
+     */
+    override fun findExistingNameConflicts(
         element: PsiElement,
-        searchScope: SearchScope,
-        searchInCommentsAndStrings: Boolean,
-    ): Collection<PsiReference> {
-        requireFreshIndex(element.project)
-        return super.findReferences(element, searchScope, searchInCommentsAndStrings)
+        newName: String,
+        conflicts: MultiMap<PsiElement, String>,
+    ) {
+        if (!indexIsFresh(element.project)) {
+            conflicts.putValue(element,
+                "The Cajeta index is not up to date, so usages outside the " +
+                    "open files may not be renamed. Run Tools > Cajeta > " +
+                    "Rebuild Cajeta Index to rename with the full set.")
+        }
     }
 
     companion object {
-        /**
-         * Refuse unless the index is FRESH. `safeForRefactoring()` exists for
-         * exactly this: a rename is the one operation where "probably right"
-         * is not good enough, because the damage is silent.
-         */
-        fun requireFreshIndex(project: Project) {
-            val fresh = try {
-                project.getService(CajetaXrefFreshness::class.java)?.safeForRefactoring() ?: false
-            } catch (_: Throwable) {
-                false
-            }
-            if (!fresh) throw IncorrectOperationException(
-                "The Cajeta index is not up to date, so the full set of usages " +
-                    "cannot be guaranteed. Run Tools > Cajeta > Rebuild Cajeta " +
-                    "Index and try again.")
+        fun indexIsFresh(project: Project): Boolean = try {
+            project.getService(CajetaXrefFreshness::class.java)
+                ?.safeForRefactoring() ?: false
+        } catch (_: Throwable) {
+            false
         }
     }
 }
@@ -114,10 +120,7 @@ class CajetaSafeDeleteProcessor : SafeDeleteProcessorDelegate {
     ): Collection<String>? {
         val project = element.project
         // Stale index: say so instead of implying the declaration is unused.
-        val fresh = try {
-            project.getService(CajetaXrefFreshness::class.java)?.safeForRefactoring() ?: false
-        } catch (_: Throwable) { false }
-        if (!fresh) return listOf(
+        if (!CajetaRenameProcessor.indexIsFresh(project)) return listOf(
             "The Cajeta index is not up to date — remaining usages cannot be listed.")
         val fqn = CajetaUsagesSearch.fqnOf(element) ?: return null
         val records = XrefQuery.usagesOf(project, fqn) +
