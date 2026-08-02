@@ -1004,34 +1004,18 @@ TEST(SignatureAbiTests, heapReturnUnderTransferStillCompiles) {
         "}\n";
     EXPECT_EQ(runI32(src), 42);
 }
+// `heap X(...)` at a CALL SITE surrenders: the formal becomes the owner. A
+// plain `=` store is a borrow and does NOT inherit that contract, so the formal
+// still owns and drops at return, leaving the field dangling. That is the
+// ownership model working as specified, not a defect — the program asked to
+// borrow from a value whose owner dies at the end of the call. `#=` is the
+// spelling that transfers; see plainFormalSharpStoreTakesTitleFromSurrenderedRvalue.
+//
+// (The former DISABLED_freshRvalueIntoPlainFormalFieldStoreDangles asserted
+// this program should return 2 — i.e. that the compiler should rescue it. It
+// was removed 2026-08-02: the expectation was wrong, and leaving it disabled
+// implied a fix was owed.)
 
-// title-tracking / FieldOwnership — the field-store title trap (see
-// specs/field-store-title-trap-spec.md). A fresh owned rvalue surrendered to a
-// PLAIN formal that stores it into a field without consuming the title is freed
-// at callee exit (the specified "unconsumed flag-true formal drops in the
-// callee" rule), leaving the field dangling. NOT template-specific and NOT a
-// missing borrow-escape check — fields legitimately alias (FieldOwnership.md
-// rejected the static rule). Pinned DISABLED until the semantic call is made:
-// today it reads freed memory rather than the 2 it should.
-TEST(SignatureAbiTests, DISABLED_freshRvalueIntoPlainFormalFieldStoreDangles) {
-    std::string src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag;\n"
-        "    public Animal(int32 t) { this.tag = t; }\n"
-        "}\n"
-        "public class BoxA {\n"
-        "    public Animal value;\n"
-        "    public BoxA(Animal v) { this.value = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        BoxA b = heap BoxA(heap Animal(2));\n"
-        "        return b.value.tag;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // The LEND path is correct today and must stay correct: a named local passed
 // plainly lends, the field aliases, and the source still owns. This is the
@@ -1096,4 +1080,56 @@ TEST(SignatureAbiTests, primitiveTemplateFieldStoreStillCompiles) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 42);
+}
+// The owning shape does NOT require a `#T` formal. A PLAIN formal with a `#=`
+// store transfers correctly: `#=` consumes the formal's runtime title, so its
+// drop entry is deactivated and the field owns. This is the spelling to reach
+// for — `=` borrows, `#=` transfers, and the STORE SITE decides, independent of
+// how the caller passed the value. (field-store-title-trap §2 originally listed
+// only `#T v` + `#=` as the working owning shape, which understated this.)
+TEST(SignatureAbiTests, plainFormalSharpStoreTakesTitleFromSurrenderedRvalue) {
+    std::string src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag;\n"
+        "    public Animal(int32 t) { this.tag = t; }\n"
+        "}\n"
+        "public class BoxA {\n"
+        "    public Animal value;\n"
+        "    public BoxA(Animal v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        BoxA b = heap BoxA(heap Animal(2));\n"
+        "        return b.value.tag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 2);
+}
+
+// The same `#=` store is safe when the caller LENDS rather than surrenders —
+// the pairing that would double-free if `#=` blindly claimed the title. Both
+// the field and the caller's local remain readable (2 + 2), and the run exits
+// cleanly. Pins that the store-site spelling is safe against EITHER caller
+// shape, which is what makes "`#=` when you mean transfer" a rule an author can
+// follow without reasoning about the call site.
+TEST(SignatureAbiTests, plainFormalSharpStoreIsSafeWhenCallerLends) {
+    std::string src =
+        "package test;\n"
+        "public class Animal {\n"
+        "    public int32 tag;\n"
+        "    public Animal(int32 t) { this.tag = t; }\n"
+        "}\n"
+        "public class BoxA {\n"
+        "    public Animal value;\n"
+        "    public BoxA(Animal v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Animal a = heap Animal(2);\n"
+        "        BoxA b = heap BoxA(a);\n"
+        "        return b.value.tag + a.tag;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
 }
