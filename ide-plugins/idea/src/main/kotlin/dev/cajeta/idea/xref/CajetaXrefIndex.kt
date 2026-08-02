@@ -79,6 +79,11 @@ class CajetaXrefIndex : FileBasedIndexExtension<String, String>() {
                     "inheritance" -> {
                         val parent = str(rec, "parent") ?: continue
                         put("sub:$parent", rec.toCompactString())
+                        // The same edge, keyed upward. The record already
+                        // carries both endpoints; without this key the index
+                        // could answer "who extends X" but not "what does X
+                        // extend", which is half a hierarchy.
+                        str(rec, "child")?.let { put("super:$it", rec.toCompactString()) }
                     }
                     "references" -> {
                         val target = str(rec, "target") ?: continue

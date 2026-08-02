@@ -57,6 +57,11 @@
              Ctrl+Click usages popup, and the docked Find window with its file
              tree and source preview. The search itself answers from the
              compiler's resolved reference export, not a text scan. -->
+        <!-- Type Hierarchy (Ctrl+H), ide-features Unit 3. Walks the
+             compiler's exported extends/implements edges; the three views are
+             three walks over the same relation. -->
+        <typeHierarchyProvider language="Cajeta"
+            implementationClass="dev.cajeta.idea.hierarchy.CajetaTypeHierarchyProvider"/>
         <lang.findUsagesProvider language="Cajeta"
             implementationClass="dev.cajeta.idea.usages.CajetaFindUsagesProvider"/>
         <referencesSearch
