@@ -226,6 +226,9 @@ namespace cajeta {
     // depends on the enclosing class stack; a flat regex can spot
     // the names but can't compose the right canonical, and regex
     // is fragile around string literals and comments anyway.
+    // Defined below, beside the lazy-stdlib bookkeeping it feeds.
+    static void notePrescannedImport(const std::string& pkg);
+
     class ArchivePrescanVisitor : public CajetaParserBaseVisitor {
     public:
         std::string package;
@@ -245,6 +248,28 @@ namespace cajeta {
                 p += ids[i]->getText();
             }
             package = p;
+            return defaultResult();
+        }
+
+        // Record which on-demand stdlib packages the tree imports, so they can
+        // all be made concrete before the first body walk rather than one unit
+        // at a time. See drainPrescannedLazyStdlib.
+        std::any visitImportDeclaration(
+                CajetaParser::ImportDeclarationContext* ctx) override {
+            if (auto* qn = ctx->qualifiedName()) {
+                const auto& ids = qn->identifier();
+                // An import names a TYPE (`cajeta.math.Tensor`); its package is
+                // everything up to the last segment. A trailing `.*` parses as
+                // a MUL token rather than an identifier, so the whole dotted
+                // name is already the package in that form.
+                size_t take = ctx->MUL() ? ids.size() : (ids.size() - 1);
+                std::string pkg;
+                for (size_t i = 0; i < take; ++i) {
+                    if (i) pkg += ".";
+                    pkg += ids[i]->getText();
+                }
+                if (!pkg.empty()) notePrescannedImport(pkg);
+            }
             return defaultResult();
         }
 
@@ -522,14 +547,23 @@ namespace cajeta {
     void prescanSourceRoot(const std::string& rootPath, bool suppressConsole) {
         using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
         std::filesystem::path root(rootPath);
+        // Sorted for the same determinism reason as listModulePaths: the
+        // archive registry this builds is first-write-wins, so an unsorted
+        // walk lets two same-short-name declarations bind differently
+        // depending on which checkout the compiler is looking at.
+        std::vector<std::filesystem::path> sources;
         for (const auto& entry : recursive_directory_iterator(root)) {
             if (!entry.is_regular_file()) continue;
             if (entry.path().extension() != CAJETA_EXTENSION) continue;
-            std::ifstream in(entry.path());
+            sources.push_back(entry.path());
+        }
+        std::sort(sources.begin(), sources.end());
+        for (const auto& path : sources) {
+            std::ifstream in(path);
             if (!in) continue;
             antlr4::ANTLRInputStream input(in);
             prescanSource(input, suppressConsole,
-                          entry.path().lexically_normal().string());
+                          path.lexically_normal().string());
         }
     }
 
@@ -554,6 +588,19 @@ namespace cajeta {
                 result->push_back(dirEntry.path().string());
             }
         }
+
+        // Sorted, for determinism (§2.0.7) — the same reason the xref export
+        // sorts. recursive_directory_iterator yields entries in filesystem
+        // order, which is not the same on two machines and not even the same
+        // for two checkouts of one repo: a fresh `git clone` writes files in a
+        // different sequence than a working copy that grew file by file.
+        //
+        // Parse order is not cosmetic. It decides synthesized-name tie-breaks,
+        // first-write-wins archive keys, and when an on-demand stdlib package
+        // becomes concrete — so an unsorted walk let the same commit compile
+        // to different binaries on different hosts. That is what made
+        // cajeta-ml build clean locally and crash in CI on identical sources.
+        result->sort();
 
         return result;
     }
@@ -802,8 +849,13 @@ namespace cajeta {
     static thread_local std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
     static thread_local std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
     static thread_local std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
+    // Lazy pkgs named by an `import` ANYWHERE under the source root, collected
+    // during the prescan sweep and drained in one go before the first body
+    // walk. See drainPrescannedLazyStdlib.
+    static thread_local std::set<std::string> g_prescanLazyImports;
 
     static void resetLazyStdlibStateImpl() {
+        g_prescanLazyImports.clear();
         g_stdlibParsedPackages.clear();
         g_lazyPrescanned.clear();
         g_lazyParsed.clear();
@@ -851,10 +903,22 @@ namespace cajeta {
     // Fully parse every enqueued lazy package into the stdlib module, then
     // lay them out. Queue-guarded and idempotent; safe to call after every
     // parse (a cheap no-op when the queue is empty).
+    // Re-entrancy guard. The drain parses stdlib sources, and those parses run
+    // the same visitCompilationUnit that fires stdlibDrainHook — so a lazy
+    // package importing another lazy package would recurse into a drain whose
+    // queue the outer loop is already consuming. The outer loop drains the
+    // whole queue regardless, so an inner call is always safe to skip.
+    static thread_local bool g_draining = false;
+
     static void drainLazyStdlib() {
+        if (g_draining) return;
         if (g_lazyQueue.empty()) return;
         auto stdlib = CajetaModule::getStdlibModule();
         if (!stdlib) { g_lazyQueue.clear(); return; }
+        g_draining = true;
+        struct DrainGuard {
+            ~DrainGuard() { g_draining = false; }
+        } drainGuard;
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(stdlib);
         QualifiedNamePtr originalQName = stdlib->getQName();
@@ -907,6 +971,38 @@ namespace cajeta {
             CajetaModule::buildPendingPrototypes();
         }
         CajetaModule::setActiveModule(prevActive);
+    }
+
+    static void notePrescannedImport(const std::string& pkg) {
+        if (isLazyStdlibPackage(pkg)) g_prescanLazyImports.insert(pkg);
+    }
+
+    // Make every on-demand stdlib package the compile unit set imports
+    // CONCRETE before any module's body walk begins.
+    //
+    // The import hook alone enqueues a lazy package for "the next drain
+    // point", which is the END of the importing unit's parse — too late for
+    // a declaration whose TYPE names a lazy generic. `ArrayList<Tensor<E>>`
+    // must instantiate the real cajeta.math.Tensor while the field is being
+    // resolved, and a prescan placeholder carries no template parameters to
+    // instantiate. Worse, the trigger was per-unit: a file importing a USER
+    // class whose fields are typed that way (dev.cajeta.ml.zoo.SmallCnn
+    // imports GradTape and never mentions cajeta.math) pulls that class's
+    // declaration into its own module with nothing having loaded math.
+    //
+    // So resolution succeeded or failed on the order the filesystem happened
+    // to hand the compiler its sources — a fresh checkout, whose readdir
+    // order differs from a working copy's, miscompiled a tree that built
+    // clean in place. Draining here makes the result order-independent: the
+    // prescan has already seen every import in the tree, and no user body has
+    // been walked yet, so this is the last point where the parse can be
+    // reordered without disturbing a walk in progress.
+    static void drainPrescannedLazyStdlib() {
+        if (g_prescanLazyImports.empty()) return;
+        for (const auto& pkg : g_prescanLazyImports) {
+            noteStdlibImportImpl(pkg);
+        }
+        drainLazyStdlib();
     }
 
     // Parse every embedded stdlib file into `module`. Called exactly
@@ -1168,6 +1264,14 @@ namespace cajeta {
             }
         }
 
+        // The classpath prescan has now seen every dependency's imports. Make
+        // the on-demand stdlib packages they name concrete BEFORE Phase 2
+        // walks their signatures: a dependency class whose field is typed
+        // `ArrayList<Tensor<E>>` (cajeta-ml's GradTape) instantiates
+        // cajeta.math.Tensor while that signature is read, and nothing in the
+        // consuming project need ever import cajeta.math itself.
+        drainPrescannedLazyStdlib();
+
         // Phase 2 — full parse. Each ClassSource entry becomes a
         // standalone CajetaModule. The module's qName is derived from
         // the entry name (`deplib/Util.cajeta` → `deplib.Util`); its
@@ -1252,6 +1356,10 @@ namespace cajeta {
         CajetaModule::stdlibImportHook = [](const std::string& pkg) {
             noteStdlibImportImpl(pkg);
         };
+        // Drain hook — fired by visitCompilationUnit once a unit's imports are
+        // all noted, so a lazy generic named in a FIELD or PARAMETER type
+        // (`ArrayList<Tensor<E>>`) resolves to the real class rather than an
+        // uninstantiable prescan placeholder. See CajetaModule::stdlibDrainHook.
         // On-demand USER-class materialization (table-fit spec §2): lets a
         // synthesizer force a cross-file class's declaring module to compile
         // when it needs the real declaration, not a placeholder. Rebound per
@@ -1941,6 +2049,11 @@ namespace cajeta {
         {
             ProgressPhase phase("prescan", "Scanning sources");
             prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
+            // Every import in the tree is now known. Fully parse the on-demand
+            // stdlib packages they name BEFORE the first body walk, so a field
+            // or parameter typed `ArrayList<Tensor<E>>` resolves the same way
+            // no matter which order the filesystem hands us the sources.
+            drainPrescannedLazyStdlib();
         }
 
         // unique_ptr: the many emit/link calls below throw, and the trailing

@@ -24,6 +24,7 @@
 #include "CacheManifest.h"
 #include <optional>
 #include <functional>
+#include <list>
 #include <string>
 #include <set>
 #include <vector>
@@ -60,6 +61,14 @@ namespace cajeta {
     // prescan (used under --diag-format=json so prescan syntax errors don't leak
     // free text into the NDJSON stream; the authoritative parse re-reports them).
     void prescanSourceRoot(const std::string& rootPath, bool suppressConsole = false);
+
+    // Every `.cajeta` file under `rootPath`, SORTED (§2.0.7). Parse order
+    // decides synthesized-name tie-breaks, first-write-wins archive keys, and
+    // when an on-demand stdlib package becomes concrete, so it must not depend
+    // on filesystem enumeration order — two checkouts of one commit have to
+    // compile to the same bytes. Declared here so the determinism regression
+    // test can pin the ordering. Caller owns the returned list.
+    std::list<std::string>* listModulePaths(std::string rootPath);
 
     // Emit a per-module global ctor that registers UnrecoverableException's
     // vtable with the runtime (__cajeta_set_unrecoverable_vtable). Must be
