@@ -57,19 +57,30 @@ system in §10; interactivity in §11; accessibility in §12.
 
 ### 1.6 Systems
 
-`cajeta.math.Tensor`, `cajeta.math.Color`, `cajeta.math.stats.Stats`
-(the statistical transforms in §8), `cajeta.nucleo.frame.Table` (the L3 data
-source), `cajeta.wire.Compressor` (deflate, required by PNG), `cajeta.io`,
+`dev.cajeta.font` — **both** the font machinery (`cajeta-font`) and the
+**shaping engine** (`cajeta-text-shaping`); `cajeta.resource` (the bundled
+default font); `cajeta.math.Tensor`, `cajeta.math.Color`,
+`cajeta.math.stats.Stats` (the statistical transforms in §8),
+`cajeta.nucleo.frame.Table` (the L3 data source, at L3 only),
+`cajeta.wire.Compressor` (deflate, required by PNG), `cajeta.io`,
 `dev.cajeta.unit`.
 
 ### 1.7 The critical path, stated up front
 
-**Text is the hard part.** There is no font
-loading, no glyph metrics, no text shaping anywhere in cajeta. Every axis label,
-tick, legend entry, and title needs measured text before layout can resolve —
-you cannot place an axis without knowing how wide its labels are. §3 is
-therefore the first unit of work and the gate on everything else. Any plan that
-sequences charts before text is wrong.
+**Text is the hard part.** There is no font loading, no glyph metrics, and no
+text shaping anywhere in cajeta. Every axis label, tick, legend entry, and title
+needs measured text before layout can resolve — you cannot place an axis without
+knowing how wide its labels are.
+
+**That work is no longer in this spec.** It is `cajeta-font` (parsing, metrics,
+outlines) and `cajeta-text-shaping` (string → positioned glyphs), both in
+`dev.cajeta.font`. §3 states what this library requires of them and what it does
+with the result.
+
+The critical path is unchanged in substance: **both must land before phase C1**
+(§13.7). Any plan that sequences charts before text is still wrong — it is now
+wrong across a library boundary rather than within this one, which makes the
+dependency explicit instead of implicit.
 
 ---
 
@@ -102,20 +113,47 @@ sequences charts before text is wrong.
 
 ## 3. Feature: text, fonts, and metrics *(the gate — see §1.7)*
 
+> **This library does not implement text handling. It consumes it.**
+> Font parsing is `cajeta-font`; **shaping — turning a string into positioned
+> glyphs — is `cajeta-text-shaping`**, which lives in `dev.cajeta.font` because
+> GSUB/GPOS are font tables and three libraries need them (§13.1). Everything
+> below is a *requirement this library places on those two*, plus what it does
+> with the result. An earlier draft of this section described shaping as chart's
+> own work; that was wrong and is corrected here.
+
 - **3.1** When a font is loaded, TrueType and OpenType files are parsed and
-  glyph outlines and metrics are available.
-- **3.2** When a string is measured, the result is its width, ascent,
-  descent, and bounding box are calculated in advance **before** drawing it, so layout can resolve.
+  glyph outlines and metrics are available — via `cajeta-font`, not a second
+  parser here.
+- **3.2** When a string is measured, its width, ascent, descent, and bounding
+  box are available **before** it is drawn, so layout can resolve. Measurement
+  is **the shaped advance sum**, not a per-character metric lookup — those
+  differ wherever ligatures, kerning, or marks apply, and a layout built on the
+  wrong one collides.
 - **3.3** When the same string for any backend is measured, the metrics agree —
   otherwise SVG and PNG disagree on label collisions.
-- **3.4** When text is drawn, kerning is applied.  Broad kerning configuration should be supported (tight, normal, wide)
+- **3.4** When text is drawn, kerning is applied — from `cajeta-text-shaping`
+  §7, which reads GPOS (or a legacy `kern` table). Broad tracking configuration
+  is supported on top of it: tight, normal, wide.
 - **3.5** When text is embedded in PDF, only the glyphs used are subset and
   embedded.
 - **3.6** When text as geometry is needed, glyph outlines can be emitted as
   paths, so a backend without font support still renders.
-- **3.7** When non-Latin text is rendered, the shaping limitations are
-  documented honestly. *(See §13.1 — full complex-script shaping is a large
-  problem and this spec does not pretend to solve it.)*
+- **3.7** When non-Latin text is rendered, it shapes correctly through
+  `cajeta-text-shaping` — Arabic joins, Devanagari reorders, bidi resolves. This
+  library states no shaping limitations of its own; whatever that spec supports,
+  charts support (§13.1).
+- **3.7.1** When a label is laid out, the glyph buffer's **visual order and
+  positions are used as given**. This library must not reorder glyphs, sum
+  per-character widths, or index text by character to place it — all three are
+  correct only for simple scripts and silently wrong elsewhere.
+- **3.7.2** When a label needs to wrap, line breaks come from a line-breaking
+  facility, **not** from splitting on spaces or character counts. See
+  `cajeta-text-shaping` §13.5: **line breaking is currently unowned**, and
+  wrapped axis labels and multi-line titles both need it. This is a live
+  dependency, not a detail.
+- **3.7.3** When text is measured for collision detection, the measurement is
+  the shaped one (§3.2), so a rotated or non-Latin tick label does not overlap
+  because its width was estimated wrong.
 - **3.8** When no font is supplied, a **bundled** default is used, so a first
   chart needs no configuration.
 
