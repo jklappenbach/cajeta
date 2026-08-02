@@ -24,6 +24,21 @@ building off its manifest.
   fails; `details.name` `myapp` with the same package `app` builds and runs.
   The trigger is exact equality with a *top-level* package name, so it is
   reached by the most natural naming a developer can choose.
+- 1.6 **This is already known, and already worked around.** The correction
+  matters, because it changes the fix from "diagnose a mystery" to "decide
+  whether the workaround is the supported answer." `cajeta-six/samples/tour`
+  has the same shape — `details.name` `tour`, sources in package `tour` — and
+  its manifest sets an explicit `output-path` with a comment saying why:
+
+  > `output-path` puts the binary at `build/tour` rather than the default
+  > `build/exe/<name>`: the project name `tour` matches the top-level package
+  > `tour`, so the default would collide with the `build/exe/tour/` object
+  > directory.
+
+  So there **is** a per-project escape hatch (`output-path` on the build
+  action, `BuildAction.cpp:274`), it is undocumented outside that one comment,
+  and every project that trips the collision must discover it independently.
+  `cajeta-unit`'s tour did not, and hand-rolled a compile script instead.
 
 ## 2. Use cases
 
@@ -36,18 +51,34 @@ building off its manifest.
 - 2.3 When an existing project already builds, its executable path does not
   move — whatever fixes 2.1 must not silently relocate outputs that scripts and
   CI already reference.
+- 2.4 When a project sets `output-path` explicitly, it builds regardless of any
+  name/package coincidence — the existing escape hatch keeps working.
+- 2.5 When a developer hits the collision, the diagnostic names the collision
+  and the remedy, rather than reporting that a file cannot be opened.
 
 ## 3. Design notes
 
-- 3.1 Three candidate fixes, in decreasing order of how much they disturb
-  existing layouts: emit objects to a sibling directory (`exe/` for the binary,
-  `obj/` for objects); flatten the project's own objects to dotted names, which
-  makes them consistent with dependency objects and removes the collision
-  class entirely; or detect the collision and error early. **The second is
-  worth costing first** — the inconsistency in 1.4 looks unintentional, and
-  removing it fixes the defect as a side effect rather than working around it.
-- 3.2 Whichever is chosen, 2.3 constrains it: `cajeta-six/samples/tour` and
-  every CI script that references `build/exe/<name>` must keep working.
+- 3.1 Given 1.6, the first decision is **whether to fix the layout at all or to
+  bless `output-path` as the answer**. Blessing it is cheap and already proven,
+  but it makes a naming coincidence something every developer must know about,
+  and the failure that teaches them is a linker error about a directory. The
+  cost of not fixing it is paid once per project, forever.
+- 3.2 If the layout is fixed: three candidates, in decreasing order of how much
+  they disturb existing outputs — emit objects to a sibling directory (`exe/`
+  for the binary, `obj/` for objects); flatten the project's own objects to
+  dotted names, making them consistent with dependency objects and removing the
+  collision class entirely; or detect the collision and error early with a
+  message naming `output-path` as the fix. **The second is worth costing
+  first** — the inconsistency in 1.4 looks unintentional, and removing it fixes
+  the defect as a side effect rather than working around it.
+- 3.3 **Whatever is decided, the diagnostic should change.** `cannot open
+  output file … : Is a directory` names neither the cause nor the remedy, and
+  1.6 shows the remedy already exists. Even if the layout stays exactly as it
+  is, detecting the collision and naming `output-path` would have saved
+  `cajeta-unit`'s tour from a hand-rolled build script.
+- 3.4 Whichever is chosen, 2.3 constrains it: `cajeta-six/samples/tour` and
+  every CI script that references `build/exe/<name>` or `build/tour` must keep
+  working.
 
 ## 4. Acceptance
 
