@@ -184,9 +184,13 @@ public final class HashMap<K, V> {
                     // Replace: the member store's displaced release
                     // (title-stores §3.3.2) drops an owned old value.
                     this.slots[i].val #= value;
-                    // The incoming key duplicates the one already stored, and
-                    // we always own it now, so it is always ours to drop.
-                    Cajeta.dropValue(key);
+                    // The incoming key duplicates the one already stored, so
+                    // it is NOT stored. We do not drop it by hand: the `#K`
+                    // formal owns it and its own armed entry reclaims it at
+                    // return. An explicit dropValue here double-frees a class
+                    // key and drops a non-pointer for a primitive one (this
+                    // was a SIGSEGV in HashMapTests.bracketReplaceUpdatesValue).
+                    // Same rule as BPlusTree.put's replace path.
                     return;
                 }
                 mm = mm & (mm - 1);
