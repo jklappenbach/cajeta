@@ -1,7 +1,6 @@
 package dev.cajeta.idea.debugger
 
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.ModalityState
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
@@ -47,37 +46,25 @@ class CajetaDebuggerEvaluator(
             .orTimeout(HOVER_TIMEOUT_SECONDS, TimeUnit.SECONDS)
             .thenAccept { outcome ->
                 val value = outcome.value
-                onEdt {
-                    if (value != null) callback.evaluated(CajetaValue(value, session))
-                    // §7.2.4: an identifier that is not live is a plain message,
-                    // never an error dialog.
-                    else callback.errorOccurred(outcome.message ?: "not available")
-                }
+                LOG.debug("hover evaluate '" + expression + "' -> " +
+                          (value?.value ?: ("none: " + outcome.message)))
+                // Delivered on the completing thread ON PURPOSE. The platform's
+                // XValueHint.evaluated already marshals to the EDT itself;
+                // marshalling here first killed the popup outright (Julian,
+                // live 2026-08-01), so the threading is the platform's to own.
+                if (value != null) callback.evaluated(CajetaValue(value, session))
+                // §7.2.4: an identifier that is not live is a plain message,
+                // never an error dialog.
+                else callback.errorOccurred(outcome.message ?: "not available")
             }
             .exceptionally { t ->
                 val why = if (t is java.util.concurrent.TimeoutException ||
                               t.cause is java.util.concurrent.TimeoutException)
                     "evaluation timed out" else (t.message ?: "evaluation failed")
-                onEdt { callback.errorOccurred(why) }
+                LOG.debug("hover evaluate '" + expression + "' failed: " + why)
+                callback.errorOccurred(why)
                 null
             }
-    }
-
-    /**
-     * The answer arrives on the DAP client's thread, and the hint machinery is
-     * EDT-only: it tracks the live hint so a mouse-move can dismiss it. A
-     * callback delivered from another thread lands outside that bookkeeping,
-     * and a popup shown that way is never told to close — which is exactly how
-     * a hover popup outlives the mouse that summoned it (Julian, live
-     * 2026-08-01).
-     */
-    private fun onEdt(block: () -> Unit) {
-        val app = ApplicationManager.getApplication()
-        when {
-            app == null -> block()
-            app.isDispatchThread -> block()
-            else -> app.invokeLater(block, ModalityState.any())
-        }
     }
 
     /**
@@ -101,6 +88,8 @@ class CajetaDebuggerEvaluator(
     override fun isCodeFragmentEvaluationSupported(): Boolean = false
 
     companion object {
+        private val LOG = Logger.getInstance(CajetaDebuggerEvaluator::class.java)
+
         /**
          * How long a hover may take before its answer is no longer wanted
          * (Julian, live 2026-08-01). Deliberately short: the debuggee is
