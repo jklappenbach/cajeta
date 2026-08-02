@@ -92,6 +92,58 @@ earlier, so the stated intent is not what the grammar does.
 passes. Either way validation is a full `cajeta_tests.sh` sweep, since a
 grammar or expression-dispatch change touches every parse.
 
+## 4a. Design — 2026-08-02 (code-read, not yet implemented)
+
+**Take 4.2, at one site.** `Expression::fromContext`,
+`src/cajeta/asn/expression/Expression.cpp:218` — the `ctx->LPAREN()` branch
+already forks cast-vs-postfix-call on `ctx->typeType().empty()`, and its own
+comment states the two forms. The `else` arm building `CallExpression` is
+where the reinterpretation goes.
+
+**Rule:** when the callee (`ctx->expression(0)`) is a *parenthesized single
+identifier*, build a `CastExpression` on that identifier's type instead of a
+`CallExpression`.
+
+Why this is narrow rather than clever:
+
+- The shape is detectable **syntactically** — `expression(0)` is a primary
+  holding `'(' expression ')'` whose inner expression is one identifier. No
+  type lookup at dispatch time, so the substitution stack is not consulted and
+  a method-level `<E extends Floating>` needs no special handling. That
+  matters: template bodies are skipped on the declaring walk and re-walked per
+  instantiation, so a design requiring `E` to *resolve* here would work at
+  instantiation and fail at declaration.
+- **3.3 falls out for free.** `kernel.launch(...)(...)`'s callee is a method
+  call, not a parenthesized identifier — the branch never fires.
+- **3.2 is untouched.** `(T) a.b()` does not parse as a postfix call at all
+  (its operand is unparenthesized), so it never reaches this arm and its
+  precedence cannot move. This is the advantage over 4.1, which edits the
+  grammar and must re-prove precedence for every suffix operator.
+- **3.4 resolves toward Java**, as recommended: `(name)(expr)` is a cast. The
+  indirect-call form `(fnValue)(args)` becomes unspellable with a *bare*
+  parenthesized identifier callee; it remains available as `fnValue(args)` or
+  `(this.fn)(args)` (a dotted callee is not a single identifier). Confirmed
+  unused across runtime, tests, and the ML stack as of 2026-07-31.
+
+**One divergence to pin, not paper over.** `(T)(x).foo()` parses outermost as
+DOT over `(T)(x)`, so this rule yields `((T)(x)).foo()` — cast, then call.
+Java yields `(T)((x).foo())`. 4.1 has the identical caveat. Accept the
+divergence (the form is vanishingly rare and reader-hostile) and pin it with a
+test that asserts the cajeta reading, so nobody "fixes" it later by accident.
+
+**Tests to add before the change (3.1/3.2/3.3 + the divergence):**
+
+1. `(E) (acc / 2.0)` in a generic method lowers as a cast — the reported case.
+2. `(int64) (mm & 65535)` still lowers as a cast — the primitive path is
+   unchanged.
+3. `(T) a.b()` still parses as `(T) (a.b())` — the precedence pin.
+4. `kernel.launch(...)(...)` still parses as the XPU launch form.
+5. `(T)(x).foo()` parses as `((T)(x)).foo()` — the documented divergence.
+
+Then revert the 17 hoisted locals in `ml/grad/StructKernels.cajeta`? **No** —
+leave them. They read better, which the spec already notes; the fix is for the
+next generic kernel, not for churning working code.
+
 ## 5. Not blocking
 
 Priority is low: the workaround is mechanical and reads better. Slot it
