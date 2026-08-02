@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Scaling Distributed Machine Learning with the Parameter Server
+description: The parameter-server architecture: sharded key-value parameter storage with asynchronous push/pull and bounded-delay consistency. The alternative to all-reduce, and the design cajeta rejects for synchronous training — recorded so the rejection is informed.
+url: https://www.cs.cmu.edu/~muli/file/parameter_server_osdi14.pdf

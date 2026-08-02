@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Alpa: Automating Inter- and Intra-Operator Parallelism for Distributed Deep Learning
+description: Searches the parallelization plan automatically, splitting the space into intra-operator (tensor) and inter-operator (pipeline) levels solved by ILP and dynamic programming. What §6.5 means by the compiler choosing the sharding rather than the user annotating it.
+url: https://arxiv.org/abs/2201.12023

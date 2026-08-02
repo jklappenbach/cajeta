@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Efficient Large-Scale Language Model Training on GPU Clusters Using Megatron-LM
+description: Composes tensor, pipeline, and data parallelism (PTD-P) and derives when each dimension pays, with an interleaved pipeline schedule. The 3D-parallelism cost model `auto-sharding-spec` §6.5 needs to make partitioning automatic.
+url: https://arxiv.org/abs/2104.04473

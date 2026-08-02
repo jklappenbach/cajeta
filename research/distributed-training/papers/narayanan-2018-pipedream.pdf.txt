@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PipeDream: Fast and Efficient Pipeline Parallel DNN Training
+description: Asynchronous 1F1B pipelining with weight stashing — removes GPipe's bubble at the cost of stale weights and version management. The counterexample to bit-identity across topologies, and why pipeline parallelism needs its own correctness contract.
+url: https://arxiv.org/abs/1806.03377

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Bandwidth Optimal All-reduce Algorithms for Clusters of Workstations
+description: The ring all-reduce: proves the bandwidth-optimal schedule for all-reduce on a cluster and gives the reduce-scatter + all-gather construction every collective library (NCCL, RCCL, Gloo) implements. The primitive `distributed-training-spec` §6.1's collectives layer is built on.
+url: https://www.cs.fsu.edu/~xyuan/paper/09jpdc.pdf

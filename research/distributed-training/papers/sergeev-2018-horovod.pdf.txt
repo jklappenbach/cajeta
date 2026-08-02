@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Horovod: fast and easy distributed deep learning in TensorFlow
+description: Ring all-reduce applied to DL training, with tensor fusion and the insight that synchronous data-parallel SGD over a bandwidth-optimal collective beats the parameter-server design. The reference point for what a minimal collectives binding must expose.
+url: https://arxiv.org/abs/1802.05799

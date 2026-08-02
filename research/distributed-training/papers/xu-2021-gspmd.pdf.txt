@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GSPMD: General and Scalable Parallelization for ML Computation Graphs
+description: Sharding annotations on tensors, with the compiler propagating them through the graph and inserting collectives. The compiler-first parallelism model `auto-sharding-spec` §6.5 is built on, and XLA/JAX's edge over torch.
+url: https://arxiv.org/abs/2105.04663

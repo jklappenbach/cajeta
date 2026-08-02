@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: ZeRO-Offload: Democratizing Billion-Scale Model Training
+description: Offloads optimizer state and the optimizer step to host memory/CPU with a bounded-communication schedule. The offload half of `activation-memory-spec` §6.2, and the case for a CPU floor under the device hierarchy.
+url: https://arxiv.org/abs/2101.06840

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PyTorch Distributed: Experiences on Accelerating Data Parallel Training
+description: How DDP actually works: gradient bucketing, overlapping all-reduce with the backward pass, and the parameter-to-bucket mapping. The engineering `distributed-training-spec` §6.1 must match, and the source of its comm/compute-overlap requirement.
+url: https://arxiv.org/abs/2006.15704

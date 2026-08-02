@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour
+description: Linear LR scaling with warmup, and the accounting rules (BN statistics, weight decay, loss normalization) that make an N-way data-parallel run match the single-node result. The optimization-side contract behind data parallelism's correctness claim.
+url: https://arxiv.org/abs/1706.02677

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Training Deep Nets with Sublinear Memory Cost
+description: Gradient checkpointing: recompute activations in the backward pass instead of storing them, trading O(sqrt(n)) memory for one extra forward. The rematerialization primitive `activation-memory-spec` §6.2 aims to schedule automatically from liveness rather than by hand.
+url: https://arxiv.org/abs/1604.06174

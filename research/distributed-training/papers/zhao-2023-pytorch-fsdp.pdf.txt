@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: PyTorch FSDP: Experiences on Scaling Fully Sharded Data Parallel
+description: ZeRO-3 as a production API: flat-parameter sharding, deferred initialization, communication prefetch, and the interaction with activation checkpointing and mixed precision. The API shape §6.1 is measured against.
+url: https://arxiv.org/abs/2304.11277

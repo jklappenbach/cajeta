@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPipe: Easy Scaling with Micro-Batch Pipeline Parallelism
+description: Synchronous pipeline parallelism: split the model into stages, split the batch into micro-batches, and accept the bubble in exchange for exact gradients. The pipeline baseline whose correctness is unambiguous.
+url: https://arxiv.org/abs/1811.06965
