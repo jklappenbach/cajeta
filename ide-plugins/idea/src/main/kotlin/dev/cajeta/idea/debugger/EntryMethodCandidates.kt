@@ -42,7 +42,7 @@ object EntryMethodCandidates {
             candidates.isNotEmpty() -> null
             indexUnavailable ->
                 "Xref index unavailable — declared entry methods only. " +
-                    "Run Tools > Cajeta > Rebuild Cajeta Xref Index."
+                    "Run Tools > Cajeta > Rebuild Cajeta Index."
             else -> "No static main methods found in this project."
         }
     }

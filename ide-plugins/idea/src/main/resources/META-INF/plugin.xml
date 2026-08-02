@@ -188,7 +188,7 @@
             <action
                 id="dev.cajeta.idea.xref.RebuildIndex"
                 class="dev.cajeta.idea.xref.CajetaXrefRebuildAction"
-                text="Rebuild Cajeta Xref Index"
+                text="Rebuild Cajeta Index"
                 description="Whole-root compiler export, ingested into the xref index in the background."/>
             <action
                 id="dev.cajeta.idea.TypeFixtureAction"
