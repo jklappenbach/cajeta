@@ -26,14 +26,12 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [diagnostic-engine](diagnostic-engine-spec.md) | — (engine + lint + full-compile collect-and-continue landed 2026-07-29; codegen-in-collect-mode is the open follow-up; remaining scope unverified) | active |
 | [compile-cache](compile-cache-spec.md) | [plan](../agents/cajeta/compile-cache-plan.md) | blocked (parked after Unit 2, 2026-07-10; re-open trigger HIT 2026-07-31: plan D1 — warm-cache build drops newly-required template instantiations, link failure; cold build fine) |
 | [cajetadoc-model-fidelity](cajetadoc-model-fidelity-spec.md) | — (docs-refactor 15.1) | draft |
-| [stack-return-transfer-error](stack-return-transfer-error-spec.md) | — (defect; **FIXED** 2026-07-31 — CAJETA_ERROR_STACK_RETURN_ESCAPES now covers `return stack X()` and `return #stackLocal` under a `#` return; was an IR-verifier crash / silent clobber) | draft |
 | [net-server-shutdown-wake](net-server-shutdown-wake-spec.md) | — (docs-refactor 15.6) | draft |
-| [matrix-element-callarg](matrix-element-callarg-spec.md) | — (docs-refactor 15.8) | draft |
+| [matrix-element-callarg](matrix-element-callarg-spec.md) | — (docs-refactor 15.8) | — (docs-refactor 15.8) **PARTIAL 2026-08-01:** the plain-array extension (`f(arr[i])`) now works; the original `f(m[1][1])` Matrix case still SIGSEGVs. |
 | [kernel-device-call-diagnostic](kernel-device-call-diagnostic-spec.md) | — (docs-refactor 15.9) | draft |
 | [channel-ownership](channel-ownership-spec.md) | [plan](../agents/channel-ownership-plan.md) | draft |
 | [view-element-arrays](view-element-arrays-spec.md) | plan: `agents/view-element-arrays-plan.md` | active (unblocks cajeta-gossip G1) |
 | [profile](profile-spec.md) | — | draft |
-| [jit-run-parse-abort](jit-run-parse-abort-spec.md) | — | draft |
 | [cajeta-ir-phase-b](cajeta-ir-phase-b-spec.md) | — (§4/§5 resolved; §2 forwarding, §3 captures remain) | draft |
 | [llm-kernel-scheduling](llm-kernel-scheduling-spec.md) | — | draft |
 | [robotics-kernel-scheduling](robotics-kernel-scheduling-spec.md) | — | draft |
@@ -45,17 +43,12 @@ flipped to `active` on approval, and removed when the plan closes (spec →
 | [xpu-build-ergonomics](xpu-build-ergonomics-spec.md) | — | draft |
 | [simd-numeric-kernels](simd-numeric-kernels-spec.md) | — | draft |
 | [quaternion-vector-stdlib](quaternion-vector-stdlib-spec.md) | [plan](../agents/quaternion-vector-stdlib-plan.md) | draft |
-| [ternary-int-codegen](ternary-int-codegen-spec.md) | — | draft |
-| [placeholder-owned-field](placeholder-owned-field-spec.md) | — (defect; FIXED 2026-07-31 — cross-module vtable constant; pins live; ml co-location workaround stays until the fix releases in v0.13.0) | draft |
-| [null-owned-interface-arg](null-owned-interface-arg-spec.md) | — (defect; FIXED 2026-07-31, pin live; noted follow-up: fat-aware interface `== null`) | draft |
-| [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | draft |
-| [float64-tostring-roundtrip](float64-tostring-roundtrip-spec.md) | — (defect, tour-quality logging review) | draft |
-| [cross-cja-exception-catch](cross-cja-exception-catch-spec.md) | — (defect, tour-quality unit review) | draft |
-| [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | draft |
+| [json-tobytes-string](json-tobytes-string-spec.md) | — (defect, tour-quality stdlib review) | — (defect) **CONFIRMED 2026-08-01 on 0.14.0:** String-field round trip still SIGSEGVs (fault addr nil) after `toBytes` returns 60 bytes. |
+| [float64-tostring-roundtrip](float64-tostring-roundtrip-spec.md) | — (defect, tour-quality logging review) | — (defect) **PARTIAL 2026-08-01:** the pinned `0.987` case now renders correctly, but rendering is still not shortest-round-trip — `1.0/3.0` prints `0.333333`, which parses back to different bits. Spec 2.1 unmet. |
+| [classpath-diag-duplication](classpath-diag-duplication-spec.md) | — (defect, cosmetic) | — (defect, cosmetic) **CONFIRMED 2026-08-01 on 0.14.0:** still doubled, second line has an empty subject. |
 | [classpath-signature-shortname-rebind](classpath-signature-shortname-rebind-spec.md) | — (defect; archive-entry-order-dependent wrong-package binding; workaround: xgboost TreeWalker rename) | draft |
 | [owned-interface-return-fault](owned-interface-return-fault-spec.md) | — (defect, SIGSEGV; a `#<Interface>` return faults on first use once stored in a container field — container/index/ownership all ruled out in the spec; workaround: build inline or return the concrete type) | draft |
-| [typeparam-cast-of-paren](typeparam-cast-of-paren-spec.md) | — (defect; `(E) (expr)` parses as a postfix call, not a cast — primitive destinations and unparenthesized operands are fine; workaround: hoist to a named local, 17 sites in ml/grad/StructKernels) | draft |
-| [buildtool-dependency-classpath](buildtool-dependency-classpath-spec.md) | — (defect/gap, verify first) | draft |
-| [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | draft |
+| [typeparam-cast-of-paren](typeparam-cast-of-paren-spec.md) | — (defect; `(E) (expr)` parses as a postfix call, not a cast — primitive destinations and unparenthesized operands are fine; workaround: hoist to a named local, 17 sites in ml/grad/StructKernels) | — (defect) **CONFIRMED 2026-08-01 on 0.14.0:** `(E) (acc / 2.0)` still fails with CAJETA_ERROR_NOT_IMPLEMENTED (general postfix call). |
+| [linkedlist-class-pop](linkedlist-class-pop-spec.md) | — (defect, tour-quality unit 3; 12-line repro in spec) | — (defect) **CONFIRMED 2026-08-01 on 0.14.0:** `LinkedList<String>` `popTail()` still SIGSEGVs; 12-line repro in spec. |
 | [runtime-lost-wakeup-under-load](runtime-lost-wakeup-under-load-spec.md) | — (defect) | FIXED 2026-07-31 (18a78057 + 7d8cfd8c): closing a descriptor neither woke nor serialized against the fibers parked on it in the reactor — both interleavings fixed; http tour 0/6 -> 40/40. Open only for acceptance 2.2's >=100-run loop |
 | [field-store-title-trap](field-store-title-trap-spec.md) | — (defect, silent UAF; fresh rvalue -> plain formal -> plain field store is freed at callee exit. RE-DIAGNOSED: not template-specific, not a missing borrow check; fix is a semantic change awaiting sign-off, spec §4) | draft |

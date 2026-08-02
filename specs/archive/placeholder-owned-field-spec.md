@@ -72,3 +72,9 @@ Co-locate the wrapper AFTER its inner class in one compilation unit.
 `dev.cajeta.ml/ElasticNet.cajeta` keeps Lasso co-located until the ml
 toolchain pin reaches a release carrying this fix (v0.13.0) — CI builds on
 the released .deb, not this tree.
+
+---
+
+**CLOSED — verified fixed on cajeta 0.14.0 (8ca5b362), 2026-08-01.** Re-ran this
+spec's repro against a freshly built 0.14.0 compiler; the defect no longer
+reproduces. Archived per td-project-workflow (spec -> archive, INDEX row dropped).

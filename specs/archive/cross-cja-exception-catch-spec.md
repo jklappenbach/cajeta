@@ -24,3 +24,9 @@ Found by the tour-quality unit review (findings/unit.md, Defects).
 
 - 3.1 Regression test: throw in a separately-archived `.cja`, catch in the
   consumer, across JIT and AOT paths; unit-tour gated demos enabled and green.
+
+---
+
+**CLOSED — verified fixed on cajeta 0.14.0 (8ca5b362), 2026-08-01.** Re-ran this
+spec's repro against a freshly built 0.14.0 compiler; the defect no longer
+reproduces. Archived per td-project-workflow (spec -> archive, INDEX row dropped).

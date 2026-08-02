@@ -53,3 +53,9 @@ overflow-checked arithmetic) that injects the mismatched comparison.
 - 3.2 Non-regression: the existing ternary/conditional test surface stays green; the
   `if/else` workaround in `StringBuilder.grow` can be reverted to the ternary form and
   still passes (proving the fix at the original call site).
+
+---
+
+**CLOSED — verified fixed on cajeta 0.14.0 (8ca5b362), 2026-08-01.** Re-ran this
+spec's repro against a freshly built 0.14.0 compiler; the defect no longer
+reproduces. Archived per td-project-workflow (spec -> archive, INDEX row dropped).
