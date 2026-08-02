@@ -38,13 +38,27 @@ public final class Pair<K, V> {
      *
      * @EntryPoint
      */
-    public Pair(K first, V second) {
+    public Pair(#K first, #V second) {
+        // uniform-transfer 2.3 — a pair OWNS its two components, so the
+        // formals are `#` and the stores are unconditional transfers.
         this.first #= first;
         this.second #= second;
     }
 
+    /** Borrowing reads — the pair keeps its components. */
     @Inline
     public K first()  { return this.first; }
     @Inline
     public V second() { return this.second; }
+
+    /**
+     * Extracting reads — the component's title moves to the caller and the
+     * pair's slot decays to borrowed. Needed wherever a pair is DECOMPOSED
+     * into an owning container (`HashMap(#Pair<K,V>[])`): the borrowing
+     * `first()`/`second()` cannot feed a `#K`/`#V` formal.
+     */
+    @Inline
+    public #K takeFirst()  { K out #= this.first;  return #out; }
+    @Inline
+    public #V takeSecond() { V out #= this.second; return #out; }
 }

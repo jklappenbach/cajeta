@@ -75,12 +75,12 @@ public final class HashSet<T> {
      * (array-literals §6): `HashSet<int32> s = heap HashSet<int32>([1,2,2,3])`.
      * Duplicates collapse — the set holds {1, 2, 3}.
      */
-    public HashSet(T[] items) {
+    public HashSet(#T[] items) {
         this.map = heap HashMap<T, int8>(16);
         int32 n = (int32) items.count();
         int32 i = 0;
         while (i < n) {
-            this.add(items[i]);
+            this.add(#items[i]);
             i = i + 1;
         }
     }
@@ -92,12 +92,10 @@ public final class HashSet<T> {
      *
      * @Param value the member to add.
      */
-    public void add(T value) {
-        // `#value` forwards the CALLER's transfer (title-tracking 6.2.3): a
-        // droppable class formal forwards its entry flag, an entry-less
-        // String/primitive formal its incoming word bit. A plain forward
-        // read all-borrow in put while THIS formal's armed entry dropped
-        // the member at exit — the set held a dangling pointer.
+    public void add(#T value) {
+        // uniform-transfer 2.3 — the set OWNS its members. The `#` forward
+        // is now the only legal spelling rather than a mode-matching trick:
+        // the map's key formal is `#K`, so the title moves straight through.
         this.map.put(#value, 1);
     }
 

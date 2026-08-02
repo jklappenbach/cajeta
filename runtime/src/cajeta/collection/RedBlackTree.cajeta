@@ -100,10 +100,10 @@ public final class RedBlackTree<K, V> {
      * replaced; otherwise a new red node is inserted and the
      * red-black invariants restored. O(log n).
      */
-    public void put(K key, V value) {
+    public void put(#K key, #V value) {
+        // uniform-transfer 2.3 — the container OWNS its keys and values:
+        // one unconditional transfer, no caller spelling to match.
         if (this.root == null) {
-            // `#key`/`#value` forward the CALLER's transfer word bits into
-            // the node ctor's consuming stores (title-tracking §6.1).
             RedBlackNode<K, V> r = heap RedBlackNode<K, V>(#key, #value);
             r.red = false;
             // Borrow link first; the registry add is the node's LAST use
