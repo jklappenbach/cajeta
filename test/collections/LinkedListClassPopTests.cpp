@@ -210,3 +210,114 @@ TEST(LinkedListClassPopTests, popUserClassOwningArraySurvives) {
         "    }\n"
         "}\n"), 9);
 }
+
+// PROBE — a String built at RUNTIME rather than a literal. Every earlier
+// String probe used a literal (directly or via a local holding one), so the
+// literal's own storage/title status was never excluded.
+TEST(LinkedListClassPopTests, DISABLED_popRuntimeBuiltStringAlsoDies) {
+    EXPECT_EQ(runI32(
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<String> xs = heap LinkedList<String>();\n"
+        "        String a = \"alp\" + \"habet\";\n"
+        "        xs.addTail(a);\n"
+        "        String t = xs.popTail();\n"
+        "        return (int32) t.size();\n"
+        "    }\n"
+        "}\n"), 8);
+}
+
+// PROBE — String in a DIFFERENT container, to separate "String" from
+// "LinkedList's pop".
+TEST(LinkedListClassPopTests, arrayListStringRoundTripWorks) {
+    EXPECT_EQ(runI32(
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<String> xs = heap ArrayList<String>();\n"
+        "        xs.add(\"alpha\");\n"
+        "        String t = xs.get(0);\n"
+        "        return (int32) t.size();\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+// PROBE — a user class with String's EXACT field shape (int32, int32, int8[],
+// int32). If this fails, the fault tracks the layout/ABI; if it passes, String
+// is special-cased somewhere.
+TEST(LinkedListClassPopTests, popUserClassWithStringsExactLayoutSurvives) {
+    EXPECT_EQ(runI32(
+        "package test;\n"
+        "import cajeta.collection.LinkedList;\n"
+        "public final class Strish {\n"
+        "    public int32 lenTag;\n"
+        "    public int32 aux;\n"
+        "    public int8[] base;\n"
+        "    public int32 cachedCpLength;\n"
+        "    public Strish(int32 n) {\n"
+        "        this.lenTag = n;\n"
+        "        this.aux = 0;\n"
+        "        this.base #= heap int8[4];\n"
+        "        this.cachedCpLength = 0;\n"
+        "    }\n"
+        "    public int32 size() { return this.lenTag; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        LinkedList<Strish> xs = heap LinkedList<Strish>();\n"
+        "        xs.addTail(heap Strish(5));\n"
+        "        Strish t = xs.popTail();\n"
+        "        return t.size();\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+// PROBE — the same node/extract shape as LinkedList.pop, written from scratch
+// outside the stdlib. Isolates "String field + fused claim" from anything
+// LinkedList-specific.
+static const char* MINI = R"SRC(
+package test;
+public final class MiniNode<T> {
+    public T value;
+    public MiniNode(T v) { this.value #= v; }
+}
+public final class MiniBox<T> {
+    MiniNode<T> node;
+    public MiniBox() { this.node = null; }
+    public void put(T v) { this.node #= heap MiniNode<T>(#v); }
+    public T take() {
+        MiniNode<T> n #= this.node;
+        this.node = null;
+        T t #= #n.value;
+        return #t;
+    }
+}
+)SRC";
+
+TEST(LinkedListClassPopTests, DISABLED_miniBoxStringExtractionDies) {
+    EXPECT_EQ(runI32(std::string(MINI) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        MiniBox<String> b = heap MiniBox<String>();\n"
+        "        b.put(\"alpha\");\n"
+        "        String t = b.take();\n"
+        "        return (int32) t.size();\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+TEST(LinkedListClassPopTests, miniBoxUserClassExtractionSurvives) {
+    EXPECT_EQ(runI32(std::string(MINI) +
+        "public final class Tg { public int32 v; public Tg(int32 v) { this.v = v; } }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        MiniBox<Tg> b = heap MiniBox<Tg>();\n"
+        "        b.put(heap Tg(5));\n"
+        "        Tg t = b.take();\n"
+        "        return t.v;\n"
+        "    }\n"
+        "}\n"), 5);
+}
