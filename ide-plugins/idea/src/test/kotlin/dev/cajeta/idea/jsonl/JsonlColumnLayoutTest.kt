@@ -164,4 +164,46 @@ class JsonlColumnLayoutTest {
         assertFalse(cols.isPinned())
         assertEquals(listOf("level", "message"), cols.currentLayout().columns)
     }
+
+    // --- the whole cycle a profile goes through, end to end ----------------
+
+    @Test
+    fun aSessionsArrangementIsWhatTheNextSessionOpensWith() {
+        // Stand in for the persistent store: encode/decode is the real thing,
+        // only the storage is a map. This is the contract the console wiring
+        // has to honour — it caught nothing about Swing listeners, so the
+        // wiring is verified live (plan 8.3.2), but the model half is pinned.
+        val stored = HashMap<String, String>()
+        val key = "debug/demo.Prog.main"
+
+        // Session 1: reader trims the columns, reorders, widens one.
+        val first = JsonlColumns(defaultCount = 5)
+        first.observe(record(1, """{"timestamp":"t","level":"info","message":"m","file":"f","line":9}"""))
+        first.setFieldVisible("timestamp", false)
+        first.setFieldVisible("line", false)
+        first.setOrder(listOf("message", "level", "file"))
+        first.setUserWidth("message", 700)
+        stored[key] = first.currentLayout().encode()
+
+        // Session 2: a fresh console for the same profile.
+        val second = JsonlColumns(defaultCount = 5)
+        JsonlColumnLayout.decode(stored[key])?.let { second.applyLayout(it) }
+
+        assertEquals(listOf("message", "level", "file"), second.visible())
+        assertEquals(700, second.userWidth("message"))
+
+        // ...and it survives the records of session 2 arriving, including a
+        // field the reader had switched off.
+        second.observe(record(1, """{"timestamp":"t","level":"warn","message":"m","file":"f","line":3}"""))
+        assertEquals(listOf("message", "level", "file"), second.visible())
+    }
+
+    @Test
+    fun profilesDoNotShareLayouts() {
+        val stored = HashMap<String, String>()
+        stored["debug/demo.A.main"] = JsonlColumnLayout(listOf("level"), emptyMap()).encode()
+
+        assertNull(JsonlColumnLayout.decode(stored["debug/demo.B.main"]))
+        assertEquals(listOf("level"), JsonlColumnLayout.decode(stored["debug/demo.A.main"])?.columns)
+    }
 }

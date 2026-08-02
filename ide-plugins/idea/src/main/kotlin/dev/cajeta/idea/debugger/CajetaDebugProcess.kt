@@ -86,9 +86,15 @@ class CajetaDebugProcess(
                 .console,
             project = session.project,
             navigationRoots = listOfNotNull(session.project.basePath, configuration.sourceRoot.ifBlank { null }),
-            // Column layout is remembered per run/debug profile (§3.1.9.1);
-            // the session name IS the configuration's name.
-            profileKey = JsonConsoleLayoutStore.keyFor("debug", session.sessionName),
+            // Column layout is remembered per run/debug profile (§3.1.9.1).
+            // Key on the ENTRY METHOD, not the platform's session name: a
+            // profile is defined by the main it runs, that main's logging
+            // keeps one schema, and the name is a display string the platform
+            // is free to decorate (" (1)" for a second concurrent session,
+            // renames, temporary configurations). Fall back to the session
+            // name only when there is no entry method to key on.
+            profileKey = JsonConsoleLayoutStore.keyFor(
+                "debug", configuration.entryMethod.ifBlank { session.sessionName }),
         )
         processHandler.attachConsole(console)
         return console
