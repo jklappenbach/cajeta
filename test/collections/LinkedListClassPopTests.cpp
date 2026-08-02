@@ -27,7 +27,7 @@ int32_t runI32(const std::string& src) {
 
 // The reported repro: two class-typed elements in, one popped off the tail.
 // Returning its length proves the popped element is ALIVE, not freed.
-TEST(LinkedListClassPopTests, DISABLED_popTailReturnsLiveClassElement) {
+TEST(LinkedListClassPopTests, popTailReturnsLiveClassElement) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -42,7 +42,7 @@ TEST(LinkedListClassPopTests, DISABLED_popTailReturnsLiveClassElement) {
         "}\n"), 4);   // "beta"
 }
 
-TEST(LinkedListClassPopTests, DISABLED_popHeadReturnsLiveClassElement) {
+TEST(LinkedListClassPopTests, popHeadReturnsLiveClassElement) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -60,7 +60,7 @@ TEST(LinkedListClassPopTests, DISABLED_popHeadReturnsLiveClassElement) {
 // Pop everything, then keep using what came out — the drop-chain-clean case
 // (spec 3.1). If a popped node's drop frees the element, the SECOND pop or the
 // trailing reads are where it shows.
-TEST(LinkedListClassPopTests, DISABLED_drainKeepsEveryPoppedElementAlive) {
+TEST(LinkedListClassPopTests, drainKeepsEveryPoppedElementAlive) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -81,7 +81,7 @@ TEST(LinkedListClassPopTests, DISABLED_drainKeepsEveryPoppedElementAlive) {
 
 // The single-element list takes popTail's OTHER branch (no predecessor — the
 // title lives in headNode, not in prev.next).
-TEST(LinkedListClassPopTests, DISABLED_popTailSingleElementTakesHeadNodeBranch) {
+TEST(LinkedListClassPopTests, popTailSingleElementTakesHeadNodeBranch) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -146,7 +146,7 @@ TEST(LinkedListClassPopTests, popUserClassLent) {
 }
 
 // PROBE — String via a NAMED LOCAL rather than a literal at the call site.
-TEST(LinkedListClassPopTests, DISABLED_popStringViaNamedLocalAlsoDies) {
+TEST(LinkedListClassPopTests, popStringViaNamedLocalAlsoDies) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -214,7 +214,7 @@ TEST(LinkedListClassPopTests, popUserClassOwningArraySurvives) {
 // PROBE — a String built at RUNTIME rather than a literal. Every earlier
 // String probe used a literal (directly or via a local holding one), so the
 // literal's own storage/title status was never excluded.
-TEST(LinkedListClassPopTests, DISABLED_popRuntimeBuiltStringAlsoDies) {
+TEST(LinkedListClassPopTests, popRuntimeBuiltStringAlsoDies) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -297,7 +297,7 @@ public final class MiniBox<T> {
 }
 )SRC";
 
-TEST(LinkedListClassPopTests, DISABLED_miniBoxStringExtractionDies) {
+TEST(LinkedListClassPopTests, miniBoxStringExtractionDies) {
     EXPECT_EQ(runI32(std::string(MINI) +
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -378,7 +378,7 @@ public final class SBox<T> {
 }
 )SRC";
 
-TEST(LinkedListClassPopTests, DISABLED_singleSharpStoreFromStringFieldStillDies) {
+TEST(LinkedListClassPopTests, singleSharpStoreFromStringFieldStillDies) {
     EXPECT_EQ(runI32(std::string(MINI_SINGLE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
