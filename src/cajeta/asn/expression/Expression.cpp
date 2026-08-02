@@ -91,10 +91,61 @@ namespace cajeta {
         return neu;
     }
 
+    // `(Name)(operand)` — is this postfix-call node actually a CAST whose
+    // destination names a type? Returns the destination type when so, null to
+    // leave the node a call.
+    //
+    // Shape first, resolution second, and both must hold:
+    //
+    //   - the callee is a PARENTHESIZED SINGLE IDENTIFIER. `kernel.launch(d)(a)`
+    //     has a method-call callee and is excluded here, before any lookup —
+    //     the XPU launch form never reaches the resolver.
+    //   - exactly ONE argument, unlabelled and not `#`-transferred. A cast has
+    //     one operand; `(f)(a, b)` and `(f)(#a)` stay calls.
+    //   - the identifier RESOLVES to a type in the current scope. This is the
+    //     only semantic step, and it is deliberately last: a name that is not
+    //     a type falls through and behaves exactly as it did before.
+    //
+    // Resolution runs through the ordinary resolver, so a class-level or
+    // method-level type parameter binds through the module's substitution
+    // stack when the template body is walked for an instantiation — which is
+    // the only time a template body IS walked. That is why the check cannot
+    // be hoisted into the grammar or done purely on the name.
+    static CajetaTypePtr castDestOfParenCallee(
+            CajetaParser::ExpressionContext* ctx) {
+        if (ctx->expression().size() != 1 || !ctx->parameterList()) {
+            return nullptr;
+        }
+        auto entries = ctx->parameterList()->parameterEntry();
+        if (entries.size() != 1) return nullptr;
+        auto* only = entries[0];
+        if (!only->expression() || only->REFERENCE() || only->parameterLabel()) {
+            return nullptr;
+        }
+        // Callee must be `'(' identifier ')'` — a primary holding parens whose
+        // inner expression is a primary holding just an identifier.
+        auto* calleePrim = ctx->expression(0)->primary();
+        if (!calleePrim || !calleePrim->LPAREN() || !calleePrim->expression()) {
+            return nullptr;
+        }
+        auto* innerPrim = calleePrim->expression()->primary();
+        if (!innerPrim || !innerPrim->identifier()) return nullptr;
+        // A bare identifier primary carries nothing else; anything richer
+        // (`(a.b)(x)`, `(a[0])(x)`) is a call, not a cast destination.
+        if (innerPrim->getText() != innerPrim->identifier()->getText()) {
+            return nullptr;
+        }
+        return CajetaType::resolveNamed(
+            QualifiedName::getOrInsert(innerPrim->identifier()->getText(),
+                                       "code"),
+            nullptr);
+    }
+
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
         antlr4::Token* token = ctx->getStart();
         ExpressionPtr result = nullptr;
         bool sharpAssign = false;
+        bool castOfParenCallee = false;
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->SHARP_ASSIGN()) {
@@ -226,6 +277,29 @@ namespace cajeta {
                 // Intersection casts (multiple typeTypes) aren't supported yet; take the first.
                 CajetaTypePtr destType = CajetaType::fromContext(ctx->typeType(0), nullptr);
                 result = make_shared<CastExpression>(destType, token);
+            } else if (CajetaTypePtr namedDest = castDestOfParenCallee(ctx)) {
+                // `(Name)(expr)` — a cast whose destination NAMES a type and
+                // whose operand is parenthesized. The grammar's postfix-call
+                // alternative wins it, because `(Name)` is itself a valid
+                // parenthesized identifier expression, and the cast
+                // alternative is listed later. A PRIMITIVE destination cannot
+                // match that alternative (`(int64)` is not an expression),
+                // which is why `(int64) (mm & 65535)` always worked and
+                // `(E) (acc / 2.0)` did not — the dominant idiom in generic
+                // numeric code ("reduce in float64, narrow to E on store").
+                //
+                // Reinterpreted here rather than in the grammar so cast
+                // PRECEDENCE cannot move: `(T) a.b()` has an unparenthesized
+                // operand, never parses as a postfix call, and so never
+                // reaches this arm. Reordering the grammar alternatives would
+                // lift the cast above every suffix operator between them and
+                // regress it to `((T) a).b()`.
+                //
+                // Resolution failure falls through to the call, so an
+                // identifier that is not a type behaves exactly as before.
+                // See specs/typeparam-cast-of-paren-spec.md.
+                result = make_shared<CastExpression>(namedDest, token);
+                castOfParenCallee = true;
             } else {
                 // `<callee>(args)` — the callee expression is attached as
                 // children[0] by the child loop at the bottom of this function.
@@ -457,7 +531,14 @@ namespace cajeta {
             result = make_shared<InstanceOfExpression>(targetType, patternName, token);
         }
 
-        if (result) {
+        if (result && castOfParenCallee) {
+            // `(Name)(operand)` reinterpreted as a cast. The operand is the
+            // postfix call's single ARGUMENT, not a child expression — the
+            // node's only `expression()` child is the callee `(Name)`, which
+            // is the destination type and must NOT become the cast's operand.
+            auto* only = ctx->parameterList()->parameterEntry(0);
+            result->addChild(Expression::fromContext(only->expression()));
+        } else if (result) {
             if (!ctx->expression().empty()) {
                 size_t childIndex = 0;
                 for (auto childContext: ctx->expression()) {
