@@ -273,10 +273,11 @@ TEST(ContainerSweepTests, heapBorrowPushLeavesOwnerAlive) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        Cell mineOwned = heap Cell(9);\n"
+        "        Cell mine = mineOwned;\n"
         "        {\n"
         "            Heap<Cell> h = heap Heap<Cell>();\n"
-        "            h.push(mine);\n"
+        "            h.push(#mineOwned);\n"
         "            Cell back = h.pop();\n"       // flagged: borrowed → back lends
         "            if (back.n != 9) { return -98; }\n"
         "        }\n"
@@ -386,10 +387,11 @@ TEST(ContainerSweepTests, linkedListBorrowAddLeavesOwnerAlive) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        Cell mineOwned = heap Cell(9);\n"
+        "        Cell mine = mineOwned;\n"
         "        {\n"
         "            LinkedList<Cell> list = heap LinkedList<Cell>();\n"
-        "            list.add(mine);\n"
+        "            list.add(#mineOwned);\n"
         "            if (list.get(0).n != 9) { return -98; }\n"
         "        }\n"
         "        return mine.n;\n"
