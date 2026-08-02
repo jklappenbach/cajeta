@@ -30,6 +30,7 @@ namespace {
 // that had no bearing on transfer semantics.
 const char* kSrc =
     "package test;\n"
+    "import cajeta.collection.ArrayList;\n"
     "public class Cell {\n"
     "    public int32 n;\n"
     "    public Cell(int32 nn) { this.n = nn; }\n"
@@ -115,7 +116,6 @@ std::string compileExpectError(const std::string& src,
 // 2.1.1 — a plain owned local into a container is now an error naming `#v`.
 TEST(UniformTransferTests, plainAddOfOwnedLocalIsTransferRequired) {
     std::string src = std::string(kSrc) +
-        "import cajeta.collection.ArrayList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
@@ -131,7 +131,6 @@ TEST(UniformTransferTests, plainAddOfOwnedLocalIsTransferRequired) {
 // 2.1.2 — the surrendered spelling compiles.
 TEST(UniformTransferTests, sharpAddOfOwnedLocalCompiles) {
     EXPECT_EQ(runI32(std::string(kSrc) +
-        "import cajeta.collection.ArrayList;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
