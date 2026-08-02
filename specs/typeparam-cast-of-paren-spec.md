@@ -107,12 +107,18 @@ identifier*, build a `CastExpression` on that identifier's type instead of a
 Why this is narrow rather than clever:
 
 - The shape is detectable **syntactically** — `expression(0)` is a primary
-  holding `'(' expression ')'` whose inner expression is one identifier. No
-  type lookup at dispatch time, so the substitution stack is not consulted and
-  a method-level `<E extends Floating>` needs no special handling. That
-  matters: template bodies are skipped on the declaring walk and re-walked per
-  instantiation, so a design requiring `E` to *resolve* here would work at
-  instantiation and fail at declaration.
+  holding `'(' expression ')'` whose inner expression is one identifier.
+  Checking shape first is what keeps the change narrow.
+
+  *(Corrected after implementing.* This design originally claimed the name
+  must NOT be resolved here — that template bodies are skipped on the
+  declaring walk, so resolving `E` at dispatch would work at instantiation and
+  fail at declaration. That reasoning was wrong. A template body is only ever
+  walked FOR an instantiation, and at that point the substitution stack has
+  `E` bound, so `resolveNamed` succeeds. Tests 1 and 2 pin both the
+  method-level and class-level cases. Resolving is in fact what makes the
+  change safe: a name that is not a type falls through to the call unchanged,
+  so no working program can break.)*
 - **3.3 falls out for free.** `kernel.launch(...)(...)`'s callee is a method
   call, not a parenthesized identifier — the branch never fires.
 - **3.2 is untouched.** `(T) a.b()` does not parse as a postfix call at all
@@ -125,20 +131,62 @@ Why this is narrow rather than clever:
   `(this.fn)(args)` (a dotted callee is not a single identifier). Confirmed
   unused across runtime, tests, and the ML stack as of 2026-07-31.
 
-**One divergence to pin, not paper over.** `(T)(x).foo()` parses outermost as
-DOT over `(T)(x)`, so this rule yields `((T)(x)).foo()` — cast, then call.
-Java yields `(T)((x).foo())`. 4.1 has the identical caveat. Accept the
-divergence (the form is vanishingly rare and reader-hostile) and pin it with a
-test that asserts the cajeta reading, so nobody "fixes" it later by accident.
+**One divergence to pin, not paper over** — and it is an INCONSISTENCY, which
+writing the test revealed and this spec originally got wrong.
 
-**Tests to add before the change (3.1/3.2/3.3 + the divergence):**
+`(T)(x).foo()` with T naming a type parses outermost as DOT over `(T)(x)`, so
+this rule yields `((T)(x)).foo()` — cast, then suffix. Java yields
+`(T)((x).foo())`.
 
-1. `(E) (acc / 2.0)` in a generic method lowers as a cast — the reported case.
-2. `(int64) (mm & 65535)` still lowers as a cast — the primitive path is
-   unchanged.
-3. `(T) a.b()` still parses as `(T) (a.b())` — the precedence pin.
-4. `kernel.launch(...)(...)` still parses as the XPU launch form.
-5. `(T)(x).foo()` parses as `((T)(x)).foo()` — the documented divergence.
+But with a PRIMITIVE destination, `(int64)(x).foo()` cannot match the
+postfix-call alternative at all, so the cast alternative takes the whole chain
+and cajeta already agrees with Java. Measured, not assumed: an early draft of
+test 5 used `(int32) (d).toString()` and failed with "no member 'toString' on
+'float64'" — i.e. the primitive form had bound the whole chain, Java-style.
+
+So `(D)(x).f()` reads differently depending on whether D is a primitive or a
+type name. Matching Java for the type-name case would mean restructuring the
+tree upward from the DOT parent, far beyond this change. Accept the split,
+pin BOTH sides, and say so plainly rather than leaving it to be discovered.
+
+**Tests (written first, all six in `test/expression/UnaryAndCastTests.cpp`):**
+
+1. `typeParamCastOfParenthesizedOperand` — `(E) (acc / 2.0)` in a generic
+   METHOD. The reported case.
+2. `classTypeParamCastOfParenthesizedOperand` — the same over a CLASS type
+   parameter (`Box<E extends Floating>`), which is the `GradTape<E>` shape.
+3. `primitiveCastOfParenthesizedOperandStillWorks` — `(int64) (mm & 65535)`.
+4. `castBindsWholePostfixChainNotJustTheReceiver` — the precedence pin.
+5. `typeNameCastOfParenthesizedThenSuffixBindsCastFirst` — the divergence.
+6. `primitiveCastBindsWholeChainLikeJava` — the other side of the split.
+
+1, 2 and 5 failed with the reported `CAJETA_ERROR_NOT_IMPLEMENTED: general
+postfix call` before the change; 3, 4 and 6 passed before and after.
+
+## 4b. Implemented — 2026-08-02
+
+`Expression::fromContext`, `src/cajeta/asn/expression/Expression.cpp`: a new
+`castDestOfParenCallee(ctx)` helper, consulted in the `LPAREN` branch between
+the existing typeType-cast arm and the postfix-call arm.
+
+Two details that only surfaced in the writing:
+
+- **The operand is the call's ARGUMENT, not a child expression.** `(E)(x)`
+  parses with `expression(0)` = the callee `(E)` and `x` inside
+  `parameterList`. The generic child-attach loop at the bottom of
+  `fromContext` would have hung the *destination type* on the cast as its
+  operand. The cast arm attaches `parameterList()->parameterEntry(0)`
+  explicitly and skips that loop.
+- **Shape is checked before resolution, and resolution is last.** The callee
+  must be a parenthesized single identifier and there must be exactly one
+  unlabelled, non-`#` argument; only then is the name resolved. So
+  `kernel.launch(d)(a)` is excluded on shape, and a name that is not a type
+  falls through to the call unchanged — the change cannot turn a working call
+  into an error.
+
+Validation: 28/28 in `CastTests`+`PrefixTests`+`PostfixTests`, 22/22 across
+`XpuLaunch*`/`XpuKernelArg*` (3.3), light sweep 198/198. Full sweep at the
+gate.
 
 Then revert the 17 hoisted locals in `ml/grad/StructKernels.cajeta`? **No** —
 leave them. They read better, which the spec already notes; the fix is for the
