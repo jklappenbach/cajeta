@@ -49,3 +49,9 @@ a fat-aware `==` is a candidate follow-up.
 
 The `Pipeline` IdentityTransformer padding stays (it is also semantically
 cleaner than nullable stages).
+
+---
+
+**CLOSED — verified fixed on cajeta 0.14.0 (8ca5b362), 2026-08-01.** Re-ran this
+spec's repro against a freshly built 0.14.0 compiler; the defect no longer
+reproduces. Archived per td-project-workflow (spec -> archive, INDEX row dropped).
