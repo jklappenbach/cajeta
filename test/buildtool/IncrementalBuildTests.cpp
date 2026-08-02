@@ -155,6 +155,20 @@ struct Project {
         return exitCodeOf(std::system(cmd.c_str()));
     }
 
+    // Hand-authored agent skills live beside cajeta.json, OUTSIDE the source
+    // root, and are embedded into the built artifact.
+    void writeSkill(const std::string& body) const {
+        fs::create_directories(root / "skills");
+        std::ofstream s(root / "skills" / "t-overview.md");
+        s << "---\n"
+             "id: t-overview\n"
+             "applies-to: [t.Main]\n"
+             "title: t — orientation\n"
+             "description: routing for t\n"
+             "---\n\n"
+          << body << "\n";
+    }
+
     // Force the next build past the Phase-0 whole-artifact layer so it
     // exercises the manifest/codegen-skip path (artifact evicted, IR slots
     // intact — a real cache state).
@@ -457,6 +471,70 @@ TEST(IncrementalBuild, WholeArtifactMissFallsThroughThenRehits) {
     EXPECT_TRUE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
     EXPECT_EQ(readAll(p.exePath()), exe2);
     EXPECT_EQ(p.runExe(), 8);
+}
+
+// Editing an EMBEDDED RESOURCE busts the whole-artifact key.
+//
+// `skills/` is authored beside cajeta.json, outside the positional source
+// root, so the key's `.cajeta` walk never saw it: a skill edit left the key
+// unchanged and the cache re-published an artifact carrying the OLD skill —
+// byte-identical, silently stale, and invisible until someone read the
+// shipped documentation and found it describing the previous release.
+// Documentation that ships inside the artifact is a build input.
+TEST(IncrementalBuild, EditedSkillMissesTheWholeArtifactCache) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("skillkey");
+    p.writeSkill("first body");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_FALSE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+
+    // No change at all — the key must still hit, or the fix would be a
+    // blanket cache defeat rather than a correction.
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_TRUE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+
+    // Skill edited, sources untouched → MISS.
+    p.writeSkill("second body, materially different");
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_FALSE(contains(p.buildOutput(), "[cache] hit"))
+        << "an edited skill must re-key the artifact:\n" << p.buildOutput();
+
+    // ...and the rebuilt state hits again, so the key is content-addressed
+    // rather than merely invalidated once.
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_TRUE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+
+    // Reverting to the ORIGINAL skill returns to the ORIGINAL key — content
+    // addressing, not a monotonic counter.
+    p.writeSkill("first body");
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_TRUE(contains(p.buildOutput(), "[cache] hit"))
+        << "reverting a skill should land back on the first artifact:\n"
+        << p.buildOutput();
+}
+
+// Adding a NEW skill file re-keys too — the walk must be over the directory,
+// not a fixed set of paths sampled once.
+TEST(IncrementalBuild, AddedSkillFileMissesTheWholeArtifactCache) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    auto p = Project::create("skilladd");
+    p.writeSkill("only skill");
+
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    ASSERT_TRUE(contains(p.buildOutput(), "[cache] hit")) << p.buildOutput();
+
+    {
+        std::ofstream s(p.root / "skills" / "t-second.md");
+        s << "---\nid: t-second\napplies-to: [t.Util]\n"
+             "title: t — second\ndescription: more routing\n---\n\nbody\n";
+    }
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();
+    EXPECT_FALSE(contains(p.buildOutput(), "[cache] hit"))
+        << "a new skill file must re-key the artifact:\n" << p.buildOutput();
 }
 
 // `no-cache: true` bypasses BOTH cache layers: no artifact reuse, no

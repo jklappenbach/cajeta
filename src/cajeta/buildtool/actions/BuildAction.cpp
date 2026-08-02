@@ -21,6 +21,7 @@
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/Flavor.h"
+#include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
@@ -442,17 +443,55 @@ namespace cajeta::buildtool {
                 sourceCount = static_cast<int>(perSource.size());
                 std::sort(perSource.begin(), perSource.end());
 
+                // Non-source inputs the archive EMBEDS. `skills/` is authored
+                // beside cajeta.json, outside the positional source root, so
+                // the .cajeta walk above never sees it — editing a skill left
+                // the key unchanged and the cache re-published an artifact
+                // carrying the OLD skill, byte-identical and silently stale.
+                // Documentation that ships inside the artifact is a build
+                // input like any other. (The generated skills/index.json is
+                // derived from these files' front matter, so digesting the
+                // sources covers it.)
+                std::vector<std::pair<std::string, std::string>> perResource;
+                if (ctx.manifest()) {
+                    fs::path skillRoot =
+                        fs::path(projectRootFromManifest(*ctx.manifest()))
+                        / "skills";
+                    std::error_code ec3;
+                    if (fs::is_directory(skillRoot, ec3)) {
+                        for (auto& e : fs::recursive_directory_iterator(
+                                           skillRoot, ec3)) {
+                            if (!e.is_regular_file()) continue;
+                            std::string d = ArtifactCache::sha256OfFile(
+                                e.path().string());
+                            if (d.empty()) continue;
+                            perResource.emplace_back(
+                                "skills/" + fs::relative(e.path(), skillRoot)
+                                                .generic_string(),
+                                d);
+                        }
+                    }
+                }
+                std::sort(perResource.begin(), perResource.end());
+
                 // Phase 0 whole-artifact layer — single-file artifacts only
                 // (exe/cja); exploded-ir has no one artifact to re-publish.
-                // Key = discriminator ⊕ entry ⊕ every (path, digest): the
-                // discriminator already folds flags/emit/target/profile/
-                // classpath, but NOT the entry method (positional).
+                // Key = discriminator ⊕ entry ⊕ every (path, digest) over
+                // sources AND embedded resources: the discriminator already
+                // folds flags/emit/target/profile/classpath, but NOT the entry
+                // method (positional) and not what gets embedded.
                 if (!outputPath.empty()) {
                     std::string wholeInput = probeOut;
                     wholeInput.push_back('\0');
                     wholeInput += *entry;
                     wholeInput.push_back('\0');
                     for (auto& [rel, digest] : perSource) {
+                        wholeInput += rel + "=" + digest + "\n";
+                    }
+                    // Separated from the source block so a source path can
+                    // never collide with a resource path in the key.
+                    wholeInput.push_back('\0');
+                    for (auto& [rel, digest] : perResource) {
                         wholeInput += rel + "=" + digest + "\n";
                     }
                     std::string wholeDigest = sha256Hex(wholeInput);
