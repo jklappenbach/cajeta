@@ -321,3 +321,84 @@ TEST(LinkedListClassPopTests, miniBoxUserClassExtractionSurvives) {
         "    }\n"
         "}\n"), 5);
 }
+
+// PROBE — same MiniBox shape, but the extraction is a PLAIN read instead of a
+// fused claim. §5.1.6 says a plain store "dual-role-resolves a copy"; if the
+// plain READ resolves a copy too, a String field never needs to give up its
+// wrapper and the fix is spelling, not machinery.
+static const char* MINI_PLAIN = R"SRC(
+package test;
+public final class PNode<T> {
+    public T value;
+    public PNode(T v) { this.value #= v; }
+}
+public final class PBox<T> {
+    PNode<T> node;
+    public PBox() { this.node = null; }
+    public void put(T v) { this.node #= heap PNode<T>(#v); }
+    public T take() {
+        PNode<T> n #= this.node;
+        this.node = null;
+        T t = n.value;          // PLAIN read, not `#n.value`
+        return t;
+    }
+}
+)SRC";
+
+TEST(LinkedListClassPopTests, plainReadExtractsStringSafely) {
+    EXPECT_EQ(runI32(std::string(MINI_PLAIN) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        PBox<String> b = heap PBox<String>();\n"
+        "        b.put(\"alpha\");\n"
+        "        String t = b.take();\n"
+        "        return (int32) t.size();\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+// PROBE — Julian's spelling: `#=` store with a PLAIN rhs (single sharp), not
+// the stdlib's `#= #n.value` double-sharp.
+static const char* MINI_SINGLE = R"SRC(
+package test;
+public final class SNode<T> {
+    public T value;
+    public SNode(T v) { this.value #= v; }
+}
+public final class SBox<T> {
+    SNode<T> node;
+    public SBox() { this.node = null; }
+    public void put(T v) { this.node #= heap SNode<T>(#v); }
+    public T take() {
+        SNode<T> n #= this.node;
+        this.node = null;
+        T t #= n.value;         // single sharp — the store carries the transfer
+        return #t;
+    }
+}
+)SRC";
+
+TEST(LinkedListClassPopTests, DISABLED_singleSharpStoreFromStringFieldStillDies) {
+    EXPECT_EQ(runI32(std::string(MINI_SINGLE) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        SBox<String> b = heap SBox<String>();\n"
+        "        b.put(\"alpha\");\n"
+        "        String t = b.take();\n"
+        "        return (int32) t.size();\n"
+        "    }\n"
+        "}\n"), 5);
+}
+
+TEST(LinkedListClassPopTests, singleSharpStoreFromUserClassFieldWorks) {
+    EXPECT_EQ(runI32(std::string(MINI_SINGLE) +
+        "public final class Tg2 { public int32 v; public Tg2(int32 v) { this.v = v; } }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        SBox<Tg2> b = heap SBox<Tg2>();\n"
+        "        b.put(heap Tg2(5));\n"
+        "        Tg2 t = b.take();\n"
+        "        return t.v;\n"
+        "    }\n"
+        "}\n"), 5);
+}

@@ -80,6 +80,27 @@ rewrite, 2026-07-31).
   scenario stores the edit descriptions themselves instead of int32 IDs
   (the current gated workaround).
 
+## 1b. The spelling is a SEPARATE defect (2026-08-02)
+
+The stdlib's pop writes `T title #= #node.value;` — a double sharp. Per the
+language rule ("a store uses `#=`; everything else uses `#v`" —
+`language-ownership`), the correct spelling is `T title #= node.value;`: the
+`#=` store already carries the transfer. **The compiler accepts the double
+sharp silently, with no diagnostic** — worth its own filing.
+
+Measured, so the two defects are not confused:
+
+| Extraction | `T = String` | `T = user class` |
+|---|---|---|
+| `T t #= node.value;`  (correct spelling) | **garbage** | correct |
+| `T t #= #node.value;` (stdlib's double sharp) | **garbage, identical** | correct |
+| `T t = node.value;`   (plain read) | **correct** | n/a — would leak the title |
+
+So the spelling is wrong and should be fixed, but it is NOT the cause: `#=`
+from a String field has nothing to transfer either way, because the field has
+no ownership bit (1.2a). Correcting the spelling makes the IDIOMATIC form the
+one that silently corrupts, which raises the priority of the real fix.
+
 ## 2a. Fix direction (needs a call — §5.1.6 is ratified)
 
 The always-owned exclusion is not an oversight; it is how String transfers
@@ -88,7 +109,18 @@ holder owning. What it does not cover is EXTRACTION — `T t #= #node.value` is
 neither put spelling, and there is no mechanism for a String field to give up
 ownership.
 
-Two shapes fit the existing machinery:
+The plain read already does the right thing — `T t = node.value;` survives the
+holder's drop under `MALLOC_PERTURB_` (`plainReadExtractsStringSafely`). §5.1.6
+says a plain store "dual-role-resolves a copy"; the plain READ evidently
+resolves one too. That suggests the smallest correct fix:
+
+- **(0) Degrade `#=` from a String-typed field to the plain resolve.** A String
+  field cannot give up its wrapper — that is what §5.1.6 means by always-owned —
+  so the transfer spelling should copy/share rather than forward, exactly as the
+  plain read does. No new machinery, no rule change, decidable per template
+  instantiation. This is the recommended shape.
+
+Two heavier alternatives, if (0) proves wrong:
 
 - **(A) Share on extract.** Lower a fused claim of a String-typed field to a
   stake acquire rather than a title move: the runtime already has the
