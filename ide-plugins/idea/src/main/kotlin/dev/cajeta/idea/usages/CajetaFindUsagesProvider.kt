@@ -28,7 +28,7 @@ class CajetaFindUsagesProvider : FindUsagesProvider {
     override fun getWordsScanner(): WordsScanner? = null
 
     override fun canFindUsagesFor(psiElement: PsiElement): Boolean =
-        psiElement is CajetaTypeDeclaration && psiElement.name != null
+        psiElement is CajetaNamedElement && psiElement.name != null
 
     override fun getHelpId(psiElement: PsiElement): String? = null
 

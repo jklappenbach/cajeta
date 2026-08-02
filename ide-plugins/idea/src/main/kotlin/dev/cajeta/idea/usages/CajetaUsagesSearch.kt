@@ -46,7 +46,14 @@ class CajetaUsagesSearch : QueryExecutor<PsiReference, ReferencesSearch.SearchPa
 
         val sites = CajetaUsageRecords.parseAll(
             ReadAction.compute<List<dev.cajeta.idea.debugger.Json.Obj>, RuntimeException> {
-                XrefQuery.usagesOf(project, fqn)
+                // A type is referenced; a method is CALLED. The export keys the
+                // two relations separately, so ask both and let whichever
+                // applies answer — a member gets its call sites, a type its
+                // references, and neither needs to know which it is.
+                XrefQuery.usagesOf(project, fqn) +
+                    overloadKeyFor(project, target)
+                        ?.let { XrefQuery.callersOf(project, it) }
+                        .orEmpty()
             })
         for (site in sites) {
             val ref = ReadAction.compute<PsiReference?, RuntimeException> {
@@ -69,9 +76,58 @@ class CajetaUsagesSearch : QueryExecutor<PsiReference, ReferencesSearch.SearchPa
          * return nothing (or worse, another member's usages) rather than
          * failing visibly. They join when the key is confirmed.
          */
+        /**
+         * The overload key for a MEMBER, read from its own declaration record
+         * rather than constructed.
+         *
+         * Constructing it would mean re-implementing the compiler's mangling
+         * in Kotlin and keeping the two in step forever; a wrong guess returns
+         * nothing, or another overload's usages, without ever failing visibly.
+         * The declaration already carries the key, so the only real problem is
+         * picking the RIGHT declaration when a name is overloaded — settled by
+         * position, since two overloads cannot share a line.
+         */
+        fun overloadKeyFor(project: Project, element: PsiElement): String? {
+            if (element !is CajetaNamedElement) return null
+            if (element is CajetaTypeDeclaration) return null
+            val dotted = dottedNameOf(element) ?: return null
+            val file = element.containingFile ?: return null
+            val doc = PsiDocumentManager.getInstance(project).getDocument(file)
+            val line = doc?.getLineNumber(element.textOffset)?.plus(1)
+            val records = XrefQuery.declarationsOf(project, dotted)
+            if (records.isEmpty()) return null
+            val exact = records.firstOrNull { r ->
+                (r.entries["line"] as? dev.cajeta.idea.debugger.Json.Num)
+                    ?.value?.toInt() == line
+            }
+            // With no position match, a SINGLE candidate is unambiguous; more
+            // than one means overloads we cannot tell apart, and answering
+            // with the wrong one is worse than answering with none (§2.1.3).
+            val chosen = exact ?: records.singleOrNull() ?: return null
+            return (chosen.entries["overloadKey"] as? dev.cajeta.idea.debugger.Json.Str)
+                ?.value?.ifBlank { null }
+        }
+
+        /** `package.Outer.member` — the name a declaration record is filed
+         *  under, for a type or a member alike. */
+        private fun dottedNameOf(element: PsiElement): String? {
+            val named = element as? CajetaNamedElement ?: return null
+            val name = named.name ?: return null
+            val enclosing = ArrayList<String>()
+            var parent = PsiTreeUtil.getParentOfType(
+                element, CajetaTypeDeclaration::class.java, true)
+            while (parent != null) {
+                parent.name?.let { enclosing.add(0, it) }
+                parent = PsiTreeUtil.getParentOfType(
+                    parent, CajetaTypeDeclaration::class.java, true)
+            }
+            val pkg = packageOf(element.containingFile)?.ifBlank { null }
+            return (listOfNotNull(pkg) + enclosing + name).joinToString(".")
+        }
+
         fun fqnOf(element: PsiElement): String? {
             if (element !is CajetaNamedElement) return null
-            if (element !is CajetaTypeDeclaration) return null
+            if (element !is CajetaTypeDeclaration) return dottedNameOf(element)
             val name = element.name ?: return null
             val enclosing = ArrayList<String>()
             var parent = PsiTreeUtil.getParentOfType(
