@@ -52,6 +52,17 @@
     </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- Find Usages (ide-features §2.0.4). Registering these turns on the
+             platform's own usage machinery — right-click Find Usages, the
+             Ctrl+Click usages popup, and the docked Find window with its file
+             tree and source preview. The search itself answers from the
+             compiler's resolved reference export, not a text scan. -->
+        <lang.findUsagesProvider language="Cajeta"
+            implementationClass="dev.cajeta.idea.usages.CajetaFindUsagesProvider"/>
+        <referencesSearch
+            implementation="dev.cajeta.idea.usages.CajetaUsagesSearch"/>
+        <usageTypeProvider
+            implementation="dev.cajeta.idea.usages.CajetaUsageTypeProvider"/>
         <!-- W-buildtool: the Gradle-style build-tool tool window, available only
              when the project has a cajeta.json (spec §2.2). -->
         <toolWindow
