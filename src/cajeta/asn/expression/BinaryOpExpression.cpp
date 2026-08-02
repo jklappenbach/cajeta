@@ -722,6 +722,89 @@ namespace cajeta {
      * @param module
      * @return
      */
+    // Locate the hidden ownership word for a `recv.field` store, so the store
+    // can record whether the field holds a title.
+    //
+    // The word lives at a FIXED byte delta from the field slot — both sit in
+    // the declaring class's sub-object region, so the delta measured on the
+    // standalone layout holds inside any descendant. Returns false (leaving
+    // the outputs untouched) whenever the field carries no bit: a bit-less
+    // field type, an unresolvable receiver, or an opaque/incomplete layout.
+    //
+    // Shared by the String field-store path and the general field-ownership
+    // ("fob") block below. They diverge afterwards — the general path also
+    // classifies the store's spelling and releases a displaced owned value,
+    // while a String field always owns its wrapper — but both need this same
+    // word, and a second copy of the layout math is a place for the two to
+    // disagree.
+    static bool locateFieldOwnershipBit(
+            const CajetaModulePtr& module, llvm::IRBuilder<>* builder,
+            const std::shared_ptr<DotExpression>& dot, llvm::Value* slotPtr,
+            llvm::Value** wordPtrOut, int* bitIdxOut,
+            StructurePropertyPtr* propOut = nullptr) {
+        if (!dot || !slotPtr || !slotPtr->getType()->isPointerTy()) return false;
+        auto& ch = dot->getChildren();
+        auto recv = ch.empty() ? nullptr
+            : std::dynamic_pointer_cast<Expression>(ch[0]);
+        // title-stores §3.3.2 (Unit 4) — ARRAY-ELEMENT receivers participate
+        // only when the element struct carries per-member bits; elements
+        // without them keep the 6.2.6b exemption.
+        if (auto aix = std::dynamic_pointer_cast<ArrayIndexExpression>(
+                ch.empty() ? nullptr : ch[0])) {
+            if (!aix->getResolvedType()) aix->resolveTypes(module);
+            if (!CajetaClass::arrayElementCarriesMemberBits(
+                    aix->getResolvedType())) {
+                recv = nullptr;
+            }
+        }
+        if (recv && !recv->getResolvedType()) recv->resolveTypes(module);
+        auto recvClass = recv
+            ? std::dynamic_pointer_cast<CajetaClass>(recv->getResolvedType())
+            : nullptr;
+        if (!recvClass) return false;
+
+        StructurePropertyPtr prop;
+        CajetaClassPtr decl;
+        std::function<bool(const CajetaClassPtr&)> find =
+            [&](const CajetaClassPtr& cls) -> bool {
+                if (!cls) return false;
+                auto pit = cls->getProperties().find(dot->getIdentifier());
+                if (pit != cls->getProperties().end()) {
+                    prop = pit->second;
+                    decl = cls;
+                    return true;
+                }
+                for (auto& sup : cls->getSuperClasses()) {
+                    if (find(sup)) return true;
+                }
+                return false;
+            };
+        find(recvClass);
+        if (!prop || !decl || !CajetaClass::fieldHasOwnershipBit(prop)) {
+            return false;
+        }
+
+        int fieldIdx = decl->getFieldLlvmIndex(prop);
+        int wordIdx = decl->getOwnershipWordLlvmIndex();
+        auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
+            decl->getLlvmType());
+        if (fieldIdx < 0 || wordIdx < 0 || !declTy || declTy->isOpaque()) {
+            return false;
+        }
+        const llvm::DataLayout& dl = module->getLlvmModule()->getDataLayout();
+        const llvm::StructLayout* sl = dl.getStructLayout(declTy);
+        int64_t delta = (int64_t) sl->getElementOffset((unsigned) wordIdx)
+            - (int64_t) sl->getElementOffset((unsigned) fieldIdx);
+        auto& ctx = *module->getLlvmContext();
+        *wordPtrOut = builder->CreateInBoundsGEP(
+            llvm::Type::getInt8Ty(ctx), slotPtr,
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), delta),
+            "own_bits_addr");
+        *bitIdxOut = decl->ownershipBitIndexOf(prop);
+        if (propOut) *propOut = prop;
+        return true;
+    }
+
     // B1 S5: `*` on a matrix LHS. `*` is MATRIX MULTIPLY (not element-wise):
     //   Matrix<T,R,K> * Matrix<T,K,C> -> Matrix<T,R,C>  (inner dim K checked)
     //   Matrix<T,R,C> * Vector<T,C>   -> Vector<T,R>
@@ -2128,6 +2211,34 @@ namespace cajeta {
                                 }
                             }
                             builder->CreateStore(fresh, lhs);
+                            // The field owns `fresh` on EVERY arm above — a
+                            // resolved copy/stake, a transferred rvalue, or
+                            // either side of the moveMask phi — so record the
+                            // title in the hidden ownership word. Without
+                            // this the word stays 0 (borrow) and the holder's
+                            // drop skips a String it must free: the mirror of
+                            // the double-free this bit was added to stop.
+                            //
+                            // This path `break`s out of the assign switch
+                            // before the general fob block below, so it must
+                            // write the bit itself rather than fall through.
+                            {
+                                llvm::Value* strWordPtr = nullptr;
+                                int strBitIdx = -1;
+                                if (locateFieldOwnershipBit(
+                                        module, builder, dotLhs2, lhs,
+                                        &strWordPtr, &strBitIdx)) {
+                                    auto& sctx = *module->getLlvmContext();
+                                    llvm::Type* i64Ty =
+                                        llvm::Type::getInt64Ty(sctx);
+                                    llvm::Value* w = builder->CreateLoad(
+                                        i64Ty, strWordPtr, "own_bits");
+                                    w = builder->CreateOr(w,
+                                        llvm::ConstantInt::get(
+                                            i64Ty, 1ULL << strBitIdx));
+                                    builder->CreateStore(w, strWordPtr);
+                                }
+                            }
                             result = fresh;
                             break;
                         }
@@ -2308,83 +2419,13 @@ namespace cajeta {
                 // (formal): the bit written below is this flag, not const 1.
                 llvm::Value* fobRuntimeFlag = nullptr;
                 if (auto fobDot = dynamic_pointer_cast<DotExpression>(lhsAst)) {
-                    auto& fch = fobDot->getChildren();
-                    auto fobRecv = fch.empty() ? nullptr
-                        : dynamic_pointer_cast<Expression>(fch[0]);
-                    // title-stores §3.3.2 (Unit 4) — ARRAY-ELEMENT receivers
-                    // participate when the element struct carries per-member
-                    // bits (`slots[i].val #= v` writes the slot's inline
-                    // ownership word). The 6.2.6b blanket exemption is
-                    // lifted for exactly that family: it existed because
-                    // HashMap's manual owned[] fought the hidden word
-                    // (remove() handed the occupant out flagged but could
-                    // never clear the word — a tombstone-reuse put then
-                    // displaced-released the STALE val pointer; the DnsCache
-                    // third-eviction SIGSEGV). Under Unit 4 the honest
-                    // spelling exists (`#slots[i].val` extraction CLEARS the
-                    // word) and HashMap converts in the same unit. Elements
-                    // WITHOUT member bits keep the exemption.
-                    if (auto fobAix = dynamic_pointer_cast<ArrayIndexExpression>(
-                            fch.empty() ? nullptr : fch[0])) {
-                        if (!fobAix->getResolvedType()) {
-                            fobAix->resolveTypes(module);
-                        }
-                        if (!CajetaClass::arrayElementCarriesMemberBits(
-                                fobAix->getResolvedType())) {
-                            fobRecv = nullptr;
-                        }
-                    }
-                    if (fobRecv && !fobRecv->getResolvedType()) {
-                        fobRecv->resolveTypes(module);
-                    }
-                    auto fobRecvClass = fobRecv
-                        ? dynamic_pointer_cast<CajetaClass>(
-                              fobRecv->getResolvedType())
-                        : nullptr;
                     StructurePropertyPtr fobProp;
-                    CajetaClassPtr fobDecl;
-                    if (fobRecvClass) {
-                        std::function<bool(const CajetaClassPtr&)> fobFind =
-                            [&](const CajetaClassPtr& cls) -> bool {
-                                if (!cls) return false;
-                                auto pit = cls->getProperties().find(
-                                    fobDot->getIdentifier());
-                                if (pit != cls->getProperties().end()) {
-                                    fobProp = pit->second;
-                                    fobDecl = cls;
-                                    return true;
-                                }
-                                for (auto& sup : cls->getSuperClasses()) {
-                                    if (fobFind(sup)) return true;
-                                }
-                                return false;
-                            };
-                        fobFind(fobRecvClass);
-                    }
-                    if (fobProp && fobDecl
-                            && CajetaClass::fieldHasOwnershipBit(fobProp)
-                            && lhs && lhs->getType()->isPointerTy()) {
-                        int fieldIdx = fobDecl->getFieldLlvmIndex(fobProp);
-                        int wordIdx = fobDecl->getOwnershipWordLlvmIndex();
-                        auto* declTy = llvm::dyn_cast_or_null<llvm::StructType>(
-                            fobDecl->getLlvmType());
-                        if (fieldIdx >= 0 && wordIdx >= 0 && declTy
-                                && !declTy->isOpaque()) {
-                            const llvm::DataLayout& fobDl =
-                                module->getLlvmModule()->getDataLayout();
-                            const llvm::StructLayout* sl =
-                                fobDl.getStructLayout(declTy);
-                            int64_t delta =
-                                (int64_t) sl->getElementOffset((unsigned) wordIdx)
-                                - (int64_t) sl->getElementOffset((unsigned) fieldIdx);
+                    if (locateFieldOwnershipBit(module, builder, fobDot, lhs,
+                                                &fobWordPtr, &fobBitIdx,
+                                                &fobProp)) {
+                        {
                             auto& fobCtx = *module->getLlvmContext();
-                            llvm::Type* i8Ty = llvm::Type::getInt8Ty(fobCtx);
                             llvm::Type* i64Ty = llvm::Type::getInt64Ty(fobCtx);
-                            fobWordPtr = builder->CreateInBoundsGEP(
-                                i8Ty, lhs,
-                                llvm::ConstantInt::get(i64Ty, delta),
-                                "own_bits_addr");
-                            fobBitIdx = fobDecl->ownershipBitIndexOf(fobProp);
                             fobFieldIsArray = (bool) dynamic_pointer_cast<
                                 CajetaArray>(fobProp->getType());
                             // Spelling → title in: `= #x`, a fresh heap

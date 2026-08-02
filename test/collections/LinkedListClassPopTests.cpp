@@ -146,7 +146,7 @@ TEST(LinkedListClassPopTests, popUserClassLent) {
 }
 
 // PROBE — String via a NAMED LOCAL rather than a literal at the call site.
-TEST(LinkedListClassPopTests, popStringViaNamedLocalAlsoDies) {
+TEST(LinkedListClassPopTests, popStringViaNamedLocalSurvives) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -214,7 +214,7 @@ TEST(LinkedListClassPopTests, popUserClassOwningArraySurvives) {
 // PROBE — a String built at RUNTIME rather than a literal. Every earlier
 // String probe used a literal (directly or via a local holding one), so the
 // literal's own storage/title status was never excluded.
-TEST(LinkedListClassPopTests, popRuntimeBuiltStringAlsoDies) {
+TEST(LinkedListClassPopTests, popRuntimeBuiltStringSurvives) {
     EXPECT_EQ(runI32(
         "package test;\n"
         "import cajeta.collection.LinkedList;\n"
@@ -297,7 +297,7 @@ public final class MiniBox<T> {
 }
 )SRC";
 
-TEST(LinkedListClassPopTests, miniBoxStringExtractionDies) {
+TEST(LinkedListClassPopTests, miniBoxStringExtractionSurvives) {
     EXPECT_EQ(runI32(std::string(MINI) +
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -378,7 +378,7 @@ public final class SBox<T> {
 }
 )SRC";
 
-TEST(LinkedListClassPopTests, singleSharpStoreFromStringFieldStillDies) {
+TEST(LinkedListClassPopTests, singleSharpStoreFromStringFieldWorks) {
     EXPECT_EQ(runI32(std::string(MINI_SINGLE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
