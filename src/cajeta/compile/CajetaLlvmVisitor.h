@@ -2716,6 +2716,19 @@ namespace cajeta {
                 // initializer expression in a MoveExpression.
                 if (ctx->SHARP_ASSIGN() != nullptr
                         && ctx->variableInitializer()->expression() != nullptr) {
+                    // `T x #= #v` — the transfer spelled twice. `#=` IS the
+                    // transfer; a second `#` on the initializer adds nothing and
+                    // reads as a claim that does not exist. Same rule as the
+                    // assignment form in Expression::fromContext and the
+                    // Statement.cpp declaration path this mirrors.
+                    if (cajeta::cajetaSharpOperandIsBareIdentifier(
+                            ctx->variableInitializer()->expression())) {
+                        throw cajeta::Exception(
+                            std::string("`#=` already transfers — drop the `#` "
+                                        "on the right-hand side and write "
+                                        "`T x #= src`"),
+                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                    }
                     auto inner = any_cast<ExpressionPtr>(
                         visitExpression(ctx->variableInitializer()->expression()));
                     auto mv = make_shared<MoveExpression>(

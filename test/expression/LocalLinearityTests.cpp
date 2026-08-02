@@ -273,3 +273,88 @@ TEST(LocalLinearityTests, bareDeclMoveAssignAcrossScopes) {
         "}\n";
     EXPECT_EQ(runI32(src), 33);
 }
+
+// --- double sharp: `x #= #y` is an error ---------------------------------------
+//
+// `#=` IS the transfer — the store site carries it (language-ownership: "a
+// store uses `#=`; everything else uses `#v`"). Writing `#` on the RHS as well
+// says "transfer" twice and does nothing the single sharp did not already do.
+// It compiled silently, which let the stdlib's LinkedList.popHead/popTail carry
+// `T title #= #node.value` — a spelling that reads as a deliberate extra claim
+// and is not one. Reject it so the intent has exactly one spelling.
+
+TEST(LocalLinearityTests, doubleSharpStoreIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell a = heap Cell(3);\n"
+        "        Cell b #= #a;\n"           // double sharp — reject
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// The same on a FIELD store — the shape the stdlib actually used.
+TEST(LocalLinearityTests, doubleSharpFieldStoreIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public class Box {\n"
+        "    public Cell held;\n"
+        "    public void put(Cell c) { this.held #= #c; }\n"   // double sharp
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+}
+
+// A FIELD/ELEMENT source is NOT the redundant case and stays legal: there the
+// double sharp is the "fused claim", which forwards whatever mode the source
+// slot holds — owned or borrowed — VERBATIM, where a plain `#=` asserts an
+// unconditional transfer. That is how HashMap.remove hands a value back in the
+// mode the caller gave it. Narrowing the rule to bare-identifier sources is
+// what keeps that expressible (MemberBitmapTests.hashMapRemoveFlaggedContract
+// is the pin: the BORROWED remove is the path that breaks without it).
+TEST(LocalLinearityTests, doubleSharpFromFieldIsTheFusedClaimAndStaysLegal) {
+    std::string src = std::string(kCellSrc) +
+        "public class Node2 {\n"
+        "    public Cell value;\n"
+        "    public Node2(Cell v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Node2 n = heap Node2(heap Cell(4));\n"
+        "        Cell t #= #n.value;\n"     // fused claim — legal
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+}
+
+// The CORRECT spelling keeps working — the store carries the transfer.
+TEST(LocalLinearityTests, singleSharpStoreStillCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell a = heap Cell(3);\n"
+        "        Cell b #= a;\n"
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// And the LEGACY `dst = #v` spelling is untouched — it is deprecated, not an
+// error, and rejecting it here would be a different (breaking) decision.
+TEST(LocalLinearityTests, legacyPlainAssignWithSharpRhsStillCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell a = heap Cell(5);\n"
+        "        Cell b = #a;\n"
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}

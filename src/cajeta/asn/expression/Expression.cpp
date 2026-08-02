@@ -91,6 +91,27 @@ namespace cajeta {
         return neu;
     }
 
+// `#= #x` — is the right-hand `#` operand a BARE IDENTIFIER (a local or
+// parameter)? Then the sharp is genuinely redundant: `#=` already transfers a
+// local's title, so the second `#` says it twice.
+//
+// It is NOT redundant when the operand is a FIELD or ELEMENT access. There the
+// double sharp is the "fused claim": it forwards whatever mode the source slot
+// holds — owned or borrowed — VERBATIM, where a plain `#=` asserts an
+// unconditional transfer. That distinction is load-bearing: it is how
+// HashMap.remove hands a value back in the mode the caller gave it, with no
+// separate boolean. Removing it breaks the borrowed-entry path
+// (MemberBitmapTests.hashMapRemoveFlaggedContract).
+bool cajetaSharpOperandIsBareIdentifier(
+        CajetaParser::ExpressionContext* rhs) {
+    if (!rhs || rhs->REFERENCE() == nullptr) return false;
+    if (rhs->expression().size() != 1) return false;
+    auto* inner = rhs->expression(0);
+    auto* prim = inner->primary();
+    if (!prim || !prim->identifier()) return false;
+    return prim->getText() == prim->identifier()->getText();
+}
+
     // `(Name)(operand)` — is this postfix-call node actually a CAST whose
     // destination names a type? Returns the destination type when so, null to
     // leave the node a call.
@@ -543,6 +564,28 @@ namespace cajeta {
                 size_t childIndex = 0;
                 for (auto childContext: ctx->expression()) {
                     ExpressionPtr child = Expression::fromContext(childContext);
+                    if (sharpAssign && childIndex == 1
+                            && cajetaSharpOperandIsBareIdentifier(childContext)) {
+                        // `x #= #y` — the transfer spelled twice. `#=` IS the
+                        // transfer: the STORE site carries it, which is what
+                        // makes "a store uses `#=`; everything else uses `#v`"
+                        // a rule you can apply without looking at the other
+                        // side. A second `#` on the RHS adds nothing and reads
+                        // as a deliberate extra claim that does not exist.
+                        //
+                        // It compiled silently until 2026-08-02, which is how
+                        // the stdlib's LinkedList.popHead/popTail came to carry
+                        // `T title #= #node.value`. Rejected so the intent has
+                        // exactly one spelling. (The legacy `dst = #v` is a
+                        // different, deprecated-not-rejected form and is
+                        // handled below — narrowing that one is a breaking
+                        // change and not this rule's business.)
+                        throw Exception(
+                            std::string("`#=` already transfers — drop the `#` "
+                                        "on the right-hand side and write "
+                                        "`dst #= src`"),
+                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                    }
                     if (sharpAssign && childIndex == 1) {
                         auto mv = make_shared<MoveExpression>(
                             childContext->getStart());

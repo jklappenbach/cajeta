@@ -208,3 +208,38 @@ TEST(MemberBitmapTests, hashMapRemoveFlaggedContract) {
         "}\n";
     EXPECT_EQ(runI32(src), 39);
 }
+
+// PROBE — split the flagged-remove contract: does the single-sharp fused claim
+// break the OWNED path, the BORROWED path, or both?
+TEST(MemberBitmapTests, PROBE_removeOwnedOnly) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public class Cell { public int32 n; public Cell(int32 nn) { this.n = nn; } }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
+        "        m.put(1, #heap Cell(3));\n"
+        "        Cell out = m.remove(1);\n"
+        "        return out.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+TEST(MemberBitmapTests, PROBE_removeBorrowedOnly) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public class Cell { public int32 n; public Cell(int32 nn) { this.n = nn; } }\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell held = heap Cell(9);\n"
+        "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
+        "        m.put(2, held);\n"
+        "        Cell b = m.remove(2);\n"
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 9);
+}

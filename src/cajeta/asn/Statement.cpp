@@ -109,6 +109,22 @@ namespace cajeta {
                 // title-stores §2.2.3 — `T x #= v`: wrap the initializer
                 // expression (mirrors visitVariableDeclarator).
                 if (vdCtx->SHARP_ASSIGN() != nullptr && initializer != nullptr) {
+                    // `T x #= #v` — the transfer spelled twice. Same rule as the
+                    // assignment form in Expression::fromContext: `#=` IS the
+                    // transfer, so a second `#` on the initializer adds nothing
+                    // and reads as a claim that does not exist. Checked
+                    // syntactically on the initializer's expression context.
+                    if (auto* viCtx = vdCtx->variableInitializer()) {
+                        if (auto* eCtx = viCtx->expression()) {
+                            if (cajeta::cajetaSharpOperandIsBareIdentifier(eCtx)) {
+                                throw Exception(
+                                    std::string("`#=` already transfers — drop "
+                                                "the `#` on the right-hand side "
+                                                "and write `T x #= src`"),
+                                    std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                            }
+                        }
+                    }
                     if (auto vi = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                         auto& kids = vi->getChildren();
                         if (!kids.empty()) {

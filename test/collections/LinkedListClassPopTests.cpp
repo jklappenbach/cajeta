@@ -291,7 +291,7 @@ public final class MiniBox<T> {
     public T take() {
         MiniNode<T> n #= this.node;
         this.node = null;
-        T t #= #n.value;
+        T t #= n.value;
         return #t;
     }
 }
@@ -358,7 +358,7 @@ TEST(LinkedListClassPopTests, plainReadExtractsStringSafely) {
 }
 
 // PROBE — Julian's spelling: `#=` store with a PLAIN rhs (single sharp), not
-// the stdlib's `#= #n.value` double-sharp.
+// the stdlib's `#= n.value` double-sharp.
 static const char* MINI_SINGLE = R"SRC(
 package test;
 public final class SNode<T> {

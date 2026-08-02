@@ -788,4 +788,14 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+
+    // `x #= #y` — true when the right-hand `#` operand is a BARE IDENTIFIER (a
+    // local or parameter), which makes the second `#` redundant: `#=` already
+    // transfers a local's title. FALSE for a field/element operand, where the
+    // double sharp is the "fused claim" that forwards the source slot's mode
+    // verbatim — a distinct, load-bearing operation. Defined in Expression.cpp;
+    // shared with the two declaration paths (Statement.cpp,
+    // CajetaLlvmVisitor::visitVariableDeclarator).
+    bool cajetaSharpOperandIsBareIdentifier(
+        CajetaParser::ExpressionContext* rhs);
 }
