@@ -120,6 +120,8 @@ void printUsage(const char* progname) {
               << "                                       file and stop before codegen. Pair with --emit-xref\n"
               << "                                       (bare) for xref records on the diagnostic channel.\n"
               << "  --lint <dir> --emit-xref=<path>      Whole-root xref export: one document over every file.\n"
+              << "  --lint <dir> --list-profiles         Report the DI profiles the project declares (@Profile)\n"
+              << "                                       as {\"profiles\":[...]} on stdout. Front-end only.\n"
               << "  --source-root <dir>                  Project context for --lint: sibling files are parsed\n"
               << "                                       for their signatures so cross-file references resolve.\n"
               << "  --shadow <path>                      On-disk file the linted (staged) buffer stands in for;\n"
@@ -395,6 +397,8 @@ int main(int argc, const char* argv[]) {
         return false;
     };
 
+    // --list-profiles: report declared DI profiles and exit (IDE support).
+    bool listProfiles = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         std::string value;
@@ -586,6 +590,10 @@ int main(int argc, const char* argv[]) {
             // Lean DCE diagnostic: write the generated keep-set + provenance to
             // this path as JSON (lean builds only).
             compiler.getMutableFlags().keepsetJson = value;
+        } else if (arg == "--list-profiles") {
+            // Report the DI profiles this project declares (@Profile), for an
+            // IDE to offer instead of making the developer remember them.
+            listProfiles = true;
         } else if (match(arg, "emit-xref", value)) {
             // Write the RESOLVED cross-reference index to this path as JSON, for
             // an IDE to consume rather than reimplementing Cajeta's name
@@ -743,6 +751,50 @@ int main(int argc, const char* argv[]) {
         // REQUIRES --emit-xref=<path> — "lint a directory, diagnostics only" is
         // not a mode, and guessing one file to lint would be a wrong answer
         // dressed as a right one.
+        if (listProfiles && std::filesystem::is_directory(lintFile)) {
+            // Front-end parse only — profiles are an annotation fact, so no
+            // codegen is needed to know them. Reports what the COMPILER sees,
+            // which is the point: a plugin-side text scan would have to
+            // re-implement the three @Profile spellings and would still miss
+            // profiles declared inside a dependency archive.
+            compiler.lintRoot(lintFile);
+            std::set<std::string> profiles;
+            auto modules = compiler.getModules();   // by value (see the header)
+            for (auto& module : modules) {
+                if (!module) continue;
+                for (auto& [canonical, klass] : module->getStructures()) {
+                    if (!klass) continue;
+                    for (auto& inst : klass->getAnnotationInstances()) {
+                        if (!inst || !inst->getName()) continue;
+                        if (inst->getName()->getTypeName() != "Profile") continue;
+                        // Three spellings, all handled by the same accessors
+                        // the DI selection uses: @Profile("dev"),
+                        // @Profile({"dev","test"}), and repeated @Profile.
+                        const std::vector<std::string>& list = inst->getStringList();
+                        if (!list.empty()) {
+                            for (auto& one : list)
+                                if (!one.empty()) profiles.insert(one);
+                        } else {
+                            const std::string& one = inst->getString();
+                            if (!one.empty()) profiles.insert(one);
+                        }
+                    }
+                }
+            }
+            // A JSON document on stdout, like --emit-xref writes one to a
+            // path: this is a query answering with data, not a diagnostic
+            // stream. Sorted so the IDE's list is stable between runs.
+            std::cout << "{\"profiles\":[";
+            bool first = true;
+            for (const auto& p : profiles) {
+                if (!first) std::cout << ",";
+                std::cout << "\"" << p << "\"";
+                first = false;
+            }
+            std::cout << "]}" << std::endl;
+            return 0;
+        }
+
         if (std::filesystem::is_directory(lintFile)) {
             const std::string& xrefOut = compiler.getFlags().emitXref;
             if (xrefOut.empty() || xrefOut == "-") {
