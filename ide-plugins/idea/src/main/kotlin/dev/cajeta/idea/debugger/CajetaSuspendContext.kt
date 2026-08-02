@@ -6,6 +6,7 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.frame.XCompositeNode
 import com.intellij.xdebugger.frame.XExecutionStack
+import com.intellij.xdebugger.evaluation.XDebuggerEvaluator
 import com.intellij.xdebugger.frame.XStackFrame
 import com.intellij.xdebugger.frame.XSuspendContext
 import com.intellij.xdebugger.frame.XValueChildrenList
@@ -39,6 +40,14 @@ class CajetaStackFrame(
             null
         }
     }
+
+    /**
+     * Editor hover evaluation for THIS frame (spec §7.1.3). The platform asks
+     * the selected frame, which is right: an identifier resolves in the frame
+     * the reader is looking at, not in whichever one stopped last.
+     */
+    override fun getEvaluator(): XDebuggerEvaluator? =
+        session?.let { CajetaDebuggerEvaluator(it, frame.id) }
 
     /** Stable key so the UI keeps frame selection across steps. */
     override fun getEqualityObject(): Any = "${frame.path}:${frame.line}:${frame.name}"

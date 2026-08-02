@@ -208,6 +208,26 @@ class CajetaDebugSession(private val client: DapClient) {
         return client.sendRequest("setExceptionBreakpoints", Json.obj("filters" to filters))
     }
 
+    /**
+     * DAP `evaluate` (spec §7.1.1): resolve a bare identifier or a simple
+     * `.field` / `[i]` path against a frame's locals and render it exactly as
+     * a Variables row would. Read-only by construction — the server navigates,
+     * it never calls or mutates (§7.1.4).
+     *
+     * The future completes with null when the expression does not resolve; the
+     * REASON travels in [EvaluateOutcome.message] so a hover can say "not
+     * available" versus "unsupported expression" rather than showing an error
+     * dialog for both (§7.2.3, §7.2.4).
+     */
+    fun evaluate(expression: String, frameId: Int): CompletableFuture<EvaluateOutcome> =
+        client.sendRequest(
+            "evaluate",
+            Json.obj(
+                "expression" to Json.of(expression),
+                "frameId" to Json.of(frameId),
+            ),
+        ).thenApply { parseEvaluate(it) }
+
     /** DAP `scopes` for a frame; structured via [parseScopes]. */
     fun scopes(frameId: Int): CompletableFuture<Json> =
         client.sendRequest("scopes", Json.obj("frameId" to Json.of(frameId)))
@@ -418,6 +438,43 @@ data class DapScope(
 )
 
 /** A single DAP variable, decoded for the XValue mapping layer. */
+/**
+ * What an `evaluate` came back with. Either a [value] to show, or a [message]
+ * explaining why there is nothing — never both, never neither.
+ */
+data class EvaluateOutcome(
+    val value: DapVariable?,
+    val message: String?,
+) {
+    val resolved: Boolean get() = value != null
+}
+
+/**
+ * Read an `evaluate` response into an outcome. A failed response carries its
+ * reason in the top-level `message` (the server distinguishes "not available:
+ * x" from "unsupported expression: x"); a successful one carries
+ * `{result, type, variablesReference}`, the same triple a Variables row uses,
+ * so the hover popup renders through the same [CajetaValue] path.
+ */
+fun parseEvaluate(response: Json, expression: String = ""): EvaluateOutcome {
+    val root = response as? Json.Obj ?: return EvaluateOutcome(null, "not available")
+    val success = (root.entries["success"] as? Json.Bool)?.value ?: false
+    if (!success) {
+        val msg = (root.entries["message"] as? Json.Str)?.value
+        return EvaluateOutcome(null, msg?.ifBlank { null } ?: "not available")
+    }
+    val body = root.entries["body"] as? Json.Obj
+        ?: return EvaluateOutcome(null, "not available")
+    val result = (body.entries["result"] as? Json.Str)?.value
+        ?: return EvaluateOutcome(null, "not available")
+    val type = (body.entries["type"] as? Json.Str)?.value ?: ""
+    val ref = (body.entries["variablesReference"] as? Json.Num)?.value?.toInt() ?: 0
+    return EvaluateOutcome(
+        DapVariable(name = expression, value = result, type = type, variablesReference = ref),
+        null,
+    )
+}
+
 data class DapVariable(
     val name: String,
     val value: String,
