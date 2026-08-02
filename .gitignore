@@ -115,3 +115,6 @@ build-tsan/
 
 # Per-plan throwaway regression manifest (template: test/regression_manifest.example.txt)
 test/regression_manifest.txt
+
+# Third-party course material — proprietary, local reference only. Never commit.
+research/ml/course-material/

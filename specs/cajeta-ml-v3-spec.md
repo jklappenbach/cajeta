@@ -185,3 +185,88 @@ GPU kernels for the op registry (`cajeta.xpu` phase — the seam ships in
 v3), distributed training, compile-style graph fusion, AMP/mixed
 precision, quantization, sparse NN ops, dataset download tooling,
 torchvision-style transforms beyond what the fixtures need.
+
+## 13. Feature: transformer & transfer-learning completion
+
+*Added 2026-07-31, verified 2026-08-01. The feed-forward and CNN surface is
+already covered by §3–§5: forward/backprop, MSE and cross-entropy, the SGD
+family, and the sigmoid/tanh/ReLU/softmax activations are all present in §3.2.
+What the transformer and transfer-learning surface needs is below. No separate
+spec: this is v3's scope.*
+
+### 13.1 API doctrine — settled
+
+The reference material for this surface is TensorFlow/Keras, but **cajeta's
+neural API is torch-shaped** (decision 2026-07-31, Julian: "We do torch"). Rationale: the API
+must match the oracle §10 already pins, tensor layout stays NCHW rather than
+straddling NHWC, foreign-weight import (§13.6) is close to mechanical against a
+torch-shaped module tree, and SPELA is already expressed in torch module and
+parameter terms. `docs/specification/nucleo/keras-facade-spec.md` stays
+**parked** — if it is ever built it is a thin convenience layer over this one
+engine, never a second API with its own semantics.
+
+Consequence, accepted knowingly: Keras reference notebooks do **not** port
+line-by-line. Fixtures are produced by rebuilding the architecture and comparing
+metrics, not by translating cells.
+
+### 13.2 Positional encodings
+
+- **13.2.1** When a transformer input is built, sinusoidal and learned
+  positional encodings are both available and compose with `Embedding`.
+- **13.2.2** When a sequence exceeds the encoding's configured maximum length,
+  it fails loudly rather than silently truncating or wrapping.
+
+### 13.3 Encoder-decoder attention
+
+§4.2 supplies a multihead attention block and §4.3 targets an encoder only.
+
+- **13.3.1** When a decoder layer is built, cross-attention over encoder
+  outputs is available alongside self-attention.
+- **13.3.2** When a causal mask is applied, position `i` attends only to
+  positions `≤ i`, and the mask is verified by test rather than assumed.
+- **13.3.3** When a padding mask is passed, padded positions contribute nothing
+  to attention weights and produce no gradient.
+
+### 13.4 Data augmentation (`ml.data`)
+
+§8 is loading and batching only, and §12 defers "torchvision-style transforms
+beyond what the fixtures need". Vision training is not credible without
+augmentation, so a minimal transform set moves in scope.
+
+- **13.4.1** When a transform pipeline is composed, random flip, crop,
+  rotation, and normalization are available and seedable.
+- **13.4.2** When augmentation is enabled, it applies on the training path only
+  and is inert in eval mode — the same train/eval discipline `Dropout` already
+  follows.
+
+### 13.5 Transfer learning
+
+Three case studies depend on it (Brain Tumor, COVID-19 chest X-ray, Food Image).
+
+- **13.5.1** When a module subtree is freezed, its parameters report
+  `requiresGrad = false`, receive no updates, and the optimizer does not
+  silently carry state for them.
+- **13.5.2** When for fine-tuning is unfreezed, training resumes on those
+  parameters with optimizer state initialized correctly.
+- **13.5.3** When a classification head is replaced, the backbone's loaded
+  weights are preserved and only the new head is initialized.
+
+### 13.6 Pretrained-weight import
+
+§6 covers cajeta's own checkpoints. The BERT case study needs foreign weights.
+
+- **13.6.1** When a torch `state_dict` is imported, parameters map onto the
+  module tree by name, and any unmatched key on either side is reported — never
+  silently dropped.
+- **13.6.2** When a tensor's shape disagrees with its target parameter, the
+  import fails naming both shapes.
+
+### 13.7 Open questions
+
+- **13.7.1** Contrastive learning is adjacent to this surface but has no consumer.
+  Recommendation: out of scope for v3; revisit if a project needs it.
+- **13.7.2** Graph neural networks are **not** in scope. They are a distinct
+  architecture family with no consumer here; `ml-graph-analytics` covers
+  classical graph analysis and does not imply GNN support.
+- **13.7.3** Does foreign-weight import (§13.6) imply a safetensors/HF reader,
+  or is a torch `state_dict` enough? Recommendation: `state_dict` only for v3.

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Random Search for Hyper-Parameter Optimization
+description: Bergstra, Bengio, JMLR 13:281-305 (2012). Random search over a hyper-parameter grid finds equal or better models than exhaustive grid search in a fraction of the budget, because few hyper-parameters actually matter. The reference for a randomized search alongside grid search.
+url: https://www.jmlr.org/papers/volume13/bergstra12a/bergstra12a.pdf

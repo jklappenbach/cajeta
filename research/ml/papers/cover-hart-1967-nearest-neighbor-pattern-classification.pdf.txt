@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Nearest Neighbor Pattern Classification
+description: Cover, Hart, IEEE Trans. Information Theory 13(1):21-27 (1967). Foundational k-NN result: the asymptotic nearest-neighbor risk is bounded by twice the Bayes risk. Establishes the metric-dependence of the rule.
+url: https://doi.org/10.1109/TIT.1967.1053964

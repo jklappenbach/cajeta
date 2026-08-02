@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Regularized Discriminant Analysis
+description: Friedman, JASA 84(405):165-175 (1989). The LDA-QDA continuum: a two-parameter (lambda, gamma) shrinkage of the per-class covariance toward the pooled estimate and toward a multiple of the identity, chosen by cross-validated misclassification risk. The reference for QDA reg_param and LDA shrinkage.
+url: https://www.tandfonline.com/doi/abs/10.1080/01621459.1989.10478752

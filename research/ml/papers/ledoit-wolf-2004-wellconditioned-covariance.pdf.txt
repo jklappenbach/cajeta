@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Well-Conditioned Estimator for Large-Dimensional Covariance Matrices
+description: Ledoit, Wolf, J. Multivariate Analysis 88(2):365-411 (2004). Analytically optimal shrinkage intensity toward a scaled identity target; the estimator behind scikit-learn LedoitWolf and LDA shrinkage="auto".
+url: http://www.ledoit.net/ole1a.pdf

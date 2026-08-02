@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Honey, I Shrunk the Sample Covariance Matrix
+description: Ledoit, Wolf, J. Portfolio Management 30(4):110-119 (2004). The practitioner-facing companion to the JMVA paper: why the sample covariance is ill-conditioned in high dimensions and how the shrinkage intensity is estimated.
+url: http://www.ledoit.net/honey.pdf

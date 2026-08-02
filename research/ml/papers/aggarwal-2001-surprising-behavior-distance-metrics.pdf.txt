@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: On the Surprising Behavior of Distance Metrics in High Dimensional Space
+description: Aggarwal, Hinneburg, Keim, ICDT 2001. Contrast between Lk norms degrades as dimension grows, and lower k (Manhattan and fractional norms) preserves it better than Euclidean. The justification for exposing a metric parameter on k-NN rather than fixing L2.
+url: https://bib.dbvis.de/uploadedFiles/155.pdf

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: A Study of Cross-Validation and Bootstrap for Accuracy Estimation and Model Selection
+description: Kohavi, IJCAI 1995. Empirical comparison of holdout, k-fold, leave-one-out and bootstrap; concludes ten-fold stratified cross-validation is the best default for model selection. The basis for stratified folds and repeated-holdout defaults.
+url: http://ai.stanford.edu/~ronnyk/accEst.pdf
