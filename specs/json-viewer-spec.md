@@ -40,9 +40,24 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
 
 ### 1.3 Open items for Julian's review
 - **1.3.1** RESOLVED (Julian, 2026-07-28): binary JSON ("jsonb") can wait —
-  it is the plan's FINAL unit. The codec seam + MessagePack/CBOR land there;
-  the concrete build-emitted format is confirmed when that unit starts. The
-  console's role in run/debug sessions is the focus.
+  it is the plan's FINAL unit. The console's role in run/debug sessions is
+  the focus.
+  - **1.3.1a** FORMAT RESOLVED (Julian, 2026-08-01): **CBOR**. Chosen over
+    MessagePack and a custom format because two of this spec's own
+    requirements point at it — 4.1.4 wants a byte-stable round-trip, and CBOR
+    defines deterministic encoding normatively (RFC 8949 §4.2) instead of by
+    convention; and a record-per-item stream is CBOR Sequences (RFC 8742),
+    which carries the existing compiler-jsonl envelope unchanged. Its
+    diagnostic notation (§8) also gives the bytes a defined text rendering,
+    which matters for a tool whose job is making machine output readable.
+    `cajeta.wire.Encoder` already names CBOR as an example format.
+    Implementation cost was not a differentiator: the codec is hand-written
+    Kotlin either way (5.1.4, no new plugin dependencies).
+  - **1.3.1b** STILL OPEN: what PRODUCES binary. Nothing emits it today, so
+    Unit 5 delivers a reader/writer for files (fixtures, other tools'
+    output). A cajeta-side emitter — the build writing CBOR instead of
+    NDJSON — is a separate decision with its own driver, and the format
+    choice above does not commit to it.
 - **1.3.2** JSON5 full support vs JSONC-only (comments + trailing commas).
   Drafted: JSONC-level leniency reading; full JSON5 deferred.
 - **1.3.3** RESOLVED (Julian, 2026-07-28): the JSON view is an IN-PLACE
@@ -71,8 +86,10 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   without stripping comments it did not touch.
 - **2.1.5** Binary JSON via a **decoder seam**: `BinaryJsonCodec { detect
   (bytes/extension), decode(bytes) -> tree, encode(tree) -> bytes }`.
-  First codecs: MessagePack, CBOR. Registration is data-driven so a future
-  cajeta wire format plugs in without viewer changes.
+  First codec: **CBOR** (1.3.1a), reading single items and CBOR Sequences
+  alike. Registration stays data-driven, so MessagePack or a future cajeta
+  wire format plugs in later without viewer changes — the seam is the
+  commitment, CBOR is only the first thing behind it.
 - **2.1.6** Mixed console lines: a line that is not pure JSON but contains a
   trailing JSON object after a plain-text prefix (a logger prefix, ANSI
   color codes) renders the prefix verbatim and the JSON part structured.
@@ -206,8 +223,10 @@ item (buildtool-widget 9.3, structured-during-run) is absorbed here.
   fights it (single source: the Document).
 - **4.1.4** Binary files: the text tab shows a read-only hex/summary stub;
   the structured tab is the editor. Save re-encodes through the codec;
-  a decode→encode round-trip without edits is byte-stable for the shipped
-  codecs, or the file is marked read-only with the reason shown.
+  a decode→encode round-trip without edits is byte-stable — for CBOR that
+  means deterministic encoding (RFC 8949 §4.2), so stability is a property
+  of the encoder rather than a hope — or the file is marked read-only with
+  the reason shown.
 - **4.1.5** Large files: the windowed reader path (existing) for JSONL;
   documents above a size threshold open read-only structured with a banner.
 - **4.1.6** The editor's table view carries the same column chooser and width

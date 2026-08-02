@@ -15,6 +15,7 @@ import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
 import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
@@ -66,6 +67,14 @@ class JsonConsoleWrapper(
 
     private val controller = JsonlConsoleController(structuredByDefault)
 
+    // Declared BEFORE the table: Kotlin initializes properties in declaration
+    // order, and the table's constructor installs the layout listeners. When
+    // this sat further down, those listeners saw a null store and silently
+    // declined to install — column order and width were never captured at all.
+    private val layoutStore: JsonConsoleLayoutStore? =
+        if (profileKey.isBlank() || project == null) null
+        else JsonConsoleLayoutStore.getInstance(project)
+
     private val tableModel = JsonlRowsTableModel()
     private val table = JBTable(tableModel).apply {
         setDefaultRenderer(Any::class.java, TintRenderer(tableModel))
@@ -82,14 +91,15 @@ class JsonConsoleWrapper(
     private var panel: JPanel? = null
     private val refreshQueued = AtomicBoolean(false)
 
-    private val layoutStore: JsonConsoleLayoutStore? =
-        if (profileKey.isBlank() || project == null) null
-        else JsonConsoleLayoutStore.getInstance(project)
-
     init {
         // Restore this profile's layout before any output arrives, so the
         // first refresh already renders the reader's arrangement (§3.1.9).
-        layoutStore?.load(profileKey)?.let { controller.columns.applyLayout(it) }
+        val restored = layoutStore?.load(profileKey)
+        if (restored != null) controller.columns.applyLayout(restored)
+        LOG.info("json console layout: key='" + profileKey + "' " +
+                 (if (layoutStore == null) "NOT persisted (no key/project)"
+                  else if (restored == null) "no saved layout yet"
+                  else "restored " + restored.columns))
     }
 
     /** Persist the live arrangement. Called on every explicit change — a
@@ -99,6 +109,7 @@ class JsonConsoleWrapper(
         val store = layoutStore ?: return
         val layout = synchronized(controller) { controller.columns.currentLayout() }
         store.save(profileKey, layout)
+        LOG.debug("json console layout saved: key='" + profileKey + "' " + layout.columns)
     }
 
     override fun getComponent(): JComponent {
@@ -125,6 +136,13 @@ class JsonConsoleWrapper(
     override fun print(text: String, contentType: ConsoleViewContentType) {
         delegate.print(text, contentType)
         appendChunk(text)
+    }
+
+    override fun dispose() {
+        // The session ending is exactly when the reader's last arrangement
+        // has to survive, and a gesture may have landed after the last save.
+        saveLayout()
+        delegate.dispose()
     }
 
     override fun clear() {
@@ -312,7 +330,8 @@ class JsonConsoleWrapper(
     //     column would freeze at whatever the first burst happened to need. ---
 
     private fun installLayoutCapture(table: JBTable) {
-        if (layoutStore == null) return
+        // Installed unconditionally — saveLayout() is the one place that knows
+        // whether persistence is on. A guard here could only go stale again.
         val header = table.tableHeader ?: return
         header.reorderingAllowed = true
         header.addMouseListener(object : MouseAdapter() {
@@ -384,6 +403,7 @@ class JsonConsoleWrapper(
     }
 
     companion object {
+        private val LOG = Logger.getInstance(JsonConsoleWrapper::class.java)
         private const val STRUCTURED = "structured"
         private const val RAW = "raw"
     }
