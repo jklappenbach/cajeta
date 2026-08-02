@@ -17,6 +17,8 @@
 #include <cstdint>
 #include <string>
 
+#include "cajeta/error/Exception.h"
+
 using cajeta_test::CajetaJit;
 
 namespace {
@@ -92,6 +94,70 @@ TEST(UniformTransferTests, sharpStoreFromOwnedElementTransfers) {
         "        return t.n;\n"
         "    }\n"
         "}\n"), 9);
+}
+
+// ---- Unit 2 (spec 2.3): containers own their elements ------------------
+
+std::string compileExpectError(const std::string& src,
+                               const std::string& expectCode) {
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), expectCode);
+        return e.getMessage();
+    } catch (const std::exception& e) {
+        return e.what();
+    }
+    ADD_FAILURE() << "expected a compile error";
+    return "";
+}
+
+// 2.1.1 — a plain owned local into a container is now an error naming `#v`.
+TEST(UniformTransferTests, plainAddOfOwnedLocalIsTransferRequired) {
+    std::string src = std::string(kSrc) +
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
+        "        Cell c = heap Cell(3);\n"
+        "        xs.add(c);\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#c"), std::string::npos) << msg;
+}
+
+// 2.1.2 — the surrendered spelling compiles.
+TEST(UniformTransferTests, sharpAddOfOwnedLocalCompiles) {
+    EXPECT_EQ(runI32(std::string(kSrc) +
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
+        "        Cell c = heap Cell(3);\n"
+        "        xs.add(#c);\n"
+        "        return xs.get(0).n;\n"
+        "    }\n"
+        "}\n"), 3);
+}
+
+// 2.1.3 — a primitive element still needs no `#`: an int32 local has no drop
+// entry, so the `#T` check never fires. This is the exemption that keeps the
+// change from breaking every `ArrayList<int32>` in existence.
+TEST(UniformTransferTests, primitiveElementAddNeedsNoSharp) {
+    EXPECT_EQ(runI32(
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"
+        "        int32 n = 4;\n"
+        "        xs.add(n);\n"
+        "        xs.add(7);\n"
+        "        return xs.get(0) + xs.get(1);\n"
+        "    }\n"
+        "}\n"), 11);
 }
 
 // The baseline Unit 3 will overturn: the DOUBLE sharp is still accepted

@@ -9886,8 +9886,33 @@ namespace cajeta {
                     // title flag), the native frees or adopts memory the
                     // caller still owns. There is no surrender spelling for
                     // these shapes, so the fix is a copy or an owned local.
+                    //
+                    // uniform-transfer 2.3 — a read of a SCALAR field or
+                    // element is not a borrow of anything: an int32 has no
+                    // title to forge a second owner of. The shape check
+                    // predates `#T` element formals, when only droppable
+                    // types reached it; with containers declaring `#T` it
+                    // now sees `list.add(items[i])` on an
+                    // `ArrayList<int32>` and rejects code that cannot leak.
+                    // Arrays keep the check — they carry PRIMITIVE_FLAG in
+                    // this type system but are droppable buffers, which is
+                    // the `int8[]` consuming-native hazard the rule exists
+                    // for. Same carve-out the call-return arm below already
+                    // makes; it just was never applied to the other two.
+                    auto ownershipLessScalar = [](const CajetaTypePtr& t) {
+                        return t && (t->getTypeFlags() & PRIMITIVE_FLAG)
+                            && !std::dynamic_pointer_cast<CajetaArray>(t);
+                    };
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    bool scalarRead = argExpr
+                        && ownershipLessScalar(argExpr->getResolvedType());
+
                     const char* borrowShape = nullptr;
-                    if (dynamic_pointer_cast<DotExpression>(argExpr)) {
+                    if (scalarRead) {
+                        borrowShape = nullptr;
+                    } else if (dynamic_pointer_cast<DotExpression>(argExpr)) {
                         borrowShape = "a field read";
                     } else if (dynamic_pointer_cast<ArrayIndexExpression>(argExpr)) {
                         borrowShape = "an array-element read";
