@@ -28,6 +28,10 @@ object XrefQuery {
     fun subtypesOf(project: Project, parentFqn: String): List<Json.Obj> =
         records(project, "sub:$parentFqn")
 
+    /** Inheritance records naming what [childFqn] extends or implements. */
+    fun supertypesOf(project: Project, childFqn: String): List<Json.Obj> =
+        records(project, "super:$childFqn")
+
     /** Call records to exactly this overloadKey — one overload, no conflation. */
     fun callersOf(project: Project, calleeOverloadKey: String): List<Json.Obj> =
         records(project, "call:$calleeOverloadKey")
