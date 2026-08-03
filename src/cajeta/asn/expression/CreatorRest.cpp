@@ -386,14 +386,20 @@ namespace cajeta {
                                         && !argKlass->isSharedCapableValue()
                                         && !argKlass->isInterface()) {
                                     if (scope->isBorrow(nm)) {
+                                        // Same violation as moving out of an
+                                        // alias: a transfer demotes its source
+                                        // (transfer-demotes-to-borrow §1.3).
                                         string note = scope->transferSiteOf(nm);
                                         throw Exception(
-                                            "use of moved value: `#" + nm + "` — "
-                                                "the value was already transferred"
-                                                + (note.empty() ? "" : " (" + note + ")")
-                                                + ". Fix: reassign a fresh value "
-                                                  "before transferring again.",
-                                            "CAJETA_ERROR_USE_AFTER_MOVE");
+                                            "cannot transfer ownership of `" + nm
+                                                + "`: it is a borrow"
+                                                + (note.empty() ? "" : " — already "
+                                                    "transferred (" + note + ")")
+                                                + ". You cannot transfer ownership "
+                                                  "more than once, or from a borrow. "
+                                                  "Fix: transfer from the owner, or "
+                                                  "construct a fresh value.",
+                                            "CAJETA_ERROR_MOVE_OF_BORROW");
                                     }
                                     if (!field->getDropEntry()) {
                                         string owner = scope->borrowSourceOf(nm);

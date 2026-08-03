@@ -43,6 +43,20 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
     return fn();
 }
 
+// transfer-demotes-to-borrow — a read of a transferred binding is legal:
+// `#` moves the title, not the binding. Asserts the source compiles.
+// Value-correctness of such reads is pinned in DemotedBindingReadTests.
+void compileExpectOk(const std::string& src) {
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got "
+                      << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.what();
+    }
+}
+
 std::string compileExpectError(const std::string& src,
                                const std::string& expectCode) {
     try {
@@ -87,32 +101,34 @@ TEST(LocalLinearityTests, doubleCallArgTransferIsCompileError) {
         "        Sink s2 = heap Sink();\n"
         "        Cell v = heap Cell(5);\n"
         "        s1.take(#v);\n"
-        "        s2.take(#v);\n"          // second transfer — reject
+        "        s2.take(#v);\n"          // second transfer — still rejected
         "        return s2.seen;\n"
         "    }\n"
         "}\n";
+    // A transfer demotes its source, so a SECOND transfer is a transfer from
+    // a borrow — one error covers both shapes (transfer-demotes-to-borrow §1.3).
     std::string msg =
-        compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+        compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
     EXPECT_NE(msg.find("v"), std::string::npos) << msg;
 }
 
 // 2.1.2 corollary — a plain READ after a call-arg transfer is also
 // use-after-move (today it compiles and reads a deactivated value).
-TEST(LocalLinearityTests, readAfterCallArgTransferIsCompileError) {
+TEST(LocalLinearityTests, readAfterCallArgTransferIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Sink s1 = heap Sink();\n"
         "        Cell v = heap Cell(5);\n"
         "        s1.take(#v);\n"
-        "        return v.n;\n"           // read of moved local — reject
+        "        return v.n;\n"           // demoted to a borrow — readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.2 — ctor-arg transfers mark moved too (`heap Holder(#v)`).
-TEST(LocalLinearityTests, readAfterCtorArgTransferIsCompileError) {
+TEST(LocalLinearityTests, readAfterCtorArgTransferIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell held;\n"
@@ -122,10 +138,10 @@ TEST(LocalLinearityTests, readAfterCtorArgTransferIsCompileError) {
         "    public static int32 run() {\n"
         "        Cell v = heap Cell(5);\n"
         "        Holder h = heap Holder(#v);\n"
-        "        return v.n;\n"           // read of moved local — reject
+        "        return v.n;\n"           // demoted to a borrow — readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.3 — legal same-scope move chain: exactly one drop at scope exit
@@ -150,16 +166,16 @@ TEST(LocalLinearityTests, legalMoveChainSingleDrop) {
 }
 
 // 2.1.3 — reads of the moved-out links are rejected.
-TEST(LocalLinearityTests, readOfMovedChainLinkIsCompileError) {
+TEST(LocalLinearityTests, readOfMovedChainLinkIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell obj = heap Cell(42);\n"
         "        Cell obj3 #= obj;\n"
-        "        return obj.n;\n"         // moved at the line above
+        "        return obj.n;\n"         // demoted above — still readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.3 — borrows are move-transparent: a borrow taken BEFORE the owner
@@ -211,7 +227,7 @@ TEST(LocalLinearityTests, loopTransferReArmCompiles) {
 }
 
 // 2.1.5 — branch join is conservative: moved on one path = moved after.
-TEST(LocalLinearityTests, branchJoinMovedIsCompileError) {
+TEST(LocalLinearityTests, branchJoinMovedIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run(int32 flag) {\n"
@@ -220,10 +236,10 @@ TEST(LocalLinearityTests, branchJoinMovedIsCompileError) {
         "        if (flag > 0) {\n"
         "            s.take(#v);\n"
         "        }\n"
-        "        return v.n;\n"           // moved on the taken path — reject
+        "        return v.n;\n"           // demoted on one path — readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.5 control — reassigned on the SAME path after the move: re-armed at

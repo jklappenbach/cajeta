@@ -3138,22 +3138,45 @@ bool cajetaSharpOperandIsBareIdentifier(
                 if (FieldPtr mvField = scope->getField(mvName)) {
                     bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(mvField);
                     auto mvKlass = dynamic_pointer_cast<CajetaClass>(mvField->getType());
-                    if (!isFormal && mvKlass && !mvKlass->isValueType()
-                            && !mvKlass->isSharedCapableValue()
-                            && !mvField->getDropEntry()) {
-                        // Only borrows with a RECORDED source (alias /
-                        // field-read shapes, Gap-4 liveBorrows) reject —
-                        // a call-result local (`conn = next.get()`) stays
+                    bool titleBearing = mvKlass && !mvKlass->isValueType()
+                            && !mvKlass->isSharedCapableValue();
+                    // A borrow cannot surrender a title it does not hold. Two
+                    // ways to be a borrow, one error — a transfer DEMOTES its
+                    // source (transfer-demotes-to-borrow §1.3), so transferring
+                    // twice IS transferring from a borrow.
+                    if (titleBearing && scope->isBorrow(mvName)) {
+                        // (a) demoted by an earlier transfer. Applies to formals
+                        // too: `isBorrow` is only true once something in THIS
+                        // method actually transferred it, so a plain formal that
+                        // was merely lent is untouched (§1.4 — a formal's
+                        // ownership is fixed by the call site, and `#=` there is
+                        // conditional acquisition, not a static borrow).
+                        string note = scope->transferSiteOf(mvName);
+                        throw Exception(
+                            "cannot transfer ownership of `" + mvName
+                                + "`: it is a borrow"
+                                + (note.empty() ? "" : " — already transferred ("
+                                    + note + ")")
+                                + ". You cannot transfer ownership more than "
+                                  "once, or from a borrow. Fix: transfer from "
+                                  "the owner, or construct a fresh value.",
+                            "CAJETA_ERROR_MOVE_OF_BORROW");
+                    }
+                    if (!isFormal && titleBearing && !mvField->getDropEntry()) {
+                        // (b) never owned. Only borrows with a RECORDED source
+                        // (alias / field-read shapes, Gap-4 liveBorrows) reject
+                        // — a call-result local (`conn = next.get()`) stays
                         // unchecked until the `#?` runtime-owner ABI
                         // (spec §3.1.6, plan Unit 5) can carry its role.
                         string owner = scope->borrowSourceOf(mvName);
                         if (!owner.empty()) {
                             throw Exception(
-                                "cannot move out of a borrow: `" + mvName
-                                    + "` does not own its value; ownership "
-                                      "belongs to `" + owner + "`. Fix: move "
-                                      "from the owner, or store an owned value "
-                                      "(fresh construction / clone()) first.",
+                                "cannot transfer ownership of `" + mvName
+                                    + "`: it is a borrow; ownership belongs to `"
+                                    + owner + "`. You cannot transfer ownership "
+                                      "more than once, or from a borrow. Fix: "
+                                      "transfer from the owner, or store an owned "
+                                      "value (fresh construction / clone()) first.",
                                 "CAJETA_ERROR_MOVE_OF_BORROW");
                         }
                     }
