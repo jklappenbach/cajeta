@@ -55,3 +55,25 @@ cleaner than nullable stages).
 **CLOSED — verified fixed on cajeta 0.14.0 (8ca5b362), 2026-08-01.** Re-ran this
 spec's repro against a freshly built 0.14.0 compiler; the defect no longer
 reproduces. Archived per td-project-workflow (spec -> archive, INDEX row dropped).
+
+## 4. Follow-up closed too — fat-aware `==` (2026-08-03)
+
+The candidate follow-up §3 records ("`f == null` on an interface-typed field
+has no fat-aware compare lowering — nulls are observable only via dispatch
+guards") is now DONE, so this spec has nothing left open.
+
+Confirmed first, red-first, as
+`PlaceholderOwnedFieldTests.nullInterfaceIsObservableViaEquals`: a null
+interface compared `false` against null and a real one also compared "not
+empty", so the predicate was simply never true.
+
+Cause: both interface shapes hand back a pointer to the 24-byte
+`{ ptr data, ptr vtable, i64 kind }` BODY — a field's GEP *is* the body
+address, a local's slot loads to it — so `== null` compared the body's
+ADDRESS, which is never null. Fix in `BinaryOpExpression.cpp`'s EQ/NE arm:
+when one operand is interface-typed and the other is a null pointer constant,
+load and compare the body's DATA word. The null case memsets the body to
+zero, so `data == null` is exactly "empty".
+
+Landed alongside the `owned-interface-return-fault` fix (same session); both
+pinned in `PlaceholderOwnedFieldTests`, 10/10.

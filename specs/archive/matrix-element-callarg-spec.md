@@ -1,7 +1,48 @@
-# Host codegen SIGSEGV — matrix element as call argument — spec (draft)
+# Host codegen SIGSEGV — matrix element as call argument — FIXED 2026-08-03
 
 Origin: docs-refactor 15.8 (unit-12 GeometryDemo, 2026-07-03). Sibling of
 the cajeta-gfx §1 "compound Vector expression" finding.
+
+## 0. Resolution (2026-08-03)
+
+**FIXED — one guard, and the §1 suspicion was right.** The defect is
+argument-position lowering generally, exactly as §1's 2026-07-31 extension
+concluded, and the three failure signatures (runtime SIGSEGV, isel `Cannot
+select`, physreg-copy abort) are one bug wearing three hats.
+
+**Root cause: a DOUBLE LOAD.** Element access lowers per container. A plain
+array hands back the element GEP — a POINTER the caller must load — while
+Matrix and Vector extract the lane and materialize it, handing back the
+VALUE. The 2026-08-01 fix that made `f(arr[i])` work applies `loadIfLValue`
+to every `ArrayIndexExpression` argument, which is right for the GEP shape and
+wrong for the materialized one. The already-loaded Matrix element got loaded a
+second time:
+
+```llvm
+%5 = load float, ptr %vec.idx.slot   ; the element's value
+%6 = load float, float %5            ; "Load operand must be a pointer"
+```
+
+That is why the failure mode varied by source while the position never did —
+the same double load is a verify error here, an isel failure there, and a
+register-allocator abort somewhere else, depending on the type involved.
+
+**Fix.** `loadIfLValue` returns immediately when its operand is not a pointer.
+That is a universal invariant, not a Matrix special case: every branch of that
+function emits a load, and a load from a non-pointer is unrepresentable. So
+the guard covers Matrix `m[r][c]`, plain arrays, and `ArrayList.operator[]`
+at once, and any future container that materializes its elements.
+
+**Coverage against §2.1's use cases:**
+- Use case 1 (`f(m[r][c])` correct, no ritual) — `MatrixTests.elementAsCallArgument`.
+- Nested composition `f(g(m[1][1]))` — `MatrixTests.elementAsNestedCallArgument`.
+- The extract-to-local control still works — `elementViaLocalAsCallArgument`.
+- The plain-array sibling stays fixed — `plainArrayElementAsCallArgument`.
+- Use case 2 (remove the tour workaround) — the `ArrayList.operator[]` hoist
+  in `BPlusTreeDemo` is reverted to `asks.get(prices[k])`.
+
+**Still owed:** `dev.cajeta.ml`'s `KNeighborsRegressor` carries a hoist naming
+this spec; it can be reverted when ml is rebuilt for 0.15.0.
 
 ## 1. Definition
 

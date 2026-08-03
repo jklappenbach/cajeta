@@ -1,6 +1,57 @@
-# owned-interface-return-fault — `#Interface` return faults on first use (draft)
+# owned-interface-return-fault — `#Interface` return faults on first use — FIXED 2026-08-03
 
-## 1. Definition (defect)
+## 0. Resolution (2026-08-03)
+
+**FIXED**, and the defect was far broader than §1 describes. The container,
+the field, and the second frame are all irrelevant: **every `#Interface`
+return of a concrete class was miscompiled.** The minimal repro is 15 lines
+with no container anywhere —
+
+```cajeta
+public static #Face make(int32 k) { return heap Plus(k); }
+Face f = D.make(10);
+return f.poke(5);           // SIGSEGV
+```
+
+pinned as `PlaceholderOwnedFieldTests.PROBE_ifaceReturnToLocalDispatch`. §2's
+"ruled out" list held up — each item really does work in isolation — but it
+led away from the answer, because nobody tried the return on its own.
+
+**Root cause.** An interface value is a 24-byte `{ ptr data, ptr vtable, i64
+kind }` returned BY VALUE, and every other way of producing one assembles that
+body. `ReturnStatement::generateCode` had no wrap, so `return heap Plus(k)`
+fell into the general coercion arm `retTy->isAggregateType() && valTy->isPointerTy()`
+— "the expression yielded the ADDRESS of the aggregate, so load it". That is
+correct for an `@ValueType` (`return stack Vec2(...)`) and catastrophic here:
+the pointer is the Plus OBJECT, not a body. The emitted IR read 24 bytes out
+of a 16-byte object:
+
+```llvm
+%2 = call ptr @malloc(i64 16)      ; Plus is {vtable, k}
+%4 = load %test.Face, ptr %2       ; reads 24
+ret %test.Face %4
+```
+
+so the caller received `data` = Plus's vtable pointer, `vtable` = Plus's `k`
+field, and `kind` = 8 bytes of heap past the allocation. Dispatch loaded
+through `k + 8`; with `k = 10` that is address **0x12** — the exact fault the
+repro reports, which is how the diagnosis was confirmed rather than assumed.
+
+**Fix.** `Statement.cpp` — wrap a concrete class into the interface's fat body
+BEFORE that coercion arm can misread it (data = the object pointer, vtable =
+`srcCls->getInterfaceVTable(iface)`, kind = OWNED for a `#` return / fresh
+construction / explicit `#x`, BORROWED otherwise), then return the body struct
+by value. Verified at the IR level, not just by test outcome.
+
+**§4.3 answered.** The `#<BaseClass>` control PASSES while the interface case
+faulted, so the defect is fat-value handling, not return-slot lifetime. Both
+are now pinned (`ownedBaseClassReturnSurvivesContainerField`).
+
+**Downstream.** cajeta-ml's `SpelaTrainer` workaround (build each optimizer
+inline, §5) can be reverted. `inlineInterfaceBuildIsTheWorkingBaseline` pins
+that the workaround keeps working either way, so the revert is optional.
+
+## 1. Definition (defect, as originally reported)
 
 A method whose return type is `#<Interface>` — ownership transfer of a
 FAT interface value — hands back a value that faults (SIGSEGV, `fault
