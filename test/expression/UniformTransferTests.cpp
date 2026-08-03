@@ -159,17 +159,38 @@ TEST(UniformTransferTests, primitiveElementAddNeedsNoSharp) {
         "}\n"), 11);
 }
 
-// The baseline Unit 3 will overturn: the DOUBLE sharp is still accepted
-// today for a field source (it forwards the slot's mode verbatim). When
-// 3.2.1 widens the diagnostic this must flip to a compile error — the test
-// is kept and inverted there, not deleted, so the change is deliberate.
-TEST(UniformTransferTests, doubleSharpFromFieldIsStillAcceptedBeforeUnit3) {
-    EXPECT_EQ(runI32(std::string(kSrc) +
+// 1.1.5, INVERTED by Unit 3 as promised. The baseline this test used to pin —
+// "the DOUBLE sharp is still accepted for a field source, because it forwards
+// the slot's mode verbatim" — is exactly what 3.2.1 overturned. Kept and
+// flipped rather than deleted so the change reads as deliberate.
+TEST(UniformTransferTests, doubleSharpFromFieldIsRejectedByUnit3) {
+    std::string src = std::string(kSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Holder h = heap Holder();\n"
         "        h.put(heap Cell(7));\n"
         "        Cell t #= #h.c;\n"
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        ADD_FAILURE() << "expected CAJETA_ERROR_DOUBLE_TRANSFER";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_DOUBLE_TRANSFER");
+    }
+}
+
+// …and the single sharp does the job, with the same value. The pair is the
+// origin guard (3.1.5): the sharp is the only difference between them, so a
+// DOUBLE_TRANSFER raised anywhere else in the compile cannot fake a pass.
+TEST(UniformTransferTests, singleSharpFromFieldTransfers) {
+    EXPECT_EQ(runI32(std::string(kSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        h.put(heap Cell(7));\n"
+        "        Cell t #= h.c;\n"
         "        return t.n;\n"
         "    }\n"
         "}\n"), 7);

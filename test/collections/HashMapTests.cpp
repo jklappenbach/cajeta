@@ -158,8 +158,8 @@ TEST(HashMapTests, bracketWriteThenRead) {
         "    public static int32 run() {\n"
         "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
         "        Tag t = heap Tag(7);\n"
-        "        m[t] = 42;\n"
-        "        return m[t];\n"
+        "        m[#t] = 42;\n"      // the map owns its keys (`#K`)
+        "        return m[t];\n"      // t is a demoted borrow — still looks up
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -365,22 +365,32 @@ TEST(HashMapTests, removeThenPutReusesTombstoneSlot) {
     EXPECT_EQ(fn(), 1);
 }
 
+// Replace under an owning map: two writes at an EQUAL key, second wins, size
+// stays 1, and the incoming duplicate key is reclaimed rather than stored.
+//
+// uniform-transfer 2.3 rewrote this. It used to write `m[t] = 10; m[t] = 99;`
+// with one `Tag` local, which the owning `#K` makes impossible twice over: the
+// lend is rejected, and surrendering `t` twice is MOVE_OF_BORROW. Replace now
+// needs a SECOND key that compares equal to the first — so the key type has to
+// be value-hashed, which `String` is and an identity-hashed user class is not.
+//
+// That asymmetry is the migration's sharpest edge and it is deliberate, not an
+// oversight: see the plan's 4.2.4 and `OwnedKeyLookupTests`, which pins the
+// identity MISS so the day structural equality lands for classes, it fails
+// loudly. Replacing a value under an owned CLASS key has no spelling today;
+// `map.update` is the open question, deferred to the collections-overhaul spec.
 TEST(HashMapTests, bracketReplaceUpdatesValue) {
-    // `m[t] = 10` then `m[t] = 99` on the same key — second write
-    // replaces, size stays 1.
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag();\n"
-        "        m[t] = 10;\n"
-        "        m[t] = 99;\n"
-        "        int32 v = m[t];\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        String a = \"tag\" + 1;\n"
+        "        String b = \"tag\" + 1;\n"   // equal by value, distinct object
+        "        m[#a] = 10;\n"
+        "        m[#b] = 99;\n"                // replace: same value hash
+        "        int32 v = m[a];\n"            // a is demoted, still looks up
         "        int64 sz = m.count();\n"
         "        if (sz == 1) { return v; }\n"
         "        return -1;\n"

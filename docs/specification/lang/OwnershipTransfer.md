@@ -51,9 +51,13 @@ transfer at `map.put(id, entity)`. The map indexes; the world owns. Same
 decides per-call. A callee-side `#V` here collapses one of the two
 stories.
 
-The current sweep correctly marks the owning-container ctors `#T`. It
-must NOT mark `Pair`, `LinkedListNode`, `RedBlackNode`, `HashMap.put`,
-etc., because those serve both stories.
+> **This section is HISTORY as of uniform-transfer-semantics (0.15.0).** The
+> two-stories design was tried and withdrawn: `Pair`, `LinkedListNode`,
+> `RedBlackNode`, `HashMap.put` and every other stdlib element/key parameter
+> ARE now `#K`/`#V`, and the second story is a compile error. The rationale,
+> and what replaces the indexing use case, is in "Superseded for the stdlib
+> collections" below — read that before taking anything in this section or
+> in "Recovery of the per-call ownership story" as current.
 
 ## The model
 
@@ -252,25 +256,42 @@ bounded by the borrow's lifetime.
 > particular is still the caller's burden until reference types land.
 
 Field-store of a plain-`T` parameter — `this.f = param;` inside a
-ctor or setter — is **not** rejected. The pattern is the load-bearing
-form for index / cache / view collections: a `HashMap<K, V>` used as
-an index alongside a primary owner stores references to values whose
-lifetime lives elsewhere. Forcing every such collection's `put`,
-`add`, and ctor to mark `#K`/`#V` would collapse that use case (the
-same map type can't serve both owning-store and indexing).
+ctor or setter — is **not** rejected. It stays legal for user classes,
+where parking a value whose lifetime lives elsewhere is a legitimate
+design the compiler cannot second-guess.
 
-The current rule is: the caller decides per call site. Calling
-`map.put(k, v)` borrows (caller still owns `k`, `v`); calling
-`map.put(#k, #v)` transfers. Phase 1's caller-side `#x` machinery
-handles both correctly, and Phase 2's `(#T, x)` rejection still fires
-for callees whose formals genuinely demand transfer (owning wrappers
-like `Optional`, `Mutex`, exception ctors).
+> **Superseded for the stdlib collections (uniform-transfer-semantics, 0.15.0).**
+> This section used to argue the opposite for containers: that the caller
+> decides per call site — `map.put(k, v)` borrowing, `map.put(#k, #v)`
+> transferring — because forcing `#K`/`#V` "would collapse" the indexing use
+> case. That is no longer the language. **Every stdlib collection declares its
+> key and element parameters `#K`/`#V`**, so `map.put(k, v)` is
+> `CAJETA_ERROR_TRANSFER_REQUIRED` and no container can hold a borrow.
+>
+> The dual-capable design lost on evidence rather than taste. An entry whose
+> ownership was decided at the call site had to be *recorded* — a per-entry bit
+> — and then teardown, eviction, replace, rehash, and remove all had to branch
+> on it. That bit produced a recurring double-free/leak family (`Cache` evicting
+> a borrowed value; `HashMap.remove` displaced-releasing one), and no static
+> check could tell you which mode a given entry was in. Owning removes the
+> branch: teardown drops everything, remove hands the title back, replace
+> displaces exactly one value.
+>
+> The indexing use case survives, spelled honestly. A secondary index owns its
+> keys and looks up with fresh equal ones — `String` and primitives are
+> value-hashed, so that just works; a class-keyed index either owns its keys or
+> stores an identifier it can re-derive. What is gone is the *unstated* version,
+> where one map type silently meant two different things.
+>
+> The residual exposure moved rather than vanished: a demoted source read after
+> its container tears down still dangles, and nothing diagnoses it yet
+> ([`MemoryModel`](MemoryModel.md) §1.7). That is the lifetime tracker's job.
 
-The unsoundness window — passing plain `k` while the map outlives
-`k`'s primary owner — is the same one Rust closes with lifetime
-annotations. Cajeta will close it the same way once reference types
-land; until then, the safety burden sits with the caller exactly
-where it does in C and pre-borrow-checker code.
+The unsoundness window for plain user-class field stores — parking
+`k` in something that outlives `k`'s primary owner — is the same one
+Rust closes with lifetime annotations. Cajeta will close it the same
+way once reference types land; until then, the safety burden sits with
+the caller exactly where it does in C and pre-borrow-checker code.
 See [`BorrowSoundness`](BorrowSoundness.md) for the interim static
 lint and debug-build runtime checks that target this gap without
 waiting on reference types.
@@ -302,6 +323,13 @@ The phasing lets a project upgrade incrementally:
 4. Pull in Phase 3 — body-side promise becomes enforced.
 
 ## Recovery of the per-call ownership story
+
+> **Withdrawn in 0.15.0.** The code below no longer compiles: `byTransform.put(e.id, e)`
+> is `CAJETA_ERROR_TRANSFER_REQUIRED`, because `HashMap.put` takes `#K, #V`.
+> A secondary index now either owns its keys and values, or stores an
+> identifier it can re-derive from the primary owner. Kept because the use
+> case is real and the argument for it is the clearest statement of what the
+> change costs — see "Superseded for the stdlib collections" above.
 
 Restating the use case the design serves:
 

@@ -2721,7 +2721,7 @@ namespace cajeta {
                     // reads as a claim that does not exist. Same rule as the
                     // assignment form in Expression::fromContext and the
                     // Statement.cpp declaration path this mirrors.
-                    if (cajeta::cajetaSharpOperandIsBareIdentifier(
+                    if (cajeta::cajetaRhsCarriesRedundantSharp(
                             ctx->variableInitializer()->expression())) {
                         throw cajeta::Exception(
                             std::string("`#=` already acquires ownership when the source "

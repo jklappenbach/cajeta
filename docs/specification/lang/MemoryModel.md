@@ -59,8 +59,13 @@ call arguments, returns, and extraction reads are not assignments and keep `#v`.
 this.held #= c;         // store: `held` takes c's title
 sink.keep(#c);          // argument: not an assignment — `#v` stays
 return #c;              // return: same
-T x #= #this.data[i];   // both: extract the slot's title (`#`), store it (`#=`)
+T x #= this.data[i];    // store from a slot: the `#=` is the whole transfer
 ```
+
+**A `#=` never takes a second `#` on its right.** The store already carries the
+transfer, whatever the source is — identifier, field, element, or call result —
+so `x #= #y` is `CAJETA_ERROR_DOUBLE_TRANSFER`. The rule has no exceptions to
+remember.
 
 > **Deprecated:** `dst = #v` was the original store spelling. It still compiles
 > and still transfers, but warns (`CAJETA_WARN_DEPRECATED_TRANSFER_ASSIGN`) and
@@ -385,7 +390,7 @@ Arrays that never receive a title store behave exactly as before and cost only
 stays a borrow — which is what shift, sift, and split loops need:
 
 ```cajeta
-this.data[j] #= #this.data[j - 1];   // move whatever title that slot holds
+this.data[j] #= this.data[j - 1];   // move whatever title that slot holds
 ```
 
 ---

@@ -1023,6 +1023,72 @@ namespace cajeta {
                             entries.push_back(ParameterEntry(idxType, "", idxVal));
                             entries.push_back(ParameterEntry(valType, "", valVal));
                             std::string opName = "operator[]=";
+                            // uniform-transfer 2.3 — the `#T` contract check.
+                            // This store lowers STRAIGHT to invokeMethod, so
+                            // MethodCallExpression's check never sees it, and
+                            // `m[k] = v` was the one container write that could
+                            // still lend into an owning entry (found 2026-08-03
+                            // by ContainerTitleTests.indexedLendIsRejected —
+                            // `HashMap.operator[]=` takes `#K, #V` and the
+                            // subscript form compiled clean anyway).
+                            //
+                            // Same rule as the general call path, in the two
+                            // positions this form has: a `#`-declared formal
+                            // whose argument is a bare identifier naming an
+                            // owner must be surrendered explicitly. Fresh
+                            // constructions and `#x` (a MoveExpression) pass
+                            // through, as do borrows and primitives.
+                            if (auto opTgt = recvClass->resolveMethod(opName,
+                                    entries, /*isConstructor=*/false,
+                                    /*floatingParams=*/false)) {
+                                auto opFormals = opTgt->getParameterList();
+                                bool opStatic = opTgt->getModifiers().find(STATIC)
+                                    != opTgt->getModifiers().end();
+                                bool opHasThis = !opFormals.empty()
+                                    && opFormals.front()->getName() == "this";
+                                size_t opOff = (opStatic || !opHasThis) ? 0 : 1;
+                                ExpressionPtr opArgs[2] = { idxAst, valAst };
+                                for (size_t a = 0; a < 2; ++a) {
+                                    size_t fi = opOff + a;
+                                    if (fi >= opFormals.size()) break;
+                                    auto& ofp = opFormals[fi];
+                                    if (!ofp || !ofp->isTransferred()) continue;
+                                    auto oa = opArgs[a];
+                                    if (dynamic_pointer_cast<MoveExpression>(oa))
+                                        continue;
+                                    if (dynamic_pointer_cast<NewExpression>(oa))
+                                        continue;
+                                    auto oid = dynamic_pointer_cast<
+                                        IdentifierExpression>(oa);
+                                    if (!oid) continue;
+                                    auto oscope = module->getScopeStack().peek();
+                                    if (!oscope) continue;
+                                    FieldPtr ofield =
+                                        oscope->getField(oid->getTextValue());
+                                    if (!ofield) continue;
+                                    bool owns = ofield->getDropEntry() != nullptr;
+                                    if (!owns) {
+                                        if (auto cm = module->getCurrentMethod()) {
+                                            owns = cm->isArenaEligibleLocal(
+                                                oid->getTextValue());
+                                        }
+                                    }
+                                    if (!owns) continue;
+                                    throw Exception(
+                                        "method `" + opName + "` declares "
+                                        "parameter `" + ofp->getName()
+                                        + "` as `#T` (ownership transfer "
+                                          "required); write `#"
+                                        + oid->getTextValue() + "` at the call "
+                                          "site to surrender ownership of the "
+                                          "source local, or pass a fresh "
+                                          "`heap T(...)` / `stack T(...)` "
+                                          "construction. See "
+                                          "docs/specification/lang/"
+                                          "OwnershipTransfer.md.",
+                                        "CAJETA_ERROR_TRANSFER_REQUIRED");
+                                }
+                            }
                             // title-tracking 6.2.1 — the transfer word for the
                             // lowered call. `m[k] = #v` previously passed NO
                             // word: the MoveExpression deactivated the source
@@ -1171,22 +1237,24 @@ namespace cajeta {
         // Genuine use-after-`#`-move reads are still caught in
         // Identifier.cpp / DotExpression.cpp via borrowedBindings / borrowedPaths.
 
-        // title-stores §2.1 — fuse `dst[i] #= #src[j]` into a FORWARDING
-        // slot move before the RHS extraction codegen runs: the source bit
-        // transfers verbatim and the borrowed-take panic is suppressed.
+        // title-stores §2.1 — fuse `dst[i] #= src[j]` into a FORWARDING slot
+        // move before the RHS extraction codegen runs: the source bit
+        // transfers verbatim and the borrowed-take panic is suppressed. This
+        // is the container author's shift/sift primitive.
+        //
+        // uniform-transfer-semantics Unit 3: the mark never required the
+        // DOUBLE sharp, so the primitive is unaffected by that unit rejecting
+        // `#= #`. The walk below is kept because the `#=` desugar wraps its
+        // RHS in a Move of its own and an explicit legacy `dst[i] = #src[j]`
+        // must reach the same innermost node.
         if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
             auto fwdLhs = dynamic_pointer_cast<ArrayIndexExpression>(children[0]);
             auto fwdMv = dynamic_pointer_cast<MoveExpression>(children[1]);
-            bool fwdDouble = false;
-            // The `#=` desugar wraps the parsed `#expr` Move again — walk
-            // to the INNERMOST Move (its codegen does the take). The double
-            // wrap IS the fused signature.
             while (fwdMv && !fwdMv->getChildren().empty()) {
                 auto deeper = dynamic_pointer_cast<MoveExpression>(
                     fwdMv->getChildren()[0]);
                 if (!deeper) break;
                 fwdMv = deeper;
-                fwdDouble = true;
             }
             if (fwdLhs && fwdMv && !fwdMv->getChildren().empty()) {
                 if (auto fwdSrc = dynamic_pointer_cast<ArrayIndexExpression>(
@@ -1206,16 +1274,13 @@ namespace cajeta {
                 }
             }
             // title-stores §3.3.2 — member-to-member forwarding
-            // (`dst[i].m #= #src[j].m`, the HashMap rehash shape): a
-            // DOUBLE-Move over a Dot source forwards that member's bit
-            // verbatim through the field-detach path. The mark is inert
-            // for String/primitive members (their Moves don't consult
-            // it), so gating on the shape alone is safe.
-            if (fwdDouble && fwdMv && !fwdMv->getChildren().empty()
-                    && dynamic_pointer_cast<DotExpression>(
-                           fwdMv->getChildren()[0])) {
-                fwdMv->setForwardingSlotMove(true);
-            }
+            // (`dst[i].m #= #src[j].m`, the HashMap rehash shape) is GONE as
+            // of uniform-transfer-semantics Unit 3. It was reachable only
+            // through a double Move, which only `#= #` produced, and that
+            // spelling is now rejected outright. The capability retires with
+            // its one caller: the rehash forwarded a member's bit verbatim
+            // because a slot might hold a borrow, and spec 2.3 removed that
+            // possibility. `grep '#= #' runtime/src` is 0.
         }
         // array-literals §3.2 — for `lhs = [...]`, target-type the RHS literal
         // from the LHS array element type BEFORE the operands generate below

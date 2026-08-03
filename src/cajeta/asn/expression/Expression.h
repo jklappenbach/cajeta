@@ -789,13 +789,11 @@ namespace cajeta {
     };
 
 
-    // `x #= #y` — true when the right-hand `#` operand is a BARE IDENTIFIER (a
-    // local or parameter), which makes the second `#` redundant: `#=` already
-    // transfers a local's title. FALSE for a field/element operand, where the
-    // double sharp is the "fused claim" that forwards the source slot's mode
-    // verbatim — a distinct, load-bearing operation. Defined in Expression.cpp;
-    // shared with the two declaration paths (Statement.cpp,
-    // CajetaLlvmVisitor::visitVariableDeclarator).
-    bool cajetaSharpOperandIsBareIdentifier(
+    // `x #= #y` — true when the right-hand side of a `#=` carries its own `#`,
+    // whatever the source's shape (identifier, field, element, call result).
+    // The store already IS the transfer, so the second sharp is always
+    // redundant. Defined in Expression.cpp; shared with the two declaration
+    // paths (Statement.cpp, CajetaLlvmVisitor::visitVariableDeclarator).
+    bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs);
 }

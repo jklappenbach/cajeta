@@ -116,7 +116,7 @@ namespace cajeta {
                     // syntactically on the initializer's expression context.
                     if (auto* viCtx = vdCtx->variableInitializer()) {
                         if (auto* eCtx = viCtx->expression()) {
-                            if (cajeta::cajetaSharpOperandIsBareIdentifier(eCtx)) {
+                            if (cajeta::cajetaRhsCarriesRedundantSharp(eCtx)) {
                                 throw Exception(
                                     std::string("`#=` already acquires ownership "
                                                 "when the source has it — drop the "

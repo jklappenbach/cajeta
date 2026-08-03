@@ -14,6 +14,8 @@
 #include <cstdint>
 #include <string>
 
+#include "cajeta/error/Exception.h"
+
 using cajeta_test::CajetaJit;
 
 namespace {
@@ -127,7 +129,7 @@ TEST(MemberBitmapTests, memberMoveOutForwardsAndClearsOnlyThatBit) {
         "            slots[1].a #= heap Cell(3);\n"
         "            slots[1].b #= heap Cell(4);\n"
         "            {\n"
-        "                Cell taken #= #slots[1].a;\n"   // title out, bit clears
+        "                Cell taken #= slots[1].a;\n"    // title out, bit clears
         "                t = taken.n * 10;\n"            // 30
         "            }\n"                                 // taken drops here
         "            t = t + slots[1].b.n;\n"             // 34
@@ -139,11 +141,18 @@ TEST(MemberBitmapTests, memberMoveOutForwardsAndClearsOnlyThatBit) {
     EXPECT_EQ(runI32(src), 34);
 }
 
-// 4.1.2a — HashMap mixed ownership CONTRACT (green today against owned[],
-// must stay green when 4.2.2 deletes it): owned key + borrowed value per
-// put; replace displaced-releases the owned old value; teardown drops
-// exactly what the map took.
-TEST(MemberBitmapTests, hashMapMixedOwnershipContract) {
+// ---- uniform-transfer-semantics 2.1.5 — the HashMap ownership rewrite -----
+//
+// 4.1.2a/b pinned MIXED ownership: owned and borrowed values in one map, with
+// replace and remove each behaving per-entry according to a bit. Spec 2.3
+// abolishes the borrowed half (`put` takes `#K, #V`), so what remains is the
+// owned path — which is where the interesting behaviour always was. Rewritten,
+// not deleted: replace-displaces and remove-hands-back are still real
+// contracts, and this is now the only place they are pinned for HashMap.
+
+// 4.1.2a — every value owned: replace displaced-releases the old one, and the
+// teardown drops exactly what is still resident.
+TEST(MemberBitmapTests, hashMapOwnedValueContract) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
@@ -154,27 +163,55 @@ TEST(MemberBitmapTests, hashMapMixedOwnershipContract) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
-        "        Cell held = heap Cell(9);\n"
         "        int32 t = 0;\n"
         "        {\n"
+        "            Cell held = heap Cell(9);\n"
         "            HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "            m.put(1, #heap Cell(3));\n"     // owned value
-        "            m.put(2, held);\n"              // borrowed value
+        "            m.put(1, #heap Cell(3));\n"
+        "            m.put(2, #held);\n"
         "            m.put(1, #heap Cell(5));\n"     // replace: drops the 3
         "            t = m.get(1).n * 10 + m.get(2).n;\n"   // 59
-        "        }\n"                                  // map drops the 5 only
-        "        if (held.n != 9) { return -2; }\n"
-        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"  // held
+        "            if (held.n != 9) { return -2; }\n"     // demoted read
+        "        }\n"                                  // map drops the 5 and the 9
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
         "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 59);
 }
 
-// 4.1.2b — HashMap remove hands the value back in the mode the entry held
-// (flagged): an owned remove transfers the title to the caller (whose
-// local drops it); a borrowed remove hands back a borrow. CONTRACT pin.
-TEST(MemberBitmapTests, hashMapRemoveFlaggedContract) {
+// The lend `m.put(k, v)` that both of these used to rely on is now diagnosed.
+TEST(MemberBitmapTests, hashMapLendIsRejected) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public class Cell {\n"
+        "    public int32 n;\n"
+        "    public Cell(int32 nn) { this.n = nn; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell held = heap Cell(9);\n"
+        "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
+        "        m.put(2, held);\n"
+        "        return m.get(2).n;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        ADD_FAILURE() << "expected the lend into an owning map to be rejected";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TRANSFER_REQUIRED");
+        EXPECT_NE(e.getMessage().find("#held"), std::string::npos)
+            << e.getMessage();
+    }
+}
+
+// 4.1.2b — was `hashMapRemoveFlaggedContract`, whose subject was remove
+// handing the value back "in the mode the entry held". There is one mode left:
+// remove ends membership and transfers the title to the receiving local, which
+// drops it. Both removes here are owned, and both must balance.
+TEST(MemberBitmapTests, hashMapRemoveTransfersToCaller) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
@@ -185,32 +222,31 @@ TEST(MemberBitmapTests, hashMapRemoveFlaggedContract) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
-        "        Cell held = heap Cell(9);\n"
         "        int32 t = 0;\n"
         "        {\n"
+        "            Cell held = heap Cell(9);\n"
         "            HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
         "            m.put(1, #heap Cell(3));\n"
-        "            m.put(2, held);\n"
+        "            m.put(2, #held);\n"
         "            {\n"
-        "                Cell out = m.remove(1);\n"   // owned → title to out
+        "                Cell out = m.remove(1);\n"   // title to out
         "                t = out.n * 10;\n"           // 30
         "            }\n"                              // out drops the 3
         "            {\n"
-        "                Cell b = m.remove(2);\n"     // borrowed → borrow back
+        "                Cell b = m.remove(2);\n"     // title to b
         "                t = t + b.n;\n"              // 39
-        "            }\n"
+        "            }\n"                              // b drops the 9
         "            if ((int32) m.count() != 0) { return -3; }\n"
         "        }\n"
-        "        if (held.n != 9) { return -2; }\n"
-        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"  // held
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
         "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 39);
 }
 
-// PROBE — split the flagged-remove contract: does the single-sharp fused claim
-// break the OWNED path, the BORROWED path, or both?
+// PROBE — kept from the fused-claim investigation: the single-sharp remove of
+// an owned entry, isolated from everything else.
 TEST(MemberBitmapTests, PROBE_removeOwnedOnly) {
     std::string src =
         "package test;\n"
@@ -227,7 +263,9 @@ TEST(MemberBitmapTests, PROBE_removeOwnedOnly) {
     EXPECT_EQ(runI32(src), 3);
 }
 
-TEST(MemberBitmapTests, PROBE_removeBorrowedOnly) {
+// The transferred-in twin of the probe above: put a local's title in, take it
+// straight back out.
+TEST(MemberBitmapTests, PROBE_removeTransferredLocal) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
@@ -236,7 +274,7 @@ TEST(MemberBitmapTests, PROBE_removeBorrowedOnly) {
         "    public static int32 run() {\n"
         "        Cell held = heap Cell(9);\n"
         "        HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "        m.put(2, held);\n"
+        "        m.put(2, #held);\n"
         "        Cell b = m.remove(2);\n"
         "        return b.n;\n"
         "    }\n"

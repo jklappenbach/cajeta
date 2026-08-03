@@ -140,7 +140,7 @@ TEST(OwnedIntrinsicTests, internPoolAdoptOrCopy) {
         "        if (Cajeta.owned(c)) {\n"
         "            this.data[this.size] #= c;\n"     // adopt
         "        } else {\n"
-        "            this.data[this.size] #= #heap Cell(c.n);\n"  // copy
+        "            this.data[this.size] #= heap Cell(c.n);\n"  // copy
         "        }\n"
         "        this.size = this.size + 1;\n"
         "    }\n"

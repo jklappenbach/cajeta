@@ -325,14 +325,28 @@ TEST(LocalLinearityTests, doubleSharpFieldStoreIsCompileError) {
     compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
 }
 
-// A FIELD/ELEMENT source is NOT the redundant case and stays legal: there the
-// double sharp is the "fused claim", which forwards whatever mode the source
-// slot holds — owned or borrowed — VERBATIM, where a plain `#=` asserts an
-// unconditional transfer. That is how HashMap.remove hands a value back in the
-// mode the caller gave it. Narrowing the rule to bare-identifier sources is
-// what keeps that expressible (MemberBitmapTests.hashMapRemoveFlaggedContract
-// is the pin: the BORROWED remove is the path that breaks without it).
-TEST(LocalLinearityTests, doubleSharpFromFieldIsTheFusedClaimAndStaysLegal) {
+// uniform-transfer-semantics Unit 3 — the rule is now BLANKET: `#` on the RHS
+// of `#=` is an error whatever the source's shape.
+//
+// It used to be narrowed to bare-identifier sources so that a FIELD or ELEMENT
+// source could keep the "fused claim" — a double sharp that forwarded whatever
+// mode the source slot held, owned or borrowed, VERBATIM. That existed for one
+// reason: a container slot MIGHT hold a borrow, so a store out of one could not
+// assert an unconditional transfer. Spec 2.3 removes the premise — every
+// container owns its elements — and Unit 2 collapsed all 20 stdlib fused claims
+// to single moves accordingly (`grep '#= #' runtime/src` is now 0).
+//
+// So the narrowing no longer buys anything, and the language gets one rule:
+// the STORE carries the transfer, and it is spelled exactly once.
+//
+// Array-element → array-element stores keep forwarding the source bit verbatim
+// under the SINGLE sharp (BinaryOpExpression's fwdLhs/fwdSrc arm does not
+// require the double), so `dst[i] #= src[j]` is the shift/sift primitive it
+// always was. Nothing is lost here except a second spelling.
+
+// 3.1.1 — a FIELD source. This test previously asserted the opposite; it is
+// inverted rather than deleted so the history shows the rule changing.
+TEST(LocalLinearityTests, doubleSharpFromFieldIsCompileError) {
     std::string src = std::string(kCellSrc) +
         "public class Node2 {\n"
         "    public Cell value;\n"
@@ -341,11 +355,113 @@ TEST(LocalLinearityTests, doubleSharpFromFieldIsTheFusedClaimAndStaysLegal) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Node2 n = heap Node2(heap Cell(4));\n"
-        "        Cell t #= #n.value;\n"     // fused claim — legal
+        "        Cell t #= #n.value;\n"     // was the fused claim — now rejected
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 3.1.5 (field half) — the origin guard. The SAME fixture with the sharp
+// dropped must compile clean. Without this, a DOUBLE_TRANSFER raised anywhere
+// else in the compile (the stdlib, a fixture typo) would read as a pass: §6
+// records three tests that once went green for exactly that reason. The pair
+// makes the offending line the only difference between red and green.
+TEST(LocalLinearityTests, doubleSharpFromFieldSingleSharpControlCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public class Node2 {\n"
+        "    public Cell value;\n"
+        "    public Node2(Cell v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Node2 n = heap Node2(heap Cell(4));\n"
+        "        Cell t #= n.value;\n"      // the one-character difference
         "        return t.n;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 4);
+}
+
+// 3.1.2 — an ARRAY-ELEMENT source.
+TEST(LocalLinearityTests, doubleSharpFromElementIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell[] arr = heap Cell[2];\n"
+        "        arr[0] #= heap Cell(5);\n"
+        "        Cell t #= #arr[0];\n"      // element source — rejected
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 3.1.5 (element half) — the same fixture minus the sharp.
+TEST(LocalLinearityTests, doubleSharpFromElementSingleSharpControlCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell[] arr = heap Cell[2];\n"
+        "        arr[0] #= heap Cell(5);\n"
+        "        Cell t #= arr[0];\n"
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// 3.1.3 — a CALL-RESULT source. `make()` already hands back a title (`#Cell`),
+// so `#make()` claims a title that is already the caller's.
+TEST(LocalLinearityTests, doubleSharpFromCallResultIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() { return heap Cell(6); }\n"
+        "    public static int32 run() {\n"
+        "        Cell t #= #make();\n"      // call-result source — rejected
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 3.1.5 (call half) — the same fixture minus the sharp.
+TEST(LocalLinearityTests, doubleSharpFromCallResultSingleSharpControlCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() { return heap Cell(6); }\n"
+        "    public static int32 run() {\n"
+        "        Cell t #= make();\n"
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+// 3.1.2 (store half) — an element STORE whose source is an element. This is
+// the shift/sift primitive, and it must keep forwarding the source bit under
+// the single sharp: slot 0 is owned, so slot 1 ends up owning it and slot 0
+// decays. One live Cell at scope exit, not two, and no double free.
+TEST(LocalLinearityTests, elementToElementStoreForwardsUnderSingleSharp) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell[] arr = heap Cell[2];\n"
+        "            arr[0] #= heap Cell(7);\n"
+        "            arr[1] #= arr[0];\n"   // forward the title, no double sharp
+        "            t = arr[1].n;\n"
+        "        }\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
 }
 
 // The CORRECT spelling keeps working — the store carries the transfer.

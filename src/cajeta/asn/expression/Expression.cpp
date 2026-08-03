@@ -91,25 +91,37 @@ namespace cajeta {
         return neu;
     }
 
-// `#= #x` — is the right-hand `#` operand a BARE IDENTIFIER (a local or
-// parameter)? Then the sharp is genuinely redundant: `#=` already acquires a
-// local's title, so the second `#` says it twice.
+// `#= #x` — does the right-hand side of a `#=` carry its own `#`? The store
+// already IS the transfer, so a second sharp is redundant WHATEVER the source's
+// shape, and the three `#=` sites reject it (CAJETA_ERROR_DOUBLE_TRANSFER).
 //
-// It is NOT redundant when the operand is a FIELD or ELEMENT access. There the
-// double sharp is the "fused claim": it forwards whatever mode the source slot
-// holds — owned or borrowed — VERBATIM, where a plain `#=` asserts an
-// unconditional transfer. That distinction is load-bearing: it is how
-// HashMap.remove hands a value back in the mode the caller gave it, with no
-// separate boolean. Removing it breaks the borrowed-entry path
-// (MemberBitmapTests.hashMapRemoveFlaggedContract).
-bool cajetaSharpOperandIsBareIdentifier(
+// uniform-transfer-semantics Unit 3 widened this. It used to answer the
+// narrower "is the operand a BARE IDENTIFIER", because a FIELD or ELEMENT
+// source needed the double sharp for the "fused claim": a forward of whatever
+// mode the source slot held, owned or borrowed, VERBATIM, where a plain `#=`
+// asserts an unconditional transfer. That existed for exactly one reason — a
+// container slot MIGHT hold a borrow. Spec 2.3 removes the premise (containers
+// own their elements) and Unit 2 collapsed all 20 stdlib fused claims to single
+// moves, so the exemption now buys a second spelling and nothing else.
+//
+// ELEMENT→ELEMENT stores keep forwarding under the SINGLE sharp: the
+// fwdLhs/fwdSrc arm in BinaryOpExpression::generateCode never required the
+// double, so `dst[i] #= src[j]` is still the shift/sift primitive.
+//
+// What DOES go away is claiming a possibly-titleless slot into a LOCAL:
+// `T x #= #slot` used to forward the slot's mode, so a borrowed slot yielded a
+// borrow. `T x #= slot` does not — it demands a title, and a slot without one
+// panics CAJETA_PANIC_TITLE_MISS. That is the honest reading of what the code
+// says, and it is the intended consequence: the old spelling let "claim" mean
+// "borrow if that's all there is". Take a plain borrow (`T x = slot`) when that
+// is what you meant.
+bool cajetaRhsCarriesRedundantSharp(
         CajetaParser::ExpressionContext* rhs) {
+    // `REFERENCE expression` is the only expression alternative carrying a
+    // REFERENCE token, so the size check is belt-and-braces against a grammar
+    // change quietly widening this into other productions.
     if (!rhs || rhs->REFERENCE() == nullptr) return false;
-    if (rhs->expression().size() != 1) return false;
-    auto* inner = rhs->expression(0);
-    auto* prim = inner->primary();
-    if (!prim || !prim->identifier()) return false;
-    return prim->getText() == prim->identifier()->getText();
+    return rhs->expression().size() == 1;
 }
 
     // `(Name)(operand)` — is this postfix-call node actually a CAST whose
@@ -565,7 +577,7 @@ bool cajetaSharpOperandIsBareIdentifier(
                 for (auto childContext: ctx->expression()) {
                     ExpressionPtr child = Expression::fromContext(childContext);
                     if (sharpAssign && childIndex == 1
-                            && cajetaSharpOperandIsBareIdentifier(childContext)) {
+                            && cajetaRhsCarriesRedundantSharp(childContext)) {
                         // `x #= #y` — the transfer spelled twice. `#=` IS the
                         // transfer: the STORE site carries it, which is what
                         // makes "a store uses `#=`; everything else uses `#v`"

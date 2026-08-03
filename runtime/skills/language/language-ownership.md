@@ -26,6 +26,11 @@ the receiving local's declaration — `Point q = this.make();` is plain, because
 the signature already carries the transfer. (Legacy `dst = #v` still compiles
 with a deprecation warning; write `dst #= v`.)
 
+**Never both.** `x #= #y` is `CAJETA_ERROR_DOUBLE_TRANSFER` whatever `y` is —
+identifier, field, element, or call result. The store carries the transfer, so
+the second `#` says nothing the first did not. There is no source shape that
+takes both, and no exception to memorize.
+
 ## Drops
 
 Owners are reclaimed at their block's closing `}`, in reverse declaration
@@ -121,5 +126,30 @@ placement keyword).
 - Ownership at a call site is directional: a plain `T` parameter can *accept*
   an offered `#x` (the value then drops in the callee) — but a `#T` parameter
   never accepts a plain borrow.
-- Containers take elements by transfer (`list.add(#g)`); after the add, the
-  local is moved — capture anything you still need (e.g. `count()`) first.
+- **Containers OWN their elements, and the rule is enforced, not conventional.**
+  Every stdlib container declares its element parameters `#T`, so lending one a
+  plain local is `CAJETA_ERROR_TRANSFER_REQUIRED` at the call site, naming the
+  fix. There is no borrowed-element mode: `list.add(g)` does not compile, and a
+  container never holds something it will not reclaim.
+
+  ```cajeta
+  list.add(#g);          // the list takes g's title
+  int64 n = g.count();   // g is a demoted borrow — still readable
+  ```
+
+  You do NOT need to capture what you still want before the add. `#` moves the
+  title, not the binding, so `g` reads fine afterwards for as long as the list
+  is alive. What you must not do is read it *after the list tears down* — the
+  list freed the element, and nothing diagnoses that yet (MemoryModel §1.7).
+
+- **String is a normal owned class here.** `list.add(s)` on a `String` is the
+  same error as any other element, which is the single largest source of
+  migration churn. Two fixes, and they mean different things:
+
+  ```cajeta
+  list.add(#s);                          // surrender the one String
+  list.add(s.substring(0, s.count()));   // give the list its own copy; s stays owner
+  ```
+
+  Reach for the copy when the caller genuinely needs to keep an owner past the
+  container's life; otherwise surrender and read `s` as a borrow.

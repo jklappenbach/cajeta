@@ -9957,7 +9957,33 @@ namespace cajeta {
                     auto scope = module->getScopeStack().peek();
                     if (!scope) continue;
                     FieldPtr field = scope->getField(idExpr->getTextValue());
-                    if (!field || !field->getDropEntry()) continue;
+                    if (!field) continue;
+                    // An active drop entry is the usual proof that this frame
+                    // OWNS the value. It is not the only one: frame-arena U2/U3
+                    // routes non-escaping String-concat and primitive-array
+                    // locals through the arena, which reclaims them in bulk at
+                    // scope exit and so registers NO drop entry. Those locals
+                    // are still owners, and handing one to a `#T` formal is the
+                    // same hazard — worse, since the arena reset would free
+                    // memory the callee now owns.
+                    //
+                    // Found 2026-08-03 by uniform-transfer 2.1.4: `a.add(s)` on
+                    // an `ArrayList<String>` compiled CLEAN because the concat
+                    // local `String s = "e" + i` was arena-routed. The escape
+                    // walk counts only `#name` as an escape, so a plain lend was
+                    // invisible to it AND to this check — each deferring to the
+                    // other. Asking the method directly breaks the cycle: the
+                    // plain form now errors, and the `#` form marks the name
+                    // escaping, which un-elects it from the arena and gives it a
+                    // real drop entry.
+                    bool callerOwns = field->getDropEntry() != nullptr;
+                    if (!callerOwns) {
+                        if (auto cm = module->getCurrentMethod()) {
+                            callerOwns = cm->isArenaEligibleLocal(
+                                idExpr->getTextValue());
+                        }
+                    }
+                    if (!callerOwns) continue;
                     throw Exception(
                         "method `" + methodCallName + "` declares parameter `"
                             + fp->getName() + "` as `#T` (ownership transfer required); "
