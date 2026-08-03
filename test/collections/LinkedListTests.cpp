@@ -95,9 +95,9 @@ TEST(LinkedListTests, removeUnlinksAndDecrementsCount) {
         "        Tag a = heap Tag(1);\n"
         "        Tag b = heap Tag(2);\n"
         "        Tag c = heap Tag(3);\n"
-        "        ll.add(a);\n"
-        "        ll.add(b);\n"
-        "        ll.add(c);\n"
+        "        ll.add(#a);\n"
+        "        ll.add(#b);\n"
+        "        ll.add(#c);\n"
         "        ll.remove(b);\n"
         "        return (int32) ll.count();\n"  // 2
         "    }\n"
@@ -117,7 +117,7 @@ TEST(LinkedListTests, containsFindsAddedValue) {
         "    public static int32 run() {\n"
         "        LinkedList<Tag> ll = heap LinkedList<Tag>();\n"
         "        Tag a = heap Tag(1);\n"
-        "        ll.add(a);\n"
+        "        ll.add(#a);\n"
         "        if (ll.contains(a)) { return 1; } else { return 0; }\n"
         "    }\n"
         "}\n";
