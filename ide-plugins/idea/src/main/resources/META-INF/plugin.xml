@@ -168,6 +168,10 @@
 
         <postStartupActivity
             implementation="dev.cajeta.idea.xref.CajetaSourceMountStartup"/>
+        <!-- Index on project open, so rename/hierarchy/usages are usable
+             without the developer first running Rebuild by hand. -->
+        <postStartupActivity
+            implementation="dev.cajeta.idea.xref.CajetaXrefStartup"/>
         <postStartupActivity
             implementation="dev.cajeta.idea.markdown.InstallCommentCaretListener"/>
 
