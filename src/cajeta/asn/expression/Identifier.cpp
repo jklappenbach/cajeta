@@ -48,7 +48,7 @@ namespace cajeta {
         // earlier in the active scope, reject the read at compile time.
         // Per `MemoryModel.md` § Static analysis rules § Use-after-move.
         auto scope = module->getScopeStack().peek();
-        if (scope && scope->isMoved(identifier)) {
+        if (scope && scope->isBorrow(identifier)) {
             throw Exception("use-after-move: identifier '" + identifier
                 + "' was transferred via `#` and cannot be read here",
                 "CAJETA_ERROR_USE_AFTER_MOVE");

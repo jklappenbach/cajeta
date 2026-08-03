@@ -385,8 +385,8 @@ namespace cajeta {
                                 if (argKlass && !argKlass->isValueType()
                                         && !argKlass->isSharedCapableValue()
                                         && !argKlass->isInterface()) {
-                                    if (scope->isMoved(nm)) {
-                                        string note = scope->movedNoteOf(nm);
+                                    if (scope->isBorrow(nm)) {
+                                        string note = scope->transferSiteOf(nm);
                                         throw Exception(
                                             "use of moved value: `#" + nm + "` — "
                                                 "the value was already transferred"
@@ -408,7 +408,7 @@ namespace cajeta {
                                                 "CAJETA_ERROR_MOVE_OF_BORROW");
                                         }
                                     }
-                                    scope->markMoved(nm,
+                                    scope->demoteToBorrow(nm,
                                         "transferred to a constructor at line "
                                             + std::to_string(getSourceLine()));
                                 }

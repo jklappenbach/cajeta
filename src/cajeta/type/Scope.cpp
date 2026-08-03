@@ -55,12 +55,12 @@ namespace cajeta {
         // anything there, and both are consulted by alloca (not by name).
     }
 
-    void Scope::markMoved(const string& name) {
-        markMoved(name, "");
+    void Scope::demoteToBorrow(const string& name) {
+        demoteToBorrow(name, "");
     }
 
     // 5.2.7 — lend edges live on the HOLDER's declaring scope (same placement
-    // rule markMoved uses), so a lend recorded inside a nested block is still
+    // rule demoteToBorrow uses), so a lend recorded inside a nested block is still
     // visible at the outer return that escapes the holder.
     void Scope::recordLend(const string& holder, const string& src) {
         Scope* target = this;
@@ -82,7 +82,7 @@ namespace cajeta {
         return {};
     }
 
-    void Scope::markMoved(const string& name, const string& note) {
+    void Scope::demoteToBorrow(const string& name, const string& note) {
         // Find the scope where the name was declared and record the move there;
         // otherwise record it locally so later checks still see it.
         Scope* target = this;
@@ -91,17 +91,17 @@ namespace cajeta {
             target = target->parent ? target->parent.get() : nullptr;
         }
         if (!target) target = this;
-        if (target->movedNames.insert(name).second) {
+        if (target->borrowedBindings.insert(name).second) {
             moveLog.emplace_back(target, name);
         }
-        if (!note.empty()) target->movedNotes[name] = note;
+        if (!note.empty()) target->transferSites[name] = note;
     }
 
     void Scope::retractMovesSince(size_t mark) {
         while (moveLog.size() > mark) {
             auto& entry = moveLog.back();
-            entry.first->movedNames.erase(entry.second);
-            entry.first->movedNotes.erase(entry.second);
+            entry.first->borrowedBindings.erase(entry.second);
+            entry.first->transferSites.erase(entry.second);
             moveLog.pop_back();
         }
     }
@@ -110,38 +110,38 @@ namespace cajeta {
         vector<MoveMark> out;
         for (size_t i = mark; i < moveLog.size(); ++i) {
             auto& e = moveLog[i];
-            auto nit = e.first->movedNotes.find(e.second);
+            auto nit = e.first->transferSites.find(e.second);
             out.push_back({e.first, e.second,
-                nit == e.first->movedNotes.end() ? string() : nit->second});
+                nit == e.first->transferSites.end() ? string() : nit->second});
         }
         return out;
     }
 
     void Scope::reapplyMoves(const vector<MoveMark>& moves) {
         for (auto& m : moves) {
-            if (m.target->movedNames.insert(m.name).second) {
+            if (m.target->borrowedBindings.insert(m.name).second) {
                 moveLog.emplace_back(m.target, m.name);
             }
-            if (!m.note.empty()) m.target->movedNotes[m.name] = m.note;
+            if (!m.note.empty()) m.target->transferSites[m.name] = m.note;
         }
     }
 
-    void Scope::clearMoved(const string& name) {
+    void Scope::restoreOwnership(const string& name) {
         Scope* target = this;
         while (target) {
-            if (target->movedNames.erase(name)) {
-                target->movedNotes.erase(name);
+            if (target->borrowedBindings.erase(name)) {
+                target->transferSites.erase(name);
                 return;
             }
             target = target->parent ? target->parent.get() : nullptr;
         }
     }
 
-    string Scope::movedNoteOf(const string& name) {
+    string Scope::transferSiteOf(const string& name) {
         Scope* target = this;
         while (target) {
-            auto it = target->movedNotes.find(name);
-            if (it != target->movedNotes.end()) return it->second;
+            auto it = target->transferSites.find(name);
+            if (it != target->transferSites.end()) return it->second;
             target = target->parent ? target->parent.get() : nullptr;
         }
         return "";
@@ -158,13 +158,13 @@ namespace cajeta {
         return "";
     }
 
-    bool Scope::isMoved(const string& name) {
-        if (movedNames.find(name) != movedNames.end()) return true;
-        if (parent) return parent->isMoved(name);
+    bool Scope::isBorrow(const string& name) {
+        if (borrowedBindings.find(name) != borrowedBindings.end()) return true;
+        if (parent) return parent->isBorrow(name);
         return false;
     }
 
-    void Scope::markMovedPath(const string& path) {
+    void Scope::demotePathToBorrow(const string& path) {
         // Record on the scope where the root variable lives, so a move inside
         // a nested block still invalidates the outer binding's sub-paths.
         if (path.empty()) return;
@@ -173,30 +173,30 @@ namespace cajeta {
         Scope* target = this;
         while (target) {
             if (target->fields.find(root) != target->fields.end()) {
-                target->movedPaths.insert(path);
+                target->borrowedPaths.insert(path);
                 return;
             }
             target = target->parent ? target->parent.get() : nullptr;
         }
         // Fallback: record locally if the root isn't found in any ancestor.
-        movedPaths.insert(path);
+        borrowedPaths.insert(path);
     }
 
-    bool Scope::isPathMoved(const string& path) {
+    bool Scope::isPathBorrow(const string& path) {
         // Check every prefix of `path` ("a", "a.b", "a.b.c") against the
         // moved-path set — if any prefix was moved, the full path is invalid.
         size_t pos = 0;
         while (true) {
             size_t dot = path.find('.', pos);
             string prefix = (dot == string::npos) ? path : path.substr(0, dot);
-            if (movedPaths.find(prefix) != movedPaths.end()) return true;
+            if (borrowedPaths.find(prefix) != borrowedPaths.end()) return true;
             // The root identifier of the path may also be in the variable-level
             // moved set (covers `#person` followed by a `person.name` read).
-            if (pos == 0 && movedNames.find(prefix) != movedNames.end()) return true;
+            if (pos == 0 && borrowedBindings.find(prefix) != borrowedBindings.end()) return true;
             if (dot == string::npos) break;
             pos = dot + 1;
         }
-        if (parent) return parent->isPathMoved(path);
+        if (parent) return parent->isPathBorrow(path);
         return false;
     }
 

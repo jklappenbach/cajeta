@@ -1147,8 +1147,8 @@ namespace cajeta {
                     // binding. Clear before the LHS slot fetch (a write target,
                     // same rationale as markAssigned above); the fresh-owner
                     // entry retarget below keys on lhsWasMoved.
-                    lhsWasMoved = sc->isMoved(lhsId->getTextValue());
-                    if (lhsWasMoved) sc->clearMoved(lhsId->getTextValue());
+                    lhsWasMoved = sc->isBorrow(lhsId->getTextValue());
+                    if (lhsWasMoved) sc->restoreOwnership(lhsId->getTextValue());
                 }
             }
         }
@@ -1169,7 +1169,7 @@ namespace cajeta {
         // the scope-exit drop chain's responsibility, not this write site.
         //
         // Genuine use-after-`#`-move reads are still caught in
-        // Identifier.cpp / DotExpression.cpp via movedNames / movedPaths.
+        // Identifier.cpp / DotExpression.cpp via borrowedBindings / borrowedPaths.
 
         // title-stores §2.1 — fuse `dst[i] #= #src[j]` into a FORWARDING
         // slot move before the RHS extraction codegen runs: the source bit
@@ -2825,7 +2825,7 @@ namespace cajeta {
                                         }
                                     }
                                     // Intentionally NOT calling
-                                    // sc->markMoved here. The source
+                                    // sc->demoteToBorrow here. The source
                                     // local often goes on to be
                                     // reassigned in the next loop
                                     // iteration (e.g. `piece = source
@@ -2836,7 +2836,7 @@ namespace cajeta {
                                     // key` followed by future probes
                                     // against `key`'s field). The
                                     // dropEntry deactivation is the
-                                    // necessary half; markMoved is
+                                    // necessary half; demoteToBorrow is
                                     // too aggressive for the
                                     // ownership-transfer-into-array
                                     // shape.

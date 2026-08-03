@@ -2749,7 +2749,7 @@ bool cajetaSharpOperandIsBareIdentifier(
         // field stays resident and readable); if the bit is clear, panic —
         // extraction from a place that holds no title (integer-coded throw,
         // first-clause catchable like the NonNull check). This shape returns
-        // the loaded r-value directly and deliberately does NOT markMovedPath
+        // the loaded r-value directly and deliberately does NOT demotePathToBorrow
         // (post-extraction reads are legal borrows).
         if (auto dotInner = dynamic_pointer_cast<DotExpression>(inner)) {
             if (!dotInner->getResolvedType()) dotInner->resolveTypes(module);
@@ -3158,7 +3158,7 @@ bool cajetaSharpOperandIsBareIdentifier(
                         }
                     }
                 }
-                scope->markMoved(mvName,
+                scope->demoteToBorrow(mvName,
                     "moved by `#" + mvName + "` at line "
                         + std::to_string(getSourceLine()));
                 // If the moved-out identifier has a drop entry, flag it inactive
@@ -3219,7 +3219,7 @@ bool cajetaSharpOperandIsBareIdentifier(
                 }
                 if (!bitCapableClassField) {
                     string path = DotExpression::buildPath(inner);
-                    if (!path.empty()) scope->markMovedPath(path);
+                    if (!path.empty()) scope->demotePathToBorrow(path);
                 }
             }
         }
@@ -4186,7 +4186,7 @@ bool cajetaSharpOperandIsBareIdentifier(
                 // outer and the closure would attempt to free the same
                 // memory.
                 if (cap.byTransfer && outerScope) {
-                    outerScope->markMoved(cap.name);
+                    outerScope->demoteToBorrow(cap.name);
                     if (llvm::Value* entry = outerField->getDropEntry()) {
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {

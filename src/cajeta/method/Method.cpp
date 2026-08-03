@@ -3032,7 +3032,7 @@ namespace cajeta {
         // skipped. Sync clears the borrow set, so a synced buffer is fine.
         if (ScopePtr sc = module->getScopeStack().peek()) {
             for (const string& name : sc->pendingLaunchBorrows()) {
-                if (!sc->containsField(name) || sc->isMoved(name)) continue;
+                if (!sc->containsField(name) || sc->isBorrow(name)) continue;
                 FieldPtr f = sc->getField(name);
                 if (!f || !f->getDropEntry()) continue;
                 // title-tracking Unit 8: formals are RUNTIME owners now and

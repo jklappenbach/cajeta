@@ -230,7 +230,7 @@ namespace cajeta {
             string path = buildPath(self);
             if (!path.empty()) {
                 auto scope = module->getScopeStack().peek();
-                if (scope && scope->isPathMoved(path)) {
+                if (scope && scope->isPathBorrow(path)) {
                     throw Exception("use-after-move: path '" + path
                         + "' was transferred via `#` and cannot be read here",
                         "CAJETA_ERROR_USE_AFTER_MOVE");
