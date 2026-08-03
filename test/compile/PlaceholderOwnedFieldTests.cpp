@@ -238,6 +238,136 @@ TEST(PlaceholderOwnedFieldTests, ownedInterfaceReturnSurvivesContainerField) {
     EXPECT_EQ(fn(), 30);
 }
 
+// --- bisection probes: which STEP of the reported shape faults? -----------
+// Each adds one element of §1's repro. Named PROBE_ so they read as
+// diagnosis, not contract.
+
+// P1: `#Interface` return -> local -> dispatch, same method. No container,
+// no field.
+TEST(PlaceholderOwnedFieldTests, PROBE_ifaceReturnToLocalDispatch) {
+    std::string src =
+        "package test;\n"
+        "public interface Face {\n"
+        "    int32 poke(int32 v);\n"
+        "}\n"
+        "public final class Plus implements Face {\n"
+        "    public int32 k;\n"
+        "    public Plus(int32 kk) { this.k = kk; }\n"
+        "    public int32 poke(int32 v) { return v + this.k; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static #Face make(int32 k) { return heap Plus(k); }\n"
+        "    public static int32 run() {\n"
+        "        Face f = D.make(10);\n"
+        "        return f.poke(5);\n"          // 15
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 15);
+}
+
+// P2: same, but the value goes through a LOCAL container first.
+TEST(PlaceholderOwnedFieldTests, PROBE_ifaceReturnToLocalContainer) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public interface Face {\n"
+        "    int32 poke(int32 v);\n"
+        "}\n"
+        "public final class Plus implements Face {\n"
+        "    public int32 k;\n"
+        "    public Plus(int32 kk) { this.k = kk; }\n"
+        "    public int32 poke(int32 v) { return v + this.k; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static #Face make(int32 k) { return heap Plus(k); }\n"
+        "    public static int32 run() {\n"
+        "        ArrayList<Face> xs = heap ArrayList<Face>();\n"
+        "        Face f = D.make(10);\n"
+        "        xs.add(#f);\n"
+        "        return xs.get(0).poke(5);\n"   // 15
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 15);
+}
+
+// P3: container FIELD, but stored and read in the SAME method — isolates the
+// field round-trip from the cross-frame part.
+TEST(PlaceholderOwnedFieldTests, PROBE_ifaceReturnToFieldContainerSameFrame) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public interface Face {\n"
+        "    int32 poke(int32 v);\n"
+        "}\n"
+        "public final class Plus implements Face {\n"
+        "    public int32 k;\n"
+        "    public Plus(int32 kk) { this.k = kk; }\n"
+        "    public int32 poke(int32 v) { return v + this.k; }\n"
+        "}\n"
+        "public final class RegP {\n"
+        "    public ArrayList<Face> faces;\n"
+        "    public RegP() { this.faces #= heap ArrayList<Face>(); }\n"
+        "    public #Face make(int32 k) { return heap Plus(k); }\n"
+        "    public int32 both(int32 v) {\n"
+        "        Face f = this.make(10);\n"
+        "        this.faces.add(#f);\n"
+        "        return this.faces.get(0).poke(v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RegP r = heap RegP();\n"
+        "        return r.both(5);\n"           // 15
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 15);
+}
+
+// P4: NO `#Interface` return anywhere, but the store and read are in
+// different frames — the other half of the difference the spec isolated.
+TEST(PlaceholderOwnedFieldTests, PROBE_inlineBuildCrossFrame) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public interface Face {\n"
+        "    int32 poke(int32 v);\n"
+        "}\n"
+        "public final class Plus implements Face {\n"
+        "    public int32 k;\n"
+        "    public Plus(int32 kk) { this.k = kk; }\n"
+        "    public int32 poke(int32 v) { return v + this.k; }\n"
+        "}\n"
+        "public final class RegQ {\n"
+        "    public ArrayList<Face> faces;\n"
+        "    public RegQ() { this.faces #= heap ArrayList<Face>(); }\n"
+        "    public void enroll(int32 k) {\n"
+        "        Face f = heap Plus(k);\n"      // built inline, no `#Face` return
+        "        this.faces.add(#f);\n"
+        "    }\n"
+        "    public int32 poke(int32 v) { return this.faces.get(0).poke(v); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        RegQ r = heap RegQ();\n"
+        "        r.enroll(10);\n"
+        "        return r.poke(5);\n"           // 15
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 15);
+}
+
 // 4.3 — the discriminating control. A `#<BaseClass>` return of a derived
 // instance shares "return type wider than the allocated type" but is a THIN
 // pointer, not a fat body. If this passes while the interface version faults,

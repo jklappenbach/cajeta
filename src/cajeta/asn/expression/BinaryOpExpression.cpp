@@ -3814,6 +3814,58 @@ namespace cajeta {
             case BINARY_OP_GE:
             case BINARY_OP_EQ:
             case BINARY_OP_NE: {
+                // fat-aware interface `== null` (null-owned-interface-arg
+                // follow-up). An interface value is a 24-byte
+                // `{ ptr data, ptr vtable, i64 kind }`, and both shapes hand
+                // back a pointer to that BODY — a field's GEP is the body
+                // address, a local's slot loads to it. Comparing that pointer
+                // against null therefore compared the body's ADDRESS, which is
+                // never null, so a null interface was not observable at all:
+                // `nullIntoOwnedInterfaceFormal` could prove one CONSTRUCTS,
+                // STORES and DROPS without faulting, but `f == null` always
+                // answered false. Compare the body's DATA word instead — the
+                // null case memsets the body to zero, so data == null is
+                // exactly "empty".
+                {
+                    if (lhsAst && !lhsAst->getResolvedType())
+                        lhsAst->resolveTypes(module);
+                    if (rhsAst && !rhsAst->getResolvedType())
+                        rhsAst->resolveTypes(module);
+                    auto ifaceOf = [&](ExpressionPtr a) -> CajetaClassPtr {
+                        auto c = dynamic_pointer_cast<CajetaClass>(
+                            a ? a->getResolvedType() : nullptr);
+                        return (c && c->isInterface()) ? c : nullptr;
+                    };
+                    llvm::Value* lv = loadL(lhs);
+                    llvm::Value* rv = loadR(rhs);
+                    CajetaClassPtr ifaceCls;
+                    llvm::Value* bodyPtr = nullptr;
+                    if (ifaceOf(lhsAst) && rv
+                            && llvm::isa<llvm::ConstantPointerNull>(rv)) {
+                        ifaceCls = ifaceOf(lhsAst); bodyPtr = lv;
+                    } else if (ifaceOf(rhsAst) && lv
+                            && llvm::isa<llvm::ConstantPointerNull>(lv)) {
+                        ifaceCls = ifaceOf(rhsAst); bodyPtr = rv;
+                    }
+                    if (ifaceCls && bodyPtr && bodyPtr->getType()->isPointerTy()) {
+                        llvm::Type* bodyTy = ifaceCls->getLlvmType();
+                        if (bodyTy && bodyTy->isStructTy()) {
+                            llvm::Type* ptrTy = llvm::PointerType::get(
+                                *module->getLlvmContext(), 0);
+                            llvm::Value* dataSlot = builder->CreateStructGEP(
+                                bodyTy, bodyPtr, 0, "iface_null_data");
+                            llvm::Value* data =
+                                builder->CreateLoad(ptrTy, dataSlot);
+                            llvm::Value* nul =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            result = (binaryOp == BINARY_OP_EQ)
+                                ? builder->CreateICmpEQ(data, nul, "iface.isnull")
+                                : builder->CreateICmpNE(data, nul, "iface.notnull");
+                            break;
+                        }
+                    }
+                }
                 auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
                 bool isFp = l->getType()->isFloatingPointTy();
                 // Signedness from the AST's resolved types AS WELL AS getTypeFlagsOf.

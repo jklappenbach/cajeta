@@ -2481,6 +2481,82 @@ namespace cajeta {
                 "returned expression is 'void', but the method returns a value",
                 "CAJETA_ERROR_UNRESOLVED_EXPRESSION");
         }
+        // owned-interface-return-fault — WRAP a concrete class into the
+        // interface's fat body. MUST run before the aggregate coercion below.
+        //
+        // An interface value is a 24-byte `{ ptr data, ptr vtable, i64 kind }`
+        // returned BY VALUE. Every other way of producing one builds that body:
+        // `Face f = heap Plus(k)` wraps in LocalVariableDeclaration, and
+        // interface-typed slots and fields load their inline body. `return heap
+        // Plus(k)` through a `#Face` return had no wrap, and fell into the
+        // `retTy->isAggregateType() && valTy->isPointerTy()` arm below — which
+        // means "the expression yielded the ADDRESS of the aggregate, load it".
+        // That is right for an @ValueType (`return stack Vec2(...)`) and wrong
+        // here: the pointer is the Plus OBJECT, not a body. It emitted
+        //
+        //     %2 = call ptr @malloc(i64 16)          ; Plus is 16 bytes
+        //     %4 = load %test.Face, ptr %2           ; reads 24
+        //     ret %test.Face %4
+        //
+        // so the caller got data = Plus's vtable pointer, vtable = Plus's `k`
+        // field, and kind = 8 bytes of heap past the allocation. Dispatch then
+        // loaded through `k + 8` — with k = 10 that is address 0x12, the exact
+        // reported fault.
+        //
+        // The `#BaseClass` sibling is unaffected: it returns a thin pointer and
+        // needs no wrap, which is why it passed while this faulted — the
+        // discriminator placing the defect in fat-value handling rather than
+        // return-slot lifetime (spec 4.3).
+        if (retTy->isAggregateType() && val->getType()->isPointerTy()) {
+            if (auto m = module->getCurrentMethod()) {
+                auto ifaceRet =
+                    dynamic_pointer_cast<CajetaClass>(m->getReturnType());
+                if (expression && !expression->getResolvedType()) {
+                    expression->resolveTypes(module);
+                }
+                auto srcCls = dynamic_pointer_cast<CajetaClass>(
+                    expression ? expression->getResolvedType() : nullptr);
+                if (ifaceRet && ifaceRet->isInterface() && srcCls
+                        && !srcCls->isInterface()
+                        && retTy == ifaceRet->getLlvmType()) {
+                    auto& lctx = *module->getLlvmContext();
+                    llvm::Type* ptrTy = llvm::PointerType::get(lctx, 0);
+                    llvm::Type* i64Ty = llvm::Type::getInt64Ty(lctx);
+                    llvm::Value* body = builder->CreateAlloca(retTy);
+                    builder->CreateStore(val,
+                        builder->CreateStructGEP(retTy, body, 0, "iface_data"));
+                    std::string ifaceCanonical =
+                        ifaceRet->getQName()->toCanonical();
+                    llvm::Constant* vtableRef = nullptr;
+                    if (auto gv = srcCls->getInterfaceVTable(ifaceCanonical)) {
+                        vtableRef = CajetaModule::ensureGlobalInModule(
+                            module->getLlvmModule(), gv);
+                    }
+                    if (!vtableRef) {
+                        vtableRef = llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy));
+                    }
+                    builder->CreateStore(vtableRef,
+                        builder->CreateStructGEP(retTy, body, 1,
+                                                 "iface_vtable"));
+                    // A `#Interface` return hands ownership out, and so does a
+                    // fresh construction or an explicit `#x` through a plain
+                    // return type. Anything else leaves the callee owning it.
+                    bool ownedOut = m->isReturnsOwnership()
+                        || dynamic_pointer_cast<NewExpression>(expression)
+                        || dynamic_pointer_cast<MoveExpression>(expression);
+                    builder->CreateStore(
+                        llvm::ConstantInt::get(i64Ty,
+                            (uint64_t) (ownedOut ? IFACE_KIND_OWNED_CLASS
+                                                 : IFACE_KIND_BORROWED_CLASS)),
+                        builder->CreateStructGEP(retTy, body, 2, "iface_kind"));
+                    // By-value return ABI: hand back the body STRUCT. The
+                    // alloca dies with this frame; the struct does not.
+                    val = builder->CreateLoad(retTy, body);
+                }
+            }
+        }
+
         llvm::Type* valTy = val->getType();
         if (valTy != retTy) {
             if (retTy->isIntegerTy() && valTy->isIntegerTy()) {
@@ -2510,6 +2586,7 @@ namespace cajeta {
             }
             // Remaining pointer/aggregate mismatches fall through; verifier flags.
         }
+
         // A4: fire @After advice before scope-exit + drops on the
         // typed-return path too. Same ordering rule as the void-
         // return / fall-through paths. A6: @AfterReturning fires
