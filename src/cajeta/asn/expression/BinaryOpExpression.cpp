@@ -249,6 +249,30 @@ namespace cajeta {
         if (llvm::isa<llvm::ConstantPointerNull>(v)) {
             return v;
         }
+        // matrix-element-callarg — a NON-POINTER is already an r-value, so
+        // there is nothing to load through. Every branch below emits a load,
+        // and a load whose operand is not a pointer is not merely wrong but
+        // unrepresentable: LLVM rejects it at verify.
+        //
+        // The shape that hit this is a Matrix element in ARGUMENT position,
+        // `f(m[1][1])`. Element access lowers per container: a plain array
+        // hands back the element GEP (a pointer, which the caller must load),
+        // while Matrix/Vector extract the lane and materialize it, handing
+        // back the float VALUE. The 2026-08-01 fix that made `f(arr[i])` work
+        // applies loadIfLValue to every ArrayIndexExpression argument, so the
+        // already-materialized Matrix element got loaded a second time:
+        //
+        //     %5 = load float, ptr %vec.idx.slot   ; the element's value
+        //     %6 = load float, float %5            ; "Load operand must be a pointer"
+        //
+        // Guarding on the VALUE rather than on the container type fixes every
+        // such source at once — the same defect was reported against Matrix
+        // `m[r][c]`, plain arrays, and `ArrayList.operator[]`, with three
+        // different failure signatures, because the position was always the
+        // variable and the lowering never was.
+        if (!v->getType()->isPointerTy()) {
+            return v;
+        }
         auto* builder = module->getBuilder();
         bool treatAllocaAsSlot = !ast
             || dynamic_pointer_cast<IdentifierExpression>(ast) != nullptr;
