@@ -2724,7 +2724,8 @@ namespace cajeta {
                     if (cajeta::cajetaSharpOperandIsBareIdentifier(
                             ctx->variableInitializer()->expression())) {
                         throw cajeta::Exception(
-                            std::string("`#=` already transfers — drop the `#` "
+                            std::string("`#=` already acquires ownership when the source "
+                                        "has it — drop the `#` "
                                         "on the right-hand side and write "
                                         "`T x #= src`"),
                             std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));

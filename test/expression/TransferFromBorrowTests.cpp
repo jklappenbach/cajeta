@@ -154,3 +154,62 @@ TEST(TransferFromBorrowTests, plainArgAtSharpFormalIsStillTransferRequired) {
         "        H h = heap H();\n"
         "        h.own(t);\n"), "CAJETA_ERROR_TRANSFER_REQUIRED");
 }
+
+// ---- Unit 4 (plan 4.1): diagnostic quality ---------------------------------
+
+// 4.1.3 — when the new owner is a CONTAINER there is no source-level variable
+// to name (spec 6.5). The message must degrade gracefully: still identify the
+// subject, never emit an empty name or attribute ownership to nothing.
+TEST(TransferFromBorrowTests, messageDegradesWhenTheNewOwnerIsAContainer) {
+    std::string msg = messageOf(
+        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>();\n"
+        "        Tag t = heap Tag(1);\n"
+        "        m.put(#t, 10);\n"
+        "        m.put(#t, 99);\n");
+    EXPECT_NE(msg.find("`t`"), std::string::npos) << msg;
+    EXPECT_EQ(msg.find("``"), std::string::npos)
+        << "empty name in the diagnostic: " << msg;
+    EXPECT_EQ(msg.find("belongs to `."), std::string::npos) << msg;
+}
+
+// 4.1.4 — the diagnostic speaks about OWNERSHIP, never about the container
+// operation that happened to trigger it. "You cannot insert the same key
+// twice" would read as a restriction on duplicate keys, which is not the rule
+// and is not true (spec 4.1.2).
+TEST(TransferFromBorrowTests, messageDoesNotDescribeTheViolationInContainerTerms) {
+    std::string msg = messageOf(
+        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>();\n"
+        "        Tag t = heap Tag(1);\n"
+        "        m.put(#t, 10);\n"
+        "        m.put(#t, 99);\n");
+    for (const char* banned : {"same key", "duplicate key", "insert the same",
+                               "already in the map", "already contains"}) {
+        EXPECT_EQ(msg.find(banned), std::string::npos)
+            << "container-flavoured wording `" << banned << "` in: " << msg;
+    }
+}
+
+// 4.1.1 — every transfer diagnostic states the rule once, in the same words.
+TEST(TransferFromBorrowTests, everyTransferDiagnosticStatesTheRule) {
+    const char* kRule = "cannot transfer ownership more than once, or from a borrow";
+    EXPECT_NE(messageOf(                       // demoted by an earlier transfer
+        "        Tag t = heap Tag(1);\n"
+        "        Tag a #= t;\n"
+        "        Tag b #= t;\n").find(kRule), std::string::npos);
+    EXPECT_NE(messageOf(                       // never owned — an alias
+        "        Tag t = heap Tag(1);\n"
+        "        Tag alias = t;\n"
+        "        Tag x #= alias;\n").find(kRule), std::string::npos);
+}
+
+// 1.4.1 — `#=` is CONDITIONAL acquisition, not an unconditional transfer
+// (spec 1.4): at a plain formal it forwards whatever the caller did. The
+// double-sharp diagnostic must not claim otherwise.
+TEST(TransferFromBorrowTests, doubleSharpDiagnosticDoesNotClaimUnconditionalTransfer) {
+    std::string msg = messageOf(
+        "        Tag t = heap Tag(1);\n"
+        "        Tag b #= #t;\n");
+    EXPECT_EQ(msg.find("already transfers"), std::string::npos)
+        << "`#=` is conditional acquisition, not an unconditional transfer: " << msg;
+    EXPECT_NE(msg.find("#"), std::string::npos) << msg;
+}

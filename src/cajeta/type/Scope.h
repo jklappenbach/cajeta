@@ -75,7 +75,7 @@ namespace cajeta {
         // assignment site in BinaryOpExpression checks before
         // writing: if the target path overlaps any live borrow's
         // path (either is a prefix of the other), the write is
-        // rejected with CAJETA_ERROR_USE_AFTER_MOVE — the borrower
+        // rejected with CAJETA_ERROR_MOVE_OF_BORROW — the borrower
         // would dangle the moment the source is mutated.
         //
         // Recorded on the borrower's scope; cleaned up when that

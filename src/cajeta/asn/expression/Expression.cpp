@@ -92,7 +92,7 @@ namespace cajeta {
     }
 
 // `#= #x` — is the right-hand `#` operand a BARE IDENTIFIER (a local or
-// parameter)? Then the sharp is genuinely redundant: `#=` already transfers a
+// parameter)? Then the sharp is genuinely redundant: `#=` already acquires a
 // local's title, so the second `#` says it twice.
 //
 // It is NOT redundant when the operand is a FIELD or ELEMENT access. There the
@@ -581,9 +581,9 @@ bool cajetaSharpOperandIsBareIdentifier(
                         // handled below — narrowing that one is a breaking
                         // change and not this rule's business.)
                         throw Exception(
-                            std::string("`#=` already transfers — drop the `#` "
-                                        "on the right-hand side and write "
-                                        "`dst #= src`"),
+                            std::string("`#=` already acquires ownership when "
+                                        "the source has it — drop the `#` on the "
+                                        "right-hand side and write `dst #= src`"),
                             std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
                     }
                     if (sharpAssign && childIndex == 1) {

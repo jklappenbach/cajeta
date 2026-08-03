@@ -4,8 +4,8 @@
 // BORROW of the same live instance, and a borrow is readable. These tests
 // pin that: every read below is an ordinary borrow read.
 //
-// They fail before 2.2 with CAJETA_ERROR_USE_AFTER_MOVE, which is the point —
-// that error names a state the model does not have (spec 1.3).
+// Before Unit 2 these were rejected by a read check that named a state the
+// model does not have — a binding is demoted, not dead (spec 1.3).
 //
 // What stays rejected is transferring again; Unit 3 covers that. Nothing here
 // asserts a transfer.

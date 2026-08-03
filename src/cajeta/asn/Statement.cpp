@@ -118,9 +118,10 @@ namespace cajeta {
                         if (auto* eCtx = viCtx->expression()) {
                             if (cajeta::cajetaSharpOperandIsBareIdentifier(eCtx)) {
                                 throw Exception(
-                                    std::string("`#=` already transfers — drop "
-                                                "the `#` on the right-hand side "
-                                                "and write `T x #= src`"),
+                                    std::string("`#=` already acquires ownership "
+                                                "when the source has it — drop the "
+                                                "`#` on the right-hand side and "
+                                                "write `T x #= src`"),
                                     std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
                             }
                         }

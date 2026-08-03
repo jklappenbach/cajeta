@@ -28,6 +28,17 @@ const char* kCellSrc =
     "    public Cell(int32 nn) { this.n = nn; }\n"
     "}\n";
 
+void compileExpectOk(const std::string& src) {
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.what();
+    }
+}
+
 int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
     auto jit = CajetaJit::compile(src, entryClass);
     auto fn = jit->lookup<int32_t (*)()>("run");
@@ -75,9 +86,8 @@ TEST(SignatureAbiTests, plainArgLends) {
 }
 
 // 5.1.2 — `#x` into an UNANNOTATED formal surrenders the title: the
-// source is statically moved and a later read is rejected, naming the
-// transfer.
-TEST(SignatureAbiTests, sharpArgMarksSourceMoved) {
+// source is demoted to a borrow; a later read is an ordinary borrow read.
+TEST(SignatureAbiTests, sharpArgDemotesSourceToBorrow) {
     std::string src = std::string(kCellSrc) +
         "public class Sink {\n"
         "    public int32 seen;\n"
@@ -88,12 +98,22 @@ TEST(SignatureAbiTests, sharpArgMarksSourceMoved) {
         "        Sink s = heap Sink();\n"
         "        Cell v = heap Cell(5);\n"
         "        s.take(#v);\n"              // surrender at a plain edge
-        "        return v.n;\n"              // read of moved local — reject
+        "        return v.n;\n"              // demoted to a borrow — readable
         "    }\n"
         "}\n";
-    std::string msg =
-        compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
-    EXPECT_NE(msg.find("v"), std::string::npos) << msg;
+    // transfer-demotes-to-borrow: `#v` moves the title, not the binding, so
+    // the read COMPILES — `v` is a borrow of the same instance.
+    //
+    // Its VALUE is deliberately not asserted. `take(Cell c)` is a plain
+    // formal, so the surrender hands ownership to a formal whose scope ends
+    // at return: the Cell is freed there and `v` dangles. That is spec §1.7's
+    // accepted v1 exposure — a borrow of a demoted binding dangles once the
+    // new owner drops it, and the compiler does not diagnose it. Asserting a
+    // value here would be asserting the contents of freed memory.
+    //
+    // Contrast DemotedBindingReadTests, where the new owner OUTLIVES the read
+    // and the value is therefore well-defined and asserted.
+    compileExpectOk(src);
 }
 
 // 5.1.3a — `#v` store of a formal forwards the CALL's flag into the field
