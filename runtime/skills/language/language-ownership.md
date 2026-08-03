@@ -29,13 +29,16 @@ with a deprecation warning; write `dst #= v`.)
 ## Drops
 
 Owners are reclaimed at their block's closing `}`, in reverse declaration
-order, on the normal *and* the exception path. A moved-from local's drop entry
-is deactivated — double free is structurally impossible. There is no `delete`.
+order, on the normal *and* the exception path. A transferred local is DEMOTED to a borrow: its drop entry is deactivated, so
+double free is structurally impossible, and the binding stays readable. There is no `delete`.
 
 ## The borrow-checker errors you will meet (all verified)
 
-- `CAJETA_ERROR_USE_AFTER_MOVE` — reading `p` after `q #= p` / `f(#p)`:
-  "path 'p.x' was transferred via `#` and cannot be read here."
+- `CAJETA_ERROR_MOVE_OF_BORROW` — transferring from something that does not
+  own its value. A transfer DEMOTES its source to a borrow, so transferring
+  twice raises this too: "You cannot transfer ownership more than once, or
+  from a borrow." Reading `p` after `q #= p` is NOT an error — `p` is a
+  readable borrow of the same live instance.
 - `CAJETA_ERROR_TRANSFER_REQUIRED` — passing plain `a` where the parameter is
   `#T`: write `#a`, or pass a fresh `heap T(...)` construction.
 - `CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER` — returning an owned local

@@ -36,7 +36,8 @@ runtime surprise:
 ```cajeta
 Point p = heap Point(7, 24);
 Point q #= p;
-int32 v = p.x;    // ERROR — CAJETA_ERROR_USE_AFTER_MOVE
+int32 v = p.x;    // legal — `p` is now a BORROW of the same instance
+Point r #= p;     // ERROR — CAJETA_ERROR_MOVE_OF_BORROW
 ```
 
 ## Where `#` goes

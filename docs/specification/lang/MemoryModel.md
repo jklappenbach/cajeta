@@ -528,19 +528,55 @@ debug) by the global live-set claim described under § Runtime.
 
 ---
 
+## Transfer demotes its source to a borrow
+
+`#` moves the **title**, not the binding. After a transfer the source is a
+borrow of the same live instance — it did not die and it is still readable.
+
+```cajeta
+Tag orig = heap Tag();
+Tag owner #= orig;
+
+orig.setValue(5);      // legal — both names denote ONE instance
+Tag other #= orig;     // error — you cannot transfer from a borrow
+```
+
+Both names point at the same object; only ownership moved. That makes the two
+transfer errors one: transferring twice IS transferring from a borrow, so both
+raise `CAJETA_ERROR_MOVE_OF_BORROW`.
+
+> You cannot transfer ownership more than once, or from a borrow.
+
+**`#=` is conditional acquisition, not a transfer operator.** It means *take
+ownership if the source has it*. Where ownership is statically known the
+compiler decides; at a plain formal — whose ownership is fixed by the CALL
+SITE — the store forwards whatever the caller did, so the same method body
+serves a lend, a transfer, and a fresh construction.
+
+**The exposure this accepts:** a borrow of a transferred binding dangles once
+the new owner drops it, and the compiler does not diagnose it. This is the
+same programmer responsibility the table below assigns to aliases generally.
+
+```cajeta
+Tag orig = heap Tag();
+{ Tag owner #= orig; }     // owner drops here; the instance is freed
+orig.setValue(5);          // use-after-free — compiles, faults at runtime
+```
+
 ## Errors caught statically (summary)
 
 | Error | Caught by |
 |-------|-----------|
 | Use-after-free | Scope-based lifetime check |
-| Use-after-move | Per-variable moved-state tracking |
+| Transfer from a borrow (incl. transferring twice) | `CAJETA_ERROR_MOVE_OF_BORROW` — a transfer DEMOTES its source to a borrow, so a second transfer is a transfer from a borrow |
+| Reading a transferred binding | **Not an error.** `#` moves the title, not the binding: the source stays a readable borrow of the same live instance |
 | Double-free | Impossible by construction |
 | Alias-mutation invalidation | Path-based borrow tracking |
 | Drop-order error | LIFO scope analysis |
 | Borrow-of-frame-local returned | Signature conformance check |
 | Anonymous-owner chained borrow | Expression-level lifetime check |
 | Double-free of aliased field | Runtime live-set claim (see `FieldOwnership.md`) |
-| Use-after-free of aliased field whose source dropped first | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
+| Use-after-free of a borrow whose owner dropped first — including a transferred binding | Programmer responsibility at v1 (Phase 6+ lifetime tracker) |
 | Escaping holder retaining a lend of a dying local | Single-hop dangling-lend check (`CAJETA_ERROR_DANGLING_LEND`) |
 | Plain argument at a must-own (`#T`) edge | `CAJETA_ERROR_TRANSFER_REQUIRED` |
 | Two declarations differing only in transfer mode | `CAJETA_ERROR_TRANSFER_MODE_OVERLOAD` |
@@ -583,7 +619,7 @@ Recommend **path 1**. The codebase is small enough; the inconsistency of path 2 
 The rollout left a few items deliberately out of v1 scope; they're called out here so future work knows where to pick up.
 
 - **String stdlib helpers leak fix.** ✅ Done. `LocalVariableDeclaration` recognizes the owned-allocating shapes — binary `+` lowered to `__cajeta_str_concat`, and the routed method intrinsics `substring` / `toUpperCase` / `toLowerCase` / `trim` / `replace` on a String receiver — and registers `__cajeta_free` as the local's drop fn. String literal aliases and `p.name` field-reads remain borrow-shaped (no drop). Pinned by `test/parser/OwnedStringDropTests.cpp`. The pragmatic detection at the assignment site replaces the proposed type-system `OwnedString` flag for v1; the flag can land later if a non-LocalVariable owner site appears.
-- **Alias-mutation through writes.** ✅ Done. `Scope` carries a `liveBorrows` map (path → borrower set) populated by `LocalVariableDeclaration` for pointer-shaped path-read initializers; `BinaryOpExpression`'s assignment branch consults `findInvalidatingBorrow` and throws `CAJETA_ERROR_USE_AFTER_MOVE` when the write path overlaps any live borrow. Pinned by `test/parser/AliasMutationBorrowTests.cpp`.
+- **Alias-mutation through writes.** ⚠️ Partial. `Scope` carries a `liveBorrows` map (path → borrower set) populated by `LocalVariableDeclaration` for pointer-shaped path-read initializers; `Scope::findInvalidatingBorrow` exists but is **not wired up** — it has no callers, so no diagnostic fires for an overlapping write today. `AliasMutationBorrowTests` accordingly only asserts that these programs COMPILE. (Verified 2026-08-03 while retiring `CAJETA_ERROR_USE_AFTER_MOVE`; the gap predates that work.) Pinned by `test/parser/AliasMutationBorrowTests.cpp`.
 - **Multi-parameter borrow-return with annotation.** Today multi-input free functions can't return a borrow at all. Rust-style explicit lifetime annotations would lift this restriction; not part of v1.
 - **FFI / `unsafe` / multi-threading.** All explicitly deferred.
 - **Static class fields landed.** ✅ Done. `public static int32 total = 0;` emits an LLVM global named `<class.canonical>.<fieldName>` in the declaring class's home module via `CajetaClass::getOrCreateStaticFieldGlobal`. Cross-module references go through `ensureGlobalInModule`. `DotExpression` short-circuits class-name LHS lookups in `canonicalMap` and returns the global as an l-value for reads/writes; `loadIfLValue` treats `GlobalVariable` like a GEP slot. Static-property literal initializers (`= 100`, `= -7`, float literals) are constant-folded into the global's `setInitializer`; complex expressions fall back to zero. Statics are skipped from instance struct layout. Pinned by `test/parser/StaticFieldTests.cpp` (9 tests) plus `test/parser/LambdaStaticCaptureTests.cpp` (2 tests) for lambda-body access through globals (no captures-struct routing needed).

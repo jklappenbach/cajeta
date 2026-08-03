@@ -262,10 +262,10 @@ public void demo() {
 }
 ```
 
-The borrow checker is static. Use-after-move, borrow-escape-on-return, alias-mutation, and definite-assignment violations are caught at compile time:
+The borrow checker is static. Transfer-from-a-borrow, borrow-escape-on-return, and definite-assignment violations are caught at compile time:
 
 ```
-CAJETA_ERROR_USE_AFTER_MOVE
+CAJETA_ERROR_MOVE_OF_BORROW
 CAJETA_ERROR_BORROW_ESCAPE
 CAJETA_ERROR_VARIABLE_NOT_ASSIGNED
 CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM

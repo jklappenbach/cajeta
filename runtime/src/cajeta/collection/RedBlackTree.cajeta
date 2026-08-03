@@ -286,7 +286,7 @@ public final class RedBlackTree<K, V> {
                 // `z.parent.parent` chains rather than cached in locals:
                 // caching a node-field read in a local makes it a borrow,
                 // and the later `z = z.parent.parent` reassignment would
-                // invalidate it (CAJETA_ERROR_USE_AFTER_MOVE). Reassigning
+                // invalidate it (CAJETA_ERROR_MOVE_OF_BORROW). Reassigning
                 // `z` straight from its own field chain is the same shape
                 // as LinkedList's `cur = cur.next`, which is allowed.
                 if (z.parent == z.parent.parent.left) {
