@@ -533,6 +533,25 @@ namespace cajeta {
                     } else if (MethodCallExpression::freshHeapCreatorTempClass(
                             parameters[twi].expression)) {
                         ctorTransferWord |= ((int64_t) 1) << twi;
+                    } else if (MethodCallExpression::freshHeapArrayLiteralArg(
+                            parameters[twi].expression)) {
+                        // A heap ARRAY LITERAL ctor arg is a fresh owned
+                        // rvalue exactly as `heap X()` is, but it is an
+                        // ArrayLiteralExpression rather than a NewExpression,
+                        // so the creator probe above never matched and the word
+                        // went out 0. The callee's `#V` formal was then told it
+                        // had NOT been surrendered, its `this.f #= formal`
+                        // stored no title, and a later claim panicked
+                        // TITLE_MISS.
+                        //
+                        // `HashMap<String,int32[]> g = ["a": [1,2]]` found it:
+                        // the map literal lowers to `Pair(#K, #V)` plus the
+                        // owning `HashMap(#Pair<K,V>[])` ctor, whose
+                        // `takeSecond()` is the claim that blew up
+                        // (CollectionLiteralTests.MapToList). Scalar- and
+                        // value-type-valued map literals were unaffected, which
+                        // is why only the array case ever surfaced.
+                        ctorTransferWord |= ((int64_t) 1) << twi;
                     }
                     continue;
                 }

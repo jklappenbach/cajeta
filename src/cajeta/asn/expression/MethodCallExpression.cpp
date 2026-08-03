@@ -493,6 +493,19 @@ namespace cajeta {
         return droppableTempClass(ne->getResolvedType());
     }
 
+    // A heap ARRAY LITERAL argument (`f([1, 2])`) — the array-typed twin of the
+    // creator probe above. It allocates through __cajeta_new_array_header, so
+    // it is a fresh owned rvalue whose title nobody else holds, and it must
+    // contribute its bit to the call's transfer word.
+    //
+    // Stack and arena literals are excluded: the frame reclaims their storage,
+    // so a callee told it owns one would free memory it does not own.
+    bool MethodCallExpression::freshHeapArrayLiteralArg(
+            const AbstractSyntaxNodePtr& e) {
+        auto lit = dynamic_pointer_cast<ArrayLiteralExpression>(e);
+        return lit && !lit->isStackAlloc() && !lit->isArenaEligible();
+    }
+
     // The inlined forward value source + the grad source produced by one
     // symbolic differentiation pass (transform-intrinsics U3).
     struct GradPieces { std::string valueExpr; std::string gradExpr; };
@@ -10113,6 +10126,30 @@ namespace cajeta {
                     // runtime-owned plain arg: forwards its flag below
                 } else if (freshHeapCreatorTempClass(
                         parameters[mmi].expression)) {
+                    moveMask |= ((int64_t) 1) << mmi;
+                    continue;
+                } else if (freshHeapArrayLiteralArg(
+                        parameters[mmi].expression)) {
+                    // A heap ARRAY LITERAL is a fresh owned rvalue exactly as
+                    // `heap X()` is — nobody else can be holding its title —
+                    // but it is an ArrayLiteralExpression, not a NewExpression,
+                    // so the creator probe above never saw it and the word went
+                    // out as 0.
+                    //
+                    // That meant a literal handed to a `#T` formal was recorded
+                    // as NOT surrendered, so the callee's `this.f #= formal`
+                    // stored no title and a later claim panicked TITLE_MISS.
+                    // Reached from map literals: `HashMap<String,int32[]> g =
+                    // ["a": [1,2]]` lowers to `Pair(#K, #V)` + the owning
+                    // `HashMap(#Pair<K,V>[])` ctor, whose `takeSecond()` is the
+                    // claim that blew up (CollectionLiteralTests.MapToList).
+                    // Scalar-valued and value-type-valued map literals were
+                    // fine, which is why only the array case surfaced.
+                    //
+                    // Stack and arena literals are deliberately excluded: their
+                    // storage is reclaimed by the frame, so telling a callee it
+                    // owns them would hand out a title to memory it must not
+                    // free.
                     moveMask |= ((int64_t) 1) << mmi;
                     continue;
                 } else {
