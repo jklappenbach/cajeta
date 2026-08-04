@@ -1,0 +1,17 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/**
+ * Cosine DISTANCE (`1 - cosine similarity`, scipy `cosine`) as a
+ * {@link Metric}. Zero-norm input is defined, never NaN — see
+ * {@link Distance#cosineSimilarity} for the doctrine (§2.5).
+ */
+public final class Cosine implements Metric {
+    public Cosine() {
+    }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        return Distance.cosine(a, b);
+    }
+}

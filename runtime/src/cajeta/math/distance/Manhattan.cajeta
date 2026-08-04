@@ -1,0 +1,13 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/** Manhattan (L1, cityblock) distance as a {@link Metric}. */
+public final class Manhattan implements Metric {
+    public Manhattan() {
+    }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        return Distance.manhattan(a, b);
+    }
+}

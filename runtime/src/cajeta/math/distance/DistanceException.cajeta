@@ -1,0 +1,19 @@
+package cajeta.math.distance;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by `cajeta.math.distance` on invalid parameters (`minkowski` with
+ * `p <= 0`, spec §2.2) and on shape violations (non-vector input, length
+ * mismatch, non-matrix input to `pdist`/`cdist`).
+ *
+ * Recoverable: bad shapes and parameters are normal, caller-handleable
+ * conditions (mirrors {@link cajeta.math.linalg.LinAlgException}).
+ */
+public class DistanceException extends RecoverableException {
+    public DistanceException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

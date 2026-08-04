@@ -1,0 +1,17 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/**
+ * Correlation DISTANCE (`1 - Pearson r`, scipy `correlation`) as a
+ * {@link Metric}. The similarity itself is {@link Distance#pearson}
+ * (§2.6 — recsys needs both it and cosine).
+ */
+public final class Pearson implements Metric {
+    public Pearson() {
+    }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        return Distance.pearsonDistance(a, b);
+    }
+}

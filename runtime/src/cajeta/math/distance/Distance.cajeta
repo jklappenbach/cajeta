@@ -1,0 +1,355 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/**
+ * `cajeta.math.distance` — distance and similarity kernels
+ * (stdlib-completion spec §2; roadmap §5.1). Pure functions over tensors
+ * with no estimator semantics: `dev.cajeta.ml`'s k-NN and clustering,
+ * `dev.cajeta.recsys`'s similarity search, and anything else needing a
+ * distance all call HERE — this is the only distance implementation in the
+ * ecosystem (§9.1), behind the {@link Metric} seam (§2.7).
+ *
+ * Statics compute single pairs; {@link #pdist} and {@link #cdist} compute
+ * pairwise matrices for any `Metric`. `pdist`'s symmetry and zero diagonal
+ * hold EXACTLY, by construction — the lower triangle is computed once and
+ * mirrored, the diagonal is written zero — never by rounding (§2.3, §9.2).
+ *
+ * **High-dimensional caveat** (Aggarwal, Hinneburg & Keim 2001, "On the
+ * Surprising Behavior of Distance Metrics in High Dimensional Space" —
+ * `research/ml/papers/`): as dimensionality grows, L_k distances
+ * concentrate — the gap between the nearest and farthest neighbor shrinks
+ * relative to the distances themselves, and it shrinks FASTER for larger
+ * `k`. Euclidean distance stops discriminating in high dimensions sooner
+ * than manhattan; fractional-norm behavior is the paper's subject. Every
+ * consumer reaching for euclidean by default over wide feature vectors
+ * should know this is where it stops working.
+ */
+public final class Distance {
+
+    // ------------------------------------------------------------ validation
+
+    /** Both operands must be 1-D and of equal length. Returns the length. */
+    private static int64 checkPair(Tensor<float64> a, Tensor<float64> b) {
+        if (a.ndim() != 1 || b.ndim() != 1) {
+            throw heap DistanceException("distance: operands must be 1-D vectors");
+        }
+        if (a.shapeAt(0) != b.shapeAt(0)) {
+            throw heap DistanceException("distance: vector lengths differ");
+        }
+        return a.shapeAt(0);
+    }
+
+    private static void checkMatrix(Tensor<float64> x) {
+        if (x.ndim() != 2) {
+            throw heap DistanceException("pdist/cdist: input must be a (n, d) matrix");
+        }
+    }
+
+    // -------------------------------------------------------------- L_p family
+
+    /** Euclidean (L2) distance — the DIRECT form `sqrt(sum (a-b)^2)`. */
+    public static float64 euclidean(Tensor<float64> a, Tensor<float64> b) {
+        int64 n = checkPair(a, b);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = a.get1(i) - b.get1(i);
+            s = s + d * d;
+            i = i + 1;
+        }
+        return Math.sqrt(s);
+    }
+
+    /** Manhattan (L1, cityblock) distance `sum |a-b|`. */
+    public static float64 manhattan(Tensor<float64> a, Tensor<float64> b) {
+        int64 n = checkPair(a, b);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = a.get1(i) - b.get1(i);
+            if (d < 0.0) { d = -d; }
+            s = s + d;
+            i = i + 1;
+        }
+        return s;
+    }
+
+    /** Chebyshev (L-infinity) distance `max |a-b|`. */
+    public static float64 chebyshev(Tensor<float64> a, Tensor<float64> b) {
+        int64 n = checkPair(a, b);
+        float64 m = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = a.get1(i) - b.get1(i);
+            if (d < 0.0) { d = -d; }
+            if (d > m) { m = d; }
+            i = i + 1;
+        }
+        return m;
+    }
+
+    /**
+     * Minkowski (L_p) distance `(sum |a-b|^p)^(1/p)`. `p <= 0` is rejected
+     * (§2.2); `p = 1` equals {@link #manhattan}, `p = 2` equals
+     * {@link #euclidean}.
+     */
+    public static float64 minkowski(Tensor<float64> a, Tensor<float64> b, float64 p) {
+        if (p <= 0.0) {
+            throw heap DistanceException("minkowski: p must be positive");
+        }
+        int64 n = checkPair(a, b);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = a.get1(i) - b.get1(i);
+            if (d < 0.0) { d = -d; }
+            s = s + Math.pow(d, p);
+            i = i + 1;
+        }
+        return Math.pow(s, 1.0 / p);
+    }
+
+    // ------------------------------------------------- cosine and correlation
+
+    /**
+     * Cosine SIMILARITY `a.b / (|a| |b|)` in `[-1, 1]`.
+     *
+     * Zero-norm doctrine (§2.5 — deliberately diverges from scipy's NaN):
+     * exactly one zero-norm operand → similarity `0` (nothing points
+     * anywhere, nothing is aligned); both zero-norm → similarity `1`
+     * (identical inputs), keeping `cosine(x, x) == 0` for every `x`.
+     */
+    public static float64 cosineSimilarity(Tensor<float64> a, Tensor<float64> b) {
+        int64 n = checkPair(a, b);
+        float64 dot = 0.0;
+        float64 na = 0.0;
+        float64 nb = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 av = a.get1(i);
+            float64 bv = b.get1(i);
+            dot = dot + av * bv;
+            na = na + av * av;
+            nb = nb + bv * bv;
+            i = i + 1;
+        }
+        if (na == 0.0 && nb == 0.0) { return 1.0; }
+        if (na == 0.0 || nb == 0.0) { return 0.0; }
+        return dot / (Math.sqrt(na) * Math.sqrt(nb));
+    }
+
+    /** Cosine DISTANCE `1 - cosineSimilarity` (scipy `cosine`), in `[0, 2]`. */
+    public static float64 cosine(Tensor<float64> a, Tensor<float64> b) {
+        return 1.0 - cosineSimilarity(a, b);
+    }
+
+    /**
+     * Pearson correlation `r` as a SIMILARITY beside cosine (§2.6) — the
+     * cosine of the mean-centered vectors. A zero-variance (constant)
+     * operand follows the same doctrine as {@link #cosineSimilarity} on
+     * the centered vectors: both constant → `1`, exactly one → `0`.
+     */
+    public static float64 pearson(Tensor<float64> a, Tensor<float64> b) {
+        int64 n = checkPair(a, b);
+        float64 ma = 0.0;
+        float64 mb = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            ma = ma + a.get1(i);
+            mb = mb + b.get1(i);
+            i = i + 1;
+        }
+        float64 fn = (float64) n;
+        ma = ma / fn;
+        mb = mb / fn;
+        float64 dot = 0.0;
+        float64 na = 0.0;
+        float64 nb = 0.0;
+        i = 0;
+        while (i < n) {
+            float64 av = a.get1(i) - ma;
+            float64 bv = b.get1(i) - mb;
+            dot = dot + av * bv;
+            na = na + av * av;
+            nb = nb + bv * bv;
+            i = i + 1;
+        }
+        if (na == 0.0 && nb == 0.0) { return 1.0; }
+        if (na == 0.0 || nb == 0.0) { return 0.0; }
+        return dot / (Math.sqrt(na) * Math.sqrt(nb));
+    }
+
+    /** Correlation DISTANCE `1 - pearson` (scipy `correlation`). */
+    public static float64 pearsonDistance(Tensor<float64> a, Tensor<float64> b) {
+        return 1.0 - pearson(a, b);
+    }
+
+    // ------------------------------------------------------ pairwise matrices
+
+    /**
+     * Pairwise distances over the rows of `x (n, d)`: the full `(n, n)`
+     * matrix (§2.3 — the square form of scipy's `pdist`). Symmetry and the
+     * zero diagonal hold EXACTLY, by construction: each `i < j` distance is
+     * computed once and written to both triangles, and the diagonal is
+     * written `0` — never computed, never rounded (§9.2).
+     *
+     * Any `Metric` — including caller-defined ones — is driven row-pair
+     * by row-pair; an argument whose static type is {@link Euclidean}
+     * selects the expanded-form overload below (§2.8).
+     */
+    public static #Tensor<float64> pdist(Tensor<float64> x, Metric metric) {
+        checkMatrix(x);
+        int64 n = x.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < n) {
+            Tensor<float64> ri = x.index(0, i);
+            int64 j = i + 1;
+            while (j < n) {
+                float64 d = metric.distance(ri, x.index(0, j));
+                out.set2(i, j, d);
+                out.set2(j, i, d);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+     * {@link Euclidean} overload of {@link #pdist}: the expanded matmul
+     * form (§2.8) — `gram = x xT` once, every distance from norms + gram.
+     * Selected by OVERLOAD when the argument's static type is `Euclidean`;
+     * an interface-typed `Metric` that happens to be a `Euclidean` takes
+     * the generic path (identical results, direct form) — dispatching on
+     * the runtime type needs `instanceof` on an interface-typed value,
+     * which is a live compiler defect (specs/instanceof-interface-lhs).
+     */
+    public static #Tensor<float64> pdist(Tensor<float64> x, Euclidean metric) {
+        checkMatrix(x);
+        int64 n = x.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = n;
+        sh[1] = n;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> gram = Tensor.matmul<float64>(x, x.transpose());
+        int64 i = 0;
+        while (i < n) {
+            int64 j = i + 1;
+            while (j < n) {
+                float64 sq = gram.get2(i, i) + gram.get2(j, j)
+                           - 2.0 * gram.get2(i, j);
+                // Cancellation can push a near-zero square negative;
+                // clamp so sqrt never sees it (§2.8).
+                if (sq < 0.0) { sq = 0.0; }
+                float64 d = Math.sqrt(sq);
+                out.set2(i, j, d);
+                out.set2(j, i, d);
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+     * Cross-distances between the rows of `x (nx, d)` and `y (ny, d)`: the
+     * `(nx, ny)` matrix (§2.4 — scipy's `cdist`). An argument whose static
+     * type is {@link Euclidean} selects the expanded-form overload below
+     * (§2.8).
+     */
+    public static #Tensor<float64> cdist(Tensor<float64> x, Tensor<float64> y, Metric metric) {
+        checkMatrix(x);
+        checkMatrix(y);
+        if (x.shapeAt(1) != y.shapeAt(1)) {
+            throw heap DistanceException("cdist: column counts differ");
+        }
+        int64 nx = x.shapeAt(0);
+        int64 ny = y.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = nx;
+        sh[1] = ny;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        int64 i = 0;
+        while (i < nx) {
+            Tensor<float64> ri = x.index(0, i);
+            int64 j = 0;
+            while (j < ny) {
+                out.set2(i, j, metric.distance(ri, y.index(0, j)));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+
+    /**
+     * {@link Euclidean} overload of {@link #cdist}: the whole matrix from
+     * one matmul via `|a|^2 + |b|^2 - 2 a.b` (§2.8). Overload-selected —
+     * see the {@link #pdist} `Euclidean` overload for the dispatch note.
+     *
+     * **Precision caveat, by design:** for near-zero distances between
+     * large-norm points the expanded form loses the distance to
+     * cancellation — the direct form {@link #euclidean} is accurate
+     * there, and the loss is observable (asserted in the unit's tests,
+     * not hidden). Negative squares from cancellation are clamped to
+     * zero, so the result is always finite and non-negative.
+     */
+    public static #Tensor<float64> cdist(Tensor<float64> x, Tensor<float64> y, Euclidean metric) {
+        checkMatrix(x);
+        checkMatrix(y);
+        if (x.shapeAt(1) != y.shapeAt(1)) {
+            throw heap DistanceException("cdist: column counts differ");
+        }
+        int64 nx = x.shapeAt(0);
+        int64 ny = y.shapeAt(0);
+        int64[] sh = heap int64[2];
+        sh[0] = nx;
+        sh[1] = ny;
+        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> gram = Tensor.matmul<float64>(x, y.transpose());
+        int64 d = x.shapeAt(1);
+        float64[] sqx = heap float64[nx];
+        float64[] sqy = heap float64[ny];
+        int64 i = 0;
+        while (i < nx) {
+            float64 s = 0.0;
+            int64 k = 0;
+            while (k < d) {
+                float64 v = x.get2(i, k);
+                s = s + v * v;
+                k = k + 1;
+            }
+            sqx[i] = s;
+            i = i + 1;
+        }
+        int64 j = 0;
+        while (j < ny) {
+            float64 s = 0.0;
+            int64 k = 0;
+            while (k < d) {
+                float64 v = y.get2(j, k);
+                s = s + v * v;
+                k = k + 1;
+            }
+            sqy[j] = s;
+            j = j + 1;
+        }
+        i = 0;
+        while (i < nx) {
+            j = 0;
+            while (j < ny) {
+                float64 sq = sqx[i] + sqy[j] - 2.0 * gram.get2(i, j);
+                if (sq < 0.0) { sq = 0.0; }
+                out.set2(i, j, Math.sqrt(sq));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return out;
+    }
+}

@@ -1,0 +1,23 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/**
+ * Minkowski (L_p) distance as a {@link Metric}, carrying its `p`.
+ * `p <= 0` is rejected at construction (§2.2); `p = 1` is manhattan,
+ * `p = 2` euclidean.
+ */
+public final class Minkowski implements Metric {
+    private float64 p;
+
+    public Minkowski(float64 p) {
+        if (p <= 0.0) {
+            throw heap DistanceException("minkowski: p must be positive");
+        }
+        this.p = p;
+    }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        return Distance.minkowski(a, b, this.p);
+    }
+}

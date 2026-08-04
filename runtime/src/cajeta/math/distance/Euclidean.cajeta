@@ -1,0 +1,18 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/**
+ * Euclidean (L2) distance as a {@link Metric}. Pairwise, {@link
+ * Distance#pdist}/{@link Distance#cdist} fast-path this metric through the
+ * expanded matmul form (§2.8) — see {@link Distance#cdist} for the
+ * near-zero-distance precision caveat.
+ */
+public final class Euclidean implements Metric {
+    public Euclidean() {
+    }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        return Distance.euclidean(a, b);
+    }
+}

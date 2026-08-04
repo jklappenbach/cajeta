@@ -1,0 +1,26 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/**
+ * A distance metric over `float64` vectors — the one seam every consumer of
+ * a distance shares (spec stdlib-completion §2.7): k-NN, clustering, and
+ * similarity search all take a `Metric`, never a hardcoded formula, so a
+ * metric added here (or defined by a caller) reaches every algorithm.
+ *
+ * `distance(a, b)` takes two 1-D tensors of equal length and returns a
+ * non-negative dissimilarity. Implementations must be symmetric
+ * (`distance(a, b) == distance(b, a)`) and zero on identical input;
+ * the triangle inequality is conventional but not enforced (cosine and
+ * Pearson distances violate it and are metrics here in the scipy sense).
+ *
+ * Bundled implementations: {@link Euclidean}, {@link Manhattan},
+ * {@link Chebyshev}, {@link Minkowski}, {@link Cosine}, {@link Pearson}.
+ * {@link Distance#pdist} and {@link Distance#cdist} drive any `Metric` —
+ * including caller-defined ones — and fast-path {@link Euclidean}
+ * internally without changing its results' contract.
+ */
+public interface Metric {
+    /** Distance between 1-D vectors `a` and `b` of equal length. */
+    float64 distance(Tensor<float64> a, Tensor<float64> b);
+}

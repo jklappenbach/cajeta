@@ -1,0 +1,13 @@
+package cajeta.math.distance;
+
+import cajeta.math.Tensor;
+
+/** Chebyshev (L-infinity) distance as a {@link Metric}. */
+public final class Chebyshev implements Metric {
+    public Chebyshev() {
+    }
+
+    public float64 distance(Tensor<float64> a, Tensor<float64> b) {
+        return Distance.chebyshev(a, b);
+    }
+}
