@@ -19,7 +19,7 @@ public final class Home {
 
     // The resolved ~/.cajeta directory, or null if even $HOME is unset
     // (a broken environment cvm can't recover from on its own).
-    public static String dir() {
+    public static #String dir() {
         String explicit = System.env.get("CAJETA_HOME");
         if (explicit != null && !explicit.isEmpty()) {
             return explicit;
@@ -39,12 +39,12 @@ public final class Home {
     }
 
     // Convenience sub-paths under the resolved home.
-    public static String binDir(String home)      { return home + "/bin"; }
-    public static String versionsDir(String home) { return home + "/versions"; }
-    public static String settingsFile(String home){ return home + "/settings"; }
+    public static #String binDir(String home)      { return home + "/bin"; }
+    public static #String versionsDir(String home) { return home + "/versions"; }
+    public static #String settingsFile(String home){ return home + "/settings"; }
 
     // The active-toolchain shim — bin/cajeta, the `cajeta` that lands on PATH.
-    public static String shimFile(String home)    { return home + "/bin/cajeta"; }
+    public static #String shimFile(String home)    { return home + "/bin/cajeta"; }
 
     // A specific installed toolchain's directory and its binary. These
     // take two reference parameters and return a freshly built string, so

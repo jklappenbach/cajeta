@@ -2,8 +2,8 @@ package cvm;
 
 import cajeta.lang.System;
 import cajeta.lang.Optional;
-import cajeta.net.http.HttpClient;
-import cajeta.net.http.HttpResponse;
+import dev.cajeta.http.client.HttpClient;
+import dev.cajeta.http.HttpResponse;
 import cajeta.codec.json.JsonReader;
 import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonObject;
