@@ -1,5 +1,39 @@
 # classpath-signature-shortname-rebind — cross-package short-name capture in classpath re-parse (draft)
 
+## 0. RESOLVED 2026-08-04 — placeholder-fill short-name capture
+
+Both 1a hypotheses were wrong in the details: the resolver tiers are sound,
+and the module context at the signature parse was correct
+(`scopePackageOf` = the declaring package throughout, verified by trace).
+The capture happens one step earlier, in **placeholder reuse**:
+
+1. An earlier-parsed archive entry imports `pkgA.Name` (the xgboost analog:
+   the consumer library's conformer imports `dev.cajeta.ml.Predictor`).
+   Resolution synthesizes a correct placeholder for `pkgA.Name` — registered
+   in canonicalMap under BOTH `pkgA.Name` and the bare short key `Name`.
+2. The decoy — a same-shortname class in ANOTHER package, `pkgB.sub.Name` —
+   is then declared. The placeholder-reuse lookup in
+   `visitClassDeclaration` missed its own canonical, **fell back to the bare
+   short key**, found the `pkgA.Name` placeholder, and
+   `fillFromDeclaration` mutated that SAME shared_ptr.
+   `canonicalMap["pkgA.Name"]` now IS the decoy.
+3. `pkgA.Split`'s signature parse later does everything right — own-package
+   tier-1 lookup of `pkgA.Name` — and receives the decoy. The candidate
+   list "impossible from the source" follows.
+
+Order-dependence explained: the capture needs the import-driven placeholder
+to exist before the decoy declares, hence one archive order failed and the
+other passed (requirement 2.2's both-orders repro pinned exactly this).
+
+**Fix**: all three placeholder-fill sites (class / view / interface in
+`CajetaLlvmVisitor.h`) accept a short-key hit only when the placeholder's
+recorded canonical equals the declaring class's canonical.
+
+**Pin**: `test/compile/ClasspathShortnameRebindTests.cpp` — deliberately
+ordered two-archive fixture (interface formal, conformer in the second
+archive, consumer that never names the class), both classpath orders,
+compile + run verified. Satisfies 2.1 and 2.2.
+
 ## 1. Definition (defect)
 
 When two classpath archives (or an archive and the project) declare

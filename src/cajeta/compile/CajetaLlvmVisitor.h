@@ -858,7 +858,23 @@ namespace cajeta {
                 auto& canon = CajetaType::getCanonicalMap();
                 auto it = canon.find(qName->toCanonical());
                 if (it == canon.end()) {
-                    it = canon.find(qName->getTypeName());
+                    // Short-name fallback — guarded. The short key can hold a
+                    // placeholder created FOR another package's same-named
+                    // class (classpath-signature-shortname-rebind: filling it
+                    // would rebind every reference held under THAT canonical
+                    // — e.g. a signature's own-package formal — to this
+                    // class). Only accept a short-key hit whose recorded
+                    // canonical is OURS.
+                    auto sit = canon.find(qName->getTypeName());
+                    if (sit != canon.end()) {
+                        auto ph = std::dynamic_pointer_cast<CajetaClass>(
+                            sit->second);
+                        if (ph && ph->getQName()
+                                && ph->getQName()->toCanonical()
+                                       == qName->toCanonical()) {
+                            it = sit;
+                        }
+                    }
                 }
                 if (it != canon.end()) {
                     auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
@@ -1475,7 +1491,18 @@ namespace cajeta {
                 auto& canon = CajetaType::getCanonicalMap();
                 auto it = canon.find(qName->toCanonical());
                 if (it == canon.end()) {
-                    it = canon.find(qName->getTypeName());
+                    // Short-name fallback — guarded against cross-package
+                    // capture; see visitClassDeclaration's placeholder reuse.
+                    auto sit = canon.find(qName->getTypeName());
+                    if (sit != canon.end()) {
+                        auto ph = dynamic_pointer_cast<CajetaClass>(
+                            sit->second);
+                        if (ph && ph->getQName()
+                                && ph->getQName()->toCanonical()
+                                       == qName->toCanonical()) {
+                            it = sit;
+                        }
+                    }
                 }
                 if (it != canon.end()) {
                     auto existing = dynamic_pointer_cast<CajetaView>(it->second);
@@ -1727,7 +1754,18 @@ namespace cajeta {
                 auto& canon = CajetaType::getCanonicalMap();
                 auto it = canon.find(qName->toCanonical());
                 if (it == canon.end()) {
-                    it = canon.find(qName->getTypeName());
+                    // Short-name fallback — guarded against cross-package
+                    // capture; see visitClassDeclaration's placeholder reuse.
+                    auto sit = canon.find(qName->getTypeName());
+                    if (sit != canon.end()) {
+                        auto ph = std::dynamic_pointer_cast<CajetaClass>(
+                            sit->second);
+                        if (ph && ph->getQName()
+                                && ph->getQName()->toCanonical()
+                                       == qName->toCanonical()) {
+                            it = sit;
+                        }
+                    }
                 }
                 if (it != canon.end()) {
                     auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
