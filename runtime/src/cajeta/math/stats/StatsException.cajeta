@@ -1,0 +1,21 @@
+package cajeta.math.stats;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by `cajeta.math.stats` on invalid distribution parameters —
+ * `p` outside `[0, 1]`, negative `n`, negative `lambda` (spec
+ * stdlib-completion §3.6). The message names the offending parameter;
+ * the alternative — returning `NaN` — hides the caller's bug until it
+ * has propagated through a computation.
+ *
+ * Recoverable: bad parameters are normal, caller-handleable conditions
+ * (mirrors {@link cajeta.math.linalg.LinAlgException}).
+ */
+public class StatsException extends RecoverableException {
+    public StatsException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

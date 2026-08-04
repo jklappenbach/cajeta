@@ -1,0 +1,55 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * The Bernoulli distribution — the **named `n = 1` binomial** (spec §3.3;
+ * scipy `stats.bernoulli`). PMF and CDF are exact closed forms, not
+ * log-space round trips; agreement with `Binomial.pmf(k, 1, p)` is pinned
+ * by test.
+ */
+public final class Bernoulli {
+
+    private static void check(float64 p) {
+        if (p < 0.0 || p > 1.0) {
+            throw heap StatsException("bernoulli: p must be in [0, 1]");
+        }
+    }
+
+    /** `P(X = k)`: `p` at `k = 1`, `1 - p` at `k = 0`, else `0`. */
+    public static float64 pmf(int64 k, float64 p) {
+        check(p);
+        if (k == 1) { return p; }
+        if (k == 0) { return 1.0 - p; }
+        return 0.0;
+    }
+
+    /** `P(X <= k)`: `0` below the support, `1 - p` at `0`, `1` from `1` up. */
+    public static float64 cdf(int64 k, float64 p) {
+        check(p);
+        if (k < 0) { return 0.0; }
+        if (k >= 1) { return 1.0; }
+        return 1.0 - p;
+    }
+
+    /** `count` seeded draws in `{0, 1}` with `P(1) = p`. */
+    public static #Tensor<int64> sample(float64 p, int64 count, Generator g) {
+        check(p);
+        if (count < 0) {
+            throw heap StatsException("bernoulli: count must be non-negative");
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = count;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        if (count == 0) { return out; }
+        Tensor<float32> u = g.uniform(count);
+        float32 fp = (float32) p;
+        int64 i = 0;
+        while (i < count) {
+            if (u.get1(i) < fp) { out.set1(i, 1); }
+            i = i + 1;
+        }
+        return out;
+    }
+}

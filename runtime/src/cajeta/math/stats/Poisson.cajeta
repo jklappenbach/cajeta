@@ -1,0 +1,89 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * The Poisson distribution (spec §3.4; scipy `stats.poisson`). The PMF
+ * evaluates in log space through {@link Stats#gammaLn}
+ * (`exp(k ln λ − λ − ln k!)`); the CDF is the regularized upper
+ * incomplete gamma `Q(k+1, λ)`, reusing the series/continued-fraction
+ * pair `Stats` already carries for `erf`.
+ *
+ * Negative `lambda` is rejected with {@link StatsException}, never `NaN`
+ * (§3.6). Sampling is Knuth's product-of-uniforms method through
+ * {@link cajeta.math.random.Generator} — O(λ) draws per sample —
+ * reproducible under a fixed seed (§3.5).
+ */
+public final class Poisson {
+
+    private static void check(float64 lambda) {
+        if (lambda < 0.0) {
+            throw heap StatsException("poisson: lambda must be non-negative");
+        }
+    }
+
+    /** `P(X = k)` for `X ~ Poisson(lambda)`; `0` for `k < 0`. */
+    public static float64 pmf(int64 k, float64 lambda) {
+        check(lambda);
+        if (k < 0) { return 0.0; }
+        if (lambda == 0.0) { if (k == 0) { return 1.0; } return 0.0; }
+        float64 fk = (float64) k;
+        return Math.exp(fk * Math.log(lambda) - lambda - Stats.gammaLn(fk + 1.0));
+    }
+
+    /**
+     * `P(X <= k)` = `Q(k+1, lambda)`, split across the two incomplete-
+     * gamma regimes the way `Stats` evaluates them: the series computes
+     * `P(a, x)` for `x < a + 1`, the Lentz continued fraction computes
+     * `Q(a, x)` for `x >= a + 1`.
+     */
+    public static float64 cdf(int64 k, float64 lambda) {
+        check(lambda);
+        if (k < 0) { return 0.0; }
+        if (lambda == 0.0) { return 1.0; }
+        float64 a = ((float64) k) + 1.0;
+        if (lambda < a + 1.0) {
+            return 1.0 - Stats.gammPSeries(a, lambda);
+        }
+        return Stats.gammQContinued(a, lambda);
+    }
+
+    /**
+     * `count` seeded draws via Knuth's method: multiply uniforms until the
+     * product falls below `e^-lambda`; the number of factors, less one, is
+     * the sample. Uniforms are drawn in blocks and consumed as needed.
+     */
+    public static #Tensor<int64> sample(float64 lambda, int64 count, Generator g) {
+        check(lambda);
+        if (count < 0) {
+            throw heap StatsException("poisson: count must be non-negative");
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = count;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        if (count == 0 || lambda == 0.0) { return out; }
+        float64 limit = Math.exp(-lambda);
+        int64 chunk = 4096;
+        Tensor<float32> buf = g.uniform(chunk);
+        int64 pos = 0;
+        int64 i = 0;
+        while (i < count) {
+            int64 k = 0;
+            float64 prod = 1.0;
+            while (true) {
+                if (pos >= chunk) {
+                    buf = g.uniform(chunk);
+                    pos = 0;
+                }
+                prod = prod * ((float64) buf.get1(pos));
+                pos = pos + 1;
+                if (prod <= limit) { break; }
+                k = k + 1;
+            }
+            out.set1(i, k);
+            i = i + 1;
+        }
+        return out;
+    }
+}

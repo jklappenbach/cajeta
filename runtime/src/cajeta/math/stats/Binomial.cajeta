@@ -1,0 +1,87 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+import cajeta.math.random.Generator;
+
+/**
+ * The binomial distribution `B(n, p)` (stdlib-completion spec §3; scipy
+ * `stats.binom`). An API over machinery `Stats` already carries: the PMF
+ * evaluates **in log space** through {@link Stats#gammaLn} — a stable log
+ * binomial coefficient, exponentiated once — so large `n` never overflows
+ * a naive factorial (§3.1, §9.4); the CDF is the regularized incomplete
+ * beta {@link Stats#betainc} (§3.2).
+ *
+ * Invalid parameters (`p` outside `[0, 1]`, negative `n`) are rejected
+ * with {@link StatsException} naming the parameter, never `NaN` (§3.6).
+ * Sampling draws through {@link cajeta.math.random.Generator} and is
+ * reproducible under a fixed seed (§3.5).
+ */
+public final class Binomial {
+
+    private static void check(int64 n, float64 p) {
+        if (n < 0) {
+            throw heap StatsException("binomial: n must be non-negative");
+        }
+        if (p < 0.0 || p > 1.0) {
+            throw heap StatsException("binomial: p must be in [0, 1]");
+        }
+    }
+
+    /** `P(X = k)` for `X ~ B(n, p)`; `0` outside the support `0..n`. */
+    public static float64 pmf(int64 k, int64 n, float64 p) {
+        check(n, p);
+        if (k < 0 || k > n) { return 0.0; }
+        if (p == 0.0) { if (k == 0) { return 1.0; } return 0.0; }
+        if (p == 1.0) { if (k == n) { return 1.0; } return 0.0; }
+        float64 fk = (float64) k;
+        float64 fn = (float64) n;
+        float64 logC = Stats.gammaLn(fn + 1.0) - Stats.gammaLn(fk + 1.0)
+                     - Stats.gammaLn(fn - fk + 1.0);
+        return Math.exp(logC + fk * Math.log(p) + (fn - fk) * Math.log(1.0 - p));
+    }
+
+    /**
+     * `P(X <= k)` for `X ~ B(n, p)`, via the regularized incomplete beta:
+     * `I_{1-p}(n-k, k+1)`.
+     */
+    public static float64 cdf(int64 k, int64 n, float64 p) {
+        check(n, p);
+        if (k < 0) { return 0.0; }
+        if (k >= n) { return 1.0; }
+        if (p == 0.0) { return 1.0; }
+        if (p == 1.0) { return 0.0; }
+        float64 fk = (float64) k;
+        float64 fn = (float64) n;
+        return Stats.betainc(fn - fk, fk + 1.0, 1.0 - p);
+    }
+
+    /**
+     * `count` draws from `B(n, p)`, each the sum of `n` seeded Bernoulli
+     * trials — O(n) per draw, exact for any `n`, reproducible under the
+     * generator's seed.
+     */
+    public static #Tensor<int64> sample(int64 n, float64 p, int64 count, Generator g) {
+        check(n, p);
+        if (count < 0) {
+            throw heap StatsException("binomial: count must be non-negative");
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = count;
+        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        if (count == 0 || n == 0) { return out; }
+        Tensor<float32> u = g.uniform(n * count);
+        float32 fp = (float32) p;
+        int64 i = 0;
+        while (i < count) {
+            int64 c = 0;
+            int64 j = 0;
+            while (j < n) {
+                if (u.get1(i * n + j) < fp) { c = c + 1; }
+                j = j + 1;
+            }
+            out.set1(i, c);
+            i = i + 1;
+        }
+        return out;
+    }
+}
