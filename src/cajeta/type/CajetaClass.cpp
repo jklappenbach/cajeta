@@ -3038,6 +3038,16 @@ namespace cajeta {
         // Cross-module: the caller is emitting IR into a different
         // llvm::Module. Insert an extern decl there and return that.
         if (callerModule && callerModule->getLlvmModule() != lmod) {
+            // compile-cache D1: the DEFINITION above lands in the declaring
+            // class's module, demanded by this caller's codegen. If the
+            // caller is later skipped as clean, nothing re-demands it —
+            // record the demand so obligation replay re-creates the
+            // definition (replay passes a null callerModule, so it never
+            // re-records here).
+            CajetaModule::noteCrossModuleStaticFieldRef(
+                callerModule,
+                static_pointer_cast<CajetaClass>(shared_from_this()),
+                prop->getName());
             llvm::Constant* shim = CajetaModule::ensureGlobalInModule(
                 callerModule->getLlvmModule(), g);
             return llvm::cast<llvm::GlobalVariable>(shim);

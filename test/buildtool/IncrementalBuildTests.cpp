@@ -363,18 +363,48 @@ TEST(IncrementalBuild, RebuildAfterEvictionByteIdenticalIr) {
     }
 }
 
+// compile-cache D1 — the demand set is larger than the obligation set.
+// A FOLDABLE stdlib static (JsonValue.OBJECT = 5) is defined in the stdlib
+// object only when a referencing module's codegen demands it
+// (getOrCreateStaticFieldGlobal); non-foldable statics are covered by the
+// declaring module's unconditional clinit pass and were never at risk.
+// When the referencing module is clean and skipped, the demand must be
+// replayed from its obligations sidecar (`Owner::field` key) or the
+// symbol vanishes from the fresh stdlib object and the link fails with
+// `undefined symbol: cajeta.codec.json.JsonValue.OBJECT`.
+TEST(IncrementalBuild, WarmRebuildKeepsDemandedStdlibStatics) {
+    if (!fs::exists(compilerBinary()))
+        GTEST_SKIP() << "compiler binary unavailable";
+    Project p = Project::create("stdstatic");
+    {   // Util becomes the program's ONLY referencer of the static.
+        std::ofstream s(p.srcDir() / "Util.cajeta");
+        s << "package t;\n"
+             "import cajeta.codec.json.JsonValue;\n"
+             "public final class Util {\n"
+             "    public static int32 streamed() {\n"
+             "        return JsonValue.OBJECT;\n"
+             "    }\n"
+             "}\n";
+    }
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();      // cold: links fine
+    ASSERT_EQ(p.runExe(), 9) << "OBJECT(5) + mainBias(4)";
+    p.dropArtifactCache();   // past Phase-0, onto the manifest/skip path
+    ASSERT_EQ(p.build(), 0) << p.buildOutput();      // D1 died at this link
+    EXPECT_TRUE(contains(p.buildOutput(), "[incremental] skip"))
+        << p.buildOutput();
+    ASSERT_EQ(p.runExe(), 9)
+        << "the replayed static must keep its folded value";
+}
+
 // Phase 5 real-source-tree smoke: samples/tour (~87 sources, no deps)
 // builds end-to-end under default-on incremental, and a no-change rebuild
 // skips every source. Runs the suite's usual CI lane, satisfying the
 // "wire into CI" criterion.
-// DISABLED_ 2026-07-31: samples/tour now contains the compile-cache D1
-// repro content (tour-quality unit 3's demos) — the warm rebuild drops
-// newly-required template instantiations and fails the link (undefined
-// JsonValue.OBJECT here; cold build fine). Known, registered defect:
-// agents/cajeta/compile-cache-plan.md D1 (re-open trigger hit) — this
-// smoke asserts behavior D1 currently breaks, so it stays disabled until
-// D1's fix lands; flipping it back on is part of D1's definition of done.
-TEST(IncrementalBuild, DISABLED_TourSmokeBuildsIncrementally) {
+// (DISABLED_ 2026-07-31 → re-enabled 2026-08-04: the tour carries the
+// compile-cache D1 repro content, so this smoke was red — undefined
+// JsonValue.OBJECT at the warm link — until the static-field obligation
+// kind landed. Re-enabling it was part of D1's definition of done.)
+TEST(IncrementalBuild, TourSmokeBuildsIncrementally) {
     if (!fs::exists(compilerBinary()))
         GTEST_SKIP() << "compiler binary unavailable";
     const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");

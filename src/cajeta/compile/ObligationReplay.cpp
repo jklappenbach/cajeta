@@ -139,8 +139,33 @@ namespace cajeta {
         std::string rest = key.substr(sep + 2);
         auto paren = rest.find('(');
         if (paren == std::string::npos) {
-            err = "malformed method obligation `" + key + "`";
-            return false;
+            // Static-field form: `Owner::field`, no param list (compile-cache
+            // D1). A foldable static's global is defined in the declaring
+            // class's module only when a referencing module's codegen demands
+            // it; the skipped module's demand is re-asserted here by forcing
+            // the definition the same way a live reference would — a null
+            // caller module targets the declaring module and records nothing.
+            CajetaTypePtr hostType = resolveCanonicalType(host, err);
+            if (!hostType) return false;
+            auto hostClass = std::dynamic_pointer_cast<CajetaClass>(hostType);
+            if (!hostClass) {
+                err = "static-field obligation host `" + host
+                    + "` is not a class";
+                return false;
+            }
+            auto& props = hostClass->getProperties();
+            auto pit = props.find(rest);
+            if (pit == props.end() || !pit->second
+                || !pit->second->isStatic()) {
+                err = "no static field `" + rest + "` on `" + host + "`";
+                return false;
+            }
+            if (!hostClass->getOrCreateStaticFieldGlobal(pit->second,
+                                                         nullptr)) {
+                err = "static-field global creation failed for `" + key + "`";
+                return false;
+            }
+            return true;
         }
         std::string methodName = trim(rest.substr(0, paren));
 
