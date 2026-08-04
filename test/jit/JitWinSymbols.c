@@ -42,6 +42,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+// opendir/readdir/closedir for __cajeta_path_list — libmingwex statics,
+// absent from the PE export table like the libm family.
+#include <dirent.h>
 
 // OptiX AS runtime glue (src/cajeta/xpu/nvidia/OptixAccel.cpp). The EMBEDDED
 // runtime bitcode's CUDA noun provider references these (the first host-lib
@@ -126,6 +129,10 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("getpid",         &getpid),
     CJ_SYM("ftruncate",      &ftruncate),
     CJ_SYM("strdup",         &strdup),
+    // dirent (libmingwex) — __cajeta_path_list's directory walk.
+    CJ_SYM("opendir",        &opendir),
+    CJ_SYM("readdir",        &readdir),
+    CJ_SYM("closedir",       &closedir),
     CJ_SYM("stat64i32",      &stat),
     CJ_SYM("fstat64i32",     &fstat),
     CJ_SYM("__mingw_fprintf",  &__mingw_fprintf),
