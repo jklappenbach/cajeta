@@ -32,9 +32,11 @@ public class ProbeData {
     /** file path → (probe-id → hit-count). */
     HashMap<String, HashMap<int32, int64>> hits;
 
-    public ProbeData(Grain grain, String emittedBy) {
+    // Owns its diagnostic path (uniform transfer): the dump outlives
+    // the parsing call, so a borrowed emittedBy would dangle.
+    public ProbeData(Grain grain, #String emittedBy) {
         this.grain = grain;
-        this.emittedBy = emittedBy;
+        this.emittedBy #= emittedBy;
         this.hits #= heap HashMap<String, HashMap<int32, int64>>();
     }
 
@@ -54,7 +56,9 @@ public class ProbeData {
         if (existing.isEmpty()) {
             HashMap<int32, int64> fresh #= heap HashMap<int32, int64>();
             fresh.put(probeId, count);
-            this.hits.put(file, #fresh);
+            // The map owns its key; the borrowed formal gets copied.
+            this.hits.put(
+                file.substring(0, (int32) file.count()), #fresh);
             return;
         }
         HashMap<int32, int64> table = existing.get();

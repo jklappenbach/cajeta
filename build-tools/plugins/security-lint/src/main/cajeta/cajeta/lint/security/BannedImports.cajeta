@@ -5,7 +5,7 @@ import cajeta.codec.json.JsonArray;
 import cajeta.codec.json.JsonObject;
 import cajeta.codec.json.JsonValue;
 import cajeta.collection.ArrayList;
-import cajeta.coverage.Glob;
+import cajeta.lint.security.internal.Glob;
 
 /**
  * Parses + matches the banned-imports list.
@@ -57,7 +57,7 @@ public class BannedImports {
      * back-compat path. Bad entries throw `LintConfigException`
      * citing the offending index.
      */
-    public static BannedImports parse(
+    public static #BannedImports parse(
         ActionContext ctx, JsonArray arr) {
         ArrayList<BannedImportEntry> out =
             #heap ArrayList<BannedImportEntry>();
@@ -96,7 +96,7 @@ public class BannedImports {
         return #heap BannedImports(out);
     }
 
-    static BannedImportEntry parseTypedEntry(JsonObject obj, int32 idx) {
+    static #BannedImportEntry parseTypedEntry(JsonObject obj, int32 idx) {
         Optional<String> patV = obj.getString("pattern");
         if (patV.isEmpty()) {
             throw stack LintConfigException(

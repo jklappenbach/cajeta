@@ -42,7 +42,7 @@ public enum Grain {
      * Round-trip: enum back to manifest string. Used when surfacing
      * the resolved grain in reports.
      */
-    public String toName() {
+    public #String toName() {
         if (this == Grain.LINE)   { return "line";   }
         if (this == Grain.BRANCH) { return "branch"; }
         return "region";

@@ -13,14 +13,13 @@ public class FloatFormat {
      * `cajeta.lang.Math.roundHalfEven` to avoid the half-up bias that
      * inflates aggregate percentages in CI gates.
      */
-    public static String oneDecimal(float v) {
+    public static #String oneDecimal(float64 v) {
         boolean negative = v < 0.0;
         if (negative) { v = -v; }
-        // Scale, round, split — keeps the formatting branch-free in
-        // the common case (cajeta floats are IEEE-754 32-bit, the
-        // round-trip through int64 loses no information for the
-        // percentage range we care about).
-        int64 scaled = Math.roundHalfEven(v * 10.0);
+        // Scale, round (half-up — plenty for a percentage display),
+        // split. The round-trip through int64 loses no information
+        // for the percentage range we care about.
+        int64 scaled = (int64) (v * 10.0 + 0.5);
         int64 whole  = scaled / 10;
         int64 frac   = scaled - (whole * 10);
         StringBuilder b = stack StringBuilder();

@@ -37,8 +37,10 @@ public class ImportExtractor {
         String dottedPath;
         int32 line;
 
-        public ImportRef(String dottedPath, int32 line) {
-            this.dottedPath = dottedPath;
+        // Owns its path (uniform transfer): the ref outlives the
+        // extraction call, so a borrowed slice would dangle.
+        public ImportRef(#String dottedPath, int32 line) {
+            this.dottedPath #= dottedPath;
             this.line = line;
         }
         public String dottedPath() { return this.dottedPath; }
@@ -49,44 +51,52 @@ public class ImportExtractor {
      * Yield each import in the preamble of `source` (the file's
      * full text). Returns in declaration order.
      */
-    public static ArrayList<ImportRef> extract(String source) {
+    public static #ArrayList<ImportRef> extract(String source) {
         ArrayList<ImportRef> out #= heap ArrayList<ImportRef>();
-        String[] lines = source.split("\n");
-        int32 i = 0;
-        while (i < lines.count) {
-            String trimmed = lines[i].trim();
+        int32 srcLen = source.byteLength();
+        int32 lineStart = 0;
+        int32 lineNo = 1;
+        boolean walking = true;
+        while (walking && lineStart <= srcLen) {
+            int64 nl = source.indexOfFrom("\n", (int64) lineStart);
+            int32 lineEnd = nl < 0 ? srcLen : (int32) nl;
+            String trimmed = source.substring(lineStart, lineEnd).trim();
             // Skip blanks + line comments. Block comments mid-
             // preamble are rare in practice and would require
             // multi-line tracking; v1 ignores them — a banned
             // import buried inside a block comment doesn't matter.
-            if (trimmed.count() == 0 ||
-                trimmed.startsWith("//") ||
-                trimmed.startsWith("/*") ||
-                trimmed.startsWith("*")  ||
-                trimmed.startsWith("package ")) {
-                i = i + 1;
-                continue;
+            boolean skip = trimmed.byteLength() == 0
+                || trimmed.startsWith("//")
+                || trimmed.startsWith("/*")
+                || trimmed.startsWith("*")
+                || trimmed.startsWith("package ");
+            if (!skip) {
+                if (!trimmed.startsWith("import ")) {
+                    // First substantive non-import line — the rest of
+                    // the file is class/struct bodies.
+                    walking = false;
+                } else {
+                    // Pull out the dotted path. Format:
+                    //   import <dotted>;   or   import <dotted>.*;
+                    String body = trimmed.substring(7, trimmed.byteLength());
+                    if (body.endsWith(";")) {
+                        body = body.substring(0, body.byteLength() - 1);
+                    }
+                    if (body.endsWith(".*")) {
+                        body = body.substring(0, body.byteLength() - 2);
+                    }
+                    body = body.trim();
+                    if (body.byteLength() > 0) {
+                        out.add(heap ImportRef(#body, lineNo));
+                    }
+                }
             }
-            if (!trimmed.startsWith("import ")) {
-                // First substantive non-import line — the rest of
-                // the file is class/struct bodies.
-                break;
+            if (nl < 0) {
+                walking = false;
             }
-            // Pull out the dotted path. Format:
-            //   import <dotted>;     or     import <dotted>.*;
-            String body = trimmed.substring(7);  // past "import "
-            if (body.endsWith(";")) {
-                body = body.substring(0, body.count() - 1);
-            }
-            if (body.endsWith(".*")) {
-                body = body.substring(0, body.count() - 2);
-            }
-            body = body.trim();
-            if (body.count() > 0) {
-                out.add(#heap ImportRef(body, i + 1));
-            }
-            i = i + 1;
+            lineStart = lineEnd + 1;
+            lineNo = lineNo + 1;
         }
-        return out;
+        return #out;
     }
 }

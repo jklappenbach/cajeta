@@ -32,8 +32,10 @@ public class CoverageMap {
         // lines/branches individually. boolean[] indexed by probe-id.
         boolean[] covered;
 
-        public FileEntry(String path, Grain grain, int32 totalProbes) {
-            this.path = path;
+        // Owns its path (uniform transfer): the entry outlives the
+        // creating call, so a borrowed path would dangle.
+        public FileEntry(#String path, Grain grain, int32 totalProbes) {
+            this.path #= path;
             this.grain = grain;
             this.totalProbes = totalProbes;
             this.hitProbes = 0;
@@ -65,7 +67,7 @@ public class CoverageMap {
          * File-level percentage (`hit / total * 100`), or 100 if the
          * file has no probes (vacuously covered).
          */
-        public float percent() {
+        public float64 percent() {
             if (this.totalProbes == 0) {
                 return 100.0;
             }
@@ -102,9 +104,15 @@ public class CoverageMap {
         if (existing.isPresent()) {
             return existing.get();
         }
-        FileEntry fresh #= heap FileEntry(path, this.grain, totalProbes);
-        this.files.put(path, #fresh);
-        return fresh;
+        // The map owns both the key and the entry, so each gets its
+        // own copy of `path` (the formal stays the caller's borrow).
+        FileEntry fresh #= heap FileEntry(
+            path.substring(0, (int32) path.count()), this.grain, totalProbes);
+        this.files.put(path.substring(0, (int32) path.count()), #fresh);
+        // Re-read for the return: after the put the map owns the
+        // entry; the caller gets a borrow of the map's copy.
+        Optional<FileEntry> stored = this.files.get(path);
+        return stored.get();
     }
 
     /**
@@ -113,7 +121,7 @@ public class CoverageMap {
      * `(hit / total)` directly. Use file-level percentages for the
      * bottom-N report; the overall is a quick number for the gate.
      */
-    public float overallPercent() {
+    public float64 overallPercent() {
         int64 totalHit   = 0;
         int64 totalProbes = 0;
         // TODO P1: HashMap iterator surface (`.entries()` returning a
@@ -124,7 +132,8 @@ public class CoverageMap {
         ArrayList<String> keys = this.files.keys();
         int32 i = 0;
         while (i < keys.count()) {
-            FileEntry e = this.files.get(keys.get(i)).get();
+            Optional<FileEntry> eOpt = this.files.get(keys.get(i));
+            FileEntry e = eOpt.get();
             totalHit    = totalHit    + e.hitProbes();
             totalProbes = totalProbes + e.totalProbes();
             i = i + 1;

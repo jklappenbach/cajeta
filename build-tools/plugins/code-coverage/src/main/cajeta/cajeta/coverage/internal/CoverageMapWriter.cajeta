@@ -1,18 +1,17 @@
 package cajeta.coverage.internal;
 
-import cajeta.collection.ArrayList;
 import cajeta.coverage.CoverageMap;
 import cajeta.coverage.Grain;
-import cajeta.io.file.FileReader;
-import cajeta.io.file.FileWriter;
+import cajeta.io.file.File;
 import cajeta.io.file.Path;
+import cajeta.lang.stream.Stream;
 
 /**
- * Read/write the merged `CoverageMap` to disk.
+ * Write the merged `CoverageMap` to disk.
  *
- * On-disk format (binary, big-endian) — kept stable; reader rejects
- * unknown versions so a future schema change can't silently corrupt
- * a CI run's gate:
+ * On-disk format (binary, big-endian) — kept stable; the reader
+ * rejects unknown versions so a future schema change can't silently
+ * corrupt a CI run's gate:
  *
  *   magic        : "CJCV"   (4 bytes)
  *   version      : u16      (currently 1)
@@ -28,38 +27,36 @@ import cajeta.io.file.Path;
  *
  * The format is internal to the plugin — the consumer's contract is
  * with the `cajeta.coverage.report` action's outputs/findings, not
- * with the on-disk shape. We're free to bump the version when the
- * plugin's own schema needs to grow.
+ * with the on-disk shape.
  */
 public class CoverageMapWriter {
 
     /**
-     * Write `map` to `path`. Parent directories must exist (the
+     * Write `map` to `path` — packed into one `ByteBuf`, flushed with
+     * a single `writeAllBytes`. Parent directories must exist (the
      * caller creates them — see `Collect.run`).
      */
     public static void write(Path path, CoverageMap map) {
-        FileWriter w = FileWriter.openTruncate(path);
-        // Header
-        w.writeBytes("CJCV".bytes());
-        w.writeU16BE(1);
-        w.writeU8(grainToByte(map.grain()));
-        w.writeU8(0);  // reserved
-        ArrayList<String> paths = map.files().keys();
-        w.writeU32BE(paths.count());
-        // Files
-        int32 i = 0;
-        while (i < paths.count()) {
-            String fpath = paths.get(i);
-            CoverageMap.FileEntry e = map.files().get(fpath).get();
-            byte[] pathBytes = fpath.bytes();
-            w.writeU32BE(pathBytes.count);
-            w.writeBytes(pathBytes);
-            w.writeU32BE(e.totalProbes());
-            w.writeU32BE(e.hitProbes());
-            writeBitset(w, e);
-            i = i + 1;
+        ByteBuf out = heap ByteBuf(4096);
+        out.putString("CJCV");
+        out.putU16BE(1);
+        out.putU8(grainToByte(map.grain()));
+        out.putU8(0);  // reserved
+        out.putU32BE((int32) map.files().count());
+        Stream<String> paths = map.files().keys();
+        Optional<String> cur = paths.next();
+        while (cur.isPresent()) {
+            String fpath = cur.get();
+            Optional<CoverageMap.FileEntry> eOpt = map.files().get(fpath);
+            CoverageMap.FileEntry e = eOpt.get();
+            out.putU32BE(fpath.byteLength());
+            out.putString(fpath);
+            out.putU32BE(e.totalProbes());
+            out.putU32BE(e.hitProbes());
+            putBitset(out, e);
+            cur = paths.next();
         }
-        w.close();
+        File.writeAllBytes(path.toString(), out.data, out.len);
     }
 
     static int32 grainToByte(Grain g) {
@@ -68,18 +65,18 @@ public class CoverageMapWriter {
         return 2;
     }
 
-    static void writeBitset(FileWriter w, CoverageMap.FileEntry e) {
+    static void putBitset(ByteBuf out, CoverageMap.FileEntry e) {
         int32 nBytes = (e.totalProbes() + 7) / 8;
-        byte[] packed #= heap byte[nBytes];
+        int8[] packed = heap int8[nBytes];
         int32 pid = 0;
         while (pid < e.totalProbes()) {
             if (e.wasHit(pid)) {
                 int32 byteIdx = pid / 8;
                 int32 bitIdx  = pid - (byteIdx * 8);
-                packed[byteIdx] = packed[byteIdx] | (1 << bitIdx);
+                packed[byteIdx] = (int8) (packed[byteIdx] | (1 << bitIdx));
             }
             pid = pid + 1;
         }
-        w.writeBytes(packed);
+        out.putRaw(packed, nBytes);
     }
 }

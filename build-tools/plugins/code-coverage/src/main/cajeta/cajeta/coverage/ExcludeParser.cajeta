@@ -40,15 +40,16 @@ public class ExcludeParser {
      * fails at parse time. (The CLI is defense-in-depth; this is
      * the spec.)
      */
-    static final String[] GENERIC_REASONS = [
-        "wip", "todo", "skip", "fixme", "tbd"
-    ];
+    // Kept as a predicate rather than a static String[] blocklist:
+    // a static string-array literal currently trips a spurious
+    // INITIALIZER_TYPE_MISMATCH at codegen (compiler defect, noted in
+    // specs/INDEX.md), and the predicate is simpler anyway.
 
     /**
      * Parse the array. `ctx` is used only for warning emission (the
      * back-compat path); failures throw `ExcludeConfigException`.
      */
-    public static ArrayList<Exclude> parse(
+    public static #ArrayList<Exclude> parse(
         ActionContext ctx, JsonArray excludeArr) {
         ArrayList<Exclude> out #= heap ArrayList<Exclude>();
         if (excludeArr == null) {
@@ -89,7 +90,7 @@ public class ExcludeParser {
         return out;
     }
 
-    static Exclude parseTypedEntry(JsonObject obj, int32 idx) {
+    static #Exclude parseTypedEntry(JsonObject obj, int32 idx) {
         String kindStr    = requireString(obj, "kind",    idx);
         String pattern    = requireString(obj, "pattern", idx);
         String reason     = requireString(obj, "reason",  idx);
@@ -116,7 +117,7 @@ public class ExcludeParser {
         return #heap Exclude(maybeKind.get(), pattern, reason);
     }
 
-    static String requireString(JsonObject obj, String key, int32 idx) {
+    static #String requireString(JsonObject obj, String key, int32 idx) {
         Optional<String> v = obj.getString(key);
         if (v.isEmpty()) {
             if (!obj.containsKey(key)) {
@@ -140,11 +141,7 @@ public class ExcludeParser {
     public static boolean isGeneric(String reason) {
         String trimmed = reason.trim().toLowerCase();
         if (trimmed.count() == 0) { return true; }
-        int32 i = 0;
-        while (i < GENERIC_REASONS.count) {
-            if (trimmed == GENERIC_REASONS[i]) { return true; }
-            i = i + 1;
-        }
-        return false;
+        return trimmed == "wip" || trimmed == "todo" || trimmed == "skip"
+            || trimmed == "fixme" || trimmed == "tbd";
     }
 }

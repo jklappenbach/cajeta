@@ -6,6 +6,7 @@ import cajeta.buildtool.plugin.Finding;
 import cajeta.codec.json.JsonArray;
 import cajeta.codec.json.JsonObject;
 import cajeta.collection.ArrayList;
+import cajeta.io.file.File;
 import cajeta.io.file.FileReader;
 import cajeta.io.file.Path;
 import cajeta.lint.security.internal.ImportExtractor;
@@ -32,12 +33,11 @@ import cajeta.lint.security.internal.SourceWalker;
 public class Scan {
 
     /** Banned-imports findings carry this rule id. */
-    static final String BANNED_IMPORT_RULE = "banned-import";
 
     /**
      * @capability filesystem
      */
-    public static ActionResult run(ActionContext ctx, JsonObject params) {
+    public static #ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
         ArrayList<String> sourceRoots = params.getStringArray("source-roots");
         if (sourceRoots.count() == 0) {
@@ -78,7 +78,9 @@ public class Scan {
         int32 fi = 0;
         while (fi < files.count()) {
             Path file = files.get(fi);
-            String source = FileReader.readAllText(file);
+            // Slurp as bytes (UTF-8 source) and wrap once.
+            int8[] raw = File.readAllBytes(file.toString());
+            String source = heap String(#raw, (int32) raw.count());
             scanImports(file, source, banned, findings);
             scanSecrets(file, source, secrets, findings);
             fi = fi + 1;
@@ -108,10 +110,12 @@ public class Scan {
                 if (reason.count() > 0) {
                     msg = msg + ": " + reason;
                 }
+                // Rule slug spelled inline: a Finding owns its strings,
+                // and a static-field constant cannot surrender a title.
                 findings.add(#Finding.warning(
-                    BANNED_IMPORT_RULE,
+                    "banned-import",
                     file.toString(), ref.line(), 1,
-                    msg));
+                    #msg));
             }
             i = i + 1;
         }
@@ -121,23 +125,36 @@ public class Scan {
         Path file, String source,
         SecretPatterns secrets, ArrayList<Finding> findings) {
         if (secrets.count() == 0) { return; }
-        String[] lines = source.split("\n");
+        // Per-line walk without a split() allocation storm: find each
+        // newline and substring the line out.
+        int32 srcLen = source.byteLength();
+        int32 lineStart = 0;
         int32 li = 0;
-        while (li < lines.count) {
-            String line = lines[li];
+        boolean walking = true;
+        while (walking) {
+            int64 nl = source.indexOfFrom("\n", (int64) lineStart);
+            int32 lineEnd = nl < 0 ? srcLen : (int32) nl;
+            String line = source.substring(lineStart, lineEnd);
             ArrayList<SecretPatterns.Hit> hits = secrets.scanLine(line);
             int32 hi = 0;
             while (hi < hits.count()) {
                 SecretPatterns.Hit h = hits.get(hi);
+                // The Finding owns its rule string — copy the entry's
+                // borrowed id for the rule slot.
+                String rid = h.entry().id();
                 findings.add(#Finding.withSeverity(
-                    h.entry().id(),
+                    rid.substring(0, (int32) rid.count()),
                     h.entry().severity(),
                     file.toString(), li + 1, h.startCol() + 1,
-                    "secret pattern '" + h.entry().id() +
-                    "' matched here"));
+                    "secret pattern '" + rid + "' matched here"));
                 hi = hi + 1;
             }
-            li = li + 1;
+            if (nl < 0) {
+                walking = false;
+            } else {
+                lineStart = lineEnd + 1;
+                li = li + 1;
+            }
         }
     }
 }

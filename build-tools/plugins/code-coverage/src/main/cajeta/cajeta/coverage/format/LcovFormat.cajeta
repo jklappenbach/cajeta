@@ -2,6 +2,8 @@ package cajeta.coverage.format;
 
 import cajeta.collection.ArrayList;
 import cajeta.coverage.CoverageMap;
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
 import cajeta.io.file.FileWriter;
 import cajeta.io.file.Path;
 
@@ -28,17 +30,18 @@ import cajeta.io.file.Path;
  */
 public class LcovFormat {
 
-    public static String emit(Path outputDir, CoverageMap map) {
+    public static #String emit(Path outputDir, CoverageMap map) {
         Path out = outputDir.resolve("lcov.info");
-        FileWriter w = FileWriter.openTruncate(out);
+        FileWriter w = File.openWrite((out).toString(), OpenMode.WRITE);
 
         ArrayList<String> paths = map.files().keys();
         int32 i = 0;
         while (i < paths.count()) {
             String fpath = paths.get(i);
-            CoverageMap.FileEntry e = map.files().get(fpath).get();
-            w.writeText("TN:\n");
-            w.writeText("SF:" + fpath + "\n");
+            Optional<CoverageMap.FileEntry> eOpt = map.files().get(fpath);
+            CoverageMap.FileEntry e = eOpt.get();
+            w.writeString("TN:\n");
+            w.writeString("SF:" + fpath + "\n");
             // TODO: per-probe DA records require the per-source
             // position sidecar (PositionLookup) here too — currently
             // omitted to keep this emitter independent of the
@@ -46,9 +49,9 @@ public class LcovFormat {
             // pass it in). Lines-hit/lines-found are reported at
             // probe granularity; consumers of lcov.info that need
             // line-level detail can fall back to the sarif format.
-            w.writeText("LH:" + String.valueOf(e.hitProbes())   + "\n");
-            w.writeText("LF:" + String.valueOf(e.totalProbes()) + "\n");
-            w.writeText("end_of_record\n");
+            w.writeString("LH:" + String.valueOf(e.hitProbes())   + "\n");
+            w.writeString("LF:" + String.valueOf(e.totalProbes()) + "\n");
+            w.writeString("end_of_record\n");
             i = i + 1;
         }
         w.close();

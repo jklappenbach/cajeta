@@ -3,6 +3,8 @@ package cajeta.coverage.format;
 import cajeta.buildtool.plugin.Finding;
 import cajeta.collection.ArrayList;
 import cajeta.coverage.CoverageMap;
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
 import cajeta.io.file.FileWriter;
 import cajeta.io.file.Path;
 
@@ -28,53 +30,53 @@ import cajeta.io.file.Path;
  */
 public class SarifFormat {
 
-    public static String emit(
+    public static #String emit(
         Path outputDir, CoverageMap map, ArrayList<Finding> findings) {
         Path out = outputDir.resolve("coverage.sarif");
-        FileWriter w = FileWriter.openTruncate(out);
+        FileWriter w = File.openWrite((out).toString(), OpenMode.WRITE);
 
         // Hand-built so we stay independent of a JSON-writer stdlib
         // surface that's still in flux. SARIF's required fields are
         // few enough that the structure stays readable.
-        w.writeText("{\n");
-        w.writeText("  \"version\": \"2.1.0\",\n");
-        w.writeText("  \"$schema\": \"https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json\",\n");
-        w.writeText("  \"runs\": [{\n");
-        w.writeText("    \"tool\": {\n");
-        w.writeText("      \"driver\": {\n");
-        w.writeText("        \"name\": \"cajeta.coverage\",\n");
-        w.writeText("        \"version\": \"1.0.0\",\n");
-        w.writeText("        \"informationUri\": \"https://cajeta.org/plugins/coverage\",\n");
-        w.writeText("        \"rules\": [{\n");
-        w.writeText("          \"id\": \"uncovered\",\n");
-        w.writeText("          \"name\": \"UncoveredCode\",\n");
-        w.writeText("          \"shortDescription\": { \"text\": \"Code not exercised by tests.\" },\n");
-        w.writeText("          \"defaultConfiguration\": { \"level\": \"note\" }\n");
-        w.writeText("        }]\n");
-        w.writeText("      }\n");
-        w.writeText("    },\n");
-        w.writeText("    \"results\": [\n");
+        w.writeString("{\n");
+        w.writeString("  \"version\": \"2.1.0\",\n");
+        w.writeString("  \"$schema\": \"https://schemastore.azurewebsites.net/schemas/json/sarif-2.1.0-rtm.5.json\",\n");
+        w.writeString("  \"runs\": [{\n");
+        w.writeString("    \"tool\": {\n");
+        w.writeString("      \"driver\": {\n");
+        w.writeString("        \"name\": \"cajeta.coverage\",\n");
+        w.writeString("        \"version\": \"1.0.0\",\n");
+        w.writeString("        \"informationUri\": \"https://cajeta.org/plugins/coverage\",\n");
+        w.writeString("        \"rules\": [{\n");
+        w.writeString("          \"id\": \"uncovered\",\n");
+        w.writeString("          \"name\": \"UncoveredCode\",\n");
+        w.writeString("          \"shortDescription\": { \"text\": \"Code not exercised by tests.\" },\n");
+        w.writeString("          \"defaultConfiguration\": { \"level\": \"note\" }\n");
+        w.writeString("        }]\n");
+        w.writeString("      }\n");
+        w.writeString("    },\n");
+        w.writeString("    \"results\": [\n");
         int32 i = 0;
         while (i < findings.count()) {
             Finding f = findings.get(i);
-            if (i > 0) { w.writeText(",\n"); }
-            w.writeText("      {\n");
-            w.writeText("        \"ruleId\": \"" + escape(f.rule()) + "\",\n");
-            w.writeText("        \"level\": \"" + sarifLevel(f.severity().toName()) + "\",\n");
-            w.writeText("        \"message\": { \"text\": \"" + escape(f.message()) + "\" },\n");
-            w.writeText("        \"locations\": [{\n");
-            w.writeText("          \"physicalLocation\": {\n");
-            w.writeText("            \"artifactLocation\": { \"uri\": \"" + escape(f.file()) + "\" },\n");
-            w.writeText("            \"region\": { \"startLine\": " +
+            if (i > 0) { w.writeString(",\n"); }
+            w.writeString("      {\n");
+            w.writeString("        \"ruleId\": \"" + escape(f.rule()) + "\",\n");
+            w.writeString("        \"level\": \"" + sarifLevel(f.severity().toName()) + "\",\n");
+            w.writeString("        \"message\": { \"text\": \"" + escape(f.message()) + "\" },\n");
+            w.writeString("        \"locations\": [{\n");
+            w.writeString("          \"physicalLocation\": {\n");
+            w.writeString("            \"artifactLocation\": { \"uri\": \"" + escape(f.file()) + "\" },\n");
+            w.writeString("            \"region\": { \"startLine\": " +
                        String.valueOf(f.line()) + " }\n");
-            w.writeText("          }\n");
-            w.writeText("        }]\n");
-            w.writeText("      }");
+            w.writeString("          }\n");
+            w.writeString("        }]\n");
+            w.writeString("      }");
             i = i + 1;
         }
-        w.writeText("\n    ]\n");
-        w.writeText("  }]\n");
-        w.writeText("}\n");
+        w.writeString("\n    ]\n");
+        w.writeString("  }]\n");
+        w.writeString("}\n");
         w.close();
         return out.toString();
     }
@@ -91,7 +93,7 @@ public class SarifFormat {
      * General-purpose JSON output goes through
      * `cajeta.codec.json.JsonWriter` once stabilized.
      */
-    static String escape(String s) {
+    static #String escape(String s) {
         StringBuilder b = stack StringBuilder();
         int32 i = 0;
         while (i < s.count()) {
@@ -101,7 +103,7 @@ public class SarifFormat {
             else if (c == '\n') { b.append("\\n"); }
             else if (c == '\r') { b.append("\\r"); }
             else if (c == '\t') { b.append("\\t"); }
-            else { b.append(c); }
+            else { b.append(s.substring(i, i + 1)); }
             i = i + 1;
         }
         return b.toString();
