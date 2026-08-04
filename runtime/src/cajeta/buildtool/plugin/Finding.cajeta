@@ -1,0 +1,112 @@
+package cajeta.buildtool.plugin;
+
+/**
+ * One structured finding emitted by a plugin action.
+ *
+ * Findings are the cross-plugin currency for "something interesting
+ * happened at this source location": uncovered probes from
+ * cajeta.coverage, banned imports from cajeta.lint.security, license
+ * violations from acme.license-check, etc. The native `lint`
+ * action collects findings published by preceding actions via
+ * `include-findings: ["${id.findings}"]` and emits a unified
+ * report keyed by source location.
+ *
+ * Shape (kept narrow on purpose):
+ *
+ *   - `rule`      — stable slug identifying the check that
+ *                   produced this finding. Used as the SARIF
+ *                   ruleId; consumers (CI, IDE) rely on it for
+ *                   "new findings since last build" diffs.
+ *   - `severity`  — `Severity.ERROR` / `WARNING` / `INFO`.
+ *   - `file`      — source file path (absolute or workspace-
+ *                   relative; format consumers normalize).
+ *   - `line`      — 1-based line number. `0` is allowed for
+ *                   findings that don't have a position (e.g.
+ *                   "this whole file lacks a license header"),
+ *                   in which case SARIF emits no `region`.
+ *   - `column`    — 1-based column number. `0` allowed alongside
+ *                   `line == 0`.
+ *   - `message`   — human-readable, single-line. Plugins should
+ *                   embed the rule's reason or specifics here
+ *                   (e.g. "banned import 'X': supply-chain risk")
+ *                   so the message stands on its own without
+ *                   needing the user to look up the rule's docs.
+ *
+ * Intentionally NOT included:
+ *
+ *   - End-position (line/column endpoints). v1 keeps findings as
+ *     point-positions; the lint task's unified report doesn't
+ *     yet render ranges. Adds when a real consumer needs it.
+ *   - Code suggestions / quick-fixes. The native lint surface
+ *     doesn't carry them; if a plugin wants to expose a fix it
+ *     does so through the IDE plugin protocol, not Finding.
+ *   - Fingerprints / dedup keys. SARIF has them; cajeta's first
+ *     dedup pass works on (rule, file, line) — sufficient until
+ *     real-world false-positive-vs-real-issue dedup forces more.
+ */
+public class Finding {
+
+    String   rule;
+    Severity severity;
+    String   file;
+    int32    line;
+    int32    column;
+    String   message;
+
+    // A Finding OWNS its strings (uniform transfer, 0.15.0): findings
+    // outlive the emitting statement — they accumulate in the result's
+    // list and serialize at action return — so borrow-storing the
+    // caller's locals here would dangle once those locals drop.
+    public Finding(
+        #String rule, Severity severity,
+        #String file, int32 line, int32 column,
+        #String message) {
+        this.rule     #= rule;
+        this.severity  = severity;
+        this.file     #= file;
+        this.line      = line;
+        this.column    = column;
+        this.message  #= message;
+    }
+
+    public String   rule()     { return this.rule;     }
+    public Severity severity() { return this.severity; }
+    public String   file()     { return this.file;     }
+    public int32    line()     { return this.line;     }
+    public int32    column()   { return this.column;   }
+    public String   message()  { return this.message;  }
+
+    // ── Common factories ────────────────────────────────────────
+    //
+    // Most plugins emit findings at one severity per rule; these
+    // factories make the call sites read straight without naming
+    // Severity every time. `withSeverity` is the escape hatch for
+    // plugins that have severity in their config.
+
+    public static #Finding error(
+        #String rule, #String file, int32 line, int32 column, #String message) {
+        return #heap Finding(#rule, Severity.ERROR, #file, line, column, #message);
+    }
+
+    public static #Finding warning(
+        #String rule, #String file, int32 line, int32 column, #String message) {
+        return #heap Finding(#rule, Severity.WARNING, #file, line, column, #message);
+    }
+
+    public static #Finding info(
+        #String rule, #String file, int32 line, int32 column, #String message) {
+        return #heap Finding(#rule, Severity.INFO, #file, line, column, #message);
+    }
+
+    /**
+     * Severity-by-name factory. Unknown severity strings default
+     * to WARNING — the safer side for security/lint plugins where
+     * a typo'd severity shouldn't silently drop the finding to INFO.
+     */
+    public static #Finding withSeverity(
+        #String rule, String severityName,
+        #String file, int32 line, int32 column, #String message) {
+        Severity s = Severity.parse(severityName).orElse(Severity.WARNING);
+        return #heap Finding(#rule, s, #file, line, column, #message);
+    }
+}

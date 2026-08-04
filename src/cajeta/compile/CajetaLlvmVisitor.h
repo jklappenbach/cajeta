@@ -2334,6 +2334,16 @@ namespace cajeta {
             CajetaTypePtr returnType;
             if (ctx->typeTypeOrVoid()) {
                 returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
+                if (!returnType) {
+                    // Same guard as visitMethodDeclaration: a null return
+                    // type segfaults in generatePrototype instead of
+                    // diagnosing.
+                    reportOrThrow(ctx->typeTypeOrVoid()->getStart(),
+                        "CAJETA_ERROR_UNRESOLVED_TYPE",
+                        "unresolved type '" + ctx->typeTypeOrVoid()->getText()
+                            + "' in return type of operator '" + methodName + "'");
+                    returnType = CajetaType::error();
+                }
             }
             BlockPtr block;
             if (ctx->methodBody()) {
@@ -2471,6 +2481,16 @@ namespace cajeta {
                 }
             }
             CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
+            if (ctx->typeTypeOrVoid() != nullptr && !returnType) {
+                // A null return type must not reach generatePrototype —
+                // it flows into llvm::FunctionType::get(nullptr, ...)
+                // and segfaults instead of diagnosing.
+                reportOrThrow(ctx->typeTypeOrVoid()->getStart(),
+                    "CAJETA_ERROR_UNRESOLVED_TYPE",
+                    "unresolved type '" + ctx->typeTypeOrVoid()->getText()
+                        + "' in return type of method '" + name + "'");
+                returnType = CajetaType::error();  // recover: analysis continues
+            }
             // methodBody is either `block` or `;` (abstract methods, interface
             // body methods). For the `;` form, visitMethodBody returns an
             // empty std::any and any_cast<BlockPtr> would throw bad_any_cast.

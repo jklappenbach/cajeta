@@ -7,6 +7,7 @@
 #include "../asn/expression/Expression.h"
 #include "../asn/AnnotationParser.h"
 #include "../error/Exception.h"
+#include "../error/Diagnostics.h"
 #include "CajetaArray.h"
 
 namespace cajeta {
@@ -16,7 +17,18 @@ namespace cajeta {
         set<QualifiedNamePtr> annotations;
         set<Modifier> modifiers;
         CajetaTypePtr elemType = CajetaType::fromContext(ctx->typeType(), module);
-        if (!elemType) return nullptr;
+        if (!elemType) {
+            // Diagnose rather than return null silently: the caller skips a
+            // null parameter, so an unresolved type would otherwise change
+            // the method's arity without a word.
+            if (ctx->typeType() != nullptr) {
+                reportOrThrow(ctx->typeType()->getStart(),
+                    "CAJETA_ERROR_UNRESOLVED_TYPE",
+                    "unresolved type '" + ctx->typeType()->getText()
+                        + "' in varargs parameter '" + name + "'");
+            }
+            return nullptr;
+        }
         // Wrap as T[] — varargs callers will pack trailing args into a
         // fresh array of this element type and pass it as the single
         // value at this parameter slot.
@@ -42,6 +54,14 @@ namespace cajeta {
         vector<AnnotationInstancePtr> paramAnnotations;
         CajetaParser::TypeTypeContext* ctxType = ctx->typeType();
         CajetaTypePtr type = CajetaType::fromContext(ctxType, module);
+        if (ctxType != nullptr && !type) {
+            // Same rationale as the varargs overload above: a silently
+            // dropped parameter mis-arities the method.
+            reportOrThrow(ctxType->getStart(),
+                "CAJETA_ERROR_UNRESOLVED_TYPE",
+                "unresolved type '" + ctxType->getText()
+                    + "' in parameter '" + name + "'");
+        }
 
         std::vector<CajetaParser::VariableModifierContext*> variableModifiers = ctx->variableModifier();
         for (auto& ctxVariableModifier: variableModifiers) {
