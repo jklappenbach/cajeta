@@ -346,9 +346,33 @@ tokenizer — which argues against).
 
 ---
 
-## 6. Sequencing — four independent chains
+## 6. Sequencing — three phases
 
-Nothing here is one queue; four chains can proceed in parallel.
+*(Rewritten 2026-08-04; decided 2026-08-01. This SUPERSEDES the original
+"four independent chains" doctrine — the chains below remain accurate as a
+**dependency structure**, but execution is phased, not parallel.)*
+
+- **P0 — hold.** No new track work until the ml session shipped its release
+  with the deferred defect fixes. *(Cleared: dev.cajeta.ml 0.4.0 on Olla
+  2026-08-02; toolchain v0.16.0 released 2026-08-04.)*
+- **P1 — stdlib + toolchain, batched into ONE release.** `stdlib-completion`,
+  `buildtool-resources`, and the buildtool defect work are fast-tracked ahead
+  of **every** external library, because they ship on the TOOLCHAIN release
+  cycle rather than a library's — a stdlib gap blocks its consumers for a
+  whole release, however small the gap is.
+- **P2 — external libraries, in dependency order:**
+  - **2a** unblocked the moment stdlib lands: `ml-graph-analytics` (stdlib
+    only), `cajeta-font`.
+  - **2b** the ML surface, **SEQUENCED not parallel** — `ml-classification-gaps`
+    → `ml-trees-ensembles` → `ml-unsupervised` → `cajeta-ml-v3` §13 — three
+    specs land in one codebase (`dev.cajeta.ml`) and will contend.
+  - **2c** documents + recsys: `cajeta-docs`, `ml-timeseries`, `ml-recsys`.
+  - **2d** scale: `nucleo-distributed-frame` → `cajeta-dqe` → `cajeta-ml-dist`;
+    `cajeta-cloud` object store.
+  - **2e** charting: `cajeta-text-shaping`, then `cajeta-chart` C1–C4.
+  - **2f** `cajeta-rag` — genuinely last.
+
+The original dependency chains, still valid as structure:
 
 ```
 CHAIN 1 — presentation
@@ -379,11 +403,12 @@ CHAIN 4 — scale
 
 ### 6.1 What to start first
 
-- **`dev.cajeta.graph`** — depends on stdlib only, no blockers, self-contained.
-- **`ml-classification-gaps`** — the one spec already **approved**, and it needs
-  only the §5.1 stdlib distances.
-- **`buildtool-dependency-classpath`** — a *defect*, and Chain 1 is fully blocked
-  behind it. Cheapest unblock in the set.
+**P1 in full** — `stdlib-completion` leads (its §5.1 distances gate three ML
+specs), with `buildtool-resources` batched into the same toolchain release.
+*(The original pick of `buildtool-dependency-classpath` is moot: the U1
+verdict of 2026-08-02 found the reported defect STALE — manifest deps
+already resolve; the real blocker there is
+`buildtool-exe-package-name-collision`.)*
 
 ### 6.2 What not to start first
 
