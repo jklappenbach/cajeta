@@ -274,6 +274,27 @@ public final class String {
     }
 
     /**
+     * Lexicographic comparison: negative when this sorts before
+     * `other`, zero on equality, positive after. Unsigned bytewise —
+     * which is exactly UTF-8 code-point order.
+     */
+    public int32 compareTo(String other) {
+        int32 na = this.byteLength();
+        int32 nb = other.byteLength();
+        int32 n = na < nb ? na : nb;
+        int32 i = 0;
+        while (i < n) {
+            int32 ca = ((int32) this.byteAt(i)) & 255;
+            int32 cb = ((int32) other.byteAt(i)) & 255;
+            if (ca != cb) {
+                return ca - cb;
+            }
+            i = i + 1;
+        }
+        return na - nb;
+    }
+
+    /**
      * Returns a half-open byte-indexed window `[begin, end)` of this
      * String. Indices clamp to [0, byteLength]. ZERO-COPY for > 12 B
      * results (a stake-carrying view of this String's root buffer,

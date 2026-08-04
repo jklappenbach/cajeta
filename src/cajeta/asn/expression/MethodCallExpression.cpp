@@ -8024,6 +8024,26 @@ namespace cajeta {
                     return inst;
                 }
             }
+
+            // listJoined() — the runtime bridge under Path.list(): one
+            // NUL-joined child-names buffer per readdir() pass (sorted,
+            // "."/".." excluded). The helper returns the CajetaArray
+            // header directly; Path.list() splits it in cajeta.
+            if (methodCallName == "listJoined" && parameters.empty()) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_list");
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    llvm::Value* arr = builder->CreateCall(fn,
+                        {bd.first, bd.second}, "path.list_arr");
+                    auto arrTy = make_shared<CajetaArray>(
+                        module, CajetaType::of("int8"));
+                    module->getStructures()[arrTy->toCanonical()] =
+                        static_pointer_cast<CajetaClass>(arrTy);
+                    resolvedType = arrTy;
+                    return arr;
+                }
+            }
         }
 
         // ----- FileReader / FileWriter / File instance-method intrinsic -----
