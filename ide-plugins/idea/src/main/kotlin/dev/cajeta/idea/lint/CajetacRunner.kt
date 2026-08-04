@@ -55,9 +55,24 @@ object CajetacRunner {
             // shard instead of being clobbered on the next edit (§8.3.1).
             val classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
                 .dependencyArchives(basePath)
-            val stderr = runCompiler(compilerPath, tempFile, sourceRoot, filePath,
-                                     emitXref, classpath)
-                ?: return LintOutput(emptyList(), XrefStream.EMPTY)
+            // Route through the warm --lint-server daemon when enabled; its
+            // response payload is byte-identical to one-shot stderr, so the same
+            // demux/parse below produces the same LintOutput either way
+            // (lint-server-spec §5). Unsupported/dead server → one-shot fallback.
+            val useServer = CajetaSettings.instance.useLintServer
+            val stderr = routeLint(
+                useServer = useServer,
+                serverPayload = {
+                    if (!useServer) null
+                    else LintServerClient.instance.lint(
+                        compilerPath, tempFile.toString(), filePath,
+                        sourceRoot, emitXref, classpath)
+                },
+                oneShot = {
+                    runCompiler(compilerPath, tempFile, sourceRoot, filePath,
+                                emitXref, classpath)
+                },
+            ) ?: return LintOutput(emptyList(), XrefStream.EMPTY)
             val xref = if (emitXref) XrefStreamParser.demux(stderr)
                        else XrefStream.EMPTY
             if (!xref.supported) {
@@ -71,6 +86,24 @@ object CajetacRunner {
         } finally {
             runCatching { Files.deleteIfExists(tempFile) }
         }
+    }
+
+    /** The lint-routing decision (lint-server-spec §5.1), factored out so it is
+     *  testable without a process: prefer the warm server's payload when it
+     *  produces one, otherwise the one-shot subprocess. Both return the same
+     *  diagnostic/xref text shape, so the caller parses the result identically.
+     *  [serverPayload] already collapses an unsupported/dead/back-off server to
+     *  null, which is the signal to fall back. */
+    internal fun routeLint(
+        useServer: Boolean,
+        serverPayload: () -> String?,
+        oneShot: () -> String?,
+    ): String? {
+        if (useServer) {
+            val payload = serverPayload()
+            if (payload != null) return payload
+        }
+        return oneShot()
     }
 
     private val PACKAGE_RE = Regex("""(?m)^\s*package\s+([A-Za-z_][\w.]*)\s*;""")
@@ -152,10 +185,18 @@ object CajetacRunner {
             val pb = ProcessBuilder(args).redirectErrorStream(false)
             val process = pb.start()
             process.outputStream.close()
-            val finished = process.waitFor(10, TimeUnit.SECONDS)
+            // A one-shot `--lint` cold-compiles the stdlib every invocation
+            // (~19s on a quiet machine, measured on samples/tour Tour.cajeta), so
+            // the old 10s cap force-killed it before it produced ANY diagnostics —
+            // linting silently never worked and the log filled with timeouts. Give
+            // the cold path headroom to complete. The durable fix is the warm
+            // `--lint-server` daemon (lint-server Unit 4), after which lints are
+            // sub-second and this ceiling only guards a genuine hang.
+            val timeoutSec = 30L
+            val finished = process.waitFor(timeoutSec, TimeUnit.SECONDS)
             if (!finished) {
                 process.destroyForcibly()
-                log.warn("cajetac timed out after 10s on ${file.fileName}")
+                log.warn("cajetac timed out after ${timeoutSec}s on ${file.fileName}")
                 return null
             }
             process.errorStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }

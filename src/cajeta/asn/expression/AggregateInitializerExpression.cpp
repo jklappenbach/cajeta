@@ -276,7 +276,7 @@ namespace cajeta {
                                 }
                             }
                         }
-                        scope->markMoved(idExpr->getTextValue());
+                        scope->demoteToBorrow(idExpr->getTextValue());
                     }
                 }
             }

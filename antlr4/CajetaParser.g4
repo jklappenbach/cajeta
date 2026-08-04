@@ -497,6 +497,11 @@ elementValuePair
 // an aggregate and silently lost its elements — no diagnostic, just an empty
 // list. Ordering the specific form ahead of the general one restores it.
 elementValue
+    // The array initializer must be tried BEFORE expression: since the
+    // prefixless aggregate literal (`'{' parameterList '}'`, collection-
+    // literals 2) an annotation's `{"a", "b"}` is ALSO a valid expression,
+    // and the expression alt silently swallowed every annotation list arg
+    // (captured as raw text -> String kind, not *List).
     : elementValueArrayInitializer
     | annotation
     | expression

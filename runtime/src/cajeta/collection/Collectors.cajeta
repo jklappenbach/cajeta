@@ -49,6 +49,11 @@ public class Collectors {
      *     .collect(Collectors.toList<int64>());
      * ```
      *
+     * PRIMITIVE T ONLY today: the accumulator lends its element into
+     * the list's owning `#T` formal, which is a compile error for a
+     * class T instantiation (same limitation, and reason, as the
+     * trees' `keysInOrder`).
+     *
      * @EntryPoint
      */
     public static #Collector<T, ArrayList<T>> toList<T>() {

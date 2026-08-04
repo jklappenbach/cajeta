@@ -25,7 +25,7 @@ public class Collect {
     /**
      * @capability filesystem
      */
-    public static ActionResult run(ActionContext ctx, JsonObject params) {
+    public static #ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
         Optional<String> maybeInput = params.getString("input");
         if (maybeInput.isEmpty()) {
@@ -34,7 +34,7 @@ public class Collect {
                 "(path to the test runner's probe-data dir)");
         }
         Path inputDir = Path.of(maybeInput.get());
-        if (!inputDir.exists() || !inputDir.isDirectory()) {
+        if (!inputDir.exists() || !inputDir.isDir()) {
             return ActionResult.error(
                 "cajeta.coverage.collect: 'input' (" + inputDir.toString() +
                 ") is not a directory");
@@ -45,7 +45,18 @@ public class Collect {
                 ctx.workdir() + "/build/coverage.map"));
 
         // ── Walk dump files + merge ──────────────────────────────
-        ArrayList<Path> dumps = inputDir.listMatching("*.probe");
+        // list() hands back every child sorted; keep the *.probe ones
+        // (extraction `#=` moves each kept Path's title into dumps).
+        ArrayList<Path> dumps #= heap ArrayList<Path>();
+        ArrayList<Path> children = inputDir.list();
+        int32 ci = 0;
+        while (ci < children.count()) {
+            if (children.get(ci).name().endsWith(".probe")) {
+                Path kept #= children[ci];
+                dumps.add(#kept);
+            }
+            ci = ci + 1;
+        }
         if (dumps.count() == 0) {
             return ActionResult.error(
                 "cajeta.coverage.collect: no *.probe files in '" +
@@ -77,7 +88,7 @@ public class Collect {
         }
 
         // ── Write the merged map ─────────────────────────────────
-        outputPath.parent().createDirectories();
+        outputPath.parent().mkdirs();
         CoverageMapWriter.write(outputPath, map);
 
         // ── Result ───────────────────────────────────────────────

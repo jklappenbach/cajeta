@@ -52,6 +52,33 @@
     </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- Find Usages (ide-features §2.0.4). Registering these turns on the
+             platform's own usage machinery — right-click Find Usages, the
+             Ctrl+Click usages popup, and the docked Find window with its file
+             tree and source preview. The search itself answers from the
+             compiler's resolved reference export, not a text scan. -->
+        <!-- Type Hierarchy (Ctrl+H), ide-features Unit 3. Walks the
+             compiler's exported extends/implements edges; the three views are
+             three walks over the same relation. -->
+        <!-- Rename + Safe Delete (ide-features Unit 5). The rewrite is the
+             platform's; ours is the reference set it rewrites, and the refusal
+             when the index is not FRESH — a partial set renames the
+             declaration, misses a use site, and leaves code broken for a
+             reason the developer did not cause. -->
+        <lang.refactoringSupport language="Cajeta"
+            implementationClass="dev.cajeta.idea.refactor.CajetaRefactoringSupportProvider"/>
+        <renamePsiElementProcessor
+            implementation="dev.cajeta.idea.refactor.CajetaRenameProcessor"/>
+        <refactoring.safeDeleteProcessor
+            implementation="dev.cajeta.idea.refactor.CajetaSafeDeleteProcessor"/>
+        <typeHierarchyProvider language="Cajeta"
+            implementationClass="dev.cajeta.idea.hierarchy.CajetaTypeHierarchyProvider"/>
+        <lang.findUsagesProvider language="Cajeta"
+            implementationClass="dev.cajeta.idea.usages.CajetaFindUsagesProvider"/>
+        <referencesSearch
+            implementation="dev.cajeta.idea.usages.CajetaUsagesSearch"/>
+        <usageTypeProvider
+            implementation="dev.cajeta.idea.usages.CajetaUsageTypeProvider"/>
         <!-- W-buildtool: the Gradle-style build-tool tool window, available only
              when the project has a cajeta.json (spec §2.2). -->
         <toolWindow
@@ -78,6 +105,10 @@
             extensions="jsonl;ndjson;jsonlines"/>
         <fileEditorProvider
             implementation="dev.cajeta.idea.jsonl.JsonlFileEditorProvider"/>
+        <!-- json-viewer unit 4: structured document tab for .json/.jsonc,
+             beside the platform text editor (spec 4.1.1). -->
+        <fileEditorProvider
+            implementation="dev.cajeta.idea.jsonl.JsonDocFileEditorProvider"/>
 
         <!-- ide-symbol-index Unit 6: compiler-authoritative xref cache. Shards
              (.cjxref, one per source file, written under .cajeta/xref/) feed a
@@ -137,6 +168,10 @@
 
         <postStartupActivity
             implementation="dev.cajeta.idea.xref.CajetaSourceMountStartup"/>
+        <!-- Index on project open, so rename/hierarchy/usages are usable
+             without the developer first running Rebuild by hand. -->
+        <postStartupActivity
+            implementation="dev.cajeta.idea.xref.CajetaXrefStartup"/>
         <postStartupActivity
             implementation="dev.cajeta.idea.markdown.InstallCommentCaretListener"/>
 
@@ -168,12 +203,23 @@
     </extensions>
 
     <actions>
+        <!-- Julian, 2026-08-02: hierarchy from the right-click menu, beside
+             Find Usages. These REFERENCE the platform's own actions rather
+             than defining new ones, so they keep their keymap bindings
+             (Ctrl+H, Alt+F7) and their enable/disable logic. -->
+        <reference ref="TypeHierarchy">
+            <add-to-group group-id="EditorPopupMenu" anchor="after"
+                relative-to-action="FindUsages"/>
+        </reference>
+        <reference ref="FindUsages">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+        </reference>
         <group id="dev.cajeta.idea.toolsGroup" text="Cajeta" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <action
                 id="dev.cajeta.idea.xref.RebuildIndex"
                 class="dev.cajeta.idea.xref.CajetaXrefRebuildAction"
-                text="Rebuild Cajeta Xref Index"
+                text="Rebuild Cajeta Index"
                 description="Whole-root compiler export, ingested into the xref index in the background."/>
             <action
                 id="dev.cajeta.idea.TypeFixtureAction"

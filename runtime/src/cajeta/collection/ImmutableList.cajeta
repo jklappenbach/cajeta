@@ -4,9 +4,10 @@ import cajeta.lang.stream.ArrayStream;
 
 /**
  * Immutable, array-backed list. A frozen snapshot of an
- * `ArrayList`: the backing array is copied once at construction
- * and never mutated, so reads are O(1) and the structure is safe to
- * share without defensive copies.
+ * `ArrayList`: the source is CONSUMED at construction (its elements
+ * move into a right-sized backing array the snapshot owns) and never
+ * mutated after, so reads are O(1) and the structure is safe to share
+ * and outlives its source.
  *
  * Modeled on Guava's `RegularImmutableList` — a thin, dense array
  * wrapper with no per-element indirection. There are no mutators;
@@ -54,33 +55,36 @@ public final class ImmutableList<T> {
     private int32 sizeCount;
 
     /**
-     * Build an immutable copy of `src`. Copies every element of
-     * `src` (in order) into a right-sized owned array; the source
-     * `ArrayList` is left untouched and still owned by the caller.
+     * Freeze `src`: every element MOVES (in order) into a right-sized
+     * array the snapshot owns, and the source list is consumed — the
+     * snapshot must be able to outlive it, which a borrow-holding
+     * copy could not guarantee for class T (uniform-transfer 2.3).
      *
      * ```cajeta
-     * stack src = ArrayList<string>();
+     * ArrayList<String> src = heap ArrayList<String>();
      * src.add("a");
      * src.add("b");
-     * stack snapshot = ImmutableList<string>(src);
-     * // `src` may keep mutating — `snapshot` never changes.
+     * ImmutableList<String> snapshot = heap ImmutableList<String>(#src);
+     * // `src` is dead here; `snapshot` owns "a" and "b".
      * ```
      *
-     * @Param src the list whose elements to snapshot.
+     * @Param src the list whose elements move into the snapshot.
      * @EntryPoint
      */
-    public ImmutableList(ArrayList<T> src) {
+    public ImmutableList(#ArrayList<T> src) {
         int32 n = src.count();
         T[] copy = heap T[n];
         int32 i = 0;
         while (i < n) {
-            copy[i] = src.get(i);
+            // title-stores §2.1 — forwarding move out of the consumed
+            // source; each element's bit rides into the snapshot.
+            copy[i] #= src.data[i];
             i = i + 1;
         }
         // `#copy` transfers ownership of the fresh array into the
         // field — without it, the local's scope-exit drop would free
         // the storage we just installed. Same pattern as
-        // ArrayList.add / HashMap.resize.
+        // ArrayList.reserve / HashMap.resize.
         this.data #= copy;
         this.sizeCount = n;
     }
@@ -88,14 +92,14 @@ public final class ImmutableList<T> {
     /**
      * Build an immutable list directly from an array literal
      * (array-literals §6): `ImmutableList<int32> xs = heap ImmutableList<int32>([1,2,3])`.
-     * Copies the elements into a right-sized owned array, in order.
+     * The literal is consumed; its elements move in, in order.
      */
-    public ImmutableList(T[] items) {
+    public ImmutableList(#T[] items) {
         int32 n = (int32) items.count();
         T[] copy = heap T[n];
         int32 i = 0;
         while (i < n) {
-            copy[i] = items[i];
+            copy[i] #= items[i];
             i = i + 1;
         }
         this.data #= copy;
@@ -121,7 +125,7 @@ public final class ImmutableList<T> {
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.sizeCount) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         return this.data[i];

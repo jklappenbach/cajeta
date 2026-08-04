@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
  * navigation keeps answering from the previous shards until the new ones land
  * (9.1.1).
  */
-class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Xref Index") {
+class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Index") {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
@@ -45,7 +45,7 @@ class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Xref Index") {
                 .conventionalSourceRoot(base)
 
             freshness.refreshStarted()
-            object : Task.Backgroundable(project, "Rebuilding Cajeta xref index", true) {
+            object : Task.Backgroundable(project, "Rebuilding Cajeta index", true) {
                 override fun run(indicator: ProgressIndicator) {
                     indicator.isIndeterminate = true
                     try {
@@ -75,6 +75,11 @@ class CajetaXrefRebuildAction : AnAction("Rebuild Cajeta Xref Index") {
                             return
                         }
                         freshness.refreshSucceeded()
+                        // The manual rebuild is the developer's "fix everything"
+                        // action — make sure dependency SOURCES are mounted too,
+                        // not just their declarations exported (§8.3 first-open
+                        // fix): shards without mounted files navigate nowhere.
+                        CajetaSourceMounts.mountAll(project)
                     } catch (t: Throwable) {
                         log.warn("xref rebuild failed", t)
                         freshness.refreshFailed(t.message ?: "rebuild failed")

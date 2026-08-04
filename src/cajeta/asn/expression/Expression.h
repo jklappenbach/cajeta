@@ -788,4 +788,12 @@ namespace cajeta {
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 
+
+    // `x #= #y` — true when the right-hand side of a `#=` carries its own `#`,
+    // whatever the source's shape (identifier, field, element, call result).
+    // The store already IS the transfer, so the second sharp is always
+    // redundant. Defined in Expression.cpp; shared with the two declaration
+    // paths (Statement.cpp, CajetaLlvmVisitor::visitVariableDeclarator).
+    bool cajetaRhsCarriesRedundantSharp(
+        CajetaParser::ExpressionContext* rhs);
 }

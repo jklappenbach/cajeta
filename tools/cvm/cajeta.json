@@ -37,9 +37,13 @@
 
         // The core stdlib is built into the toolchain — not declared or
         // fetched — and dead-code elimination links only what cvm uses.
-        // cvm has no third-party dependencies (version-independence means
-        // it must stay self-contained and minimal).
-        "dependencies": {},
+        // HTTP left the stdlib for dev.cajeta.http, so that one library
+        // is now a dependency. Version-independence is unaffected — the
+        // contract is about CAJETA versions (a 1.0 cvm installs an 8.0
+        // cajeta), not about what libraries cvm itself links.
+        "dependencies": {
+            "dev.cajeta.http": "0.1.3"
+        },
 
         "build": {
             // src/main/cajeta is the default source root; stated for

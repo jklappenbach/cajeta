@@ -9,9 +9,8 @@ package cajeta.collection;
  *
  * The list owns the nodes — `LinkedList.add` heap-allocates a node
  * and links it in; `remove` unlinks and lets the dropped node fall
- * off the drop chain. The VALUE is owned by the node iff the list's
- * caller `#`-transferred it (the node's field bit + `owned` mirror);
- * dropping a node then drops an owned value with it.
+ * off the drop chain. The node likewise OWNS its value (uniform-transfer
+ * 2.3): the ctor takes `#T`, so dropping a node always drops its value.
  *
  * ## v1 surface
  *
@@ -23,10 +22,9 @@ package cajeta.collection;
  */
 public final class LinkedListNode<T> {
     public T value;
-    // title-stores Unit 5 — the value field's ownership BIT is the single
-    // truth (set by the `#value` ctor store); the mirror byte is gone.
-    // Flagged pops use the fused claim (`T t #= #node.value`), which
-    // forwards the bit verbatim instead of reading a mirror.
+    // The value field's ownership BIT is the single truth, set by the
+    // ctor's `#value` store. Under uniform-transfer 2.3 the node always
+    // owns, so pops take the title with a single move (`T t #= node.value`).
     public LinkedListNode<T> prev;
     public LinkedListNode<T> next;
 
@@ -40,12 +38,12 @@ public final class LinkedListNode<T> {
      * // node.prev == null && node.next == null
      * ```
      */
-    public LinkedListNode(T value) {
-        // Consuming spelling — records the forwarded flag on the node's
-        // field bit and deactivates the formal's entry so an owned value
-        // isn't freed at ctor exit while the node still points at it (the
-        // CacheNode treatment). A borrowed value stores plain-equivalent:
-        // the bit records 0 and the node's drop walk skips it.
+    public LinkedListNode(#T value) {
+        // uniform-transfer 2.3 — the node OWNS its value, so the formal is
+        // `#T` and the store is an unconditional transfer. The old comment
+        // described a value that was owned "iff the caller #-transferred
+        // it"; that conditional is exactly what the uniform contract
+        // abolishes. A node's drop now always drops its value.
         this.value #= value;
         this.prev = null;
         this.next = null;

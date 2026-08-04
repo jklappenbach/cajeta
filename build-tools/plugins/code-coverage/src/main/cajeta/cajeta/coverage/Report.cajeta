@@ -41,7 +41,7 @@ public class Report {
     /**
      * @capability filesystem
      */
-    public static ActionResult run(ActionContext ctx, JsonObject params) {
+    public static #ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
         Optional<String> maybeInput = params.getString("input");
         if (maybeInput.isEmpty()) {
@@ -93,7 +93,8 @@ public class Report {
         int32 fi = 0;
         while (fi < filePaths.count()) {
             String fpath = filePaths.get(fi);
-            CoverageMap.FileEntry entry = map.files().get(fpath).get();
+            Optional<CoverageMap.FileEntry> entryOpt = map.files().get(fpath);
+            CoverageMap.FileEntry entry = entryOpt.get();
             // File-kind exclude drops the whole file from numerator
             // AND denominator — `cajeta.coverage.report` treats opt-
             // out as "this file was never expected to be tested,"
@@ -123,10 +124,10 @@ public class Report {
             }
             fi = fi + 1;
         }
-        float overall = counts.overallPercent();
+        float64 overall = counts.overallPercent();
 
         // ── Emit each requested format ───────────────────────────
-        outputDir.createDirectories();
+        outputDir.mkdirs();
         String htmlPath   = "";
         String sarifPath  = "";
         String lcovPath   = "";
@@ -157,43 +158,45 @@ public class Report {
         // agree on which files dragged the percentage down — and
         // both reflect the report's exclusion config.
         if (minPercent.isPresent() && overall < minPercent.get()) {
-            ArrayList<FilteredCounts.FileEntry> bottom =
+            ArrayList<FilteredCounts.FilteredEntry> bottom =
                 counts.bottomN(BOTTOM_N);
             ActionResult r #= heap ActionResult();
             r.output("percent", FloatFormat.oneDecimal(overall));
-            r.output("html-path",  htmlPath);
-            r.output("sarif-path", sarifPath);
-            r.output("lcov-path",  lcovPath);
+            r.output("html-path",  #htmlPath);
+            r.output("sarif-path", #sarifPath);
+            r.output("lcov-path",  #lcovPath);
             r.findings(#findings);
-            return r.error(
+            r.fail(
                 "cajeta.coverage.report: coverage " +
                 FloatFormat.oneDecimal(overall) +
                 "% < min " + String.valueOf(minPercent.get()) + "%; " +
                 "bottom " + String.valueOf(bottom.count()) +
                 " files:\n" + FilteredCounts.cite(bottom));
+            return #r;
         }
         if (minPerFile.isPresent()) {
-            ArrayList<FilteredCounts.FileEntry> belowFloor =
+            ArrayList<FilteredCounts.FilteredEntry> belowFloor =
                 counts.filesBelow(minPerFile.get());
             if (belowFloor.count() > 0) {
                 ActionResult r #= heap ActionResult();
                 r.output("percent", FloatFormat.oneDecimal(overall));
                 r.findings(#findings);
-                return r.error(
+                r.fail(
                     "cajeta.coverage.report: " +
                     String.valueOf(belowFloor.count()) +
                     " files below min-per-file " +
                     String.valueOf(minPerFile.get()) + "%:\n" +
                     FilteredCounts.cite(belowFloor));
+                return #r;
             }
         }
 
         // ── Success ──────────────────────────────────────────────
         ActionResult r #= heap ActionResult();
         r.output("percent",    FloatFormat.oneDecimal(overall));
-        r.output("html-path",  htmlPath);
-        r.output("sarif-path", sarifPath);
-        r.output("lcov-path",  lcovPath);
+        r.output("html-path",  #htmlPath);
+        r.output("sarif-path", #sarifPath);
+        r.output("lcov-path",  #lcovPath);
         r.findings(#findings);
         return #r;
     }

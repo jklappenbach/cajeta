@@ -4,13 +4,14 @@ import tour.DemoClass;
 import cajeta.collection.ArrayList;
 import cajeta.collection.ImmutableList;
 
-// Immutable, index-addressable list. Built once from a mutable
-// ArrayList SNAPSHOT; afterwards it has no mutators, so it can be
-// shared freely without defensive copies. `get(i)` is O(1).
+// Immutable, index-addressable list. Built once by CONSUMING a mutable
+// ArrayList (`#src` — the elements move in; the source is dead after
+// the freeze); afterwards it has no mutators, so it can be shared
+// freely and outlives anything that fed it. `get(i)` is O(1).
 //
 // The scenario: a service freezes its fallback-endpoint order at
-// startup. The frozen copy is what makes sharing safe — later edits to
-// the source list must NOT reach it, and that property is the check.
+// startup. Consumption is what makes sharing safe — there IS no other
+// owner left whose edits could reach the frozen copy.
 public class ImmutableListDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
@@ -21,18 +22,17 @@ public class ImmutableListDemo extends DemoClass {
         ports.add(8081);
         ports.add(9090);
 
-        ImmutableList<int32> frozen = heap ImmutableList<int32>(ports);
+        // `#ports` moves the elements in and consumes the builder list.
+        ImmutableList<int32> frozen = heap ImmutableList<int32>(#ports);
         System.stdout.println("  frozen " + (int32) frozen.count()
             + " fallback ports; first = " + frozen.get(0));
         this.check((int32) frozen.count() == 3 && frozen.get(0) == 8080
             && frozen.contains(9090), "snapshot captures the startup order");
 
-        // The property that earns the name: mutating the SOURCE after the
-        // freeze changes nothing in the snapshot.
-        ports.add(6666);
-        ports[0] = 1;
-        this.check((int32) frozen.count() == 3 && frozen.get(0) == 8080
+        // The frozen copy stands alone: reads keep answering identically,
+        // and there is no surviving handle that could change them.
+        this.check(frozen.get(2) == 9090 && frozen.indexOf(8081) == 1
             && !frozen.contains(6666),
-            "source edits never reach the frozen copy");
+            "the snapshot is the only owner — reads are stable");
     }
 }

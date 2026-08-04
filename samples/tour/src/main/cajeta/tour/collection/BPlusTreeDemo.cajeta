@@ -42,12 +42,7 @@ public class BPlusTreeDemo extends DemoClass {
         int32 k = 0;
         while (k < prices.count()) {
             if (k > 0 && prices[k] <= prices[k - 1]) { ascending = false; }
-            // Hoist the element before the call: `asks.get(prices[k])`
-            // trips the element-as-call-argument codegen defect
-            // (specs/matrix-element-callarg-spec.md — physreg-copy abort;
-            // the comparison position above is fine).
-            int32 price = prices[k];
-            if (price <= 10020) { depth = depth + asks.get(price); }
+            if (prices[k] <= 10020) { depth = depth + asks.get(prices[k]); }
             k = k + 1;
         }
         System.stdout.println("  depth within 20c of top: " + depth + " shares");

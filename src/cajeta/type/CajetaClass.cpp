@@ -906,14 +906,17 @@ namespace cajeta {
         if (dynamic_pointer_cast<CajetaView>(t)) return false;
         if (cls->isInterface() || cls->isValueType()) return false;
         if (cls->isSharedCapableValue()) return false;
-        // String-the-class transfers by the store-site share/resolve
-        // machinery and its fields stay always-owned (§5.1.6) — it is not
-        // a value type, so it needs its own exclusion.
-        if (cls->getQName()
-                && cls->getQName()->getTypeName() == "String"
-                && cls->getQName()->getPackageName() == "cajeta.lang") {
-            return false;
-        }
+        // String USED to be excluded here — "transfers by the store-site
+        // share/resolve machinery, fields stay always-owned (§5.1.6)". That
+        // made both `#` spellings inert on a String field: `#=` set no bit and
+        // `#field` decayed none, while the holder's drop still freed the
+        // member as always-owned. Extracting a String from a container
+        // therefore returned freed memory (linkedlist-class-pop). A String
+        // wrapper is a heap object like any other class instance — malloc'd,
+        // and freed by __cajeta_string_drop_claimed — so it carries a bit like
+        // any other. Static/borrow/inline forms stay safe because
+        // __cajeta_string_drop is claim-gated and a static wrapper is not
+        // live-set tracked, so the claim misses and it bails.
         return true;
     }
 
@@ -3035,6 +3038,16 @@ namespace cajeta {
         // Cross-module: the caller is emitting IR into a different
         // llvm::Module. Insert an extern decl there and return that.
         if (callerModule && callerModule->getLlvmModule() != lmod) {
+            // compile-cache D1: the DEFINITION above lands in the declaring
+            // class's module, demanded by this caller's codegen. If the
+            // caller is later skipped as clean, nothing re-demands it —
+            // record the demand so obligation replay re-creates the
+            // definition (replay passes a null callerModule, so it never
+            // re-records here).
+            CajetaModule::noteCrossModuleStaticFieldRef(
+                callerModule,
+                static_pointer_cast<CajetaClass>(shared_from_this()),
+                prop->getName());
             llvm::Constant* shim = CajetaModule::ensureGlobalInModule(
                 callerModule->getLlvmModule(), g);
             return llvm::cast<llvm::GlobalVariable>(shim);

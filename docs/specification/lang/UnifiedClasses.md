@@ -245,7 +245,7 @@ The `#` operator transfers ownership of a class instance:
 ```cajeta
 MyClass a = heap MyClass();
 MyClass b #= a;                   // b takes ownership; a's drop entry deactivated
-// `a` is moved-from; subsequent reads of `a` are a compile error (CAJETA_ERROR_USE_AFTER_MOVE)
+// `a` is demoted to a borrow; reads are fine, a second transfer is not (CAJETA_ERROR_MOVE_OF_BORROW)
 ```
 
 For stack instances, `#a` deactivates `a`'s drop entry — the instance still lives in the frame's stack region until function exit, but its drop fn doesn't run when `a` goes out of scope (because `b` now owns it). When `b` drops, the destructor fires; the stack bytes are reclaimed at frame teardown regardless.

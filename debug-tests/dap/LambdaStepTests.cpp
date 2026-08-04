@@ -458,6 +458,14 @@ TEST(LambdaStep, StepOverParallelPipelineLandsOnNextLine) {
         }
     EXPECT_EQ(file, "Prog.cajeta") << "step parked in " << file << ":" << line;
     EXPECT_EQ(line, 10);
+
+    // End the session like a client does. Leaving the program parked used to
+    // hang the whole binary in ~DapServer (see
+    // DapMultiSession.DestroyingAServerWhileParkedDoesNotHang, which pins the
+    // server-side fix); this is the client-side half of the same discipline.
+    log.clear();
+    drive(srv, req(7, "continue", Json::object()), log);
+    drive(srv, req(8, "disconnect", Json::object()), log);
 }
 
 // Live report 2026-07-22 ("stepping up crashes debug"): step-OUT was

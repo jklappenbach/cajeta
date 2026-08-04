@@ -91,10 +91,94 @@ namespace cajeta {
         return neu;
     }
 
+// `#= #x` — does the right-hand side of a `#=` carry its own `#`? The store
+// already IS the transfer, so a second sharp is redundant WHATEVER the source's
+// shape, and the three `#=` sites reject it (CAJETA_ERROR_DOUBLE_TRANSFER).
+//
+// uniform-transfer-semantics Unit 3 widened this. It used to answer the
+// narrower "is the operand a BARE IDENTIFIER", because a FIELD or ELEMENT
+// source needed the double sharp for the "fused claim": a forward of whatever
+// mode the source slot held, owned or borrowed, VERBATIM, where a plain `#=`
+// asserts an unconditional transfer. That existed for exactly one reason — a
+// container slot MIGHT hold a borrow. Spec 2.3 removes the premise (containers
+// own their elements) and Unit 2 collapsed all 20 stdlib fused claims to single
+// moves, so the exemption now buys a second spelling and nothing else.
+//
+// ELEMENT→ELEMENT stores keep forwarding under the SINGLE sharp: the
+// fwdLhs/fwdSrc arm in BinaryOpExpression::generateCode never required the
+// double, so `dst[i] #= src[j]` is still the shift/sift primitive.
+//
+// What DOES go away is claiming a possibly-titleless slot into a LOCAL:
+// `T x #= #slot` used to forward the slot's mode, so a borrowed slot yielded a
+// borrow. `T x #= slot` does not — it demands a title, and a slot without one
+// panics CAJETA_PANIC_TITLE_MISS. That is the honest reading of what the code
+// says, and it is the intended consequence: the old spelling let "claim" mean
+// "borrow if that's all there is". Take a plain borrow (`T x = slot`) when that
+// is what you meant.
+bool cajetaRhsCarriesRedundantSharp(
+        CajetaParser::ExpressionContext* rhs) {
+    // `REFERENCE expression` is the only expression alternative carrying a
+    // REFERENCE token, so the size check is belt-and-braces against a grammar
+    // change quietly widening this into other productions.
+    if (!rhs || rhs->REFERENCE() == nullptr) return false;
+    return rhs->expression().size() == 1;
+}
+
+    // `(Name)(operand)` — is this postfix-call node actually a CAST whose
+    // destination names a type? Returns the destination type when so, null to
+    // leave the node a call.
+    //
+    // Shape first, resolution second, and both must hold:
+    //
+    //   - the callee is a PARENTHESIZED SINGLE IDENTIFIER. `kernel.launch(d)(a)`
+    //     has a method-call callee and is excluded here, before any lookup —
+    //     the XPU launch form never reaches the resolver.
+    //   - exactly ONE argument, unlabelled and not `#`-transferred. A cast has
+    //     one operand; `(f)(a, b)` and `(f)(#a)` stay calls.
+    //   - the identifier RESOLVES to a type in the current scope. This is the
+    //     only semantic step, and it is deliberately last: a name that is not
+    //     a type falls through and behaves exactly as it did before.
+    //
+    // Resolution runs through the ordinary resolver, so a class-level or
+    // method-level type parameter binds through the module's substitution
+    // stack when the template body is walked for an instantiation — which is
+    // the only time a template body IS walked. That is why the check cannot
+    // be hoisted into the grammar or done purely on the name.
+    static CajetaTypePtr castDestOfParenCallee(
+            CajetaParser::ExpressionContext* ctx) {
+        if (ctx->expression().size() != 1 || !ctx->parameterList()) {
+            return nullptr;
+        }
+        auto entries = ctx->parameterList()->parameterEntry();
+        if (entries.size() != 1) return nullptr;
+        auto* only = entries[0];
+        if (!only->expression() || only->REFERENCE() || only->parameterLabel()) {
+            return nullptr;
+        }
+        // Callee must be `'(' identifier ')'` — a primary holding parens whose
+        // inner expression is a primary holding just an identifier.
+        auto* calleePrim = ctx->expression(0)->primary();
+        if (!calleePrim || !calleePrim->LPAREN() || !calleePrim->expression()) {
+            return nullptr;
+        }
+        auto* innerPrim = calleePrim->expression()->primary();
+        if (!innerPrim || !innerPrim->identifier()) return nullptr;
+        // A bare identifier primary carries nothing else; anything richer
+        // (`(a.b)(x)`, `(a[0])(x)`) is a call, not a cast destination.
+        if (innerPrim->getText() != innerPrim->identifier()->getText()) {
+            return nullptr;
+        }
+        return CajetaType::resolveNamed(
+            QualifiedName::getOrInsert(innerPrim->identifier()->getText(),
+                                       "code"),
+            nullptr);
+    }
+
     ExpressionPtr Expression::fromContext(CajetaParser::ExpressionContext* ctx) {
         antlr4::Token* token = ctx->getStart();
         ExpressionPtr result = nullptr;
         bool sharpAssign = false;
+        bool castOfParenCallee = false;
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->SHARP_ASSIGN()) {
@@ -226,6 +310,29 @@ namespace cajeta {
                 // Intersection casts (multiple typeTypes) aren't supported yet; take the first.
                 CajetaTypePtr destType = CajetaType::fromContext(ctx->typeType(0), nullptr);
                 result = make_shared<CastExpression>(destType, token);
+            } else if (CajetaTypePtr namedDest = castDestOfParenCallee(ctx)) {
+                // `(Name)(expr)` — a cast whose destination NAMES a type and
+                // whose operand is parenthesized. The grammar's postfix-call
+                // alternative wins it, because `(Name)` is itself a valid
+                // parenthesized identifier expression, and the cast
+                // alternative is listed later. A PRIMITIVE destination cannot
+                // match that alternative (`(int64)` is not an expression),
+                // which is why `(int64) (mm & 65535)` always worked and
+                // `(E) (acc / 2.0)` did not — the dominant idiom in generic
+                // numeric code ("reduce in float64, narrow to E on store").
+                //
+                // Reinterpreted here rather than in the grammar so cast
+                // PRECEDENCE cannot move: `(T) a.b()` has an unparenthesized
+                // operand, never parses as a postfix call, and so never
+                // reaches this arm. Reordering the grammar alternatives would
+                // lift the cast above every suffix operator between them and
+                // regress it to `((T) a).b()`.
+                //
+                // Resolution failure falls through to the call, so an
+                // identifier that is not a type behaves exactly as before.
+                // See specs/typeparam-cast-of-paren-spec.md.
+                result = make_shared<CastExpression>(namedDest, token);
+                castOfParenCallee = true;
             } else {
                 // `<callee>(args)` — the callee expression is attached as
                 // children[0] by the child loop at the bottom of this function.
@@ -292,13 +399,27 @@ namespace cajeta {
             bool acceptable = false;
             if (lp) {
                 if (auto* fpl = lp->formalParameterList()) {
+                    // `var`-list params (`(var a, var b) -> ...`) must fall
+                    // through to UnsupportedExpression, not reach
+                    // FormalParameter::fromContext — its unresolved-type
+                    // diagnostic would throw UNRESOLVED_TYPE for `var`
+                    // before the NOT_IMPLEMENTED funnel below.
+                    bool varForm = false;
                     for (auto* fp : fpl->formalParameter()) {
-                        if (auto p = FormalParameter::fromContext(fp, nullptr)) {
-                            names.push_back(p->getName());
-                            types.push_back(p->getType());
+                        if (fp->typeType() && fp->typeType()->getText() == "var") {
+                            varForm = true;
+                            break;
                         }
                     }
-                    acceptable = !names.empty() || fpl->formalParameter().empty();
+                    if (!varForm) {
+                        for (auto* fp : fpl->formalParameter()) {
+                            if (auto p = FormalParameter::fromContext(fp, nullptr)) {
+                                names.push_back(p->getName());
+                                types.push_back(p->getType());
+                            }
+                        }
+                        acceptable = !names.empty() || fpl->formalParameter().empty();
+                    }
                 } else if (lp->LPAREN() && lp->RPAREN() && !lp->lambdaLVTIList()) {
                     // Parens form. Either empty `()` or bare-identifier list
                     // `(a, b)`. Names captured; types filled in at resolve
@@ -457,11 +578,40 @@ namespace cajeta {
             result = make_shared<InstanceOfExpression>(targetType, patternName, token);
         }
 
-        if (result) {
+        if (result && castOfParenCallee) {
+            // `(Name)(operand)` reinterpreted as a cast. The operand is the
+            // postfix call's single ARGUMENT, not a child expression — the
+            // node's only `expression()` child is the callee `(Name)`, which
+            // is the destination type and must NOT become the cast's operand.
+            auto* only = ctx->parameterList()->parameterEntry(0);
+            result->addChild(Expression::fromContext(only->expression()));
+        } else if (result) {
             if (!ctx->expression().empty()) {
                 size_t childIndex = 0;
                 for (auto childContext: ctx->expression()) {
                     ExpressionPtr child = Expression::fromContext(childContext);
+                    if (sharpAssign && childIndex == 1
+                            && cajetaRhsCarriesRedundantSharp(childContext)) {
+                        // `x #= #y` — the transfer spelled twice. `#=` IS the
+                        // transfer: the STORE site carries it, which is what
+                        // makes "a store uses `#=`; everything else uses `#v`"
+                        // a rule you can apply without looking at the other
+                        // side. A second `#` on the RHS adds nothing and reads
+                        // as a deliberate extra claim that does not exist.
+                        //
+                        // It compiled silently until 2026-08-02, which is how
+                        // the stdlib's LinkedList.popHead/popTail came to carry
+                        // `T title #= #node.value`. Rejected so the intent has
+                        // exactly one spelling. (The legacy `dst = #v` is a
+                        // different, deprecated-not-rejected form and is
+                        // handled below — narrowing that one is a breaking
+                        // change and not this rule's business.)
+                        throw Exception(
+                            std::string("`#=` already acquires ownership when "
+                                        "the source has it — drop the `#` on the "
+                                        "right-hand side and write `dst #= src`"),
+                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                    }
                     if (sharpAssign && childIndex == 1) {
                         auto mv = make_shared<MoveExpression>(
                             childContext->getStart());
@@ -2625,7 +2775,7 @@ namespace cajeta {
         // field stays resident and readable); if the bit is clear, panic —
         // extraction from a place that holds no title (integer-coded throw,
         // first-clause catchable like the NonNull check). This shape returns
-        // the loaded r-value directly and deliberately does NOT markMovedPath
+        // the loaded r-value directly and deliberately does NOT demotePathToBorrow
         // (post-extraction reads are legal borrows).
         if (auto dotInner = dynamic_pointer_cast<DotExpression>(inner)) {
             if (!dotInner->getResolvedType()) dotInner->resolveTypes(module);
@@ -3014,27 +3164,50 @@ namespace cajeta {
                 if (FieldPtr mvField = scope->getField(mvName)) {
                     bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(mvField);
                     auto mvKlass = dynamic_pointer_cast<CajetaClass>(mvField->getType());
-                    if (!isFormal && mvKlass && !mvKlass->isValueType()
-                            && !mvKlass->isSharedCapableValue()
-                            && !mvField->getDropEntry()) {
-                        // Only borrows with a RECORDED source (alias /
-                        // field-read shapes, Gap-4 liveBorrows) reject —
-                        // a call-result local (`conn = next.get()`) stays
+                    bool titleBearing = mvKlass && !mvKlass->isValueType()
+                            && !mvKlass->isSharedCapableValue();
+                    // A borrow cannot surrender a title it does not hold. Two
+                    // ways to be a borrow, one error — a transfer DEMOTES its
+                    // source (transfer-demotes-to-borrow §1.3), so transferring
+                    // twice IS transferring from a borrow.
+                    if (titleBearing && scope->isBorrow(mvName)) {
+                        // (a) demoted by an earlier transfer. Applies to formals
+                        // too: `isBorrow` is only true once something in THIS
+                        // method actually transferred it, so a plain formal that
+                        // was merely lent is untouched (§1.4 — a formal's
+                        // ownership is fixed by the call site, and `#=` there is
+                        // conditional acquisition, not a static borrow).
+                        string note = scope->transferSiteOf(mvName);
+                        throw Exception(
+                            "cannot transfer ownership of `" + mvName
+                                + "`: it is a borrow"
+                                + (note.empty() ? "" : " — already transferred ("
+                                    + note + ")")
+                                + ". You cannot transfer ownership more than "
+                                  "once, or from a borrow. Fix: transfer from "
+                                  "the owner, or construct a fresh value.",
+                            "CAJETA_ERROR_MOVE_OF_BORROW");
+                    }
+                    if (!isFormal && titleBearing && !mvField->getDropEntry()) {
+                        // (b) never owned. Only borrows with a RECORDED source
+                        // (alias / field-read shapes, Gap-4 liveBorrows) reject
+                        // — a call-result local (`conn = next.get()`) stays
                         // unchecked until the `#?` runtime-owner ABI
                         // (spec §3.1.6, plan Unit 5) can carry its role.
                         string owner = scope->borrowSourceOf(mvName);
                         if (!owner.empty()) {
                             throw Exception(
-                                "cannot move out of a borrow: `" + mvName
-                                    + "` does not own its value; ownership "
-                                      "belongs to `" + owner + "`. Fix: move "
-                                      "from the owner, or store an owned value "
-                                      "(fresh construction / clone()) first.",
+                                "cannot transfer ownership of `" + mvName
+                                    + "`: it is a borrow; ownership belongs to `"
+                                    + owner + "`. You cannot transfer ownership "
+                                      "more than once, or from a borrow. Fix: "
+                                      "transfer from the owner, or store an owned "
+                                      "value (fresh construction / clone()) first.",
                                 "CAJETA_ERROR_MOVE_OF_BORROW");
                         }
                     }
                 }
-                scope->markMoved(mvName,
+                scope->demoteToBorrow(mvName,
                     "moved by `#" + mvName + "` at line "
                         + std::to_string(getSourceLine()));
                 // If the moved-out identifier has a drop entry, flag it inactive
@@ -3095,7 +3268,7 @@ namespace cajeta {
                 }
                 if (!bitCapableClassField) {
                     string path = DotExpression::buildPath(inner);
-                    if (!path.empty()) scope->markMovedPath(path);
+                    if (!path.empty()) scope->demotePathToBorrow(path);
                 }
             }
         }
@@ -4062,7 +4235,7 @@ namespace cajeta {
                 // outer and the closure would attempt to free the same
                 // memory.
                 if (cap.byTransfer && outerScope) {
-                    outerScope->markMoved(cap.name);
+                    outerScope->demoteToBorrow(cap.name);
                     if (llvm::Value* entry = outerField->getDropEntry()) {
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {

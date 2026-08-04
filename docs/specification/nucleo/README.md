@@ -38,7 +38,7 @@ first-class function types, closures, **closure specialization**, method-level t
 | `nucleo-column-spec.md` | Arrow-laid-out columnar buffer + C Data Interface (no libarrow); the column == tensor-buffer invariant; Tensor Arrow retrofit. |
 | `nucleo-expr-spec.md` | Lazy expression graph + fusion engine — shared by tensor ops AND dataframe ops. |
 | `nucleo-autograd-spec.md` | The autograd engine — tensor-op VJP rules, forward/backward contract, eager tape, `Diff<T>`, `@NoGrad`/`@Checkpoint`. Consumes transform-intrinsics. |
-| `nucleo-nn-optim-spec.md` | Module/Parameter system + optimizers (explicit grads, no global state) — skinned by the torch/keras façades. |
+| `nucleo-nn-optim-spec.md` | RETIRED — the neural spine moved to `dev.cajeta.ml` (`ml.nn` / `ml.optim`) and the stdlib packages were removed in v0.14.0. Kept for the design record. |
 | `nucleo-frame-spec.md` | Polars-shaped lazy typed dataframe (`Table<T>`) + the pluggable index interface (zone-maps/B+/Z-order; R-tree/BVH/HNSW deferred). |
 | `nucleo-sparse-linalg-spec.md` | Sparse *arrays* (CSR/CSC/COO) + sparse linalg; extended factorizations (qr/cholesky/lu/svd/eig) returning typed records. |
 
@@ -102,18 +102,14 @@ Progress:
   columns, 64-bit offsets, null-carrying utf8 import, nullable narrowing, the live
   pyarrow probe (needs the embedding seam — C-ABI conformance is consumer-tested
   in-tree), MX scales/kernels, codec readers, device story.
-- **nucleo-nn-optim** — ✅ v1 complete (`nucleo-nn-optim-plan.md`, 2026-07-21):
-  the neural-net spine. `GradAll<K>` (one closure returning ordered grads for the
-  leading K args) + `Tensor.relu` VJP + broadcast-aware `add`/`sub` backward
-  (`Tensor.sumTo`); `Module`/`Parameter` with reflection collection (declared
-  order, dotted names, buffers); `Linear`; the optimizer protocol with
-  SGD/Adam/AdamW (explicit positional grads, fail-loud, lazy state); pure
-  `lr(step)` schedules + thin wrapper; `Losses.mse*` (Grad inlines qualified
-  statics); FiberLocal train/eval + seeded Dropout. THE BAR: a 2-layer relu MLP
-  trains end-to-end under each optimizer (TrainEndToEndTests). v1 core is
-  float32/non-generic. Deferred, recorded in-plan: crossEntropy + axis
-  reductions, BatchNorm, generic Module<T> (two compiler gaps), call sugar,
-  clip/accumulate wrappers, SSA-locals backward, serialization.
+- **nucleo-nn-optim** — 🗑️ REMOVED in v0.14.0. The neural spine (Module/
+  Parameter, Linear, Dropout, Losses, Modes; SGD/Adam/AdamW, schedules)
+  now lives in the standalone `dev.cajeta.ml` library as `ml.nn` /
+  `ml.optim`, which is also where the tensor autograd, the module zoo,
+  both trainers, checkpoints and LoRA live. The stdlib keeps only the
+  foundational pieces: `nucleo.autograd`'s scalar tape and the
+  compile-time `Grad` transform, which are compiler-integrated and have
+  consumers beyond neural nets.
 - **nucleo-frame** — 🔨 ACTIVE (`nucleo-frame-plan.md`, approved 2026-07-21, COMPLETE
   scope — no milestone split): typed `Table<T>` + accessor/DSL synthesis, the lazy
   relational plan (filter/select/with/groupBy/agg/sort/join/resample/rolling/pivot/melt),

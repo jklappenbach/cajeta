@@ -320,7 +320,7 @@ public final class Profile {
         ok.peakRssKb = Memory.peakRssKb();
         ok.status = "ok";
         ok.checkOk = true;
-        rows.add(ok);
+        rows.add(#ok);      // the list owns its rows; `ok` stays readable
 
         // A skipped row (missing-toolchain shape) — recorded, never silent.
         Result skip = heap Result();
@@ -331,7 +331,7 @@ public final class Profile {
         skip.status = "skipped";
         skip.checkOk = false;
         skip.notes = "toolchain not found: cargo";
-        rows.add(skip);
+        rows.add(#skip);
 
         Report.writeResults(results, rows);
         Report.writeEnv(envPath, runId);

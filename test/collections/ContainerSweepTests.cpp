@@ -1,24 +1,32 @@
 //
-// title-tracking 6.2.3 (second tranche) — the rev-2 borrow/transfer contract
-// (spec §6) across the NON-HashMap collections: ArrayList, Heap, HashSet,
-// LinkedList, Collectors. HashMap earned this surface in 6.2.2; these pin the
-// same semantics everywhere else: dual-capable stores (the call site decides,
-// the entry bit records), borrow reads, `#`-extraction via operator#[] (title
-// out, entry resident, panic without a title), remove-shaped calls returning
-// the value in the mode the entry held (flagged), and teardown walks that drop
-// exactly the owned entries.
+// title-tracking 6.2.3 (second tranche) — the transfer contract across the
+// NON-HashMap collections: ArrayList, Heap, HashSet, LinkedList, Collectors,
+// RedBlackTree, BPlusTree. HashMap earned this surface in 6.2.2; these pin the
+// same semantics everywhere else: owning stores, borrow reads,
+// `#`-extraction via operator#[] (title out, entry resident, panic without a
+// title), remove-shaped calls handing the value back, and teardown walks that
+// drop exactly what the container holds.
 //
-// Red-first: at authoring time every container here stores its formal PLAIN,
-// so an owned add (`xs.add(#x)`) leaves the formal's drop entry armed — the
-// callee exit-drop frees the element the container just stored (the DnsCache
-// UAF class). None has entry bits, an extraction operator, or a flagged
+// Red-first: at authoring time every container here stored its formal PLAIN,
+// so an owned add (`xs.add(#x)`) left the formal's drop entry armed — the
+// callee exit-drop freed the element the container just stored (the DnsCache
+// UAF class). None had entry bits, an extraction operator, or a flagged
 // remove/pop.
+//
+// uniform-transfer-semantics 2.1.6/2.1.8 rewrote the six "dual-capable store"
+// tests. That contract — the CALL SITE decides whether the container owns or
+// borrows, and the entry bit records which — is gone: spec 2.3 makes every
+// container own its elements, and lending one is a compile error. The six
+// rewrites are marked in place with the reasoning; the rest of the file was
+// always about owned elements and is unchanged.
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
 #include <string>
+
+#include "cajeta/error/Exception.h"
 
 using cajeta_test::CajetaJit;
 
@@ -60,6 +68,24 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
     return fn();
 }
 
+// uniform-transfer-semantics 2.1.6/2.1.8 — the lend-into-a-container shape is
+// now a COMPILE error, so half the contract below is asserted on the compiler
+// rather than at runtime.
+std::string compileExpectError(const std::string& src,
+                               const std::string& expectCode) {
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), expectCode);
+        return e.getMessage();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "expected a cajeta::Exception, got " << e.what();
+        return e.what();
+    }
+    ADD_FAILURE() << "expected " << expectCode << ", got a clean compile";
+    return "";
+}
+
 }  // namespace
 
 // ===================== ArrayList =====================
@@ -89,19 +115,57 @@ TEST(ContainerSweepTests, arrayListOwnedAddDropsAtListTeardown) {
     EXPECT_EQ(runI32(src), 7);
 }
 
-// `xs.add(v)` — the list borrows; the local keeps the title and teardown
-// must not free it out from under the owner.
-TEST(ContainerSweepTests, arrayListBorrowAddLeavesOwnerAlive) {
+// ---- uniform-transfer-semantics 2.1.6 / 2.1.8 — the borrow-premise rewrite --
+//
+// Six tests in this file (one per container) used to pin the same shape: hand a
+// container a plain owned local, and the container BORROWS it, so the local
+// outlives the container's scope. Spec 2.3 abolishes that premise — a container
+// owns its elements — so the shape is now `CAJETA_ERROR_TRANSFER_REQUIRED`.
+//
+// Each is rewritten as a PAIR, not deleted and not `#`-patched. Adding `#` was
+// tried and reverted twice: it silences the compile error by handing the
+// container the title, after which the trailing `return mine.n` reads memory
+// the container already freed. The test goes green while the program gets
+// worse, which is the one outcome a rewrite must not produce.
+//
+// The pair is:
+//   (a) the lend is rejected, and the diagnostic names the fix;
+//   (b) the transferring spelling works, and the source stays READABLE through
+//       it (transfer-demotes-to-borrow: `#` moves the title, not the binding),
+//       leak-free, for as long as the container is alive.
+//
+// (b) reads `mine.n` INSIDE the container's scope on purpose. Once the
+// container tears down it has freed the element, and the demoted binding
+// dangles — the accepted v1 exposure (MemoryModel §1.7), not something these
+// tests can pin.
+
+TEST(ContainerSweepTests, arrayListLendIsRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
+        "        xs.add(mine);\n"
+        "        return xs.get(0).n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+}
+
+TEST(ContainerSweepTests, arrayListTransferLeavesSourceReadable) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        int32 t = 0;\n"
         "        {\n"
+        "            Cell mine = heap Cell(9);\n"
         "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
-        "            xs.add(mine);\n"
+        "            xs.add(#mine);\n"
         "            if (xs.get(0).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"          // demoted to a borrow, still live
         "        }\n"
-        "        return mine.n;\n"
+        "        return t;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -113,21 +177,23 @@ TEST(ContainerSweepTests, arrayListBorrowAddLeavesOwnerAlive) {
     EXPECT_EQ(runI32(src), 9);
 }
 
-// One owned element, one borrowed, in the SAME list — teardown drops exactly
-// the owned one.
-TEST(ContainerSweepTests, arrayListMixedOwnershipDropsOnlyOwned) {
+// Was `arrayListMixedOwnershipDropsOnlyOwned`. Mixed ownership inside one
+// container is exactly what spec 2.3 removes, so the surviving contract is the
+// simpler one: every element is owned, and teardown drops every element.
+TEST(ContainerSweepTests, arrayListAllElementsOwnedDropAtTeardown) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell lent = heap Cell(20);\n"
         "        int32 t = 0;\n"
         "        {\n"
+        "            Cell second = heap Cell(20);\n"
         "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
         "            xs.add(#heap Cell(1));\n"
-        "            xs.add(lent);\n"
+        "            xs.add(#second);\n"
         "            t = xs.get(0).n + xs.get(1).n;\n"   // 21
+        "            t = t + second.n;\n"                // 41 — demoted read
         "        }\n"
-        "        return t + lent.n;\n"                   // 41
+        "        return t;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -268,19 +334,39 @@ TEST(ContainerSweepTests, heapOwnedPushPopReclaims) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-// Borrow push: the owner keeps the title through sift, pop, and teardown.
-TEST(ContainerSweepTests, heapBorrowPushLeavesOwnerAlive) {
+// 2.1.8 (Heap) — the borrow-premise pair. See the ArrayList block above for
+// why this is a rewrite and not a `#` patch.
+TEST(ContainerSweepTests, heapLendIsRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        Heap<Cell> h = heap Heap<Cell>();\n"
+        "        h.push(mine);\n"
+        "        return h.pop().n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+}
+
+// The transferring spelling round-trips through sift and pop: the heap takes
+// the title on push and hands it back on pop, so `back` owns it and reclaims
+// it. The source stays readable across the whole trip.
+TEST(ContainerSweepTests, heapTransferPushPopRoundTrips) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        int32 t = 0;\n"
         "        {\n"
+        "            Cell mine = heap Cell(9);\n"
         "            Heap<Cell> h = heap Heap<Cell>();\n"
-        "            h.push(mine);\n"
-        "            Cell back = h.pop();\n"       // flagged: borrowed → back lends
+        "            h.push(#mine);\n"
+        "            Cell back = h.pop();\n"       // flagged: owned → back drops
         "            if (back.n != 9) { return -98; }\n"
+        "            t = mine.n;\n"                // demoted read, still live
         "        }\n"
-        "        return mine.n;\n"
+        "        return t;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -379,20 +465,38 @@ TEST(ContainerSweepTests, linkedListOwnedAddDropsAtTeardown) {
     EXPECT_EQ(runI32(src), 7);
 }
 
-// `list.add(v)` — the node borrows (the ctor forward carries the caller's
-// REAL flag; a static-1 word here once stamped borrowed adds owned and the
-// teardown freed the caller's element — the CreatorRest composition bug).
-TEST(ContainerSweepTests, linkedListBorrowAddLeavesOwnerAlive) {
+// 2.1.8 (LinkedList) — the borrow-premise pair.
+TEST(ContainerSweepTests, linkedListLendIsRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        LinkedList<Cell> list = heap LinkedList<Cell>();\n"
+        "        list.add(mine);\n"
+        "        return list.get(0).n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+}
+
+// The node's value store forwards the caller's flag through the ctor — a
+// static-1 word here once stamped every add owned and the teardown freed the
+// caller's element (the CreatorRest composition bug). With every add owned
+// that stamp is now correct by construction, and this pins the count.
+TEST(ContainerSweepTests, linkedListTransferAddDropsAtTeardown) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        int32 t = 0;\n"
         "        {\n"
+        "            Cell mine = heap Cell(9);\n"
         "            LinkedList<Cell> list = heap LinkedList<Cell>();\n"
-        "            list.add(mine);\n"
+        "            list.add(#mine);\n"
         "            if (list.get(0).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"                // demoted read, still live
         "        }\n"
-        "        return mine.n;\n"
+        "        return t;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -492,18 +596,38 @@ TEST(ContainerSweepTests, redBlackOwnedPutReclaimsAtTeardown) {
     EXPECT_EQ(runI32(src), 40);
 }
 
-// Borrowed put: the local keeps the title through fixup and teardown.
-TEST(ContainerSweepTests, redBlackBorrowPutLeavesOwnerAlive) {
+// 2.1.8 (RedBlackTree) — the borrow-premise pair.
+TEST(ContainerSweepTests, redBlackLendIsRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
+        "        m.put(1, mine);\n"
+        "        return m.get(1).n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+}
+
+// The transferred value survives fixup (rotations + recolours) and the tree
+// reclaims it at teardown.
+TEST(ContainerSweepTests, redBlackTransferPutSurvivesFixup) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        int32 t = 0;\n"
         "        {\n"
+        "            Cell mine = heap Cell(9);\n"
         "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
-        "            m.put(1, mine);\n"
+        "            m.put(1, #mine);\n"
+        "            int32 i = 2;\n"
+        "            while (i < 20) { m.put(i, #heap Cell(i)); i = i + 1; }\n"
         "            if (m.get(1).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"                // demoted read, still live
         "        }\n"
-        "        return mine.n;\n"
+        "        return t;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -592,20 +716,38 @@ TEST(ContainerSweepTests, bplusOwnedPutSurvivesSplitReclaimsAtTeardown) {
     EXPECT_EQ(runI32(src), 145);
 }
 
-// BPlus borrowed put: the owner keeps the title through shift/split/teardown.
-TEST(ContainerSweepTests, bplusBorrowPutLeavesOwnerAlive) {
+// 2.1.8 (BPlusTree) — the borrow-premise pair.
+TEST(ContainerSweepTests, bplusLendIsRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell mine = heap Cell(9);\n"
+        "        BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
+        "        m.put(1, mine);\n"
+        "        return m.get(1).n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+}
+
+// The transferred value survives the leaf shifts and the split cascade (50
+// entries over order 32 forces splits) and the tree reclaims it at teardown.
+TEST(ContainerSweepTests, bplusTransferPutSurvivesSplit) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
+        "        int32 t = 0;\n"
         "        {\n"
+        "            Cell mine = heap Cell(9);\n"
         "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
-        "            m.put(1, mine);\n"
+        "            m.put(1, #mine);\n"
         "            int32 i = 10;\n"
         "            while (i < 50) { m.put(i, #heap Cell(i)); i = i + 1; }\n"
         "            if (m.get(1).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"                // demoted read, still live
         "        }\n"
-        "        return mine.n;\n"
+        "        return t;\n"
         "    }\n"
         "    public static int32 run() {\n"
         "        int64 base = Cajeta.liveCount();\n"

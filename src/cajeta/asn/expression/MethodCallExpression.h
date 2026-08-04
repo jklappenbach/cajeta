@@ -123,6 +123,10 @@ namespace cajeta {
         // surrenders per spec §4.1.1. stack/shared placements never do.
         static shared_ptr<CajetaClass> freshHeapCreatorTempClass(
             const AbstractSyntaxNodePtr& e);
+        // The array-typed twin: a heap `[1, 2]` literal argument is equally an
+        // anonymous owned rvalue. stack/arena literals never surrender — the
+        // frame reclaims their storage.
+        static bool freshHeapArrayLiteralArg(const AbstractSyntaxNodePtr& e);
         CajetaTypePtr getPreProjectionReturnType() const {
             return preProjectionReturnType;
         }

@@ -562,7 +562,8 @@ namespace cajeta {
         // the process). forcesAll ⇒ keep-all; sites ⇒ narrow contributions the
         // Compiler resolves against the full canonicalMap after quiescence.
         struct ReflSite {
-            enum Kind { BoundClosure, ForNameLiteral, PackageLiteral, Annotated };
+            enum Kind { BoundClosure, ForNameLiteral, PackageLiteral, Annotated,
+                        MethodAnnotated };
             Kind kind;
             std::string selector;  // T canonical / class name / package / anno short
         };
@@ -861,6 +862,19 @@ namespace cajeta {
         // either arg is null. See docs/IncrementalCompilation.md.
         static void noteCrossModuleMethodInstantiation(
             const CajetaModulePtr& triggering, const MethodPtr& inst);
+        // Static-field twin (compile-cache D1). A FOLDABLE static's global is
+        // defined in the DECLARING class's module only when some module's
+        // codegen references it (CajetaClass::getOrCreateStaticFieldGlobal);
+        // if that referencing module is later skipped as clean, nothing
+        // re-demands the definition and the symbol vanishes from the fresh
+        // stdlib object (undefined at link — the demand set is larger than
+        // the template-obligation set). Records `Owner::field` — `::` with
+        // NO `(` distinguishes it from both other kinds — on `triggering`
+        // IFF the owner's module differs. No-op when same-module or any arg
+        // is null/empty.
+        static void noteCrossModuleStaticFieldRef(
+            const CajetaModulePtr& triggering, const CajetaClassPtr& owner,
+            const std::string& fieldName);
         // Write this module's obligations to a sidecar next to its emitted IR
         // (`<archiveRoot><archivePath:.ll→.obligations>`), one sorted
         // canonical name per line. No-op (and removes any stale sidecar) when

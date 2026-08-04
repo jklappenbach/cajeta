@@ -107,7 +107,7 @@ TEST(ElementSlotSemanticsTests, displacedReleaseOnOwnedSlotOnly) {
 }
 
 // 3.1.3 — move-out `#data[i]` clears the bit and forwards it: the grow
-// loop `bigger[i] #= #this.data[i]` transfers every owned element to the
+// loop `bigger[i] #= this.data[i]` transfers every owned element to the
 // new array; the old array then tears down empty. Zero leak, zero UAF.
 TEST(ElementSlotSemanticsTests, moveOutClearsAndForwards) {
     std::string src = std::string(kFixtureSrc) +
@@ -122,7 +122,7 @@ TEST(ElementSlotSemanticsTests, moveOutClearsAndForwards) {
         "            Cell[] bigger = heap Cell[4];\n"
         "            int32 i = 0;\n"
         "            while (i < v.size) {\n"
-        "                bigger[i] #= #v.data[i];\n"
+        "                bigger[i] #= v.data[i];\n"
         "                i = i + 1;\n"
         "            }\n"
         "            v.data #= bigger;\n"                // old array drops EMPTY
@@ -240,7 +240,7 @@ TEST(ElementSlotSemanticsTests, aliasSeesSameBits) {
         "            MiniVec v = heap MiniVec(4);\n"
         "            v.add(#heap Cell(6));\n"
         "            Cell[] alias = v.data;\n"           // lend of the array
-        "            Cell got #= #alias[0];\n"           // take via the alias
+        "            Cell got #= alias[0];\n"            // take via the alias
         "            t = got.n;\n"
         "        }\n"                                     // v drops nothing owned; got drops
         "        int64 leaked = Cajeta.liveCount() - base;\n"
@@ -250,7 +250,7 @@ TEST(ElementSlotSemanticsTests, aliasSeesSameBits) {
     EXPECT_EQ(runI32(src), 6);
 }
 
-// §2.1 fused forwarding — `dst[i] #= #src[j]` moves WHATEVER title the
+// §2.1 slot forwarding — `dst[i] #= src[j]` moves WHATEVER title the
 // source slot holds: owned transfers (dst drops it), borrow forwards as
 // borrow (no panic, the true owner keeps its single drop). The container
 // author's shift/sift primitive.
@@ -268,8 +268,8 @@ TEST(ElementSlotSemanticsTests, fusedForwardingMovesBorrowsWithoutPanic) {
         "            MiniVec v = heap MiniVec(4);\n"
         "            v.add(#heap Cell(1));\n"           // slot 0 owned
         "            putAt(v, 1, keep);\n"               // slot 1 borrowed
-        "            v.data[2] #= #v.data[0];\n"         // forward owned 0 -> 2
-        "            v.data[3] #= #v.data[1];\n"         // forward BORROW 1 -> 3 (no panic)
+        "            v.data[2] #= v.data[0];\n"          // forward owned 0 -> 2
+        "            v.data[3] #= v.data[1];\n"          // forward BORROW 1 -> 3 (no panic)
         "            t = v.data[2].n + v.data[3].n;\n"
         "        }\n"                                     // teardown drops slot 2 only
         "        if (keep.n != 4) { return -2; }\n"

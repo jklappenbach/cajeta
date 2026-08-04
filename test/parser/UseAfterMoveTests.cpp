@@ -4,7 +4,7 @@
 // The `#` operator transfers ownership of its operand. After a transfer, the
 // source identifier is no longer readable; the compiler must reject any
 // subsequent access. These tests confirm both directions: valid programs
-// compile, invalid ones throw `CAJETA_ERROR_USE_AFTER_MOVE`.
+// compile, invalid ones throw `CAJETA_ERROR_MOVE_OF_BORROW`.
 //
 // Path-based tracking (field-path moves, alias-mutation invalidation) and
 // inter-procedural elision land in Session 3 — those cases are out of scope
@@ -30,19 +30,33 @@ std::string makeSource(const std::string& body) {
            "}\n";
 }
 
-// Compile and capture the cajeta::Exception; assert errorId is the expected
-// CAJETA_ERROR_USE_AFTER_MOVE.
-void expectUseAfterMove(const std::string& source, const std::string& expectedName) {
+// transfer-demotes-to-borrow — a transfer DEMOTES its source to a borrow, so
+// transferring again is a transfer FROM a borrow. One error covers both.
+void expectTransferFromBorrow(const std::string& source, const std::string& expectedName) {
     try {
         CajetaJit::compile(source, "test.U");
-        FAIL() << "expected use-after-move error but compile succeeded";
+        FAIL() << "expected a transfer-from-borrow error but compile succeeded";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MOVE_OF_BORROW");
         EXPECT_NE(e.getMessage().find(expectedName), std::string::npos)
             << "exception message '" << e.getMessage()
             << "' did not contain expected identifier '" << expectedName << "'";
     } catch (std::exception& e) {
-        FAIL() << "expected cajeta::Exception (use-after-move), got std::exception: " << e.what();
+        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+    }
+}
+
+// A read of a demoted binding is an ordinary borrow read — `#` moves the
+// title, not the binding. Value-correctness of such reads is pinned in
+// DemotedBindingReadTests; here we only assert it is not rejected.
+void expectCompilesOk(const std::string& source) {
+    try {
+        CajetaJit::compile(source, "test.U");
+    } catch (cajeta::Exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
+    } catch (std::exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.what();
     }
 }
 
@@ -113,25 +127,25 @@ TEST(UseAfterMoveTests, moveOnReturnExpression) {
 
 // --- Invalid programs: use after the move ----------------------------------
 
-TEST(UseAfterMoveTests, readAfterMoveOnAssignment) {
+TEST(UseAfterMoveTests, readAfterMoveOnAssignmentIsLegal) {
     auto src = makeSource(
         "String s = \"hello\";\n"
         "String t #= s;\n"
-        "int32 n = (int32) s.size();\n"   // s was moved into t — error
+        "int32 n = (int32) s.size();\n"   // demoted to a borrow — readable
         "return n;");
-    expectUseAfterMove(src, "s");
+    expectCompilesOk(src);
 }
 
-TEST(UseAfterMoveTests, readAfterMoveByPrintln) {
+TEST(UseAfterMoveTests, readAfterMoveByPrintlnIsLegal) {
     auto src = makeSource(
         "String s = \"hello\";\n"
         "String t #= s;\n"
-        "System.stdout.println(s);\n"     // s was moved
+        "System.stdout.println(s);\n"     // demoted to a borrow — readable
         "return 0;");
-    expectUseAfterMove(src, "s");
+    expectCompilesOk(src);
 }
 
-TEST(UseAfterMoveTests, readAfterMoveAsIntrinsicArgument) {
+TEST(UseAfterMoveTests, readAfterMoveAsIntrinsicArgumentIsLegal) {
     // Use-after-move read appears as an argument to a String intrinsic.
     // The intrinsic dispatch path evaluates the argument expression, which
     // routes back into IdentifierExpression::generateCode and triggers the
@@ -139,12 +153,12 @@ TEST(UseAfterMoveTests, readAfterMoveAsIntrinsicArgument) {
     auto src = makeSource(
         "String s = \"hi\";\n"
         "String t #= s;\n"
-        "int32 n = Integer.parseInt(s);\n"   // s was moved
+        "int32 n = Integer.parseInt(s);\n"   // demoted to a borrow — readable
         "return n;");
-    expectUseAfterMove(src, "s");
+    expectCompilesOk(src);
 }
 
-TEST(UseAfterMoveTests, doubleMove) {
+TEST(UseAfterMoveTests, doubleMoveIsTransferFromBorrow) {
     // Moving twice from the same source — the second `#s` would already be
     // reading a moved identifier.
     auto src = makeSource(
@@ -152,10 +166,10 @@ TEST(UseAfterMoveTests, doubleMove) {
         "String a #= s;\n"
         "String b #= s;\n"                // double-move on s
         "return 0;");
-    expectUseAfterMove(src, "s");
+    expectTransferFromBorrow(src, "s");
 }
 
-TEST(UseAfterMoveTests, moveThenReturnSource) {
+TEST(UseAfterMoveTests, moveThenReturnSourceIsTransferFromBorrow) {
     auto src =
         "package test;\n"
         "public final class U {\n"
@@ -165,5 +179,5 @@ TEST(UseAfterMoveTests, moveThenReturnSource) {
         "        return #s;\n"            // s already moved into t
         "    }\n"
         "}\n";
-    expectUseAfterMove(src, "s");
+    expectTransferFromBorrow(src, "s");
 }

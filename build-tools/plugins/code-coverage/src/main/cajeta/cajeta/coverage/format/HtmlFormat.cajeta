@@ -5,6 +5,8 @@ import cajeta.collection.ArrayList;
 import cajeta.coverage.CoverageMap;
 import cajeta.coverage.internal.FloatFormat;
 import cajeta.io.file.FileReader;
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
 import cajeta.io.file.FileWriter;
 import cajeta.io.file.Path;
 
@@ -31,10 +33,10 @@ import cajeta.io.file.Path;
  */
 public class HtmlFormat {
 
-    public static String emit(
+    public static #String emit(
         Path outputDir, CoverageMap map, ArrayList<Finding> findings) {
         Path htmlDir = outputDir.resolve("html");
-        htmlDir.createDirectories();
+        htmlDir.mkdirs();
 
         emitStylesheet(htmlDir);
         emitIndex(htmlDir, map);
@@ -44,7 +46,8 @@ public class HtmlFormat {
         int32 i = 0;
         while (i < paths.count()) {
             String fpath = paths.get(i);
-            CoverageMap.FileEntry e = map.files().get(fpath).get();
+            Optional<CoverageMap.FileEntry> eOpt = map.files().get(fpath);
+            CoverageMap.FileEntry e = eOpt.get();
             emitAnnotated(htmlDir, fpath, e, findings);
             i = i + 1;
         }
@@ -54,34 +57,35 @@ public class HtmlFormat {
 
     static void emitIndex(Path htmlDir, CoverageMap map) {
         Path out = htmlDir.resolve("index.html");
-        FileWriter w = FileWriter.openTruncate(out);
-        w.writeText("<!DOCTYPE html>\n<html><head>\n");
-        w.writeText("<meta charset=\"utf-8\">\n");
-        w.writeText("<title>coverage — cajeta.coverage</title>\n");
-        w.writeText("<link rel=\"stylesheet\" href=\"style.css\">\n");
-        w.writeText("</head><body>\n");
-        w.writeText("<h1>coverage</h1>\n");
-        w.writeText("<p class=\"summary\">overall: <b>" +
+        FileWriter w = File.openWrite((out).toString(), OpenMode.WRITE);
+        w.writeString("<!DOCTYPE html>\n<html><head>\n");
+        w.writeString("<meta charset=\"utf-8\">\n");
+        w.writeString("<title>coverage — cajeta.coverage</title>\n");
+        w.writeString("<link rel=\"stylesheet\" href=\"style.css\">\n");
+        w.writeString("</head><body>\n");
+        w.writeString("<h1>coverage</h1>\n");
+        w.writeString("<p class=\"summary\">overall: <b>" +
                    FloatFormat.oneDecimal(map.overallPercent()) +
                    "%</b> · grain: " + map.grain().toName() +
                    " · files: " + String.valueOf(map.count()) + "</p>\n");
-        w.writeText("<table><thead><tr><th>file</th><th>%</th>" +
+        w.writeString("<table><thead><tr><th>file</th><th>%</th>" +
                    "<th>hit</th><th>total</th></tr></thead><tbody>\n");
         ArrayList<String> paths = map.files().keys();
         int32 i = 0;
         while (i < paths.count()) {
             String fpath = paths.get(i);
-            CoverageMap.FileEntry e = map.files().get(fpath).get();
-            w.writeText("<tr><td><a href=\"" + linkFor(fpath) + "\">" +
+            Optional<CoverageMap.FileEntry> eOpt = map.files().get(fpath);
+            CoverageMap.FileEntry e = eOpt.get();
+            w.writeString("<tr><td><a href=\"" + linkFor(fpath) + "\">" +
                        escape(fpath) + "</a></td>");
-            w.writeText("<td class=\"" + percentClass(e.percent()) +
+            w.writeString("<td class=\"" + percentClass(e.percent()) +
                        "\">" + FloatFormat.oneDecimal(e.percent()) +
                        "%</td>");
-            w.writeText("<td>" + String.valueOf(e.hitProbes())   + "</td>");
-            w.writeText("<td>" + String.valueOf(e.totalProbes()) + "</td></tr>\n");
+            w.writeString("<td>" + String.valueOf(e.hitProbes())   + "</td>");
+            w.writeString("<td>" + String.valueOf(e.totalProbes()) + "</td></tr>\n");
             i = i + 1;
         }
-        w.writeText("</tbody></table>\n</body></html>\n");
+        w.writeString("</tbody></table>\n</body></html>\n");
         w.close();
     }
 
@@ -89,22 +93,22 @@ public class HtmlFormat {
                               CoverageMap.FileEntry entry,
                               ArrayList<Finding> findings) {
         Path out = htmlDir.resolve(linkFor(sourcePath));
-        out.parent().createDirectories();
-        FileWriter w = FileWriter.openTruncate(out);
-        w.writeText("<!DOCTYPE html>\n<html><head>\n");
-        w.writeText("<meta charset=\"utf-8\">\n");
-        w.writeText("<title>" + escape(sourcePath) + "</title>\n");
-        w.writeText("<link rel=\"stylesheet\" href=\"" +
+        out.parent().mkdirs();
+        FileWriter w = File.openWrite((out).toString(), OpenMode.WRITE);
+        w.writeString("<!DOCTYPE html>\n<html><head>\n");
+        w.writeString("<meta charset=\"utf-8\">\n");
+        w.writeString("<title>" + escape(sourcePath) + "</title>\n");
+        w.writeString("<link rel=\"stylesheet\" href=\"" +
                    relativeToRoot(sourcePath) + "style.css\">\n");
-        w.writeText("</head><body>\n");
-        w.writeText("<h1>" + escape(sourcePath) + "</h1>\n");
-        w.writeText("<p>coverage: " +
+        w.writeString("</head><body>\n");
+        w.writeString("<h1>" + escape(sourcePath) + "</h1>\n");
+        w.writeString("<p>coverage: " +
                    FloatFormat.oneDecimal(entry.percent()) +
                    "% · " + String.valueOf(entry.hitProbes()) +
                    "/" + String.valueOf(entry.totalProbes()) +
                    " probes</p>\n<pre><code>\n");
         renderAnnotatedSource(w, sourcePath, entry, findings);
-        w.writeText("</code></pre>\n</body></html>\n");
+        w.writeString("</code></pre>\n</body></html>\n");
         w.close();
     }
 
@@ -121,7 +125,7 @@ public class HtmlFormat {
         // Build a fast "is line uncovered?" lookup from the findings
         // list — the findings already carry the probe-id → line
         // resolution from PositionLookup.
-        HashSet<int32> uncoveredLines #= heap HashSet<int32>();
+        HashSet<int32> uncoveredLines #= heap HashSet<int32>(16);
         int32 fi = 0;
         while (fi < findings.count()) {
             Finding f = findings.get(fi);
@@ -131,16 +135,27 @@ public class HtmlFormat {
             fi = fi + 1;
         }
 
-        FileReader r = FileReader.openOrNull(Path.of(sourcePath));
-        if (r == null) {
-            w.writeText("[source not readable: " + escape(sourcePath) + "]\n");
+        if (!Path.of(sourcePath).isFile()) {
+            w.writeString("[source not readable: " + escape(sourcePath) + "]\n");
             return;
         }
-        String[] lines = r.readAllLines();
-        r.close();
+        int8[] srcBytes = File.readAllBytes(sourcePath);
+        int32 total = (int32) srcBytes.count();
         int32 i = 0;
-        while (i < lines.count) {
-            int32 lineNo = i + 1;
+        int32 lineNo = 1;
+        while (i < total) {
+            int32 lineStart = i;
+            while (i < total && srcBytes[i] != (int8) 10) {
+                i = i + 1;
+            }
+            int32 len = i - lineStart;
+            int8[] lb = heap int8[len];
+            int32 k = 0;
+            while (k < len) {
+                lb[k] = srcBytes[lineStart + k];
+                k = k + 1;
+            }
+            String line = heap String(#lb, len);
             String cls = "line-untracked";
             if (uncoveredLines.contains(lineNo)) {
                 cls = "line-missed";
@@ -150,18 +165,19 @@ public class HtmlFormat {
                 // The findings list only carries uncovered lines.
                 cls = "line-hit";
             }
-            w.writeText("<span class=\"" + cls + "\">");
-            w.writeText(String.valueOf(lineNo));
-            w.writeText("\t");
-            w.writeText(escape(lines[i]));
-            w.writeText("</span>\n");
+            w.writeString("<span class=\"" + cls + "\">");
+            w.writeString(String.valueOf(lineNo));
+            w.writeString("\t");
+            w.writeString(escape(line));
+            w.writeString("</span>\n");
             i = i + 1;
+            lineNo = lineNo + 1;
         }
     }
 
     static void emitStylesheet(Path htmlDir) {
-        FileWriter w = FileWriter.openTruncate(htmlDir.resolve("style.css"));
-        w.writeText(
+        FileWriter w = File.openWrite((htmlDir.resolve("style.css")).toString(), OpenMode.WRITE);
+        w.writeString(
             "body { font: 14px/1.4 -apple-system, sans-serif; padding: 1em; }\n" +
             "h1   { font-weight: 600; margin-bottom: 0.5em; }\n" +
             ".summary { color: #555; }\n" +
@@ -178,18 +194,18 @@ public class HtmlFormat {
         w.close();
     }
 
-    static String percentClass(float pct) {
+    static String percentClass(float64 pct) {
         if (pct < 60.0) { return "pct-low";  }
         if (pct < 90.0) { return "pct-mid";  }
         return "pct-high";
     }
 
-    static String linkFor(String sourcePath) {
+    static #String linkFor(String sourcePath) {
         return sourcePath + ".html";
     }
 
     /** "../../" depth from a nested page back to the html root. */
-    static String relativeToRoot(String sourcePath) {
+    static #String relativeToRoot(String sourcePath) {
         int32 slashes = 0;
         int32 i = 0;
         while (i < sourcePath.count()) {
@@ -205,7 +221,7 @@ public class HtmlFormat {
         return b.toString();
     }
 
-    static String escape(String s) {
+    static #String escape(String s) {
         StringBuilder b = stack StringBuilder();
         int32 i = 0;
         while (i < s.count()) {
@@ -214,7 +230,7 @@ public class HtmlFormat {
             else if (c == '>') { b.append("&gt;");   }
             else if (c == '&') { b.append("&amp;");  }
             else if (c == '"') { b.append("&quot;"); }
-            else               { b.append(c);        }
+            else               { b.append(s.substring(i, i + 1)); }
             i = i + 1;
         }
         return b.toString();

@@ -6,8 +6,8 @@ import cajeta.buildtool.plugin.Finding;
 import cajeta.codec.json.JsonObject;
 import cajeta.collection.ArrayList;
 import cajeta.io.file.Path;
-import cajeta.io.process.Process;
-import cajeta.io.process.ProcessBuilder;
+import cajeta.process.Command;
+import cajeta.process.ProcessResult;
 
 /**
  * `cajeta.coverage.instrument` — drive a probed build of the project.
@@ -29,7 +29,7 @@ public class Instrument {
      * @capability filesystem
      * @capability process
      */
-    public static ActionResult run(ActionContext ctx, JsonObject params) {
+    public static #ActionResult run(ActionContext ctx, JsonObject params) {
         // ── Param parsing ────────────────────────────────────────
         // Defaults come from the plugin's `config` block (the build
         // tool merges those into `params` before dispatch).
@@ -48,28 +48,32 @@ public class Instrument {
         ArrayList<String> excludes = params.getStringArray("exclude");
 
         // ── Build the compiler argv ──────────────────────────────
-        ProcessBuilder pb #= heap ProcessBuilder();
-        pb.command("cajeta");
-        pb.arg("build");
-        pb.arg("--flavor=" + flavor);
-        pb.arg("--profile=" + profile);
-        pb.arg("--instrument=coverage");
-        pb.arg("--coverage-grain=" + grain.toName());
+        int32 argc = 6 + (int32) excludes.count();
+        String[] argv = heap String[argc];
+        argv[0] = "cajeta";
+        argv[1] = "build";
+        argv[2] = "--flavor=" + flavor;
+        argv[3] = "--profile=" + profile;
+        argv[4] = "--instrument=coverage";
+        argv[5] = "--coverage-grain=" + grain.toName();
         int32 ei = 0;
         while (ei < excludes.count()) {
-            pb.arg("--coverage-exclude=" + excludes.get(ei));
+            argv[6 + ei] = "--coverage-exclude=" + excludes.get(ei);
             ei = ei + 1;
         }
-        pb.workdir(ctx.workdir());
 
-        // Stream the compiler's output through our context so the
-        // user sees progress live, not buffered until exit.
-        pb.inheritStdout();
-        pb.inheritStderr();
-
-        // ── Spawn + wait ─────────────────────────────────────────
-        Process proc = pb.spawn();
-        int32 exitCode = proc.waitFor();
+        // ── Run + wait ───────────────────────────────────────────
+        // Stdio stays inherited (no capture) so the user sees the
+        // compiler's output live, not buffered until exit.
+        Command cmd = heap Command(#argv);
+        String wd = ctx.workdir();
+        cmd.workingDir(wd.substring(0, (int32) wd.count()));
+        ProcessResult pr = cmd.run();
+        if (!pr.launched()) {
+            return ActionResult.error(
+                "cajeta.coverage.instrument: failed to launch cajeta");
+        }
+        int32 exitCode = pr.exitCode();
         if (exitCode != 0) {
             return ActionResult.error(
                 "cajeta.coverage.instrument: cajeta build failed (exit " +
@@ -90,7 +94,7 @@ public class Instrument {
                 artifact.toString() + " but the path doesn't exist");
         }
         Path covMap = artifact.parent().resolve(
-            artifact.fileName() + ".coverage-map");
+            artifact.name() + ".coverage-map");
         int32 probeCount = 0;
         if (covMap.exists()) {
             probeCount = CoverageMapHeader.readProbeCount(covMap);

@@ -1,15 +1,14 @@
 package cajeta.coverage.internal;
 
-import cajeta.io.file.FileReader;
+import cajeta.io.file.File;
 import cajeta.io.file.Path;
 
 /**
- * Header-only inspection of a compiler-emitted coverage-map sidecar.
+ * Header-only inspection of a compiler-emitted coverage-map sidecar
+ * ("CJCM"): magic(4) version:u16 grain:u8 reserved:u8 nProbes:u32.
  * Used by the `cajeta.coverage.instrument` action to surface
- * `probe-count` without paying for a full sidecar load.
- *
- * The sidecar's format is documented in `PositionLookup`. This class
- * only reads the magic + version + grain + nProbes fields and stops.
+ * `probe-count` without paying for a full sidecar load, and by the
+ * merger for per-file probe totals.
  */
 public class CoverageMapHeader {
 
@@ -20,24 +19,22 @@ public class CoverageMapHeader {
      * probes).
      */
     public static int32 readProbeCount(Path path) {
-        if (!path.exists()) {
+        if (!path.isFile()) {
             return 0;
         }
-        FileReader r = FileReader.open(path);
-        byte[] magic = r.readBytes(4);
-        if (magic != "CJCM".bytes()) {
-            r.close();
+        int8[] b = File.readAllBytes(path.toString());
+        if (b.count() < 12) {
             return 0;
         }
-        int32 version = r.readU16BE();
-        if (version != 1) {
-            r.close();
+        // magic "CJCM"
+        if (ByteBuf.u8(b, 0) != 67 || ByteBuf.u8(b, 1) != 74
+                || ByteBuf.u8(b, 2) != 67 || ByteBuf.u8(b, 3) != 77) {
             return 0;
         }
-        r.readU8();  // grain
-        r.readU8();  // reserved
-        int32 nProbes = r.readU32BE();
-        r.close();
-        return nProbes;
+        if (ByteBuf.u16(b, 4) != 1) {
+            return 0;
+        }
+        // bytes 6 (grain) and 7 (reserved) are skipped.
+        return ByteBuf.u32(b, 8);
     }
 }

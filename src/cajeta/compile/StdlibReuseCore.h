@@ -17,8 +17,10 @@
 
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 
+#include <llvm/IR/GlobalValue.h>
 #include <llvm/IR/LLVMContext.h>
 
 #include "cajeta/compile/CajetaModule.h"
@@ -82,11 +84,22 @@ namespace cajeta {
     private:
         StdlibReuseCore() = default;
         void captureBaselines();
+        // The persistent stdlib llvm::Module's own baseline (spec §4.1): the
+        // set of global values present after priming. A session adds to that
+        // module — notably `external global` declarations of instantiations it
+        // emitted into ITS user module — and those additions must not outlive
+        // it, or the next session fails to materialize symbols nothing
+        // defines. See the definitions for the full account.
+        void captureLlvmBaseline();
+        void restoreLlvmBaseline();
+        void pruneAppendingGlobal(llvm::Module& m, const char* name,
+                                  const std::set<llvm::GlobalValue*>& surviving);
 
         llvm::LLVMContext sharedContext;
         std::unique_ptr<Compiler> prime;   // owns the TargetMachine the stdlib references
         CajetaModulePtr stdlibModule;
         std::map<std::string, CajetaClassPtr> baselineStructures;
+        std::set<llvm::GlobalValue*> baselineLlvmValues;
         bool isPrimed = false;
         bool isCodegenLayered = false;
 

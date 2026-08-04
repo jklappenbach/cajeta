@@ -92,23 +92,13 @@ public final class BPlusTree<K, V> {
      * index.put(1, "uno");   // same key updates in place, count stays 1
      * ```
      */
-    public void put(K key, V value) {
-        // The slot spelling must MATCH what the caller did (HashMap.put
-        // rule); the tail bits record the outcome per slot.
-        boolean keyOwned = Cajeta.owned(key);
-        boolean valOwned = Cajeta.owned(value);
+    public void put(#K key, #V value) {
+        // uniform-transfer 2.3 — the container OWNS its keys and values:
+        // one unconditional transfer, no caller spelling to match.
         if (this.root == null) {
             BPlusTreeNode<K, V> r = heap BPlusTreeNode<K, V>(true, this.order);
-            if (keyOwned) {
-                r.keys[0] #= key;
-            } else {
-                r.keys[0] = key;
-            }
-            if (valOwned) {
-                r.values[0] #= value;
-            } else {
-                r.values[0] = value;
-            }
+            r.keys[0] #= key;
+            r.values[0] #= value;
             r.numKeys = 1;
             // Borrow link first; the registry add is the node's LAST use.
             this.root = r;
@@ -125,16 +115,10 @@ public final class BPlusTree<K, V> {
         if (pos < leaf.numKeys) {
             // keys[pos] >= key; equal iff not (key < keys[pos]).
             if ((key < leaf.keys[pos]) == false) {
-                // Replace: displaced-release an owned old value, store in
-                // the caller's mode. An OWNED duplicate key reclaims at
-                // exit via its still-armed formal entry.
-                // The slot store's displaced release drops an owned
-                // old value; the bit records the spelling.
-                if (valOwned) {
-                    leaf.values[pos] #= value;
-                } else {
-                    leaf.values[pos] = value;
-                }
+                // Replace: the slot store's displaced release drops the
+                // old value, which is now always owned. The duplicate key
+                // reclaims at exit via the formal's armed entry.
+                leaf.values[pos] #= value;
                 return;
             }
         }
@@ -142,20 +126,12 @@ public final class BPlusTree<K, V> {
         int32 j = leaf.numKeys;
         while (j > pos) {
             // title-stores §2.1 — forwarding slot moves: the bit rides.
-            leaf.keys[j] #= #leaf.keys[j - 1];
-            leaf.values[j] #= #leaf.values[j - 1];
+            leaf.keys[j] #= leaf.keys[j - 1];
+            leaf.values[j] #= leaf.values[j - 1];
             j = j - 1;
         }
-        if (keyOwned) {
-            leaf.keys[pos] #= key;
-        } else {
-            leaf.keys[pos] = key;
-        }
-        if (valOwned) {
-            leaf.values[pos] #= value;
-        } else {
-            leaf.values[pos] = value;
-        }
+        leaf.keys[pos] #= key;
+        leaf.values[pos] #= value;
         leaf.numKeys = leaf.numKeys + 1;
         this.sizeCount = this.sizeCount + 1;
 
@@ -169,18 +145,15 @@ public final class BPlusTree<K, V> {
      */
     public V get(K key) {
         if (this.root == null) {
-            V[] missDefault = heap V[1];
+            V[] missDefault = stack V[1];
             return missDefault[0];
         }
         BPlusTreeNode<K, V> leaf = this.findLeaf(key);
-        int32 i = 0;
-        while (i < leaf.numKeys) {
-            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
-                return leaf.values[i];
-            }
-            i = i + 1;
+        int32 i = this.findInLeaf(leaf, key);
+        if (i >= 0) {
+            return leaf.values[i];
         }
-        V[] missDefault = heap V[1];
+        V[] missDefault = stack V[1];
         return missDefault[0];
     }
 
@@ -192,14 +165,7 @@ public final class BPlusTree<K, V> {
             return false;
         }
         BPlusTreeNode<K, V> leaf = this.findLeaf(key);
-        int32 i = 0;
-        while (i < leaf.numKeys) {
-            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
-                return true;
-            }
-            i = i + 1;
-        }
-        return false;
+        return this.findInLeaf(leaf, key) >= 0;
     }
 
     /**
@@ -207,7 +173,7 @@ public final class BPlusTree<K, V> {
      */
     public K min() {
         if (this.root == null) {
-            K[] missDefault = heap K[1];
+            K[] missDefault = stack K[1];
             return missDefault[0];
         }
         BPlusTreeNode<K, V> node = this.root;
@@ -221,6 +187,12 @@ public final class BPlusTree<K, V> {
      * All keys in ascending order, walking the linked leaves. Returns
      * a fresh heap `ArrayList<K>` whose ownership transfers to the
      * caller.
+     *
+     * PRIMITIVE K ONLY today: the walk copies each key into the list,
+     * and for a class K that copy would be a borrow lent into the
+     * list's owning `#T` formal — a compile error at instantiation.
+     * A class-K variant needs a clone/copy protocol (deferred with
+     * `map.update`, uniform-transfer 4.2.4).
      */
     public #ArrayList<K> keysInOrder() {
         ArrayList<K> out = heap ArrayList<K>();
@@ -251,6 +223,19 @@ public final class BPlusTree<K, V> {
 
     // ----- internals ---------------------------------------------------
 
+    /** Index of `key` in `leaf` (order-equality: neither < nor >), or -1. */
+    @Inline
+    private int32 findInLeaf(BPlusTreeNode<K, V> leaf, K key) {
+        int32 i = 0;
+        while (i < leaf.numKeys) {
+            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
     /** Descend from the root to the leaf that would contain `key`. */
     private BPlusTreeNode<K, V> findLeaf(K key) {
         BPlusTreeNode<K, V> node = this.root;
@@ -273,11 +258,10 @@ public final class BPlusTree<K, V> {
         right.numKeys = total - mid;
         int32 k = 0;
         while (k < right.numKeys) {
-            // title-stores §2.1 — split forwards titles; source bits clear.
             // title-stores §2.1 — the forwarding moves carry each slot's
             // bit; the source bits clear with the takes.
-            right.keys[k] #= #leaf.keys[mid + k];
-            right.values[k] #= #leaf.values[mid + k];
+            right.keys[k] #= leaf.keys[mid + k];
+            right.values[k] #= leaf.values[mid + k];
             k = k + 1;
         }
         leaf.numKeys = mid;
@@ -322,7 +306,7 @@ public final class BPlusTree<K, V> {
         // Shift keys right of `i`, then children right of `i+1`.
         int32 j = parent.numKeys;
         while (j > i) {
-            parent.keys[j] #= #parent.keys[j - 1];
+            parent.keys[j] #= parent.keys[j - 1];
             j = j - 1;
         }
         parent.keys[i] = sep;
@@ -350,7 +334,7 @@ public final class BPlusTree<K, V> {
         // Right keys: node.keys[mid+1 ..].
         int32 k = 0;
         while (k < right.numKeys) {
-            right.keys[k] #= #node.keys[mid + 1 + k];
+            right.keys[k] #= node.keys[mid + 1 + k];
             k = k + 1;
         }
         // Right children: node.children[mid+1 ..] (numKeys+1 of them).

@@ -95,7 +95,6 @@ src/main/cajeta/tour/
 │   ├── LinAlgDemo             solve/LU/QR/cholesky/svd/eigh/lstsq/norms
 │   ├── StatsDemo              buckets, order stats, cov, special functions
 │   ├── AutogradDemo           Grad / Vmap / Jit + the eager Tape
-│   ├── TrainingLoopDemo       nn.Linear + Losses + SGD/Adam + LrSchedule
 │   ├── FftDemo / PolyDemo / QuaternionDemo / RandomDemo / MathDemo
 │   └── NpyDemo                .npy round trip to disk (and cleans up)
 │

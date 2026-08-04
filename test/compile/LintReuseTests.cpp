@@ -123,7 +123,8 @@ struct WarmRun {
 };
 
 WarmRun runWarm(const fs::path& file, const std::string& sourceRoot = "",
-                const std::string& shadow = "", bool emitXref = false) {
+                const std::string& shadow = "", bool emitXref = false,
+                const std::vector<std::string>& classpath = {}) {
     WarmRun r;
     auto errFile = freshTempDir("warm") / "stderr.txt";
 
@@ -143,6 +144,7 @@ WarmRun runWarm(const fs::path& file, const std::string& sourceRoot = "",
     req.shadow = shadow;
     req.jsonDiagnostics = true;
     req.emitXref = emitXref;
+    req.classpath = classpath;
     r.rc = cajeta::lintservice::warmLint(req);
 
     std::fflush(stderr);
@@ -153,6 +155,88 @@ WarmRun runWarm(const fs::path& file, const std::string& sourceRoot = "",
 
     r.err = readFile(errFile);
     return r;
+}
+
+// Like runWarm, but through the SERVED path (sibling-context reuse), so a
+// caller can drive cold-then-warm-hit against one persistent context — the
+// shape the `--lint-server` loop actually runs.
+WarmRun runServed(const fs::path& file, const std::string& sourceRoot,
+                  cajeta::lintservice::SiblingContext& ctx,
+                  const std::vector<std::string>& classpath = {},
+                  bool emitXref = false) {
+    WarmRun r;
+    auto errFile = freshTempDir("served") / "stderr.txt";
+
+    std::fflush(stderr);
+    std::cerr.flush();
+    int savedFd = CAJETA_DUP(CAJETA_FILENO(stderr));
+    FILE* redirect = std::fopen(errFile.string().c_str(), "wb");
+    if (!redirect) {
+        CAJETA_CLOSE(savedFd);
+        return r;
+    }
+    CAJETA_DUP2(CAJETA_FILENO(redirect), CAJETA_FILENO(stderr));
+
+    cajeta::lintservice::LintRequest req;
+    req.file = file.string();
+    req.sourceRoot = sourceRoot;
+    req.jsonDiagnostics = true;
+    req.emitXref = emitXref;
+    req.classpath = classpath;
+    r.rc = cajeta::lintservice::warmLintServed(req, ctx).rc;
+
+    std::fflush(stderr);
+    std::cerr.flush();
+    CAJETA_DUP2(savedFd, CAJETA_FILENO(stderr));
+    CAJETA_CLOSE(savedFd);
+    std::fclose(redirect);
+
+    r.err = readFile(errFile);
+    return r;
+}
+
+// Build a one-class library archive and return its `.cja` path (empty on
+// failure). The dependency half of the classpath fixtures below. With
+// [withDi] the library also carries a DI graph — one `@Component` provider of
+// an interface and one `@Component` consumer that `@Inject`s it — the shape
+// that exposes a DOUBLE ingest: registering the same provider twice reads as
+// two candidate providers and the injection point turns ambiguous.
+fs::path buildDepArchive(const std::string& tag, bool withDi = false) {
+    auto lib = freshTempDir(tag);
+    auto src = lib / "src";
+    fs::create_directories(src / "dep");
+    {
+        std::ofstream out(src / "dep" / "DepType.cajeta");
+        out << "package dep;\n"
+               "public class DepType {\n"
+               "    public int32 answer() { return 42; }\n"
+               "}\n";
+    }
+    if (withDi) {
+        std::ofstream out(src / "dep" / "Wiring.cajeta");
+        out << "package dep;\n"
+               "public interface Sink {\n"
+               "    public void write();\n"
+               "}\n"
+               "@Component\n"
+               "public final class ConsoleSink implements Sink {\n"
+               "    public ConsoleSink() { }\n"
+               "    public void write() { }\n"
+               "}\n"
+               "@Component\n"
+               "public final class Pipeline {\n"
+               "    @Inject Sink sink;\n"
+               "    public Pipeline() { }\n"
+               "}\n";
+    }
+    auto arc = lib / "arc";
+    fs::create_directories(arc);
+    std::string cmd = compilerBinary() + " dep.DepType " + src.string() + " "
+                    + arc.string() + " --emit=cja > " CAJETA_LINT_DEVNULL " 2>&1";
+    if (std::system(cmd.c_str()) != 0) return {};
+    for (auto& e : fs::directory_iterator(arc))
+        if (e.path().extension() == ".cja") return e.path();
+    return {};
 }
 
 const char* HEALTHY_ALPHA =
@@ -346,6 +430,96 @@ TEST(LintReuse, SourceRootSiblingsResolveAfterRestore) {
     EXPECT_EQ(warm1.err, oracle.err) << "first --source-root warm run diverges";
     EXPECT_EQ(warm2.err, oracle.err)
         << "sibling signatures after restore diverge from fresh";
+}
+
+// A consumer that declares a field of the dependency's type. The reference
+// resolves only if the `.cja` on the classpath was ingested; without it the
+// lint reports CAJETA_ERROR_UNRESOLVED_TYPE.
+const char* DEP_CONSUMER =
+    "public final class Consumer {\n"
+    "    dep.DepType d;\n"
+    "    public static void main() { }\n"
+    "}";
+
+// The warm path must honor the classpath exactly as one-shot `--lint
+// --classpath=...` does. Julian, 2026-07-31: `Logger` from the
+// dev.cajeta.logging dep stayed red-underlined in CLion while one-shot lint
+// of the same buffer was clean — the warm server never received the
+// classpath, so every dependency type read as unresolved.
+TEST(LintReuse, ClasspathDependencyResolvesInWarmLint) {
+    SKIP_WITHOUT_BINARY();
+    auto cja = buildDepArchive("warmcp");
+    ASSERT_FALSE(cja.empty()) << "dep .cja build failed";
+
+    auto root = freshTempDir("warmcpuser") / "src";
+    auto target = writeUnit(root, "Consumer", DEP_CONSUMER);
+
+    std::string flags = "--diag-format=json --classpath=" + cja.string();
+    auto oracle = oracleLint(target, flags);
+    auto warm = runWarm(target, "", "", false, {cja.string()});
+
+    EXPECT_EQ(warm.err, oracle.err)
+        << "warm lint diverges from one-shot with --classpath";
+    EXPECT_EQ(warm.err.find("UNRESOLVED_TYPE"), std::string::npos)
+        << "dependency type unresolved in warm lint:\n" << warm.err;
+}
+
+// The served path reuses a sibling context across requests. The second
+// request is a warm HIT (nothing changed), and it must still resolve the
+// dependency — a re-ingest against restored registries must neither drop the
+// dep nor double-register it.
+TEST(LintReuse, ClasspathSurvivesSiblingContextWarmHit) {
+    SKIP_WITHOUT_BINARY();
+    auto cja = buildDepArchive("servedcp");
+    ASSERT_FALSE(cja.empty()) << "dep .cja build failed";
+
+    auto root = freshTempDir("servedcpuser") / "src";
+    writeUnit(root, "Sibling", SIBLING);
+    auto target = writeUnit(root, "Consumer", DEP_CONSUMER);
+
+    std::string flags = "--diag-format=json --source-root " + root.string()
+                      + " --classpath=" + cja.string();
+    auto oracle = oracleLint(target, flags);
+
+    cajeta::lintservice::SiblingContext ctx;
+    auto cold = runServed(target, root.string(), ctx, {cja.string()});
+    auto hot  = runServed(target, root.string(), ctx, {cja.string()});
+
+    EXPECT_EQ(cold.err, oracle.err) << "cold served run diverges from one-shot";
+    EXPECT_EQ(hot.err, oracle.err)
+        << "warm-hit served run lost the classpath:\n" << hot.err;
+}
+
+// The warm hit restores a context baseline that ALREADY carries the
+// dependency's declarations. Ingesting the classpath again on top of it
+// registers every dependency `@Component` a second time, and the dependency's
+// own `@Inject` sites then see two candidate providers. Julian, 2026-07-31:
+// the second lint of an unchanged tour buffer reported
+// CAJETA_ERROR_DI_AMBIGUOUS for dev.cajeta.logging's Appender, which the first
+// lint and the one-shot binary both resolved cleanly.
+TEST(LintReuse, ClasspathDiProvidersAreNotDoubleRegisteredOnWarmHit) {
+    SKIP_WITHOUT_BINARY();
+    auto cja = buildDepArchive("dicp", /*withDi=*/true);
+    ASSERT_FALSE(cja.empty()) << "dep .cja build failed";
+
+    auto root = freshTempDir("dicpuser") / "src";
+    writeUnit(root, "Sibling", SIBLING);
+    auto target = writeUnit(root, "Consumer", DEP_CONSUMER);
+
+    std::string flags = "--diag-format=json --source-root " + root.string()
+                      + " --classpath=" + cja.string();
+    auto oracle = oracleLint(target, flags);
+    ASSERT_EQ(oracle.err.find("DI_AMBIGUOUS"), std::string::npos)
+        << "fixture is ambiguous even one-shot; test would be vacuous:\n"
+        << oracle.err;
+
+    cajeta::lintservice::SiblingContext ctx;
+    auto cold = runServed(target, root.string(), ctx, {cja.string()});
+    auto hot  = runServed(target, root.string(), ctx, {cja.string()});
+
+    EXPECT_EQ(cold.err, oracle.err) << "cold served run diverges from one-shot";
+    EXPECT_EQ(hot.err, oracle.err)
+        << "dependency providers double-registered on the warm hit:\n" << hot.err;
 }
 
 // 1.3.1 — parity across the existing lint fixture corpus. The entries

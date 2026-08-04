@@ -57,23 +57,24 @@ TEST(LambdaL3Tests, transferCaptureRunsWithinScope) {
 // as use-after-move at compile time. This is what makes `#` meaningful:
 // the static check catches a use that would have aliased the moved-out
 // owner.
-TEST(LambdaL3Tests, outerUseAfterTransferIsCompileError) {
+TEST(LambdaL3Tests, outerReadAfterTransferIsLegal) {
     auto src =
         "package test;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] arr = heap int32[3];\n"
         "        () -> int64 fn = () -> #arr.count();\n"
-        "        int64 size = arr.count();\n"  // use-after-move
+        "        int64 size = arr.count();\n"  // demoted — readable
         "        return (int32) size;\n"
         "    }\n"
         "}\n";
+    // transfer-demotes-to-borrow: the capture demotes `arr` to a borrow of
+    // the same live array; the outer read is an ordinary borrow read.
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected use-after-move on outer read after transfer";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
-        EXPECT_NE(e.getMessage().find("arr"), std::string::npos);
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
     }
 }
 
@@ -410,7 +411,7 @@ TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
 // Transfer-name registered when `#arr` appears inside the if-then
 // block of a lambda body. Outer use after the lambda is created must
 // still trip use-after-move.
-TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaMovesOuter) {
+TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaDemotesOuter) {
     auto src =
         "package test;\n"
         "public final class D {\n"
@@ -426,17 +427,18 @@ TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaMovesOuter) {
         "        return (int32) (fn(true) + size);\n"
         "    }\n"
         "}\n";
+    // transfer-demotes-to-borrow: the capture demotes `arr` to a borrow of
+    // the same live array; the outer read is an ordinary borrow read.
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected use-after-move on outer read after transfer in if-branch";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
-        EXPECT_NE(e.getMessage().find("arr"), std::string::npos);
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
     }
 }
 
 // Same shape but the `#name` lives inside a `for`-loop body.
-TEST(LambdaL3Tests, transferInsideForBodyOfLambdaMovesOuter) {
+TEST(LambdaL3Tests, transferInsideForBodyOfLambdaDemotesOuter) {
     auto src =
         "package test;\n"
         "public final class D {\n"
@@ -453,12 +455,13 @@ TEST(LambdaL3Tests, transferInsideForBodyOfLambdaMovesOuter) {
         "        return (int32) (fn(1) + size);\n"
         "    }\n"
         "}\n";
+    // transfer-demotes-to-borrow: the capture demotes `arr` to a borrow of
+    // the same live array; the outer read is an ordinary borrow read.
     try {
         CajetaJit::compile(src, "test.D");
-        FAIL() << "expected use-after-move on outer read after transfer in for body";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
-        EXPECT_NE(e.getMessage().find("arr"), std::string::npos);
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
     }
 }
 

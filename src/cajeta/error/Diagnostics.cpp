@@ -92,6 +92,25 @@ namespace cajeta {
             if (v.empty()) out += "null";
             else { out += "\""; out += jsonEscape(v); out += "\""; }
         }
+
+        // The one place a record is opened (compiler-jsonl 2.1.1): every record
+        // leads with its `kind`, so a consumer dispatches on the discriminator
+        // instead of inferring the type from which payload fields happen to be
+        // present. Callers append their own fields and close with `}`.
+        std::string openRecord(const char* kind) {
+            std::string o = "{\"kind\":\"";
+            o += kind;
+            o += "\",";
+            return o;
+        }
+
+        // The one place a record is written: one line, one flush, so a consumer
+        // reading the pipe sees each record when it happens rather than at
+        // process exit (spec 1.4.3).
+        void writeRecord(std::string& o) {
+            o += "}\n";
+            std::cerr << o << std::flush;
+        }
     } // namespace
 
     void emitJsonDiagnostic(const std::string& severity,
@@ -100,17 +119,17 @@ namespace cajeta {
                             const std::string& file,
                             int line,
                             int column) {
-        std::string o = "{";
+        // `kind` leads; every field that was here before is unchanged, in the
+        // same order, with the same meaning (compiler-jsonl 1.4.2 — a new
+        // compiler must not break an installed plugin).
+        std::string o = openRecord("diagnostic");
         strOrNull(o, "severity", severity); o += ",";
         strOrNull(o, "code", code);         o += ",";
         strOrNull(o, "message", message);   o += ",";
         strOrNull(o, "file", file);         o += ",";
         o += "\"line\":";   o += (line   > 0 ? std::to_string(line)   : "null"); o += ",";
         o += "\"column\":"; o += (column > 0 ? std::to_string(column) : "null");
-        o += "}\n";
-        // stderr, unbuffered-friendly: one write per line so consumers reading
-        // the pipe see each diagnostic as it is produced.
-        std::cerr << o << std::flush;
+        writeRecord(o);
     }
 
     namespace {
@@ -120,11 +139,69 @@ namespace cajeta {
     void setJsonProgressEnabled(bool enabled) { g_jsonProgress = enabled; }
     bool jsonProgressEnabled() { return g_jsonProgress; }
 
+    namespace {
+        // Build provenance, not an argv-derived value: the producer identifies
+        // the compiler that wrote the stream, so it must be the same whether
+        // the emitter is the `cajeta` binary or anything else linking this
+        // library (the lint reuse tests run the driver IN-PROCESS and compare
+        // byte-for-byte against a fresh subprocess — a producer that depended
+        // on main() having run made those two disagree). CAJETA_VERSION is a
+        // global compile definition, so it is available here.
+#ifndef CAJETA_VERSION
+#define CAJETA_VERSION "0.0.0-unknown"
+#endif
+        std::string g_jsonProducer = std::string("cajeta ") + CAJETA_VERSION;
+    }
+
+    void setJsonProducer(const std::string& producer) {
+        if (!producer.empty()) g_jsonProducer = producer;
+    }
+    const std::string& jsonProducer() { return g_jsonProducer; }
+
+    bool resolveDiagFormatFromArgv(int argc, const char* argv[]) {
+        // Only the `--diag-format=<value>` form exists (main.cpp's `match`
+        // takes no space-separated variant), so an exact token compare is the
+        // whole grammar. Text stays the default: anything else, including a
+        // malformed value, leaves the gate alone for the verb's own parser to
+        // reject with a usage message.
+        bool json = false;
+        for (int i = 1; i < argc; ++i) {
+            const std::string a = argv[i];
+            if (a == "--diag-format=json") json = true;
+            else if (a == "--diag-format=text") json = false;
+        }
+        if (json) setJsonProgressEnabled(true);
+        return json;
+    }
+
+    void emitStreamRecord() {
+        // Text mode emits nothing structured, ever (spec 1.4.1).
+        if (!jsonProgressEnabled()) return;
+        std::string o = openRecord("stream");
+        o += "\"major\":"; o += std::to_string(kJsonlSchemaMajor); o += ",";
+        o += "\"minor\":"; o += std::to_string(kJsonlSchemaMinor); o += ",";
+        strOrNull(o, "producer", jsonProducer());
+        writeRecord(o);
+    }
+
+    void emitStreamRecordOnce() {
+        // At most once per process: for a verb whose whole run is ONE stream
+        // (a compile, a jit-run). The lint driver uses the unlatched form
+        // instead — each lint response is its own stream, and the warm server
+        // replays a payload that must match a fresh one-shot process byte for
+        // byte (lint-server-spec 1.4.1), which a process-lifetime latch would
+        // break from the second request on.
+        static bool emitted = false;
+        if (emitted) return;
+        emitted = true;
+        emitStreamRecord();
+    }
+
     void emitJsonProgress(const std::string& phase,
                           const std::string& state,
                           const std::string& label,
                           long long elapsedMs) {
-        std::string o = "{\"kind\":\"progress\",";
+        std::string o = openRecord("progress");
         strOrNull(o, "phase", phase); o += ",";
         strOrNull(o, "state", state); o += ",";
         strOrNull(o, "label", label);
@@ -132,19 +209,42 @@ namespace cajeta {
             o += ",\"elapsedMs\":";
             o += std::to_string(elapsedMs);
         }
-        o += "}\n";
-        // Same stream + flush discipline as emitJsonDiagnostic: one write per
-        // line so the IDE's pipe reader sees a phase the moment it starts,
-        // instead of when the process exits.
-        std::cerr << o << std::flush;
+        writeRecord(o);
+    }
+
+    void emitJsonLog(const std::string& level, const std::string& message) {
+        std::string o = openRecord("log");
+        strOrNull(o, "level", level); o += ",";
+        strOrNull(o, "message", message);
+        writeRecord(o);
+    }
+
+    void logLine(const std::string& level, const std::string& text) {
+        if (jsonProgressEnabled()) {
+            // Strip the trailing newline: it belongs to the line-oriented text
+            // form, not to the message a consumer renders.
+            std::string msg = text;
+            while (!msg.empty() && (msg.back() == '\n' || msg.back() == '\r'))
+                msg.pop_back();
+            emitJsonLog(level, msg);
+        } else {
+            std::cerr << text;
+        }
+    }
+
+    void emitJsonResult(const std::string& status, const std::string& message) {
+        if (!jsonProgressEnabled()) return;
+        std::string o = openRecord("result");
+        strOrNull(o, "status", status);
+        if (!message.empty()) { o += ","; strOrNull(o, "message", message); }
+        writeRecord(o);
     }
 
     void emitJsonCacheHit(const std::string& artifact) {
-        std::string o = "{\"kind\":\"cache\",";
+        std::string o = openRecord("cache");
         strOrNull(o, "state", "hit");     o += ",";
         strOrNull(o, "artifact", artifact);
-        o += "}\n";
-        std::cerr << o << std::flush;
+        writeRecord(o);
     }
 
     ProgressPhase::ProgressPhase(std::string phase, std::string label)

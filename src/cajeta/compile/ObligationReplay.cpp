@@ -4,8 +4,10 @@
 #include "../method/Method.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
+#include "../type/FormalParameter.h"
 
 #include <set>
+#include <string>
 #include <vector>
 
 namespace cajeta {
@@ -137,14 +139,41 @@ namespace cajeta {
         std::string rest = key.substr(sep + 2);
         auto paren = rest.find('(');
         if (paren == std::string::npos) {
-            err = "malformed method obligation `" + key + "`";
-            return false;
+            // Static-field form: `Owner::field`, no param list (compile-cache
+            // D1). A foldable static's global is defined in the declaring
+            // class's module only when a referencing module's codegen demands
+            // it; the skipped module's demand is re-asserted here by forcing
+            // the definition the same way a live reference would — a null
+            // caller module targets the declaring module and records nothing.
+            CajetaTypePtr hostType = resolveCanonicalType(host, err);
+            if (!hostType) return false;
+            auto hostClass = std::dynamic_pointer_cast<CajetaClass>(hostType);
+            if (!hostClass) {
+                err = "static-field obligation host `" + host
+                    + "` is not a class";
+                return false;
+            }
+            auto& props = hostClass->getProperties();
+            auto pit = props.find(rest);
+            if (pit == props.end() || !pit->second
+                || !pit->second->isStatic()) {
+                err = "no static field `" + rest + "` on `" + host + "`";
+                return false;
+            }
+            if (!hostClass->getOrCreateStaticFieldGlobal(pit->second,
+                                                         nullptr)) {
+                err = "static-field global creation failed for `" + key + "`";
+                return false;
+            }
+            return true;
         }
         std::string methodName = trim(rest.substr(0, paren));
 
-        // Step past the (nesting-aware) value-param list. Its TYPES are
-        // ignored per D2, but the param COUNT disambiguates same-name
-        // overloaded method templates below.
+        // Step past the (nesting-aware) value-param list. The param COUNT
+        // disambiguates same-name overloaded method templates below, and when
+        // two overloads share a count the TYPES break the tie (compile-cache
+        // D1 — v1 gave up here and failed the replay, which dropped a
+        // newly-required instantiation and broke the link).
         int depth = 0;
         size_t i = paren;
         for (; i < rest.size(); ++i) {
@@ -153,8 +182,15 @@ namespace cajeta {
         }
         std::string paramsInner =
             trim(rest.substr(paren + 1, (i - 1) - (paren + 1)));
-        size_t keyParamCount =
-            paramsInner.empty() ? 0 : splitTopLevel(paramsInner).size();
+        std::vector<std::string> keyParams;
+        if (!paramsInner.empty()) {
+            for (auto& piece : splitTopLevel(paramsInner)) {
+                std::string p = trim(piece);
+                if (!p.empty() && p[0] == '#') p = trim(p.substr(1));
+                keyParams.push_back(std::move(p));
+            }
+        }
+        size_t keyParamCount = keyParams.size();
         std::vector<CajetaTypePtr> targs;
         if (i < rest.size() && rest[i] == '<' && rest.back() == '>') {
             if (!resolveArgList(rest.substr(i + 1, rest.size() - i - 2),
@@ -192,6 +228,51 @@ namespace cajeta {
             err = "no method template `" + methodName + "` on `" + host + "`";
             return false;
         }
+        // compile-cache D1 — break a same-count tie on the value-param TYPES,
+        // which the key has been carrying all along. Instantiate each tied
+        // candidate with the requested type arguments and compare its concrete
+        // parameter types against the key's; the one that matches is the one
+        // the original call site resolved to.
+        //
+        // Instantiating a loser is cheap and inert: it builds the specialized
+        // Method but does NOT bring it alive (no register / prototype / body),
+        // so nothing is emitted for it. `noteCrossModuleMethodInstantiation`
+        // no-ops here too — replay runs outside codegen, so there is no current
+        // codegen module to charge the obligation to.
+        // `keySkip` is how many leading key params are NOT declared params —
+        // 1 when the key was captured after `this` insertion, 0 otherwise.
+        // `getParameterList()` may itself carry a leading `this` (the count
+        // above uses `getParameters()`, the map, which does not), so both
+        // sides are re-aligned here rather than assumed.
+        auto signatureMatches = [&](const MethodPtr& cand,
+                                    size_t keySkip) -> bool {
+            MethodPtr probe = cand->instantiateMethodTemplate(targs);
+            if (!probe) return false;
+            auto probeParams = probe->getParameterList();
+            size_t declSkip = (!probeParams.empty() && probeParams.front()
+                               && probeParams.front()->getName() == "this")
+                                  ? 1u : 0u;
+            if (keyParams.size() < keySkip) return false;
+            size_t n = keyParams.size() - keySkip;
+            if (probeParams.size() - declSkip != n) return false;
+            for (size_t p = 0; p < n; ++p) {
+                auto& fp = probeParams[declSkip + p];
+                if (!fp || !fp->getType()) return false;
+                const std::string& keyParam = keyParams[keySkip + p];
+                std::string ignored;
+                CajetaTypePtr want = resolveCanonicalType(keyParam, ignored);
+                // An unresolvable key param must not silently disqualify a
+                // candidate — fall back to comparing the spelling.
+                if (want) {
+                    if (want->toCanonical() != fp->getType()->toCanonical())
+                        return false;
+                } else if (keyParam != fp->getType()->toCanonical()) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
         MethodPtr tmpl;
         if (named.size() == 1) {
             tmpl = named.front();
@@ -200,21 +281,29 @@ namespace cajeta {
                  ++wantOffset) {
                 if (keyParamCount < wantOffset) break;
                 size_t want = keyParamCount - wantOffset;
-                MethodPtr match;
-                bool tie = false;
+                std::vector<MethodPtr> sameCount;
                 for (auto& m : named) {
-                    if (m->getParameters().size() != want) continue;
-                    if (match) { tie = true; break; }
-                    match = m;
+                    if (m->getParameters().size() == want) sameCount.push_back(m);
                 }
-                if (tie) {
-                    err = "ambiguous method template `" + methodName
-                        + "` on `" + host + "` (multiple overloads with "
-                        + std::to_string(want) + " params; v1 replay does"
-                          " not compare value-param signatures)";
-                    return false;
+                if (sameCount.size() == 1) {
+                    tmpl = sameCount.front();
+                } else if (sameCount.size() > 1) {
+                    MethodPtr match;
+                    bool tie = false;
+                    for (auto& m : sameCount) {
+                        if (!signatureMatches(m, wantOffset)) continue;
+                        if (match) { tie = true; break; }
+                        match = m;
+                    }
+                    if (tie) {
+                        err = "ambiguous method template `" + methodName
+                            + "` on `" + host + "` (multiple overloads with "
+                            + std::to_string(want) + " params share the same "
+                              "value-param signature)";
+                        return false;
+                    }
+                    tmpl = match;
                 }
-                tmpl = match;
             }
             if (!tmpl) {
                 err = "no method template `" + methodName + "` on `" + host

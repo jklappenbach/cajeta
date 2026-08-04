@@ -43,6 +43,20 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
     return fn();
 }
 
+// transfer-demotes-to-borrow — a read of a transferred binding is legal:
+// `#` moves the title, not the binding. Asserts the source compiles.
+// Value-correctness of such reads is pinned in DemotedBindingReadTests.
+void compileExpectOk(const std::string& src) {
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got "
+                      << e.getErrorId() << ": " << e.getMessage();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.what();
+    }
+}
+
 std::string compileExpectError(const std::string& src,
                                const std::string& expectCode) {
     try {
@@ -87,32 +101,34 @@ TEST(LocalLinearityTests, doubleCallArgTransferIsCompileError) {
         "        Sink s2 = heap Sink();\n"
         "        Cell v = heap Cell(5);\n"
         "        s1.take(#v);\n"
-        "        s2.take(#v);\n"          // second transfer — reject
+        "        s2.take(#v);\n"          // second transfer — still rejected
         "        return s2.seen;\n"
         "    }\n"
         "}\n";
+    // A transfer demotes its source, so a SECOND transfer is a transfer from
+    // a borrow — one error covers both shapes (transfer-demotes-to-borrow §1.3).
     std::string msg =
-        compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+        compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
     EXPECT_NE(msg.find("v"), std::string::npos) << msg;
 }
 
 // 2.1.2 corollary — a plain READ after a call-arg transfer is also
 // use-after-move (today it compiles and reads a deactivated value).
-TEST(LocalLinearityTests, readAfterCallArgTransferIsCompileError) {
+TEST(LocalLinearityTests, readAfterCallArgTransferIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Sink s1 = heap Sink();\n"
         "        Cell v = heap Cell(5);\n"
         "        s1.take(#v);\n"
-        "        return v.n;\n"           // read of moved local — reject
+        "        return v.n;\n"           // demoted to a borrow — readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.2 — ctor-arg transfers mark moved too (`heap Holder(#v)`).
-TEST(LocalLinearityTests, readAfterCtorArgTransferIsCompileError) {
+TEST(LocalLinearityTests, readAfterCtorArgTransferIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public class Holder {\n"
         "    public Cell held;\n"
@@ -122,10 +138,10 @@ TEST(LocalLinearityTests, readAfterCtorArgTransferIsCompileError) {
         "    public static int32 run() {\n"
         "        Cell v = heap Cell(5);\n"
         "        Holder h = heap Holder(#v);\n"
-        "        return v.n;\n"           // read of moved local — reject
+        "        return v.n;\n"           // demoted to a borrow — readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.3 — legal same-scope move chain: exactly one drop at scope exit
@@ -150,16 +166,16 @@ TEST(LocalLinearityTests, legalMoveChainSingleDrop) {
 }
 
 // 2.1.3 — reads of the moved-out links are rejected.
-TEST(LocalLinearityTests, readOfMovedChainLinkIsCompileError) {
+TEST(LocalLinearityTests, readOfMovedChainLinkIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell obj = heap Cell(42);\n"
         "        Cell obj3 #= obj;\n"
-        "        return obj.n;\n"         // moved at the line above
+        "        return obj.n;\n"         // demoted above — still readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.3 — borrows are move-transparent: a borrow taken BEFORE the owner
@@ -211,7 +227,7 @@ TEST(LocalLinearityTests, loopTransferReArmCompiles) {
 }
 
 // 2.1.5 — branch join is conservative: moved on one path = moved after.
-TEST(LocalLinearityTests, branchJoinMovedIsCompileError) {
+TEST(LocalLinearityTests, branchJoinMovedIsLegal) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run(int32 flag) {\n"
@@ -220,10 +236,10 @@ TEST(LocalLinearityTests, branchJoinMovedIsCompileError) {
         "        if (flag > 0) {\n"
         "            s.take(#v);\n"
         "        }\n"
-        "        return v.n;\n"           // moved on the taken path — reject
+        "        return v.n;\n"           // demoted on one path — readable
         "    }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_USE_AFTER_MOVE");
+    compileExpectOk(src);
 }
 
 // 2.1.5 control — reassigned on the SAME path after the move: re-armed at
@@ -272,4 +288,205 @@ TEST(LocalLinearityTests, bareDeclMoveAssignAcrossScopes) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 33);
+}
+
+// --- double sharp: `x #= #y` is an error ---------------------------------------
+//
+// `#=` IS the transfer — the store site carries it (language-ownership: "a
+// store uses `#=`; everything else uses `#v`"). Writing `#` on the RHS as well
+// says "transfer" twice and does nothing the single sharp did not already do.
+// It compiled silently, which let the stdlib's LinkedList.popHead/popTail carry
+// `T title #= #node.value` — a spelling that reads as a deliberate extra claim
+// and is not one. Reject it so the intent has exactly one spelling.
+
+TEST(LocalLinearityTests, doubleSharpStoreIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell a = heap Cell(3);\n"
+        "        Cell b #= #a;\n"           // double sharp — reject
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// The same on a FIELD store — the shape the stdlib actually used.
+TEST(LocalLinearityTests, doubleSharpFieldStoreIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public class Box {\n"
+        "    public Cell held;\n"
+        "    public void put(Cell c) { this.held #= #c; }\n"   // double sharp
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+}
+
+// uniform-transfer-semantics Unit 3 — the rule is now BLANKET: `#` on the RHS
+// of `#=` is an error whatever the source's shape.
+//
+// It used to be narrowed to bare-identifier sources so that a FIELD or ELEMENT
+// source could keep the "fused claim" — a double sharp that forwarded whatever
+// mode the source slot held, owned or borrowed, VERBATIM. That existed for one
+// reason: a container slot MIGHT hold a borrow, so a store out of one could not
+// assert an unconditional transfer. Spec 2.3 removes the premise — every
+// container owns its elements — and Unit 2 collapsed all 20 stdlib fused claims
+// to single moves accordingly (`grep '#= #' runtime/src` is now 0).
+//
+// So the narrowing no longer buys anything, and the language gets one rule:
+// the STORE carries the transfer, and it is spelled exactly once.
+//
+// Array-element → array-element stores keep forwarding the source bit verbatim
+// under the SINGLE sharp (BinaryOpExpression's fwdLhs/fwdSrc arm does not
+// require the double), so `dst[i] #= src[j]` is the shift/sift primitive it
+// always was. Nothing is lost here except a second spelling.
+
+// 3.1.1 — a FIELD source. This test previously asserted the opposite; it is
+// inverted rather than deleted so the history shows the rule changing.
+TEST(LocalLinearityTests, doubleSharpFromFieldIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public class Node2 {\n"
+        "    public Cell value;\n"
+        "    public Node2(Cell v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Node2 n = heap Node2(heap Cell(4));\n"
+        "        Cell t #= #n.value;\n"     // was the fused claim — now rejected
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 3.1.5 (field half) — the origin guard. The SAME fixture with the sharp
+// dropped must compile clean. Without this, a DOUBLE_TRANSFER raised anywhere
+// else in the compile (the stdlib, a fixture typo) would read as a pass: §6
+// records three tests that once went green for exactly that reason. The pair
+// makes the offending line the only difference between red and green.
+TEST(LocalLinearityTests, doubleSharpFromFieldSingleSharpControlCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public class Node2 {\n"
+        "    public Cell value;\n"
+        "    public Node2(Cell v) { this.value #= v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Node2 n = heap Node2(heap Cell(4));\n"
+        "        Cell t #= n.value;\n"      // the one-character difference
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 4);
+}
+
+// 3.1.2 — an ARRAY-ELEMENT source.
+TEST(LocalLinearityTests, doubleSharpFromElementIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell[] arr = heap Cell[2];\n"
+        "        arr[0] #= heap Cell(5);\n"
+        "        Cell t #= #arr[0];\n"      // element source — rejected
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 3.1.5 (element half) — the same fixture minus the sharp.
+TEST(LocalLinearityTests, doubleSharpFromElementSingleSharpControlCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell[] arr = heap Cell[2];\n"
+        "        arr[0] #= heap Cell(5);\n"
+        "        Cell t #= arr[0];\n"
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
+}
+
+// 3.1.3 — a CALL-RESULT source. `make()` already hands back a title (`#Cell`),
+// so `#make()` claims a title that is already the caller's.
+TEST(LocalLinearityTests, doubleSharpFromCallResultIsCompileError) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() { return heap Cell(6); }\n"
+        "    public static int32 run() {\n"
+        "        Cell t #= #make();\n"      // call-result source — rejected
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+}
+
+// 3.1.5 (call half) — the same fixture minus the sharp.
+TEST(LocalLinearityTests, doubleSharpFromCallResultSingleSharpControlCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static #Cell make() { return heap Cell(6); }\n"
+        "    public static int32 run() {\n"
+        "        Cell t #= make();\n"
+        "        return t.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
+// 3.1.2 (store half) — an element STORE whose source is an element. This is
+// the shift/sift primitive, and it must keep forwarding the source bit under
+// the single sharp: slot 0 is owned, so slot 1 ends up owning it and slot 0
+// decays. One live Cell at scope exit, not two, and no double free.
+TEST(LocalLinearityTests, elementToElementStoreForwardsUnderSingleSharp) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell[] arr = heap Cell[2];\n"
+        "            arr[0] #= heap Cell(7);\n"
+        "            arr[1] #= arr[0];\n"   // forward the title, no double sharp
+        "            t = arr[1].n;\n"
+        "        }\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// The CORRECT spelling keeps working — the store carries the transfer.
+TEST(LocalLinearityTests, singleSharpStoreStillCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell a = heap Cell(3);\n"
+        "        Cell b #= a;\n"
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 3);
+}
+
+// And the LEGACY `dst = #v` spelling is untouched — it is deprecated, not an
+// error, and rejecting it here would be a different (breaking) decision.
+TEST(LocalLinearityTests, legacyPlainAssignWithSharpRhsStillCompiles) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Cell a = heap Cell(5);\n"
+        "        Cell b = #a;\n"
+        "        return b.n;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 5);
 }

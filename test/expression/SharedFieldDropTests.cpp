@@ -63,8 +63,9 @@ TEST(SharedFieldDropTests, fieldHeldStakeReleasesOnObjectDrop) {
 // The balance assert was BLOCKED on the container element-drop gap (slices
 // 9.2.1); element-ownership Unit 3 closed it — an OWNING instantiation
 // (`ArrayList<String>`) drops its elements at teardown, so `#`-transferred
-// slices belong in one. (The borrow instantiation deliberately does not
-// drop — see OwnershipLeakProbe.arrayListBorrowElementsUntouched.)
+// slices belong in one. (uniform-transfer-semantics 2.3 went further: there
+// is no borrow instantiation left — lending into a container is a compile
+// error. See OwnershipLeakProbe.arrayListStringLendIsRejected.)
 TEST(SharedFieldDropTests, containerHeldStakesRelease) {
     EXPECT_EQ(runJit(
         "int64 base = Cajeta.liveCount();\n"

@@ -10,12 +10,13 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
 import java.awt.CardLayout
+import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JPanel
+import javax.swing.JTable
 import javax.swing.JTextField
 import javax.swing.JToggleButton
 import javax.swing.JToolBar
-import javax.swing.table.AbstractTableModel
 
 /**
  * The structured JSONL console surface (spec §7): a thin Swing delegate over the
@@ -30,8 +31,9 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
 
     private val controller = JsonlConsoleController(structuredByDefault)
 
-    private val tableModel = RowsTableModel()
-    private val table = JBTable(tableModel)
+    private val tableModel = JsonlRowsTableModel()
+    // No width ceiling (§3.1.8): content-sized columns, horizontal scrolling.
+    private val table = JBTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
     private val rawArea = JBTextArea().apply { isEditable = false }
 
     private val cards = CardLayout()
@@ -67,6 +69,14 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
         add(fieldFilter)
         add(JToggleButton("Filter field").apply {
             addActionListener { applyFieldFilter(); refresh() }
+        })
+        // The column chooser (§3.1.7): rebuilt at every click from the fields
+        // discovered so far, so a mid-run arrival is selectable immediately.
+        add(JButton("Fields").apply {
+            addActionListener {
+                JsonlTableSupport.fieldsPopup(controller.columns) { refresh() }
+                    .show(this, 0, height)
+            }
         })
     }
 
@@ -104,7 +114,9 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
     private fun refresh() {
         showCard()
         if (controller.isStructured) {
-            tableModel.update(controller.model().columns, controller.visibleRows())
+            val columns = controller.visibleColumns()
+            tableModel.update(columns, controller.visibleRows())
+            JsonlTableSupport.applyWidths(table, columns, controller.columns)
         } else {
             rawArea.text = controller.rawText()
         }
@@ -115,33 +127,6 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
     private fun onEdt(block: () -> Unit) {
         val app = ApplicationManager.getApplication()
         if (app == null || app.isDispatchThread) block() else app.invokeLater(block)
-    }
-
-    /** Table model over the engine's columns: one leading `#` line column, then a
-     *  cell per derived column; a [JsonlRow.Raw] spans as its verbatim text in
-     *  the first data column. */
-    private class RowsTableModel : AbstractTableModel() {
-        private var columns: List<String> = emptyList()
-        private var rows: List<JsonlRow> = emptyList()
-
-        fun update(columns: List<String>, rows: List<JsonlRow>) {
-            this.columns = columns
-            this.rows = rows
-            fireTableStructureChanged()
-        }
-
-        override fun getRowCount() = rows.size
-        override fun getColumnCount() = columns.size + 1
-        override fun getColumnName(c: Int) = if (c == 0) "#" else columns[c - 1]
-
-        override fun getValueAt(r: Int, c: Int): Any {
-            val row = rows[r]
-            if (c == 0) return row.lineNumber
-            return when (row) {
-                is JsonlRow.Record -> JsonlEngine.cell(row, columns[c - 1])
-                is JsonlRow.Raw -> if (c == 1) row.text else ""   // raw text in first data column
-            }
-        }
     }
 
     companion object {

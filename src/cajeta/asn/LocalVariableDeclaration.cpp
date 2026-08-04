@@ -1279,7 +1279,7 @@ namespace cajeta {
                         //     The source local's drop entry stays
                         //     active (since `a` keeps the body
                         //     pointer); reads of `a` after this point
-                        //     trip CAJETA_ERROR_USE_AFTER_MOVE.
+                        //     trip CAJETA_ERROR_MOVE_OF_BORROW.
                         //
                         // This complements the field-read and array-
                         // element cases above; together they cover the
@@ -1392,7 +1392,7 @@ namespace cajeta {
 
             // Gap 4 — record a live read-borrow on the scope so a later
             // write through the borrowed path (or any prefix of it)
-            // rejects with CAJETA_ERROR_USE_AFTER_MOVE before clobbering
+            // rejects with CAJETA_ERROR_MOVE_OF_BORROW before clobbering
             // the borrowed slot. Triggered for the borrow shapes
             // detected above: field/array reads of class refs
             // (`String alias = p.name`) and local-to-local aliases of

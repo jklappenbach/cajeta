@@ -34,6 +34,11 @@ class CajetaDebugSession(private val client: DapClient) {
         /** Ask the server to keep its compiled world across sessions
          *  (resident-debug-server 4.2.1). */
         val resident: Boolean = false,
+        /** Resolved dependency `.cja` archives for the launch — the JIT's
+         *  --classpath. Without them a project that declares dependencies
+         *  fails to compile at launch with CAJETA_ERROR_UNRESOLVED_TYPE.
+         *  Empty stays off the wire (absence = no dependencies). */
+        val classpath: List<String> = emptyList(),
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -53,6 +58,15 @@ class CajetaDebugSession(private val client: DapClient) {
     @Volatile var onOutput: ((String, String) -> Unit)? = null
     @Volatile var onClosed: (() -> Unit)? = null
 
+    /**
+     * A breakpoint the server could NOT bind, reported once the program is
+     * compiled: (source file as sent, 1-based line, reason). setBreakpoints is
+     * answered before the compile, so the server says `verified: true` there
+     * and corrects itself here. Without surfacing this the run just ends and
+     * the gutter still shows an armed breakpoint (Julian, 2026-07-31).
+     */
+    @Volatile var onBreakpointUnverified: ((String, Int, String) -> Unit)? = null
+
     fun start() {
         client.onEvent("stopped") { ev -> onStopped?.invoke(ev.opt("body") ?: Json.obj()) }
         client.onEvent("terminated") { onTerminated?.invoke() }
@@ -65,6 +79,17 @@ class CajetaDebugSession(private val client: DapClient) {
             body?.opt("output")?.let {
                 val category = body.opt("category")?.asString() ?: "console"
                 onOutput?.invoke(it.asString(), category)
+            }
+        }
+        client.onEvent("breakpoint") { ev ->
+            val bp = ev.opt("body")?.opt("breakpoint")
+            if (bp != null && (bp.opt("verified") as? Json.Bool)?.value == false) {
+                val file = bp.opt("source")?.opt("path")?.asString()
+                    ?: bp.opt("source")?.opt("name")?.asString() ?: ""
+                val line = bp.opt("line")?.asInt() ?: 0
+                val message = bp.opt("message")?.asString()
+                    ?: "the program cannot stop here"
+                if (line > 0) onBreakpointUnverified?.invoke(file, line, message)
             }
         }
         client.onClosed = { onClosed?.invoke() }
@@ -183,6 +208,26 @@ class CajetaDebugSession(private val client: DapClient) {
         return client.sendRequest("setExceptionBreakpoints", Json.obj("filters" to filters))
     }
 
+    /**
+     * DAP `evaluate` (spec §7.1.1): resolve a bare identifier or a simple
+     * `.field` / `[i]` path against a frame's locals and render it exactly as
+     * a Variables row would. Read-only by construction — the server navigates,
+     * it never calls or mutates (§7.1.4).
+     *
+     * The future completes with null when the expression does not resolve; the
+     * REASON travels in [EvaluateOutcome.message] so a hover can say "not
+     * available" versus "unsupported expression" rather than showing an error
+     * dialog for both (§7.2.3, §7.2.4).
+     */
+    fun evaluate(expression: String, frameId: Int): CompletableFuture<EvaluateOutcome> =
+        client.sendRequest(
+            "evaluate",
+            Json.obj(
+                "expression" to Json.of(expression),
+                "frameId" to Json.of(frameId),
+            ),
+        ).thenApply { parseEvaluate(it) }
+
     /** DAP `scopes` for a frame; structured via [parseScopes]. */
     fun scopes(frameId: Int): CompletableFuture<Json> =
         client.sendRequest("scopes", Json.obj("frameId" to Json.of(frameId)))
@@ -257,6 +302,11 @@ class CajetaDebugSession(private val client: DapClient) {
         // Blank stays off the wire (absence = unspecified, like env above).
         if (p.cacheDir.isNotBlank()) args["cacheDir"] = Json.of(p.cacheDir)
         if (p.resident) args["resident"] = Json.of(true)
+        if (p.classpath.isNotEmpty()) {
+            val cp = Json.arr()
+            p.classpath.forEach { cp.add(Json.of(it)) }
+            args["classpath"] = cp
+        }
         return args
     }
 
@@ -388,6 +438,43 @@ data class DapScope(
 )
 
 /** A single DAP variable, decoded for the XValue mapping layer. */
+/**
+ * What an `evaluate` came back with. Either a [value] to show, or a [message]
+ * explaining why there is nothing — never both, never neither.
+ */
+data class EvaluateOutcome(
+    val value: DapVariable?,
+    val message: String?,
+) {
+    val resolved: Boolean get() = value != null
+}
+
+/**
+ * Read an `evaluate` response into an outcome. A failed response carries its
+ * reason in the top-level `message` (the server distinguishes "not available:
+ * x" from "unsupported expression: x"); a successful one carries
+ * `{result, type, variablesReference}`, the same triple a Variables row uses,
+ * so the hover popup renders through the same [CajetaValue] path.
+ */
+fun parseEvaluate(response: Json, expression: String = ""): EvaluateOutcome {
+    val root = response as? Json.Obj ?: return EvaluateOutcome(null, "not available")
+    val success = (root.entries["success"] as? Json.Bool)?.value ?: false
+    if (!success) {
+        val msg = (root.entries["message"] as? Json.Str)?.value
+        return EvaluateOutcome(null, msg?.ifBlank { null } ?: "not available")
+    }
+    val body = root.entries["body"] as? Json.Obj
+        ?: return EvaluateOutcome(null, "not available")
+    val result = (body.entries["result"] as? Json.Str)?.value
+        ?: return EvaluateOutcome(null, "not available")
+    val type = (body.entries["type"] as? Json.Str)?.value ?: ""
+    val ref = (body.entries["variablesReference"] as? Json.Num)?.value?.toInt() ?: 0
+    return EvaluateOutcome(
+        DapVariable(name = expression, value = result, type = type, variablesReference = ref),
+        null,
+    )
+}
+
 data class DapVariable(
     val name: String,
     val value: String,

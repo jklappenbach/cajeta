@@ -11,8 +11,8 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JTable
 import javax.swing.JToolBar
-import javax.swing.table.AbstractTableModel
 import java.awt.BorderLayout
 
 /**
@@ -23,12 +23,19 @@ import java.awt.BorderLayout
  */
 class JsonlStructuredEditor(private val file: VirtualFile) : UserDataHolderBase(), FileEditor {
 
-    private val tableModel = WindowTableModel()
-    private val table = JBTable(tableModel)
+    private val tableModel = JsonlRowsTableModel()
+    // No width ceiling (§3.1.8): content-sized columns, horizontal scrolling.
+    private val table = JBTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
     private val status = JLabel()
     private val prev = JButton("◀ Prev")
     private val next = JButton("Next ▶")
+    private val fields = JButton("Fields")
     private val panel = JPanel(BorderLayout())
+
+    // Column discovery/selection/widths (§4.1.6), owned across pages: paging
+    // forward may reveal fields the first window never had, and paging back
+    // must not retract them or discard the reader's choice.
+    private val columns = JsonlColumns()
 
     private var startLine = 1
 
@@ -37,6 +44,11 @@ class JsonlStructuredEditor(private val file: VirtualFile) : UserDataHolderBase(
             isFloatable = false
             add(prev.apply { addActionListener { page(-PAGE) } })
             add(next.apply { addActionListener { page(PAGE) } })
+            add(fields.apply {
+                addActionListener {
+                    JsonlTableSupport.fieldsPopup(columns) { render() }.show(this, 0, height)
+                }
+            })
             add(status)
         }
         panel.add(bar, BorderLayout.NORTH)
@@ -49,13 +61,24 @@ class JsonlStructuredEditor(private val file: VirtualFile) : UserDataHolderBase(
         load()
     }
 
+    private var rows: List<JsonlRow> = emptyList()
+
     private fun load() {
         val window = readWindow(startLine, PAGE)
-        tableModel.update(window.columns, window.rows)
+        rows = window.rows
+        columns.observeAll(window.rows)
+        render()
         prev.isEnabled = startLine > 1
         next.isEnabled = window.hasMore
         val last = startLine + PAGE - 1
         status.text = "  lines $startLine–$last" + if (window.hasMore) "" else " (end)"
+    }
+
+    /** Re-render the loaded window under the current column selection. */
+    private fun render() {
+        val visible = columns.visible()
+        tableModel.update(visible, rows)
+        JsonlTableSupport.applyWidths(table, visible, columns)
     }
 
     /** Read one window, opening (and closing) a fresh stream — the reader stops
@@ -75,30 +98,6 @@ class JsonlStructuredEditor(private val file: VirtualFile) : UserDataHolderBase(
     override fun removePropertyChangeListener(listener: PropertyChangeListener) {}
     override fun dispose() {}
     override fun getFile(): VirtualFile = file
-
-    private class WindowTableModel : AbstractTableModel() {
-        private var columns: List<String> = emptyList()
-        private var rows: List<JsonlRow> = emptyList()
-
-        fun update(columns: List<String>, rows: List<JsonlRow>) {
-            this.columns = columns
-            this.rows = rows
-            fireTableStructureChanged()
-        }
-
-        override fun getRowCount() = rows.size
-        override fun getColumnCount() = columns.size + 1
-        override fun getColumnName(c: Int) = if (c == 0) "#" else columns[c - 1]
-
-        override fun getValueAt(r: Int, c: Int): Any {
-            val row = rows[r]
-            if (c == 0) return row.lineNumber
-            return when (row) {
-                is JsonlRow.Record -> JsonlEngine.cell(row, columns[c - 1])
-                is JsonlRow.Raw -> if (c == 1) row.text else ""
-            }
-        }
-    }
 
     companion object {
         /** Physical lines per window — bounds memory on huge files (§8.2.2). */

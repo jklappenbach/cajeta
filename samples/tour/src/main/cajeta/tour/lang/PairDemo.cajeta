@@ -40,10 +40,15 @@ public class PairDemo extends DemoClass {
         this.check(qr.first() * 5 + qr.second() == 47,
             "the two components reassemble the dividend");
 
-        // Nesting: a Pair is just a type, so it can be a component.
+        // Nesting: a Pair is just a type, so it can be a component. Pair
+        // OWNS its components (`#K`, `#V`), so the inner pair is handed over
+        // with `#`. `qr` stays readable afterwards — `#` moves the title, not
+        // the binding — and the same pair is now reachable through `tagged`.
         Pair<int32, Pair<int32, int32>> tagged =
-            stack Pair<int32, Pair<int32, int32>>(1, qr);
+            stack Pair<int32, Pair<int32, int32>>(1, #qr);
         this.check(tagged.second().first() == 9,
             "pairs nest — second().first() reaches the inner component");
+        this.check(qr.first() == 9,
+            "the surrendered pair still reads through its demoted binding");
     }
 }

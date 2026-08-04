@@ -3,6 +3,24 @@ package cajeta.lint.security.internal;
 import cajeta.collection.ArrayList;
 
 /**
+ * One regex match. start/end are byte offsets into the input.
+ * Top-level (not nested in Regex): `Optional<Match>` trips the
+ * nested-type-argument resolution defect (specs/INDEX.md), and a
+ * top-level Match costs nothing.
+ */
+public class Match {
+    int32 start;
+    int32 end;
+
+    public Match(int32 start, int32 end) {
+        this.start = start;
+        this.end   = end;
+    }
+    public int32 start() { return this.start; }
+    public int32 end()   { return this.end;   }
+}
+
+/**
  * Minimal regex engine for secret-pattern matching.
  *
  * Dialect (ECMA-script subset, ASCII-only):
@@ -32,19 +50,6 @@ import cajeta.collection.ArrayList;
  */
 public class Regex {
 
-    /** One regex match. start/end are byte offsets into the input. */
-    public class Match {
-        int32 start;
-        int32 end;
-
-        public Match(int32 start, int32 end) {
-            this.start = start;
-            this.end   = end;
-        }
-        public int32 start() { return this.start; }
-        public int32 end()   { return this.end;   }
-    }
-
     /**
      * Compile the pattern. Returns empty when the pattern is
      * malformed (the caller surfaces the offending pattern in its
@@ -54,10 +59,9 @@ public class Regex {
      * always actionable).
      */
     public static Optional<Regex> compile(String pattern) {
-        // TODO: Thompson NFA construction. Returns
-        //   Optional.of(heap Regex(<compiled-states>))
-        // on success, Optional.empty() on syntax error.
-        return stack Optional<Regex>(true, #heap Regex());
+        // TODO: Thompson NFA construction. Returns present on
+        // success, empty on syntax error.
+        return stack Optional<Regex>(true, heap Regex());
     }
 
     /**
@@ -69,7 +73,7 @@ public class Regex {
     public Optional<Match> find(String input) {
         // TODO: NFA simulation. v1 stub returns empty so callers
         // can iterate the plumbing without false hits.
-        return stack Optional<Match>(false, #heap Match(0, 0));
+        return stack Optional<Match>(false);
     }
 
     /**
@@ -77,20 +81,21 @@ public class Regex {
      * by any future "show every secret leak on this line" path.
      * Default impl loops `find` + advances past each match.
      */
-    public ArrayList<Match> findAll(String input) {
+    public #ArrayList<Match> findAll(String input) {
         ArrayList<Match> out #= heap ArrayList<Match>();
         int32 cursor = 0;
         while (cursor < input.count()) {
-            String tail = input.substring(cursor);
+            String tail = input.substring(cursor, input.byteLength());
             Optional<Match> m = this.find(tail);
             if (m.isEmpty()) { break; }
-            out.add(#heap Match(cursor + m.get().start(),
-                               cursor + m.get().end()));
-            cursor = cursor + m.get().end();
-            if (m.get().end() == m.get().start()) {
+            Match hit = m.get();
+            out.add(heap Match(cursor + hit.start(), cursor + hit.end()));
+            int32 stepEnd = hit.end();
+            cursor = cursor + stepEnd;
+            if (stepEnd == hit.start()) {
                 cursor = cursor + 1;
             }
         }
-        return out;
+        return #out;
     }
 }

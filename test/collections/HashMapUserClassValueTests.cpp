@@ -108,14 +108,16 @@ TEST(HashMapUserClassValueTests, noCtorClassWithArgsIsHardError) {
     }
 }
 
-// 1.1.1 — single put (plain, no transfer) + indexer read of a field.
+// 1.1.1 — single put + indexer read of a field. uniform-transfer 2.3: the
+// map OWNS its values, so the put surrenders and `obj` stays readable as a
+// demoted borrow.
 TEST(HashMapUserClassValueTests, putAndIndexerReadOfClassValue) {
     std::string src = std::string(kMyObjectSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        HashMap<int32, MyObject> map = heap HashMap<int32, MyObject>();\n"
         "        MyObject obj = heap MyObject(3, \"hello\");\n"
-        "        map.put(obj.key, obj);\n"
+        "        map.put(obj.key, #obj);\n"
         "        MyObject picked = map[3];\n"
         "        return picked.key;\n"  // 3
         "    }\n"
@@ -135,7 +137,7 @@ TEST(HashMapUserClassValueTests, chainedGetterIndexerRead) {
         "    public static int32 run() {\n"
         "        Holder holder = heap Holder();\n"
         "        MyObject obj = heap MyObject(7, \"chained\");\n"
-        "        holder.getMap().put(obj.key, obj);\n"
+        "        holder.getMap().put(obj.key, #obj);\n"
         "        return holder.getMap()[7].key;\n"  // 7
         "    }\n"
         "}\n";
@@ -152,9 +154,10 @@ TEST(HashMapUserClassValueTests, loopedPutsTeardownAccounted) {
         "        int32 i = 0;\n"
         "        while (i < 10) {\n"
         "            MyObject obj = heap MyObject(i, \"v\" + i);\n"
-        "            map.put(obj.key, obj);\n"
-        // Read while the element is alive: plain put is a borrow store
-        // (the loop local still owns; it drops at iteration exit).
+        "            map.put(obj.key, #obj);\n"
+        // Read through the map while the element is alive. The MAP owns it
+        // now (uniform-transfer 2.3), so it survives the loop iteration
+        // that created it and is reclaimed at the map's teardown.
         "            last = map[i].key;\n"
         "            i = i + 1;\n"
         "        }\n"
@@ -164,10 +167,10 @@ TEST(HashMapUserClassValueTests, loopedPutsTeardownAccounted) {
         "        int64 base = Cajeta.liveCount();\n"
         "        int32 t = work();\n"
         "        int64 leaked = Cajeta.liveCount() - base;\n"
-        // Borrow-stored elements are owned by the loop locals whose drop
-        // entries fire at loop-body scope exit; the map borrows. Expect
-        // no NEGATIVE delta (double free) and no crash. Positive delta
-        // would be a leak; pin the exact accounting once fixed.
+        // The map owns all 10 elements and drops them at its teardown, so
+        // the scope must balance exactly: any non-zero delta is a leak
+        // (positive) or a double free (negative), and either shows up as a
+        // wrong return value rather than a silent pass.
         "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";

@@ -175,7 +175,7 @@ public void demo() {
 
 The borrow checker is **static**. Use-after-move, borrow-escape-on-return,
 alias-mutation, and definite-assignment violations are caught at compile time
-(`CAJETA_ERROR_USE_AFTER_MOVE`, `CAJETA_ERROR_BORROW_ESCAPE`, …).
+(`CAJETA_ERROR_MOVE_OF_BORROW`, `CAJETA_ERROR_BORROW_ESCAPE`, …).
 
 Reclamation is automatic at scope exit via a per-thread drop chain (entries fire
 in reverse declaration order, and the throw path unwinds them so drops run on the

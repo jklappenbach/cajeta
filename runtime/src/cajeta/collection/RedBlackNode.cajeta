@@ -35,12 +35,10 @@ public final class RedBlackNode<K, V> {
      * // node.red == true && node.left == null && node.parent == null
      * ```
      */
-    public RedBlackNode(K key, V value) {
-        // Consuming stores (title-tracking 6.2.4, the CacheNode treatment):
-        // the field bits record what the tree's caller actually forwarded,
-        // and the formals' entries deactivate so owned values aren't freed
-        // at ctor exit. The node's drop walk reclaims owned key/value when
-        // the tree's registry releases the node.
+    public RedBlackNode(#K key, #V value) {
+        // uniform-transfer 2.3 — the node OWNS its key and value; the
+        // formals are `#` and the stores are unconditional transfers. The
+        // node's drop walk reclaims both when the registry releases it.
         this.key #= key;
         this.value #= value;
         this.left = null;

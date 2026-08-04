@@ -2,6 +2,7 @@ package dev.cajeta.idea.xref
 
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.diagnostic.Logger
+import dev.cajeta.idea.buildtool.ManifestScan
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
 import java.nio.file.Files
@@ -49,11 +50,27 @@ object CajetaSourceMountGlue {
      */
     fun dependencyArchives(basePath: String?): List<Path> {
         if (basePath == null) return emptyList()
-        val dir = File(basePath, ".cajeta/cache/artifacts")
-        if (!dir.isDirectory) return emptyList()
-        return dir.listFiles { f -> f.isFile && f.name.endsWith(".cja") }
-            ?.sortedBy { it.name }?.map { it.toPath() } ?: emptyList()
+        val base = File(basePath)
+        // Every sub-project's artifacts dir, not just the root's. A repo opened
+        // at its root (cajeta-logging, with the consumer under samples/tour) is
+        // ordinary, and looking only at <base>/.cajeta left those dependencies
+        // unmounted and their imports unresolved — Julian, 2026-07-30.
+        val dirs = LinkedHashSet<File>()
+        dirs.add(File(base, ARTIFACTS))
+        for (manifest in ManifestScan.findManifests(base)) {
+            manifest.parentFile?.let { dirs.add(File(it, ARTIFACTS)) }
+        }
+        val byName = LinkedHashMap<String, Path>()   // same hash resolved twice = one archive
+        for (dir in dirs) {
+            if (!dir.isDirectory) continue
+            dir.listFiles { f -> f.isFile && f.name.endsWith(".cja") }
+                ?.sortedBy { it.name }
+                ?.forEach { byName.putIfAbsent(it.name, it.toPath()) }
+        }
+        return byName.values.toList()
     }
+
+    private const val ARTIFACTS = ".cajeta/cache/artifacts"
 
     /** The compiler identity the stdlib cache keys on: `cajeta --version`. */
     fun compilerIdentity(compilerPath: String): String? = try {

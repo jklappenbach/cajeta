@@ -613,6 +613,10 @@ void __cajeta_proc_release(int64_t handle_i) { (void) handle_i; }
 // (1/0 for predicates, -1 for hard errors that the cajeta-side
 // will throw IoException for once the hierarchy is wired).
 
+// opendir/readdir for __cajeta_path_list — mingw-w64 ships dirent.h,
+// so this works on the Windows target too.
+#include <dirent.h>
+
 // Bound on stack-allocated path buffers. Linux PATH_MAX is 4096;
 // callers with longer paths bail with the error sentinel.
 #define __CAJETA_PATH_MAX 4096
@@ -791,6 +795,69 @@ void* __cajeta_path_canonical(const char* bytes, int64_t length) {
     }
     memcpy(((char*) hdr) + 8, canon, n);
     free(canon);
+    return hdr;
+}
+
+// Non-recursive directory listing. Returns a CajetaArray header whose
+// int8[] payload is the child entry NAMES ("." and ".." excluded),
+// sorted lexicographically (byte order) and joined by NUL bytes —
+// determinism is part of the contract (Path.list() documents it; the
+// lint/coverage plugins key stable CI diffs off it). One call per
+// directory regardless of entry count; Path.list() splits the buffer
+// and joins each name onto the parent in cajeta. Returns an EMPTY
+// array on open failure as well as for an empty directory — callers
+// that care check isDir() first.
+static int __cajeta_name_cmp(const void* a, const void* b) {
+    return strcmp(*(const char* const*) a, *(const char* const*) b);
+}
+void* __cajeta_path_list(const char* bytes, int64_t length) {
+    char path[__CAJETA_PATH_MAX];
+    size_t total = 0;
+    size_t count = 0;
+    size_t cap = 64;
+    char** names = NULL;
+    DIR* d = NULL;
+    if (__cajeta_copy_path_with_nul(path, sizeof(path), bytes, length) == 0) {
+        d = opendir(path);
+    }
+    if (d) {
+        names = (char**) malloc(cap * sizeof(char*));
+        struct dirent* de;
+        while (names && (de = readdir(d)) != NULL) {
+            const char* n = de->d_name;
+            if (n[0] == '.' && (n[1] == '\0' || (n[1] == '.' && n[2] == '\0'))) {
+                continue;  // skip "." / ".."
+            }
+            if (count == cap) {
+                cap *= 2;
+                char** grown = (char**) realloc(names, cap * sizeof(char*));
+                if (!grown) break;
+                names = grown;
+            }
+            names[count] = strdup(n);
+            if (!names[count]) break;
+            total += strlen(n) + 1;  // name + NUL separator
+            count++;
+        }
+        closedir(d);
+    }
+    if (count > 0) {
+        qsort(names, count, sizeof(char*), __cajeta_name_cmp);
+    }
+    // Payload layout: name1 NUL name2 NUL ... nameN NUL — a trailing
+    // NUL after the last name keeps the cajeta-side split loop uniform.
+    void* hdr = __cajeta_new_array_header(8, 1, (uint64_t) total);
+    if (hdr) {
+        char* out = ((char*) hdr) + 8;
+        for (size_t i = 0; i < count; i++) {
+            size_t n = strlen(names[i]);
+            memcpy(out, names[i], n);
+            out += n;
+            *out++ = '\0';
+        }
+    }
+    for (size_t i = 0; i < count; i++) free(names[i]);
+    free(names);
     return hdr;
 }
 

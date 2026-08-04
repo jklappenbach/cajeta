@@ -385,15 +385,21 @@ namespace cajeta {
                                 if (argKlass && !argKlass->isValueType()
                                         && !argKlass->isSharedCapableValue()
                                         && !argKlass->isInterface()) {
-                                    if (scope->isMoved(nm)) {
-                                        string note = scope->movedNoteOf(nm);
+                                    if (scope->isBorrow(nm)) {
+                                        // Same violation as moving out of an
+                                        // alias: a transfer demotes its source
+                                        // (transfer-demotes-to-borrow §1.3).
+                                        string note = scope->transferSiteOf(nm);
                                         throw Exception(
-                                            "use of moved value: `#" + nm + "` — "
-                                                "the value was already transferred"
-                                                + (note.empty() ? "" : " (" + note + ")")
-                                                + ". Fix: reassign a fresh value "
-                                                  "before transferring again.",
-                                            "CAJETA_ERROR_USE_AFTER_MOVE");
+                                            "cannot transfer ownership of `" + nm
+                                                + "`: it is a borrow"
+                                                + (note.empty() ? "" : " — already "
+                                                    "transferred (" + note + ")")
+                                                + ". You cannot transfer ownership "
+                                                  "more than once, or from a borrow. "
+                                                  "Fix: transfer from the owner, or "
+                                                  "construct a fresh value.",
+                                            "CAJETA_ERROR_MOVE_OF_BORROW");
                                     }
                                     if (!field->getDropEntry()) {
                                         string owner = scope->borrowSourceOf(nm);
@@ -408,7 +414,7 @@ namespace cajeta {
                                                 "CAJETA_ERROR_MOVE_OF_BORROW");
                                         }
                                     }
-                                    scope->markMoved(nm,
+                                    scope->demoteToBorrow(nm,
                                         "transferred to a constructor at line "
                                             + std::to_string(getSourceLine()));
                                 }
@@ -526,6 +532,25 @@ namespace cajeta {
                             ? twBuilder->CreateOr(ctorWordVal, tbit) : tbit;
                     } else if (MethodCallExpression::freshHeapCreatorTempClass(
                             parameters[twi].expression)) {
+                        ctorTransferWord |= ((int64_t) 1) << twi;
+                    } else if (MethodCallExpression::freshHeapArrayLiteralArg(
+                            parameters[twi].expression)) {
+                        // A heap ARRAY LITERAL ctor arg is a fresh owned
+                        // rvalue exactly as `heap X()` is, but it is an
+                        // ArrayLiteralExpression rather than a NewExpression,
+                        // so the creator probe above never matched and the word
+                        // went out 0. The callee's `#V` formal was then told it
+                        // had NOT been surrendered, its `this.f #= formal`
+                        // stored no title, and a later claim panicked
+                        // TITLE_MISS.
+                        //
+                        // `HashMap<String,int32[]> g = ["a": [1,2]]` found it:
+                        // the map literal lowers to `Pair(#K, #V)` plus the
+                        // owning `HashMap(#Pair<K,V>[])` ctor, whose
+                        // `takeSecond()` is the claim that blew up
+                        // (CollectionLiteralTests.MapToList). Scalar- and
+                        // value-type-valued map literals were unaffected, which
+                        // is why only the array case ever surfaced.
                         ctorTransferWord |= ((int64_t) 1) << twi;
                     }
                     continue;

@@ -215,28 +215,11 @@ namespace cajeta {
             return nullptr;
         }
 
-        // Use-after-move check for field-access paths. Build the dotted path
-        // from this DotExpression down to its named root, then ask the scope
-        // whether any prefix of that path has been moved-out. This catches
-        // patterns like `#person.name` followed by a read of `person.name`
-        // or any path through it.
-        //
-        // Per MemoryModel.md § Path-based borrow tracking. Skip when the LHS
-        // doesn't bottom out at a named identifier (e.g. `factory.make().foo`)
-        // — those produce anonymous owners and are handled by the separate
-        // anonymous-owner rule.
-        {
-            ExpressionPtr self = dynamic_pointer_cast<Expression>(shared_from_this());
-            string path = buildPath(self);
-            if (!path.empty()) {
-                auto scope = module->getScopeStack().peek();
-                if (scope && scope->isPathMoved(path)) {
-                    throw Exception("use-after-move: path '" + path
-                        + "' was transferred via `#` and cannot be read here",
-                        "CAJETA_ERROR_USE_AFTER_MOVE");
-                }
-            }
-        }
+        // A transferred PATH is readable, exactly as a transferred identifier
+        // is: `#person.name` demotes `person.name` to a borrow of the same
+        // live instance rather than killing the path. Re-transferring it is
+        // rejected at the `#` operand instead.
+        // Per `specs/transfer-demotes-to-borrow-spec.md` §2.3.1.
 
         // Static-namespace constants: Math.PI / Math.E / Integer.MAX_VALUE / ... .
         // These have no instance backing and don't survive the GEP path below, so we

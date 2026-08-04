@@ -212,6 +212,21 @@ namespace cajeta {
         triggering->instantiationObligations.insert(inst->getMapKey(false));
     }
 
+    void CajetaModule::noteCrossModuleStaticFieldRef(
+        const CajetaModulePtr& triggering, const CajetaClassPtr& owner,
+        const std::string& fieldName) {
+        if (!triggering || !owner || fieldName.empty()) {
+            return;
+        }
+        // A same-module reference travels with the module's own IR; only a
+        // cross-module demand can vanish when `triggering` is skipped.
+        if (owner->getModule() == triggering) {
+            return;
+        }
+        triggering->instantiationObligations.insert(
+            owner->toCanonical() + "::" + fieldName);
+    }
+
     void CajetaModule::writeObligationsSidecar() const {
         // Path mirrors the emitted IR: swap the .ll suffix for .obligations.
         std::string path = archiveRoot + archivePath;

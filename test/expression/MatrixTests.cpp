@@ -553,3 +553,82 @@ TEST(MatrixTests, elementwiseShapeMismatchRejected) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_SHAPE");
     }
 }
+
+// ---- matrix-element-callarg (spec 2.1) ------------------------------------
+//
+// `f(m[r][c])` — a matrix element passed DIRECTLY as a call argument — has
+// SIGSEGV'd the built binary since docs-refactor 15.8 (tour GeometryDemo §3
+// carries the extract-to-local workaround). Extracting first works, and the
+// same element in a CONDITION is fine, which is why GfxCameraTests never
+// caught it. The 2026-08-01 recheck found the plain-array sibling
+// (`f(arr[i])`) fixed and the Matrix case still failing.
+//
+// These pin the position, not the container: same element, three positions.
+// The suspected shape is that argument-position lowering of a value-type
+// element takes the address of a transient where statement and condition
+// positions materialize correctly.
+
+// 2.1 — the defect proper: element straight into a call argument.
+TEST(MatrixTests, elementAsCallArgument) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 twice(float32 x) { return x * 2.0f; }\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(\n"
+        "            1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        return D.twice(m[1][1]);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 8.0f);
+}
+
+// The control that has always worked — extract to a local first. If this
+// ever goes red the dissection is chasing the wrong thing.
+TEST(MatrixTests, elementViaLocalAsCallArgument) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 twice(float32 x) { return x * 2.0f; }\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(\n"
+        "            1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        float32 x = m[1][1];\n"
+        "        return D.twice(x);\n"
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 8.0f);
+}
+
+// Nested composition — `f(g(m[r][c]))`. Named in spec 2.1 alongside the
+// direct form; a fix that only handles depth one would leave this red.
+TEST(MatrixTests, elementAsNestedCallArgument) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float32 twice(float32 x) { return x * 2.0f; }\n"
+        "    public static float32 plusOne(float32 x) { return x + 1.0f; }\n"
+        "    public static float32 run() {\n"
+        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(\n"
+        "            1.0f, 2.0f, 3.0f, 4.0f);\n"
+        "        return D.twice(D.plusOne(m[1][1]));\n"
+        "    }\n"
+        "}\n";
+    EXPECT_FLOAT_EQ(runF32(src), 10.0f);
+}
+
+// The plain-array sibling, recorded FIXED on 2026-08-01. Pinned so the
+// Matrix fix cannot regress it, and so "which shapes work" stays a fact in
+// the suite rather than a note in the spec.
+TEST(MatrixTests, plainArrayElementAsCallArgument) {
+    std::string src = std::string("package test;\n") +
+        "public final class D {\n"
+        "    public static float64 twice(float64 x) { return x * 2.0; }\n"
+        "    public static float64 run64() {\n"
+        "        float64[] xs = heap float64[3];\n"
+        "        xs[1] = 21.0;\n"
+        "        return D.twice(xs[1]);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        return (int32) D.run64();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}

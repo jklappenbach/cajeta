@@ -43,7 +43,7 @@ TEST(HashMapTests, putThenGet) {
         "    public static int32 run() {\n"
         "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
         "        Tag t = heap Tag(7);\n"
-        "        m.put(t, 42);\n"
+        "        m.put(#t, 42);\n"
         "        return m.get(t);\n"
         "    }\n"
         "}\n";
@@ -83,7 +83,7 @@ TEST(HashMapTests, containsKeyReportsPresence) {
         "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(8);\n"
         "        Tag inserted = heap Tag();\n"
         "        Tag missing = heap Tag();\n"
-        "        m.put(inserted, 1);\n"
+        "        m.put(#inserted, 1);\n"
         "        int32 yes = 0;\n"
         "        if (m.containsKey(inserted)) { yes = 10; }\n"
         "        int32 no = 0;\n"
@@ -123,16 +123,14 @@ TEST(HashMapTests, replaceUpdatesExistingValue) {
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag();\n"
-        "        m.put(t, 10);\n"
-        "        m.put(t, 99);\n"
-        "        int32 v = m.get(t);\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        String k1 = \"tag\";\n"
+        "        String k2 = \"tag\";\n"
+        "        m.put(#k1, 10);\n"
+        "        m.put(#k2, 99);\n"
+        "        int32 v = m.get(\"tag\");\n"
         "        int64 sz = m.count();\n"
         "        if (sz == 1) { return v; }\n"
         "        return -1;\n"
@@ -160,8 +158,8 @@ TEST(HashMapTests, bracketWriteThenRead) {
         "    public static int32 run() {\n"
         "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
         "        Tag t = heap Tag(7);\n"
-        "        m[t] = 42;\n"
-        "        return m[t];\n"
+        "        m[#t] = 42;\n"      // the map owns its keys (`#K`)
+        "        return m[t];\n"      // t is a demoted borrow — still looks up
         "    }\n"
         "}\n";
     auto jit = CajetaJit::compile(src, "test.D");
@@ -191,11 +189,11 @@ TEST(HashMapTests, growsBeyondInitialCapacityAndKeepsAllEntries) {
         "        Tag t3 = heap Tag(3);\n"
         "        Tag t4 = heap Tag(4);\n"
         "        Tag t5 = heap Tag(5);\n"
-        "        m.put(t1, 10);\n"
-        "        m.put(t2, 20);\n"
-        "        m.put(t3, 30);\n"
-        "        m.put(t4, 40);\n"
-        "        m.put(t5, 50);\n"
+        "        m.put(#t1, 10);\n"
+        "        m.put(#t2, 20);\n"
+        "        m.put(#t3, 30);\n"
+        "        m.put(#t4, 40);\n"
+        "        m.put(#t5, 50);\n"
         "        int64 sz = m.count();\n"
         "        int32 v1 = m.get(t1);\n"
         "        int32 v2 = m.get(t2);\n"
@@ -215,6 +213,11 @@ TEST(HashMapTests, growsBeyondInitialCapacityAndKeepsAllEntries) {
 }
 
 TEST(HashMapTests, resizeClearsTombstones) {
+    // Uses String (VALUE-hashed) keys: `m.remove(k)` frees the key the map
+    // owned, so consulting the surrendered handle afterwards would read freed
+    // memory (transfer-demotes-to-borrow 1.7). A fresh literal checks absence
+    // without a dangling borrow.
+    //
     // Insert N keys, remove some (leaving tombstones), insert more
     // until resize fires. Resize walks oldState looking only at
     // OCCUPIED slots — tombstones are dropped on the floor and
@@ -223,38 +226,35 @@ TEST(HashMapTests, resizeClearsTombstones) {
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(4);\n"
-        "        Tag keep1 = heap Tag();\n"
-        "        Tag drop1 = heap Tag();\n"
-        "        Tag keep2 = heap Tag();\n"
-        "        Tag drop2 = heap Tag();\n"
-        "        m.put(keep1, 100);\n"
-        "        m.put(drop1, 200);\n"
-        "        m.put(keep2, 300);\n"
-        "        m.put(drop2, 400);\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(4);\n"
+        "        String keep1 = \"k1\";\n"
+        "        String drop1 = \"d1\";\n"
+        "        String keep2 = \"k2\";\n"
+        "        String drop2 = \"d2\";\n"
+        "        m.put(#keep1, 100);\n"
+        "        m.put(#drop1, 200);\n"
+        "        m.put(#keep2, 300);\n"
+        "        m.put(#drop2, 400);\n"
         "        // Remove two — leaves tombstones at usedSlots=4.\n"
-        "        m.remove(drop1);\n"
-        "        m.remove(drop2);\n"
+        "        m.remove(\"d1\");\n"
+        "        m.remove(\"d2\");\n"
         "        // Insert more to push usedSlots over threshold and\n"
         "        // trigger resize.\n"
-        "        Tag x1 = heap Tag();\n"
-        "        Tag x2 = heap Tag();\n"
-        "        m.put(x1, 1);\n"
-        "        m.put(x2, 2);\n"
+        "        String x1 = \"x1\";\n"
+        "        String x2 = \"x2\";\n"
+        "        m.put(#x1, 1);\n"
+        "        m.put(#x2, 2);\n"
         "        int64 sz = m.count();\n"
-        "        int32 vk1 = m.get(keep1);\n"
-        "        int32 vk2 = m.get(keep2);\n"
-        "        int32 vx1 = m.get(x1);\n"
-        "        int32 vx2 = m.get(x2);\n"
+        "        int32 vk1 = m.get(\"k1\");\n"
+        "        int32 vk2 = m.get(\"k2\");\n"
+        "        int32 vx1 = m.get(\"x1\");\n"
+        "        int32 vx2 = m.get(\"x2\");\n"
         "        int32 d1 = 0;\n"
-        "        if (m.containsKey(drop1)) { d1 = 1; }\n"
+        "        if (m.containsKey(\"d1\")) { d1 = 1; }\n"
         "        int32 d2 = 0;\n"
-        "        if (m.containsKey(drop2)) { d2 = 1; }\n"
+        "        if (m.containsKey(\"d2\")) { d2 = 1; }\n"
         "        if (sz == 4 && vk1 == 100 && vk2 == 300\n"
         "                && vx1 == 1 && vx2 == 2\n"
         "                && d1 == 0 && d2 == 0) {\n"
@@ -276,21 +276,18 @@ TEST(HashMapTests, removeReturnsTrueAndShrinksSize) {
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag();\n"
-        "        m.put(t, 42);\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        String t = \"tag\";\n"
+        "        m.put(#t, 42);\n"
         "        int32 removed = 0;\n"
-        "        boolean hadT = m.containsKey(t);\n"
-        "        m.remove(t);\n"
-        "        if (hadT && !m.containsKey(t)) { removed = 1; }\n"
+        "        boolean hadT = m.containsKey(\"tag\");\n"
+        "        m.remove(\"tag\");\n"
+        "        if (hadT && !m.containsKey(\"tag\")) { removed = 1; }\n"
         "        int64 sz = m.count();\n"
         "        int32 stillThere = 0;\n"
-        "        if (m.containsKey(t)) { stillThere = 1; }\n"
+        "        if (m.containsKey(\"tag\")) { stillThere = 1; }\n"
         "        int32 score = (removed * 100) + (sz == 0 ? 10 : 0) + (stillThere == 0 ? 1 : 0);\n"
         "        return score;\n"
         "    }\n"
@@ -314,7 +311,7 @@ TEST(HashMapTests, removeReturnsFalseWhenAbsent) {
         "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
         "        Tag inserted = heap Tag();\n"
         "        Tag missing = heap Tag();\n"
-        "        m.put(inserted, 1);\n"
+        "        m.put(#inserted, 1);\n"
         "        int32 falseyRemove = 0;\n"
         "        boolean hadMissing = m.containsKey(missing);\n"
         "        m.remove(missing);\n"
@@ -339,24 +336,23 @@ TEST(HashMapTests, removeThenPutReusesTombstoneSlot) {
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public int32 id;\n"
-        "    public Tag(int32 i) { this.id = i; }\n"
-        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag a = heap Tag(1);\n"
-        "        Tag b = heap Tag(2);\n"
-        "        Tag c = heap Tag(3);\n"
-        "        m.put(a, 10);\n"
-        "        m.put(b, 20);\n"
-        "        m.put(c, 30);\n"
-        "        m.remove(b);\n"
-        "        m.put(b, 99);\n"
-        "        int32 va = m.get(a);\n"
-        "        int32 vb = m.get(b);\n"
-        "        int32 vc = m.get(c);\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        String a = \"a\";\n"
+        "        String b1 = \"b\";\n"
+        "        String c = \"c\";\n"
+        "        m.put(#a, 10);\n"
+        "        m.put(#b1, 20);\n"
+        "        m.put(#c, 30);\n"
+        "        m.remove(\"b\");\n"
+        // The re-insert needs a SECOND owned key — remove reclaimed the
+        // first. It still probes through the tombstone, which is the point.
+        "        String b2 = \"b\";\n"
+        "        m.put(#b2, 99);\n"
+        "        int32 va = m.get(\"a\");\n"
+        "        int32 vb = m.get(\"b\");\n"
+        "        int32 vc = m.get(\"c\");\n"
         "        int64 sz = m.count();\n"
         "        if (sz == 3 && va == 10 && vb == 99 && vc == 30) {\n"
         "            return 1;\n"
@@ -369,22 +365,32 @@ TEST(HashMapTests, removeThenPutReusesTombstoneSlot) {
     EXPECT_EQ(fn(), 1);
 }
 
+// Replace under an owning map: two writes at an EQUAL key, second wins, size
+// stays 1, and the incoming duplicate key is reclaimed rather than stored.
+//
+// uniform-transfer 2.3 rewrote this. It used to write `m[t] = 10; m[t] = 99;`
+// with one `Tag` local, which the owning `#K` makes impossible twice over: the
+// lend is rejected, and surrendering `t` twice is MOVE_OF_BORROW. Replace now
+// needs a SECOND key that compares equal to the first — so the key type has to
+// be value-hashed, which `String` is and an identity-hashed user class is not.
+//
+// That asymmetry is the migration's sharpest edge and it is deliberate, not an
+// oversight: see the plan's 4.2.4 and `OwnedKeyLookupTests`, which pins the
+// identity MISS so the day structural equality lands for classes, it fails
+// loudly. Replacing a value under an owned CLASS key has no spelling today;
+// `map.update` is the open question, deferred to the collections-overhaul spec.
 TEST(HashMapTests, bracketReplaceUpdatesValue) {
-    // `m[t] = 10` then `m[t] = 99` on the same key — second write
-    // replaces, size stays 1.
     auto src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag();\n"
-        "        m[t] = 10;\n"
-        "        m[t] = 99;\n"
-        "        int32 v = m[t];\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        String a = \"tag\" + 1;\n"
+        "        String b = \"tag\" + 1;\n"   // equal by value, distinct object
+        "        m[#a] = 10;\n"
+        "        m[#b] = 99;\n"                // replace: same value hash
+        "        int32 v = m[a];\n"            // a is demoted, still looks up
         "        int64 sz = m.count();\n"
         "        if (sz == 1) { return v; }\n"
         "        return -1;\n"
@@ -417,7 +423,7 @@ TEST(HashMapTests, classTypedValueWorks) {
         "        HashMap<Tag, Box> m = heap HashMap<Tag, Box>(16);\n"
         "        Tag t = heap Tag(7);\n"
         "        Box b = heap Box(99);\n"
-        "        m.put(t, b);\n"
+        "        m.put(#t, #b);\n"
         "        Box got = m.get(t);\n"
         "        return got.payload;\n"  // 99
         "    }\n"

@@ -43,6 +43,11 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         // the native Build tool window instead of the Run window (build-toolwindow
         // spec §6). Escape hatch: off restores the old Run-window behaviour.
         var buildTasksInBuildWindow: Boolean = true,
+        // Route per-edit lint through the warm `cajeta --lint-server` daemon
+        // (lint-server-spec §5). On by default: the daemon primes the stdlib once,
+        // so warm lints are sub-second instead of the ~19s cold one-shot compile.
+        // Off falls back to a fresh one-shot `cajeta --lint` per edit.
+        var useLintServer: Boolean = true,
     )
 
     private var state = State()
@@ -120,6 +125,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
     var buildTasksInBuildWindow: Boolean
         get() = state.buildTasksInBuildWindow
         set(value) { state.buildTasksInBuildWindow = value }
+
+    var useLintServer: Boolean
+        get() = state.useLintServer
+        set(value) { state.useLintServer = value }
 
     companion object {
         // Default points at the in-tree cajeta build. Users override

@@ -1216,6 +1216,16 @@ namespace cajeta {
                 } else {
                     llvmRetAbs = rt ? rt->getLlvmType() : nullptr;
                 }
+                // Error recovery (collect-and-continue): an unresolved
+                // return type was diagnosed at the declaration and
+                // recovered to CajetaType::error(), whose llvm type is
+                // null — and FunctionType::get(nullptr, ...) segfaults
+                // inside LLVM instead of diagnosing. void keeps the walk
+                // alive; nothing is emitted once an error is collected.
+                if (!llvmRetAbs) {
+                    llvmRetAbs = llvm::Type::getVoidTy(
+                        *module->getLlvmContext());
+                }
             }
             llvmFunctionType = llvmTypes.empty()
                 ? llvm::FunctionType::get(llvmRetAbs, false)
@@ -1377,6 +1387,13 @@ namespace cajeta {
                 llvmRet = llvm::PointerType::get(*module->getLlvmContext(), 0);
             } else {
                 llvmRet = rt ? rt->getLlvmType() : nullptr;
+            }
+            // Error recovery — same rationale as the abstract path above:
+            // a diagnosed-and-recovered return type (CajetaType::error())
+            // has no llvm type, and FunctionType::get(nullptr, ...)
+            // segfaults inside LLVM.
+            if (!llvmRet) {
+                llvmRet = llvm::Type::getVoidTy(*module->getLlvmContext());
             }
         }
         if (llvmTypes.size()) {
@@ -2233,8 +2250,21 @@ namespace cajeta {
                 // the lifetime facet.
                 facetIn.ownsDrop     = parameter->isTransferred();
                 facetIn.isReference  = !isPrim && !parameter->isTransferred();
+                // `this` is typed `pointer` in the ABI, which the inspector
+                // cannot decode (no record for "pointer" — live tour showed
+                // `this` with zero children). Register the OWNING class so the
+                // slot decodes like any reference local: slot holds the
+                // instance pointer, fields at their offsets. Reference classes
+                // only — a value-type `this` is pointer-to-VALUE, and the
+                // record's inline storage would misread the slot (covered by
+                // debugger-runtime-type-inspection).
+                std::string dbgType = pt->toCanonical();
+                if (parameter->getName() == "this" && parent
+                        && parent->getQName() && !parent->isValueType()) {
+                    dbgType = parent->getQName()->toCanonical();
+                }
                 dbg::emitDbgLocal(module, pf->getName(),
-                                  pt->toCanonical(),
+                                  dbgType,
                                   pf->getOrCreateAllocation(),
                                   dbg::classifyField(facetIn),
                                   pf->getDropEntry());
@@ -3019,7 +3049,7 @@ namespace cajeta {
         // skipped. Sync clears the borrow set, so a synced buffer is fine.
         if (ScopePtr sc = module->getScopeStack().peek()) {
             for (const string& name : sc->pendingLaunchBorrows()) {
-                if (!sc->containsField(name) || sc->isMoved(name)) continue;
+                if (!sc->containsField(name) || sc->isBorrow(name)) continue;
                 FieldPtr f = sc->getField(name);
                 if (!f || !f->getDropEntry()) continue;
                 // title-tracking Unit 8: formals are RUNTIME owners now and

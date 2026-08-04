@@ -17,6 +17,17 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
     private val completed = StringBuilder()   // all newline-terminated text seen
     private val pending = StringBuilder()      // the not-yet-terminated trailing line
 
+    // Rows parsed incrementally as lines complete (json-viewer §3.1.5): a 10k-line
+    // burst refreshed per batch costs one parse per line, not a whole-buffer
+    // reparse per refresh. Blank lines advance the counter but yield no row.
+    private val rows = ArrayList<JsonlRow>()
+    private var lineNumber = 0
+
+    /** Column discovery + selection + widths (spec §3.1.7, §3.1.8), fed as
+     *  lines complete so the chooser fills during the run. Owned here so the
+     *  selection survives filter changes and structured/raw flips. */
+    val columns = JsonlColumns()
+
     var isStructured: Boolean = structuredByDefault
         private set
 
@@ -29,8 +40,14 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
         pending.append(chunk)
         var nl = pending.indexOf("\n")
         while (nl >= 0) {
+            val line = pending.substring(0, nl)
             completed.append(pending, 0, nl + 1)   // include the newline
             pending.delete(0, nl + 1)
+            lineNumber++
+            JsonlEngine.parseLine(lineNumber, line)?.let {
+                rows += it
+                columns.observe(it)
+            }
             nl = pending.indexOf("\n")
         }
     }
@@ -43,16 +60,30 @@ class JsonlConsoleController(structuredByDefault: Boolean = true) {
 
     fun clearFilter() { filter = null }
 
-    /** The full render model over everything completed so far (structured view). */
-    fun model(): JsonlModel = JsonlEngine.parse(completed.toString())
+    /** The full render model over everything completed so far — columns are the
+     *  complete deterministic order, which is what a chooser must offer. What
+     *  the table actually renders is [visibleColumns]. */
+    fun model(): JsonlModel = JsonlModel(rows.toList(), columns.available())
+
+    /** The columns to render: the reader's selection, or the default subset. */
+    fun visibleColumns(): List<String> = columns.visible()
 
     /** Rows to display in structured mode, after the active filter. */
-    fun visibleRows(): List<JsonlRow> {
-        val rows = model().rows
-        return filter?.let { rows.filter(it) } ?: rows
-    }
+    fun visibleRows(): List<JsonlRow> =
+        filter?.let { rows.filter(it) } ?: rows.toList()
 
     /** The verbatim stream for raw mode (completed lines only; a partial trailing
      *  line is shown once it completes). */
     fun rawText(): String = completed.toString()
+
+    /** Reset to empty (console Clear): both cards start over. */
+    fun clear() {
+        completed.setLength(0)
+        pending.setLength(0)
+        rows.clear()
+        lineNumber = 0
+        // Discovery and the reader's column choice deliberately SURVIVE a
+        // Clear: the console is emptied, not reconfigured, and a selection
+        // silently resetting mid-session is the behavior this unit removes.
+    }
 }

@@ -93,8 +93,8 @@ public final class Cache<K, V> {
      * @EntryPoint
      */
     public Cache(int32 maxEntries) {
-        // Heap-allocate the backing table with an explicit power-of-2
-        // capacity (HashMap has no no-arg constructor; it auto-grows past 16).
+        // Small explicit start (16) rather than HashMap's 64-slot default:
+        // caches are often bounded tight, and the table auto-grows anyway.
         this.entries = heap HashMap<K, CacheNode<K, V>>(16);
         this.mruHead = null;
         this.lruTail = null;
@@ -159,13 +159,13 @@ public final class Cache<K, V> {
         // class V), NOT an Optional — null-check the node before use.
         CacheNode<K, V> node = this.entries.get(key);
         if (node == null) {
-            return stack Optional<V>(false, #null);
+            return stack Optional<V>(false);
         }
         int64 now = Cajeta.currentTimeNanos();
         if (this.isExpired(node, now)) {
             this.removeNode(node);
             this.entries.remove(key);
-            return stack Optional<V>(false, #null);
+            return stack Optional<V>(false);
         }
         node.accessedAt = now;
         this.moveToHead(node);
@@ -181,7 +181,7 @@ public final class Cache<K, V> {
      * cache.put("session-7f3a", session);
      * ```
      */
-    public void put(#K key, V value) {
+    public void put(#K key, #V value) {
         // The cache OWNS its key (callers transfer it): a cache entry must
         // outlive the caller's key local — a borrowed cache key would dangle
         // once the caller returns (e.g. DnsCache builds a fresh key per call).
@@ -192,9 +192,8 @@ public final class Cache<K, V> {
         // class V), NOT an Optional — null-check rather than isPresent().
         CacheNode<K, V> node = this.entries.get(key);
         if (node != null) {
-            // Consuming spelling (title-tracking 6.2.3): forwards the caller's
-            // flag onto the node's value bit and releases the displaced old
-            // value if the node owned it.
+            // The cache owns its values too now: an unconditional
+            // transfer that displaced-releases the old occupant.
             node.value #= value;
             node.accessedAt = now;
             this.moveToHead(node);
@@ -226,8 +225,9 @@ public final class Cache<K, V> {
 
     /** Drop every entry and reset the LRU list to empty. */
     public void clear() {
-        // Heap-allocate the backing table with an explicit power-of-2
-        // capacity (HashMap has no no-arg constructor; it auto-grows past 16).
+        // Replace the table wholesale — its teardown drops every node
+        // (and each node its value) exactly once. Same small start as
+        // the ctor.
         this.entries = heap HashMap<K, CacheNode<K, V>>(16);
         this.mruHead = null;
         this.lruTail = null;
@@ -249,13 +249,18 @@ public final class Cache<K, V> {
     public void evict() {
         if (this.maxAgeNanos == 0) { return; }
         int64 now = Cajeta.currentTimeNanos();
+        // The LRU list is ordered by last access, so expiry is MONOTONE
+        // along it: walk from the least-recent tail and stop at the first
+        // fresh node — everything nearer the head is fresher still. A
+        // mostly-fresh cache pays O(expired), not O(n).
         CacheNode<K, V> cursor = this.lruTail;
         while (cursor != null) {
-            CacheNode<K, V> prev = cursor.prev;
-            if (this.isExpired(cursor, now)) {
-                this.removeNode(cursor);
-                this.entries.remove(cursor.key);
+            if (!this.isExpired(cursor, now)) {
+                return;
             }
+            CacheNode<K, V> prev = cursor.prev;
+            this.removeNode(cursor);
+            this.entries.remove(cursor.key);
             cursor = prev;
         }
     }

@@ -1,5 +1,9 @@
 #include "cajeta/dbg/DebugController.h"
 
+#include "cajeta/error/Diagnostics.h"
+
+#include <sstream>
+
 #include <iostream>
 
 // CP6f-2d: the process-global stop coordinator lives in the C runtime
@@ -263,9 +267,16 @@ namespace cajeta::dbg {
         stepOriginDepth = originDepth;
         stepOriginLine = originLine;
         stepOriginFrame = originFrame;
-        std::cerr << "[step-armed] kind=" << (int) kind << " fiber=" << fiberId
+        {
+            // Debugger chatter, verbatim (compiler-jsonl 9.2): under the flag
+            // it becomes a `log` record the console can filter to debug level;
+            // without it, the same line it has always printed.
+            std::ostringstream armed;
+            armed << "[step-armed] kind=" << (int) kind << " fiber=" << fiberId
                   << " originDepth=" << originDepth
                   << " originFrame=" << originFrame << "\n";
+            cajeta::logLine("debug", armed.str());
+        }
         // Same release sequence as resume() (which we can't call here — it
         // would clear the step we just armed).
         stopped = false;

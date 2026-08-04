@@ -493,6 +493,19 @@ namespace cajeta {
         return droppableTempClass(ne->getResolvedType());
     }
 
+    // A heap ARRAY LITERAL argument (`f([1, 2])`) — the array-typed twin of the
+    // creator probe above. It allocates through __cajeta_new_array_header, so
+    // it is a fresh owned rvalue whose title nobody else holds, and it must
+    // contribute its bit to the call's transfer word.
+    //
+    // Stack and arena literals are excluded: the frame reclaims their storage,
+    // so a callee told it owns one would free memory it does not own.
+    bool MethodCallExpression::freshHeapArrayLiteralArg(
+            const AbstractSyntaxNodePtr& e) {
+        auto lit = dynamic_pointer_cast<ArrayLiteralExpression>(e);
+        return lit && !lit->isStackAlloc() && !lit->isArenaEligible();
+    }
+
     // The inlined forward value source + the grad source produced by one
     // symbolic differentiation pass (transform-intrinsics U3).
     struct GradPieces { std::string valueExpr; std::string gradExpr; };
@@ -1883,10 +1896,15 @@ namespace cajeta {
                 methodCallName == "heapInstance" && parameters.size() == 1;
             bool isBoundedSubtypes =
                 methodCallName == "subtypes" && parameters.empty();
-            // classesAnnotated<@A>(): inject A's canonical name as the String arg
-            // and keep only @A-bearing classes.
+            // classesAnnotated<@A>() / classesWithMethodAnnotated<@A>():
+            // inject A's canonical name as the String arg and keep only the
+            // matching classes (class-level vs any-method-level annotation).
+            bool isMethodAnnotatedToken =
+                methodCallName == "classesWithMethodAnnotated"
+                && parameters.empty();
             bool isAnnotatedToken =
-                methodCallName == "classesAnnotated" && parameters.empty();
+                (methodCallName == "classesAnnotated" && parameters.empty())
+                || isMethodAnnotatedToken;
             if (isBoundedHeapInstance || isBoundedSubtypes || isAnnotatedToken) {
                 if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
                         children[0])) {
@@ -1923,7 +1941,8 @@ namespace cajeta {
                         using RS = CajetaModule::ReflSite;
                         if (isAnnotatedToken) {
                             auto p = tok.rfind('.');
-                            keep.sites.push_back({RS::Annotated,
+                            keep.sites.push_back({isMethodAnnotatedToken
+                                    ? RS::MethodAnnotated : RS::Annotated,
                                 p == std::string::npos ? tok : tok.substr(p + 1)});
                             explicitMethodTypeArgs.clear();
                         } else {
@@ -1945,7 +1964,8 @@ namespace cajeta {
         if (!children.empty()) {
             static const std::set<std::string> kClassReflEntry = {
                 "forName", "allClasses", "classesInPackage",
-                "classesAnnotated", "subtypes", "heapInstance"};
+                "classesAnnotated", "classesWithMethodAnnotated",
+                "subtypes", "heapInstance"};
             bool isClassEntry = false, isGetType = false;
             if (kClassReflEntry.count(methodCallName)) {
                 if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
@@ -2015,6 +2035,13 @@ namespace cajeta {
                         keep.sites.push_back({RS::Annotated, shortName(s)});
                     else M::noteForceAll("classesAnnotated(<non-literal>) — pass an "
                         "annotation token classesAnnotated<@A>() or a name literal");
+                } else if (methodCallName == "classesWithMethodAnnotated") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty())
+                        keep.sites.push_back({RS::MethodAnnotated, shortName(s)});
+                    else M::noteForceAll("classesWithMethodAnnotated(<non-literal>)"
+                        " — pass an annotation token"
+                        " classesWithMethodAnnotated<@A>() or a name literal");
                 } else if (methodCallName == "heapInstance"
                         || methodCallName == "subtypes") {
                     // bounded form already recorded BoundClosure above; the
@@ -8011,6 +8038,26 @@ namespace cajeta {
                     return inst;
                 }
             }
+
+            // listJoined() — the runtime bridge under Path.list(): one
+            // NUL-joined child-names buffer per readdir() pass (sorted,
+            // "."/".." excluded). The helper returns the CajetaArray
+            // header directly; Path.list() splits it in cajeta.
+            if (methodCallName == "listJoined" && parameters.empty()) {
+                llvm::Function* fn = module->getRuntimeFunction(
+                    "__cajeta_path_list");
+                if (fn) {
+                    auto bd = loadBytesAndLen();
+                    llvm::Value* arr = builder->CreateCall(fn,
+                        {bd.first, bd.second}, "path.list_arr");
+                    auto arrTy = make_shared<CajetaArray>(
+                        module, CajetaType::of("int8"));
+                    module->getStructures()[arrTy->toCanonical()] =
+                        static_pointer_cast<CajetaClass>(arrTy);
+                    resolvedType = arrTy;
+                    return arr;
+                }
+            }
         }
 
         // ----- FileReader / FileWriter / File instance-method intrinsic -----
@@ -9798,15 +9845,22 @@ namespace cajeta {
                             if (klass && !klass->isValueType()
                                     && !klass->isSharedCapableValue()
                                     && !klass->isInterface()) {
-                                if (scope->isMoved(nm)) {
-                                    string note = scope->movedNoteOf(nm);
+                                if (scope->isBorrow(nm)) {
+                                    // A transfer demotes its source, so this is
+                                    // the same violation as moving out of an
+                                    // alias — one error, not two
+                                    // (transfer-demotes-to-borrow §1.3).
+                                    string note = scope->transferSiteOf(nm);
                                     throw Exception(
-                                        "use of moved value: `#" + nm + "` — the "
-                                            "value was already transferred"
-                                            + (note.empty() ? "" : " (" + note + ")")
-                                            + ". Fix: reassign a fresh value before "
-                                              "transferring again.",
-                                        "CAJETA_ERROR_USE_AFTER_MOVE");
+                                        "cannot transfer ownership of `" + nm
+                                            + "`: it is a borrow"
+                                            + (note.empty() ? "" : " — already "
+                                                "transferred (" + note + ")")
+                                            + ". You cannot transfer ownership more "
+                                              "than once, or from a borrow. Fix: "
+                                              "transfer from the owner, or construct "
+                                              "a fresh value.",
+                                        "CAJETA_ERROR_MOVE_OF_BORROW");
                                 }
                                 // Recorded-source borrows only (see the
                                 // MoveExpression check): call-result locals
@@ -9823,7 +9877,7 @@ namespace cajeta {
                                             "CAJETA_ERROR_MOVE_OF_BORROW");
                                     }
                                 }
-                                scope->markMoved(nm,
+                                scope->demoteToBorrow(nm,
                                     "transferred to `" + methodCallName
                                         + "` at line "
                                         + std::to_string(getSourceLine()));
@@ -9886,8 +9940,33 @@ namespace cajeta {
                     // title flag), the native frees or adopts memory the
                     // caller still owns. There is no surrender spelling for
                     // these shapes, so the fix is a copy or an owned local.
+                    //
+                    // uniform-transfer 2.3 — a read of a SCALAR field or
+                    // element is not a borrow of anything: an int32 has no
+                    // title to forge a second owner of. The shape check
+                    // predates `#T` element formals, when only droppable
+                    // types reached it; with containers declaring `#T` it
+                    // now sees `list.add(items[i])` on an
+                    // `ArrayList<int32>` and rejects code that cannot leak.
+                    // Arrays keep the check — they carry PRIMITIVE_FLAG in
+                    // this type system but are droppable buffers, which is
+                    // the `int8[]` consuming-native hazard the rule exists
+                    // for. Same carve-out the call-return arm below already
+                    // makes; it just was never applied to the other two.
+                    auto ownershipLessScalar = [](const CajetaTypePtr& t) {
+                        return t && (t->getTypeFlags() & PRIMITIVE_FLAG)
+                            && !std::dynamic_pointer_cast<CajetaArray>(t);
+                    };
+                    if (argExpr && !argExpr->getResolvedType()) {
+                        argExpr->resolveTypes(module);
+                    }
+                    bool scalarRead = argExpr
+                        && ownershipLessScalar(argExpr->getResolvedType());
+
                     const char* borrowShape = nullptr;
-                    if (dynamic_pointer_cast<DotExpression>(argExpr)) {
+                    if (scalarRead) {
+                        borrowShape = nullptr;
+                    } else if (dynamic_pointer_cast<DotExpression>(argExpr)) {
                         borrowShape = "a field read";
                     } else if (dynamic_pointer_cast<ArrayIndexExpression>(argExpr)) {
                         borrowShape = "an array-element read";
@@ -9925,7 +10004,33 @@ namespace cajeta {
                     auto scope = module->getScopeStack().peek();
                     if (!scope) continue;
                     FieldPtr field = scope->getField(idExpr->getTextValue());
-                    if (!field || !field->getDropEntry()) continue;
+                    if (!field) continue;
+                    // An active drop entry is the usual proof that this frame
+                    // OWNS the value. It is not the only one: frame-arena U2/U3
+                    // routes non-escaping String-concat and primitive-array
+                    // locals through the arena, which reclaims them in bulk at
+                    // scope exit and so registers NO drop entry. Those locals
+                    // are still owners, and handing one to a `#T` formal is the
+                    // same hazard — worse, since the arena reset would free
+                    // memory the callee now owns.
+                    //
+                    // Found 2026-08-03 by uniform-transfer 2.1.4: `a.add(s)` on
+                    // an `ArrayList<String>` compiled CLEAN because the concat
+                    // local `String s = "e" + i` was arena-routed. The escape
+                    // walk counts only `#name` as an escape, so a plain lend was
+                    // invisible to it AND to this check — each deferring to the
+                    // other. Asking the method directly breaks the cycle: the
+                    // plain form now errors, and the `#` form marks the name
+                    // escaping, which un-elects it from the arena and gives it a
+                    // real drop entry.
+                    bool callerOwns = field->getDropEntry() != nullptr;
+                    if (!callerOwns) {
+                        if (auto cm = module->getCurrentMethod()) {
+                            callerOwns = cm->isArenaEligibleLocal(
+                                idExpr->getTextValue());
+                        }
+                    }
+                    if (!callerOwns) continue;
                     throw Exception(
                         "method `" + methodCallName + "` declares parameter `"
                             + fp->getName() + "` as `#T` (ownership transfer required); "
@@ -10055,6 +10160,30 @@ namespace cajeta {
                     // runtime-owned plain arg: forwards its flag below
                 } else if (freshHeapCreatorTempClass(
                         parameters[mmi].expression)) {
+                    moveMask |= ((int64_t) 1) << mmi;
+                    continue;
+                } else if (freshHeapArrayLiteralArg(
+                        parameters[mmi].expression)) {
+                    // A heap ARRAY LITERAL is a fresh owned rvalue exactly as
+                    // `heap X()` is — nobody else can be holding its title —
+                    // but it is an ArrayLiteralExpression, not a NewExpression,
+                    // so the creator probe above never saw it and the word went
+                    // out as 0.
+                    //
+                    // That meant a literal handed to a `#T` formal was recorded
+                    // as NOT surrendered, so the callee's `this.f #= formal`
+                    // stored no title and a later claim panicked TITLE_MISS.
+                    // Reached from map literals: `HashMap<String,int32[]> g =
+                    // ["a": [1,2]]` lowers to `Pair(#K, #V)` + the owning
+                    // `HashMap(#Pair<K,V>[])` ctor, whose `takeSecond()` is the
+                    // claim that blew up (CollectionLiteralTests.MapToList).
+                    // Scalar-valued and value-type-valued map literals were
+                    // fine, which is why only the array case surfaced.
+                    //
+                    // Stack and arena literals are deliberately excluded: their
+                    // storage is reclaimed by the frame, so telling a callee it
+                    // owns them would hand out a title to memory it must not
+                    // free.
                     moveMask |= ((int64_t) 1) << mmi;
                     continue;
                 } else {

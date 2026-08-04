@@ -290,6 +290,91 @@ class CajetaDebugSessionTest {
         assertTrue(received.contains("continue"))
     }
 
+    /**
+     * A `breakpoint` event downgrading a location to verified:false reaches
+     * onBreakpointUnverified with its file, line and reason. The server sends
+     * this after the compile, because setBreakpoints is answered before the
+     * program exists. Julian, 2026-07-31: a run "never hit a breakpoint, and
+     * didn't show compilation or any other reason" — this is the channel that
+     * reason travels on.
+     */
+    @Test
+    fun routesUnverifiedBreakpointWithItsReason() {
+        connect()
+        val reported = CountDownLatch(1)
+        var got: Triple<String, Int, String>? = null
+        session.onBreakpointUnverified = { file, line, message ->
+            got = Triple(file, line, message)
+            reported.countDown()
+        }
+
+        runServer { command, srv ->
+            if (command == "configurationDone") {
+                srv.write(
+                    event(
+                        "breakpoint",
+                        Json.obj(
+                            "reason" to Json.of("changed"),
+                            "breakpoint" to Json.obj(
+                                "id" to Json.of(1),
+                                "verified" to Json.of(false),
+                                "line" to Json.of(2),
+                                "message" to Json.of("no statement compiled here"),
+                                "source" to Json.obj("path" to Json.of("Calc.cajeta")),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+        session.start()
+        session.launch(
+            CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"),
+            listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 2)),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertTrue("no unverified report", reported.await(5, TimeUnit.SECONDS))
+        assertEquals("Calc.cajeta", got!!.first)
+        assertEquals(2, got!!.second)
+        assertEquals("no statement compiled here", got!!.third)
+    }
+
+    /** A breakpoint event that CONFIRMS a location must not be reported as a
+     *  failure — otherwise every session would cry wolf. */
+    @Test
+    fun verifiedBreakpointEventIsNotReportedAsUnverified() {
+        connect()
+        val reports = Collections.synchronizedList(mutableListOf<Int>())
+        session.onBreakpointUnverified = { _, line, _ -> reports.add(line) }
+
+        runServer { command, srv ->
+            if (command == "configurationDone") {
+                srv.write(
+                    event(
+                        "breakpoint",
+                        Json.obj(
+                            "reason" to Json.of("changed"),
+                            "breakpoint" to Json.obj(
+                                "id" to Json.of(1),
+                                "verified" to Json.of(true),
+                                "line" to Json.of(6),
+                                "source" to Json.obj("path" to Json.of("Calc.cajeta")),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+        session.start()
+        session.launch(
+            CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"),
+            listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
+        ).get(5, TimeUnit.SECONDS)
+
+        Thread.sleep(300)   // give a wrong implementation time to fire
+        assertTrue("a verified breakpoint was reported as unverified", reports.isEmpty())
+    }
+
     @Test
     fun setBreakpointsSendsSourcePathAndLines() {
         connect()
@@ -684,5 +769,37 @@ class CajetaDebugSessionTest {
         assertEquals("13", vars[0].value)
         assertEquals("int", vars[0].type)
         assertEquals(0, vars[0].variablesReference)
+    }
+    /**
+     * Dependency archives ride the launch (2026-07-30): without them the
+     * server's JIT compile cannot resolve a dependency type and the launch
+     * dies at CAJETA_ERROR_UNRESOLVED_TYPE. Absence stays absence — every
+     * dependency-free launch must send exactly what it sent before.
+     */
+    @Test
+    fun launchCarriesClasspathWhenPresentAndOmitsItWhenEmpty() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                classpath = listOf("/deps/a.cja", "/deps/b.cja"),
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        val cp = lastRequestByCommand["launch"]!!.at("arguments").at("classpath")
+        assertEquals(2, cp.size)
+        assertEquals("/deps/a.cja", cp[0].asString())
+        assertEquals("/deps/b.cja", cp[1].asString())
+
+        session.launch(
+            CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"),
+        ).get(5, TimeUnit.SECONDS)
+        assertTrue(
+            "no classpath must stay off the wire",
+            lastRequestByCommand["launch"]!!.at("arguments").opt("classpath") == null,
+        )
     }
 }

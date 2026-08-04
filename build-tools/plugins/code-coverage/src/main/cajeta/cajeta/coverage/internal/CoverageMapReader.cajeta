@@ -2,7 +2,7 @@ package cajeta.coverage.internal;
 
 import cajeta.coverage.CoverageMap;
 import cajeta.coverage.Grain;
-import cajeta.io.file.FileReader;
+import cajeta.io.file.File;
 import cajeta.io.file.Path;
 
 /**
@@ -12,46 +12,57 @@ import cajeta.io.file.Path;
  */
 public class CoverageMapReader {
 
-    public static CoverageMap read(Path path) {
-        FileReader r = FileReader.open(path);
-        byte[] magic = r.readBytes(4);
-        if (magic != "CJCV".bytes()) {
+    public static #CoverageMap read(Path path) {
+        int8[] b = File.readAllBytes(path.toString());
+        int32 total = (int32) b.count();
+        if (total < 12
+                || ByteBuf.u8(b, 0) != 67 || ByteBuf.u8(b, 1) != 74
+                || ByteBuf.u8(b, 2) != 67 || ByteBuf.u8(b, 3) != 86) {
             throw stack CoverageMapFormatException(
                 "not a coverage map: bad magic at " + path.toString());
         }
-        int32 version = r.readU16BE();
+        int32 version = ByteBuf.u16(b, 4);
         if (version != 1) {
             throw stack CoverageMapFormatException(
                 "coverage map version " + String.valueOf(version) +
                 " not supported (expected 1) at " + path.toString());
         }
-        Grain grain = grainFromByte(r.readU8());
-        r.readU8();  // reserved
-        int32 nFiles = r.readU32BE();
+        Grain grain = grainFromByte(ByteBuf.u8(b, 6));
+        int32 nFiles = ByteBuf.u32(b, 8);
         CoverageMap out #= heap CoverageMap(grain);
+        int32 off = 12;
         int32 i = 0;
         while (i < nFiles) {
-            int32 pathLen = r.readU32BE();
-            String fpath = String.fromBytes(r.readBytes(pathLen));
-            int32 totalProbes = r.readU32BE();
-            int32 hitProbes   = r.readU32BE();
+            int32 pathLen = ByteBuf.u32(b, off);
+            off = off + 4;
+            int8[] pb = heap int8[pathLen];
+            int32 k = 0;
+            while (k < pathLen) {
+                pb[k] = b[off + k];
+                k = k + 1;
+            }
+            String fpath = heap String(#pb, pathLen);
+            off = off + pathLen;
+            int32 totalProbes = ByteBuf.u32(b, off);
+            int32 hitProbes   = ByteBuf.u32(b, off + 4);
+            off = off + 8;
             CoverageMap.FileEntry e = out.getOrCreate(fpath, totalProbes);
             // Inflate the byte-packed bitset.
             int32 nBytes = (totalProbes + 7) / 8;
-            byte[] packed = r.readBytes(nBytes);
             int32 pid = 0;
             while (pid < totalProbes) {
                 int32 byteIdx = pid / 8;
                 int32 bitIdx  = pid - (byteIdx * 8);
-                if ((packed[byteIdx] & (1 << bitIdx)) != 0) {
+                if ((b[off + byteIdx] & (1 << bitIdx)) != 0) {
                     e.markCovered(pid);
                 }
                 pid = pid + 1;
             }
-            // Cross-check: the file's own hitProbes count should
-            // match what we just reconstructed. A mismatch means
-            // the writer/reader drifted — fail loudly so we catch
-            // it in CI rather than reporting a corrupted number.
+            off = off + nBytes;
+            // Cross-check: the file's own hitProbes count should match
+            // what we just reconstructed. A mismatch means the writer /
+            // reader drifted — fail loudly so CI catches it rather than
+            // reporting a corrupted number.
             if (e.hitProbes() != hitProbes) {
                 throw stack CoverageMapFormatException(
                     "coverage map " + path.toString() +
@@ -61,8 +72,7 @@ public class CoverageMapReader {
             }
             i = i + 1;
         }
-        r.close();
-        return out;
+        return #out;
     }
 
     static Grain grainFromByte(int32 b) {

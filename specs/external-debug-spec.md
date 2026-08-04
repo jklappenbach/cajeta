@@ -203,12 +203,26 @@ trace, not only a debugger's.
 6.1.2 Record the declaring source file per class (or per method) at parse time,
       and emit `FrameDesc` from that rather than from the module.
 6.1.3 Applies to captured exception traces and to the live stack equally.
+6.1.4 The same empty-source-path defect reaches `--classpath` dependencies, and
+      costs more than rendering there. `ingestClasspath` builds one module per
+      archived class through the synthetic ctor, leaving `sourcePath` empty, so
+      every dependency module is INDISTINGUISHABLE by the identity the JIT's
+      debug loc-id registry keys on. They shared one id range and overwrote each
+      other's loc-table entries: exactly one dependency class resolved, and
+      breakpoints in any other could not match at all. Each classpath module
+      carries its archive-relative entry name as its source path — already
+      machine-independent, so reproducibility (§3.1.3) holds.
 
 ### 6.2 Use cases
 6.2.1 As a developer reading a production exception trace, when it crosses a
       stdlib frame, then that frame names its file and line.
 6.2.2 As a developer, when a stack crosses user and stdlib code, then every frame
       is rendered in the same form.
+6.2.3 As a developer stepping into a dependency, when the stack crosses several
+      classes of one archive, then each frame names ITS own file and line —
+      not whichever class of that archive happened to be written last.
+6.2.4 As a developer, when I set a breakpoint in a dependency's source, then it
+      binds and stops, for every class in the archive rather than one of them.
 
 ## 7. Acceptance
 

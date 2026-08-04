@@ -118,7 +118,7 @@ public final class HashMap<K, V> {
      * replace earlier ones, matching `put`. The default capacity (64) is used;
      * the table grows if the entry count crosses 0.75 load.
      */
-    public HashMap(Pair<K, V>[] entries) {
+    public HashMap(#Pair<K, V>[] entries) {
         this.cap = 64;
         this.slots = heap MapEntry<K, V>[64];
         this.ctrl = heap int8[80];
@@ -128,27 +128,32 @@ public final class HashMap<K, V> {
         int32 n = (int32) entries.count();
         int32 i = 0;
         while (i < n) {
-            this.put(entries[i].first(), entries[i].second());
+            this.put(entries[i].takeFirst(), entries[i].takeSecond());
             i = i + 1;
         }
     }
 
-    // Fill the whole ctrl array (slots + mirror) with EMPTY (0x80). The 8-byte
-    // word store handles the bulk; cap+16 is a multiple of 8 so the tail rarely
-    // runs, but it stays for safety.
+    // Fill `ctrlArr[0..total)` with EMPTY (0x80). The 8-byte word store
+    // handles the bulk; cap+16 is a multiple of 8 so the tail rarely runs,
+    // but it stays for safety. Shared by the ctors (via fillCtrlEmpty) and
+    // resize (on the fresh table).
     @Inline
-    private void fillCtrlEmpty() {
-        int64 n = this.cap + 16;
+    private void fillEmpty(int8[] ctrlArr, int64 total) {
         int64 word = (int64) 0x8080808080808080;
         int64 k = 0;
-        while (k + 8 <= n) {
-            Cajeta.storeU64(this.ctrl, k, word);
+        while (k + 8 <= total) {
+            Cajeta.storeU64(ctrlArr, k, word);
             k = k + 8;
         }
-        while (k < n) {
-            this.ctrl[k] = (int8) 0x80;
+        while (k < total) {
+            ctrlArr[k] = (int8) 0x80;
             k = k + 1;
         }
+    }
+
+    @Inline
+    private void fillCtrlEmpty() {
+        this.fillEmpty(this.ctrl, this.cap + 16);
     }
 
     // Write control byte `b` at slot `i`, mirroring into the cloned tail when the
@@ -164,11 +169,10 @@ public final class HashMap<K, V> {
     /**
      * Insert or replace the value at `key`.
      */
-    public void put(K key, V value) {
-        // The store spelling must MATCH what the caller did (a borrowed
-        // String must copy via the dual-role resolve; `#` forwards).
-        boolean keyOwned = Cajeta.owned(key);
-        boolean valOwned = Cajeta.owned(value);
+    public void put(#K key, #V value) {
+        // uniform-transfer 2.3 — the map OWNS its keys and values, so there
+        // is no caller spelling left to match and the dual-role reads are
+        // gone. Every store below is an unconditional transfer.
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);
@@ -184,23 +188,14 @@ public final class HashMap<K, V> {
                 if (this.slots[i].key == key) {
                     // Replace: the member store's displaced release
                     // (title-stores §3.3.2) drops an owned old value.
-                    // title-tracking 5.2.6 — the spelling must MATCH what the
-                    // caller did. `#value` moves the title into the slot (needed
-                    // for a class V: a plain store would lend, leaving the
-                    // formal's drop entry armed to free the value the map just
-                    // stored). The plain store is equally required when the
-                    // caller LENT: for a shared-capable V (String) it runs the
-                    // dual-role resolve that COPIES the borrowed bytes, and `#`
-                    // there would store a pointer to the caller's dying temp.
-                    if (valOwned) {
-                        this.slots[i].val #= value;
-                    } else {
-                        this.slots[i].val = value;
-                    }
-                    // The new key duplicates the stored one; drop it if we took it.
-                    if (keyOwned) {
-                        Cajeta.dropValue(key);
-                    }
+                    this.slots[i].val #= value;
+                    // The incoming key duplicates the one already stored, so
+                    // it is NOT stored. We do not drop it by hand: the `#K`
+                    // formal owns it and its own armed entry reclaims it at
+                    // return. An explicit dropValue here double-frees a class
+                    // key and drops a non-pointer for a primitive one (this
+                    // was a SIGSEGV in HashMapTests.bracketReplaceUpdatesValue).
+                    // Same rule as BPlusTree.put's replace path.
                     return;
                 }
                 mm = mm & (mm - 1);
@@ -224,17 +219,8 @@ public final class HashMap<K, V> {
             }
         }
         boolean wasEmpty = (this.ctrl[insertAt] == (int8) 0x80);
-        // Spelling matches the caller's transfer (see the replace branch above).
-        if (keyOwned) {
-            this.slots[insertAt].key #= key;
-        } else {
-            this.slots[insertAt].key = key;
-        }
-        if (valOwned) {
-            this.slots[insertAt].val #= value;
-        } else {
-            this.slots[insertAt].val = value;
-        }
+        this.slots[insertAt].key #= key;
+        this.slots[insertAt].val #= value;
         this.setCtrl(insertAt, h2);
         this.sizeCount = this.sizeCount + 1;
         // Reusing a DELETED slot doesn't consume a fresh empty, so usedSlots
@@ -259,17 +245,7 @@ public final class HashMap<K, V> {
         int64 newMask = newCap - 1;
         MapEntry<K, V>[] newSlots = heap MapEntry<K, V>[newCap];
         int8[] newCtrl = heap int8[newCap + 16];
-        int64 nlen = newCap + 16;
-        int64 word = (int64) 0x8080808080808080;
-        int64 k = 0;
-        while (k + 8 <= nlen) {
-            Cajeta.storeU64(newCtrl, k, word);
-            k = k + 8;
-        }
-        while (k < nlen) {
-            newCtrl[k] = (int8) 0x80;
-            k = k + 1;
-        }
+        this.fillEmpty(newCtrl, newCap + 16);
         int64 newSize = 0;
         int64 s = 0;
         while (s < oldCap) {
@@ -286,11 +262,10 @@ public final class HashMap<K, V> {
                     int32 emptyM = g.eqMask((int8) 0x80) & 65535;
                     if (emptyM != 0) {
                         int64 i = (pos + Cajeta.ctz64((int64) emptyM)) & newMask;
-                        // title-stores §3.3.2 — forwarding member moves:
-                        // each member's bit rides verbatim; String members
-                        // forward their wrapper without the copy.
-                        newSlots[i].key #= #this.slots[s].key;
-                        newSlots[i].val #= #this.slots[s].val;
+                        // Every slot owns, so a single move takes the title
+                        // and clears the source — no mode left to forward.
+                        newSlots[i].key #= this.slots[s].key;
+                        newSlots[i].val #= this.slots[s].val;
                         newCtrl[i] = h2;
                         if (i < 16) {
                             newCtrl[newCap + i] = h2;
@@ -312,11 +287,14 @@ public final class HashMap<K, V> {
         this.usedSlots = newSize;
     }
 
-    /**
-     * Retrieve the value at `key`, or null/zero if absent. Use `containsKey` to
-     * distinguish "absent" from "present but stored null/0".
-     */
-    public V get(K key) {
+    // Shared lookup probe (get / containsKey / remove / the extracting
+    // subscript): the slot index holding `key`, or -1 when absent. One
+    // SIMD group compare per 16 slots; an EMPTY byte in a group proves
+    // absence (a real key would have landed before any empty on its
+    // probe chain). put() keeps its own loop — it also tracks the first
+    // reusable EMPTY/DELETED slot, which no reader needs.
+    @Inline
+    private int64 findSlot(K key) {
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);
@@ -329,7 +307,7 @@ public final class HashMap<K, V> {
             while (mm != 0) {
                 int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
                 if (this.slots[i].key == key) {
-                    return this.slots[i].val;
+                    return i;
                 }
                 mm = mm & (mm - 1);
             }
@@ -340,9 +318,22 @@ public final class HashMap<K, V> {
                 pos = (pos + stride) & mask;
             }
         }
-        // Miss default: a fresh single-element V array is zero-initialized (null
-        // for class V, 0 for primitive V) with the right LLVM element type.
-        V[] missDefault = heap V[1];
+        return -1;
+    }
+
+    /**
+     * Retrieve the value at `key`, or null/zero if absent. Use `containsKey` to
+     * distinguish "absent" from "present but stored null/0".
+     */
+    public V get(K key) {
+        int64 i = this.findSlot(key);
+        if (i >= 0) {
+            return this.slots[i].val;
+        }
+        // Miss default: a stack single-element V array is zero-initialized
+        // (null for class V, 0 for primitive V) with the right LLVM element
+        // type — no heap traffic on the miss path.
+        V[] missDefault = stack V[1];
         return missDefault[0];
     }
 
@@ -350,39 +341,13 @@ public final class HashMap<K, V> {
      * Test whether `key` is present.
      */
     public boolean containsKey(K key) {
-        int64 h = key.hash();
-        int64 mask = this.cap - 1;
-        int8 h2 = (int8) ((h >> 57) & 0x7F);
-        int64 pos = h & mask;
-        int64 stride = 0;
-        boolean searching = true;
-        while (searching) {
-            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
-            int32 mm = g.eqMask(h2);
-            while (mm != 0) {
-                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
-                if (this.slots[i].key == key) {
-                    return true;
-                }
-                mm = mm & (mm - 1);
-            }
-            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
-                searching = false;
-            } else {
-                stride = stride + 16;
-                pos = (pos + stride) & mask;
-            }
-        }
-        return false;
+        return this.findSlot(key) >= 0;
     }
 
     /**
-     * Remove the entry at `key`, leaving a `DELETED` tombstone (probed past by
-     * lookups, reused by a later `put`).
+     * Remove the entry at `key`, leaving a `DELETED` tombstone (probed past
+     * by lookups, reused by a later `put`).
      *
-     * @returns true iff `key` was present.
-     */
-    /**
      * Structural removal (title-tracking §6.4): membership ends and the value
      * comes back in whatever mode the entry held it — the FLAGGED return. An
      * owned entry hands its title to the caller (whose receiving local drops
@@ -393,56 +358,32 @@ public final class HashMap<K, V> {
      * zero default (null for class V), flag borrowed.
      */
     public V remove(K key) {
-        int64 h = key.hash();
-        int64 mask = this.cap - 1;
-        int8 h2 = (int8) ((h >> 57) & 0x7F);
-        int64 pos = h & mask;
-        int64 stride = 0;
-        boolean searching = true;
-        while (searching) {
-            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
-            int32 mm = g.eqMask(h2);
-            while (mm != 0) {
-                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
-                if (this.slots[i].key == key) {
-                    // Clear the key slot so the tombstone holds NO stale
-                    // pointer: the String field-store emitter old-drops the
-                    // previous field value unconditionally, so a stale freed
-                    // key left here was re-dropped when a later put reused
-                    // this slot — and when malloc had recycled the address
-                    // for the incoming key, that old-drop freed the key
-                    // being stored (the 6.2.6b DnsCache eviction SIGSEGV).
-                    // The zero source is allocated BEFORE the drop so its
-                    // allocation cannot land on the just-freed key. For a
-                    // String K the clear-store's own old-drop also frees a
-                    // borrow-resolved copy the manual drop never covered;
-                    // for class K the manual drop below remains the owner
-                    // release; primitives just store zero.
-                    K[] kz = heap K[1];
-                    // The zero-store's displaced release (title-stores
-                    // §3.3.2) drops an OWNED class key; a String K's
-                    // clear-store old-drop frees the slot's wrapper copy
-                    // as before. Bit clears with the plain store.
-                    this.slots[i].key = kz[0];
-                    // Fused claim: the val bit rides into `out` (owned or
-                    // borrowed, verbatim) and the slot bit clears — then
-                    // `return #out` carries that flag to the caller (the
-                    // flagged-return protocol, no explicit boolean).
-                    V out #= #this.slots[i].val;
-                    this.setCtrl(i, (int8) 0xFE);
-                    this.sizeCount = this.sizeCount - 1;
-                    return #out;
-                }
-                mm = mm & (mm - 1);
-            }
-            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
-                searching = false;
-            } else {
-                stride = stride + 16;
-                pos = (pos + stride) & mask;
-            }
+        int64 i = this.findSlot(key);
+        if (i >= 0) {
+            // Clear the key slot so the tombstone holds NO stale pointer:
+            // the String field-store emitter old-drops the previous field
+            // value unconditionally, so a stale freed key left here was
+            // re-dropped when a later put reused this slot (the 6.2.6b
+            // DnsCache eviction SIGSEGV). The zero source is a STACK slot —
+            // no heap traffic on remove, and a stack address can never
+            // collide with a recycled malloc address. For a String K the
+            // clear-store's own old-drop also frees a borrow-resolved
+            // copy; for class K it releases the owned key; primitives just
+            // store zero.
+            K[] kz = stack K[1];
+            // The zero-store's displaced release (title-stores §3.3.2)
+            // drops an OWNED class key. Bit clears with the plain store.
+            this.slots[i].key = kz[0];
+            // Fused claim: the val bit rides into `out` (owned or
+            // borrowed, verbatim) and the slot bit clears — then
+            // `return #out` carries that flag to the caller (the
+            // flagged-return protocol, no explicit boolean).
+            V out #= this.slots[i].val;
+            this.setCtrl(i, (int8) 0xFE);
+            this.sizeCount = this.sizeCount - 1;
+            return #out;
         }
-        V[] missDefault = heap V[1];
+        V[] missDefault = stack V[1];
         return Cajeta.flagged(missDefault[0], false);
     }
 
@@ -468,7 +409,7 @@ public final class HashMap<K, V> {
      *  word bit; a droppable class formal forwards its entry flag): a plain
      *  forward would read all-borrow and record every indexed store as
      *  borrowed regardless of the caller's spelling. */
-    public void operator[]= (K key, V value) {
+    public void operator[]= (#K key, #V value) {
         this.put(#key, #value);
     }
 
@@ -481,32 +422,13 @@ public final class HashMap<K, V> {
      * extracted) is a Recoverable panic, never a silent second title.
      */
     public #V operator#[] (K key) {
-        int64 h = key.hash();
-        int64 mask = this.cap - 1;
-        int8 h2 = (int8) ((h >> 57) & 0x7F);
-        int64 pos = h & mask;
-        int64 stride = 0;
-        boolean searching = true;
-        while (searching) {
-            Vector<int8,16> g = Cajeta.vload16(this.ctrl, pos);
-            int32 mm = g.eqMask(h2);
-            while (mm != 0) {
-                int64 i = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
-                if (this.slots[i].key == key) {
-                    // Guarded member detach (title-stores §3.3.2): the
-                    // title moves out and the bit decays; a borrowed or
-                    // already-extracted entry panics TITLE_MISS.
-                    V out #= this.slots[i].val;
-                    return #out;
-                }
-                mm = mm & (mm - 1);
-            }
-            if ((g.eqMask((int8) 0x80) & 65535) != 0) {
-                searching = false;
-            } else {
-                stride = stride + 16;
-                pos = (pos + stride) & mask;
-            }
+        int64 i = this.findSlot(key);
+        if (i >= 0) {
+            // Guarded member detach (title-stores §3.3.2): the title moves
+            // out and the bit decays; a borrowed or already-extracted
+            // entry panics TITLE_MISS.
+            V out #= this.slots[i].val;
+            return #out;
         }
         throw heap Exception("#[] extraction: no entry for the key — extraction requires a resident owned entry");
     }

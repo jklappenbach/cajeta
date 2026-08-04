@@ -26,7 +26,7 @@ import cajeta.coverage.internal.FloatFormat;
  */
 public class ConsoleFormat {
 
-    public static String render(
+    public static #String render(
         CoverageMap map, FilteredCounts counts, int32 bottomN) {
         StringBuilder b = stack StringBuilder();
         b.append("coverage: ");
@@ -37,7 +37,7 @@ public class ConsoleFormat {
         b.append(map.grain().toName());
         b.append(")\n");
 
-        ArrayList<FilteredCounts.FileEntry> bottom = counts.bottomN(bottomN);
+        ArrayList<FilteredCounts.FilteredEntry> bottom = counts.bottomN(bottomN);
         // Skip the section entirely if nothing's below 100% — the
         // happy case shouldn't be cluttered with an empty header.
         if (bottom.count() == 0) {

@@ -24,6 +24,7 @@
 #include "CacheManifest.h"
 #include <optional>
 #include <functional>
+#include <list>
 #include <string>
 #include <set>
 #include <vector>
@@ -60,6 +61,14 @@ namespace cajeta {
     // prescan (used under --diag-format=json so prescan syntax errors don't leak
     // free text into the NDJSON stream; the authoritative parse re-reports them).
     void prescanSourceRoot(const std::string& rootPath, bool suppressConsole = false);
+
+    // Every `.cajeta` file under `rootPath`, SORTED (§2.0.7). Parse order
+    // decides synthesized-name tie-breaks, first-write-wins archive keys, and
+    // when an on-demand stdlib package becomes concrete, so it must not depend
+    // on filesystem enumeration order — two checkouts of one commit have to
+    // compile to the same bytes. Declared here so the determinism regression
+    // test can pin the ordering. Caller owns the returned list.
+    std::list<std::string>* listModulePaths(std::string rootPath);
 
     // Emit a per-module global ctor that registers UnrecoverableException's
     // vtable with the runtime (__cajeta_set_unrecoverable_vtable). Must be
@@ -264,13 +273,6 @@ namespace cajeta {
         // (XPU-N01) or a missing ptxas are skipped with a diagnostic.
         void emitXpuKernels(const std::string& archiveRootPath);
 
-        // Walk every archive on `classpath`, re-parse each ClassSource
-        // entry into a fresh CajetaModule, and register the resulting
-        // CajetaClass objects in the canonical-name map. Called once,
-        // immediately after the stdlib parse and before user-source
-        // prescan, so user imports can resolve against classpath
-        // classes during their own parse. No-op when classpath empty.
-        void ingestClasspath();
 
         // Archive emit (--emit=cja or --emit=uber). Bundles every
         // module's LLVM bitcode into a single .cja file. Cja form
@@ -394,7 +396,8 @@ namespace cajeta {
         // cajeta::Exception caught by the caller).
         // skipContextRegistration (lint-server §4): the sibling context is
         // already warm in the global registries (restored from the context
-        // baseline), so skip the registerLintContext sweep and lint only the
+        // baseline), so skip the registerLintContext sweep AND the --classpath
+        // ingest — the baseline was captured after both — and lint only the
         // target. afterContextRegistration, when set, is invoked right after a
         // sweep actually runs and BEFORE the target is parsed — the warm-lint
         // resweep path captures the context baseline there so the snapshot
@@ -426,6 +429,19 @@ namespace cajeta {
         // point (compile(module), compile(entryMethod, ...)) so any
         // caller order works.
         CajetaModulePtr ensureStdlibModule();
+
+        // Walk every archive on `classpath`, re-parse each ClassSource
+        // entry into a fresh CajetaModule, and register the resulting
+        // CajetaClass objects in the canonical-name map. Called once,
+        // immediately after the stdlib parse and before user-source
+        // prescan, so user imports can resolve against classpath
+        // classes during their own parse. No-op when classpath empty.
+        //
+        // PUBLIC because the JIT host drives the compile phases by hand
+        // (it already calls ensureStdlibModule) rather than going through
+        // an AOT entry point — without this a debug launch cannot resolve
+        // dependency types at all.
+        void ingestClasspath();
 
         // Lazy stdlib instrumentation / control. The set of stdlib packages
         // actually parsed (eager + on-demand) and the lazy bookkeeping are
@@ -601,6 +617,19 @@ namespace cajeta {
 
         list<CajetaModulePtr> getModules() {
             return modules;
+        }
+
+        // Promote ingested classpath modules into the main module list so every
+        // downstream stage (codegen, merge, JIT link) treats them like any other
+        // module. The JIT needs dependency DEFINITIONS, not just declarations —
+        // ingestClasspath alone leaves every dep symbol unresolved at
+        // materialization ("Symbols not found: dev.cajeta.logging..."). This is
+        // the JIT's equivalent of the Obj/Exe path's classpath re-drive, where
+        // deps join `codegenModules`; archive emit still keeps them external,
+        // which is why this is opt-in rather than done inside ingestClasspath.
+        // Idempotent: the list is spliced once and left empty.
+        void linkClasspathModules() {
+            modules.splice(modules.end(), externalModules);
         }
     };
 } // code

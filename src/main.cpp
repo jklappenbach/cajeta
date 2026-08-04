@@ -120,6 +120,8 @@ void printUsage(const char* progname) {
               << "                                       file and stop before codegen. Pair with --emit-xref\n"
               << "                                       (bare) for xref records on the diagnostic channel.\n"
               << "  --lint <dir> --emit-xref=<path>      Whole-root xref export: one document over every file.\n"
+              << "  --lint <dir> --list-profiles         Report the DI profiles the project declares (@Profile)\n"
+              << "                                       as {\"profiles\":[...]} on stdout. Front-end only.\n"
               << "  --source-root <dir>                  Project context for --lint: sibling files are parsed\n"
               << "                                       for their signatures so cross-file references resolve.\n"
               << "  --shadow <path>                      On-disk file the linted (staged) buffer stands in for;\n"
@@ -251,6 +253,16 @@ static void emitException(cajeta::Exception& e, bool jsonDiag) {
 }
 
 int main(int argc, const char* argv[]) {
+    // Resolve --diag-format BEFORE any verb dispatches (compiler-jsonl 5.1.2).
+    // `jit-run` and `dap` return from this function long before the flag-parse
+    // loop below ever runs, which is precisely why the same flag used to mean
+    // different things depending on the verb: a compile got the full stream,
+    // jit-run got only a CAJETA_DIAG_FORMAT export for the runtime's
+    // uncaught-throw emitter, and nothing else got anything. Resolving here
+    // makes it one flag with one meaning; the loop below still parses it for
+    // the compile path's own flags struct, and agrees by construction.
+    cajeta::resolveDiagFormatFromArgv(argc, argv);
+
     // Top-level subcommand dispatch. `cajeta archive ...` routes to
     // the archive-management surface (docs/ArchiveManagement.md);
     // `cajeta info` (and eventually `build`, `test`, ...) routes to
@@ -290,6 +302,9 @@ int main(int argc, const char* argv[]) {
     // `cajeta dap` — Debug Adapter Protocol server over stdio (docs/
     // Debugging.md). The IDE plugin spawns this and drives the debug session.
     if (argc >= 2 && std::string(argv[1]) == "dap") {
+        // Announce the stream before the server says anything, so its
+        // stderr is a well-formed stream and not records with no version.
+        cajeta::emitStreamRecordOnce();
         cajeta::dap::DapServer server;
         return server.runOverStdio();
     }
@@ -382,6 +397,8 @@ int main(int argc, const char* argv[]) {
         return false;
     };
 
+    // --list-profiles: report declared DI profiles and exit (IDE support).
+    bool listProfiles = false;
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         std::string value;
@@ -573,6 +590,10 @@ int main(int argc, const char* argv[]) {
             // Lean DCE diagnostic: write the generated keep-set + provenance to
             // this path as JSON (lean builds only).
             compiler.getMutableFlags().keepsetJson = value;
+        } else if (arg == "--list-profiles") {
+            // Report the DI profiles this project declares (@Profile), for an
+            // IDE to offer instead of making the developer remember them.
+            listProfiles = true;
         } else if (match(arg, "emit-xref", value)) {
             // Write the RESOLVED cross-reference index to this path as JSON, for
             // an IDE to consume rather than reimplementing Cajeta's name
@@ -703,6 +724,12 @@ int main(int argc, const char* argv[]) {
         }
         cajeta::lintservice::ServerOptions opts;
         opts.sourceRoot = lintSourceRoot;
+        // --classpath is start-time context here, like --source-root: the
+        // server builds a fresh Compiler per request and each one needs the
+        // dependency archives, or every reference into a dependency lints as
+        // an unknown type (Julian, 2026-07-31 — `Logger` red-underlined while
+        // one-shot lint of the same buffer was clean).
+        opts.classpath = compiler.getClasspath();
         opts.jsonDiagnostics = jsonDiag;
         opts.classpath = compiler.getClasspath();
         return cajeta::lintservice::runLintServer(opts);
@@ -724,6 +751,50 @@ int main(int argc, const char* argv[]) {
         // REQUIRES --emit-xref=<path> — "lint a directory, diagnostics only" is
         // not a mode, and guessing one file to lint would be a wrong answer
         // dressed as a right one.
+        if (listProfiles && std::filesystem::is_directory(lintFile)) {
+            // Front-end parse only — profiles are an annotation fact, so no
+            // codegen is needed to know them. Reports what the COMPILER sees,
+            // which is the point: a plugin-side text scan would have to
+            // re-implement the three @Profile spellings and would still miss
+            // profiles declared inside a dependency archive.
+            compiler.lintRoot(lintFile);
+            std::set<std::string> profiles;
+            auto modules = compiler.getModules();   // by value (see the header)
+            for (auto& module : modules) {
+                if (!module) continue;
+                for (auto& [canonical, klass] : module->getStructures()) {
+                    if (!klass) continue;
+                    for (auto& inst : klass->getAnnotationInstances()) {
+                        if (!inst || !inst->getName()) continue;
+                        if (inst->getName()->getTypeName() != "Profile") continue;
+                        // Three spellings, all handled by the same accessors
+                        // the DI selection uses: @Profile("dev"),
+                        // @Profile({"dev","test"}), and repeated @Profile.
+                        const std::vector<std::string>& list = inst->getStringList();
+                        if (!list.empty()) {
+                            for (auto& one : list)
+                                if (!one.empty()) profiles.insert(one);
+                        } else {
+                            const std::string& one = inst->getString();
+                            if (!one.empty()) profiles.insert(one);
+                        }
+                    }
+                }
+            }
+            // A JSON document on stdout, like --emit-xref writes one to a
+            // path: this is a query answering with data, not a diagnostic
+            // stream. Sorted so the IDE's list is stable between runs.
+            std::cout << "{\"profiles\":[";
+            bool first = true;
+            for (const auto& p : profiles) {
+                if (!first) std::cout << ",";
+                std::cout << "\"" << p << "\"";
+                first = false;
+            }
+            std::cout << "]}" << std::endl;
+            return 0;
+        }
+
         if (std::filesystem::is_directory(lintFile)) {
             const std::string& xrefOut = compiler.getFlags().emitXref;
             if (xrefOut.empty() || xrefOut == "-") {
@@ -830,6 +901,14 @@ int main(int argc, const char* argv[]) {
     }
 
     bool jsonDiag = compiler.getFlags().diagFormat == DiagFormat::Json;
+    // Announce the stream before the compile says anything (compiler-jsonl
+    // 2.1.3). Emitted here rather than at the flag parse because the earlier
+    // verbs return before this point and each needs its own treatment:
+    // `--lint` and `--lint-server` must stay byte-identical to EACH OTHER
+    // (lint-server-spec 1.4.1), so their envelope is emitted by the shared
+    // driver instead.
+    cajeta::emitStreamRecordOnce();
+
     // Collect-and-continue for full compile too: migrated resolution sites report
     // to the engine (recovering) instead of aborting; the codegen loop + emit are
     // gated on the engine having no errors (Compiler::compile). All diagnostics
@@ -840,6 +919,7 @@ int main(int argc, const char* argv[]) {
         compiler.compile(positional[0], positional[1], positional[2]);
     } catch (cajeta::SyntaxErrorException&) {
         cajeta::DiagnosticEngine::setActive(nullptr);
+        cajeta::emitJsonResult("error", "syntax errors");
         return 1;  // syntax diagnostics already emitted during parsing
     } catch (cajeta::Exception& e) {
         engine.report("error", e.getErrorId(), e.getMessage(),
@@ -849,5 +929,12 @@ int main(int argc, const char* argv[]) {
     }
     cajeta::DiagnosticEngine::setActive(nullptr);
     engine.emit(jsonDiag);
-    return engine.hasErrors() ? 1 : 0;
+    // One terminal record, last, on every exit path (compiler-jsonl 9.4): "did
+    // it work" must be answerable from the stream alone, never inferred from an
+    // exit code plus silence. No-op in text mode. Emitted AFTER engine.emit so
+    // it is genuinely the last record, and keyed on the engine's verdict —
+    // collect-and-continue means a failure can arrive without an exception.
+    const bool failed = engine.hasErrors();
+    cajeta::emitJsonResult(failed ? "error" : "ok");
+    return failed ? 1 : 0;
 }

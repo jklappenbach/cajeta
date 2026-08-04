@@ -1,0 +1,99 @@
+package cajeta.coverage.internal;
+
+/**
+ * Growable byte buffer + big-endian codec for the plugin's binary
+ * sidecar formats (`CoverageMapWriter` / `CoverageMapReader` /
+ * `CoverageMapHeader`). Writers append into one buffer and flush with
+ * a single `File.writeAllBytes`; readers slurp with one
+ * `File.readAllBytes` and decode via the static getters. Big-endian
+ * throughout — the on-disk formats say so.
+ */
+public class ByteBuf {
+    public int8[] data;
+    public int32 len;
+
+    public ByteBuf(int32 initialCapacity) {
+        int32 cap = initialCapacity < 16 ? 16 : initialCapacity;
+        this.data = heap int8[cap];
+        this.len = 0;
+    }
+
+    void ensure(int32 more) {
+        int32 needed = this.len + more;
+        int32 cap = (int32) this.data.count();
+        if (needed <= cap) {
+            return;
+        }
+        int32 newCap = cap * 2;
+        while (newCap < needed) {
+            newCap = newCap * 2;
+        }
+        int8[] grown = heap int8[newCap];
+        int32 i = 0;
+        while (i < this.len) {
+            grown[i] = this.data[i];
+            i = i + 1;
+        }
+        this.data #= grown;
+    }
+
+    public void putU8(int32 v) {
+        this.ensure(1);
+        this.data[this.len] = (int8) (v & 255);
+        this.len = this.len + 1;
+    }
+
+    public void putU16BE(int32 v) {
+        this.ensure(2);
+        this.data[this.len]     = (int8) ((v >> 8) & 255);
+        this.data[this.len + 1] = (int8) (v & 255);
+        this.len = this.len + 2;
+    }
+
+    public void putU32BE(int32 v) {
+        this.ensure(4);
+        this.data[this.len]     = (int8) ((v >> 24) & 255);
+        this.data[this.len + 1] = (int8) ((v >> 16) & 255);
+        this.data[this.len + 2] = (int8) ((v >> 8) & 255);
+        this.data[this.len + 3] = (int8) (v & 255);
+        this.len = this.len + 4;
+    }
+
+    /** Append `s`'s UTF-8 bytes verbatim. */
+    public void putString(String s) {
+        int32 n = s.byteLength();
+        this.ensure(n);
+        int32 i = 0;
+        while (i < n) {
+            this.data[this.len + i] = s.byteAt(i);
+            i = i + 1;
+        }
+        this.len = this.len + n;
+    }
+
+    /** Append `src[0..n)`. */
+    public void putRaw(int8[] src, int32 n) {
+        this.ensure(n);
+        int32 i = 0;
+        while (i < n) {
+            this.data[this.len + i] = src[i];
+            i = i + 1;
+        }
+        this.len = this.len + n;
+    }
+
+    // ----- static big-endian readers over a raw buffer -----------------
+
+    public static int32 u8(int8[] b, int32 off) {
+        return ((int32) b[off]) & 255;
+    }
+
+    public static int32 u16(int8[] b, int32 off) {
+        return (u8(b, off) << 8) | u8(b, off + 1);
+    }
+
+    public static int32 u32(int8[] b, int32 off) {
+        return (u8(b, off) << 24) | (u8(b, off + 1) << 16)
+             | (u8(b, off + 2) << 8) | u8(b, off + 3);
+    }
+}

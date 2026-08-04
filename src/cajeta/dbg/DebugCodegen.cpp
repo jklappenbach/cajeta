@@ -1,5 +1,6 @@
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/DebugLocTable.h"
+#include "cajeta/dbg/DebugTypeTable.h"
 
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
@@ -50,6 +51,12 @@ namespace cajeta::dbg {
         if (!builder || !slot) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_dbg_local");
         if (!fn) return;
+        // This local's declared type is a root of the debug type closure: at a
+        // stop it is the key the bridge looks the layout up by, and on a cache
+        // hit the type world that could answer it is gone (debug-type-sidecar
+        // §2.1.1). Registering here — the one site that knows every inspectable
+        // type — costs a string compare per named local at codegen.
+        globalDebugTypeTable().addRoot(type);
         llvm::Value* nameC = builder->CreateGlobalString(name);
         llvm::Value* typeC = builder->CreateGlobalString(type);
         // The facet enums travel as two i8s, the drop entry as a ptr, matching

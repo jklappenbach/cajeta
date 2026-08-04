@@ -226,6 +226,9 @@ namespace cajeta {
     // depends on the enclosing class stack; a flat regex can spot
     // the names but can't compose the right canonical, and regex
     // is fragile around string literals and comments anyway.
+    // Defined below, beside the lazy-stdlib bookkeeping it feeds.
+    static void notePrescannedImport(const std::string& pkg);
+
     class ArchivePrescanVisitor : public CajetaParserBaseVisitor {
     public:
         std::string package;
@@ -245,6 +248,28 @@ namespace cajeta {
                 p += ids[i]->getText();
             }
             package = p;
+            return defaultResult();
+        }
+
+        // Record which on-demand stdlib packages the tree imports, so they can
+        // all be made concrete before the first body walk rather than one unit
+        // at a time. See drainPrescannedLazyStdlib.
+        std::any visitImportDeclaration(
+                CajetaParser::ImportDeclarationContext* ctx) override {
+            if (auto* qn = ctx->qualifiedName()) {
+                const auto& ids = qn->identifier();
+                // An import names a TYPE (`cajeta.math.Tensor`); its package is
+                // everything up to the last segment. A trailing `.*` parses as
+                // a MUL token rather than an identifier, so the whole dotted
+                // name is already the package in that form.
+                size_t take = ctx->MUL() ? ids.size() : (ids.size() - 1);
+                std::string pkg;
+                for (size_t i = 0; i < take; ++i) {
+                    if (i) pkg += ".";
+                    pkg += ids[i]->getText();
+                }
+                if (!pkg.empty()) notePrescannedImport(pkg);
+            }
             return defaultResult();
         }
 
@@ -522,14 +547,23 @@ namespace cajeta {
     void prescanSourceRoot(const std::string& rootPath, bool suppressConsole) {
         using recursive_directory_iterator = std::filesystem::recursive_directory_iterator;
         std::filesystem::path root(rootPath);
+        // Sorted for the same determinism reason as listModulePaths: the
+        // archive registry this builds is first-write-wins, so an unsorted
+        // walk lets two same-short-name declarations bind differently
+        // depending on which checkout the compiler is looking at.
+        std::vector<std::filesystem::path> sources;
         for (const auto& entry : recursive_directory_iterator(root)) {
             if (!entry.is_regular_file()) continue;
             if (entry.path().extension() != CAJETA_EXTENSION) continue;
-            std::ifstream in(entry.path());
+            sources.push_back(entry.path());
+        }
+        std::sort(sources.begin(), sources.end());
+        for (const auto& path : sources) {
+            std::ifstream in(path);
             if (!in) continue;
             antlr4::ANTLRInputStream input(in);
             prescanSource(input, suppressConsole,
-                          entry.path().lexically_normal().string());
+                          path.lexically_normal().string());
         }
     }
 
@@ -554,6 +588,19 @@ namespace cajeta {
                 result->push_back(dirEntry.path().string());
             }
         }
+
+        // Sorted, for determinism (§2.0.7) — the same reason the xref export
+        // sorts. recursive_directory_iterator yields entries in filesystem
+        // order, which is not the same on two machines and not even the same
+        // for two checkouts of one repo: a fresh `git clone` writes files in a
+        // different sequence than a working copy that grew file by file.
+        //
+        // Parse order is not cosmetic. It decides synthesized-name tie-breaks,
+        // first-write-wins archive keys, and when an on-demand stdlib package
+        // becomes concrete — so an unsorted walk let the same commit compile
+        // to different binaries on different hosts. That is what made
+        // cajeta-ml build clean locally and crash in CI on identical sources.
+        result->sort();
 
         return result;
     }
@@ -726,14 +773,6 @@ namespace cajeta {
                 || pkg.rfind("cajeta.nucleo.column.", 0) == 0) {
             return true;
         }
-        // cajeta.nucleo.nn + cajeta.nucleo.optim (the neural-net core) import
-        // cajeta.math too — same lazy shape (nucleo-nn-optim plan).
-        if (pkg == "cajeta.nucleo.nn"
-                || pkg.rfind("cajeta.nucleo.nn.", 0) == 0
-                || pkg == "cajeta.nucleo.optim"
-                || pkg.rfind("cajeta.nucleo.optim.", 0) == 0) {
-            return true;
-        }
         // cajeta.nucleo.sparse (CsrMatrix, cajeta-ml-v2 U7) imports
         // cajeta.math (Tensor) — same lazy shape.
         if (pkg == "cajeta.nucleo.sparse"
@@ -810,8 +849,13 @@ namespace cajeta {
     static thread_local std::set<std::string> g_lazyPrescanned;        // lazy pkgs prescanned into the archive
     static thread_local std::set<std::string> g_lazyParsed;            // lazy pkgs fully parsed
     static thread_local std::vector<std::string> g_lazyQueue;          // lazy pkgs awaiting full parse
+    // Lazy pkgs named by an `import` ANYWHERE under the source root, collected
+    // during the prescan sweep and drained in one go before the first body
+    // walk. See drainPrescannedLazyStdlib.
+    static thread_local std::set<std::string> g_prescanLazyImports;
 
     static void resetLazyStdlibStateImpl() {
+        g_prescanLazyImports.clear();
         g_stdlibParsedPackages.clear();
         g_lazyPrescanned.clear();
         g_lazyParsed.clear();
@@ -859,10 +903,22 @@ namespace cajeta {
     // Fully parse every enqueued lazy package into the stdlib module, then
     // lay them out. Queue-guarded and idempotent; safe to call after every
     // parse (a cheap no-op when the queue is empty).
+    // Re-entrancy guard. The drain parses stdlib sources, and those parses run
+    // the same visitCompilationUnit that fires stdlibDrainHook — so a lazy
+    // package importing another lazy package would recurse into a drain whose
+    // queue the outer loop is already consuming. The outer loop drains the
+    // whole queue regardless, so an inner call is always safe to skip.
+    static thread_local bool g_draining = false;
+
     static void drainLazyStdlib() {
+        if (g_draining) return;
         if (g_lazyQueue.empty()) return;
         auto stdlib = CajetaModule::getStdlibModule();
         if (!stdlib) { g_lazyQueue.clear(); return; }
+        g_draining = true;
+        struct DrainGuard {
+            ~DrainGuard() { g_draining = false; }
+        } drainGuard;
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(stdlib);
         QualifiedNamePtr originalQName = stdlib->getQName();
@@ -915,6 +971,38 @@ namespace cajeta {
             CajetaModule::buildPendingPrototypes();
         }
         CajetaModule::setActiveModule(prevActive);
+    }
+
+    static void notePrescannedImport(const std::string& pkg) {
+        if (isLazyStdlibPackage(pkg)) g_prescanLazyImports.insert(pkg);
+    }
+
+    // Make every on-demand stdlib package the compile unit set imports
+    // CONCRETE before any module's body walk begins.
+    //
+    // The import hook alone enqueues a lazy package for "the next drain
+    // point", which is the END of the importing unit's parse — too late for
+    // a declaration whose TYPE names a lazy generic. `ArrayList<Tensor<E>>`
+    // must instantiate the real cajeta.math.Tensor while the field is being
+    // resolved, and a prescan placeholder carries no template parameters to
+    // instantiate. Worse, the trigger was per-unit: a file importing a USER
+    // class whose fields are typed that way (dev.cajeta.ml.zoo.SmallCnn
+    // imports GradTape and never mentions cajeta.math) pulls that class's
+    // declaration into its own module with nothing having loaded math.
+    //
+    // So resolution succeeded or failed on the order the filesystem happened
+    // to hand the compiler its sources — a fresh checkout, whose readdir
+    // order differs from a working copy's, miscompiled a tree that built
+    // clean in place. Draining here makes the result order-independent: the
+    // prescan has already seen every import in the tree, and no user body has
+    // been walked yet, so this is the last point where the parse can be
+    // reordered without disturbing a walk in progress.
+    static void drainPrescannedLazyStdlib() {
+        if (g_prescanLazyImports.empty()) return;
+        for (const auto& pkg : g_prescanLazyImports) {
+            noteStdlibImportImpl(pkg);
+        }
+        drainLazyStdlib();
     }
 
     // Parse every embedded stdlib file into `module`. Called exactly
@@ -1158,6 +1246,46 @@ namespace cajeta {
         for (const auto& cpPath : classpath) {
             try {
                 auto arc = CajetaArchive::readFrom(cpPath);
+                // Merge the dep's reflection-keep summary (written when the
+                // dep itself was built) into this compile's accumulator.
+                // Dep reflection sites live in method bodies this compile
+                // never re-codegens (ingest is signature-only; the
+                // authoritative bitcode rides the archive), so without the
+                // merge a dep-internal `allClasses()` — cajeta-unit's
+                // Runner — is invisible to the keep-set computation and a
+                // lean link silently strips the classes the dep enumerates
+                // at runtime. Bounded dep sites keep narrowly; unbounded
+                // ones degrade to keep-all with the warning attributed to
+                // the dep.
+                if (const auto* sum =
+                        arc.findEntry("meta/reflection-keep.v1")) {
+                    std::string text(
+                        (const char*) sum->data.data(), sum->data.size());
+                    std::istringstream lines(text);
+                    std::string line;
+                    auto& keep = CajetaModule::reflectionKeep();
+                    using RS = CajetaModule::ReflSite;
+                    while (std::getline(lines, line)) {
+                        auto sp = line.find(' ');
+                        if (sp == std::string::npos) continue;
+                        std::string tag = line.substr(0, sp);
+                        std::string sel = line.substr(sp + 1);
+                        if (tag == "forceall") {
+                            CajetaModule::noteForceAll(
+                                "dependency " + arc.getName() + ": " + sel);
+                        } else if (tag == "bound") {
+                            keep.sites.push_back({RS::BoundClosure, sel});
+                        } else if (tag == "forname") {
+                            keep.sites.push_back({RS::ForNameLiteral, sel});
+                        } else if (tag == "package") {
+                            keep.sites.push_back({RS::PackageLiteral, sel});
+                        } else if (tag == "annotated") {
+                            keep.sites.push_back({RS::Annotated, sel});
+                        } else if (tag == "methodannotated") {
+                            keep.sites.push_back({RS::MethodAnnotated, sel});
+                        }
+                    }
+                }
                 for (const auto& entry : arc.getEntries()) {
                     if (entry.kindTag != CajetaArchive::EntryKind::ClassSource)
                         continue;
@@ -1167,11 +1295,22 @@ namespace cajeta {
                     prescanSource(input);
                 }
             } catch (const std::exception& e) {
-                std::cerr << "cajeta: --classpath read failed for `"
-                          << cpPath << "`: " << e.what() << std::endl;
+                // compiler-jsonl 3.1.5: a levelled record under the flag, the
+                // identical wording without it. A dependency that failed to
+                // load is the kind of reason a run needs to be able to state.
+                logLine("error", "cajeta: --classpath read failed for `"
+                                 + cpPath + "`: " + e.what() + "\n");
                 throw;
             }
         }
+
+        // The classpath prescan has now seen every dependency's imports. Make
+        // the on-demand stdlib packages they name concrete BEFORE Phase 2
+        // walks their signatures: a dependency class whose field is typed
+        // `ArrayList<Tensor<E>>` (cajeta-ml's GradTape) instantiates
+        // cajeta.math.Tensor while that signature is read, and nothing in the
+        // consuming project need ever import cajeta.math itself.
+        drainPrescannedLazyStdlib();
 
         // Phase 2 — full parse. Each ClassSource entry becomes a
         // standalone CajetaModule. The module's qName is derived from
@@ -1213,6 +1352,20 @@ namespace cajeta {
                 // `Type.method(:NN)`. entry.name is already the archive-relative
                 // path (`<pkg>/<Class>.cajeta`) — exactly the remapped form.
                 extMod->setCurrentSourceFile(entryName);
+                // ...and its IDENTITY, not just its declaring file. The JIT's
+                // debug loc-id ranges (assignDbgLocRanges) key on
+                // remappedSourcePath(), which reads sourcePath — left EMPTY by
+                // the synthetic ctor. Every dependency module therefore hashed
+                // to the same registry slot, took the same dbgLocBase, and
+                // restarted at dbgLocUsed 0, overwriting the previous one's
+                // entries in the global loc table. Last writer won: exactly one
+                // dependency class resolved, every other one's safepoints
+                // reported ITS file and line, and a breakpoint in any of them
+                // never matched (Julian, 2026-07-31: `Logger.cajeta` never
+                // fired; every dependency frame claimed `LogFmt.cajeta`).
+                // entryName is already machine-independent, so this stays
+                // reproducible across build roots.
+                extMod->setSourcePath(entryName);
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();
@@ -1243,6 +1396,10 @@ namespace cajeta {
         CajetaModule::stdlibImportHook = [](const std::string& pkg) {
             noteStdlibImportImpl(pkg);
         };
+        // Drain hook — fired by visitCompilationUnit once a unit's imports are
+        // all noted, so a lazy generic named in a FIELD or PARAMETER type
+        // (`ArrayList<Tensor<E>>`) resolves to the real class rather than an
+        // uninstantiable prescan placeholder. See CajetaModule::stdlibDrainHook.
         // On-demand USER-class materialization (table-fit spec §2): lets a
         // synthesizer force a cross-file class's declaring module to compile
         // when it needs the real declaration, not a placeholder. Rebound per
@@ -1472,7 +1629,15 @@ namespace cajeta {
         // would then CLOBBER the good whole-root shard with one missing every
         // dependency reference. Armed after capture is on so the dependency
         // declarations are emitted as xref targets too.
-        ingestClasspath();
+        //
+        // Gated by skipContextRegistration for the same reason the sibling
+        // sweep below is: on a warm-hit lint (lint-server §4) the restored
+        // context baseline was captured AFTER this ingest, so it already holds
+        // every dependency declaration. Re-ingesting would register each one a
+        // second time and the dependency's own @Inject sites would then see two
+        // candidate providers (CAJETA_ERROR_DI_AMBIGUOUS on the second lint of
+        // an unchanged buffer).
+        if (!skipContextRegistration) ingestClasspath();
 
         const bool json = getFlags().diagFormat == DiagFormat::Json;
 
@@ -1924,6 +2089,11 @@ namespace cajeta {
         {
             ProgressPhase phase("prescan", "Scanning sources");
             prescanSourceRoot(sourceRootPath, getFlags().diagFormat == DiagFormat::Json);
+            // Every import in the tree is now known. Fully parse the on-demand
+            // stdlib packages they name BEFORE the first body walk, so a field
+            // or parameter typed `ArrayList<Tensor<E>>` resolves the same way
+            // no matter which order the filesystem hands us the sources.
+            drainPrescannedLazyStdlib();
         }
 
         // unique_ptr: the many emit/link calls below throw, and the trailing
@@ -2283,6 +2453,26 @@ namespace cajeta {
                                 if (k->findAnnotation(site.selector)) {
                                     addKeep(canon,
                                         "classesAnnotated(@" + site.selector + ")");
+                                }
+                            }
+                            break;
+                        case RS::MethodAnnotated:
+                            // Any METHOD carrying the annotation keeps the
+                            // declaring class — the bounded form of the
+                            // allClasses() + per-method-filter discovery
+                            // idiom (cajeta-unit's @Test runner).
+                            for (auto& [canon, k] : classes) {
+                                bool hit = false;
+                                for (auto& [mk, m] : k->getMethods()) {
+                                    if (m && m->findAnnotation(site.selector)) {
+                                        hit = true;
+                                        break;
+                                    }
+                                }
+                                if (hit) {
+                                    addKeep(canon,
+                                        "classesWithMethodAnnotated(@"
+                                            + site.selector + ")");
                                 }
                             }
                             break;
@@ -3895,7 +4085,26 @@ namespace cajeta {
             std::string canonical = module->getQName()
                 ? module->getQName()->toCanonical()
                 : std::string("anonymous");
-            bool isStdlib = canonical.rfind("cajeta.", 0) == 0;
+            // Stdlib is identified by the embedded manifest's package set,
+            // NOT by the "cajeta." name prefix: first-party tools (the
+            // build-tool plugins under cajeta.coverage / cajeta.lint.*)
+            // legitimately live in cajeta.* without being stdlib, and the
+            // prefix test packed them as stdlib — producing EMPTY library
+            // archives. A template instantiation ("pkg.Cls<...>")
+            // classifies by the template's own package, preserving the old
+            // behavior for stdlib templates instantiated with user types.
+            std::string pkgOf = canonical;
+            auto ltPos = pkgOf.find('<');
+            if (ltPos != std::string::npos) pkgOf.resize(ltPos);
+            auto lastDotPos = pkgOf.find_last_of('.');
+            pkgOf = (lastDotPos == std::string::npos)
+                ? std::string() : pkgOf.substr(0, lastDotPos);
+            // The fused parsed-stdlib module is synthesized as
+            // cajeta.runtime.__stdlib__ — a package with no entry in the
+            // embedded file table — so it must be identified by module
+            // identity, not by the package index.
+            bool isStdlib = module == CajetaModule::getStdlibModule()
+                || stdlibPackageIndex().count(pkgOf) > 0;
             if (!uber && isStdlib) {
                 // Cja: project-only. Skip the stdlib module entirely.
                 continue;
@@ -4147,6 +4356,60 @@ namespace cajeta {
                 reqsJson += "],\"libraries\":{}}";
                 arc.setNativeLibrariesMeta(
                     std::vector<uint8_t>(reqsJson.begin(), reqsJson.end()));
+            }
+        }
+
+        // Reflection-keep summary (lean-linker-dce §3.2 / Class.allClasses
+        // keep-all defect). A dependency's reflection sites live in method
+        // bodies the CONSUMER never re-codegens (classpath ingest is
+        // signature-only; the authoritative bitcode rides the archive), so
+        // without this entry a dep-internal `allClasses()` — cajeta-unit's
+        // Runner — is INVISIBLE to the consumer's keep-set computation and a
+        // lean link would silently strip the classes the dep enumerates at
+        // runtime. Serialize this build's accumulated sites; ingestClasspath
+        // merges them into the consuming compile's accumulator, so bounded
+        // dep sites keep narrowly and unbounded ones degrade to keep-all
+        // with the warning attributed to the dep. Written only when
+        // non-empty; line-based, versioned by the entry name.
+        {
+            auto& rk = CajetaModule::reflectionKeep();
+            // Only CODE-driven demands travel: `--debug-info=full` forces
+            // keep-all for THIS build's debuggability, which says nothing
+            // about what the library's code enumerates at a consumer's
+            // link — exporting it would force keep-all on every consumer
+            // of any debug-built archive.
+            std::vector<std::string> codeReasons;
+            for (auto& reason : rk.forceAllReasons) {
+                if (reason != "--debug-info=full") codeReasons.push_back(reason);
+            }
+            bool codeForcesAll = !codeReasons.empty()
+                || (rk.forcesAll && rk.forceAllReasons.empty());
+            if (codeForcesAll || !rk.sites.empty()) {
+                std::string body;
+                for (auto& reason : codeReasons) {
+                    body += "forceall " + reason + "\n";
+                }
+                if (codeForcesAll && codeReasons.empty()) {
+                    body += "forceall (unattributed)\n";
+                }
+                using RS = CajetaModule::ReflSite;
+                for (auto& site : rk.sites) {
+                    const char* tag = nullptr;
+                    switch (site.kind) {
+                        case RS::BoundClosure:    tag = "bound"; break;
+                        case RS::ForNameLiteral:  tag = "forname"; break;
+                        case RS::PackageLiteral:  tag = "package"; break;
+                        case RS::Annotated:       tag = "annotated"; break;
+                        case RS::MethodAnnotated: tag = "methodannotated"; break;
+                    }
+                    if (tag) body += std::string(tag) + " " + site.selector + "\n";
+                }
+                CajetaArchiveEntry e;
+                e.name = "meta/reflection-keep.v1";
+                e.originTag = (uint8_t) CajetaArchive::Origin::User;
+                e.kindTag = CajetaArchive::EntryKind::Resource;
+                e.data.assign(body.begin(), body.end());
+                arc.addEntry(std::move(e));
             }
         }
 

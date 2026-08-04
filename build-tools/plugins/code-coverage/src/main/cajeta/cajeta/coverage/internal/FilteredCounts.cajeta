@@ -2,6 +2,7 @@ package cajeta.coverage.internal;
 
 import cajeta.collection.ArrayList;
 import cajeta.collection.HashMap;
+import cajeta.lang.stream.Stream;
 
 /**
  * Per-file probe counts after exclude filtering.
@@ -23,32 +24,44 @@ public class FilteredCounts {
 
     /**
      * Per-file aggregate after filtering. Same shape as
-     * `CoverageMap.FileEntry` minus the probe bitset (we only need
+     * `CoverageMap.FilteredEntry` minus the probe bitset (we only need
      * the running totals once the filter pass is done).
      */
-    public class FileEntry {
+    public class FilteredEntry {
         String path;
         int32  totalProbes;
         int32  hitProbes;
 
-        public FileEntry(String path) {
-            this.path = path;
+        // Owns its path (uniform transfer): the entry outlives the
+        // creating call, so a borrowed path would dangle.
+        public FilteredEntry(#String path) {
+            this.path #= path;
             this.totalProbes = 0;
             this.hitProbes = 0;
         }
         public String  path()        { return this.path;        }
         public int32   totalProbes() { return this.totalProbes; }
         public int32   hitProbes()   { return this.hitProbes;   }
-        public float percent() {
+
+        /** Owned copy for report buckets (path copy + counts). */
+        public #FilteredEntry snapshot() {
+            FilteredEntry c #= heap FilteredEntry(
+                this.path.substring(0, (int32) this.path.count()));
+            c.totalProbes = this.totalProbes;
+            c.hitProbes = this.hitProbes;
+            return #c;
+        }
+
+        public float64 percent() {
             if (this.totalProbes == 0) { return 100.0; }
             return (this.hitProbes * 100.0) / this.totalProbes;
         }
     }
 
-    HashMap<String, FileEntry> files;
+    HashMap<String, FilteredEntry> files;
 
     public FilteredCounts() {
-        this.files #= heap HashMap<String, FileEntry>();
+        this.files #= heap HashMap<String, FilteredEntry>();
     }
 
     /**
@@ -57,18 +70,25 @@ public class FilteredCounts {
      * decided to keep this probe in the report).
      */
     public void recordProbe(String filePath, boolean hit) {
-        Optional<FileEntry> existing = this.files.get(filePath);
-        FileEntry e #= null;
+        Optional<FilteredEntry> existing = this.files.get(filePath);
         if (existing.isPresent()) {
-            e = existing.get();
-        } else {
-            e #= heap FileEntry(filePath);
-            this.files.put(filePath, #e);
+            FilteredEntry e = existing.get();
+            e.totalProbes = e.totalProbes + 1;
+            if (hit) {
+                e.hitProbes = e.hitProbes + 1;
+            }
+            return;
         }
-        e.totalProbes = e.totalProbes + 1;
+        // The map owns key and entry; each gets its own copy of the
+        // borrowed formal.
+        FilteredEntry fresh #= heap FilteredEntry(
+            filePath.substring(0, (int32) filePath.count()));
+        fresh.totalProbes = 1;
         if (hit) {
-            e.hitProbes = e.hitProbes + 1;
+            fresh.hitProbes = 1;
         }
+        this.files.put(
+            filePath.substring(0, (int32) filePath.count()), #fresh);
     }
 
     /**
@@ -77,16 +97,17 @@ public class FilteredCounts {
      * by file (so a 500-probe file with 90% counts more than a
      * 5-probe file with 100%).
      */
-    public float overallPercent() {
+    public float64 overallPercent() {
         int64 totalHit    = 0;
         int64 totalProbes = 0;
-        ArrayList<String> keys = this.files.keys();
-        int32 i = 0;
-        while (i < keys.count()) {
-            FileEntry e = this.files.get(keys.get(i)).get();
+        Stream<String> keys = this.files.keys();
+        Optional<String> cur = keys.next();
+        while (cur.isPresent()) {
+            Optional<FilteredEntry> eOpt = this.files.get(cur.get());
+            FilteredEntry e = eOpt.get();
             totalHit    = totalHit    + e.hitProbes();
             totalProbes = totalProbes + e.totalProbes();
-            i = i + 1;
+            cur = keys.next();
         }
         if (totalProbes == 0) {
             return 100.0;
@@ -104,31 +125,33 @@ public class FilteredCounts {
      * the filtered view so the report's failure messages cite
      * post-filter percentages.
      */
-    public ArrayList<FileEntry> bottomN(int32 n) {
-        ArrayList<FileEntry> bucket #= heap ArrayList<FileEntry>();
-        ArrayList<String> keys = this.files.keys();
-        int32 i = 0;
-        while (i < keys.count()) {
-            FileEntry e = this.files.get(keys.get(i)).get();
-            insertSortedAsc(bucket, e, n);
-            i = i + 1;
+    public #ArrayList<FilteredEntry> bottomN(int32 n) {
+        ArrayList<FilteredEntry> bucket #= heap ArrayList<FilteredEntry>();
+        Stream<String> keys = this.files.keys();
+        Optional<String> cur = keys.next();
+        while (cur.isPresent()) {
+            Optional<FilteredEntry> eOpt = this.files.get(cur.get());
+            FilteredEntry e = eOpt.get();
+            insertSortedAsc(bucket, e.snapshot(), n);
+            cur = keys.next();
         }
-        return bucket;
+        return #bucket;
     }
 
     /** Every file below `floorPercent`, ascending. */
-    public ArrayList<FileEntry> filesBelow(int32 floorPercent) {
-        ArrayList<FileEntry> bucket #= heap ArrayList<FileEntry>();
-        ArrayList<String> keys = this.files.keys();
-        int32 i = 0;
-        while (i < keys.count()) {
-            FileEntry e = this.files.get(keys.get(i)).get();
+    public #ArrayList<FilteredEntry> filesBelow(int32 floorPercent) {
+        ArrayList<FilteredEntry> bucket #= heap ArrayList<FilteredEntry>();
+        Stream<String> keys = this.files.keys();
+        Optional<String> cur = keys.next();
+        while (cur.isPresent()) {
+            Optional<FilteredEntry> eOpt = this.files.get(cur.get());
+            FilteredEntry e = eOpt.get();
             if (e.percent() < floorPercent) {
-                insertSortedAsc(bucket, e, bucket.count() + 1);
+                insertSortedAsc(bucket, e.snapshot(), bucket.count() + 1);
             }
-            i = i + 1;
+            cur = keys.next();
         }
-        return bucket;
+        return #bucket;
     }
 
     /**
@@ -137,11 +160,11 @@ public class FilteredCounts {
      * Used in failure messages and the console summary; same shape
      * as `BottomN.cite` for visual consistency.
      */
-    public static String cite(ArrayList<FileEntry> files) {
+    public static #String cite(ArrayList<FilteredEntry> files) {
         StringBuilder b = stack StringBuilder();
         int32 i = 0;
         while (i < files.count()) {
-            FileEntry e = files.get(i);
+            FilteredEntry e = files.get(i);
             b.append("  ");
             b.append(FloatFormat.oneDecimal(e.percent()));
             b.append("%  ");
@@ -156,15 +179,17 @@ public class FilteredCounts {
         return b.toString();
     }
 
+    // Consumes `e`: a not-inserted entry drops with the formal; a
+    // truncated-out entry drops when the discarded removeAt fires.
     static void insertSortedAsc(
-        ArrayList<FileEntry> bucket, FileEntry e, int32 n) {
+        ArrayList<FilteredEntry> bucket, #FilteredEntry e, int32 n) {
         if (bucket.count() >= n &&
             e.percent() >= bucket.get(bucket.count() - 1).percent()) {
             return;
         }
         int32 i = 0;
         while (i < bucket.count()) {
-            FileEntry cur = bucket.get(i);
+            FilteredEntry cur = bucket.get(i);
             if (e.percent() < cur.percent()) { break; }
             if (e.percent() == cur.percent() &&
                 e.path().compareTo(cur.path()) < 0) {
@@ -172,7 +197,7 @@ public class FilteredCounts {
             }
             i = i + 1;
         }
-        bucket.insert(i, e);
+        bucket.insert(i, #e);
         while (bucket.count() > n) {
             bucket.removeAt(bucket.count() - 1);
         }

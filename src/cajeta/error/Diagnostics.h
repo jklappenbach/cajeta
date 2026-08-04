@@ -101,11 +101,48 @@ namespace cajeta {
     void setJsonProgressEnabled(bool enabled);
     bool jsonProgressEnabled();
 
+    // Who is emitting, for the `stream` record's `producer`. Defaults to
+    // "cajeta <CAJETA_VERSION>" from build provenance — NOT from argv — so a
+    // stream written in-process (the lint reuse harness) names the same
+    // producer as one written by the `cajeta` binary. Override only if some
+    // other tool ever emits this format.
+    void setJsonProducer(const std::string& producer);
+    const std::string& jsonProducer();
+
+    // Resolve `--diag-format=json` from a raw argv, BEFORE any verb dispatches
+    // (compiler-jsonl 5.1.2). `jit-run` and `dap` return long before the main
+    // flag-parse loop, which is exactly why the flag used to mean something
+    // different depending on the verb. Returns true when JSON was selected.
+    bool resolveDiagFormatFromArgv(int argc, const char* argv[]);
+
+    // Announce the stream: one `{"kind":"stream","major":M,"minor":N,
+    // "producer":"…"}` record, emitted BEFORE any other record and at most once
+    // per process (compiler-jsonl 2.1.3). It is emitted even when the run has
+    // nothing else to say, so a consumer can tell "clean" from "the process
+    // died before producing anything" (spec 2.2.4). No-op in text mode, and
+    // no-op on a second call. The producer comes from setJsonProducer, so this
+    // stays free of the build-stamped version macros.
+    void emitStreamRecordOnce();
+
+    // The unlatched form: announces a stream every time it is called. Used by
+    // the lint driver, where each response is its own stream and the warm
+    // server must replay a payload byte-identical to a fresh one-shot process
+    // (lint-server-spec 1.4.1) — a process-lifetime latch would silently drop
+    // the record from the second request onward.
+    void emitStreamRecord();
+
+    // The stream's schema version (compiler-jsonl 2.1.3/2.1.4). MAJOR bumps on
+    // any breaking change and consumers are required to REFUSE an unknown one
+    // rather than guess; MINOR bumps when a record kind or field is ADDED,
+    // which existing consumers skip or ignore (2.1.5/2.1.6).
+    constexpr int kJsonlSchemaMajor = 1;
+    constexpr int kJsonlSchemaMinor = 0;
+
     // Emit one compile-phase progress record as an NDJSON line to stderr, on the
     // SAME stream as the diagnostics above and only under `--diag-format=json`.
-    // Fields: kind ("progress" — the discriminator; a diagnostic record has no
-    // `kind` and always has `severity`, so the two never collide and an older
-    // consumer that keys on `severity` simply ignores these), phase (stable id:
+    // Fields: kind ("progress" — the discriminator, which EVERY record now
+    // carries, diagnostics included, so consumers dispatch instead of sniffing
+    // for a `severity` field), phase (stable id:
     // "prescan" | "parse" | "resolve" | "codegen" | "emit" | "link"), state
     // ("start" | "finish"), label (human-readable phase name), and, on finish,
     // elapsedMs. One line per call, flushed, so the IDE sees each phase as it
@@ -114,6 +151,25 @@ namespace cajeta {
                           const std::string& state,
                           const std::string& label,
                           long long elapsedMs = -1);
+
+    // Narration that is not a diagnostic: progress notes, failure explanations,
+    // debugger chatter (compiler-jsonl 3.1.5). `level` is "info" | "warn" |
+    // "debug". The message is carried VERBATIM (spec 9.2) — these lines are
+    // read by people, and typed records for e.g. `[step-armed]` would be schema
+    // surface with no consumer.
+    void emitJsonLog(const std::string& level, const std::string& message);
+    // The same narration, routed: under `--diag-format=json` it becomes a `log`
+    // record; otherwise `text` goes to stderr exactly as it always has. This is
+    // what keeps text mode byte-identical (spec 1.4.1) while giving the JSON
+    // console something it can filter and tint. `text` must include its own
+    // trailing newline, matching the `std::cerr` it replaces.
+    void logLine(const std::string& level, const std::string& text);
+
+    // Terminal record: exactly one, last, so "did it work" is answerable from
+    // the stream alone rather than inferred from an exit code plus silence
+    // (compiler-jsonl 3.1.6 / 9.4). `status` is "ok" | "error"; `message`
+    // explains a failure and is omitted when empty.
+    void emitJsonResult(const std::string& status, const std::string& message = "");
 
     // Emit one cache-hit record as an NDJSON line to stderr, on the same stream
     // as the diagnostics and phase records. A cached build runs no compiler at

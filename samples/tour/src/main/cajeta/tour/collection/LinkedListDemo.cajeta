@@ -7,42 +7,48 @@ import cajeta.collection.LinkedList;
 // (addHead/addTail, popHead/popTail), O(n) anywhere else (get(i),
 // contains, remove-by-value walk the links).
 //
-// The scenario: an editor's undo history. Edit IDs append at the tail;
-// undo pops from the tail (LIFO); and when the history cap is reached
-// the oldest edit falls off the head — the pattern arrays do badly
-// (front removal shifts everything) and linked lists do for free.
-//
-// The IDs index an edit log elsewhere; storing the description Strings
-// directly is gated on the class-typed pop defect
-// (specs/linkedlist-class-pop-spec.md — popTail() on LinkedList<String>
-// SIGSEGVs; primitive elements are unaffected).
+// The scenario: an editor's undo history. Edit descriptions append at
+// the tail; undo pops from the tail (LIFO); and when the history cap is
+// reached the oldest edit falls off the head — the pattern arrays do
+// badly (front removal shifts everything) and linked lists do for free.
 public class LinkedListDemo extends DemoClass {
     public void execute() {
         System.stdout.println("");
         System.stdout.println("-- LinkedList (deque) --");
 
-        LinkedList<int32> undo = heap LinkedList<int32>();
-        undo.addTail(101);          // insert 'a'
-        undo.addTail(102);          // insert 'b'
-        undo.addTail(103);          // delete line 3
-        undo.addTail(104);          // paste block
-        this.check((int32) undo.count() == 4 && undo.tail() == 104,
+        LinkedList<String> undo = heap LinkedList<String>();
+        // A named local surrendered with `#` demotes to a readable
+        // borrow — it still names the stored wrapper, which is exactly
+        // what the identity-matching contains/remove below need.
+        String bEdit = "insert 'b'";
+        undo.addTail("insert 'a'");
+        undo.addTail(#bEdit);
+        undo.addTail("delete line 3");
+        undo.addTail("paste block");
+        this.check((int32) undo.count() == 4
+                && undo.tail().equals("paste block"),
             "edits append at the tail");
 
-        // Undo = pop the most recent edit.
-        int32 undone = undo.popTail();
-        System.stdout.println("  undo -> edit " + undone
-            + "; most recent is now " + undo.tail());
-        this.check(undone == 104 && undo.tail() == 103, "undo pops LIFO");
+        // Undo = pop the most recent edit. The popped String comes back
+        // alive and owned; the node that held it is reclaimed.
+        String undone = undo.popTail();
+        System.stdout.println("  undo -> \"" + undone
+            + "\"; most recent is now \"" + undo.tail() + "\"");
+        this.check(undone.equals("paste block")
+                && undo.tail().equals("delete line 3"),
+            "undo pops LIFO");
 
         // History cap: drop the OLDEST from the head — O(1), no shifting.
-        int32 expired = undo.popHead();
-        this.check(expired == 101 && (int32) undo.count() == 2,
+        String expired = undo.popHead();
+        this.check(expired.equals("insert 'a'")
+                && (int32) undo.count() == 2,
             "cap evicts from the head in O(1)");
 
-        // Membership + targeted removal still walk the links.
-        this.check(undo.contains(103), "contains walks the list");
-        this.check(undo.remove(102) && (int32) undo.count() == 1,
+        // Membership + targeted removal still walk the links. `==` on a
+        // class element is identity; the demoted borrow above still
+        // points at the wrapper the list holds, so it matches.
+        this.check(undo.contains(bEdit), "contains walks the list");
+        this.check(undo.remove(bEdit) && (int32) undo.count() == 1,
             "remove-by-value unlinks mid-list");
     }
 }

@@ -35,7 +35,7 @@ public final class CacheNode<K, V> {
      * CacheNode<K, V> fresh #= heap CacheNode<K, V>(key, value, Cajeta.currentTimeNanos());
      * ```
      */
-    public CacheNode(K key, V value, int64 accessedAt) {
+    public CacheNode(K key, #V value, int64 accessedAt) {
         // The node BORROWS the key — the backing map owns the canonical
         // wrapper and outlives the node (Cache.put stores `#key` into the
         // map). `#key` stores the alias AS-IS: a plain store would
@@ -43,13 +43,10 @@ public final class CacheNode<K, V> {
         // never releases (T-origin String fields skip) — a leak per entry.
         // (Pre-7.2.2 this aliased by ACCIDENT via the stale moveMask TLS.)
         this.key #= key;
-        // title-tracking 6.2.3 — the CONSUMING spelling: the node's value bit
-        // records what this ctor's caller actually forwarded (owned when the
-        // cache user transferred, borrowed when they lent), and the formal's
-        // entry deactivates so an owned value isn't freed at ctor exit while
-        // the node still points at it. A plain store here was the DnsCache
-        // UAF: Cache.put's armed value formal dropped the entry the node had
-        // just stored.
+        // The node OWNS its value (uniform-transfer 2.3): the formal says
+        // so (`#V`) and the store is an unconditional transfer. (A plain
+        // store here was the DnsCache UAF: Cache.put's armed value formal
+        // dropped the entry the node had just stored.)
         this.value #= value;
         this.accessedAt = accessedAt;
         this.prev = null;

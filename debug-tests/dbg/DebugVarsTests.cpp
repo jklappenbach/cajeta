@@ -27,8 +27,10 @@ using cajeta::dbg::LifetimeState;
 
 // Native runtime frame-chain builders + the head selector (native copy).
 extern "C" {
-    void __cajeta_dbg_frame_enter(const char* func);
-    void __cajeta_dbg_frame_leave(void);
+    // enter RETURNS the frame node; leave takes that exact node back (the
+    // node-paired unlink — it is immune to a fiber-context change in between).
+    void* __cajeta_dbg_frame_enter(const char* func);
+    void __cajeta_dbg_frame_leave(void* node);
     // CP7-1b/1c: trailing args are alloc class + ownership role + the owner's
     // drop-chain entry pointer (null for non-owners).
     void __cajeta_dbg_local(const char* name, const char* type, void* addr,
@@ -166,7 +168,7 @@ TEST(EvaluateCondition, MalformedStopsWithError) {
 TEST(DebugVarsChain, SingleFrameLocals) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr) << "chain not clean at start";
 
-    __cajeta_dbg_frame_enter("demo.Calc::main");
+    void* node = __cajeta_dbg_frame_enter("demo.Calc::main");
     int32_t a = 6, b = 7;
     __cajeta_dbg_local("a", "int32", &a, 0, 0, nullptr);
     __cajeta_dbg_local("b", "int32", &b, 0, 0, nullptr);
@@ -180,17 +182,17 @@ TEST(DebugVarsChain, SingleFrameLocals) {
     EXPECT_EQ(formatValue(frames[0].locals[0].type, frames[0].locals[0].addr), "6");
     EXPECT_EQ(formatValue(frames[0].locals[1].type, frames[0].locals[1].addr), "7");
 
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
 TEST(DebugVarsChain, NestedFramesInnermostFirst) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 
-    __cajeta_dbg_frame_enter("demo.A::outer");
+    void* outer = __cajeta_dbg_frame_enter("demo.A::outer");
     int32_t x = 1;
     __cajeta_dbg_local("x", "int32", &x, 0, 0, nullptr);
-    __cajeta_dbg_frame_enter("demo.A::inner");
+    void* inner = __cajeta_dbg_frame_enter("demo.A::inner");
     int32_t y = 2;
     __cajeta_dbg_local("y", "int32", &y, 0, 0, nullptr);
 
@@ -201,8 +203,8 @@ TEST(DebugVarsChain, NestedFramesInnermostFirst) {
     EXPECT_EQ(frames[0].locals[0].name, "y");
     EXPECT_EQ(frames[1].locals[0].name, "x");
 
-    __cajeta_dbg_frame_leave();
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(inner);
+    __cajeta_dbg_frame_leave(outer);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }
 
@@ -210,7 +212,7 @@ TEST(DebugVarsChain, NestedFramesInnermostFirst) {
 // the owner's live drop-entry `active` flag.
 TEST(DebugVarsChain, FacetsAndLifetimeAtStop) {
     ASSERT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
-    __cajeta_dbg_frame_enter("demo.F::m");
+    void* node = __cajeta_dbg_frame_enter("demo.F::m");
 
     // A stack primitive: Stack / Unknown / Live, no drop entry.
     int32_t p = 9;
@@ -247,6 +249,6 @@ TEST(DebugVarsChain, FacetsAndLifetimeAtStop) {
 
     __cajeta_drop_pop_run(e);   // inactive -> no fire; restores the chain head
     std::free(e);
-    __cajeta_dbg_frame_leave();
+    __cajeta_dbg_frame_leave(node);
     EXPECT_EQ(*__cajeta_dbg_top_ptr(), nullptr);
 }

@@ -213,6 +213,54 @@ TEST(ResidentWorld, UserTypedStdlibTemplateSurvivesResidency) {
     EXPECT_EQ(exitCodeOf(s2), 42);
 }
 
+// Spec §4.1 at the IR level (plan 10.1.1). A session that instantiates a
+// stdlib template over a USER type emits those instantiations into its own
+// module, so the persistent stdlib module acquires `external global`
+// DECLARATIONS of their #ClassObject symbols. Nothing used to remove them:
+// they survived into the next session, whose user module defines no such
+// thing, and the launch died with `Symbols not found:
+// cajeta.collection.ArrayList<demo.Prog>#ClassObject`.
+//
+// Suite-order-dependent by nature — this was the whole reason
+// StepOverWorksInResidentAndCachedSessions failed after its siblings and
+// passed alone. Assert it directly instead: a template session followed, in
+// the same server, by a program that names no generic at all.
+TEST(ResidentWorld, UserTypedInstantiationDoesNotLeakIntoTheNextSession) {
+    static const char* kTemplProg =
+        "package demo;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        ArrayList<Prog> list = heap ArrayList<Prog>();\n"
+        "        list.add(heap Prog());\n"
+        "        list.add(heap Prog());\n"
+        "        return list.count() + 40;\n"
+        "    }\n"
+        "}\n";
+    // Deliberately the SAME package and class name: the canonical name
+    // `demo.Prog` is what the leaked declarations are keyed on, so a
+    // differently-named second program would sidestep the collision.
+    static const char* kPlainProg =
+        "package demo;\n"
+        "public class Prog {\n"
+        "    public static int32 main() {\n"
+        "        return 6 * 7;\n"
+        "    }\n"
+        "}\n";
+    TempProgram templ("demo", "Prog.cajeta", kTemplProg);
+    TempProgram plain("demo", "Prog.cajeta", kPlainProg);
+    CacheDirFixture cache;
+    DapServer srv;
+
+    std::vector<Json> s1 = session(srv, templ, cache.dir.string(), "demo.Prog.main");
+    ASSERT_EQ(exitCodeOf(s1), 42) << "the template session itself must work";
+
+    std::vector<Json> s2 = session(srv, plain, cache.dir.string(), "demo.Prog.main");
+    EXPECT_EQ(exitCodeOf(s2), 42)
+        << "the next session inherited the previous session's user-typed "
+           "instantiation declarations";
+}
+
 // Live report 2026-07-22: breakpoint hits but F8 does nothing in CLion.
 // Headless stepping was only ever tested NON-resident. Pin stepping through
 // a resident, cache-backed session: park at a breakpoint, `next`, expect a

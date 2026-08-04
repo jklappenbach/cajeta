@@ -12,6 +12,8 @@ import com.intellij.xdebugger.XSourcePosition
 import com.intellij.xdebugger.breakpoints.XBreakpointHandler
 import com.intellij.xdebugger.evaluation.XDebuggerEditorsProvider
 import com.intellij.xdebugger.frame.XSuspendContext
+import dev.cajeta.idea.jsonl.JsonConsoleLayoutStore
+import dev.cajeta.idea.jsonl.JsonConsoleWrapper
 import dev.cajeta.idea.settings.CajetaSettings
 import java.io.File
 
@@ -74,9 +76,26 @@ class CajetaDebugProcess(
      * output emitted before the UI existed; see CajetaDebugProcessHandler.
      */
     override fun createConsole(): ExecutionConsole {
-        val console = TextConsoleBuilderFactory.getInstance()
-            .createBuilder(session.project)
-            .console
+        // In-place JSON view on the debug console (json-viewer §3.1.1, default
+        // ON for cajeta configurations §3.1.2): the wrapper delegates every
+        // ConsoleView call to the platform console; attachConsole's replay and
+        // live output feed both cards.
+        val console = JsonConsoleWrapper(
+            TextConsoleBuilderFactory.getInstance()
+                .createBuilder(session.project)
+                .console,
+            project = session.project,
+            navigationRoots = listOfNotNull(session.project.basePath, configuration.sourceRoot.ifBlank { null }),
+            // Column layout is remembered per run/debug profile (§3.1.9.1).
+            // Key on the ENTRY METHOD, not the platform's session name: a
+            // profile is defined by the main it runs, that main's logging
+            // keeps one schema, and the name is a display string the platform
+            // is free to decorate (" (1)" for a second concurrent session,
+            // renames, temporary configurations). Fall back to the session
+            // name only when there is no entry method to key on.
+            profileKey = JsonConsoleLayoutStore.keyFor(
+                "debug", configuration.entryMethod.ifBlank { session.sessionName }),
+        )
         processHandler.attachConsole(console)
         return console
     }
@@ -146,6 +165,14 @@ class CajetaDebugProcess(
                 // resident-debug-server 5.2.1/4.2.1: identity + residency.
                 compilerPath = binary,
                 resident = true,
+                // The project's resolved dependency archives, so the launch
+                // compile resolves dependency types instead of dying at
+                // CAJETA_ERROR_UNRESOLVED_TYPE (Julian, 2026-07-30). Covers
+                // sub-project layouts — the archive lives wherever the
+                // consumer resolved it, not necessarily at the project root.
+                classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
+                    .dependencyArchives(session.project.basePath)
+                    .map { it.toString() },
             )
             ds.launch(
                 params,
@@ -344,6 +371,25 @@ class CajetaDebugProcess(
             val tid = body.opt("threadId")?.asInt() ?: 0
             stoppedThreadId = tid
             onStopped(ds, tid)
+        }
+        // A breakpoint the compile could not bind. Say so BOTH ways: grey the
+        // gutter marker (the durable signal, right next to the code) and print
+        // to the console (the signal you actually see when a run just ends).
+        // Silence here is what made a non-stopping run indistinguishable from
+        // a broken debugger — Julian, 2026-07-31.
+        ds.onBreakpointUnverified = { file, line, message ->
+            // A record, not prose: this shares a console with the compiler's
+            // stream, and a bare line would sit outside every level filter.
+            processHandler.emitError(
+                dev.cajeta.idea.jsonl.PluginNotice.log(
+                    "warn", "cajeta: breakpoint not set — $message"))
+            breakpointHandler.find(file, line)?.let { bp ->
+                com.intellij.openapi.application.ApplicationManager.getApplication()
+                    .invokeLater(
+                        { session.setBreakpointInvalid(bp, message) },
+                        com.intellij.openapi.application.ModalityState.any(),
+                    )
+            }
         }
     }
 

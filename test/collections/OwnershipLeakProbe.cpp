@@ -7,6 +7,9 @@
 #include <gtest/gtest.h>
 #include "../jit/JitTestHelper.h"
 #include <cstdint>
+#include <string>
+
+#include "cajeta/error/Exception.h"
 
 using cajeta_test::CajetaJit;
 
@@ -17,6 +20,24 @@ std::unique_ptr<CajetaJit> jitOf(const char* body) {
         "import cajeta.collection.HashMap;\n" +
         "public final class D {\n" + body + "}\n";
     return CajetaJit::compile(src, "test.D");
+}
+
+// uniform-transfer-semantics 2.1.7 — the lend-into-a-container shape is now a
+// COMPILE error, so those contracts are asserted on the compiler.
+std::string compileExpectError(const std::string& src,
+                               const std::string& expectCode,
+                               const char* entryClass = "test.F") {
+    try {
+        CajetaJit::compile(src, entryClass);
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), expectCode);
+        return e.getMessage();
+    } catch (const std::exception& e) {
+        ADD_FAILURE() << "expected a cajeta::Exception, got " << e.what();
+        return e.what();
+    }
+    ADD_FAILURE() << "expected " << expectCode << ", got a clean compile";
+    return "";
 }
 }
 
@@ -83,17 +104,16 @@ TEST(OwnershipLeakProbe, arrayListOwnedElementsDropped) {
     EXPECT_LT(delta, 20) << "owned ArrayList elements leaked: +" << delta;
 }
 
-// title-tracking §8.1 (plan 7.1.2) — the borrow→owning-slot MATERIALIZE
-// tests were RETIRED with owning instantiations: under rev 2 a plain add is
-// a borrow (entry bit 0), nothing materializes, and reading a stored borrow
-// after its source scope is the ordinary §7.4 hazard. Borrow-store semantics
-// are pinned by arrayListBorrowElementsUntouched below and
-// ContainerTitleTests.indexedBorrowStoreLeavesOwnerAlive.
+// title-tracking §8.1 (plan 7.1.2) — the borrow→owning-slot MATERIALIZE tests
+// were RETIRED with owning instantiations. uniform-transfer-semantics 2.1.7
+// finished the job: there is no borrow-store to pin any more, because lending
+// into a container is a compile error (see arrayListStringLendIsRejected
+// below and ContainerTitleTests.indexedLendIsRejected).
 
-// Balance check for the materialize path (element-ownership 3.1.5 slice):
-// borrow-add ×N into an owning list, drop everything → liveCount returns to
-// baseline (materialized wrappers dropped by the 3B walk, sources by scope).
-TEST(OwnershipLeakProbe, borrowIntoOwningSlotBalances) {
+// Balance check at scale: N owned adds into a list, drop everything →
+// liveCount returns to baseline. Each String is surrendered to the list, which
+// reclaims it at teardown; nothing is dropped twice and nothing is stranded.
+TEST(OwnershipLeakProbe, ownedElementsBalanceAtScale) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.ArrayList;\n"
@@ -101,7 +121,7 @@ TEST(OwnershipLeakProbe, borrowIntoOwningSlotBalances) {
         "    public static void fill(int32 n) {\n"
         "        ArrayList<String> a = heap ArrayList<String>();\n"
         "        int32 i = 0;\n"
-        "        while (i < n) { String s = \"elem\" + i; a.add(s); i = i + 1; }\n"
+        "        while (i < n) { String s = \"elem\" + i; a.add(#s); i = i + 1; }\n"
         "    }\n"
         "    public static int64 run(int32 n) {\n"
         "        int64 base = Cajeta.liveCount();\n"
@@ -113,7 +133,7 @@ TEST(OwnershipLeakProbe, borrowIntoOwningSlotBalances) {
     auto fn = jit->lookup<int64_t (*)(int32_t)>("run");
     int64_t delta = fn(1000);
     EXPECT_GE(delta, 0);
-    EXPECT_LT(delta, 20) << "borrow->owning materialize leaked: +" << delta;
+    EXPECT_LT(delta, 20) << "owned container elements leaked: +" << delta;
 }
 
 // title-tracking §8.1 (plan 7.1.2) — viewIntoOwningSlotPromotesToShared
@@ -121,27 +141,77 @@ TEST(OwnershipLeakProbe, borrowIntoOwningSlotBalances) {
 // the String view/share machinery itself stays pinned by the String suites.
 
 
-// Borrow-instantiation control: `ArrayList<String>` (no `#`) must NOT drop
-// elements — they belong to the enclosing scope; a premature free would
-// poison `keep` before the trailing read (element-ownership §7.1.4 gate).
-TEST(OwnershipLeakProbe, arrayListBorrowElementsUntouched) {
+// uniform-transfer-semantics 2.1.7 — was `arrayListBorrowElementsUntouched`.
+//
+// Its premise was that a list BORROWS its elements and must not touch them:
+// `a.add(keep); a.add(keep);` twice with the same String, then read `keep`
+// after the list's scope. Spec 2.3 abolishes borrowing elements, and phase 1
+// made String a fully owned class, so BOTH halves of that fixture are now
+// diagnosed. This pins the two diagnostics it turns into — the add-the-same-
+// element-twice hazard the original was quietly relying on is now named.
+TEST(OwnershipLeakProbe, arrayListStringLendIsRejected) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.ArrayList;\n"
         "public final class F {\n"
         "    public static int64 run() {\n"
         "        String keep = \"keep\" + 7;\n"
-        "        if (true) {\n"
-        "            ArrayList<String> a = heap ArrayList<String>();\n"
-        "            a.add(keep);\n"
-        "            a.add(keep);\n"
-        "        }\n"
+        "        ArrayList<String> a = heap ArrayList<String>();\n"
+        "        a.add(keep);\n"
         "        return (int64) keep.count();\n"
         "    }\n"
         "}\n";
-    auto jit = CajetaJit::compile(src, "test.F");
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
+    EXPECT_NE(msg.find("#keep"), std::string::npos) << msg;
+}
+
+// The same binding cannot be surrendered twice: the first `#keep` demotes it
+// to a borrow, and transferring from a borrow is the one error that shape
+// raises. The old fixture added `keep` twice and got away with it only
+// because the list did not take a title either time.
+TEST(OwnershipLeakProbe, arrayListStringAddedTwiceIsRejected) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class F {\n"
+        "    public static int64 run() {\n"
+        "        String keep = \"keep\" + 7;\n"
+        "        ArrayList<String> a = heap ArrayList<String>();\n"
+        "        a.add(#keep);\n"
+        "        a.add(#keep);\n"
+        "        return (int64) a.get(0).count();\n"
+        "    }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
+}
+
+// 2.1.4 — the three spellings, all in one place. `add(s)` is rejected;
+// `add(#s)` surrenders the one String; a fresh copy (`substring` returns
+// `#String`) gives the list its own element and leaves `s` an owner. The
+// plan wrote this third form as `s.clone()`; String has no clone — a
+// full-width `substring` is the copy idiom it does have.
+TEST(OwnershipLeakProbe, stringElementTransferSpellings) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class G {\n"
+        "    public static int64 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int64 t = 0;\n"
+        "        {\n"
+        "            String s = \"keep\" + 7;\n"
+        "            ArrayList<String> a = heap ArrayList<String>();\n"
+        "            a.add(s.substring(0, s.count()));\n"   // fresh copy
+        "            a.add(#s);\n"                          // surrender
+        "            t = (int64) (a.get(0).count() + a.get(1).count());\n"
+        "        }\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return leaked * 100 + t;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.G");
     auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 5) << "borrow-instantiated list touched elements it does not own";
+    EXPECT_EQ(fn(), 10);
 }
 
 // Bench-faithful: build a #-keyed HashMap<String,int32> AND do n lookups (each a

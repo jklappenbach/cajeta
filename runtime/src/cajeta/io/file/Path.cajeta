@@ -1,5 +1,6 @@
 package cajeta.io.file;
 
+import cajeta.collection.ArrayList;
 import cajeta.lang.String;
 
 /**
@@ -81,6 +82,23 @@ public class Path {
         // Path. Without the move, `copy` is freed when of()
         // returns and the caller sees a dangling bytes ptr.
         return heap Path(#copy);
+    }
+
+    /**
+     * The whole path as a String — the raw OS bytes, verbatim
+     * (UTF-8 on Linux/mac). A fresh owned copy; the Path keeps its
+     * own bytes. Without this override, `toString()` fell through
+     * to Object's placeholder and faulted at the vtable.
+     */
+    public #String toString() {
+        int32 n = (int32) this.bytes.count();
+        int8[] out = heap int8[n];
+        int32 i = 0;
+        while (i < n) {
+            out[i] = this.bytes[i];
+            i = i + 1;
+        }
+        return heap String(#out, n);
     }
 
     /**
@@ -359,6 +377,75 @@ public class Path {
     public #Path canonical() {
         int8[] empty = heap int8[0];
         return heap Path(#empty);
+    }
+
+    /**
+     * Non-recursive directory listing: one child `Path`
+     * (`this` + '/' + name) per directory entry, sorted
+     * lexicographically by name — deterministic across runs, so
+     * consumers (lint reports, coverage merges) diff stably in CI.
+     * `.` and `..` are excluded.
+     *
+     * Returns an empty list both for an empty directory and for a
+     * path that can't be opened as a directory — call `isDir()`
+     * first when the difference matters. Recursion is the caller's
+     * loop over `isDir()`; the `Stream<Path>` walk primitives are a
+     * planned follow-up (see delete()'s note).
+     *
+     * ```cajeta
+     * ArrayList<Path> entries = Path.of("src").list();
+     * ```
+     */
+    public #ArrayList<Path> list() {
+        ArrayList<Path> out #= heap ArrayList<Path>();
+        int8[] joined = this.listJoined();
+        int32 total = (int32) joined.count();
+        int32 pLen = (int32) this.bytes.count();
+        boolean needsSep = pLen > 0 && this.bytes[pLen - 1] != (int8) 47;
+        int32 s = 0;
+        int32 i = 0;
+        while (i < total) {
+            if (joined[i] == (int8) 0) {
+                int32 nLen = i - s;
+                if (nLen > 0) {
+                    int32 outLen = pLen + (needsSep ? 1 : 0) + nLen;
+                    int8[] child = heap int8[outLen];
+                    int32 j = 0;
+                    int32 k = 0;
+                    while (k < pLen) {
+                        child[j] = this.bytes[k];
+                        j = j + 1;
+                        k = k + 1;
+                    }
+                    if (needsSep) {
+                        child[j] = (int8) 47;
+                        j = j + 1;
+                    }
+                    k = s;
+                    while (k < i) {
+                        child[j] = joined[k];
+                        j = j + 1;
+                        k = k + 1;
+                    }
+                    out.add(heap Path(#child));
+                }
+                s = i + 1;
+            }
+            i = i + 1;
+        }
+        return #out;
+    }
+
+    /**
+     * Runtime bridge for `list()`: every child name in one `int8[]`,
+     * sorted, each name followed by a NUL byte (empty array on error
+     * or an empty directory). One runtime call per directory however
+     * many entries it has; `list()` does the split in cajeta. Stub
+     * body — intrinsic-lowered to `__cajeta_path_list(bytes, len)`
+     * (`MethodCallExpression.cpp`).
+     */
+    public #int8[] listJoined() {
+        return heap int8[0];
     }
 
     /**

@@ -11,6 +11,39 @@ All containers report their element count via `count()` (never `size`
 or `length`); `count()` returns `int64` except on `ArrayList`, where it
 is `int32`.
 
+## Containers own their elements — and it is enforced
+
+Every container below declares its element and key parameters `#T` / `#K` /
+`#V`. This is a compile-time contract, not a convention:
+
+```cajeta
+Cell c = heap Cell(7);
+xs.add(c);       // CAJETA_ERROR_TRANSFER_REQUIRED — the message names the fix
+xs.add(#c);      // the list takes the title
+int32 n = c.n;   // still fine: `#` moves the title, not the binding
+```
+
+Three things to know before writing container code:
+
+- **There is no borrowed-element mode.** A container never holds something it
+  will not reclaim, so teardown drops everything, `remove` hands the title
+  back, and a replace displaces exactly one value. No per-entry ownership bit
+  and nothing branching on one.
+- **The source stays readable.** A transfer DEMOTES its source to a borrow of
+  the same live instance (`MemoryModel.md`). What you must not do is read it
+  after the container tears down — that dangles, and nothing diagnoses it yet
+  (§1.7).
+- **String is an ordinary element.** `list.add(s)` on a `String` is the same
+  error as any other class. Either surrender it (`#s`) or give the container
+  its own copy — `s.substring(0, s.count())` returns a fresh `#String`.
+
+Keys are owned too, which interacts with hashing. `String` and primitives are
+VALUE-hashed, so a fresh equal key finds a surrendered entry; a user class is
+IDENTITY-hashed by default, so it does not. Replacing a value under an owned
+class key therefore has no spelling today — `map.update` is an open design
+question, and `OwnedKeyLookupTests` pins the identity MISS so the day
+structural equality lands for classes, it fails loudly.
+
 ## Status snapshot
 
 | Type | Status |
@@ -40,8 +73,8 @@ public class ArrayList<T> {
     public int32 count();                     // element count
     public boolean isEmpty();
     public T get(int32 i);
-    public void set(int32 i, T v);
-    public void add(T v);                     // amortized O(1), capacity doubles
+    public void set(int32 i, #T v);
+    public void add(#T v);                    // amortized O(1), capacity doubles
     public void appendAll(ArrayList<T> other);// append other's elements (non-consuming)
     public #ArrayStream<T> stream();          // owned Stream<T> over live elements
 }
@@ -87,14 +120,14 @@ Open-addressing hash map with linear probing + tombstones. Source at
 ```cajeta
 public class HashMap<K, V> {
     public HashMap(int64 initialCapacity);     // power-of-2 capacity
-    public void put(K key, V value);
+    public void put(#K key, #V value);
     public V get(K key);                        // returns 0/null on miss
     public boolean containsKey(K key);
     public boolean remove(K key);              // leaves a reusable tombstone
     public int64 count();
 
     public V operator[](K key);                // sugar for get
-    public void operator[]=(K key, V value);   // sugar for put
+    public void operator[]=(#K key, #V value); // sugar for put
 
     // Splittable stream views (snapshots; slot-walk order):
     public #Stream<K> keys();                  // HashMapKeyStream<K, V>
@@ -151,7 +184,7 @@ Thin wrapper over a backing `HashMap<T, _>`. Same key constraint as
 ```cajeta
 public class HashSet<T> {
     public HashSet(int64 initialCapacity);     // power-of-2 capacity
-    public void add(T v);
+    public void add(#T v);
     public boolean contains(T v);
     public boolean remove(T v);                // true if present and removed
     public int64 count();
@@ -170,10 +203,10 @@ public class LinkedList<T> {
     public int64 count();
     public T head();                           // O(1)
     public T tail();                           // O(1)
-    public void add(T v);                      // alias of addTail
+    public void add(#T v);                     // alias of addTail
     public void addFirst(T v);                 // alias of addHead
-    public void addTail(T v);                  // append at tail
-    public void addHead(T v);                  // prepend at head
+    public void addTail(#T v);                 // append at tail
+    public void addHead(#T v);                 // prepend at head
     public T popHead();                        // remove + return front
     public T popTail();                        // remove + return back
     public T get(int64 idx);                   // walk to index
@@ -204,7 +237,7 @@ public class Deque<T> {
 }
 
 public class Stack<T> {
-    public void push(T v);
+    public void push(#T v);
     public T    pop();
     public T    peek();
     public int64 count();
@@ -222,7 +255,7 @@ first). No comparator parameter today.
 ```cajeta
 public class Heap<T> {
     public Heap();
-    public void push(T v);
+    public void push(#T v);
     public T pop();                            // minimum
     public T peek();                           // minimum, no removal
     public boolean isEmpty();
@@ -242,7 +275,7 @@ deferred**.
 ```cajeta
 public class RedBlackTree<K, V> {       // BPlusTree<K, V> mirrors this
     public boolean isEmpty();
-    public void put(K key, V value);
+    public void put(#K key, #V value);
     public V get(K key);                       // 0/null on miss
     public boolean containsKey(K key);
     public K min();

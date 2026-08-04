@@ -40,10 +40,10 @@ namespace cajeta {
         // Names of identifiers in this scope (or some enclosing scope) that have
         // been moved out via `#`. Read paths consult this set and reject
         // accesses for moved identifiers — see Identifier.cpp.
-        set<string> movedNames;
-        // Optional per-name transfer-site notes for movedNames, appended to
+        set<string> borrowedBindings;
+        // Optional per-name transfer-site notes for borrowedBindings, appended to
         // use-after-move diagnostics. Lives/clears with the name's entry.
-        map<string, string> movedNotes;
+        map<string, string> transferSites;
         // Ordered log of moves recorded through THIS scope (target scope may
         // be an ancestor). Blocks checkpoint it and retract their slice when
         // their codegen ends in a return/throw terminator — a path that never
@@ -54,7 +54,7 @@ namespace cajeta {
         // Field-access paths (e.g. "person.name" or "a.b.c") that have been
         // moved out. Read paths through DotExpression check this set with
         // prefix semantics — see DotExpression.cpp.
-        set<string> movedPaths;
+        set<string> borrowedPaths;
         // P3 — definite-assignment analysis (docs/specification/lang/UnifiedClasses.md § Definite
         // assignment). Names that were declared in this scope without an
         // initializer and have not yet been assigned. Read paths check this
@@ -75,7 +75,7 @@ namespace cajeta {
         // assignment site in BinaryOpExpression checks before
         // writing: if the target path overlaps any live borrow's
         // path (either is a prefix of the other), the write is
-        // rejected with CAJETA_ERROR_USE_AFTER_MOVE — the borrower
+        // rejected with CAJETA_ERROR_MOVE_OF_BORROW — the borrower
         // would dangle the moment the source is mutated.
         //
         // Recorded on the borrower's scope; cleaned up when that
@@ -99,7 +99,7 @@ namespace cajeta {
         // later escapes the method, those sources die at scope exit and the
         // escapee carries dangling pointers — rejected with
         // CAJETA_ERROR_DANGLING_LEND. Recorded at the holder's declaring
-        // scope, like markMoved. Conservative: an extraction does NOT clear
+        // scope, like demoteToBorrow. Conservative: an extraction does NOT clear
         // the edge (no intra-procedural entry-level tracking); the `#s`
         // spelling at the lend is the suppression.
         map<string, set<string>> lendEdges;
@@ -130,6 +130,23 @@ namespace cajeta {
 
         FieldPtr getField(llvm::AllocaInst* alloca);
 
+        // Block-scoped name bindings. There is one Scope per method, so a
+        // local declared inside a nested `{ ... }` lands in the same map as
+        // the method's parameters and would otherwise clobber a same-named
+        // parameter or outer local for the REST of the method — including
+        // after the closing brace, where the name must resolve to the outer
+        // binding again. Block::generateCode snapshots the prior binding of
+        // every name a block directly declares and puts it back at the `}`.
+        //
+        // localBinding looks only at THIS scope (never the parent chain) and
+        // never inserts: getField's `fields[name]` default-constructs a null
+        // entry on a miss, so a plain lookup could not tell "unbound" from
+        // "bound to null" and would spuriously report a shadow. A null return
+        // means nothing was shadowed and the block leaves the binding alone.
+        FieldPtr localBinding(const string& fieldName);
+
+        void restoreBinding(const string& fieldName, FieldPtr prior);
+
         void setParent(ScopePtr parent) {
             this->parent = parent;
         }
@@ -140,19 +157,19 @@ namespace cajeta {
         // inside a nested block still invalidates the outer binding); if the
         // field isn't found in any enclosing scope, the mark is recorded here
         // as a best-effort signal.
-        void markMoved(const string& name);
+        void demoteToBorrow(const string& name);
 
-        // As markMoved, additionally recording a note (the transfer site)
+        // As demoteToBorrow, additionally recording a note (the transfer site)
         // that use-after-move diagnostics append.
-        void markMoved(const string& name, const string& note);
+        void demoteToBorrow(const string& name, const string& note);
 
         // Re-arm: a fresh assignment to a moved-out local clears its moved
         // state (title-tracking §3.1.4). Erases on the declaring scope,
-        // mirroring markMoved's placement.
-        void clearMoved(const string& name);
+        // mirroring demoteToBorrow's placement.
+        void restoreOwnership(const string& name);
 
         // The note recorded with the move of `name`, or "".
-        string movedNoteOf(const string& name);
+        string transferSiteOf(const string& name);
 
         // Terminated-path retraction (see moveLog). Blocks capture the size
         // before their children and retract the slice when they end in a
@@ -178,17 +195,17 @@ namespace cajeta {
         string borrowSourceOf(const string& name);
 
         // True iff `name` has been moved-out in this scope or any ancestor.
-        bool isMoved(const string& name);
+        bool isBorrow(const string& name);
 
         // Mark a field-access path as moved (e.g. "person.address.city").
         // Subsequent reads of the same path *or any path it's a prefix of*
-        // are rejected. Single-identifier names should use markMoved instead.
-        void markMovedPath(const string& path);
+        // are rejected. Single-identifier names should use demoteToBorrow instead.
+        void demotePathToBorrow(const string& path);
 
         // True iff `path` or any ancestor prefix of `path` is in the moved set
         // (in this scope or any ancestor). `"a.b.c"` is considered moved if
         // any of "a", "a.b", or "a.b.c" was marked.
-        bool isPathMoved(const string& path);
+        bool isPathBorrow(const string& path);
 
         // P3 — mark a name as declared-but-not-yet-assigned. Called by
         // LocalVariableDeclaration when a local is declared without an

@@ -4,7 +4,7 @@
 // `String n #= person.name` records the dotted path `person.name` on the
 // active scope's moved-paths set. Subsequent reads of the same path — or any
 // path passing through a moved prefix — are rejected at codegen time with
-// CAJETA_ERROR_USE_AFTER_MOVE.
+// CAJETA_ERROR_MOVE_OF_BORROW.
 //
 // The check fires at the START of DotExpression::generateCode, before any
 // codegen that depends on the field actually existing.
@@ -26,17 +26,17 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-void expectUseAfterMove(const std::string& source, const std::string& expectedFragment) {
+// transfer-demotes-to-borrow — a transferred PATH is readable, exactly as a
+// transferred identifier is: `#person.name` demotes `person.name` to a borrow
+// of the same live instance rather than killing the path.
+void expectCompilesOk(const std::string& source) {
     try {
         CajetaJit::compile(source, "test.P");
-        FAIL() << "expected use-after-move error but compile succeeded";
     } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_USE_AFTER_MOVE");
-        EXPECT_NE(e.getMessage().find(expectedFragment), std::string::npos)
-            << "exception message '" << e.getMessage()
-            << "' did not contain expected fragment '" << expectedFragment << "'";
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
     } catch (std::exception& e) {
-        FAIL() << "expected cajeta::Exception (use-after-move), got std::exception: " << e.what();
+        ADD_FAILURE() << "expected a clean compile, got " << e.what();
     }
 }
 
@@ -112,12 +112,12 @@ TEST(PathBorrowTests, readSamePathAfterClassExtractionIsLend) {
     EXPECT_EQ(fn(), 0);
 }
 
-TEST(PathBorrowTests, readDeeperPathAfterRootMoveErrors) {
-    // Move the root identifier `s` itself, then try to read through it.
+TEST(PathBorrowTests, readDeeperPathAfterRootMoveIsLegal) {
+    // Move the root identifier `s` itself, then read through it: legal.
     auto src = source(
         "Outer moved #= s;\n"          // root moved
-        "Inner n = s.foo;");           // any path through s is invalid
-    expectUseAfterMove(src, "s.foo");
+        "Inner n = s.foo;");           // demoted root — path still readable
+    expectCompilesOk(src);
 }
 
 TEST(PathBorrowTests, doubleClassExtractionPanicsCatchably) {
@@ -137,13 +137,13 @@ TEST(PathBorrowTests, doubleClassExtractionPanicsCatchably) {
     EXPECT_EQ(fn(), 42);
 }
 
-TEST(PathBorrowTests, deeperPathMoveBlocksTransitiveRead) {
-    // Three-level path; mark `s.foo.bar`, then read it. The check walks
-    // prefixes; the exact-match case fires here.
+TEST(PathBorrowTests, deeperPathReadAfterMoveIsLegal) {
+    // Three-level path; demote `s.foo.bar`, then read it. The path is a
+    // borrow of the same live instance, so the read stands.
     auto src = source(
         "String moved #= s.foo.bar;\n"
         "String n = s.foo.bar;");
-    expectUseAfterMove(src, "s.foo.bar");
+    expectCompilesOk(src);
 }
 
 TEST(PathBorrowTests, deeperReadAfterClassExtractionIsLend) {

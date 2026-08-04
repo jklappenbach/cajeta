@@ -189,30 +189,42 @@ TEST(PlainStoreDiagnosticTests, plainLocalsQuiet) {
     EXPECT_FALSE(plainStoreWarnedAbout("t"));
 }
 
-// 6.1.1g — a local claimed with a runtime title flag (`T x #= #slot`) is a
-// runtime owner: a later plain retaining store of it warns. The fixture keeps
-// the runtime path borrowed (keeper owns; the slot's bit is clear) so the
-// program stays sound while the compile-time warning fires.
+// 6.1.1g — a local whose ownership is decided at RUNTIME is a runtime owner,
+// so a later plain retaining store of it warns. The runtime-conditional part
+// is load-bearing: 6.1.1f above pins that a statically-owned local stays quiet,
+// because the compiler can already see what happens to it.
+//
+// uniform-transfer Unit 3 rewrote this fixture. It used to get its runtime flag
+// by claiming from a BORROWED array slot with the fused claim
+// (`Cell f #= #this.slots[0]`), which forwarded the slot's mode verbatim and so
+// quietly produced a BORROW where the code said "claim". That spelling is gone:
+// `#=` from a titleless slot now means what it says — a demand for a title the
+// slot does not have — and panics CAJETA_PANIC_TITLE_MISS.
+//
+// The runtime-conditional shape that remains is `#=` from a PLAIN FORMAL, which
+// is conditional acquisition: whether `f` ends up owning depends on what the
+// CALLER did, and only the caller knows. Here the caller LENDS, so `f` is a
+// borrow, `this.parked` aliases a Cell the Shelf still owns, and the trailing
+// read is sound — while the compile-time warning still fires, because a
+// different caller passing `#c` would leave `parked` dangling. That is exactly
+// the hazard CAJETA_WARN_PLAIN_RETAIN_STORE names.
 TEST(PlainStoreDiagnosticTests, flaggedLocalClaimWarns) {
     std::string src = std::string(kCellSrc) +
         "public class Shelf {\n"
         "    public Cell keeper;\n"
-        "    public Cell[] slots;\n"
         "    public Cell parked;\n"
         "    public Shelf() {\n"
-        "        this.keeper #= #heap Cell(8);\n"
-        "        this.slots = heap Cell[2];\n"
-        "        this.slots[0] = this.keeper;\n"  // borrowed slot, bit clear
+        "        this.keeper #= heap Cell(8);\n"
         "    }\n"
-        "    public void park() {\n"
-        "        Cell f #= #this.slots[0];\n"     // runtime-flagged claim
-        "        this.parked = f;\n"              // plain retain -> WARN
+        "    public void park(Cell c) {\n"
+        "        Cell f #= c;\n"          // conditional acquisition -> runtime flag
+        "        this.parked = f;\n"      // plain retain -> WARN
         "    }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Shelf s = heap Shelf();\n"
-        "        s.park();\n"
+        "        s.park(s.keeper);\n"     // LEND — keeper keeps the title
         "        return s.parked.n;\n"
         "    }\n"
         "}\n";

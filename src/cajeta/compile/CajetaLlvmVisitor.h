@@ -858,7 +858,23 @@ namespace cajeta {
                 auto& canon = CajetaType::getCanonicalMap();
                 auto it = canon.find(qName->toCanonical());
                 if (it == canon.end()) {
-                    it = canon.find(qName->getTypeName());
+                    // Short-name fallback — guarded. The short key can hold a
+                    // placeholder created FOR another package's same-named
+                    // class (classpath-signature-shortname-rebind: filling it
+                    // would rebind every reference held under THAT canonical
+                    // — e.g. a signature's own-package formal — to this
+                    // class). Only accept a short-key hit whose recorded
+                    // canonical is OURS.
+                    auto sit = canon.find(qName->getTypeName());
+                    if (sit != canon.end()) {
+                        auto ph = std::dynamic_pointer_cast<CajetaClass>(
+                            sit->second);
+                        if (ph && ph->getQName()
+                                && ph->getQName()->toCanonical()
+                                       == qName->toCanonical()) {
+                            it = sit;
+                        }
+                    }
                 }
                 if (it != canon.end()) {
                     auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
@@ -1475,7 +1491,18 @@ namespace cajeta {
                 auto& canon = CajetaType::getCanonicalMap();
                 auto it = canon.find(qName->toCanonical());
                 if (it == canon.end()) {
-                    it = canon.find(qName->getTypeName());
+                    // Short-name fallback — guarded against cross-package
+                    // capture; see visitClassDeclaration's placeholder reuse.
+                    auto sit = canon.find(qName->getTypeName());
+                    if (sit != canon.end()) {
+                        auto ph = dynamic_pointer_cast<CajetaClass>(
+                            sit->second);
+                        if (ph && ph->getQName()
+                                && ph->getQName()->toCanonical()
+                                       == qName->toCanonical()) {
+                            it = sit;
+                        }
+                    }
                 }
                 if (it != canon.end()) {
                     auto existing = dynamic_pointer_cast<CajetaView>(it->second);
@@ -1727,7 +1754,18 @@ namespace cajeta {
                 auto& canon = CajetaType::getCanonicalMap();
                 auto it = canon.find(qName->toCanonical());
                 if (it == canon.end()) {
-                    it = canon.find(qName->getTypeName());
+                    // Short-name fallback — guarded against cross-package
+                    // capture; see visitClassDeclaration's placeholder reuse.
+                    auto sit = canon.find(qName->getTypeName());
+                    if (sit != canon.end()) {
+                        auto ph = std::dynamic_pointer_cast<CajetaClass>(
+                            sit->second);
+                        if (ph && ph->getQName()
+                                && ph->getQName()->toCanonical()
+                                       == qName->toCanonical()) {
+                            it = sit;
+                        }
+                    }
                 }
                 if (it != canon.end()) {
                     auto existing = std::dynamic_pointer_cast<CajetaClass>(it->second);
@@ -2334,6 +2372,16 @@ namespace cajeta {
             CajetaTypePtr returnType;
             if (ctx->typeTypeOrVoid()) {
                 returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
+                if (!returnType) {
+                    // Same guard as visitMethodDeclaration: a null return
+                    // type segfaults in generatePrototype instead of
+                    // diagnosing.
+                    reportOrThrow(ctx->typeTypeOrVoid()->getStart(),
+                        "CAJETA_ERROR_UNRESOLVED_TYPE",
+                        "unresolved type '" + ctx->typeTypeOrVoid()->getText()
+                            + "' in return type of operator '" + methodName + "'");
+                    returnType = CajetaType::error();
+                }
             }
             BlockPtr block;
             if (ctx->methodBody()) {
@@ -2471,6 +2519,16 @@ namespace cajeta {
                 }
             }
             CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
+            if (ctx->typeTypeOrVoid() != nullptr && !returnType) {
+                // A null return type must not reach generatePrototype —
+                // it flows into llvm::FunctionType::get(nullptr, ...)
+                // and segfaults instead of diagnosing.
+                reportOrThrow(ctx->typeTypeOrVoid()->getStart(),
+                    "CAJETA_ERROR_UNRESOLVED_TYPE",
+                    "unresolved type '" + ctx->typeTypeOrVoid()->getText()
+                        + "' in return type of method '" + name + "'");
+                returnType = CajetaType::error();  // recover: analysis continues
+            }
             // methodBody is either `block` or `;` (abstract methods, interface
             // body methods). For the `;` form, visitMethodBody returns an
             // empty std::any and any_cast<BlockPtr> would throw bad_any_cast.
@@ -2716,6 +2774,20 @@ namespace cajeta {
                 // initializer expression in a MoveExpression.
                 if (ctx->SHARP_ASSIGN() != nullptr
                         && ctx->variableInitializer()->expression() != nullptr) {
+                    // `T x #= #v` — the transfer spelled twice. `#=` IS the
+                    // transfer; a second `#` on the initializer adds nothing and
+                    // reads as a claim that does not exist. Same rule as the
+                    // assignment form in Expression::fromContext and the
+                    // Statement.cpp declaration path this mirrors.
+                    if (cajeta::cajetaRhsCarriesRedundantSharp(
+                            ctx->variableInitializer()->expression())) {
+                        throw cajeta::Exception(
+                            std::string("`#=` already acquires ownership when the source "
+                                        "has it — drop the `#` "
+                                        "on the right-hand side and write "
+                                        "`T x #= src`"),
+                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                    }
                     auto inner = any_cast<ExpressionPtr>(
                         visitExpression(ctx->variableInitializer()->expression()));
                     auto mv = make_shared<MoveExpression>(

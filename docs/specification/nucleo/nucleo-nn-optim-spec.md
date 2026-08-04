@@ -1,5 +1,13 @@
 # Núcleo NN & Optim — Specification
 
+> **RETIRED (v0.14.0).** These packages were removed from the standard
+> library. The neural spine they describe now lives in the standalone
+> `dev.cajeta.ml` library as `ml.nn` / `ml.optim`, alongside the tensor
+> autograd, module zoo, trainers, checkpoints and LoRA that grew around
+> it. This document is kept for the design record; it no longer describes
+> anything in the stdlib.
+
+
 > Status: draft for review (2026-06-23). The **module/parameter system + optimizers** — the
 > neural-net core (`dev.cajeta.nucleo.nn`, `dev.cajeta.nucleo.optim`) that the torch and keras
 > façades skin. Layer-1b núcleo core. Companion design:

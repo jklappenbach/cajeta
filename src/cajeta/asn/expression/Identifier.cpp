@@ -44,15 +44,13 @@ namespace cajeta {
     }
 
     llvm::Value* IdentifierExpression::generateCode(CajetaModulePtr module) {
-        // Use-after-move check: if this identifier has been transferred via `#`
-        // earlier in the active scope, reject the read at compile time.
-        // Per `MemoryModel.md` § Static analysis rules § Use-after-move.
+        // A transferred binding is READABLE. `#` moves the title, not the
+        // binding: the source is demoted to a borrow of the same live
+        // instance, and borrows are readable. Transferring AGAIN is what is
+        // rejected, and that check lives at the `#` operand, not here.
+        // Per `MemoryModel.md` § Static analysis rules and
+        // `specs/transfer-demotes-to-borrow-spec.md` §2.1.
         auto scope = module->getScopeStack().peek();
-        if (scope && scope->isMoved(identifier)) {
-            throw Exception("use-after-move: identifier '" + identifier
-                + "' was transferred via `#` and cannot be read here",
-                "CAJETA_ERROR_USE_AFTER_MOVE");
-        }
         // P3 — definite-assignment check. A local declared without an
         // initializer is in the scope's NYA set until an assignment
         // fires; reading it before then is a compile error.

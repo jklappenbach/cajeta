@@ -1,0 +1,108 @@
+package cajeta.lint.security.internal;
+
+// Copied from cajeta.coverage's ExcludeMatcher.cajeta (the plugins are
+// separate projects and deliberately carry no cross-plugin archive
+// dependency; the matcher is ~80 lines and its dialect is pinned by
+// code-coverage's unit tests). Keep the two in sync when the dialect
+// grows.
+/**
+ * The glob matcher. Public so unit tests can pin its semantics
+ * independently of the matcher's wiring.
+ */
+public class Glob {
+
+    /**
+     * True when `candidate` matches `pattern` under the dialect
+     * documented on `ExcludeMatcher`. `separator` is the char that
+     * `**` is required to cross but `*` is forbidden from crossing
+     * (`/` for file paths, `.` for dotted names).
+     */
+    public static boolean matches(
+        String pattern, String candidate, char separator) {
+        // For dotted-name kinds, `**` is meaningless — reject up
+        // front so a typo doesn't silently behave like a literal.
+        if (separator != '/' && containsDoubleStar(pattern)) {
+            // Soft fail: treat as no match. Earlier diagnostic at
+            // parse time would be louder, but the parser hasn't
+            // resolved kind→separator semantics yet, so we err on
+            // the side of "no surprising matches."
+            return false;
+        }
+        return matchAt(pattern, 0, candidate, 0, separator);
+    }
+
+    static boolean containsDoubleStar(String pattern) {
+        int32 i = 0;
+        while (i + 1 < pattern.count()) {
+            if (pattern.charAt(i) == '*' &&
+                pattern.charAt(i + 1) == '*') {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Recursive matcher. Indices into pattern / candidate, plus the
+     * separator that bounds single-star wildcards.
+     *
+     * Cases handled (in order checked):
+     *   - end of pattern + end of candidate            → match
+     *   - end of pattern, candidate left               → no match
+     *   - `**` in pattern + separator-traversing tail  → recurse
+     *   - `*` in pattern (single, separator-bounded)   → recurse
+     *   - `?` in pattern                               → consume 1
+     *   - literal char                                 → compare
+     */
+    static boolean matchAt(
+        String pat, int32 pi, String cand, int32 ci, char separator) {
+        while (pi < pat.count()) {
+            char pc = pat.charAt(pi);
+            if (pc == '*') {
+                boolean doubleStar = false;
+                if (pi + 1 < pat.count() && pat.charAt(pi + 1) == '*') {
+                    doubleStar = true;
+                    pi = pi + 2;
+                    // Eat an optional `/` immediately after `**` so
+                    // `src/**/Foo.cajeta` matches `src/Foo.cajeta` as
+                    // well as `src/a/b/Foo.cajeta` — same convention
+                    // bash + git use.
+                    if (pi < pat.count() && pat.charAt(pi) == '/') {
+                        pi = pi + 1;
+                    }
+                } else {
+                    pi = pi + 1;
+                }
+                // Try every split: `*` (or `**`) absorbs k chars,
+                // then the rest of the pattern must match the rest
+                // of the candidate.
+                int32 ci2 = ci;
+                while (true) {
+                    if (matchAt(pat, pi, cand, ci2, separator)) {
+                        return true;
+                    }
+                    if (ci2 >= cand.count()) { return false; }
+                    char absorbed = cand.charAt(ci2);
+                    if (!doubleStar && absorbed == separator) {
+                        return false;
+                    }
+                    ci2 = ci2 + 1;
+                }
+            }
+            if (ci >= cand.count()) { return false; }
+            char cc = cand.charAt(ci);
+            if (pc == '?') {
+                // `?` matches one of anything (including a separator
+                // in v1 — bash treats it that way too).
+                pi = pi + 1;
+                ci = ci + 1;
+                continue;
+            }
+            if (pc != cc) { return false; }
+            pi = pi + 1;
+            ci = ci + 1;
+        }
+        return ci == cand.count();
+    }
+}
