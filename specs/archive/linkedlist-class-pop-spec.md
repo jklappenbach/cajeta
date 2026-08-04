@@ -3,6 +3,31 @@
 Found by the tour-quality stdlib remediation (unit 3, LinkedListDemo
 rewrite, 2026-07-31).
 
+## 0. RESOLVED 2026-08-04 — fix shape (B), both halves on main
+
+Julian's call was (B): String fields carry an ownership bit like any other
+class field. Landed in two halves, both on main before v0.15.0:
+
+- `39283f70` — drop side: the String exclusion removed from
+  `CajetaClass::fieldHasOwnershipBit`. Fixed the primary defect (pop
+  returned freed memory) but left the holder's drop honouring a bit no
+  String store ever set → `SharedFieldDropTests.moveIsRcNeutral` leaked.
+- `c322461a` — store side: the String field-store path `break`s out of the
+  BINARY_OP_ASSIGN switch before the general fob block, so it never wrote
+  the bit; it now ORs the bit in unconditionally (the field owns `fresh` on
+  every arm), with the ownership-word layout math shared via
+  `locateFieldOwnershipBit` so the two paths cannot drift.
+
+Verified 2026-08-04 on main tip `e57517e8`: the acceptance set (3.3) was
+enabled and renamed (`…Survives`/`…Works`) by the fix commits;
+`LinkedListClassPopTests` + `SharedFieldDropTests` = **22/22 green under
+`MALLOC_PERTURB_=101`**, and the v0.15.0 release sweep (5670/0/0) ran with
+both halves in. Acceptance 3.1's tour item closes with this note:
+LinkedListDemo un-gated to `LinkedList<String>` (stores the edit
+descriptions themselves, pops verified by content).
+
+The double-sharp spelling (§1b) remains a separate, still-open filing.
+
 ## 1. Definition
 
 - 1.1 `LinkedList<String>` returns a DEAD element from `popTail()` /
