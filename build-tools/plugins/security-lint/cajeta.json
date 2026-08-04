@@ -37,12 +37,11 @@
         // time would defeat its own purpose.
         "capabilities": ["filesystem"],
 
-        "dependencies": {
-            "cajeta.lang":             "1.0.*",
-            "cajeta.lang.io":          "1.0.*",
-            "cajeta.collection":       "1.0.*",
-            "cajeta.buildtool.plugin": "1.0.*"
-        },
+        // stdlib is built into the toolchain — never declared,
+        // never fetched. That includes the plugin-author API
+        // (cajeta.buildtool.plugin), which ships embedded with
+        // the build tool it targets.
+        "dependencies": {},
 
         "build": {
             "target":       "host",

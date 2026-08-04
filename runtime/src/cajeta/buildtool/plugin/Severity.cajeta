@@ -28,7 +28,7 @@ public enum Severity {
         return stack Optional<Severity>(false, Severity.INFO);
     }
 
-    public String toName() {
+    public #String toName() {
         if (this == Severity.ERROR)   { return "error";   }
         if (this == Severity.WARNING) { return "warning"; }
         return "info";
