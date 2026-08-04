@@ -679,6 +679,62 @@ public final class Class<T> {
         return #arr;
     }
 
+    /** Whether any of `c`'s declared methods carries `annotationName`. */
+    static boolean anyMethodAnnotated(Class<?> c, String annotationName) {
+        int32 mc = c.getMethodCount();
+        int32 mi = 0;
+        while (mi < mc) {
+            if (c.getMethod(mi).hasAnnotation(annotationName)) {
+                return true;
+            }
+            mi = mi + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Every retained class declaring at least one METHOD annotated
+     * `annotationName` (e.g. `"code.Test"` for a bare `@Test`). The bounded
+     * form of the `allClasses()` + per-method-filter idiom (test runners,
+     * handler scanners): with a literal argument the lean linker keeps
+     * exactly the matching classes instead of degrading to keep-all —
+     * which is what every `allClasses()`-driven discovery loop forced.
+     * Two-pass over the registry.
+     *
+     * ```cajeta
+     * #Class<?>[] suites = Class.classesWithMethodAnnotated("code.Test");
+     * ```
+     */
+    // The registry is heterogeneous by construction — registryAt is @Native
+    // returning Class<?> — so "downcast to the concrete type at the loop
+    // boundary" is not available here: enumerating classes of statically
+    // unknown type IS this API's contract. The lint is aimed at callers who
+    // can narrow; at the definition there is nothing to narrow to.
+    @SuppressLint("wildcard-crosses-hot-boundary")
+    public static #Class<?>[] classesWithMethodAnnotated(String annotationName) {
+        int32 n = registryCount();
+        int32 matches = 0;
+        int32 i = 0;
+        while (i < n) {
+            if (anyMethodAnnotated(registryAt(i), annotationName)) {
+                matches = matches + 1;
+            }
+            i = i + 1;
+        }
+        Class<?>[] arr = heap Class<?>[matches];
+        int32 j = 0;
+        i = 0;
+        while (i < n) {
+            Class<?> c = registryAt(i);
+            if (anyMethodAnnotated(c, annotationName)) {
+                arr[j] = c;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return #arr;
+    }
+
     /**
      * REFL-12 — **bounded enumeration.** `Class.subtypes<Shape>()` returns every
      * retained class that is a subtype of (or is) the bound `Shape`: the

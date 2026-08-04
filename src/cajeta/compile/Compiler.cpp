@@ -1246,6 +1246,46 @@ namespace cajeta {
         for (const auto& cpPath : classpath) {
             try {
                 auto arc = CajetaArchive::readFrom(cpPath);
+                // Merge the dep's reflection-keep summary (written when the
+                // dep itself was built) into this compile's accumulator.
+                // Dep reflection sites live in method bodies this compile
+                // never re-codegens (ingest is signature-only; the
+                // authoritative bitcode rides the archive), so without the
+                // merge a dep-internal `allClasses()` — cajeta-unit's
+                // Runner — is invisible to the keep-set computation and a
+                // lean link silently strips the classes the dep enumerates
+                // at runtime. Bounded dep sites keep narrowly; unbounded
+                // ones degrade to keep-all with the warning attributed to
+                // the dep.
+                if (const auto* sum =
+                        arc.findEntry("meta/reflection-keep.v1")) {
+                    std::string text(
+                        (const char*) sum->data.data(), sum->data.size());
+                    std::istringstream lines(text);
+                    std::string line;
+                    auto& keep = CajetaModule::reflectionKeep();
+                    using RS = CajetaModule::ReflSite;
+                    while (std::getline(lines, line)) {
+                        auto sp = line.find(' ');
+                        if (sp == std::string::npos) continue;
+                        std::string tag = line.substr(0, sp);
+                        std::string sel = line.substr(sp + 1);
+                        if (tag == "forceall") {
+                            CajetaModule::noteForceAll(
+                                "dependency " + arc.getName() + ": " + sel);
+                        } else if (tag == "bound") {
+                            keep.sites.push_back({RS::BoundClosure, sel});
+                        } else if (tag == "forname") {
+                            keep.sites.push_back({RS::ForNameLiteral, sel});
+                        } else if (tag == "package") {
+                            keep.sites.push_back({RS::PackageLiteral, sel});
+                        } else if (tag == "annotated") {
+                            keep.sites.push_back({RS::Annotated, sel});
+                        } else if (tag == "methodannotated") {
+                            keep.sites.push_back({RS::MethodAnnotated, sel});
+                        }
+                    }
+                }
                 for (const auto& entry : arc.getEntries()) {
                     if (entry.kindTag != CajetaArchive::EntryKind::ClassSource)
                         continue;
@@ -2413,6 +2453,26 @@ namespace cajeta {
                                 if (k->findAnnotation(site.selector)) {
                                     addKeep(canon,
                                         "classesAnnotated(@" + site.selector + ")");
+                                }
+                            }
+                            break;
+                        case RS::MethodAnnotated:
+                            // Any METHOD carrying the annotation keeps the
+                            // declaring class — the bounded form of the
+                            // allClasses() + per-method-filter discovery
+                            // idiom (cajeta-unit's @Test runner).
+                            for (auto& [canon, k] : classes) {
+                                bool hit = false;
+                                for (auto& [mk, m] : k->getMethods()) {
+                                    if (m && m->findAnnotation(site.selector)) {
+                                        hit = true;
+                                        break;
+                                    }
+                                }
+                                if (hit) {
+                                    addKeep(canon,
+                                        "classesWithMethodAnnotated(@"
+                                            + site.selector + ")");
                                 }
                             }
                             break;
@@ -4291,6 +4351,60 @@ namespace cajeta {
                 reqsJson += "],\"libraries\":{}}";
                 arc.setNativeLibrariesMeta(
                     std::vector<uint8_t>(reqsJson.begin(), reqsJson.end()));
+            }
+        }
+
+        // Reflection-keep summary (lean-linker-dce §3.2 / Class.allClasses
+        // keep-all defect). A dependency's reflection sites live in method
+        // bodies the CONSUMER never re-codegens (classpath ingest is
+        // signature-only; the authoritative bitcode rides the archive), so
+        // without this entry a dep-internal `allClasses()` — cajeta-unit's
+        // Runner — is INVISIBLE to the consumer's keep-set computation and a
+        // lean link would silently strip the classes the dep enumerates at
+        // runtime. Serialize this build's accumulated sites; ingestClasspath
+        // merges them into the consuming compile's accumulator, so bounded
+        // dep sites keep narrowly and unbounded ones degrade to keep-all
+        // with the warning attributed to the dep. Written only when
+        // non-empty; line-based, versioned by the entry name.
+        {
+            auto& rk = CajetaModule::reflectionKeep();
+            // Only CODE-driven demands travel: `--debug-info=full` forces
+            // keep-all for THIS build's debuggability, which says nothing
+            // about what the library's code enumerates at a consumer's
+            // link — exporting it would force keep-all on every consumer
+            // of any debug-built archive.
+            std::vector<std::string> codeReasons;
+            for (auto& reason : rk.forceAllReasons) {
+                if (reason != "--debug-info=full") codeReasons.push_back(reason);
+            }
+            bool codeForcesAll = !codeReasons.empty()
+                || (rk.forcesAll && rk.forceAllReasons.empty());
+            if (codeForcesAll || !rk.sites.empty()) {
+                std::string body;
+                for (auto& reason : codeReasons) {
+                    body += "forceall " + reason + "\n";
+                }
+                if (codeForcesAll && codeReasons.empty()) {
+                    body += "forceall (unattributed)\n";
+                }
+                using RS = CajetaModule::ReflSite;
+                for (auto& site : rk.sites) {
+                    const char* tag = nullptr;
+                    switch (site.kind) {
+                        case RS::BoundClosure:    tag = "bound"; break;
+                        case RS::ForNameLiteral:  tag = "forname"; break;
+                        case RS::PackageLiteral:  tag = "package"; break;
+                        case RS::Annotated:       tag = "annotated"; break;
+                        case RS::MethodAnnotated: tag = "methodannotated"; break;
+                    }
+                    if (tag) body += std::string(tag) + " " + site.selector + "\n";
+                }
+                CajetaArchiveEntry e;
+                e.name = "meta/reflection-keep.v1";
+                e.originTag = (uint8_t) CajetaArchive::Origin::User;
+                e.kindTag = CajetaArchive::EntryKind::Resource;
+                e.data.assign(body.begin(), body.end());
+                arc.addEntry(std::move(e));
             }
         }
 

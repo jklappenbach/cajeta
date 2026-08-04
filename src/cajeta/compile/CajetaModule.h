@@ -562,7 +562,8 @@ namespace cajeta {
         // the process). forcesAll ⇒ keep-all; sites ⇒ narrow contributions the
         // Compiler resolves against the full canonicalMap after quiescence.
         struct ReflSite {
-            enum Kind { BoundClosure, ForNameLiteral, PackageLiteral, Annotated };
+            enum Kind { BoundClosure, ForNameLiteral, PackageLiteral, Annotated,
+                        MethodAnnotated };
             Kind kind;
             std::string selector;  // T canonical / class name / package / anno short
         };

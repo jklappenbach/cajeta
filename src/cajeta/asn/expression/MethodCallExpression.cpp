@@ -1896,10 +1896,15 @@ namespace cajeta {
                 methodCallName == "heapInstance" && parameters.size() == 1;
             bool isBoundedSubtypes =
                 methodCallName == "subtypes" && parameters.empty();
-            // classesAnnotated<@A>(): inject A's canonical name as the String arg
-            // and keep only @A-bearing classes.
+            // classesAnnotated<@A>() / classesWithMethodAnnotated<@A>():
+            // inject A's canonical name as the String arg and keep only the
+            // matching classes (class-level vs any-method-level annotation).
+            bool isMethodAnnotatedToken =
+                methodCallName == "classesWithMethodAnnotated"
+                && parameters.empty();
             bool isAnnotatedToken =
-                methodCallName == "classesAnnotated" && parameters.empty();
+                (methodCallName == "classesAnnotated" && parameters.empty())
+                || isMethodAnnotatedToken;
             if (isBoundedHeapInstance || isBoundedSubtypes || isAnnotatedToken) {
                 if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
                         children[0])) {
@@ -1936,7 +1941,8 @@ namespace cajeta {
                         using RS = CajetaModule::ReflSite;
                         if (isAnnotatedToken) {
                             auto p = tok.rfind('.');
-                            keep.sites.push_back({RS::Annotated,
+                            keep.sites.push_back({isMethodAnnotatedToken
+                                    ? RS::MethodAnnotated : RS::Annotated,
                                 p == std::string::npos ? tok : tok.substr(p + 1)});
                             explicitMethodTypeArgs.clear();
                         } else {
@@ -1958,7 +1964,8 @@ namespace cajeta {
         if (!children.empty()) {
             static const std::set<std::string> kClassReflEntry = {
                 "forName", "allClasses", "classesInPackage",
-                "classesAnnotated", "subtypes", "heapInstance"};
+                "classesAnnotated", "classesWithMethodAnnotated",
+                "subtypes", "heapInstance"};
             bool isClassEntry = false, isGetType = false;
             if (kClassReflEntry.count(methodCallName)) {
                 if (auto recvId = std::dynamic_pointer_cast<IdentifierExpression>(
@@ -2028,6 +2035,13 @@ namespace cajeta {
                         keep.sites.push_back({RS::Annotated, shortName(s)});
                     else M::noteForceAll("classesAnnotated(<non-literal>) — pass an "
                         "annotation token classesAnnotated<@A>() or a name literal");
+                } else if (methodCallName == "classesWithMethodAnnotated") {
+                    std::string s = stringLiteralArg(0);
+                    if (!s.empty())
+                        keep.sites.push_back({RS::MethodAnnotated, shortName(s)});
+                    else M::noteForceAll("classesWithMethodAnnotated(<non-literal>)"
+                        " — pass an annotation token"
+                        " classesWithMethodAnnotated<@A>() or a name literal");
                 } else if (methodCallName == "heapInstance"
                         || methodCallName == "subtypes") {
                     // bounded form already recorded BoundClosure above; the

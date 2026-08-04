@@ -2052,6 +2052,79 @@ TEST(ReflectionTests, classesAnnotatedTokenForm) {
         "}\n"), 1);
 }
 
+// classesWithMethodAnnotated("code.Probe") is the bounded form of the
+// allClasses() + per-method-filter discovery idiom (cajeta-unit's Runner):
+// it matches a METHOD-level annotation only — neither a class-level @Probe
+// nor a plain class qualifies.
+TEST(ReflectionTests, classesWithMethodAnnotatedFilters) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "public class Plain {\n"
+        "    public Plain() { return; }\n"
+        "    public int32 f() { return 1; }\n"
+        "}\n"
+        "@Probe\n"
+        "public class ClassTagged {\n"
+        "    public ClassTagged() { return; }\n"
+        "    public int32 f() { return 2; }\n"
+        "}\n"
+        "public class MethodTagged {\n"
+        "    public MethodTagged() { return; }\n"
+        "    @Probe public int32 f() { return 3; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class<?>[] hits = Class.classesWithMethodAnnotated(\"code.Probe\");\n"
+        "        int32 method = 0;\n"
+        "        int32 wrong = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) hits.count()) {\n"
+        "            if (hits[i].getName().equals(\"test.MethodTagged\")) { method = method + 1; }\n"
+        "            if (hits[i].getName().equals(\"test.ClassTagged\")) { wrong = wrong + 1; }\n"
+        "            if (hits[i].getName().equals(\"test.Plain\")) { wrong = wrong + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (method == 1 && wrong == 0) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
+// ...and the token form classesWithMethodAnnotated<Probe>() lowers to the
+// string overload exactly like classesAnnotated's.
+TEST(ReflectionTests, classesWithMethodAnnotatedTokenForm) {
+    EXPECT_EQ(runCustomI32(
+        "package test;\n"
+        "import cajeta.lang.String;\n"
+        "import cajeta.reflect.Class;\n"
+        "annotation Probe { }\n"
+        "public class Plain {\n"
+        "    public Plain() { return; }\n"
+        "    public int32 f() { return 1; }\n"
+        "}\n"
+        "public class MethodTagged {\n"
+        "    public MethodTagged() { return; }\n"
+        "    @Probe public int32 f() { return 3; }\n"
+        "}\n"
+        "public final class M {\n"
+        "    public static int32 run() {\n"
+        "        Class<?>[] hits = Class.classesWithMethodAnnotated<Probe>();\n"
+        "        int32 method = 0;\n"
+        "        int32 wrong = 0;\n"
+        "        int32 i = 0;\n"
+        "        while (i < (int32) hits.count()) {\n"
+        "            if (hits[i].getName().equals(\"test.MethodTagged\")) { method = method + 1; }\n"
+        "            if (hits[i].getName().equals(\"test.Plain\")) { wrong = wrong + 1; }\n"
+        "            i = i + 1;\n"
+        "        }\n"
+        "        if (method == 1 && wrong == 0) { return 1; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"), 1);
+}
+
 // ---------------------------------------------------------------------------
 // REFL-11 — constant-fold statically-known reflection. The fold fires only for
 // `Class.of(<final-class identifier>).<accessor>(...)`; these assert the folded
