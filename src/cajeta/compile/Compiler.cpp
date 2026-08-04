@@ -4025,7 +4025,21 @@ namespace cajeta {
             std::string canonical = module->getQName()
                 ? module->getQName()->toCanonical()
                 : std::string("anonymous");
-            bool isStdlib = canonical.rfind("cajeta.", 0) == 0;
+            // Stdlib is identified by the embedded manifest's package set,
+            // NOT by the "cajeta." name prefix: first-party tools (the
+            // build-tool plugins under cajeta.coverage / cajeta.lint.*)
+            // legitimately live in cajeta.* without being stdlib, and the
+            // prefix test packed them as stdlib — producing EMPTY library
+            // archives. A template instantiation ("pkg.Cls<...>")
+            // classifies by the template's own package, preserving the old
+            // behavior for stdlib templates instantiated with user types.
+            std::string pkgOf = canonical;
+            auto ltPos = pkgOf.find('<');
+            if (ltPos != std::string::npos) pkgOf.resize(ltPos);
+            auto lastDotPos = pkgOf.find_last_of('.');
+            pkgOf = (lastDotPos == std::string::npos)
+                ? std::string() : pkgOf.substr(0, lastDotPos);
+            bool isStdlib = stdlibPackageIndex().count(pkgOf) > 0;
             if (!uber && isStdlib) {
                 // Cja: project-only. Skip the stdlib module entirely.
                 continue;
