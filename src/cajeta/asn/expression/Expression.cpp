@@ -399,13 +399,27 @@ bool cajetaRhsCarriesRedundantSharp(
             bool acceptable = false;
             if (lp) {
                 if (auto* fpl = lp->formalParameterList()) {
+                    // `var`-list params (`(var a, var b) -> ...`) must fall
+                    // through to UnsupportedExpression, not reach
+                    // FormalParameter::fromContext — its unresolved-type
+                    // diagnostic would throw UNRESOLVED_TYPE for `var`
+                    // before the NOT_IMPLEMENTED funnel below.
+                    bool varForm = false;
                     for (auto* fp : fpl->formalParameter()) {
-                        if (auto p = FormalParameter::fromContext(fp, nullptr)) {
-                            names.push_back(p->getName());
-                            types.push_back(p->getType());
+                        if (fp->typeType() && fp->typeType()->getText() == "var") {
+                            varForm = true;
+                            break;
                         }
                     }
-                    acceptable = !names.empty() || fpl->formalParameter().empty();
+                    if (!varForm) {
+                        for (auto* fp : fpl->formalParameter()) {
+                            if (auto p = FormalParameter::fromContext(fp, nullptr)) {
+                                names.push_back(p->getName());
+                                types.push_back(p->getType());
+                            }
+                        }
+                        acceptable = !names.empty() || fpl->formalParameter().empty();
+                    }
                 } else if (lp->LPAREN() && lp->RPAREN() && !lp->lambdaLVTIList()) {
                     // Parens form. Either empty `()` or bare-identifier list
                     // `(a, b)`. Names captured; types filled in at resolve

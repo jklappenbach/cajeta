@@ -4099,7 +4099,12 @@ namespace cajeta {
             auto lastDotPos = pkgOf.find_last_of('.');
             pkgOf = (lastDotPos == std::string::npos)
                 ? std::string() : pkgOf.substr(0, lastDotPos);
-            bool isStdlib = stdlibPackageIndex().count(pkgOf) > 0;
+            // The fused parsed-stdlib module is synthesized as
+            // cajeta.runtime.__stdlib__ — a package with no entry in the
+            // embedded file table — so it must be identified by module
+            // identity, not by the package index.
+            bool isStdlib = module == CajetaModule::getStdlibModule()
+                || stdlibPackageIndex().count(pkgOf) > 0;
             if (!uber && isStdlib) {
                 // Cja: project-only. Skip the stdlib module entirely.
                 continue;
