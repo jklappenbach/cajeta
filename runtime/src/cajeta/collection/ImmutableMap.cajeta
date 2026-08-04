@@ -53,12 +53,16 @@ public final class ImmutableMap<K, V> {
     private int64 cap;
 
     /**
-     * Build a frozen map from `src` (last-wins on duplicate keys). The source
-     * list is untouched.
+     * Build a frozen map from `src` (last-wins on duplicate keys),
+     * CONSUMING it: each pair is decomposed and its key/value move into
+     * the map's arrays (uniform-transfer 2.3 — the map owns its
+     * entries, so it cannot borrow them). A duplicate key's superseded
+     * value is released by the overwrite; the duplicate key itself
+     * drops with its pair.
      *
      * @EntryPoint
      */
-    public ImmutableMap(ArrayList<Pair<K, V>> src) {
+    public ImmutableMap(#ArrayList<Pair<K, V>> src) {
         int32 n = src.count();
         int64 c = 16;
         while (c < (int64) n * 2) {
@@ -86,9 +90,10 @@ public final class ImmutableMap<K, V> {
         int32 count = 0;
         int32 i = 0;
         while (i < n) {
-            Pair<K, V> p = src.get(i);
+            // Extract the owned pair; `k` is a borrow for hashing and
+            // comparison — the moves below take from the pair directly.
+            Pair<K, V> p #= src[i];
             K k = p.first();
-            V v = p.second();
             int64 h = k.hash();
             int8 h2 = (int8) ((h >> 57) & 0x7F);
             int64 pos = h & mask;
@@ -102,7 +107,10 @@ public final class ImmutableMap<K, V> {
                     int64 slot = (pos + Cajeta.ctz64((int64) (mm & 65535))) & mask;
                     int32 ei = se[slot];
                     if (keys[ei] == k) {
-                        vals[ei] = v;          // last-wins overwrite
+                        // Last-wins: the transfer displaced-releases the
+                        // superseded value; the duplicate key stays with
+                        // the pair and drops with it.
+                        vals[ei] #= p.takeSecond();
                         handled = true;
                         placing = false;
                         mm = 0;
@@ -114,8 +122,8 @@ public final class ImmutableMap<K, V> {
                     int32 emptyM = g.eqMask((int8) 0x80) & 65535;
                     if (emptyM != 0) {
                         int64 slot = (pos + Cajeta.ctz64((int64) emptyM)) & mask;
-                        keys[count] = k;
-                        vals[count] = v;
+                        keys[count] #= p.takeFirst();
+                        vals[count] #= p.takeSecond();
                         se[slot] = count;
                         ct[slot] = h2;
                         if (slot < 16) {
@@ -169,7 +177,7 @@ public final class ImmutableMap<K, V> {
                 pos = (pos + stride) & mask;
             }
         }
-        V[] missDefault = heap V[1];
+        V[] missDefault = stack V[1];
         return missDefault[0];
     }
 
@@ -227,7 +235,7 @@ public final class ImmutableMap<K, V> {
     /** Key at dense index `i` (0-based, insertion order); zero value if out of range. */
     public K keyAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
-            K[] missDefault = heap K[1];
+            K[] missDefault = stack K[1];
             return missDefault[0];
         }
         return this.keyArr[i];
@@ -236,7 +244,7 @@ public final class ImmutableMap<K, V> {
     /** Value at dense index `i` (0-based, insertion order); zero value if out of range. */
     public V valAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
-            V[] missDefault = heap V[1];
+            V[] missDefault = stack V[1];
             return missDefault[0];
         }
         return this.valArr[i];

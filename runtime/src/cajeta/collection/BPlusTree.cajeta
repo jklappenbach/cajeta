@@ -145,18 +145,15 @@ public final class BPlusTree<K, V> {
      */
     public V get(K key) {
         if (this.root == null) {
-            V[] missDefault = heap V[1];
+            V[] missDefault = stack V[1];
             return missDefault[0];
         }
         BPlusTreeNode<K, V> leaf = this.findLeaf(key);
-        int32 i = 0;
-        while (i < leaf.numKeys) {
-            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
-                return leaf.values[i];
-            }
-            i = i + 1;
+        int32 i = this.findInLeaf(leaf, key);
+        if (i >= 0) {
+            return leaf.values[i];
         }
-        V[] missDefault = heap V[1];
+        V[] missDefault = stack V[1];
         return missDefault[0];
     }
 
@@ -168,14 +165,7 @@ public final class BPlusTree<K, V> {
             return false;
         }
         BPlusTreeNode<K, V> leaf = this.findLeaf(key);
-        int32 i = 0;
-        while (i < leaf.numKeys) {
-            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
-                return true;
-            }
-            i = i + 1;
-        }
-        return false;
+        return this.findInLeaf(leaf, key) >= 0;
     }
 
     /**
@@ -183,7 +173,7 @@ public final class BPlusTree<K, V> {
      */
     public K min() {
         if (this.root == null) {
-            K[] missDefault = heap K[1];
+            K[] missDefault = stack K[1];
             return missDefault[0];
         }
         BPlusTreeNode<K, V> node = this.root;
@@ -197,6 +187,12 @@ public final class BPlusTree<K, V> {
      * All keys in ascending order, walking the linked leaves. Returns
      * a fresh heap `ArrayList<K>` whose ownership transfers to the
      * caller.
+     *
+     * PRIMITIVE K ONLY today: the walk copies each key into the list,
+     * and for a class K that copy would be a borrow lent into the
+     * list's owning `#T` formal — a compile error at instantiation.
+     * A class-K variant needs a clone/copy protocol (deferred with
+     * `map.update`, uniform-transfer 4.2.4).
      */
     public #ArrayList<K> keysInOrder() {
         ArrayList<K> out = heap ArrayList<K>();
@@ -227,6 +223,19 @@ public final class BPlusTree<K, V> {
 
     // ----- internals ---------------------------------------------------
 
+    /** Index of `key` in `leaf` (order-equality: neither < nor >), or -1. */
+    @Inline
+    private int32 findInLeaf(BPlusTreeNode<K, V> leaf, K key) {
+        int32 i = 0;
+        while (i < leaf.numKeys) {
+            if ((key < leaf.keys[i]) == false && (leaf.keys[i] < key) == false) {
+                return i;
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
     /** Descend from the root to the leaf that would contain `key`. */
     private BPlusTreeNode<K, V> findLeaf(K key) {
         BPlusTreeNode<K, V> node = this.root;
@@ -249,7 +258,6 @@ public final class BPlusTree<K, V> {
         right.numKeys = total - mid;
         int32 k = 0;
         while (k < right.numKeys) {
-            // title-stores §2.1 — split forwards titles; source bits clear.
             // title-stores §2.1 — the forwarding moves carry each slot's
             // bit; the source bits clear with the takes.
             right.keys[k] #= leaf.keys[mid + k];

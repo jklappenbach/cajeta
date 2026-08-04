@@ -169,7 +169,7 @@ public final class RedBlackTree<K, V> {
                 return cur.value;
             }
         }
-        V[] missDefault = heap V[1];
+        V[] missDefault = stack V[1];
         return missDefault[0];
     }
 
@@ -197,7 +197,7 @@ public final class RedBlackTree<K, V> {
     public K min() {
         RedBlackNode<K, V> n = this.minNode();
         if (n == null) {
-            K[] missDefault = heap K[1];
+            K[] missDefault = stack K[1];
             return missDefault[0];
         }
         return n.key;
@@ -208,7 +208,7 @@ public final class RedBlackTree<K, V> {
      */
     public K max() {
         if (this.root == null) {
-            K[] missDefault = heap K[1];
+            K[] missDefault = stack K[1];
             return missDefault[0];
         }
         RedBlackNode<K, V> n = this.root;
@@ -223,6 +223,10 @@ public final class RedBlackTree<K, V> {
      * `ArrayList<K>`. Uses parent-pointer successor walking (O(1)
      * extra space, no recursion). Ownership of the list transfers to
      * the caller.
+     *
+     * PRIMITIVE K ONLY today — same limitation (and reason) as
+     * `BPlusTree.keysInOrder`: a class K copy would lend a borrow
+     * into the list's owning `#T` formal.
      */
     public #ArrayList<K> keysInOrder() {
         ArrayList<K> out = heap ArrayList<K>();

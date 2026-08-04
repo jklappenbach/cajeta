@@ -135,8 +135,9 @@ TEST(ValueTypeCollectionTests, immutableListSetValueType) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Point[] src = [ Point{x:1,y:2}, Point{x:3,y:4}, Point{x:1,y:2} ];\n"
-        "        ImmutableList<Point> il = heap ImmutableList<Point>(src);\n"
-        "        ImmutableSet<Point> is = heap ImmutableSet<Point>(src);\n"
+        "        Point[] src2 = [ Point{x:1,y:2}, Point{x:3,y:4}, Point{x:1,y:2} ];\n"
+        "        ImmutableList<Point> il = heap ImmutableList<Point>(#src);\n"
+        "        ImmutableSet<Point> is = heap ImmutableSet<Point>(#src2);\n"
         "        int32 lc = (int32) il.count();\n"   // 3 (list keeps dups)
         "        int32 sc = (int32) is.count();\n"   // 2 (set dedups)
         "        return lc * 10 + sc;\n"             // 32

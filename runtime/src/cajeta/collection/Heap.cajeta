@@ -100,19 +100,10 @@ public final class Heap<T> {
      * ```
      */
     public void push(#T v) {
+        // Hot path stays tiny; the cold doubling lives out-of-line in
+        // grow() so push inlines cleanly (same split ArrayList documents).
         if (this.sizeCount >= this.capacity) {
-            int32 newCap = this.capacity * 2;
-            T[] grown = heap T[newCap];
-            int32 i = 0;
-            while (i < this.sizeCount) {
-                // title-stores §2.1 — forwarding move keeps tail bits honest.
-                grown[i] #= this.data[i];
-                i = i + 1;
-            }
-            // Ownership transfer of the fresh storage into the field
-            // (see ArrayList.add for why `#` is required here).
-            this.data #= grown;
-            this.capacity = newCap;
+            this.grow();
         }
         // uniform-transfer 2.3 — the heap OWNS its elements: one
         // unconditional transfer, no caller-spelling to match.
@@ -141,6 +132,24 @@ public final class Heap<T> {
         this.sizeCount = this.sizeCount + 1;
     }
 
+    // Cold, out-of-line: double the backing array and move the live
+    // elements (bits ride the forwarding moves).
+    @NoInline
+    private void grow() {
+        int32 newCap = this.capacity * 2;
+        T[] grown = heap T[newCap];
+        int32 i = 0;
+        while (i < this.sizeCount) {
+            // title-stores §2.1 — forwarding move keeps tail bits honest.
+            grown[i] #= this.data[i];
+            i = i + 1;
+        }
+        // Ownership transfer of the fresh storage into the field
+        // (see ArrayList.reserve for why `#` is required here).
+        this.data #= grown;
+        this.capacity = newCap;
+    }
+
     /**
      * @returns the smallest element without removing it, or the
      *          type's zero value if the heap is empty.
@@ -148,7 +157,7 @@ public final class Heap<T> {
     @Inline
     public T peek() {
         if (this.sizeCount == 0) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         return this.data[0];
@@ -166,13 +175,18 @@ public final class Heap<T> {
      */
     public T pop() {
         if (this.sizeCount == 0) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return Cajeta.flagged(missDefault[0], false);
         }
         // Fused claim: the root's bit rides into `top` verbatim; the
         // `return #top` below carries it to the caller (flagged return).
         T top #= this.data[0];
         this.sizeCount = this.sizeCount - 1;
+        if (this.sizeCount == 0) {
+            // Last element popped: nothing to sift, and the alternative is
+            // a pointless data[0] #= data[0] self-move.
+            return #top;
+        }
         // Move the last element (and its bit) to the root and sift down.
         this.data[0] #= this.data[this.sizeCount];
         int32 i = 0;

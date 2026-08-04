@@ -21,7 +21,7 @@ TEST(NewCollectionsTests, immutableListGet) {
         "        a.add(10);\n"
         "        a.add(20);\n"
         "        a.add(30);\n"
-        "        ImmutableList<int32> il = heap ImmutableList<int32>(a);\n"
+        "        ImmutableList<int32> il = heap ImmutableList<int32>(#a);\n"
         "        return il.get(1) + (int32) il.count();\n"  // 20 + 3
         "    }\n"
         "}\n";
@@ -42,7 +42,7 @@ TEST(NewCollectionsTests, immutableSetDedupContains) {
         "        a.add(2);\n"
         "        a.add(2);\n"
         "        a.add(3);\n"
-        "        ImmutableSet<int32> s = heap ImmutableSet<int32>(a);\n"
+        "        ImmutableSet<int32> s = heap ImmutableSet<int32>(#a);\n"
         "        if (s.contains(2)) { return (int32) s.count(); }\n"  // deduped -> 3
         "        return -1;\n"
         "    }\n"
@@ -63,7 +63,7 @@ TEST(NewCollectionsTests, immutableMapGet) {
         "        ArrayList<Pair<int32, int32>> a = heap ArrayList<Pair<int32, int32>>();\n"
         "        a.add(heap Pair<int32, int32>(1, 100));\n"
         "        a.add(heap Pair<int32, int32>(2, 200));\n"
-        "        ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(a);\n"
+        "        ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(#a);\n"
         "        return m.get(2);\n"  // 200
         "    }\n"
         "}\n";
@@ -147,7 +147,7 @@ TEST(NewCollectionsTests, immutableMapSwissStress) {
         "        int32 i = 0;\n"
         "        while (i < 500) { a.add(heap Pair<int32, int32>(i, i + 7)); i = i + 1; }\n"
         "        a.add(heap Pair<int32, int32>(250, 99999));\n"  // duplicate, last-wins
-        "        ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(a);\n"
+        "        ImmutableMap<int32, int32> m = heap ImmutableMap<int32, int32>(#a);\n"
         "        if (m.count() != 500) { return -1; }\n"
         "        if (m.get(250) != 99999) { return -2; }\n"
         "        if (m.containsKey(700)) { return -3; }\n"

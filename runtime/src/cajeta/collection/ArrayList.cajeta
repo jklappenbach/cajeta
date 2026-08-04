@@ -9,10 +9,10 @@ import cajeta.lang.stream.Stream;
  * the workhorse list of the collections package and the default
  * accumulator behind `Collectors.toList<T>()`.
  *
- * Construct an empty list with the no-arg constructor, populate it
- * with `add`, read/write slots with `get`/`set`, and walk the live
- * elements as a `Stream` via `stream` (which yields an
- * `ArrayStream`):
+ * The list OWNS its elements (uniform-transfer 2.3): `add`, `set`,
+ * and `insert` take `#T`, `removeAt` and the extracting subscript
+ * hand the title back out, and teardown drops exactly the owned
+ * slots via the backing array's tail bitmap.
  *
  * ```cajeta
  * ArrayList<int32> xs = heap ArrayList<int32>();
@@ -22,26 +22,22 @@ import cajeta.lang.stream.Stream;
  * int32 n = xs.count();        // 3
  * int32 first = xs.get(0);     // 10
  * xs.set(1, 25);               // [10, 25, 30]
+ * xs.insert(1, 15);            // [10, 15, 25, 30]
+ * int32 gone = xs.removeAt(0); // 10 -> [15, 25, 30]
  * #ArrayStream<int32> s = xs.stream();
  * ```
  *
- * Merge two lists with `appendAll`, the combiner used when partial
- * lists from parallel workers are folded together.
- *
- * ## v1 surface
- * Minimal by design: ctor, `count`/`isEmpty`, `get`/`set`, `add`,
- * `appendAll`, and `stream`. No bounds checks yet (those land with
- * the error-model wiring) and no `insert`/`remove` yet.
- *
- * `stream` currently lands a heap-allocated `ArrayStream` walking
- * the backing array up to the current size. A stack-allocated variant
- * follows once `stack ArrayStream<T>` aggregate-init on a generic
- * instantiation is verified.
+ * ## Surface
+ * Ctors (empty / `#T[]` literal), `count` / `isEmpty`, `get` / `set`,
+ * `add` / `insert` / `removeAt` / `clear`, `appendAll` (consuming
+ * combiner), subscripts (`[]` borrow read, `[]=` transfer write,
+ * `#[]` extraction), `stream`, `sort` / `sortStable`. Out-of-range
+ * indexes on get/set/insert/removeAt throw a Recoverable Exception.
  */
 public final class ArrayList<T> {
     T[] data;
     // title-stores Unit 5 — per-element ownership lives in data's tail
-    // bitmap (stores write it, the field walk drops by it); owned[] gone.
+    // bitmap (stores write it, the field walk drops by it).
     // Field name aligned with HashMap/HashSet/LinkedList — `count` as a
     // bare field name conflicts with the public `count()` accessor at
     // method resolution sites (templated-class dispatch ambiguity).
@@ -68,28 +64,31 @@ public final class ArrayList<T> {
     /**
      * Create a list holding every element of `items`, in order. Backs the
      * collection-literal form `ArrayList<int32> xs = heap ArrayList<int32>([1,2,3])`
-     * (array-literals §6): the `[...]` lowers to a `T[]` and this constructor
-     * copies it in.
+     * (array-literals §6). The literal array is CONSUMED (`#T[]`) — the
+     * list owns its elements, so each one moves out of the source. The
+     * backing array is sized to the element count up front (one
+     * allocation, no re-grow during the fill).
      *
      * ```cajeta
      * ArrayList<int32> xs = heap ArrayList<int32>([1, 2, 3]);   // count() == 3
      * ```
      */
     public ArrayList(#T[] items) {
-        // uniform-transfer 2.3 — the list OWNS what it holds, so it cannot
-        // append borrowed elements: the literal array is CONSUMED (`#T[]`)
-        // and each element moves out of it. For a primitive T this is the
-        // same code it always was; for a class T it is the difference
-        // between owning the elements and aliasing someone else's.
-        this.capacity = 16;
-        this.data = heap T[16];
-        this.sizeCount = 0;
         int32 n = (int32) items.count();
+        int32 cap = 16;
+        while (cap < n) {
+            cap = cap * 2;
+        }
+        this.capacity = cap;
+        this.data = heap T[cap];
         int32 i = 0;
         while (i < n) {
-            this.add(#items[i]);
+            // title-stores §2.1 — forwarding move: the element's bit rides
+            // out of the consumed literal into the backing slot.
+            this.data[i] #= items[i];
             i = i + 1;
         }
+        this.sizeCount = n;
     }
 
     public int32 count() {
@@ -101,16 +100,23 @@ public final class ArrayList<T> {
         return this.sizeCount == 0;
     }
 
+    /** Borrowing read of the element at `i`. Throws when out of range. */
     public T get(int32 i) {
+        if (i < 0 || i >= this.sizeCount) {
+            throw heap Exception("ArrayList.get: index out of range");
+        }
         return this.data[i];
     }
 
+    /**
+     * Replace the element at `i`. The slot store's displaced release
+     * (title-stores §3.2) drops the old occupant, which the list owns.
+     * Throws when out of range.
+     */
     public void set(int32 i, #T v) {
-        // uniform-transfer 2.3 — the container OWNS its elements, so there is
-        // no call-site choice left to read: `#T` makes the transfer the only
-        // legal spelling and the dual-role `Cajeta.owned(v)` branch is gone.
-        // The slot store's displaced release (title-stores §3.2) drops the
-        // old occupant, which is now always owned.
+        if (i < 0 || i >= this.sizeCount) {
+            throw heap Exception("ArrayList.set: index out of range");
+        }
         this.data[i] #= v;
     }
 
@@ -130,25 +136,95 @@ public final class ArrayList<T> {
         // store, an increment) and free of the growth machinery so the optimizer
         // inlines it straight into the caller's append loop — matching the
         // inlined `push`/`push_back` of Rust `Vec` / C++ `std::vector`. The cold
-        // doubling lives out-of-line in `grow()`, so it never bloats this body.
-        //
-        // uniform-transfer 2.3 — the container OWNS its elements, so the
-        // dual-role `Cajeta.owned(v)` read and its branch are gone: one
-        // unconditional transfer. This is the hottest store in the language
-        // and it just lost a runtime branch.
+        // doubling lives out-of-line in `reserve()`, so it never bloats this
+        // body. One unconditional transfer — the hottest store in the language,
+        // and it carries no runtime branch on ownership.
         if (this.sizeCount >= this.capacity) {
-            this.grow();
+            this.reserve(this.sizeCount + 1);
         }
         this.data[this.sizeCount] #= v;
         this.sizeCount = this.sizeCount + 1;
     }
 
-    // Cold, out-of-line: double the backing array and copy the live elements
-    // over. Split out of `add` so the full-capacity case stays branch-cold and
-    // `add`'s hot path stays inlinable.
+    /**
+     * Insert `v` at index `i`, shifting `[i, count)` right by one.
+     * `i == count()` appends. O(n - i). Throws when `i` is out of
+     * `[0, count]`.
+     */
+    public void insert(int32 i, #T v) {
+        if (i < 0 || i > this.sizeCount) {
+            throw heap Exception("ArrayList.insert: index out of range");
+        }
+        if (this.sizeCount >= this.capacity) {
+            this.reserve(this.sizeCount + 1);
+        }
+        // title-stores §2.1 — forwarding shifts: each bit rides right with
+        // its element; the vacated slot's bit is clear, so the final store
+        // fires no displaced release.
+        int32 j = this.sizeCount;
+        while (j > i) {
+            this.data[j] #= this.data[j - 1];
+            j = j - 1;
+        }
+        this.data[i] #= v;
+        this.sizeCount = this.sizeCount + 1;
+    }
+
+    /**
+     * Remove the element at `i`, shifting `(i, count)` left by one, and
+     * hand it back OWNED — bind it (`String s = xs.removeAt(0)`) to keep
+     * it, or discard the call and the drop fires at the statement end.
+     * O(n - i). Throws when out of range; panics TITLE_MISS if the slot's
+     * title was already `#[]`-extracted (extraction decays the slot, and
+     * a decayed slot has no title left to hand out).
+     */
+    public #T removeAt(int32 i) {
+        if (i < 0 || i >= this.sizeCount) {
+            throw heap Exception("ArrayList.removeAt: index out of range");
+        }
+        // Guarded take (title-stores §3.2), then forwarding shifts close
+        // the gap. The former last slot is left decayed (bit clear), so
+        // teardown and later stores ignore it.
+        T out #= this.data[i];
+        int32 j = i;
+        int32 last = this.sizeCount - 1;
+        while (j < last) {
+            this.data[j] #= this.data[j + 1];
+            j = j + 1;
+        }
+        this.sizeCount = last;
+        return #out;
+    }
+
+    /**
+     * Drop every element and reset to the initial capacity. The old
+     * backing array's teardown drops exactly the owned slots (tail
+     * bitmap), so each element is released once. The list is empty and
+     * immediately reusable.
+     */
+    public void clear() {
+        T[] fresh = heap T[16];
+        // `#fresh` publishes the new storage onto the field; the displaced
+        // release frees the old array along with its owned elements.
+        this.data #= fresh;
+        this.capacity = 16;
+        this.sizeCount = 0;
+    }
+
+    // Cold, out-of-line: grow the backing array to at least `needed`,
+    // doubling from the current capacity. Split out of the mutators so
+    // their hot paths stay branch-cold and inlinable. One copy pass
+    // regardless of how far the target is (appendAll reserves the full
+    // merged size in one call rather than re-doubling per element).
     @NoInline
-    private void grow() {
+    private void reserve(int32 needed) {
+        if (needed <= this.capacity) {
+            return;
+        }
         int32 newCap = this.capacity * 2;
+        while (newCap < needed) {
+            newCap = newCap * 2;
+        }
         T[] grown = heap T[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
@@ -157,47 +233,34 @@ public final class ArrayList<T> {
             grown[i] #= this.data[i];
             i = i + 1;
         }
-        // `#grown` transfers ownership of the fresh array storage
-        // into `this.data` — without the marker, the local's
-        // scope-exit drop would call __cajeta_free_array on the
-        // array we just installed in the field, leaving `this.data`
-        // pointing at freed storage. Subsequent `add`s would then
-        // write into reclaimed memory. Same pattern HashMap.rehash
-        // uses for `this.keys #= newKeys` et al.
+        // `#grown` transfers ownership of the fresh array storage into
+        // `this.data` — without the marker, the local's scope-exit drop
+        // would free the array we just installed. Same pattern as
+        // HashMap.resize.
         this.data #= grown;
         this.capacity = newCap;
     }
 
     /**
-     * Append every element of `other` onto this list (in iteration
-     * order). Used as the combiner for `Collectors.toList<T>()` under
-     * a parallel collect: each worker produces its own `ArrayList<T>`
-     * partial, and the orchestrator combines them by appending right
-     * onto left. Does NOT consume / move-out of `other` — the caller
-     * still owns its list.
+     * Append every element of `other` onto this list, in order — and
+     * CONSUME `other`: a list owns its elements, so the elements move
+     * across and the right-hand list is dead at the call. This is the
+     * combiner for `Collectors.toList<T>()` under a parallel collect —
+     * per-worker partials are folded right-onto-left and discarded.
+     * Reserves the merged size once (no re-doubling inside the loop).
      */
     public void appendAll(#ArrayList<T> other) {
-        // uniform-transfer 2.3 — this used to BORROW from `other` and append
-        // the borrows, which a list that owns its elements cannot do. The
-        // combiner therefore CONSUMES its right-hand side: each element moves
-        // across, and `other` is dead at the call.
-        //
-        // That matches how it is actually used — the parallel collect builds
-        // one partial list per worker and folds them right-onto-left, and the
-        // partials are discarded immediately after. The old signature let a
-        // caller keep using `other`, whose elements this list now also
-        // pointed at.
+        this.reserve(this.sizeCount + other.sizeCount);
         int32 i = 0;
         while (i < other.sizeCount) {
-            this.add(#other.data[i]);
+            this.data[this.sizeCount + i] #= other.data[i];
             i = i + 1;
         }
+        this.sizeCount = this.sizeCount + other.sizeCount;
     }
 
     // title-stores Unit 5 — no bespoke destructor: data's tail-bit field
     // walk drops exactly the owned slots.
-    ~ArrayList() {
-    }
 
     // ----- Subscript-syntax sugar over get/set -------------------------
 
@@ -266,9 +329,11 @@ public final class ArrayList<T> {
      * ```
      *
      * OWNERSHIP CAVEAT: sorting permutes elements WITHOUT their ownership
-     * bits, so a list holding any `#`-taken (owned) elements must not be
-     * sorted — the bits would attach to the wrong slots (leak + double
-     * free). Borrow-only lists (and primitives) are unaffected.
+     * bits. Every resident element is owned (the list's stores all
+     * transfer), so the bits are uniformly set and permutation is safe —
+     * UNLESS a slot's title was `#[]`-extracted: that slot's bit is clear
+     * while its neighbors' are set, and sorting would attach the bits to
+     * the wrong slots (leak + double free). Do not sort after extraction.
      */
     public void sort() {
         Sort.sort<T>(this.data, this.sizeCount);
@@ -276,8 +341,8 @@ public final class ArrayList<T> {
 
     /**
      * Sort the live elements in place into ascending natural order, **stable**
-     * (merge sort — equal elements keep their input order). See
-     * {@link cajeta.collection.Sort}.
+     * (merge sort — equal elements keep their input order). Same extraction
+     * caveat as `sort()`. See {@link cajeta.collection.Sort}.
      */
     public void sortStable() {
         Sort.sortStable<T>(this.data, this.sizeCount);

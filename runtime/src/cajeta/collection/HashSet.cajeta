@@ -1,6 +1,7 @@
 package cajeta.collection;
 
 import cajeta.collection.HashMap;
+import cajeta.lang.stream.Stream;
 
 /**
  * Hash-based set of unique class-typed values.
@@ -55,6 +56,15 @@ public final class HashSet<T> {
     private HashMap<T, int8> map;
 
     /**
+     * Construct a HashSet with the backing map's default capacity.
+     *
+     * @EntryPoint
+     */
+    public HashSet() {
+        this.map = heap HashMap<T, int8>();
+    }
+
+    /**
      * Construct a HashSet with the given initial bucket capacity.
      *
      * ```cajeta
@@ -76,7 +86,7 @@ public final class HashSet<T> {
      * Duplicates collapse — the set holds {1, 2, 3}.
      */
     public HashSet(#T[] items) {
-        this.map = heap HashMap<T, int8>(16);
+        this.map = heap HashMap<T, int8>(items.count() * 2);   // stays under 0.75 load for the whole fill
         int32 n = (int32) items.count();
         int32 i = 0;
         while (i < n) {
@@ -118,13 +128,11 @@ public final class HashSet<T> {
      *          it wasn't a member.
      */
     public boolean remove(T value) {
-        // HashMap.remove returns the VALUE flagged (title-tracking §6.4),
-        // not a boolean — probe membership first, then discard the flagged
-        // sentinel. An owned member (the map's key) is reclaimed inside
-        // remove either way.
-        boolean had = this.map.containsKey(value);
-        this.map.remove(value);
-        return had;
+        // ONE probe: the map's remove returns the stored value (the
+        // presence sentinel, always 1) on a hit and the zero default on a
+        // miss — that answers membership without a preceding containsKey.
+        // The owned member (the map's key) is reclaimed inside remove.
+        return this.map.remove(value) != (int8) 0;
     }
 
     /**
@@ -133,5 +141,14 @@ public final class HashSet<T> {
     @Inline
     public int64 count() {
         return this.map.count();
+    }
+
+    /**
+     * Stream over the members, slot-walk order (the backing map's key
+     * stream). Snapshot semantics match `HashMap.keys()` — mutate the
+     * set while the stream is open and the walk is undefined.
+     */
+    public #Stream<T> stream() {
+        return this.map.keys();
     }
 }

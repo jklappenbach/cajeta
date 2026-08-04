@@ -4,8 +4,9 @@ import tour.DemoClass;
 import cajeta.collection.ArrayList;
 import cajeta.collection.ImmutableSet;
 
-// Immutable set. The constructor dedups its source snapshot, so
-// duplicate inputs collapse to a single member.
+// Immutable set. The constructor CONSUMES its source (`#src`) and
+// dedups on the way in, so duplicate inputs collapse to a single
+// member and the frozen set is the sole owner of what remains.
 //
 // The scenario: the retryable HTTP status codes, frozen at startup.
 // The config source arrives with a duplicate — dedup is the
@@ -22,16 +23,16 @@ public class ImmutableSetDemo extends DemoClass {
         src.add(503);
         src.add(502);          // duplicate in the config; dedup absorbs it
 
-        ImmutableSet<int32> retryable = heap ImmutableSet<int32>(src);
+        ImmutableSet<int32> retryable = heap ImmutableSet<int32>(#src);
         System.stdout.println("  retryable codes (deduped) = "
             + (int32) retryable.count());
         this.check((int32) retryable.count() == 3, "constructor dedups 502");
         this.check(retryable.contains(503) && !retryable.contains(404),
             "503 retries, 404 does not");
 
-        // Frozen means frozen: source edits change nothing.
-        src.add(500);
+        // Frozen means frozen: the source was consumed by the freeze, so
+        // no handle remains that could grow the membership.
         this.check(!retryable.contains(500) && (int32) retryable.count() == 3,
-            "source edits never reach the frozen copy");
+            "the frozen membership stands alone");
     }
 }

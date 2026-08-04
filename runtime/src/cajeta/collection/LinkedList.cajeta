@@ -39,9 +39,10 @@ package cajeta.collection;
  * ## Storage
  *
  * Heap-allocates one `LinkedListNode`<T> per insert. The list owns the
- * nodes; unlinked nodes fall off the drop chain at scope exit. Values
- * are NOT owned by the nodes — `remove(T)` returns whether a node was
- * unlinked, but doesn't drop the value.
+ * nodes, and each node OWNS its value (uniform-transfer 2.3: the add
+ * formals are `#T`). Dropping a node — via `remove(T)`, a pop, or list
+ * teardown — therefore drops its value, unless a pop handed the title
+ * back to the caller first.
  */
 public final class LinkedList<T> {
 
@@ -82,44 +83,20 @@ public final class LinkedList<T> {
     }
 
     /**
-     * Append `value` to the tail of the list. O(1).
+     * Append `value` to the tail of the list. O(1). Synonym of
+     * `addTail` — one implementation, two names (List-style `add`,
+     * deque-style `addTail`).
      */
     public void add(#T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
-        // Title spelling (title-tracking §5): the FORWARD chain owns —
-        // headNode / each node's `next` take titles (`#`); tailNode and
-        // `prev` are borrows. Borrow-stores precede the owning store,
-        // which is the node's last use.
-        if (this.tailNode == null) {
-            this.tailNode = node;
-            this.headNode #= node;
-        } else {
-            node.prev = this.tailNode;
-            LinkedListNode<T> oldTail = this.tailNode;
-            this.tailNode = node;
-            oldTail.next #= node;
-        }
-        this.sizeCount = this.sizeCount + 1;
+        this.addTail(#value);
     }
 
     /**
-     * Prepend `value` to the head of the list. O(1).
+     * Prepend `value` to the head of the list. O(1). Synonym of
+     * `addHead`.
      */
     public void addFirst(#T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
-        if (this.headNode == null) {
-            this.tailNode = node;
-            this.headNode #= node;
-        } else {
-            // Extract the old head's title into node.next (its bit decays
-            // but the reference stays readable), backlink, then store the
-            // new head's title — no displaced release fires on the now-
-            // borrowed headNode slot.
-            node.next #= this.headNode;
-            this.headNode.prev = node;
-            this.headNode #= node;
-        }
-        this.sizeCount = this.sizeCount + 1;
+        this.addHead(#value);
     }
 
     /**
@@ -184,7 +161,7 @@ public final class LinkedList<T> {
     @Inline
     public T head() {
         if (this.headNode == null) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         return this.headNode.value;
@@ -201,7 +178,7 @@ public final class LinkedList<T> {
     @Inline
     public T tail() {
         if (this.tailNode == null) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         return this.tailNode.value;
@@ -217,7 +194,7 @@ public final class LinkedList<T> {
      */
     public T popHead() {
         if (this.headNode == null) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         // Take the head's title; relink by moving the successor's title
@@ -255,7 +232,7 @@ public final class LinkedList<T> {
      */
     public T popTail() {
         if (this.tailNode == null) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         // The tail's title lives in its predecessor's `next` (or in
@@ -289,7 +266,7 @@ public final class LinkedList<T> {
      */
     public T get(int64 idx) {
         if (idx < 0 || idx >= this.sizeCount) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         // Walk from the closer end to halve the worst-case cost.

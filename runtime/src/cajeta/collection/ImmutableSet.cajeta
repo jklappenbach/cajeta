@@ -55,21 +55,22 @@ public final class ImmutableSet<T> {
     private int64 tableCap;
 
     /**
-     * Build a frozen, de-duplicated set from `src`. The first
-     * occurrence of each `==`-equal value wins; later duplicates are
-     * dropped. The source `ArrayList` is left untouched.
+     * Build a frozen, de-duplicated set from `src`, CONSUMING it: the
+     * first occurrence of each `==`-equal value moves into the set;
+     * later duplicates are dropped with the source (uniform-transfer
+     * 2.3 — the set owns its members, so it cannot borrow them).
      *
      * ```cajeta
-     * ArrayList<string> names = heap ArrayList<string>();
+     * ArrayList<String> names = heap ArrayList<String>();
      * names.add("ann"); names.add("bo"); names.add("ann");
-     * ImmutableSet<string> set = heap ImmutableSet<string>(names);
-     * // set.count() == 2; names is unchanged
+     * ImmutableSet<String> set = heap ImmutableSet<String>(#names);
+     * // set.count() == 2; names is dead here
      * ```
      *
-     * @Param src the values to snapshot.
+     * @Param src the values to move in.
      * @EntryPoint
      */
-    public ImmutableSet(ArrayList<T> src) {
+    public ImmutableSet(#ArrayList<T> src) {
         int32 n = src.count();
         // Table sized to keep the load factor under ~0.5 (members ×2),
         // power-of-2, minimum 8.
@@ -83,7 +84,10 @@ public final class ImmutableSet<T> {
 
         int32 i = 0;
         while (i < n) {
-            T e = src.get(i);
+            // Extraction: the element's title moves out of the source;
+            // a kept element moves on into `elems`, a duplicate drops
+            // with `e` at the end of this iteration.
+            T e #= src[i];
             int64 h = e.hash();
             int64 idx = h & (cap - 1);
             boolean dup = false;
@@ -104,7 +108,7 @@ public final class ImmutableSet<T> {
                 }
             }
             if (dup == false) {
-                elems[count] = e;
+                elems[count] #= e;
                 tab[idx] = (int64) (count + 1);
                 count = count + 1;
             }
@@ -120,8 +124,9 @@ public final class ImmutableSet<T> {
      * Build a frozen, de-duplicated set directly from an array literal
      * (array-literals §6): `ImmutableSet<int32> s = heap ImmutableSet<int32>([1,2,2,3])`.
      * First occurrence of each `==`-equal value wins; the set holds {1, 2, 3}.
+     * The literal is consumed; duplicates drop with it.
      */
-    public ImmutableSet(T[] items) {
+    public ImmutableSet(#T[] items) {
         int32 n = (int32) items.count();
         int64 cap = 8;
         while (cap < (int64) n * 2) {
@@ -133,7 +138,7 @@ public final class ImmutableSet<T> {
 
         int32 i = 0;
         while (i < n) {
-            T e = items[i];
+            T e #= items[i];
             int64 h = e.hash();
             int64 idx = h & (cap - 1);
             boolean dup = false;
@@ -152,7 +157,7 @@ public final class ImmutableSet<T> {
                 }
             }
             if (dup == false) {
-                elems[count] = e;
+                elems[count] #= e;
                 tab[idx] = (int64) (count + 1);
                 count = count + 1;
             }
@@ -209,7 +214,7 @@ public final class ImmutableSet<T> {
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.elemCount) {
-            T[] missDefault = heap T[1];
+            T[] missDefault = stack T[1];
             return missDefault[0];
         }
         return this.elements[i];
