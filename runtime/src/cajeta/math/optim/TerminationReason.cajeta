@@ -1,0 +1,23 @@
+package cajeta.math.optim;
+
+/**
+ * Why an optimizer stopped (stdlib-completion plan 5.1.4). The first
+ * three are convergence; the last two are NOT — {@link OptimResult}
+ * reports `converged = false` for them, never disguising a cap or a
+ * non-finite objective as success.
+ *
+ *   - {@link #GRADIENT_NORM}  — `||g||` fell below tolerance (L-BFGS).
+ *   - {@link #STEP_SIZE}      — no further progress at machine step size.
+ *   - {@link #SIMPLEX_SIZE}   — the simplex collapsed below tolerance
+ *                               (Nelder-Mead).
+ *   - {@link #MAX_ITERATIONS} — the iteration cap was hit.
+ *   - {@link #NONFINITE}      — the objective (or gradient) produced NaN
+ *                               or infinity at the start point.
+ */
+public enum TerminationReason {
+    GRADIENT_NORM,   // 0
+    STEP_SIZE,       // 1
+    SIMPLEX_SIZE,    // 2
+    MAX_ITERATIONS,  // 3
+    NONFINITE        // 4
+}

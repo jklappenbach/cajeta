@@ -1,0 +1,27 @@
+package cajeta.math.optim;
+
+import cajeta.math.Tensor;
+
+/**
+ * The result of a minimization (stdlib-completion plan 5.2.6): the
+ * minimizer, its value, the iteration count, and the
+ * {@link TerminationReason}. `converged` is `true` only for a genuine
+ * convergence criterion — an iteration cap or a non-finite objective is
+ * reported as failure, never disguised as success (plan 5.3.2).
+ */
+public final class OptimResult {
+    public Tensor<float64> x;
+    public float64 value;
+    public int32 iterations;
+    public TerminationReason reason;
+    public boolean converged;
+
+    public OptimResult(Tensor<float64> x, float64 value, int32 iterations,
+                       TerminationReason reason, boolean converged) {
+        this.x #= x;
+        this.value = value;
+        this.iterations = iterations;
+        this.reason = reason;
+        this.converged = converged;
+    }
+}

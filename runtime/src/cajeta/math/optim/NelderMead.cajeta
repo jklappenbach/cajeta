@@ -1,0 +1,222 @@
+package cajeta.math.optim;
+
+import cajeta.math.Tensor;
+
+/**
+ * Nelder-Mead downhill simplex (stdlib-completion spec §8.6) — the
+ * gradient-free fallback for likelihoods with no clean derivative
+ * (`ml-timeseries` §8's ARMA CSS is the motivating consumer). Standard
+ * coefficients: reflection 1, expansion 2, contraction 0.5, shrink 0.5.
+ * The initial simplex follows scipy's convention: vertex `i` perturbs
+ * coordinate `i` by 5% (or to 0.00025 where `x0_i = 0`).
+ *
+ * Converges when the simplex collapses — every vertex within `1e-8` of
+ * the best in every coordinate AND every value within `1e-10` of the best
+ * ({@link TerminationReason#SIMPLEX_SIZE}). An iteration cap or a
+ * non-finite objective at the start is reported as NON-convergence,
+ * never success (plan 5.3.2). A trial point evaluating to NaN mid-run is
+ * treated as worse-than-everything, so the simplex retreats from
+ * non-finite regions instead of corrupting the ordering.
+ */
+public final class NelderMead {
+
+    public static #OptimResult minimize(Objective f, Tensor<float64> x0, int32 maxIter) {
+        if (x0.ndim() != 1 || x0.shapeAt(0) < 1) {
+            throw heap OptimException("nelderMead: x0 must be a non-empty 1-D vector");
+        }
+        if (maxIter < 1) {
+            throw heap OptimException("nelderMead: maxIter must be positive");
+        }
+        int64 n = x0.shapeAt(0);
+        int64 nv = n + 1;                              // vertices
+        float64 xatol = 0.00000001;
+        float64 fatol = 0.0000000001;
+
+        // simplex as a flat (nv, n) array + values; scratch tensor for evals
+        float64[] simplex = heap float64[nv * n];
+        float64[] fvals = heap float64[nv];
+        float64[] centroid = heap float64[n];
+        float64[] trial = heap float64[n];
+        Tensor<float64> xT = x0.copy();
+
+        int64 v = 0;
+        while (v < nv) {
+            int64 j = 0;
+            while (j < n) {
+                float64 c = x0.get1(j);
+                if (v > 0 && j == v - 1) {
+                    if (c != 0.0) { c = c * 1.05; }
+                    else { c = 0.00025; }
+                }
+                simplex[v * n + j] = c;
+                j = j + 1;
+            }
+            fvals[v] = evalVertex(f, xT, simplex, v, n);
+            if (fvals[v] != fvals[v]) {
+                return resultVertex(simplex, fvals, bestIndex(fvals, nv), n, 0,
+                                    TerminationReason.NONFINITE, false);
+            }
+            v = v + 1;
+        }
+
+        int32 iter = 0;
+        while (iter < maxIter) {
+            // order: find best, worst, second-worst
+            int64 lo = 0;
+            int64 hi = 0;
+            int64 hi2 = 0;
+            v = 1;
+            while (v < nv) {
+                if (fvals[v] < fvals[lo]) { lo = v; }
+                if (fvals[v] > fvals[hi]) { hi = v; }
+                v = v + 1;
+            }
+            if (hi == 0) { hi2 = 1; } else { hi2 = 0; }
+            v = 0;
+            while (v < nv) {
+                if (v != hi && fvals[v] > fvals[hi2]) { hi2 = v; }
+                v = v + 1;
+            }
+
+            // convergence: simplex collapsed around the best vertex
+            float64 xSpread = 0.0;
+            float64 fSpread = 0.0;
+            v = 0;
+            while (v < nv) {
+                float64 df = fvals[v] - fvals[lo];
+                if (df < 0.0) { df = -df; }
+                if (df > fSpread) { fSpread = df; }
+                int64 j = 0;
+                while (j < n) {
+                    float64 dx = simplex[v * n + j] - simplex[lo * n + j];
+                    if (dx < 0.0) { dx = -dx; }
+                    if (dx > xSpread) { xSpread = dx; }
+                    j = j + 1;
+                }
+                v = v + 1;
+            }
+            if (xSpread <= xatol && fSpread <= fatol) {
+                return resultVertex(simplex, fvals, lo, n, iter,
+                                    TerminationReason.SIMPLEX_SIZE, true);
+            }
+
+            // centroid of all but the worst
+            int64 j = 0;
+            while (j < n) { centroid[j] = 0.0; j = j + 1; }
+            v = 0;
+            while (v < nv) {
+                if (v != hi) {
+                    j = 0;
+                    while (j < n) { centroid[j] = centroid[j] + simplex[v * n + j]; j = j + 1; }
+                }
+                v = v + 1;
+            }
+            j = 0;
+            while (j < n) { centroid[j] = centroid[j] / ((float64) n); j = j + 1; }
+
+            // reflect
+            j = 0;
+            while (j < n) { trial[j] = centroid[j] + (centroid[j] - simplex[hi * n + j]); j = j + 1; }
+            float64 fr = evalPoint(f, xT, trial, n);
+            boolean shrinkNeeded = false;
+            if (lessThan(fr, fvals[lo])) {
+                // expand
+                float64[] exp = heap float64[n];
+                j = 0;
+                while (j < n) { exp[j] = centroid[j] + 2.0 * (centroid[j] - simplex[hi * n + j]); j = j + 1; }
+                float64 fe = evalPoint(f, xT, exp, n);
+                if (lessThan(fe, fr)) {
+                    replace(simplex, fvals, hi, exp, fe, n);
+                } else {
+                    replace(simplex, fvals, hi, trial, fr, n);
+                }
+            } else if (lessThan(fr, fvals[hi2])) {
+                replace(simplex, fvals, hi, trial, fr, n);
+            } else {
+                // contract (outside if reflection improved on worst, else inside)
+                if (lessThan(fr, fvals[hi])) {
+                    j = 0;
+                    while (j < n) { trial[j] = centroid[j] + 0.5 * (trial[j] - centroid[j]); j = j + 1; }
+                    float64 fc = evalPoint(f, xT, trial, n);
+                    if (lessThan(fc, fr)) { replace(simplex, fvals, hi, trial, fc, n); }
+                    else { shrinkNeeded = true; }
+                } else {
+                    j = 0;
+                    while (j < n) { trial[j] = centroid[j] - 0.5 * (centroid[j] - simplex[hi * n + j]); j = j + 1; }
+                    float64 fc = evalPoint(f, xT, trial, n);
+                    if (lessThan(fc, fvals[hi])) { replace(simplex, fvals, hi, trial, fc, n); }
+                    else { shrinkNeeded = true; }
+                }
+            }
+            if (shrinkNeeded) {
+                v = 0;
+                while (v < nv) {
+                    if (v != lo) {
+                        j = 0;
+                        while (j < n) {
+                            simplex[v * n + j] = simplex[lo * n + j]
+                                + 0.5 * (simplex[v * n + j] - simplex[lo * n + j]);
+                            j = j + 1;
+                        }
+                        fvals[v] = evalVertex(f, xT, simplex, v, n);
+                    }
+                    v = v + 1;
+                }
+            }
+            iter = iter + 1;
+        }
+        return resultVertex(simplex, fvals, bestIndex(fvals, nv), n, maxIter,
+                            TerminationReason.MAX_ITERATIONS, false);
+    }
+
+    // ------------------------------------------------------------ internals
+
+    /** NaN-aware comparison: NaN is worse than everything. */
+    private static boolean lessThan(float64 a, float64 b) {
+        if (a != a) { return false; }
+        if (b != b) { return true; }
+        return a < b;
+    }
+
+    private static int64 bestIndex(float64[] fvals, int64 nv) {
+        int64 lo = 0;
+        int64 v = 1;
+        while (v < nv) {
+            if (lessThan(fvals[v], fvals[lo])) { lo = v; }
+            v = v + 1;
+        }
+        return lo;
+    }
+
+    private static float64 evalVertex(Objective f, Tensor<float64> xT,
+                                      float64[] simplex, int64 v, int64 n) {
+        int64 j = 0;
+        while (j < n) { xT.set1(j, simplex[v * n + j]); j = j + 1; }
+        return f.value(xT);
+    }
+
+    private static float64 evalPoint(Objective f, Tensor<float64> xT,
+                                     float64[] p, int64 n) {
+        int64 j = 0;
+        while (j < n) { xT.set1(j, p[j]); j = j + 1; }
+        return f.value(xT);
+    }
+
+    private static void replace(float64[] simplex, float64[] fvals, int64 v,
+                                float64[] p, float64 fp, int64 n) {
+        int64 j = 0;
+        while (j < n) { simplex[v * n + j] = p[j]; j = j + 1; }
+        fvals[v] = fp;
+    }
+
+    private static #OptimResult resultVertex(float64[] simplex, float64[] fvals,
+                                             int64 v, int64 n, int32 iter,
+                                             TerminationReason reason, boolean converged) {
+        float64[] d = heap float64[n];
+        int64 j = 0;
+        while (j < n) { d[j] = simplex[v * n + j]; j = j + 1; }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return heap OptimResult(Tensor.of<float64>(d, sh), fvals[v], iter, reason, converged);
+    }
+}

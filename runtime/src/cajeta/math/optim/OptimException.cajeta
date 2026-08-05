@@ -1,0 +1,18 @@
+package cajeta.math.optim;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown by `cajeta.math.optim` on invalid input: a start point that is
+ * not a non-empty 1-D vector, or a non-positive iteration budget.
+ * Runtime pathologies of the OBJECTIVE (NaN, infinity) are not
+ * exceptions — they are reported as
+ * {@link TerminationReason#NONFINITE} results.
+ */
+public class OptimException extends RecoverableException {
+    public OptimException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

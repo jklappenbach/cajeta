@@ -1,0 +1,21 @@
+package cajeta.math.optim;
+
+import cajeta.math.Tensor;
+
+/**
+ * An objective with an ANALYTIC gradient (stdlib-completion spec §8.6's
+ * analytic seam). {@link Lbfgs#minimize} has an overload for this type —
+ * selected by the argument's static type — that uses `gradient` instead
+ * of numerical differentiation.
+ *
+ * Deliberately independent of {@link Objective} (both methods declared
+ * here): the optimizers dispatch on the static type, so no runtime type
+ * test is involved.
+ */
+public interface GradObjective {
+    /** The objective value at `x` (a 1-D parameter vector). */
+    float64 value(Tensor<float64> x);
+
+    /** The gradient at `x`, same length as `x`. */
+    #Tensor<float64> gradient(Tensor<float64> x);
+}

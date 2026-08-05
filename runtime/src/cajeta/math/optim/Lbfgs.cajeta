@@ -1,0 +1,377 @@
+package cajeta.math.optim;
+
+import cajeta.math.Tensor;
+
+/**
+ * L-BFGS with a strong-Wolfe line search (stdlib-completion spec §8.6;
+ * Nocedal & Wright ch. 6-7). Limited memory `m = 8`; the inverse-Hessian
+ * seed is the standard `(s.y / y.y) I` scaling from the newest pair; the
+ * line search brackets and then zooms by bisection (interpolation-free —
+ * a few extra evaluations, no pathological steps).
+ *
+ * **Gradients:** the {@link GradObjective} overload uses the analytic
+ * gradient; the {@link Objective} overload differentiates numerically by
+ * CENTRAL DIFFERENCES with per-coordinate step
+ * `h_i = cbrt(eps) * max(1, |x_i|)` (`cbrt(eps) ~ 6.06e-6`) — the
+ * textbook step-size policy balancing truncation against rounding for a
+ * second-order-accurate difference. Two evaluations per coordinate per
+ * gradient. Overload selection is by STATIC type (`instanceof` on an
+ * interface-typed value is a live compiler defect,
+ * specs/instanceof-interface-lhs).
+ *
+ * Convergence: `||g||_inf <= 1e-8` ({@link TerminationReason#GRADIENT_NORM})
+ * or a step below machine resolution ({@link TerminationReason#STEP_SIZE}).
+ * An iteration cap or a non-finite objective/gradient at the start is
+ * reported as NON-convergence — never success (plan 5.3.2).
+ */
+public final class Lbfgs {
+
+    /** Minimize with NUMERICAL gradients (central differences). */
+    public static #OptimResult minimize(Objective f, Tensor<float64> x0, int32 maxIter) {
+        return core(f, null, false, x0, maxIter);
+    }
+
+    /** Minimize with the ANALYTIC gradient of a {@link GradObjective}. */
+    public static #OptimResult minimize(GradObjective f, Tensor<float64> x0, int32 maxIter) {
+        return core(null, f, true, x0, maxIter);
+    }
+
+    // ------------------------------------------------------------ internals
+
+    private static void checkStart(Tensor<float64> x0, int32 maxIter) {
+        if (x0.ndim() != 1 || x0.shapeAt(0) < 1) {
+            throw heap OptimException("lbfgs: x0 must be a non-empty 1-D vector");
+        }
+        if (maxIter < 1) {
+            throw heap OptimException("lbfgs: maxIter must be positive");
+        }
+    }
+
+    private static float64 evalAt(Objective fv, GradObjective fg, boolean analytic,
+                                  Tensor<float64> xT) {
+        if (analytic) { return fg.value(xT); }
+        return fv.value(xT);
+    }
+
+    /** Gradient at xT into `out`; returns false if any entry is non-finite. */
+    private static boolean gradAt(Objective fv, GradObjective fg, boolean analytic,
+                                  Tensor<float64> xT, float64[] out, int64 n) {
+        if (analytic) {
+            Tensor<float64> g = fg.gradient(xT);
+            int64 i = 0;
+            while (i < n) {
+                float64 v = g.get1(i);
+                if (!finite(v)) { return false; }
+                out[i] = v;
+                i = i + 1;
+            }
+            return true;
+        }
+        // central differences, h_i = cbrt(eps) * max(1, |x_i|)
+        float64 hBase = 0.000006055454452393343;
+        int64 i = 0;
+        while (i < n) {
+            float64 xi = xT.get1(i);
+            float64 ax = xi;
+            if (ax < 0.0) { ax = -ax; }
+            if (ax < 1.0) { ax = 1.0; }
+            float64 h = hBase * ax;
+            xT.set1(i, xi + h);
+            float64 fp = evalAt(fv, fg, analytic, xT);
+            xT.set1(i, xi - h);
+            float64 fm = evalAt(fv, fg, analytic, xT);
+            xT.set1(i, xi);
+            float64 gi = (fp - fm) / (2.0 * h);
+            if (!finite(gi)) { return false; }
+            out[i] = gi;
+            i = i + 1;
+        }
+        return true;
+    }
+
+    private static boolean finite(float64 v) {
+        if (v != v) { return false; }
+        if (v > 1.0e308 || v < -1.0e308) { return false; }
+        return true;
+    }
+
+    private static #OptimResult resultAt(float64[] x, int64 n, float64 fx, int32 iter,
+                                         TerminationReason reason, boolean converged) {
+        float64[] d = heap float64[n];
+        int64 i = 0;
+        while (i < n) { d[i] = x[i]; i = i + 1; }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        return heap OptimResult(Tensor.of<float64>(d, sh), fx, iter, reason, converged);
+    }
+
+    private static #OptimResult core(Objective fv, GradObjective fg, boolean analytic,
+                                     Tensor<float64> x0, int32 maxIter) {
+        checkStart(x0, maxIter);
+        int64 n = x0.shapeAt(0);
+        int32 m = 8;                                  // history pairs
+        float64 gtol = 0.00000001;                    // ||g||_inf tolerance
+        float64 c1 = 0.0001;                          // Armijo
+        float64 c2 = 0.9;                             // curvature
+
+        float64[] x = heap float64[n];
+        float64[] g = heap float64[n];
+        float64[] gNew = heap float64[n];
+        float64[] dir = heap float64[n];
+        float64[] q = heap float64[n];
+        float64[] alpha = heap float64[m];
+        float64[] rho = heap float64[m];
+        float64[] histS = heap float64[m * n];        // ring of s pairs
+        float64[] histY = heap float64[m * n];
+        int32 histCount = 0;
+        int32 histNext = 0;
+
+        Tensor<float64> xT = x0.copy();
+        int64 z = 0;
+        while (z < n) { x[z] = xT.get1(z); z = z + 1; }
+
+        float64 fx = evalAt(fv, fg, analytic, xT);
+        if (!finite(fx)) {
+            return resultAt(x, n, fx, 0, TerminationReason.NONFINITE, false);
+        }
+        if (!gradAt(fv, fg, analytic, xT, g, n)) {
+            return resultAt(x, n, fx, 0, TerminationReason.NONFINITE, false);
+        }
+
+        int32 iter = 0;
+        while (iter < maxIter) {
+            // -- convergence on the gradient norm
+            float64 gInf = 0.0;
+            z = 0;
+            while (z < n) {
+                float64 a = g[z];
+                if (a < 0.0) { a = -a; }
+                if (a > gInf) { gInf = a; }
+                z = z + 1;
+            }
+            if (gInf <= gtol) {
+                return resultAt(x, n, fx, iter, TerminationReason.GRADIENT_NORM, true);
+            }
+
+            // -- two-loop recursion: dir = -H g
+            z = 0;
+            while (z < n) { q[z] = g[z]; z = z + 1; }
+            int32 k = 0;
+            while (k < histCount) {
+                // newest first: pair index counting back from histNext-1
+                int32 idx = histNext - 1 - k;
+                if (idx < 0) { idx = idx + m; }
+                float64 sq = 0.0;
+                int64 j = 0;
+                while (j < n) { sq = sq + histS[idx * n + j] * q[j]; j = j + 1; }
+                float64 a = rho[idx] * sq;
+                alpha[idx] = a;
+                j = 0;
+                while (j < n) { q[j] = q[j] - a * histY[idx * n + j]; j = j + 1; }
+                k = k + 1;
+            }
+            if (histCount > 0) {
+                int32 newest = histNext - 1;
+                if (newest < 0) { newest = newest + m; }
+                float64 sy = 0.0;
+                float64 yy = 0.0;
+                int64 j = 0;
+                while (j < n) {
+                    sy = sy + histS[newest * n + j] * histY[newest * n + j];
+                    yy = yy + histY[newest * n + j] * histY[newest * n + j];
+                    j = j + 1;
+                }
+                float64 gamma = sy / yy;
+                j = 0;
+                while (j < n) { q[j] = q[j] * gamma; j = j + 1; }
+            }
+            k = histCount - 1;
+            while (k >= 0) {
+                // oldest first
+                int32 idx = histNext - 1 - k;
+                if (idx < 0) { idx = idx + m; }
+                float64 yq = 0.0;
+                int64 j = 0;
+                while (j < n) { yq = yq + histY[idx * n + j] * q[j]; j = j + 1; }
+                float64 beta = rho[idx] * yq;
+                j = 0;
+                while (j < n) { q[j] = q[j] + (alpha[idx] - beta) * histS[idx * n + j]; j = j + 1; }
+                k = k - 1;
+            }
+            z = 0;
+            while (z < n) { dir[z] = -q[z]; z = z + 1; }
+
+            // -- descent guard: fall back to steepest descent if needed
+            float64 dg = 0.0;
+            z = 0;
+            while (z < n) { dg = dg + dir[z] * g[z]; z = z + 1; }
+            if (dg >= 0.0) {
+                z = 0;
+                while (z < n) { dir[z] = -g[z]; z = z + 1; }
+                dg = 0.0;
+                z = 0;
+                while (z < n) { dg = dg - g[z] * g[z]; z = z + 1; }
+            }
+
+            // -- strong-Wolfe line search: bracket, then bisection zoom
+            float64 a = lineSearch(fv, fg, analytic, xT, x, dir, n, fx, dg, c1, c2);
+            if (a <= 0.0) {
+                // no acceptable step at machine resolution
+                return resultAt(x, n, fx, iter, TerminationReason.STEP_SIZE, true);
+            }
+
+            // -- take the step; build s, y; refresh f and g
+            float64 stepInf = 0.0;
+            z = 0;
+            while (z < n) {
+                float64 s = a * dir[z];
+                float64 as = s;
+                if (as < 0.0) { as = -as; }
+                if (as > stepInf) { stepInf = as; }
+                histS[histNext * n + z] = s;          // provisional; kept if curvature ok
+                x[z] = x[z] + s;
+                xT.set1(z, x[z]);
+                z = z + 1;
+            }
+            float64 fNew = evalAt(fv, fg, analytic, xT);
+            if (!finite(fNew)) {
+                return resultAt(x, n, fNew, iter, TerminationReason.NONFINITE, false);
+            }
+            if (!gradAt(fv, fg, analytic, xT, gNew, n)) {
+                return resultAt(x, n, fNew, iter, TerminationReason.NONFINITE, false);
+            }
+            float64 sy = 0.0;
+            z = 0;
+            while (z < n) {
+                float64 y = gNew[z] - g[z];
+                histY[histNext * n + z] = y;
+                sy = sy + histS[histNext * n + z] * y;
+                z = z + 1;
+            }
+            if (sy > 0.0000000001) {                  // curvature condition holds
+                rho[histNext] = 1.0 / sy;
+                histNext = histNext + 1;
+                if (histNext == m) { histNext = 0; }
+                if (histCount < m) { histCount = histCount + 1; }
+            }
+            fx = fNew;
+            z = 0;
+            while (z < n) { g[z] = gNew[z]; z = z + 1; }
+            iter = iter + 1;
+
+            float64 xInf = 0.0;
+            z = 0;
+            while (z < n) {
+                float64 ax = x[z];
+                if (ax < 0.0) { ax = -ax; }
+                if (ax > xInf) { xInf = ax; }
+                z = z + 1;
+            }
+            if (stepInf < 0.000000000000001 * (1.0 + xInf)) {
+                return resultAt(x, n, fx, iter, TerminationReason.STEP_SIZE, true);
+            }
+        }
+        return resultAt(x, n, fx, maxIter, TerminationReason.MAX_ITERATIONS, false);
+    }
+
+    /**
+     * Strong-Wolfe line search along `dir` from `x` (φ(0)=f0, φ'(0)=dg0).
+     * Returns the accepted step, or `0` when none exists above machine
+     * resolution. `xT` is scratch: left at `x` on exit.
+     */
+    private static float64 lineSearch(Objective fv, GradObjective fg, boolean analytic,
+                                      Tensor<float64> xT, float64[] x, float64[] dir,
+                                      int64 n, float64 f0, float64 dg0,
+                                      float64 c1, float64 c2) {
+        float64 aPrev = 0.0;
+        float64 fPrev = f0;
+        float64 a = 1.0;
+        float64 aLo = -1.0;
+        float64 aHi = -1.0;
+        float64 fLo = f0;
+        int32 it = 0;
+        while (it < 25) {
+            float64 fa = phiAt(fv, fg, analytic, xT, x, dir, n, a);
+            if (!finite(fa)) {
+                // trial left the finite region: shrink toward 0
+                a = a * 0.5;
+                it = it + 1;
+                if (a < 0.000000000000001) { restore(xT, x, n); return 0.0; }
+                continue;
+            }
+            if (fa > f0 + c1 * a * dg0 || (it > 0 && fa >= fPrev)) {
+                aLo = aPrev;
+                aHi = a;
+                fLo = fPrev;
+                break;
+            }
+            float64 da = dphiAt(fv, fg, analytic, xT, x, dir, n, a);
+            float64 ada = da;
+            if (ada < 0.0) { ada = -ada; }
+            if (ada <= -c2 * dg0) { restore(xT, x, n); return a; }
+            if (da >= 0.0) {
+                aLo = a;
+                aHi = aPrev;
+                fLo = fa;
+                break;
+            }
+            aPrev = a;
+            fPrev = fa;
+            a = a * 2.0;
+            if (a > 1000.0) { restore(xT, x, n); return aPrev; }
+            it = it + 1;
+        }
+        if (aLo < 0.0) { restore(xT, x, n); return 0.0; }
+
+        // zoom by bisection
+        int32 zi = 0;
+        while (zi < 40) {
+            float64 mid = 0.5 * (aLo + aHi);
+            float64 width = aHi - aLo;
+            if (width < 0.0) { width = -width; }
+            if (width < 0.000000000000001) { break; }
+            float64 fm = phiAt(fv, fg, analytic, xT, x, dir, n, mid);
+            if (!finite(fm) || fm > f0 + c1 * mid * dg0 || fm >= fLo) {
+                aHi = mid;
+            } else {
+                float64 dm = dphiAt(fv, fg, analytic, xT, x, dir, n, mid);
+                float64 adm = dm;
+                if (adm < 0.0) { adm = -adm; }
+                if (adm <= -c2 * dg0) { restore(xT, x, n); return mid; }
+                if (dm * (aHi - aLo) >= 0.0) { aHi = aLo; }
+                aLo = mid;
+                fLo = fm;
+            }
+            zi = zi + 1;
+        }
+        restore(xT, x, n);
+        if (aLo > 0.0) { return aLo; }
+        return 0.0;
+    }
+
+    private static float64 phiAt(Objective fv, GradObjective fg, boolean analytic,
+                                 Tensor<float64> xT, float64[] x, float64[] dir,
+                                 int64 n, float64 a) {
+        int64 i = 0;
+        while (i < n) { xT.set1(i, x[i] + a * dir[i]); i = i + 1; }
+        return evalAt(fv, fg, analytic, xT);
+    }
+
+    private static float64 dphiAt(Objective fv, GradObjective fg, boolean analytic,
+                                  Tensor<float64> xT, float64[] x, float64[] dir,
+                                  int64 n, float64 a) {
+        int64 i = 0;
+        while (i < n) { xT.set1(i, x[i] + a * dir[i]); i = i + 1; }
+        float64[] gbuf = heap float64[n];
+        if (!gradAt(fv, fg, analytic, xT, gbuf, n)) { return 0.0 / 0.0; }
+        float64 s = 0.0;
+        i = 0;
+        while (i < n) { s = s + gbuf[i] * dir[i]; i = i + 1; }
+        return s;
+    }
+
+    private static void restore(Tensor<float64> xT, float64[] x, int64 n) {
+        int64 i = 0;
+        while (i < n) { xT.set1(i, x[i]); i = i + 1; }
+    }
+}

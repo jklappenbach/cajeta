@@ -1,0 +1,19 @@
+package cajeta.math.optim;
+
+import cajeta.math.Tensor;
+
+/**
+ * A scalar objective over a parameter vector — what {@link Lbfgs} and
+ * {@link NelderMead} minimize (stdlib-completion spec §8.6). Implement
+ * this when no analytic gradient is available: L-BFGS then differentiates
+ * numerically (central differences; see {@link Lbfgs}), and Nelder-Mead
+ * never needs a gradient at all.
+ *
+ * When the gradient IS available analytically, implement
+ * {@link GradObjective} instead — the optimizer overloads select it by
+ * static type.
+ */
+public interface Objective {
+    /** The objective value at `x` (a 1-D parameter vector). */
+    float64 value(Tensor<float64> x);
+}
