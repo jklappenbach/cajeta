@@ -46,7 +46,7 @@ the scaling formulas; it is expected to pass as-is.
 ### 1.6 Systems
 
 `cajeta.math.Tensor`, `cajeta.math.linalg.LinAlg` (`cholesky`, `svd`,
-`slogdet` for §5; a symmetric eigensolver is an open question — §11.6),
+`slogdet` for §5; `eigh` for §9/§10 — §11.6 resolved),
 `cajeta.math.stats.Stats`, `cajeta.math.random.Generator`,
 `cajeta.math.distance` (§2, shipped in stdlib v0.17.0), `dev.cajeta.ml`
 (`Estimator`/`Predictor`/`Transformer`, `KMeans`, `PCA`, scalers),
@@ -312,24 +312,19 @@ membership is a probability rather than a hard assignment.
 - **11.5** *(resolved 2026-08-01 — the split holds.)* §6.5 emits dendrogram
   *data* — merge order, heights, leaf ordering — and `dev.cajeta.chart` renders
   it (`cajeta-chart` §8.5). This library does not draw.
-- **11.6** The §9.11–§9.13 spectral methods and §10 decompositions need a
-  SYMMETRIC EIGENSOLVER (`eigh`-class: smallest/largest eigenpairs of a dense
-  symmetric matrix). `LinAlg` today has `svd`/`cholesky`/`slogdet`. Resolve at
-  plan time whether `svd` suffices (it does for the PSD Gram/Laplacian cases,
-  at some cost and with the smallest-eigenpair order inverted) or `LinAlg`
-  gains `eigh`. **If `eigh` is needed it is STDLIB work and must ride the next
-  toolchain cut** (the P1 doctrine — a stdlib gap blocks consumers for a whole
-  release; v0.17.0 has just shipped, so surface this before any other work in
-  this plan).
-- **11.7** Isomap's geodesic step is all-pairs shortest paths over the k-NN
-  graph — which `dev.cajeta.graph` (shipped 0.1.0) already implements. Resolve:
-  depend on `dev.cajeta.graph`, or implement the small Dijkstra internally.
-  Recommendation: INTERNAL — one algorithm's private step does not justify a
-  cross-library dependency edge, and the roadmap keeps `dev.cajeta.ml`'s
-  dependency set stdlib-only.
-- **11.8** NMF objective scope: Frobenius only in v1 (sklearn's default
-  solver); the beta-divergence family (KL/Itakura-Saito, multiplicative
-  updates) is deferred until a consumer names it.
+- **11.6** *(resolved 2026-08-05 — `LinAlg.eigh` already EXISTS.)* The premise
+  was stale: `LinAlg` has `eigh` (numpy-parity symmetric eigendecomposition,
+  cyclic Jacobi, ascending eigenvalues, orthonormal columns) alongside `svd`.
+  It shipped in the released toolchain, so §9.11–§9.13 and §10 have their
+  eigensolver TODAY — no stdlib work, no toolchain wait. The §1.6 systems
+  line is corrected.
+- **11.7** *(resolved 2026-08-05 — internal.)* Isomap implements its own
+  small Dijkstra over the k-NN graph. One algorithm's private step does not
+  justify a cross-library dependency edge; the roadmap keeps `dev.cajeta.ml`'s
+  dependency set stdlib-only. `dev.cajeta.graph` remains unreferenced.
+- **11.8** *(resolved 2026-08-05 — as stated.)* NMF ships Frobenius-only
+  (sklearn's default solver); the beta-divergence family is deferred until a
+  consumer names it.
 
 ---
 
