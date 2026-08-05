@@ -1,0 +1,20 @@
+package cajeta.math.stats;
+
+/**
+ * The alternative hypothesis of a test — always **explicit**, never
+ * inferred from the data (spec stdlib-completion §4.4): inferring the
+ * direction from the observed sign is how a one-tailed p-value gets
+ * silently halved.
+ *
+ *   - {@link #TWO_SIDED} — the parameter differs (either direction).
+ *   - {@link #LESS}      — the parameter is less than the reference.
+ *   - {@link #GREATER}   — the parameter is greater than the reference.
+ *
+ * Upper-tail-only tests (chi-square, ANOVA F) report `GREATER`: their
+ * statistic only grows with departure from the null.
+ */
+public enum Alternative {
+    TWO_SIDED,  // 0
+    LESS,       // 1
+    GREATER     // 2
+}

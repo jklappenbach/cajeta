@@ -1,0 +1,31 @@
+package cajeta.math.stats;
+
+/**
+ * The result of a hypothesis test (spec stdlib-completion §4.8): carries
+ * the statistic, the p-value, the degrees of freedom, and the alternative
+ * tested, so a result is reportable without recomputation. `warnings` is
+ * a bitmask of assumption violations (§4.7) — see the `WARN_*` constants
+ * on {@link Hypothesis}; `0` means every checked assumption held.
+ *
+ * `df` is the (only or between-groups) degrees of freedom; `dfWithin` is
+ * the within-groups df for the F test and `0` where it does not apply.
+ * Immutable: every field is set once by the constructor.
+ */
+public final class TestResult {
+    public float64 statistic;
+    public float64 pValue;
+    public float64 df;
+    public float64 dfWithin;
+    public Alternative alternative;
+    public int32 warnings;
+
+    public TestResult(float64 statistic, float64 pValue, float64 df,
+                      float64 dfWithin, Alternative alternative, int32 warnings) {
+        this.statistic = statistic;
+        this.pValue = pValue;
+        this.df = df;
+        this.dfWithin = dfWithin;
+        this.alternative = alternative;
+        this.warnings = warnings;
+    }
+}

@@ -1,0 +1,331 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+
+/**
+ * Hypothesis tests over `float64` vectors (stdlib-completion spec §4;
+ * scipy `stats.ttest_*` / `chisquare` / `chi2_contingency` / `f_oneway`).
+ * Every test returns a {@link TestResult} carrying statistic, p-value,
+ * degrees of freedom, the {@link Alternative} tested, and an assumption-
+ * warning bitmask — a p-value from a violated assumption is worse than no
+ * p-value, so violations are never silent (§4.7).
+ *
+ * **The two-sample default is WELCH** (unequal variances) — the safer
+ * assumption and R's default. scipy's `ttest_ind` defaults to the
+ * EQUAL-variance form instead; the two disagree on the same data, which
+ * is exactly why §4.2 requires the default to be stated. Pass
+ * `equalVar = true` for the pooled form.
+ *
+ * Chi-square independence applies **no Yates continuity correction**
+ * (scipy's `chi2_contingency` applies it by default on 2x2 tables);
+ * parity fixtures pin `correction=False`.
+ */
+public final class Hypothesis {
+
+    /** Sample too small for the normality reliance (any `n < 5`). */
+    public static final int32 WARN_SMALL_N = 1;
+    /** A sample (or the differences) has zero variance. */
+    public static final int32 WARN_ZERO_VARIANCE = 2;
+    /** An expected cell count is below the usual threshold of 5. */
+    public static final int32 WARN_LOW_EXPECTED = 4;
+
+    // ------------------------------------------------------------ helpers
+
+    private static void checkVector(Tensor<float64> t) {
+        if (t.ndim() != 1 || t.shapeAt(0) < 2) {
+            throw heap StatsException(
+                "hypothesis: sample must be a 1-D vector with n >= 2");
+        }
+    }
+
+    private static float64 meanOf(Tensor<float64> t) {
+        int64 n = t.shapeAt(0);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            s = s + t.get1(i);
+            i = i + 1;
+        }
+        return s / ((float64) n);
+    }
+
+    /** Sample variance, ddof = 1. */
+    private static float64 varOf(Tensor<float64> t, float64 mean) {
+        int64 n = t.shapeAt(0);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 d = t.get1(i) - mean;
+            s = s + d * d;
+            i = i + 1;
+        }
+        return s / ((float64) (n - 1));
+    }
+
+    /** p-value from a t statistic under `df`, per the alternative. */
+    private static float64 pFromT(float64 t, float64 df, Alternative alt) {
+        if (alt == Alternative.LESS) { return Stats.tCdf(t, df); }
+        if (alt == Alternative.GREATER) { return 1.0 - Stats.tCdf(t, df); }
+        float64 a = t;
+        if (a < 0.0) { a = -a; }
+        return 2.0 * (1.0 - Stats.tCdf(a, df));
+    }
+
+    /** Chi-square survival function `P(X > x)` at `k` degrees of freedom. */
+    private static float64 chi2Sf(float64 x, float64 k) {
+        float64 a = k / 2.0;
+        float64 xx = x / 2.0;
+        if (xx < a + 1.0) {
+            return 1.0 - Stats.gammPSeries(a, xx);
+        }
+        return Stats.gammQContinued(a, xx);
+    }
+
+    /** Degenerate-t handling: zero standard error (§4.7). */
+    private static #TestResult zeroVarianceResult(float64 delta, float64 df,
+                                                  Alternative alt, int32 warnings) {
+        // scipy reports an infinite statistic and a 0/1 p-value; the result
+        // is flagged WARN_ZERO_VARIANCE either way.
+        int32 w = warnings | WARN_ZERO_VARIANCE;
+        if (delta == 0.0) {
+            return heap TestResult(0.0, 1.0, df, 0.0, alt, w);
+        }
+        float64 t = delta / 0.0;                       // +-infinity by sign
+        float64 p = 0.0;
+        if (alt == Alternative.LESS && delta > 0.0) { p = 1.0; }
+        if (alt == Alternative.GREATER && delta < 0.0) { p = 1.0; }
+        return heap TestResult(t, p, df, 0.0, alt, w);
+    }
+
+    // ------------------------------------------------------------- t-tests
+
+    /**
+     * One-sample t-test of `mean(x) == mu` (§4.1; scipy `ttest_1samp`).
+     */
+    public static #TestResult tTest1(Tensor<float64> x, float64 mu, Alternative alt) {
+        checkVector(x);
+        int64 n = x.shapeAt(0);
+        int32 warnings = 0;
+        if (n < 5) { warnings = warnings | WARN_SMALL_N; }
+        float64 m = meanOf(x);
+        float64 v = varOf(x, m);
+        float64 df = (float64) (n - 1);
+        if (v == 0.0) { return zeroVarianceResult(m - mu, df, alt, warnings); }
+        float64 t = (m - mu) / Math.sqrt(v / ((float64) n));
+        return heap TestResult(t, pFromT(t, df, alt), df, 0.0, alt, warnings);
+    }
+
+    /**
+     * Two-sample t-test of `mean(a) == mean(b)` (§4.2; scipy `ttest_ind`).
+     * `equalVar = true` pools the variances (df `na+nb-2`); `false` is
+     * Welch's form with the Welch-Satterthwaite df.
+     */
+    public static #TestResult tTest2(Tensor<float64> a, Tensor<float64> b,
+                                     boolean equalVar, Alternative alt) {
+        checkVector(a);
+        checkVector(b);
+        int64 na = a.shapeAt(0);
+        int64 nb = b.shapeAt(0);
+        int32 warnings = 0;
+        if (na < 5 || nb < 5) { warnings = warnings | WARN_SMALL_N; }
+        float64 fna = (float64) na;
+        float64 fnb = (float64) nb;
+        float64 ma = meanOf(a);
+        float64 mb = meanOf(b);
+        float64 va = varOf(a, ma);
+        float64 vb = varOf(b, mb);
+        if (va == 0.0 && vb == 0.0) {
+            float64 dfz = fna + fnb - 2.0;
+            return zeroVarianceResult(ma - mb, dfz, alt, warnings);
+        }
+        if (va == 0.0 || vb == 0.0) { warnings = warnings | WARN_ZERO_VARIANCE; }
+        float64 t;
+        float64 df;
+        if (equalVar) {
+            float64 sp2 = ((fna - 1.0) * va + (fnb - 1.0) * vb) / (fna + fnb - 2.0);
+            t = (ma - mb) / Math.sqrt(sp2 * (1.0 / fna + 1.0 / fnb));
+            df = fna + fnb - 2.0;
+        } else {
+            float64 sea = va / fna;
+            float64 seb = vb / fnb;
+            t = (ma - mb) / Math.sqrt(sea + seb);
+            df = (sea + seb) * (sea + seb)
+               / (sea * sea / (fna - 1.0) + seb * seb / (fnb - 1.0));
+        }
+        return heap TestResult(t, pFromT(t, df, alt), df, 0.0, alt, warnings);
+    }
+
+    /** The DEFAULT two-sample form: **Welch** (see the class doc). */
+    public static #TestResult tTest2(Tensor<float64> a, Tensor<float64> b, Alternative alt) {
+        return tTest2(a, b, false, alt);
+    }
+
+    /**
+     * Paired t-test (§4.3; scipy `ttest_rel`): the one-sample test of the
+     * per-pair differences against zero. Distinct from {@link #tTest2} —
+     * pairing removes the between-subject variance.
+     */
+    public static #TestResult tTestPaired(Tensor<float64> a, Tensor<float64> b, Alternative alt) {
+        checkVector(a);
+        checkVector(b);
+        int64 n = a.shapeAt(0);
+        if (b.shapeAt(0) != n) {
+            throw heap StatsException("tTestPaired: samples must have equal length");
+        }
+        float64[] d = heap float64[n];
+        int64 i = 0;
+        while (i < n) {
+            d[i] = a.get1(i) - b.get1(i);
+            i = i + 1;
+        }
+        int64[] sh = heap int64[1];
+        sh[0] = n;
+        Tensor<float64> diff = Tensor.of<float64>(d, sh);
+        return tTest1(diff, 0.0, alt);
+    }
+
+    // ---------------------------------------------------------- chi-square
+
+    /**
+     * Chi-square goodness-of-fit (§4.5; scipy `chisquare`): observed vs
+     * expected counts, df `k - 1`. Upper-tail by nature — the result
+     * reports {@link Alternative#GREATER}.
+     */
+    public static #TestResult chiSquareGof(Tensor<float64> observed, Tensor<float64> expected) {
+        checkVector(observed);
+        checkVector(expected);
+        int64 k = observed.shapeAt(0);
+        if (expected.shapeAt(0) != k) {
+            throw heap StatsException("chiSquareGof: observed and expected lengths differ");
+        }
+        int32 warnings = 0;
+        float64 stat = 0.0;
+        int64 i = 0;
+        while (i < k) {
+            float64 e = expected.get1(i);
+            if (e <= 0.0) {
+                throw heap StatsException("chiSquareGof: expected counts must be positive");
+            }
+            if (e < 5.0) { warnings = warnings | WARN_LOW_EXPECTED; }
+            float64 d = observed.get1(i) - e;
+            stat = stat + d * d / e;
+            i = i + 1;
+        }
+        float64 df = (float64) (k - 1);
+        return heap TestResult(stat, chi2Sf(stat, df), df, 0.0,
+                               Alternative.GREATER, warnings);
+    }
+
+    /**
+     * Chi-square test of independence on an `(r, c)` contingency table
+     * (§4.5; scipy `chi2_contingency` with `correction=False` — no Yates
+     * correction, see the class doc). Expected counts come from the
+     * margins; df `(r-1)(c-1)`.
+     */
+    public static #TestResult chiSquareIndependence(Tensor<float64> table) {
+        if (table.ndim() != 2 || table.shapeAt(0) < 2 || table.shapeAt(1) < 2) {
+            throw heap StatsException(
+                "chiSquareIndependence: table must be at least (2, 2)");
+        }
+        int64 r = table.shapeAt(0);
+        int64 c = table.shapeAt(1);
+        float64[] rowSum = heap float64[r];
+        float64[] colSum = heap float64[c];
+        float64 total = 0.0;
+        int64 i = 0;
+        while (i < r) {
+            int64 j = 0;
+            while (j < c) {
+                float64 v = table.get2(i, j);
+                if (v < 0.0) {
+                    throw heap StatsException(
+                        "chiSquareIndependence: counts must be non-negative");
+                }
+                rowSum[i] = rowSum[i] + v;
+                colSum[j] = colSum[j] + v;
+                total = total + v;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        if (total == 0.0) {
+            throw heap StatsException("chiSquareIndependence: table sums to zero");
+        }
+        int32 warnings = 0;
+        float64 stat = 0.0;
+        i = 0;
+        while (i < r) {
+            int64 j = 0;
+            while (j < c) {
+                float64 e = rowSum[i] * colSum[j] / total;
+                if (e < 5.0) { warnings = warnings | WARN_LOW_EXPECTED; }
+                float64 d = table.get2(i, j) - e;
+                stat = stat + d * d / e;
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        float64 df = (float64) ((r - 1) * (c - 1));
+        return heap TestResult(stat, chi2Sf(stat, df), df, 0.0,
+                               Alternative.GREATER, warnings);
+    }
+
+    // --------------------------------------------------------------- ANOVA
+
+    /**
+     * One-way ANOVA over `k` groups (§4.6; scipy `f_oneway`): F statistic
+     * and p-value from the F distribution's upper tail via
+     * {@link Stats#betainc}. `df` is between-groups (`k-1`), `dfWithin`
+     * within-groups (`N-k`).
+     */
+    public static #TestResult anova1(Tensor<float64>[] groups) {
+        int64 k = groups.count();
+        if (k < 2) {
+            throw heap StatsException("anova1: at least two groups are required");
+        }
+        int32 warnings = 0;
+        float64 total = 0.0;
+        int64 bigN = 0;
+        int64 g = 0;
+        while (g < k) {
+            checkVector(groups[g]);
+            int64 n = groups[g].shapeAt(0);
+            if (n < 5) { warnings = warnings | WARN_SMALL_N; }
+            bigN = bigN + n;
+            int64 i = 0;
+            while (i < n) {
+                total = total + groups[g].get1(i);
+                i = i + 1;
+            }
+            g = g + 1;
+        }
+        float64 grand = total / ((float64) bigN);
+        float64 ssb = 0.0;
+        float64 ssw = 0.0;
+        g = 0;
+        while (g < k) {
+            int64 n = groups[g].shapeAt(0);
+            float64 m = meanOf(groups[g]);
+            float64 dm = m - grand;
+            ssb = ssb + ((float64) n) * dm * dm;
+            int64 i = 0;
+            while (i < n) {
+                float64 d = groups[g].get1(i) - m;
+                ssw = ssw + d * d;
+                i = i + 1;
+            }
+            g = g + 1;
+        }
+        float64 dfb = (float64) (k - 1);
+        float64 dfw = (float64) (bigN - k);
+        if (ssw == 0.0) {
+            warnings = warnings | WARN_ZERO_VARIANCE;
+            return heap TestResult(ssb / 0.0, 0.0, dfb, dfw,
+                                   Alternative.GREATER, warnings);
+        }
+        float64 f = (ssb / dfb) / (ssw / dfw);
+        // F survival function: I_{dfw/(dfw + dfb F)}(dfw/2, dfb/2)
+        float64 p = Stats.betainc(dfw / 2.0, dfb / 2.0, dfw / (dfw + dfb * f));
+        return heap TestResult(f, p, dfb, dfw, Alternative.GREATER, warnings);
+    }
+}
