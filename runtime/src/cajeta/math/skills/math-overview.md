@@ -132,3 +132,10 @@ Quaternion<float32> yaw = Rotation.fromAxisAngle(up, 0.7853982f);
 Class-level depth lives in the per-type skills (when present) and the doc-comments
 in each source file under `runtime/src/cajeta/math/`. Specs:
 `documents/math/tensor-spec.md` (Tensor) and the cajeta-gfx plan (gfx types).
+
+Statistics beyond the descriptive surface — discrete distributions,
+hypothesis tests, KL/entropy — route to `math-stats-inference.md`; the
+distance kernels (`cajeta.math.distance`) and the numerical optimizers
+(`cajeta.math.optim`, L-BFGS + Nelder-Mead) to `math-distance-optim.md`.
+Unicode normalization / case folding / UCD properties live on
+`cajeta.lang` — see `lang-unicode-normalization.md` there.

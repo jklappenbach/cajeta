@@ -1,0 +1,51 @@
+package cajeta.lang;
+
+/**
+ * Per-codepoint Unicode Character Database properties (stdlib-completion
+ * §7 / plan 7.2.8) — the SAME compiled-in UCD `String` normalization runs
+ * on (Unicode 16.0.0; tools/ucd/gen_ucd_tables.py), exposed for
+ * `cajeta-text-shaping` §13.2: script, joining type, canonical combining
+ * class, bidi category. A second copy of this data anywhere would be
+ * indefensible — consumers bind here.
+ *
+ * Script and bidi ids are table ordinals, stable for a given generated
+ * table set; shaping consumers should treat them as opaque keys resolved
+ * through their own name bindings. Joining types use the fixed constants
+ * below (UAX #9 / ArabicShaping.txt semantics; unlisted codepoints are
+ * `JOIN_U`, and unlisted Mn/Me/Cf default to `JOIN_T`).
+ */
+public final class Ucd {
+
+    /** Non-joining. */
+    public static final int32 JOIN_U = 0;
+    /** Transparent (combining marks, format controls). */
+    public static final int32 JOIN_T = 1;
+    /** Right-joining. */
+    public static final int32 JOIN_R = 2;
+    /** Left-joining. */
+    public static final int32 JOIN_L = 3;
+    /** Dual-joining. */
+    public static final int32 JOIN_D = 4;
+    /** Join-causing (tatweel). */
+    public static final int32 JOIN_C = 5;
+
+    /** Canonical combining class of `cp` (0 for starters and non-marks). */
+    @Native("__cajeta_ucd_ccc")
+    public static int32 combiningClass(int32 cp);
+
+    /** Script id of `cp` (0 = Unknown). */
+    @Native("__cajeta_ucd_script")
+    public static int32 script(int32 cp);
+
+    /** Joining type of `cp` — one of the `JOIN_*` constants. */
+    @Native("__cajeta_ucd_joining_type")
+    public static int32 joiningType(int32 cp);
+
+    /** Bidi category id of `cp` (table ordinal). */
+    @Native("__cajeta_ucd_bidi_class")
+    public static int32 bidiClass(int32 cp);
+
+    /** 1 when `cp` is a Default_Ignorable_Code_Point, else 0. */
+    @Native("__cajeta_ucd_default_ignorable")
+    public static int32 isDefaultIgnorable(int32 cp);
+}
