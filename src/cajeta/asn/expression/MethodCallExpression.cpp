@@ -4077,6 +4077,13 @@ namespace cajeta {
                         lm, llvm::Intrinsic::pow, {f64Ty});
                     return builder->CreateCall(fn, {x, y});
                 }
+                if (methodCallName == "atan2" && parameters.size() == 2) {
+                    llvm::Value* y = toF64(loadArg(0));
+                    llvm::Value* x = toF64(loadArg(1));
+                    llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                        lm, llvm::Intrinsic::atan2, {f64Ty});
+                    return builder->CreateCall(fn, {y, x});
+                }
                 if (methodCallName == "floor" && parameters.size() == 1) {
                     llvm::Value* x = toF64(loadArg(0));
                     llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
@@ -4107,6 +4114,9 @@ namespace cajeta {
                 static const UnaryFn unaryFns[] = {
                     {"sin",   llvm::Intrinsic::sin},
                     {"cos",   llvm::Intrinsic::cos},
+                    {"asin",  llvm::Intrinsic::asin},
+                    {"acos",  llvm::Intrinsic::acos},
+                    {"atan",  llvm::Intrinsic::atan},
                     {"log",   llvm::Intrinsic::log},     // natural log
                     {"log10", llvm::Intrinsic::log10},
                     {"exp",   llvm::Intrinsic::exp},
