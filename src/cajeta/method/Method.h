@@ -123,6 +123,9 @@ namespace cajeta {
         // scan is the single source of truth — there is no `stack T` return
         // type. See docs/specification/lang/ValueReturns.md.
         int returnsStackValueCache = -1;
+        // CajetaClass::typeFillEpoch() value this method's prototype was
+        // computed at; ensureFreshPrototype re-derives when stale.
+        uint64_t prototypeEpochSeen = 0;
         // title-tracking Unit 5: the incoming hidden transfer-word argument
         // (trailing i64), stashed at prologue binding so callee-side codegen
         // (runtime-owner formals, 5.2.2) can read per-formal bits. Null when
@@ -274,10 +277,15 @@ namespace cajeta {
         llvm::FunctionType*& llvmFunctionTypeRef();
         llvm::Function*& llvmOriginalFunctionRef();
 
+        // Recompute the prototype when a placeholder filled since it was
+        // built (specs/record-cross-type-return): the signature of a method
+        // whose param/return types were placeholders can change ABI once the
+        // real declarations arrive. Cheap when fresh (epoch compare).
+        // Defined in Method.cpp.
+        void ensureFreshPrototype();
+
         llvm::FunctionType* getLlvmFunctionType() {
-            if (!llvmFunctionTypeRef()) {
-                generatePrototype();
-            }
+            ensureFreshPrototype();
             return llvmFunctionTypeRef();
         }
 

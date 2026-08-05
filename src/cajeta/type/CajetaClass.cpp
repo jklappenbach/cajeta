@@ -103,6 +103,11 @@ namespace cajeta {
         captureDeclaringFile();
     }
 
+    uint64_t& CajetaClass::typeFillEpoch() {
+        static thread_local uint64_t epoch = 0;
+        return epoch;
+    }
+
     llvm::Type* CajetaClass::getLlvmType() {
         if (llvm::Type* cur = rawLlvmType()) return cur;  // frozen-aware cache read (U6.2)
         if (placeholderFlag && module) {
@@ -155,6 +160,38 @@ namespace cajeta {
                     } else {
                         buildInstanceStructBody(ctx);
                     }
+                }
+                return rawLlvmType();
+            }
+        }
+        // record-cross-type-return fix: a FILLED value-type class (record /
+        // @ValueType) can be asked for its LAYOUT by an earlier-parsed
+        // consumer's re-prototype BEFORE its own generatePrototype has run —
+        // cross-file record params/returns in the lazily-parsed stdlib hit
+        // this ordering. rawLlvmType() was null here, the null flowed into a
+        // FunctionType parameter list, and Argument materialization faulted
+        // on the null Type (fault addr nil, deep in BuildLazyArguments).
+        // Build the named struct on demand — opaque first (bind before body,
+        // so self-references resolve), then the flat value-type body — the
+        // frozen arm's exact recipe. generatePrototype later reuses the same
+        // named struct; the body fill is opacity-guarded on both paths.
+        // Gate on the field list being populated: mid-parse, a value type's
+        // properties are still empty, and building then would set an EMPTY
+        // body that the opacity guard would later refuse to replace (seen as
+        // "Invalid indices for GEP pointer type" on cajeta.time.Instant).
+        // With no fields yet, fall through to the old null behaviour — the
+        // caller that needs the layout (a consumer's re-prototype after
+        // fillFromDeclaration) always sees the filled field list.
+        if (isValueType() && !placeholderFlag && module && qName
+                && !properties.empty()) {
+            llvm::LLVMContext* ctx = module->getLlvmContext();
+            if (ctx) {
+                string canonical = qName->toCanonical();
+                llvm::StructType* st =
+                    CajetaType::getOrCreateLlvmStructNoRegister(ctx, canonical);
+                setLlvmType(st);
+                if (st->isOpaque()) {
+                    buildInstanceStructBody(ctx);
                 }
                 return rawLlvmType();
             }
@@ -1379,7 +1416,14 @@ namespace cajeta {
         embedSubObject(static_pointer_cast<CajetaClass>(shared_from_this()),
             /*ownVtable=*/hasVtablePointerAtSlotZero(), /*enclosingStart=*/0);
 
-        ((llvm::StructType*) rawLlvmType())->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+        // Opacity guard: the on-demand build in getLlvmType() (record-cross-
+        // type-return fix) may have filled this body already; setBody on a
+        // non-opaque struct asserts. The first fill wins — both paths build
+        // from the same field list.
+        auto* bodyStruct = (llvm::StructType*) rawLlvmType();
+        if (bodyStruct->isOpaque()) {
+            bodyStruct->setBody(llvm::ArrayRef<llvm::Type*>(llvmMembers), false);
+        }
     }
 
     void CajetaClass::generatePrototype() {

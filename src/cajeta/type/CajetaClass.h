@@ -410,6 +410,14 @@ namespace cajeta {
         // to the placeholder (held by fields/methods of earlier-
         // parsed classes) become valid for the real class because
         // it's the same shared_ptr instance.
+        // Monotone per-thread counter of placeholder fills. A method
+        // prototype computed against a placeholder may carry the wrong ABI
+        // once the real declaration arrives (record params/returns flip from
+        // ptr to by-value aggregate — specs/record-cross-type-return);
+        // Method::ensureFreshPrototype compares the epoch it was built at
+        // against this counter and re-derives the signature when stale.
+        static uint64_t& typeFillEpoch();
+
         void fillFromDeclaration(CajetaModulePtr m,
                                   QualifiedNamePtr q,
                                   list<QualifiedNamePtr> ext,
@@ -419,6 +427,7 @@ namespace cajeta {
             this->qExtended = std::move(ext);
             this->qImplemented = std::move(impl);
             this->placeholderFlag = false;
+            typeFillEpoch()++;
             // A placeholder was constructed at its first REFERENCE, so it
             // captured whatever file that reference sat in (String, referenced
             // from BFloat16.cajeta, reported BFloat16.cajeta). This is the

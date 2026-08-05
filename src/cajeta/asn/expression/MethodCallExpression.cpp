@@ -4012,11 +4012,18 @@ namespace cajeta {
                 llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
                 llvm::Type* f64Ty = llvm::Type::getDoubleTy(llvmCtx);
                 auto loadArg = [&](size_t i) -> llvm::Value* {
-                    llvm::Value* v = parameters[i].expression->generateCode(module);
-                    if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
-                        v = builder->CreateLoad(a->getAllocatedType(), a);
+                    // Shared l-value coercion: the arg may be a local alloca,
+                    // an array GEP, or a class/record FIELD GEP (DotExpression
+                    // — e.g. Math.atan2(lab.b, lab.a) on a record param); the
+                    // old alloca-only check let field GEPs through unloaded
+                    // and fed a pointer into fpext.
+                    auto& p = parameters[i].expression;
+                    llvm::Value* v = p->generateCode(module);
+                    auto ast = dynamic_pointer_cast<Expression>(p);
+                    if (ast && !ast->getResolvedType()) {
+                        ast->resolveTypes(module);
                     }
-                    return v;
+                    return loadIfLValue(module, v, ast);
                 };
                 auto toF64 = [&](llvm::Value* v) {
                     if (v->getType()->isIntegerTy()) return builder->CreateSIToFP(v, f64Ty);

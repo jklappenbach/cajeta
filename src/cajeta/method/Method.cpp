@@ -1048,6 +1048,30 @@ namespace cajeta {
         module->getBuilder()->CreateStore(value, field->getOrCreateAllocation());
     }
 
+    void Method::ensureFreshPrototype() {
+        if (llvmFunctionTypeRef() == nullptr) {
+            generatePrototype();
+            prototypeEpochSeen = CajetaClass::typeFillEpoch();
+            return;
+        }
+        // FROZEN methods were prototyped against the fully-parsed prime
+        // world — no placeholder can have been involved, so their existing
+        // prototypes are never epoch-stale. Re-running generatePrototype on
+        // the SHARED frozen AST from a later session corrupts state the
+        // other sessions' snapshots rely on (observed as a SIGSEGV in
+        // jitted String code on the second session of a process).
+        if (isFrozen()) return;
+        uint64_t epoch = CajetaClass::typeFillEpoch();
+        if (prototypeEpochSeen == epoch) return;
+        // A placeholder filled since this prototype was computed — the sret
+        // decision may have been made against a placeholder body scan;
+        // recompute it along with the signature
+        // (specs/record-cross-type-return).
+        returnsStackValueCache = -1;
+        generatePrototype();
+        prototypeEpochSeen = epoch;
+    }
+
     void Method::generatePrototype() {
         // Method-level template declarations don't get an LLVM prototype.
         // Their formals/return types include placeholder T-vars and the
@@ -1418,7 +1442,28 @@ namespace cajeta {
         // `name` at dispatch time. Reusing the existing Function*
         // keeps llvmFunction stable across reprototype calls.
         if (llvm::Function* existing = module->getLlvmModule()->getFunction(canonical)) {
-            llvmFunction = existing;
+            if (existing->isDeclaration()
+                    && existing->getFunctionType() != llvmFunctionType) {
+                // A placeholder filled since this function was declared and
+                // the ABI changed (specs/record-cross-type-return: a record
+                // param/return flips from ptr to by-value aggregate).
+                // Declare a fresh function with the corrected type, splice
+                // every existing use (vtable initializers, early call sites)
+                // over, and drop the stale declaration. Pre-fill uses cannot
+                // have passed the changed type, so the splice is type-safe
+                // under opaque pointers. Bodies are never replaced: a
+                // function with a body compiled against the old signature is
+                // left alone (the pre-existing behaviour).
+                existing->setName(canonical + ".stale");
+                llvm::Function* fresh = llvm::Function::Create(
+                    llvmFunctionType, llvm::Function::ExternalLinkage,
+                    canonical, module->getLlvmModule());
+                existing->replaceAllUsesWith(fresh);
+                existing->eraseFromParent();
+                llvmFunction = fresh;
+            } else {
+                llvmFunction = existing;
+            }
         } else {
             llvmFunction = llvm::Function::Create(llvmFunctionType, llvm::Function::ExternalLinkage,
                 canonical, module->getLlvmModule());
@@ -1836,9 +1881,27 @@ namespace cajeta {
     }
 
     void Method::generateCode() {
+        ensureFreshPrototype();  // re-derive a placeholder-era signature first
         auto& llvmFunction = llvmFunctionRef();                  // U6.3b: frozen-aware
         auto& llvmFunctionType = llvmFunctionTypeRef();          // U6.3b
         auto& llvmOriginalFunction = llvmOriginalFunctionRef();  // U6.3b
+        if (getenv("CAJETA_DBG_GENCODE")) {
+            std::cerr << "[gencode] "
+                << (parent && parent->getQName()
+                        ? parent->getQName()->toCanonical() : "?")
+                << "::" << name
+                << " frozen=" << (isFrozen() ? 1 : 0)
+                << " fn=" << (void*) llvmFunction
+                << " cachedTy=" << (void*) llvmFunctionType
+                << " cachedN=" << (llvmFunctionType
+                        ? (int) llvmFunctionType->getNumParams() : -1)
+                << " fnTy=" << (llvmFunction
+                        ? (void*) llvmFunction->getFunctionType() : nullptr)
+                << " fnN=" << (llvmFunction
+                        ? (int) llvmFunction->getFunctionType()->getNumParams()
+                        : -1)
+                << " formals=" << parameterList.size() << std::endl;
+        }
         // Emit-target swap (test-reuse): point `module` at the emit module for
         // the whole body. generateCode passes `module` DOWN to every statement/
         // expression (generateCode(CajetaModulePtr)), so this single swap

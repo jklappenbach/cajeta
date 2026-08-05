@@ -4,6 +4,7 @@
 
 #include "ParameterField.h"
 #include "../compile/CajetaModule.h"
+#include "../error/Exception.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaView.h"
 
@@ -73,6 +74,20 @@ namespace cajeta {
             // would re-allocate stack each iteration (overflow at -O0). The
             // store stays at the current point; it just references the
             // entry-block slot (which dominates every use).
+            // A paramIndex past the declared prototype means the ABI decision
+            // (sret / transfer word / by-value record) changed between
+            // prototype and body codegen — a placeholder-era signature. Fail
+            // NAMING the function instead of letting getArg walk garbage
+            // (specs/record-cross-type-return §4).
+            if (paramIndex >= (int) llvmFunction->arg_size()) {
+                throw Exception(
+                    "parameter index " + std::to_string(paramIndex)
+                        + " out of range for '"
+                        + llvmFunction->getName().str() + "' ("
+                        + std::to_string(llvmFunction->arg_size())
+                        + " declared args) — prototype/body ABI disagreement",
+                    "CAJETA_ERROR_PROTOTYPE_ABI_MISMATCH");
+            }
             alloca = module->createEntryAlloca(llvmType);
             module->getBuilder()->CreateStore(llvmFunction->getArg(paramIndex), alloca);
         }
