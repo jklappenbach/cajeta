@@ -1,10 +1,3 @@
-// PARKED 2026-08-04 (stdlib-completion U6, blocked): these tests are ready
-// but the implementation cannot land — a stdlib method returning a record
-// other than its own type mis-compiles the ENTIRE stdlib bundle (even
-// unrelated Color tests crash). Defect: specs/record-cross-type-return-spec.md.
-// The finished implementation files are preserved in the defect spec's
-// appendix reference; restore this file to test/math/ when the defect closes.
-//
 //
 // OklabTests — stdlib-completion plan Unit 6: OKLab on cajeta.math.Color
 // (spec §6, §9.7). sRGB <-> OKLab <-> OKLCh, deltaE (Euclidean in OKLab),
@@ -110,7 +103,7 @@ TEST(OklabTests, deltaEMatchesReference) {
         "        Oklab u = Oklab.fromColor(stack Color(0.0f, 0.0f, 1.0f, 1.0f));\n"
         "        if (!D.near(Oklab.deltaE(r, u), 0.53708981869576, 0.000001)) { return -1; }\n"
         "        if (Oklab.deltaE(r, r) != 0.0) { return -2; }\n"
-        "        if (!D.near(Oklab.deltaE(r, u), Oklab.deltaE(u, r), 0.0)) { return -3; }\n"
+        "        if (Oklab.deltaE(r, u) != Oklab.deltaE(u, r)) { return -3; }\n"
         "        return 1;\n"
         "    }\n"
         "}\n";

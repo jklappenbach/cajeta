@@ -1,0 +1,89 @@
+package cajeta.math;
+
+import cajeta.lang.Math;
+
+/**
+ * Oklab — a color in Björn Ottosson's OKLab perceptual space
+ * (stdlib-completion spec §6): `l` is perceptual lightness in [0,1], `a`
+ * (green-red) and `b` (blue-yellow) are the two chroma axes. Perceptual
+ * palette work (CVD separation, contrast — `cajeta-chart` §10.2) happens
+ * here or in the polar form {@link Oklch}, never in sRGB.
+ *
+ * A record: value semantics, structural equality. Coordinates are
+ * `float64` — the perceptual space is where palette math accumulates, so
+ * it does not inherit the sRGB channels' `float32` width.
+ *
+ * **Conversions are static factories on the DESTINATION type** —
+ * `Oklab.fromColor`, `Oklch.fromLab`, `Oklab.fromLch`,
+ * `Color.fromOklab` — because a stdlib method returning a record OTHER
+ * than its own type mis-compiles the whole bundle today (defect:
+ * specs/record-cross-type-return). Own-type returns are the safe shape;
+ * the `toX()` instance forms can come back when that defect closes.
+ */
+public record Oklab {
+    public float64 l;
+    public float64 a;
+    public float64 b;
+
+    /** @EntryPoint */
+    public Oklab(float64 l, float64 a, float64 b) {
+        this.l = l;
+        this.a = a;
+        this.b = b;
+    }
+
+    /** Perceptual lightness. */
+    public float64 l() {
+        return this.l;
+    }
+
+    /** Green-red axis. */
+    public float64 a() {
+        return this.a;
+    }
+
+    /** Blue-yellow axis. */
+    public float64 b() {
+        return this.b;
+    }
+
+    /** Signed cube root — negative lms components arise out of gamut. */
+    static float64 cbrtSigned(float64 x) {
+        if (x < 0.0) { return -Math.pow(-x, 0.3333333333333333); }
+        return Math.pow(x, 0.3333333333333333);
+    }
+
+    /**
+     * The OKLab coordinates of an sRGB {@link Color} (Ottosson's
+     * matrices, float64 math over Color's sRGB->linear transfer).
+     */
+    public static Oklab fromColor(Color c) {
+        float64 lr = (float64) Color.srgbToLinearChannel(c.r);
+        float64 lg = (float64) Color.srgbToLinearChannel(c.g);
+        float64 lb = (float64) Color.srgbToLinearChannel(c.b);
+        float64 l = Oklab.cbrtSigned(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+        float64 m = Oklab.cbrtSigned(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+        float64 s = Oklab.cbrtSigned(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+        return stack Oklab(
+            0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s);
+    }
+
+    /** Rectangular coordinates of a polar {@link Oklch}. */
+    public static Oklab fromLch(Oklch p) {
+        float64 rad = p.h * 0.017453292519943295;
+        return stack Oklab(p.l, p.c * Math.cos(rad), p.c * Math.sin(rad));
+    }
+
+    /**
+     * Perceptual difference ΔE_OK: the Euclidean distance in OKLab —
+     * the standard difference metric for this space.
+     */
+    public static float64 deltaE(Oklab x, Oklab y) {
+        float64 dl = x.l - y.l;
+        float64 da = x.a - y.a;
+        float64 db = x.b - y.b;
+        return Math.sqrt(dl * dl + da * da + db * db);
+    }
+}

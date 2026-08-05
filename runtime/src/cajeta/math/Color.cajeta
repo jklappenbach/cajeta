@@ -93,4 +93,46 @@ public record Color {
         float32 sb = Color.linearToSrgbChannel(this.b);
         return stack Color(sr, sg, sb, this.a);
     }
+
+    // ─────────────────────────────── OKLab (stdlib-completion §6) ─────────────
+    // The sRGB->OKLab direction lives on the destination type as
+    // Oklab.fromColor (specs/record-cross-type-return: a stdlib method
+    // returning a record other than its own type mis-compiles the bundle).
+
+    /**
+     * The sRGB color at OKLab coordinates `lab` (alpha supplied). Channels
+     * are NOT clipped: an out-of-gamut `lab` yields channels outside
+     * `[0, 1]`, and {@link #inSrgbGamut} is the explicit query (§6.5) —
+     * silent clipping would hide exactly the condition palette generators
+     * probe for.
+     */
+    public static Color fromOklab(Oklab lab, float32 alpha) {
+        float64 lp = lab.l + 0.3963377774 * lab.a + 0.2158037573 * lab.b;
+        float64 mp = lab.l - 0.1055613458 * lab.a - 0.0638541728 * lab.b;
+        float64 sp = lab.l - 0.0894841775 * lab.a - 1.2914855480 * lab.b;
+        float64 l = lp * lp * lp;
+        float64 m = mp * mp * mp;
+        float64 s = sp * sp * sp;
+        float64 lr = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s;
+        float64 lg = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s;
+        float64 lb = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+        float32 sr = Color.linearToSrgbChannel((float32) lr);
+        float32 sg = Color.linearToSrgbChannel((float32) lg);
+        float32 sb = Color.linearToSrgbChannel((float32) lb);
+        return stack Color(sr, sg, sb, alpha);
+    }
+
+    /**
+     * Whether every channel lies in the sRGB gamut, within a `1e-4`
+     * round-trip margin. The explicit out-of-gamut query for
+     * {@link #fromOklab}'s unclipped result (§6.5).
+     */
+    public boolean inSrgbGamut() {
+        float32 lo = -0.0001f;
+        float32 hi = 1.0001f;
+        if (this.r < lo || this.r > hi) { return false; }
+        if (this.g < lo || this.g > hi) { return false; }
+        if (this.b < lo || this.b > hi) { return false; }
+        return true;
+    }
 }

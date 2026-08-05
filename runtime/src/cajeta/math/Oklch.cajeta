@@ -1,0 +1,54 @@
+package cajeta.math;
+
+import cajeta.lang.Math;
+
+/**
+ * Oklch — {@link Oklab} in polar form (stdlib-completion spec §6.4):
+ * lightness `l`, chroma `c`, hue `h` in DEGREES in `[0, 360)`. Hue and
+ * chroma are what a palette generator manipulates — rotate `h` for
+ * distinct hues at equal lightness, scale `c` toward the gamut boundary.
+ *
+ * A record: value semantics, structural equality. Conversions are static
+ * factories on the destination type — `Oklch.fromLab` here,
+ * {@link Oklab#fromLch} for the way back (see the {@link Oklab} class doc
+ * for why: specs/record-cross-type-return).
+ */
+public record Oklch {
+    public float64 l;
+    public float64 c;
+    public float64 h;
+
+    /** @EntryPoint */
+    public Oklch(float64 l, float64 c, float64 h) {
+        this.l = l;
+        this.c = c;
+        this.h = h;
+    }
+
+    /** Lightness. */
+    public float64 l() {
+        return this.l;
+    }
+
+    /** Chroma. */
+    public float64 c() {
+        return this.c;
+    }
+
+    /** Hue in degrees, `[0, 360)`. */
+    public float64 h() {
+        return this.h;
+    }
+
+    /**
+     * Polar form of a rectangular {@link Oklab}: chroma
+     * `sqrt(a^2+b^2)`, hue `atan2(b, a)` in degrees wrapped to
+     * `[0, 360)`.
+     */
+    public static Oklch fromLab(Oklab lab) {
+        float64 c = Math.sqrt(lab.a * lab.a + lab.b * lab.b);
+        float64 h = Math.atan2(lab.b, lab.a) * 57.29577951308232;
+        if (h < 0.0) { h = h + 360.0; }
+        return stack Oklch(lab.l, c, h);
+    }
+}
