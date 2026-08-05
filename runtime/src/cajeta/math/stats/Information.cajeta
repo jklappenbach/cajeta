@@ -1,0 +1,127 @@
+package cajeta.math.stats;
+
+import cajeta.math.Tensor;
+
+/**
+ * Information-theoretic measures over discrete distributions
+ * (stdlib-completion spec §5; consumers: `ml-unsupervised` t-SNE and
+ * cluster comparison, `ml-trees-ensembles` entropy splits, ML losses).
+ *
+ * **KL divergence is ASYMMETRIC**: `KL(p||q) != KL(q||p)` — callers
+ * routinely get the order backwards (§5.4). `klDivergence(p, q)` is the
+ * divergence **of q from p**, `Σ p·log(p/q)` in nats, the expected extra
+ * message length when coding samples of `p` with a code built for `q`.
+ *
+ * Degenerate cases follow the standard conventions, explicitly (§5.2,
+ * §5.3): a term with `p = 0` contributes **exactly zero** (`0·log 0 = 0`,
+ * regardless of `q`); a term with `q = 0` and `p > 0` makes the result
+ * **+infinity — never NaN**. A silent NaN is the failure mode that
+ * corrupts a t-SNE gradient without a trace.
+ *
+ * Entropy and cross-entropy take the log base as a **required** argument:
+ * `ml-trees-ensembles` needs base 2, ML losses conventionally use base e,
+ * and a default would silently serve one of them wrong (§5.5).
+ *
+ * Inputs are probability vectors: 1-D, non-negative, equal length.
+ * Negative entries throw {@link StatsException}; normalization is the
+ * caller's job and is never applied silently.
+ */
+public final class Information {
+
+    private static void checkDistribution(Tensor<float64> p) {
+        if (p.ndim() != 1 || p.shapeAt(0) < 1) {
+            throw heap StatsException(
+                "information: distribution must be a non-empty 1-D vector");
+        }
+        int64 n = p.shapeAt(0);
+        int64 i = 0;
+        while (i < n) {
+            if (p.get1(i) < 0.0) {
+                throw heap StatsException(
+                    "information: probabilities must be non-negative");
+            }
+            i = i + 1;
+        }
+    }
+
+    private static void checkPair(Tensor<float64> p, Tensor<float64> q) {
+        checkDistribution(p);
+        checkDistribution(q);
+        if (p.shapeAt(0) != q.shapeAt(0)) {
+            throw heap StatsException("information: distribution lengths differ");
+        }
+    }
+
+    private static float64 checkBase(float64 base) {
+        if (base <= 1.0) {
+            throw heap StatsException("information: log base must be greater than 1");
+        }
+        return Math.log(base);
+    }
+
+    /**
+     * `KL(p||q) = Σ p·log(p/q)` in **nats** (scipy `rel_entr` summed).
+     * Asymmetric — see the class doc; `klDivergence(p, q)` and
+     * `klDivergence(q, p)` are different quantities.
+     */
+    public static float64 klDivergence(Tensor<float64> p, Tensor<float64> q) {
+        checkPair(p, q);
+        int64 n = p.shapeAt(0);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 pi = p.get1(i);
+            if (pi > 0.0) {
+                float64 qi = q.get1(i);
+                if (qi == 0.0) { return 1.0 / 0.0; }     // +infinity, never NaN
+                s = s + pi * Math.log(pi / qi);
+            }
+            i = i + 1;
+        }
+        return s;
+    }
+
+    /**
+     * Shannon entropy `-Σ p·log_base(p)`; zero-probability terms
+     * contribute zero. Base 2 yields bits, base e nats — the base is
+     * required, not defaulted (§5.5).
+     */
+    public static float64 entropy(Tensor<float64> p, float64 base) {
+        checkDistribution(p);
+        float64 lnBase = checkBase(base);
+        int64 n = p.shapeAt(0);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 pi = p.get1(i);
+            if (pi > 0.0) {
+                s = s - pi * Math.log(pi);
+            }
+            i = i + 1;
+        }
+        return s / lnBase;
+    }
+
+    /**
+     * Cross-entropy `-Σ p·log_base(q)`: `H(p) + KL(p||q)` (in the same
+     * base). `q = 0` where `p > 0` is +infinity, never NaN; `p = 0` terms
+     * contribute zero.
+     */
+    public static float64 crossEntropy(Tensor<float64> p, Tensor<float64> q, float64 base) {
+        checkPair(p, q);
+        float64 lnBase = checkBase(base);
+        int64 n = p.shapeAt(0);
+        float64 s = 0.0;
+        int64 i = 0;
+        while (i < n) {
+            float64 pi = p.get1(i);
+            if (pi > 0.0) {
+                float64 qi = q.get1(i);
+                if (qi == 0.0) { return 1.0 / 0.0; }     // +infinity, never NaN
+                s = s - pi * Math.log(qi);
+            }
+            i = i + 1;
+        }
+        return s / lnBase;
+    }
+}
