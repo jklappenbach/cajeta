@@ -5294,6 +5294,43 @@ bool cajetaRhsCarriesRedundantSharp(
         if (needObj) {
             llvm::Value* raw = children[0]->generateCode(module);
             objPtr = loadIfLValue(module, raw, lhsExpr);
+            // Interface-typed lhs: the value is a pointer to the fat body
+            // { data, vtable, kind } — strip to the data pointer before any
+            // runtime type question or pattern binding (the same recipe as
+            // CastExpression's iface→class arm). Handing the fat body to
+            // __cajeta_instanceof_named read the data pointer as a vtable
+            // and faulted (specs/instanceof-interface-lhs).
+            auto lhsIfaceClass = dynamic_pointer_cast<CajetaClass>(lhsType);
+            if (objPtr && objPtr->getType()->isPointerTy() && lhsIfaceClass
+                    && lhsIfaceClass->isInterface()) {
+                // The body pointer itself can be null (`Shape s = null;`
+                // stores a plain null, not a body with a null data slot),
+                // so the data-slot load must be null-guarded: branch, load
+                // on the non-null arm, rejoin through a phi.
+                llvm::Type* bodyTy = lhsIfaceClass->getLlvmType();
+                llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+                llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+                llvm::BasicBlock* loadBb = llvm::BasicBlock::Create(
+                    ctx, "instanceof.iface_load", parentFn);
+                llvm::BasicBlock* contBb = llvm::BasicBlock::Create(
+                    ctx, "instanceof.iface_cont", parentFn);
+                llvm::Value* isNull = builder->CreateICmpEQ(
+                    objPtr, llvm::ConstantPointerNull::get(ptrTy),
+                    "instanceof.body_null");
+                llvm::BasicBlock* fromBb = builder->GetInsertBlock();
+                builder->CreateCondBr(isNull, contBb, loadBb);
+                builder->SetInsertPoint(loadBb);
+                llvm::Value* dataSlot = builder->CreateStructGEP(
+                    bodyTy, objPtr, 0, "instanceof.iface_data");
+                llvm::Value* data = builder->CreateLoad(
+                    ptrTy, dataSlot, "instanceof.obj");
+                builder->CreateBr(contBb);
+                builder->SetInsertPoint(contBb);
+                llvm::PHINode* phi = builder->CreatePHI(ptrTy, 2, "instanceof.lhs");
+                phi->addIncoming(llvm::ConstantPointerNull::get(ptrTy), fromBb);
+                phi->addIncoming(data, loadBb);
+                objPtr = phi;
+            }
         } else {
             children[0]->generateCode(module);
         }

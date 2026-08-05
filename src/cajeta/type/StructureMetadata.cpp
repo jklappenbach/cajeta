@@ -543,6 +543,12 @@ namespace cajeta {
         size_t classAnnCount = structure->getAnnotationList().size();
         vector<std::string> parentNames;
         for (auto& p : structure->getSuperClasses()) parentNames.push_back(p->toCanonical());
+        // Implemented interfaces are parents for the runtime is-a question
+        // (specs/instanceof-interface-lhs 4.2): `o instanceof Iface` must hold
+        // for an implementor, and cajeta_rtti_isa_named walks by name.
+        for (auto& p : structure->getImplementedInterfaces()) {
+            if (p) parentNames.push_back(p->toCanonical());
+        }
 
         llvm::Constant* vtable = structure->getVirtualTableGlobal();
         if (!vtable) {
