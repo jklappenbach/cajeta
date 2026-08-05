@@ -123,7 +123,7 @@ because it is a teaching sample, not a shipped library.)
 
 ### 5.1 Distance kernels move to stdlib — a revision
 
-`ml-unsupervised` §10.1 and `ml-recsys` §10.2 both recommended a shared kernel
+`ml-unsupervised` §11.1 (formerly §10.1) and `ml-recsys` §10.2 both recommended a shared kernel
 module **inside `dev.cajeta.ml`**. Laying out the grouping shows that was wrong.
 
 Three consumers — k-NN (`dev.cajeta.ml`), similarity (`dev.cajeta.recsys`), and
@@ -132,7 +132,7 @@ kernel would make recsys depend on the entire ML library to compute a cosine.
 Distances are pure functions over tensors with no estimator semantics.
 
 > **Revision: distance and similarity kernels belong in `cajeta.math`.**
-> Update `ml-unsupervised` §10.1 and `ml-recsys` §10.2 when their plans are
+> Update `ml-unsupervised` §11.1 (done — recorded resolved) and `ml-recsys` §10.2 when their plans are
 > written.
 
 ### 5.2 `cajeta-docs` absorbs text processing — revised 2026-08-01

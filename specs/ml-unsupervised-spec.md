@@ -5,15 +5,20 @@
 ### 1.1 Purpose
 
 `dev.cajeta.ml` has exactly two unsupervised estimators: `KMeans` and `PCA`.
-Five more clustering algorithms, the cluster-quality metrics, and a
-manifold-learning method are all absent. This spec closes that set.
+Five more clustering algorithms, the cluster-quality metrics, the
+manifold-learning family, and the linear decompositions beyond PCA are all
+absent. This spec closes that set.
 
 ### 1.2 Scope basis
 
 The standard unsupervised surface — distance measures and scaling, partitional
 and density-based clustering, mixture models, hierarchical clustering, cluster
-evaluation, and manifold learning — scoped against scikit-learn's `cluster`,
-`mixture`, and `manifold` modules, plus scikit-learn-extra for K-medoids.
+evaluation, manifold learning, and linear decomposition — scoped against
+scikit-learn's `cluster`, `mixture`, `manifold`, and `decomposition` modules,
+plus scikit-learn-extra for K-medoids. *(Scope addition 2026-08-05, at
+Julian's request: ICA, NMF, Factor Analysis, MDS, and the spectral manifold
+family — Isomap, LLE, Laplacian eigenmaps — joined §9/§10. UMAP remains a
+non-goal, §1.5.1.)*
 
 ### 1.3 Parity oracles
 
@@ -41,9 +46,11 @@ the scaling formulas; it is expected to pass as-is.
 ### 1.6 Systems
 
 `cajeta.math.Tensor`, `cajeta.math.linalg.LinAlg` (`cholesky`, `svd`,
-`slogdet` for §5), `cajeta.math.stats.Stats`, `cajeta.math.random.Generator`,
-`dev.cajeta.ml` (`Estimator`/`Predictor`/`Transformer`, `KMeans`, `PCA`,
-scalers), `dev.cajeta.unit`.
+`slogdet` for §5; a symmetric eigensolver is an open question — §11.6),
+`cajeta.math.stats.Stats`, `cajeta.math.random.Generator`,
+`cajeta.math.distance` (§2, shipped in stdlib v0.17.0), `dev.cajeta.ml`
+(`Estimator`/`Predictor`/`Transformer`, `KMeans`, `PCA`, scalers),
+`dev.cajeta.unit`.
 
 ---
 
@@ -211,46 +218,143 @@ membership is a probability rather than a hard assignment.
   t-SNE cannot embed unseen points, and offering a `transform` that appears to
   would be a lie.
 
+*(9.8–9.16 added 2026-08-05 — the embedding family beyond t-SNE.)*
+
+- **9.8** When **MDS** is fitted, a low-dimensional embedding minimizes
+  **stress** against the input dissimilarities via SMACOF, seeded and with
+  `nInit` restarts keeping the best — sklearn's `MDS`. The final stress is
+  exposed, since it is the fit-quality number.
+- **9.9** When **non-metric MDS** is requested, only the rank order of the
+  dissimilarities is preserved (isotonic regression inside SMACOF), and the
+  variant is named rather than a flag defaulting silently.
+- **9.10** When MDS is given a precomputed dissimilarity matrix (a §2 `pdist`
+  result or any caller-supplied one), it embeds it directly — the door in when
+  all that exists is dissimilarities, and the reason MDS composes with
+  `cajeta.math.distance` rather than owning metrics.
+- **9.11** When **Isomap** with `nNeighbors` is fitted, geodesic distances are
+  approximated by shortest paths over the k-NN graph and embedded by classical
+  MDS (the Gram double-centering + eigendecomposition), matching sklearn's
+  `Isomap`. A disconnected neighbor graph is reported loudly, naming
+  `nNeighbors` as the dial — the classic silent-wrongness of manifold methods.
+- **9.12** When **LLE** (locally linear embedding, the standard variant) with
+  `nNeighbors` is fitted, reconstruction weights are solved per point with the
+  documented regularization and the embedding comes from the bottom non-trivial
+  eigenvectors of `(I−W)ᵀ(I−W)`, matching sklearn's `LocallyLinearEmbedding`.
+- **9.13** When **Laplacian eigenmaps** (spectral embedding) is fitted, the
+  embedding is the bottom non-trivial eigenvectors of the normalized graph
+  Laplacian over a k-NN or RBF affinity, matching sklearn's
+  `SpectralEmbedding`; the dropped trivial eigenvector is documented, not a
+  surprise.
+- **9.14** When any §9.8–§9.13 method is used, which of them can embed UNSEEN
+  points is stated per method and enforced by shape: Isomap and LLE provide
+  `transform` (sklearn's out-of-sample extensions); MDS and spectral embedding
+  are `fitTransform`-only, §9.7's honesty rule.
+- **9.15** When the eigen-solvers behind §9.11–§9.13 run, they are exact and
+  dense first — §11.3's doctrine — with the O(n²)–O(n³) limits documented per
+  method.
+- **9.16** When seeded (§9.8's SMACOF; any randomized initialization), runs
+  reproduce exactly; the deterministic spectral methods are documented as
+  deterministic up to eigenvector sign, and comparisons account for it.
+
 ---
 
-## 10. Open questions (resolve at plan time)
+## 10. Feature: linear decomposition beyond PCA
 
-- **10.1** *(resolved — superseded by roadmap §5.1.)* The §2 kernels live in
+*(Added 2026-08-05 with §9.8–§9.16 — sklearn's `decomposition` module.)*
+
+- **10.1** When **FastICA** with `nComponents` is fitted, statistically
+  independent components are recovered by the fixed-point iteration with the
+  `logcosh` contrast default (`exp` available), whitening via PCA, seeded —
+  matching sklearn's `FastICA`. Non-convergence within `maxIter` is reported
+  loudly, never returned as if converged.
+- **10.2** When ICA results are compared (to the oracle or across runs), the
+  documentation states the inherent **sign and permutation indeterminacy** —
+  components have no canonical order or sign, and the test suite compares up
+  to it rather than pinning raw coordinates.
+- **10.3** When **NMF** with `nComponents` is fitted on non-negative data,
+  `X ≈ W·H` with `W, H ≥ 0` minimizes the Frobenius objective with sklearn's
+  coordinate-descent solver and `nndsvd` initialization (seeded where
+  randomized); the reconstruction error is exposed. Negative input is rejected
+  naming the offending entry — never clipped silently.
+- **10.4** When NMF components are read, they are the parts-based, additive
+  factors that are the reason to choose NMF over PCA — non-negativity is
+  asserted on both factors, not assumed.
+- **10.5** When **Factor Analysis** with `nComponents` is fitted, loadings and
+  PER-FEATURE noise variances are estimated by EM, matching sklearn's
+  `FactorAnalysis`; the log-likelihood is exposed and non-decreasing across EM
+  iterations (§5.6's assertion, same reason).
+- **10.6** When choosing between PCA and Factor Analysis, the documentation
+  states the actual distinction — FA models heteroscedastic per-feature noise
+  where PCA assumes none — rather than presenting them as interchangeable.
+- **10.7** When any §10 estimator is used, it is a `Transformer` composing in
+  `Pipeline`, with `transform` mapping new data through the fitted components
+  (all three support it; `inverseTransform` where sklearn has it).
+
+---
+
+## 11. Open questions (resolve at plan time)
+
+- **11.1** *(resolved — superseded by roadmap §5.1.)* The §2 kernels live in
   **`cajeta.math.distance`**, not in `dev.cajeta.ml`. This spec's earlier
   recommendation of an ml-owned module was **wrong**: `dev.cajeta.recsys` is a
   separate library, so an ml-owned kernel would force it to depend on the entire
   ML library to compute a cosine. `stdlib-completion` §2 owns the work.
-- **10.2** *(resolved.)* KL divergence lives in **`cajeta.math.stats`**, owned
+- **11.2** *(resolved.)* KL divergence lives in **`cajeta.math.stats`**, owned
   by `stdlib-completion` §5. It is a general information-theoretic quantity and
   t-SNE is merely its first consumer. This spec consumes it.
-- **10.3** *(resolved 2026-08-01 — exact first.)* t-SNE ships exact, with the
+- **11.3** *(resolved 2026-08-01 — exact first.)* t-SNE ships exact, with the
   O(n²) limit documented. Correctness is checkable against an oracle;
   Barnes-Hut is a large second effort and is deferred until the limit bites.
-- **10.4** *(resolved 2026-08-01 — include.)* `KMedoids` ships despite
+- **11.4** *(resolved 2026-08-01 — include.)* `KMedoids` ships despite
   scikit-learn-extra's marginal status. Its metric flexibility (§4.3) has no
   substitute in the K-means family, and medoids are the robust-to-outliers
   answer K-means cannot give.
-- **10.5** *(resolved 2026-08-01 — the split holds.)* §6.5 emits dendrogram
+- **11.5** *(resolved 2026-08-01 — the split holds.)* §6.5 emits dendrogram
   *data* — merge order, heights, leaf ordering — and `dev.cajeta.chart` renders
   it (`cajeta-chart` §8.5). This library does not draw.
+- **11.6** The §9.11–§9.13 spectral methods and §10 decompositions need a
+  SYMMETRIC EIGENSOLVER (`eigh`-class: smallest/largest eigenpairs of a dense
+  symmetric matrix). `LinAlg` today has `svd`/`cholesky`/`slogdet`. Resolve at
+  plan time whether `svd` suffices (it does for the PSD Gram/Laplacian cases,
+  at some cost and with the smallest-eigenpair order inverted) or `LinAlg`
+  gains `eigh`. **If `eigh` is needed it is STDLIB work and must ride the next
+  toolchain cut** (the P1 doctrine — a stdlib gap blocks consumers for a whole
+  release; v0.17.0 has just shipped, so surface this before any other work in
+  this plan).
+- **11.7** Isomap's geodesic step is all-pairs shortest paths over the k-NN
+  graph — which `dev.cajeta.graph` (shipped 0.1.0) already implements. Resolve:
+  depend on `dev.cajeta.graph`, or implement the small Dijkstra internally.
+  Recommendation: INTERNAL — one algorithm's private step does not justify a
+  cross-library dependency edge, and the roadmap keeps `dev.cajeta.ml`'s
+  dependency set stdlib-only.
+- **11.8** NMF objective scope: Frobenius only in v1 (sklearn's default
+  solver); the beta-divergence family (KL/Itakura-Saito, multiplicative
+  updates) is deferred until a consumer names it.
 
 ---
 
-## 11. Acceptance criteria (spec-level)
+## 12. Acceptance criteria (spec-level)
 
-- **11.1** Every estimator conforms to `Estimator`/`Predictor`/`Transformer`
+- **12.1** Every estimator conforms to `Estimator`/`Predictor`/`Transformer`
   and composes in `Pipeline`, except where §9.7 documents why it cannot.
-- **11.2** Numerics pin against scikit-learn 1.9.0, and K-medoids against the
+- **12.2** Numerics pin against scikit-learn 1.9.0, and K-medoids against the
   pinned scikit-learn-extra; divergences recorded.
-- **11.3** GMM's log-likelihood is non-decreasing across EM iterations,
+- **12.3** GMM's log-likelihood is non-decreasing across EM iterations,
   asserted by test (§5.6).
-- **11.4** Ward linkage with a non-Euclidean metric is rejected (§6.3).
-- **11.5** DBSCAN labels noise points as noise and does not require a cluster
+- **12.4** Ward linkage with a non-Euclidean metric is rejected (§6.3).
+- **12.5** DBSCAN labels noise points as noise and does not require a cluster
   count (§7.2, §7.3).
-- **11.6** Every algorithm is tested on the shapes that separate them:
+- **12.6** Every algorithm is tested on the shapes that separate them:
   spherical blobs (K-means wins), elongated and nested non-convex shapes
   (DBSCAN wins), and overlapping Gaussians (GMM wins). A clustering suite that
   only tests blobs proves nothing.
-- **11.7** Seeded fits are reproducible across runs and thread counts.
-- **11.8** Distance kernels are implemented once and shared (§10.1), verified
+- **12.7** Seeded fits are reproducible across runs and thread counts.
+- **12.8** Distance kernels are implemented once and shared (§11.1), verified
   by there being no second implementation in the tree.
+- **12.9** §9.8–§9.16 and §10 numerics pin against scikit-learn 1.9.0 UP TO
+  EACH METHOD'S DOCUMENTED INDETERMINACY: ICA up to sign and permutation, NMF
+  up to factor permutation at fixed seed/init, spectral embeddings up to
+  eigenvector sign, MDS by stress value and pairwise-distance structure
+  (Procrustes-aligned), never raw coordinates where no canonical form exists.
+- **12.10** Isomap reports a disconnected neighbor graph loudly (§9.11), and
+  every `fitTransform`-only method rejects `transform` per §9.14.
