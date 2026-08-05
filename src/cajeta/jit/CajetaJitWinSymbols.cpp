@@ -21,6 +21,10 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+// opendir/readdir/closedir for __cajeta_path_list — mingw-w64 ships them in
+// libmingwex (statically linked, absent from the PE export table), so they
+// need the same address-binding as the libm family below.
+#include <dirent.h>
 
 // libmingwex printf-family / strtod: the runtime's fprintf/snprintf/strtod
 // calls lower to these under ANSI stdio. Bind them by their real names so we
@@ -93,6 +97,10 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("getpid",           &::getpid),
     CJ_SYM("ftruncate",        &::ftruncate),
     CJ_SYM("strdup",           &::strdup),
+    // dirent (libmingwex) — __cajeta_path_list's directory walk.
+    CJ_SYM("opendir",          &::opendir),
+    CJ_SYM("readdir",          &::readdir),
+    CJ_SYM("closedir",         &::closedir),
     CJ_SYM("stat64i32",        &::stat),
     CJ_SYM("fstat64i32",       &::fstat),
     CJ_SYM("__mingw_fprintf",  &__mingw_fprintf),

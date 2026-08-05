@@ -669,27 +669,26 @@ TEST(ParallelStreamP1Tests, parallelNoneMatchDispatchesThroughFilter) {
 }
 
 TEST(ParallelStreamP1Tests, parallelForEachDispatchesThroughFilter) {
-    // forEach has no return value; test by accumulating into a
-    // class-typed counter the lambda mutates. Each worker drains its
-    // share and bumps the counter. Order across workers is
-    // unspecified (documented v1 contract).
+    // forEach has no return value; test by accumulating into a counter
+    // the lambda bumps. The counter must be an AtomicInt32: workers
+    // invoke fn CONCURRENTLY (forEachWorker takes no lock), so a plain
+    // `c.v = c.v + 1` is a racy read-modify-write — it passed on x86 by
+    // luck and lost increments on aarch64-darwin in the v0.16.0 release
+    // run. Order across workers is unspecified (documented v1 contract).
     auto src =
         "package test;\n"
-        "public class Counter {\n"
-        "    public int32 v;\n"
-        "    public Counter(int32 i) { this.v = i; }\n"
-        "}\n"
+        "import cajeta.concurrent.AtomicInt32;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int32[] xs = heap int32[100];\n"
         "        for (int32 i = 0; i < 100; i = i + 1) { xs[i] = i + 1; }\n"
-        "        Counter c = heap Counter(0);\n"
+        "        AtomicInt32 c = heap AtomicInt32(0);\n"
         "        xs.stream()\n"
         "          .filter((x) -> x % 2 == 0)\n"
         "          .parallel()\n"
-        "          .forEach((x) -> { c.v = c.v + 1; });\n"
+        "          .forEach((x) -> { c.fetchAdd(1); });\n"
         "        // 50 evens in 1..100\n"
-        "        return c.v;\n"
+        "        return c.load();\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32Diag(src), 50);
