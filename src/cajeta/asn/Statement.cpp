@@ -1794,6 +1794,39 @@ namespace cajeta {
                         if (!inner) inner = expression;
                     }
                 }
+                // owned-return-of-borrowed-this §4: the receiver is a
+                // plain-borrow formal — the method holds NO title to
+                // transfer, so `return this` under a `#` return would hand
+                // the caller ownership of the borrowed receiver: the
+                // caller's temp drop frees the wrapper out from under the
+                // receiver local (UAF, detonating when the block is
+                // reused). Matches the field-store-title-trap doctrine
+                // that plain formals never inherit ownership.
+                bool returnsBorrowedThis =
+                    dynamic_pointer_cast<ThisExpression>(inner) != nullptr;
+                if (!returnsBorrowedThis) {
+                    if (auto idExpr =
+                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
+                        returnsBorrowedThis = idExpr->getTextValue() == "this";
+                    }
+                }
+                if (returnsBorrowedThis) {
+                    throw Exception(
+                        "method `" + m->toCanonical(false) + "` returns "
+                        "`this` through a `#` (ownership-transfer) return "
+                        "type, but the receiver is a borrow — the method "
+                        "holds no title to transfer. The caller would own "
+                        "the receiver's wrapper and free it on drop, "
+                        "dangling the caller's own local (use-after-free). "
+                        "Fix: return a fresh owned value (e.g. an owned "
+                        "copy, or a zero-copy borrow window such as "
+                        "`Cajeta.stringSliceBorrow(this, 0, "
+                        "this.byteLength())` for String), or drop the `#` "
+                        "from the return type if the caller only borrows "
+                        "the result. See "
+                        "specs/owned-return-of-borrowed-this-spec.md.",
+                        "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS");
+                }
                 bool stackReturn = Method::exprIsStackConstruction(inner);
                 std::string what = "a `stack` construction";
                 if (!stackReturn) {
