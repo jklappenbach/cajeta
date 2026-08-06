@@ -1,0 +1,84 @@
+# GPU work for cajeta-xgboost on phoenix-wsl (the self-hosted Linux/WSL
+# runner registered to THIS repo — personal-account runners are per-repo,
+# which is why the workflow lives here while the sources live in
+# cajeta-xgboost). The WSL sibling of gpu-probe.yml.
+#
+# Tasks:
+#   fixture-check — regenerate golden fixtures with xgboost-gpu 3.1.2 in
+#     WSL and `git diff --exit-code` them against the committed references
+#     (generated on native Windows). Bit-identity here certifies WSL as
+#     reference hardware: same silicon, same driver JIT, same bits.
+#   sfu-probe — recompile + rerun the SFU capture probes (MUFU.RCP /
+#     MUFU.EX2) under WSL and compare sha256 against the tables published
+#     as cajeta-xgboost v0.3.0 release assets.
+name: gpu-wsl
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'What to run'
+        required: true
+        type: choice
+        options: [fixture-check, sfu-probe]
+        default: fixture-check
+      xgboost-ref:
+        description: 'cajeta-xgboost ref to check out'
+        required: true
+        default: 'main'
+      fixtures:
+        description: 'fixture-check only: gen_reference.py --only list'
+        required: false
+        default: 'tiny_reg,tiny_binary,tiny_multi,large_reg'
+
+jobs:
+  run:
+    runs-on: [self-hosted, wsl]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout cajeta-xgboost
+        uses: actions/checkout@v4
+        with:
+          repository: jklappenbach/cajeta-xgboost
+          ref: ${{ inputs.xgboost-ref }}
+
+      - name: GPU + toolchain sanity
+        run: |
+          nvidia-smi -L
+          nvcc --version | tail -1
+
+      - name: Regenerate fixtures and diff against the committed reference
+        if: ${{ inputs.task == 'fixture-check' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          export UV_PYTHON_INSTALL_DIR="$PWD/uv-pythons" UV_CACHE_DIR="$PWD/uv-cache"
+          ./uv-x86_64-unknown-linux-gnu/uv venv xgbenv --python 3.12
+          ./uv-x86_64-unknown-linux-gnu/uv pip install --python xgbenv/bin/python --quiet 'xgboost==3.1.2' numpy
+          xgbenv/bin/python tools/fixtures/gen_reference.py --only '${{ inputs.fixtures }}'
+          echo "== git diff after regeneration =="
+          git diff --stat -- tools/fixtures || true
+          git diff --exit-code --quiet -- tools/fixtures \
+            && echo "BIT-IDENTICAL: WSL regeneration matches the committed native-Windows reference" \
+            || { echo "DIVERGED: WSL regeneration differs from the committed reference"; exit 1; }
+
+      - name: Rerun the SFU probes and compare against the published tables
+        if: ${{ inputs.task == 'sfu-probe' }}
+        run: |
+          set -euo pipefail
+          ( cd tools/fdividef && nvcc -arch=native -O2 probe_rcp.cu -o probe_rcp && ./probe_rcp )
+          ( cd tools/expf && nvcc -arch=native -O2 probe_expf.cu -o probe_expf && ./probe_expf )
+          sha256sum tools/fdividef/rcp_mantissa.npy tools/expf/ex2_table.npy
+          echo "234796e0057823853e8f8843556bfc23a362e76cb0871b9ae082a612568f61ae  tools/fdividef/rcp_mantissa.npy" | sha256sum -c -
+          echo "fe6720ac0a3685e6925f4d739cdbfe462184df30e1b2e8e4ed5b026dae680c64  tools/expf/ex2_table.npy" | sha256sum -c -
+          echo "SFU tables under WSL are bit-identical to the published v0.3.0 captures"
+
+      - name: Upload probe outputs
+        if: ${{ inputs.task == 'sfu-probe' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sfu-probe-wsl
+          path: |
+            tools/fdividef/rcp_mantissa.npy
+            tools/expf/ex2_table.npy
+            tools/expf/expf_sweep.npy
