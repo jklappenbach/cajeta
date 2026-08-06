@@ -56,11 +56,22 @@ jobs:
           ./uv-x86_64-unknown-linux-gnu/uv venv xgbenv --python 3.12
           ./uv-x86_64-unknown-linux-gnu/uv pip install --python xgbenv/bin/python --quiet 'xgboost==3.1.2' numpy
           xgbenv/bin/python tools/fixtures/gen_reference.py --only '${{ inputs.fixtures }}'
-          echo "== git diff after regeneration =="
+          echo "== git diff after regeneration (full) =="
           git diff --stat -- tools/fixtures || true
+          # The assertion covers what CUDA determines: trees, margins, preds,
+          # model.json, cuts, bins, X, y. Excluded from the hard check:
+          #   grad.npy / hess.npy — the manifests label them "reconstructed
+          #     float64" (host numpy, version-sensitive by ULPs); the device
+          #     ground truth is device_grad.npy, probed separately.
+          #   manifest.json — generate.py schema drift (the "external" field
+          #     postdates the committed fixtures).
+          echo "== hard check (device-determined artifacts) =="
           git diff --exit-code --quiet -- tools/fixtures \
-            && echo "BIT-IDENTICAL: WSL regeneration matches the committed native-Windows reference" \
-            || { echo "DIVERGED: WSL regeneration differs from the committed reference"; exit 1; }
+            ':(exclude)tools/fixtures/*/grad.npy' \
+            ':(exclude)tools/fixtures/*/hess.npy' \
+            ':(exclude)tools/fixtures/*/manifest.json' \
+            && echo "BIT-IDENTICAL: every device-determined artifact matches the committed native-Windows reference" \
+            || { echo "DIVERGED: a device-determined artifact differs"; git diff --stat -- tools/fixtures; exit 1; }
 
       - name: Rerun the SFU probes and compare against the published tables
         if: ${{ inputs.task == 'sfu-probe' }}
