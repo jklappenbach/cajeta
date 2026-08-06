@@ -20,7 +20,7 @@ on:
         description: 'What to run'
         required: true
         type: choice
-        options: [fixture-check, sfu-probe]
+        options: [fixture-check, sfu-probe, xgboost-suite]
         default: fixture-check
       xgboost-ref:
         description: 'cajeta-xgboost ref to check out'
@@ -30,6 +30,10 @@ on:
         description: 'fixture-check only: gen_reference.py --only list'
         required: false
         default: 'tiny_reg,tiny_binary,tiny_multi,large_reg'
+      cajeta-version:
+        description: 'xgboost-suite only: toolchain release to install'
+        required: false
+        default: 'v0.17.1'
 
 jobs:
   run:
@@ -72,6 +76,24 @@ jobs:
             ':(exclude)tools/fixtures/*/manifest.json' \
             && echo "BIT-IDENTICAL: every device-determined artifact matches the committed native-Windows reference" \
             || { echo "DIVERGED: a device-determined artifact differs"; git diff --stat -- tools/fixtures; exit 1; }
+
+      # xgboost-suite: the full cajeta-xgboost suite on the 4090 through the
+      # CUDA/nvptx backend — U12's §8.2 NVIDIA leg. run-tests.sh compiles the
+      # @Kernel code for every backend; the runtime picks CUDA here, so
+      # GpuHistogramTest's CPU-vs-GPU bit-identity assertions run on real
+      # NVIDIA silicon (and the whole CPU parity suite rides along).
+      - name: Install cajeta toolchain + run the suite
+        if: ${{ inputs.task == 'xgboost-suite' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download '${{ inputs.cajeta-version }}' --repo jklappenbach/cajeta \
+            --pattern 'cajeta_*_amd64.deb' --dir /tmp
+          sudo apt-get install -y /tmp/cajeta_*_amd64.deb
+          rm -f /tmp/cajeta_*_amd64.deb
+          cajeta --version
+          ./run-tests.sh
 
       - name: Rerun the SFU probes and compare against the published tables
         if: ${{ inputs.task == 'sfu-probe' }}
