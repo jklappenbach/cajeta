@@ -2899,7 +2899,23 @@ namespace cajeta {
             }
             return prod;
         };
-        for (auto& module : modules) {
+        // @Kernel methods DEFINED in classpath deps must register like the
+        // primary compilation's own: at Obj/Exe emit the deps' bodies are
+        // re-driven through this codegen (the linkClasspathDeps re-drive
+        // above), so their kernels lower here exactly like source kernels —
+        // but this walk historically saw only `modules`, leaving a library
+        // kernel with no device code, no registration ctor, and (when the
+        // consumer itself has no kernels) no backend manifest at all: launch
+        // fell to "no available backend among {}". Discovered by
+        // cajeta-xgboost U12's GpuHistogram (the first library-resident
+        // kernel that unconditionally launches).
+        std::vector<CajetaModulePtr> xpuModules(modules.begin(), modules.end());
+        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe)
+                && !externalModules.empty()) {
+            xpuModules.insert(xpuModules.end(),
+                              externalModules.begin(), externalModules.end());
+        }
+        for (auto& module : xpuModules) {
             auto mir = cajeta::xpu::mir::XpuMirBuilder::buildForModule(module);
             if (!mir) continue;
             for (auto& site : mir->launchSites) {
@@ -2917,7 +2933,7 @@ namespace cajeta {
         }
         for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k);
 
-        for (auto& module : modules) {
+        for (auto& module : xpuModules) {
             std::vector<MethodPtr> kernels;
             std::vector<MethodPtr> shaders;
             for (auto& method : module->getAllMethods()) {
