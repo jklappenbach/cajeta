@@ -7,6 +7,7 @@
 
 #include "CajetaModule.h"
 #include "SessionState.h"
+#include "../error/Exception.h"
 #include "../field/HeapField.h"
 #include "../method/Method.h"
 #include "../type/CajetaType.h"
@@ -81,39 +82,60 @@ namespace cajeta {
 
     }  // namespace
 
+    namespace {
+
+        // A wrapper segment: spliced host text (hostStart > 0) or synthetic
+        // glue (hostStart == 0). Text always ends in '\n'.
+        struct WrapperSeg {
+            std::string text;
+            int hostStart = 0;
+        };
+
+        int lineCountOf(const std::string& text) {
+            int n = 0;
+            for (char c : text) {
+                if (c == '\n') ++n;
+            }
+            return n;
+        }
+
+    }  // namespace
+
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
                                      std::string* outCanonical,
-                                     std::vector<std::string>* outBindings) {
+                                     std::vector<std::string>* outBindings,
+                                     ScriptLineMap* outLineMap) {
         std::string pkgName = scriptDefaultPackage();
-        std::string header;
+        auto hostLineOf = [](antlr4::ParserRuleContext* c) {
+            return (c && c->getStart())
+                ? static_cast<int>(c->getStart()->getLine()) : 0;
+        };
+
+        std::vector<WrapperSeg> header;
         if (auto* pd = ctx->packageDeclaration()) {
             pkgName = pd->qualifiedName()->getText();
-            header += textOf(tokens, pd);
-            header += "\n";
+            header.push_back({textOf(tokens, pd) + "\n", hostLineOf(pd)});
         } else {
-            header += "package ";
-            header += pkgName;
-            header += ";\n";
+            header.push_back({"package " + pkgName + ";\n", 0});
         }
         for (auto* imp : ctx->importDeclaration()) {
-            header += textOf(tokens, imp);
-            header += "\n";
+            header.push_back({textOf(tokens, imp) + "\n", hostLineOf(imp)});
         }
 
         // One pass over the members, in order: types hoist to top level
         // (relative order preserved), methods become static members, loose
         // statements form the entry body. Hoisting types above the wrapper
         // is safe — top-level siblings have no ordering constraint.
-        std::string hoistedTypes;
-        std::string methods;
-        std::string body;
+        std::vector<WrapperSeg> hoistedTypes;
+        std::vector<WrapperSeg> methods;
+        std::vector<WrapperSeg> body;
         CajetaParser::BlockStatementContext* lastStatement = nullptr;
         for (auto* member : ctx->scriptMember()) {
             if (auto* td = member->typeDeclaration()) {
-                hoistedTypes += textOf(tokens, td);
-                hoistedTypes += "\n";
+                hoistedTypes.push_back(
+                    {textOf(tokens, td) + "\n", hostLineOf(td)});
             } else if (auto* md = member->methodDeclaration()) {
                 auto mods = member->modifier();
                 std::string line = "    ";
@@ -123,13 +145,14 @@ namespace cajeta {
                     line += m->getText();
                     line += " ";
                 }
+                // The injected modifiers ride the member's FIRST line, so
+                // the whole segment still maps 1:1 from its host start.
                 line += textOf(tokens, md);
-                methods += line;
-                methods += "\n";
+                line += "\n";
+                methods.push_back({std::move(line), hostLineOf(md)});
             } else if (auto* bs = member->blockStatement()) {
-                body += "        ";
-                body += textOf(tokens, bs);
-                body += "\n";
+                body.push_back(
+                    {"        " + textOf(tokens, bs) + "\n", hostLineOf(bs)});
                 lastStatement = bs;
                 collectBindingNames(bs, outBindings);
             }
@@ -142,20 +165,28 @@ namespace cajeta {
             && lastStatement->getStart() != nullptr
             && lastStatement->getStart()->getType() == CajetaParser::RETURN;
 
+        // Assemble in wrapper order, recording where each spliced segment
+        // lands (U5 line map — spans stay sorted by construction).
         std::string out;
-        out += header;
-        out += hoistedTypes;
-        out += "public final class ";
-        out += stem;
-        out += " {\n";
-        out += "    public static int32 ";
-        out += scriptEntryName();
-        out += "() {\n";
-        out += body;
-        if (!endsWithReturn) out += "        return 0;\n";
-        out += "    }\n";
-        out += methods;
-        out += "}\n";
+        int wrapperLine = 1;
+        auto append = [&](const WrapperSeg& seg) {
+            int lines = lineCountOf(seg.text);
+            if (outLineMap && seg.hostStart > 0 && lines > 0) {
+                outLineMap->push_back({wrapperLine, seg.hostStart, lines});
+            }
+            out += seg.text;
+            wrapperLine += lines;
+        };
+        for (auto& seg : header) append(seg);
+        for (auto& seg : hoistedTypes) append(seg);
+        append({"public final class " + stem + " {\n", 0});
+        append({"    public static int32 " + std::string(scriptEntryName())
+                    + "() {\n", 0});
+        for (auto& seg : body) append(seg);
+        if (!endsWithReturn) append({"        return 0;\n", 0});
+        append({"    }\n", 0});
+        for (auto& seg : methods) append(seg);
+        append({"}\n", 0});
 
         if (outCanonical) *outCanonical = pkgName + "." + stem;
         return out;
@@ -242,6 +273,19 @@ namespace cajeta {
             fact.transferSite = decorateSite(scope->transferSiteOf(name),
                                              module->getScriptHostName());
             session->put(std::move(fact));
+        }
+    }
+
+    void remapScriptException(CajetaModulePtr module, Exception& e) {
+        if (!module || !module->isScriptUnit()) return;
+        if (e.isScriptRemapped()) return;
+        e.markScriptRemapped();
+        std::string file = module->scriptDiagFile();
+        if (e.hasLocation()) {
+            e.setLocation(file, module->mapScriptLine(e.getLine()),
+                          e.getColumn());
+        } else {
+            e.setLocation(file, module->getScriptCurrentHostLine(), 0);
         }
     }
 

@@ -29,6 +29,8 @@ using std::ofstream;
 #define CAJETA_EXTENSION            ".cajeta"
 #define CAJETA_IR_EXTENSION         ".ll"
 
+#include "ScriptLineMap.h"
+
 namespace cajeta {
     class StructureMetadata;
     typedef shared_ptr<StructureMetadata> StructureMetadataPtr;
@@ -262,6 +264,11 @@ namespace cajeta {
         // Null / empty outside a session compile.
         SessionState* sessionState = nullptr;
         string scriptHostName;
+        // script-units U5 — wrapper→host line spans from the synthesis, and
+        // the current statement's HOST line (stamped by Block during script
+        // codegen) used to locate exceptions thrown without a location.
+        ScriptLineMap scriptLineMap;
+        int scriptCurrentHostLine = 0;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -522,6 +529,20 @@ namespace cajeta {
         SessionState* getSessionState() const { return sessionState; }
         void setScriptHostName(const string& n) { scriptHostName = n; }
         const string& getScriptHostName() const { return scriptHostName; }
+
+        // script-units U5 — diagnostic translation. mapScriptLine turns a
+        // wrapper line into the host line (identity for ordinary modules /
+        // an empty map); scriptDiagFile is the name diagnostics should
+        // carry (host name when the host supplied one, source path else).
+        void setScriptLineMap(ScriptLineMap m) { scriptLineMap = std::move(m); }
+        int mapScriptLine(int wrapperLine) const {
+            return cajeta::mapScriptLine(scriptLineMap, wrapperLine);
+        }
+        string scriptDiagFile() const {
+            return scriptHostName.empty() ? sourcePath : scriptHostName;
+        }
+        void setScriptCurrentHostLine(int line) { scriptCurrentHostLine = line; }
+        int getScriptCurrentHostLine() const { return scriptCurrentHostLine; }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is

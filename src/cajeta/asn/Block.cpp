@@ -199,7 +199,17 @@ namespace cajeta {
             // mark had not run yet the frame would still carry the PREVIOUS
             // statement's line — `cjbreak F.cajeta:14` would stop and `cjstack`
             // would report :13 (external-debug §5.1).
-            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
+            // script-units U5 — statements in a script module live in
+            // wrapper coordinates; translate to the HOST line for the
+            // line-info shadow stack, and stamp it on the module so an
+            // unlocated semantic error thrown by this statement can be
+            // located (remapScriptException reads it).
+            int markLine = child->getSourceLine();
+            if (module->isScriptUnit()) {
+                markLine = module->mapScriptLine(markLine);
+                module->setScriptCurrentHostLine(markLine);
+            }
+            if (lineInfo) dbg::emitLineMark(module, markLine);
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
             child->generateCode(module);

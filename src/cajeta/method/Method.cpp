@@ -2281,7 +2281,20 @@ namespace cajeta {
             std::string fileName = parent ? parent->getDeclaringFile()
                                           : std::string();
             if (fileName.empty()) fileName = module->remappedSourcePath();
-            dbg::emitLineEnter(module, typeName, getName(), fileName);
+            // script-units U5 (spec §6.2) — the synthesized wrapper is
+            // invisible in traces: frames of the implicit class render as
+            // `<script>` (the entry's method name too — top-level METHOD
+            // names are the user's and stay), and the file is the host's
+            // name for the unit.
+            std::string frameMethod = getName();
+            if (parent && parent->isScriptSynthesized()) {
+                typeName = "<script>";
+                fileName = module->scriptDiagFile();
+                if (frameMethod == scriptEntryName()) {
+                    frameMethod = "<script>";
+                }
+            }
+            dbg::emitLineEnter(module, typeName, frameMethod, fileName);
         }
 
         // Register the parameters as locals in the debug frame. Materializing
@@ -2720,6 +2733,11 @@ namespace cajeta {
 
         // Type-resolver pre-pass: populates Expression::resolvedType so codegen can
         // distinguish e.g. fp8 from i8 when they share an LLVM type.
+        // script-units U5: semantic errors escaping the body compile of a
+        // SCRIPT module are rewritten into host coordinates (host source
+        // name, host line) at this single boundary — remapScriptException
+        // no-ops for ordinary modules, so the catch is behavior-neutral.
+        try {
         if (block) {
             block->resolveTypes(module);
             computeArenaEligibility();   // flag non-escaping concat locals (U2)
@@ -2739,6 +2757,10 @@ namespace cajeta {
                 }
             }
             block->generateCode(module);
+        }
+        } catch (cajeta::Exception& e) {
+            remapScriptException(module, e);
+            throw;
         }
 
         // Emit a terminator only if the body didn't (i.e. no explicit return). For void

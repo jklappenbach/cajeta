@@ -23,6 +23,8 @@
 
 namespace antlr4 { class CommonTokenStream; }
 
+#include "ScriptLineMap.h"
+
 namespace cajeta {
 
     class CajetaModule;
@@ -72,10 +74,22 @@ namespace cajeta {
     // can mark it script-synthesized after registration. `outBindings`
     // receives the names declared at scriptMember level — the unit's
     // session bindings (spec §4); block-nested locals are not collected.
+    // `outLineMap` (U5) receives the wrapper→host line spans for diagnostic
+    // translation; pass null to skip.
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
                                      std::string* outCanonical,
-                                     std::vector<std::string>* outBindings);
+                                     std::vector<std::string>* outBindings,
+                                     ScriptLineMap* outLineMap = nullptr);
+
+    // U5 (spec §6.1) — rewrite a semantic exception into the host's
+    // coordinates: host source name as the file, wrapper lines translated
+    // through the module's line map; an unlocated exception is stamped with
+    // the current statement's host line (Block stamps it per statement).
+    // No-op for ordinary modules. Called at the Method::generateCode
+    // boundary — the single remap point, so it never double-translates.
+    class Exception;
+    void remapScriptException(CajetaModulePtr module, Exception& e);
 
 }  // namespace cajeta

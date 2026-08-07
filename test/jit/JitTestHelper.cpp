@@ -796,7 +796,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
-        if (opts.session) {
+        if (opts.session || !opts.sessionHostName.empty()) {
             compiler->setSessionState(opts.session, opts.sessionHostName);
         }
         if (opts.debugInfoEnabled) {

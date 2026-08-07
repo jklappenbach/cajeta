@@ -691,11 +691,13 @@ namespace cajeta {
                 std::string stem = scriptClassStem(module->getSourcePath());
                 std::string canonical;
                 std::vector<std::string> bindings;
+                ScriptLineMap lineMap;
                 std::string wrapper =
                     synthesizeScriptUnit(tokens, unitCtx, stem, &canonical,
-                                         &bindings);
+                                         &bindings, &lineMap);
                 module->setScriptUnit(true);
                 module->setScriptBindingNames(std::move(bindings));
+                module->setScriptLineMap(std::move(lineMap));
                 antlr4::ANTLRInputStream wrapperInput(wrapper);
                 parseSource(module, wrapperInput, label, quiet);
                 auto& structures = module->getStructures();
