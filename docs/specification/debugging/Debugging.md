@@ -36,8 +36,10 @@ debugger is one frontend; the notebook is another.
 > gated by the `CompilerMode::debugInfo` flag, off by default);
 > memory-facet local metadata (`dbg::MemoryFacets`,
 > `__cajeta_dbg_local`); and the destructor-breakpoint story below.
-> **Not yet implemented:** `cajeta lsp`, `cajeta kernel` (the Jupyter
-> kernel + hot-reload + rich-display sections), time-travel /
+> **Not yet implemented:** `cajeta lsp`, `cajeta kernel` (specced and
+> planned as of 2026-08-07 — `specs/jupyter-kernel-spec.md` over the
+> script-units language feature `specs/script-units-spec.md`, plans in
+> `agents/`; unbuilt), time-travel /
 > `cajeta record|replay`, and **DWARF emission** — the debug-info path
 > is the in-process safepoint system, *not* standard DWARF (the
 > compiler has no `DIBuilder` / `DICompileUnit` codegen today). Each
@@ -478,6 +480,17 @@ Implements the [Jupyter messaging protocol](https://jupyter-client.readthedocs.i
 Notebook, VSCode's notebook UI, Hex, Marimo, and other notebook
 frontends.
 
+> **Governing specs (approved 2026-08-07).** Cell semantics — what
+> top-level code *means* — are owned by the **script-units** language
+> spec (`specs/script-units-spec.md`): a cell is a script unit, an
+> implicit class with a synthetic entry whose top-level bindings live
+> in a session scope with ordinary ownership and drop semantics. The
+> kernel process itself — protocol, execution model, display,
+> interrupt — is specified by `specs/jupyter-kernel-spec.md`, and
+> `cajeta run <file>.cajeta` consumes the same language feature as the
+> one-cell case. This section is the debugging-facing view; where it
+> and the specs disagree, the specs win.
+
 ### Launching
 
 ```
@@ -504,43 +517,45 @@ place per platform.
 
 The kernel maintains:
 
-- A **persistent JIT host** (`LLJIT` instance) accumulating
-  compiled modules across cells.
-- A **persistent symbol table** mapping top-level names (variables,
-  functions, classes) to their compiled artifacts. New cells see
-  prior cells' definitions.
-- A **persistent heap** — values bound to top-level names stay
-  alive across cells.
+- A **persistent JIT session** — one `LLJIT` whose JITDylib world
+  accumulates per-cell modules against a resident stdlib
+  (`CajetaJitHost` / `StdlibReuseCore` machinery; per-module ORC
+  delivery, content-addressed object pool).
+- The **session scope** (script-units spec §4) — top-level bindings
+  with one owner each, alive across cells; rebinding drops the old
+  value; kernel shutdown/restart drops all in reverse order.
 - **Capture buffers** for stdout / stderr — output streams back to
-  the frontend as `stream` messages.
+  the frontend as `stream` messages, live during execution.
 - An **execution counter** incremented per cell.
 
 When the frontend sends an `execute_request` with cell source:
 
-1. Parse the cell as cajeta source (treated as if it were a tiny
-   anonymous module).
-2. Resolve types against the persistent symbol table.
-3. Compile to LLVM IR.
-4. Link the new IR into the running JIT.
-5. Execute. Top-level expressions return values; the kernel
-   formats and sends the value as `execute_result`.
-6. Bind new top-level names into the persistent symbol table.
+1. Compile the cell as a **script unit** into the session (the
+   implicit-class synthesis and session-binding promotion the
+   language spec defines).
+2. Add the cell's module(s) to the session dylib world; run its
+   static ctors once.
+3. Execute the cell's entry. The trailing expression, if any, is
+   the **unit result**; the kernel renders it as `execute_result`.
+4. A cell that fails to compile leaves the session exactly as it
+   was (script-units §5.5); the counter still advances.
 
 The execution counter is the `In[N]:` / `Out[N]:` numbering
 notebooks use.
 
 ### Cell evaluation rules
 
-A cell is either:
+Cell shapes and their semantics are the script-units spec's §2 and
+§5 — statements, top-level methods, and type declarations freely
+mixed; hoisting; last-write-wins bindings and methods; generational
+type redefinition. The short version:
 
-- **A statement sequence** — like a function body. Top-level
-  variable declarations bind in the symbol table; expression
-  statements evaluate for side-effects.
-- **A single expression** — evaluated and returned as
-  `execute_result`. Notebooks render this as `Out[N]:`.
-- **A declaration** — `public class Foo { ... }`, `public static
-  int32 fn() { ... }` — added to the symbol table; no `Out[N]`
-  output unless the cell ends with an expression.
+- **A statement sequence** — the unit body; top-level declarations
+  bind into the session scope.
+- **A trailing expression** — the unit result, rendered as
+  `Out[N]:`.
+- **Declarations** — types and top-level methods, visible to later
+  cells; no `Out[N]` unless the cell ends with an expression.
 
 Cells mix all three:
 
@@ -556,10 +571,19 @@ Point origin = heap Point(0, 0);
 origin.x + origin.y
 ```
 
-This declares `Point`, binds `origin` into the symbol table,
+This declares `Point`, binds `origin` into the session scope,
 returns `0` as `Out[5]:`.
 
 ### Notebook + debugger combined
+
+> **Staged: v1.5** (jupyter-kernel spec §7). Kernel v1 ships
+> structured tracebacks, recoverable-throw interception, and
+> safepoint-based interrupt — cells compile with the same
+> statement-boundary safepoints the DAP server uses, so the pausing
+> machinery below has something to bind to from day one. The
+> debug-protocol bridge (`debug_request`/`debug_event`, breakpoints
+> on cell lines, pause/step/inspect) is the v1.5 layer this section
+> designs.
 
 The kernel and the debugger share a process. When a cell hits a
 breakpoint:
@@ -585,27 +609,32 @@ statically-typed compiled language via the JIT.
 
 ## Hot-reload semantics
 
-The kernel accepts incremental code submissions. Three categories
-of redefinition, with three different policies:
+The kernel accepts incremental code submissions. Redefinition
+semantics are owned by the script-units spec (§5); this section is
+the debugging-facing summary. Three categories, three policies —
+and note the third changed when the spec landed (2026-08-07): the
+kernel no longer refuses layout changes; it versions them.
 
 ### 1. New top-level definitions — always allowed
 
 Declaring a new type, function, or variable that doesn't conflict
 with an existing name. Trivially supported. The JIT compiles +
-links + symbol table updates.
+links + the session registers the name.
 
 ```cajeta
 // Cell 3:
 public class Cache { ... }
-// → registered as `Cache` in the symbol table
+// → registered as `Cache` in the session
 ```
 
 ### 2. Body-only changes to existing definitions — allowed
 
 Replacing a method's implementation without changing its
 signature, or replacing a top-level function's body. The JIT
-generates a new function, swaps the symbol table entry, and
-existing call sites resolve to the new version on next dispatch.
+generates a new function, swaps the binding, and existing call
+sites resolve to the new version on next dispatch. This is the
+same "body-only" compatibility class the script-units spec's §5.4
+defines — no new type generation is introduced.
 
 ```cajeta
 // Cell 7:
@@ -622,37 +651,49 @@ public static int32 score(int32 raw) {
 Caveat: in-flight calls don't pick up the new body. They finish
 with the old code. The next call dispatches to the new code.
 
-### 3. Layout-changing redefinitions — refused with a clear error
+### 3. Layout-changing redefinitions — a new type generation
 
-Adding / removing / reordering fields on a class with live
-instances, changing a method's signature, changing inheritance —
-any redefinition that would invalidate existing instances'
-memory layout or existing call sites' assumptions is rejected:
+Adding / removing / reordering fields, changing a method's
+signature, changing inheritance — any redefinition that would
+invalidate existing instances' layout introduces a **new
+generation** of the type (script-units spec §5.3). No instance is
+ever reinterpreted:
+
+- Existing values stay alive and fully usable **at the old
+  generation** — their layout, methods, and bindings are untouched.
+- The type *name* resolves to the newest generation in later cells.
+- Passing an old-generation value where the new generation is
+  expected is an ordinary compile-time type error, diagnosed with a
+  "stale generation" hint naming both generations:
 
 ```
-Cell 19: error: cannot redefine `Point` — field layout would change
-  declaring `int64 z` would shift the layout of existing instances
-  (3 instances of Point currently allocated on the heap)
-
-  options:
-    1. Define a new type `Point3D` with the additional field
-    2. Restart the kernel to discard existing instances
-    3. Migrate manually: `for (p in Cajeta.heap.instancesOf(Point)) { ... }`
+Cell 19: error: type mismatch — `p` is `Point` (generation 1,
+  defined In[4]); this context expects `Point` (generation 2,
+  defined In[19])
+  hint: stale generation — rebind or reconstruct `p`, or restart
+  the session
 ```
 
-This refuses-rather-than-corrupts policy is the simplest correct
-model. Python / IPython chose append-only (shadow the old
-definition; old instances keep working with old behavior); the
-surprise that "I redefined my class but old instances behave
-strangely" makes that the wrong choice for a statically-typed
-language with explicit memory layout. Cajeta prefers honesty.
+This is the JShell model, and it squares the circle the earlier
+draft of this section framed as refuse-vs-corrupt: Python's
+append-only shadowing surprises ("old instances behave strangely")
+because the mismatch surfaces at *runtime*; refusal frustrates
+because notebooks redefine classes constantly. Generations keep
+both honesty (the mismatch is a compile error at the use site) and
+freedom (the redefinition always succeeds). Body-only changes
+(category 2) deliberately do **not** bump the generation.
 
-Future work — **migration mode** (option 3 above) is a v2
-feature: walk the heap finding instances of the old type,
-project their fields onto the new layout where feasible, free
-the old. Requires more reflective machinery than v1 ships and
-genuinely-conflicting layout changes have no migration; the
-honest "refused" error is right for v1.
+Note the scope distinction: these are *session* semantics for
+cell-by-cell work. Live-patching a **running, paused** program —
+where old frames hold the old layout on the stack — is a different
+problem with a different answer (the v1.5 debug bridge inherits
+category 2 only; layout changes to a live debuggee remain refused).
+
+Future work — **migration mode** is a v2 feature: walk the session
+scope finding old-generation values, project their fields onto the
+new generation where feasible, rebind. Genuinely-conflicting
+layouts have no migration; the stale-generation error remains the
+honest default.
 
 ---
 
