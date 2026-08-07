@@ -253,6 +253,7 @@ namespace cajeta {
         map<string, map<string, QualifiedNamePtr>> imports;
         QualifiedNamePtr qName;
         string sourcePath;
+        bool scriptUnit = false;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -483,6 +484,14 @@ namespace cajeta {
         void setSourcePath(const string& sourcePath) {
             this->sourcePath = sourcePath;
         }
+
+        // Script units (script-units spec §3.2): true when this module's source
+        // was a script-shaped unit rewritten into the implicit-class form. The
+        // wrapper's declared package (`cajeta.script` by default) need not
+        // match the host-chosen file location, so the package/path agreement
+        // check is skipped for script modules.
+        void setScriptUnit(bool v) { scriptUnit = v; }
+        bool isScriptUnit() const { return scriptUnit; }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is

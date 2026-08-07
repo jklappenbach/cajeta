@@ -21,6 +21,7 @@
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
+#include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
@@ -678,6 +679,29 @@ namespace cajeta {
                             + parser.getNumberOfSyntaxErrors();
         if (syntaxErrors > 0) {
             throw SyntaxErrorException(static_cast<int>(syntaxErrors));
+        }
+        // Script units (script-units spec §2-§3): a unit that took the script
+        // alternative is rewritten — original token text spliced verbatim —
+        // into the implicit-class form and re-parsed; the wrapper is an
+        // ordinary unit, so the recursion terminates after one level. The
+        // semantic visitor only ever sees ordinary units.
+        {
+            auto* unitCtx = dynamic_cast<CajetaParser::CompilationUnitContext*>(parseTree);
+            if (isScriptUnit(unitCtx)) {
+                std::string stem = scriptClassStem(module->getSourcePath());
+                std::string canonical;
+                std::string wrapper =
+                    synthesizeScriptUnit(tokens, unitCtx, stem, &canonical);
+                module->setScriptUnit(true);
+                antlr4::ANTLRInputStream wrapperInput(wrapper);
+                parseSource(module, wrapperInput, label, quiet);
+                auto& structures = module->getStructures();
+                auto it = structures.find(canonical);
+                if (it != structures.end() && it->second != nullptr) {
+                    it->second->setScriptSynthesized(true);
+                }
+                return;
+            }
         }
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);

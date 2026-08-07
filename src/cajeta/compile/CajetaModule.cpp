@@ -347,7 +347,7 @@ namespace cajeta {
             itr++;
         }
 
-        if (qName->getPackageName() != packageName) {
+        if (qName->getPackageName() != packageName && !scriptUnit) {
             // Under lint (an active DiagnosticEngine), the file's disk path is not
             // authoritative — it may be a staged, unsaved buffer whose temp path
             // can't match its declared package. Skip the check rather than leak a
