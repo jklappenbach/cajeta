@@ -16,6 +16,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "CajetaParser.h"
 
@@ -40,10 +41,13 @@ namespace cajeta {
 
     // Build the wrapper compilation-unit source. `outCanonical` receives the
     // implicit class's canonical name (package + '.' + stem) so the caller
-    // can mark it script-synthesized after registration.
+    // can mark it script-synthesized after registration. `outBindings`
+    // receives the names declared at scriptMember level — the unit's
+    // session bindings (spec §4); block-nested locals are not collected.
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
-                                     std::string* outCanonical);
+                                     std::string* outCanonical,
+                                     std::vector<std::string>* outBindings);
 
 }  // namespace cajeta

@@ -5,6 +5,7 @@
 #include "LocalVariableDeclaration.h"
 #include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -61,6 +62,38 @@ namespace cajeta {
         return c;
     }
 
+    // Script units (script-units spec §4): a top-level owner in the
+    // synthesized entry belongs to the SESSION, not the entry's drop frame.
+    // When the declaring method is the script entry and the name is one of
+    // the unit's collected session bindings, register the owner with the
+    // runtime session registry — same obj, same drop fn a drop entry would
+    // carry — and emit NO function-local entry, so the value survives the
+    // entry's return and drops at __cajeta_session_drop_all (or earlier at a
+    // rebind, which the runtime handles). Returns true when promoted.
+    static bool maybeEmitSessionBind(CajetaModulePtr module, FieldPtr field,
+                                     llvm::Value* dropFn) {
+        if (!module->isScriptUnit()) return false;
+        if (!module->isScriptBindingName(field->getName())) return false;
+        auto* builder = module->getBuilder();
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        if (parentFn == nullptr
+            || parentFn->getName().find(scriptEntryName())
+                   == llvm::StringRef::npos) {
+            return false;
+        }
+        llvm::Function* bindFn =
+            module->getRuntimeFunction("__cajeta_session_bind");
+        if (!bindFn) return false;
+        auto& ctx = *module->getLlvmContext();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Value* nameStr =
+            builder->CreateGlobalString(field->getName());
+        llvm::Value* ownerPtr =
+            builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
+        builder->CreateCall(bindFn, {nameStr, ownerPtr, dropFn});
+        return true;
+    }
+
     // Emit drop-chain wiring for an owner local. Allocates a DropEntry blob on
     // the stack at function entry, pushes it onto the runtime's chain right
     // after the owner is materialized, and records the entry on both the field
@@ -73,6 +106,7 @@ namespace cajeta {
         DropPushChoice push = pickDropPush(module);
         llvm::Function* dropFn = module->getRuntimeFunction(dropFnName);
         if (!push.pushFn || !dropFn) return;
+        if (maybeEmitSessionBind(module, field, dropFn)) return;
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -311,6 +345,7 @@ namespace cajeta {
         // extern decl so the merge step resolves the Constant.
         dropFn = CajetaModule::ensureFunctionInModule(
             module->getLlvmModule(), dropFn);
+        if (maybeEmitSessionBind(module, field, dropFn)) return;
         auto* builder = module->getBuilder();
         auto& ctx = *module->getLlvmContext();
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -1698,6 +1733,24 @@ namespace cajeta {
                 // and reachable: they live in vtable.drop_fn and the
                 // dispatcher routes through them.
                 if (initIsStackAlloc) {
+                    // Script units (spec §4.7): a session binding outlives the
+                    // entry's frame, so `stack` cannot bind at top level —
+                    // uniform rule, single- and multi-unit hosts alike.
+                    if (module->isScriptUnit()
+                        && module->isScriptBindingName(field->getName())) {
+                        auto* pfn = module->getBuilder()->GetInsertBlock()
+                                        ->getParent();
+                        if (pfn && pfn->getName().find(scriptEntryName())
+                                       != llvm::StringRef::npos) {
+                            throw Exception(
+                                "top-level binding '" + field->getName()
+                                    + "' cannot be stack-allocated: session"
+                                      " bindings outlive the unit's frame —"
+                                      " use `heap`, or bind inside a { }"
+                                      " block for frame-local lifetime",
+                                "CAJETA_ERROR_SESSION_STACK_BINDING");
+                        }
+                    }
                     // Record the storage class for later analyses — the `#`
                     // return escape check needs it (stack-return-transfer-error
                     // spec §2.1) and this declaration is the only site that

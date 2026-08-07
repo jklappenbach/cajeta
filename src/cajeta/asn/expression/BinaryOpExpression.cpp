@@ -28,6 +28,7 @@
 #include "../../type/FormalParameter.h"
 #include "AggregateInitializerExpression.h"
 #include "NewExpression.h"
+#include "../../compile/ScriptUnitSynthesis.h"
 #include "LiteralExpression.h"
 
 #include <llvm/IR/Intrinsics.h>
@@ -3943,6 +3944,58 @@ namespace cajeta {
             case BINARY_OP_LOGOR:
                 // Handled at the top of the function via short-circuit branching.
                 break;
+        }
+        // Script units (script-units spec §4.3): assignment to a top-level
+        // session binding REBINDS it — the runtime drops the previous
+        // occupant and takes ownership of the stored value. Emitted after
+        // whichever store arm ran, by reloading the local's slot, so every
+        // assignment shape is covered uniformly. Stock assignment emits no
+        // old-value drop for an owner local, so the runtime's rebind drop is
+        // the only one — no double-drop.
+        if (binaryOp == BINARY_OP_ASSIGN && module->isScriptUnit()) {
+            if (auto lhsId =
+                    dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+                const std::string& name = lhsId->getTextValue();
+                if (module->isScriptBindingName(name)) {
+                    auto* builder = module->getBuilder();
+                    llvm::Function* pfn =
+                        builder->GetInsertBlock()->getParent();
+                    if (pfn && pfn->getName().find(scriptEntryName())
+                                   != llvm::StringRef::npos) {
+                        FieldPtr f;
+                        if (auto sc = module->getScopeStack().peek()) {
+                            f = sc->getField(name);
+                        }
+                        auto klass = f
+                            ? dynamic_pointer_cast<CajetaClass>(
+                                  f->getType())
+                            : nullptr;
+                        llvm::Function* dropFn = nullptr;
+                        if (klass && klass->hasVtablePointerAtSlotZero()) {
+                            klass->patchVirtualTableDropFn();
+                            dropFn = module->getRuntimeFunction(
+                                "__cajeta_class_virtual_drop");
+                        } else if (klass && klass->getQName()
+                                   && klass->getQName()->getTypeName()
+                                          == "String") {
+                            dropFn = module->getRuntimeFunction(
+                                "__cajeta_string_drop");
+                        }
+                        llvm::Function* bindFn = module->getRuntimeFunction(
+                            "__cajeta_session_bind");
+                        if (f && dropFn && bindFn) {
+                            auto& sctx = *module->getLlvmContext();
+                            llvm::Value* cur = builder->CreateLoad(
+                                llvm::PointerType::get(sctx, 0),
+                                f->getOrCreateAllocation());
+                            llvm::Value* nameStr =
+                                builder->CreateGlobalString(name);
+                            builder->CreateCall(bindFn,
+                                {nameStr, cur, dropFn});
+                        }
+                    }
+                }
+            }
         }
         return result;
     }

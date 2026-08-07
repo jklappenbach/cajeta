@@ -49,10 +49,36 @@ namespace cajeta {
         return out;
     }
 
+    namespace {
+
+        // Collect the declared names of a scriptMember-level local variable
+        // declaration — the session bindings (spec §4). Handles both grammar
+        // alternatives: `typeType variableDeclarators` and `var ident = expr`.
+        void collectBindingNames(CajetaParser::BlockStatementContext* bs,
+                                 std::vector<std::string>* out) {
+            if (bs == nullptr || out == nullptr) return;
+            auto* lvd = bs->localVariableDeclaration();
+            if (lvd == nullptr) return;
+            if (auto* vds = lvd->variableDeclarators()) {
+                for (auto* vd : vds->variableDeclarator()) {
+                    if (vd->variableDeclaratorId()
+                            && vd->variableDeclaratorId()->identifier()) {
+                        out->push_back(
+                            vd->variableDeclaratorId()->identifier()->getText());
+                    }
+                }
+            } else if (lvd->identifier()) {
+                out->push_back(lvd->identifier()->getText());
+            }
+        }
+
+    }  // namespace
+
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
-                                     std::string* outCanonical) {
+                                     std::string* outCanonical,
+                                     std::vector<std::string>* outBindings) {
         std::string pkgName = scriptDefaultPackage();
         std::string header;
         if (auto* pd = ctx->packageDeclaration()) {
@@ -98,6 +124,7 @@ namespace cajeta {
                 body += textOf(tokens, bs);
                 body += "\n";
                 lastStatement = bs;
+                collectBindingNames(bs, outBindings);
             }
         }
 

@@ -690,9 +690,12 @@ namespace cajeta {
             if (isScriptUnit(unitCtx)) {
                 std::string stem = scriptClassStem(module->getSourcePath());
                 std::string canonical;
+                std::vector<std::string> bindings;
                 std::string wrapper =
-                    synthesizeScriptUnit(tokens, unitCtx, stem, &canonical);
+                    synthesizeScriptUnit(tokens, unitCtx, stem, &canonical,
+                                         &bindings);
                 module->setScriptUnit(true);
+                module->setScriptBindingNames(std::move(bindings));
                 antlr4::ANTLRInputStream wrapperInput(wrapper);
                 parseSource(module, wrapperInput, label, quiet);
                 auto& structures = module->getStructures();

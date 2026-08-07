@@ -254,6 +254,7 @@ namespace cajeta {
         QualifiedNamePtr qName;
         string sourcePath;
         bool scriptUnit = false;
+        std::set<string> scriptBindingNames;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -492,6 +493,17 @@ namespace cajeta {
         // check is skipped for script modules.
         void setScriptUnit(bool v) { scriptUnit = v; }
         bool isScriptUnit() const { return scriptUnit; }
+
+        // The unit's session-binding names (script-units spec §4): top-level
+        // declarations collected by the synthesis pass. Codegen promotes these
+        // owners to the runtime session registry instead of the entry's drop
+        // frame.
+        void setScriptBindingNames(std::vector<string> names) {
+            scriptBindingNames = std::set<string>(names.begin(), names.end());
+        }
+        bool isScriptBindingName(const string& name) const {
+            return scriptBindingNames.find(name) != scriptBindingNames.end();
+        }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is
