@@ -2,7 +2,7 @@
 
 Cajeta is a hybrid systems / application language combining C++-style true templates, multiple-inheritance, and operator overloading.  It's also Java-style class semantics and annotations, It's Rust-inspired ownership for memory management — with a single explicit allocation idiom that lets the caller pick stack or heap at initialization.
 
-The compiler is LLVM-backed (LLVM 23) and produces either IR or native binaries.  Cajeta believes in a compiler that walks you or an AI through the code with abundant linting and verbose error messages. 
+The compiler is LLVM-backed (LLVM 23) and produces either IR — distributed in compressed archives and executed by an optimized, caching JIT — or native binaries per target (see [Compilation and execution](#compilation-and-execution)). Cajeta believes in a compiler that walks you or an AI through the code with abundant linting and verbose error messages. 
 
 Cajeta may not be your choice for embedded, but it's lean enough to perform that role.  A future roadmap will produce a version that will be able to exist even in the most austere environments.
 
@@ -18,7 +18,7 @@ Create amazing things with Cajeta.
 
 ## Version
 
-**Current:** `0.8.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
+**Current:** `0.16.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
 
 Versioning is manual and tied to releases. The flow:
 
@@ -41,6 +41,8 @@ Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
 
 - [Version](#version)
 - [Quick taste](#quick-taste)
+- [Compilation and execution](#compilation-and-execution)
+- [Ecosystem](#ecosystem)
 - [Installing](#installing)
 - [Building](#building)
 - [Running the tests](#running-the-tests)
@@ -93,6 +95,71 @@ public final class App {
 ```
 
 `stack`/`heap` are mandatory at every allocation. `new` is removed.
+
+---
+
+## Compilation and execution
+
+Cajeta is built on LLVM. The compiler lowers source to LLVM's intermediate
+representation (IR), runs it through the optimizer pipeline — including the
+loop and SLP vectorizers, so numeric code uses the host's wide SIMD
+registers — and converts the result directly into machine code for the
+processors that will execute it. From there, programs ship and run in three
+shapes:
+
+**IR archives — write once, run anywhere.** `cajeta build` emits a `.cja`: a
+zstd-compressed archive carrying the program as LLVM bitcode (plus sources,
+resources, and agent skills). Both libraries and executables distribute this
+way. At run time an optimized JIT lowers the bitcode for whatever CPU it
+lands on, and the resulting **machine code is cached** (an `llvm::ObjectCache`
+plus whole-program cache slots) — so a warm start skips compilation entirely
+and execution is fast from the first call. One artifact, every platform the
+toolchain supports.
+
+**Native binaries.** `--emit=exe` produces a conventional executable for a
+specific target triple — same IR, same optimizer, but ahead-of-time, for
+deployments that want to forego the JIT machinery altogether.
+
+**GPU kernels.** `@Kernel` methods lower through LLVM's device backends
+directly to each GPU architecture: NVPTX → `ptxas` → cubin (NVIDIA),
+AMDGCN → lld → hsaco (AMD), and **SPIR-V** for the Vulkan-portable path —
+with a CPU backend as the universal fallback. You can pin the device
+explicitly (`--xpu-backend=<list>`, `--xpu-arch=<arch>`, e.g. `sm_89`), or
+leave it unset and the toolchain selects the best execution profile for the
+silicon it finds, falling back where a backend lacks a capability —
+ultimately to the CPU path, so kernel code always runs. Vendor-exclusive
+features (tensor-core peak paths and the like) live in explicit vendor
+libraries rather than the portable core.
+
+Throughout, linking is **lazy**: the runtime and standard library are linked
+as bitcode, and only what your program actually references is materialized
+into the output — which keeps both JIT working sets and native binaries
+small.
+
+---
+
+## Ecosystem
+
+**Libraries.** The public package registry at
+[olla.cajeta.dev](https://olla.cajeta.dev) hosts a growing set of libraries,
+published as signed `.cja` archives and resolved by the build tool
+(`cajeta.json` names the dependency; the toolchain fetches, sha256-verifies,
+and caches it).
+
+**Data science and machine learning** are first-class. The stdlib's
+`cajeta.math` provides the tensor and matrix core — n-dimensional
+`Tensor<T>`, `linalg` (QR, SVD, eigendecomposition, solvers), `fft`,
+`random`, and ML-oriented reduced-precision types (`bfloat16`, the `float8`
+family) — with kernel-level execution spanning **SIMD CPU** (auto-vectorized
+through LLVM) and **GPU** (`cajeta.xpu`'s compute primitives, including
+cooperative-matrix / tensor-core matmul). On top of that core, registry
+libraries cover the applied layers: `dev.cajeta.ml` (the
+scikit-learn/statsmodels + torch roles), `dev.cajeta.graph` (network
+analysis), `dev.cajeta.xgboost`, and more.
+
+**IDE support** is currently limited to the IntelliJ-family IDEs — the
+plugin ships embedded in the compiler (`cajeta ide install`, see
+[Installing](#installing)). VS Code support is planned next.
 
 ---
 
