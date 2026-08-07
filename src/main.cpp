@@ -273,6 +273,14 @@ int main(int argc, const char* argv[]) {
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
     }
+
+    // `cajeta run <file>.cajeta` — compile the file as a script unit and
+    // execute it as a one-unit session under the JIT host (script-units
+    // spec §7). Dispatched BEFORE the build-tool task probe (and excluded
+    // from it), so a manifest task named "run" can never shadow the verb.
+    if (argc >= 2 && std::string(argv[1]) == "run") {
+        return cajeta::jit::dispatchRun(argc, argv);
+    }
     {
         int btExit = 0;
         if (cajeta::buildtool::dispatchBuildTool(argc, argv, &btExit)) {

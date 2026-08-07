@@ -61,6 +61,12 @@ namespace cajeta::jit {
         // launch whose key matches loads it without constructing a Compiler.
         // Empty = today's full compile, unconditionally.
         std::string cacheDir;
+        // script-units U6 (`cajeta run`): compile exactly this ONE file (a
+        // script unit — or any unit whose synthesized/declared entry is
+        // `__cajeta_script_entry`) instead of walking sourceRoot; entry
+        // lookup switches to the script-entry suffix, and the host drops
+        // session bindings after the entry returns. Empty = normal mode.
+        std::string scriptFile;
         // Optional build-progress callback (fast-debug-launch 1.2.2). Invoked
         // from the calling thread at phase boundaries — phase is one of
         // "collect", "parse", "codegen", "finalize", "merge", "jit" — and once
@@ -136,6 +142,13 @@ namespace cajeta::jit {
     // A developer/diagnostic verb that exercises the JIT host headlessly; the
     // full `cajeta dap` server (later) reuses runJit().
     int dispatchJitRun(int argc, const char* argv[]);
+
+    // CLI entry: `cajeta run [flags] <file>.cajeta [args...]` (script-units
+    // spec §7). Compiles the file as a script unit, runs it as a one-unit
+    // session under the JIT host, drops session bindings at exit. A
+    // `cajeta.json` in an ancestor directory supplies the classpath (its
+    // resolved manifest dependencies); standalone otherwise.
+    int dispatchRun(int argc, const char* argv[]);
 
     // --- Debug sessions (CP3) ---------------------------------------------
     // A source-line breakpoint, matched against emitted safepoints by file

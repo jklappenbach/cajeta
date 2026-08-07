@@ -42,6 +42,8 @@
 #include "cajeta/compile/NativeLink.h"
 #include "cajeta/buildtool/NativeProvision.h"
 #include "cajeta/buildtool/Lockfile.h"
+#include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Resolver.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/dbg/DebugLocTable.h"
@@ -111,6 +113,23 @@ std::vector<std::filesystem::path> collectSources(const std::filesystem::path& r
 std::string findEntryMangled(llvm::Module* mod, const std::string& dottedEntry,
                              bool* takesArgs) {
     if (takesArgs) *takesArgs = false;
+    // script-units U6: a script unit's entry is the synthesized
+    // `<pkg>.<stem>::__cajeta_script_entry()`; the package/stem are derived
+    // from the file, so the host matches by suffix rather than computing
+    // them a second time.
+    if (dottedEntry == "__cajeta_script_entry") {
+        const std::string suffix = "::__cajeta_script_entry()";
+        for (auto& fn : *mod) {
+            if (fn.isDeclaration()) continue;
+            std::string name = fn.getName().str();
+            if (name.size() > suffix.size()
+                && name.compare(name.size() - suffix.size(), suffix.size(),
+                                suffix) == 0) {
+                return name;
+            }
+        }
+        return "";
+    }
     std::string target = entryTargetFromDotted(dottedEntry);
     if (target.empty()) return "";
 
@@ -913,7 +932,21 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         return out;
     }
 
-    std::vector<fs::path> sourcePaths = collectSources(sourceRoot);
+    std::vector<fs::path> sourcePaths;
+    if (!opts.scriptFile.empty()) {
+        // script-units U6: the compilation unit is exactly this one file.
+        fs::path sf = fs::absolute(opts.scriptFile, ec);
+        if (ec || !fs::is_regular_file(sf)) {
+            std::ostringstream m;
+            m << "cajeta run: script not found: " << opts.scriptFile << "\n";
+            cajeta::logLine("error", m.str());
+            out.errorCode = 2;
+            return out;
+        }
+        sourcePaths.push_back(sf);
+    } else {
+        sourcePaths = collectSources(sourceRoot);
+    }
     if (sourcePaths.empty()) {
         {
             std::ostringstream m; m << "cajeta jit: no .cajeta files under " << sourceRoot << "\n";
@@ -1072,6 +1105,12 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
     out.compiler = std::make_unique<Compiler>();
     Compiler* compiler = out.compiler.get();
     compiler->setMode(CompilerMode::Debug);
+    // script-units U6: diagnostics for the script speak the path the user
+    // typed (U5's remap reads it as the host source name). One-unit runs
+    // carry no cross-unit session state, so the table stays null.
+    if (!opts.scriptFile.empty()) {
+        compiler->setSessionState(nullptr, opts.scriptFile);
+    }
     // Statement-boundary safepoint emission (CP2). Reset the global loc table
     // so this compile's loc_ids start at 0.
     // The JIT never set a diagnostic format, so every parse used ANTLR's
@@ -1319,9 +1358,21 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                     if (klass) klass->generateStaticInitializers();
             });
     } catch (cajeta::Exception& e) {
-        {
-            std::ostringstream m; m << "cajeta jit: [" << e.getErrorId() << "] "
-                  << e.getMessage() << "\n";
+        // U5 (spec §6.1): a located exception (script units carry the host
+        // source name + line after the remap) surfaces as a proper
+        // diagnostic record under --diag-format=json, and with its
+        // file:line in text mode — not just id + message.
+        if (cajeta::jsonProgressEnabled()) {
+            cajeta::emitJsonDiagnostic("error", e.getErrorId(),
+                                       e.getMessage(), e.getFile(),
+                                       e.getLine(), e.getColumn());
+        } else {
+            std::ostringstream m;
+            m << "cajeta jit: ";
+            if (e.hasLocation()) {
+                m << e.getFile() << ":" << e.getLine() << ": ";
+            }
+            m << "[" << e.getErrorId() << "] " << e.getMessage() << "\n";
             cajeta::logLine("error", m.str());
         }
         out.errorCode = 1;
@@ -1627,6 +1678,15 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
         }
     }
 
+    // script-units U6 / plan 3.2.3 — the one-unit session ends when the
+    // entry returns: drop the session bindings (reverse first-binding
+    // order) before teardown. An uncaught throw never reaches here — the
+    // runtime terminates the process — so drops-on-throw are the OS's
+    // reclaim, like any aborting program.
+    if (!opts.scriptFile.empty()) {
+        callVoidSymbol(jit, "__cajeta_session_drop_all");
+    }
+
     // Join any carrier thread cleanly before tearing down the JIT module.
     callVoidSymbol(jit, "__cajeta_task_shutdown");
     return rc;
@@ -1929,6 +1989,85 @@ static void setEnvVar(const char* name, const char* value) {
 #else
     ::setenv(name, value, /*overwrite=*/1);
 #endif
+}
+
+int dispatchRun(int argc, const char* argv[]) {
+    // argv: cajeta run [--cache-dir=DIR] [--diag-format=...] <file>.cajeta [args...]
+    cajeta::emitStreamRecordOnce();
+    JitRunOptions opts;
+    std::vector<std::string> positional;
+    for (int i = 2; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a.rfind("--cache-dir=", 0) == 0) {
+            opts.cacheDir = a.substr(std::string("--cache-dir=").size());
+        } else if (a == "--diag-format=json") {
+            setEnvVar("CAJETA_DIAG_FORMAT", "json");
+        } else if (a == "--diag-format=text") {
+            setEnvVar("CAJETA_DIAG_FORMAT", "text");
+        } else {
+            positional.push_back(a);
+        }
+    }
+    if (positional.empty()) {
+        std::cerr << "usage: cajeta run [--cache-dir=DIR] <file>.cajeta"
+                     " [args...]\n";
+        cajeta::emitJsonResult("error", "usage");
+        return 2;
+    }
+    opts.scriptFile = positional[0];
+    for (size_t i = 1; i < positional.size(); ++i)
+        opts.programArgs.push_back(positional[i]);
+    opts.entryMethod = "__cajeta_script_entry";
+
+    std::error_code ec;
+    std::filesystem::path scriptAbs =
+        std::filesystem::absolute(opts.scriptFile, ec);
+    if (ec || !std::filesystem::is_regular_file(scriptAbs)) {
+        std::cerr << "cajeta run: script not found: " << opts.scriptFile
+                  << "\n";
+        cajeta::emitJsonResult("error", "script not found");
+        return 2;
+    }
+    opts.sourceRoot = scriptAbs.parent_path().string();
+
+    // Project detection (spec §7.3): the nearest ancestor `cajeta.json`
+    // supplies the classpath — its resolved manifest dependencies, exactly
+    // the set `cajeta build` would pass. Standalone (stdlib only) otherwise.
+    std::filesystem::path projectRoot;
+    for (std::filesystem::path d = scriptAbs.parent_path();;
+         d = d.parent_path()) {
+        if (std::filesystem::exists(d / "cajeta.json")) {
+            projectRoot = d;
+            break;
+        }
+        if (d == d.root_path() || d.empty()) break;
+    }
+    if (!projectRoot.empty()) {
+        auto manifest = cajeta::buildtool::loadManifestFile(
+            (projectRoot / "cajeta.json").string());
+        if (!manifest) {
+            std::cerr << "cajeta run: bad manifest at " << projectRoot
+                      << ": " << cajeta::jit::toString(manifest.takeError()) << "\n";
+            cajeta::emitJsonResult("error", "bad manifest");
+            return 2;
+        }
+        auto resolved = cajeta::buildtool::resolveProjectDependencies(
+            *manifest, projectRoot.string());
+        if (!resolved) {
+            std::cerr << "cajeta run: dependency resolution failed: "
+                      << cajeta::jit::toString(resolved.takeError()) << "\n";
+            cajeta::emitJsonResult("error", "dependency resolution failed");
+            return 2;
+        }
+        for (const auto& dep : *resolved) {
+            if (!dep.artifactPath.empty())
+                opts.classpath.push_back(dep.artifactPath);
+        }
+    }
+
+    const int code = runJit(opts);
+    cajeta::emitJsonResult(code == 0 ? "ok" : "error");
+    return code;
 }
 
 int dispatchJitRun(int argc, const char* argv[]) {

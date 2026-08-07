@@ -114,6 +114,17 @@ public final class App {
 
 `stack`/`heap` are mandatory at every allocation. `new` is removed.
 
+No class is required to get started — a file of loose statements is a
+[script unit](docs/specification/lang/ScriptUnits.md), and `cajeta run`
+executes it directly with the same type checking, borrow checking, and JIT
+as any program:
+
+```cajeta
+// tool.cajeta — cajeta run tool.cajeta
+int32 x = 40;
+System.stdout.println("answer = " + (x + 2));
+```
+
 ---
 
 ## Built for agents
