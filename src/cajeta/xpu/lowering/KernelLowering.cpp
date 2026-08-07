@@ -2598,6 +2598,29 @@ private:
                 return name == "all" ? target.quadAll(builder, mod, pred)
                                      : target.quadAny(builder, mod, pred);
             }
+        } else if (recv == "Cajeta") {
+            // Cajeta.f32ToBits / bitsToF32 / f64ToBits / bitsToF64 — IEEE bit
+            // reinterpretation, mirroring the host lowering (a plain bitcast on
+            // every backend; SPIR-V selects OpBitcast). Needed in-kernel by the
+            // SFU-table `__fdividef` replication (U12 split scoring): the table
+            // index is the denominator's mantissa bits.
+            const auto& cargs = mc->getParameters();
+            if ((name == "f32ToBits" || name == "bitsToF32" ||
+                 name == "f64ToBits" || name == "bitsToF64") &&
+                cargs.size() == 1) {
+                llvm::Value* v = lowerExpr(cargs[0].expression);
+                llvm::Type* to =
+                    name == "f32ToBits"
+                        ? (llvm::Type*) llvm::Type::getInt32Ty(builder.getContext())
+                  : name == "bitsToF32"
+                        ? (llvm::Type*) llvm::Type::getFloatTy(builder.getContext())
+                  : name == "f64ToBits"
+                        ? (llvm::Type*) llvm::Type::getInt64Ty(builder.getContext())
+                        : (llvm::Type*) llvm::Type::getDoubleTy(builder.getContext());
+                return builder.CreateBitCast(v, to, "cajeta.bits");
+            }
+            unsupported("Cajeta." + name + " in a kernel (supported: "
+                        "f32ToBits, bitsToF32, f64ToBits, bitsToF64)");
         } else if (recv == "Bits") {
             // Per-invocation bit manipulation. No seam: these lower to
             // *generic* LLVM intrinsics that every backend (incl. the

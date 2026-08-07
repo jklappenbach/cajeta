@@ -30,6 +30,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <optional>
+#include <cstdio>
 
 namespace cajeta {
 namespace xpu {
@@ -88,9 +89,15 @@ namespace vulkan {
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, devMod, software, regName);
-            } catch (cajeta::Exception&) {
-                // Unsupported construct (XPU-N01) — leave this kernel to the
-                // host path; don't fail the whole compile.
+            } catch (cajeta::Exception& ex) {
+                // Unsupported construct (XPU-N01) — this kernel gets NO device
+                // code for this backend; a launch that lands here at run time
+                // fails with "no registered kernel". Say so at build time —
+                // the silent skip cost a real debugging session (U12).
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no vulkan device "
+                        "code — %s\n",
+                        regName.c_str(), ex.getMessage().c_str());
                 return false;
             }
             if (!kfn) return false;

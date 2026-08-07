@@ -94,9 +94,15 @@ namespace nvidia {
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, devMod);
-            } catch (cajeta::Exception&) {
-                // Unsupported construct (XPU-N01) — leave this kernel to the
-                // CPU-emulation path; don't fail the whole compile.
+            } catch (cajeta::Exception& ex) {
+                // Unsupported construct (XPU-N01) — this kernel gets NO device
+                // code for this backend; a launch that lands here at run time
+                // fails with "no registered kernel". Say so at build time —
+                // the silent skip cost a real debugging session (U12).
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no nvptx device "
+                        "code — %s\n",
+                        entryName.c_str(), ex.getMessage().c_str());
                 continue;
             }
             if (!kfn) continue;
