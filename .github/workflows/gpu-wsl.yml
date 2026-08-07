@@ -88,11 +88,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # No passwordless sudo on this runner — extract the deb into the
+          # workspace instead of installing it; the payload is relocatable
+          # (usr/bin/cajeta -> ../lib/cajeta/cajeta inside the tree).
           gh release download '${{ inputs.cajeta-version }}' --repo jklappenbach/cajeta \
-            --pattern 'cajeta_*_amd64.deb' --dir /tmp
-          sudo apt-get install -y /tmp/cajeta_*_amd64.deb
-          rm -f /tmp/cajeta_*_amd64.deb
-          cajeta --version
+            --pattern 'cajeta_*_amd64.deb' --dir .
+          dpkg-deb -x cajeta_*_amd64.deb "$PWD/toolchain"
+          rm -f cajeta_*_amd64.deb
+          export CAJETA="$PWD/toolchain/usr/bin/cajeta"
+          export LD_LIBRARY_PATH="$PWD/toolchain/usr/lib:${LD_LIBRARY_PATH:-}"
+          "$CAJETA" --version
           ./run-tests.sh
 
       - name: Rerun the SFU probes and compare against the published tables
