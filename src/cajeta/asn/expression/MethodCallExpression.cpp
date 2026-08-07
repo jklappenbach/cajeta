@@ -6,6 +6,7 @@
 #include "CallExpression.h"
 #include "../../error/DiagnosticEngine.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/type/CajetaArray.h"
@@ -9786,6 +9787,10 @@ namespace cajeta {
                         builder->CreateCall(mark, {entry});
                     }
                 }
+                // script-units U4 (spec §4.2) — a promoted session binding
+                // has no frame drop entry; its transfer must quiet the
+                // registry slot instead (self-gated).
+                maybeEmitSessionDisarm(module, idExpr->getTextValue());
             };
             // Caller-side `#x` (Phase 1 of #68). The caller's intent is
             // explicit at the source line — deactivate the source's drop

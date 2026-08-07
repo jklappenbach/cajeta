@@ -12,6 +12,7 @@
 #include "../type/CajetaFunctionType.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
+#include "../compile/ScriptUnitSynthesis.h"
 #include "../error/VariableAssignmentException.h"
 #include "../error/Exception.h"
 #include "../asn/DefaultBlock.h"
@@ -2207,6 +2208,11 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(boundField);
         }
 
+        // script-units U4 — a session compile seeds the entry's root scope
+        // with earlier units' bindings (self-gated: no-op for every other
+        // method and outside session compiles).
+        seedSessionScope(module);
+
         // R5-A' implicit function-body scope: capture the scope_top from the
         // caller's perspective into an alloca, then push the function-body
         // frame. Every return path (synthetic, explicit ReturnStatement)
@@ -2818,6 +2824,12 @@ namespace cajeta {
                 builder->CreateRet(llvm::PoisonValue::get(retLlvmTy));
             }
         }
+
+        // script-units U4 — write ownership facts back to the session table
+        // while the entry's scope is still alive (self-gated like the seed).
+        // A thrown compile error skips this, leaving the session unchanged
+        // (spec §5.5).
+        writeBackSessionState(module);
 
         destroyScope();
         if (pushedClass) {

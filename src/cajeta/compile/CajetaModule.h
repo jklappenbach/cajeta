@@ -34,6 +34,7 @@ namespace cajeta {
     typedef shared_ptr<StructureMetadata> StructureMetadataPtr;
 
     class CajetaClass;
+    class SessionState;
 
     class CajetaModule : public enable_shared_from_this<CajetaModule> {
     public:
@@ -255,6 +256,12 @@ namespace cajeta {
         string sourcePath;
         bool scriptUnit = false;
         std::set<string> scriptBindingNames;
+        // script-units U4 — the session this unit compiles into (owned by
+        // the host, may span many unit compiles) and the host's name for
+        // this unit's source (a file path, a cell id) for diagnostics.
+        // Null / empty outside a session compile.
+        SessionState* sessionState = nullptr;
+        string scriptHostName;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -504,6 +511,17 @@ namespace cajeta {
         bool isScriptBindingName(const string& name) const {
             return scriptBindingNames.find(name) != scriptBindingNames.end();
         }
+        const std::set<string>& getScriptBindingNames() const {
+            return scriptBindingNames;
+        }
+
+        // script-units U4 — the session table this unit compiles into and
+        // the host's name for this unit's source (diagnostics). Set by the
+        // Compiler's session plumbing before parse; null/empty otherwise.
+        void setSessionState(SessionState* s) { sessionState = s; }
+        SessionState* getSessionState() const { return sessionState; }
+        void setScriptHostName(const string& n) { scriptHostName = n; }
+        const string& getScriptHostName() const { return scriptHostName; }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is

@@ -6,6 +6,7 @@
 #include "LocalVariableDeclaration.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/ScriptUnitSynthesis.h"
 #include "../type/Scope.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
@@ -221,7 +222,21 @@ namespace cajeta {
                 exited = true;
             }
             if (exited) {
-                linScope->retractMovesSince(moveMark);
+                // script-units U4 — inside the script entry the marks feed
+                // the SESSION write-back: a `return` terminates the unit,
+                // not a join, so retracting would erase the very facts a
+                // later unit's compile must see (spec §4.2). Keep them —
+                // conservative in the safe direction (a moved-looking
+                // binding errors on a cross-unit read; a retracted one
+                // would read dangling).
+                bool scriptEntry = false;
+                if (module->isScriptUnit()) {
+                    auto cm = module->getCurrentMethod();
+                    scriptEntry = cm && cm->getName() == scriptEntryName();
+                }
+                if (!scriptEntry) {
+                    linScope->retractMovesSince(moveMark);
+                }
             }
         }
 

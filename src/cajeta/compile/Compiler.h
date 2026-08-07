@@ -112,6 +112,8 @@ namespace cajeta {
         Object,   // CPU: write a per-kernel .o (native relocatable object).
     };
 
+    class SessionState;
+
     class Compiler {
     private:
         string targetTriple;
@@ -175,6 +177,9 @@ namespace cajeta {
         // source-tag passing, etc.).
         CompilerMode mode = CompilerMode::Debug;
         CompilerFlags flags = CompilerFlags::defaultsForMode(CompilerMode::Debug);
+        // script-units U4 — see setSessionState. Host-owned; not freed here.
+        SessionState* sessionState = nullptr;
+        string sessionHostName;
         // Output mode. Default IR (write .ll). --emit=obj or --emit=exe switches to
         // native codegen for the configured target.
         EmitMode emitMode = EmitMode::IR;
@@ -534,6 +539,19 @@ namespace cajeta {
         void setBoundsCheckEnabled(bool v) {
             flags.bounds = v ? BoundsCheck::On : BoundsCheck::Off;
         }
+
+        // script-units U4 — session compile. When set, script units parsed by
+        // this Compiler compile INTO the session: their entry codegen seeds
+        // its root scope from the table and writes ownership facts back, and
+        // diagnostics carry `hostName` as the source name. The host owns the
+        // SessionState across unit compiles (`cajeta run` = one unit, the
+        // kernel = many). Cleared by passing nullptr.
+        void setSessionState(SessionState* state, const string& hostName) {
+            sessionState = state;
+            sessionHostName = hostName;
+        }
+        SessionState* getSessionState() const { return sessionState; }
+        const string& getSessionHostName() const { return sessionHostName; }
 
         // Compiler mode + per-feature flag accessors. setMode resets the
         // entire flag set to that mode's defaults; per-feature overrides

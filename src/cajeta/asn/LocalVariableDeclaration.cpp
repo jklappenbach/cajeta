@@ -683,6 +683,21 @@ namespace cajeta {
                 }
             }
             module->getScopeStack().peek()->putField(field);
+            // script-units U4 (spec §4.2/§4.3) — a redeclaration of a session
+            // binding is the rebind form across units (last-write-wins,
+            // spec §5): the fresh declaration replaced any seeded field
+            // above; clear a moved-out mark carried over from an earlier
+            // unit so reads are legal again.
+            if (module->isScriptUnit()
+                && module->isScriptBindingName(field->getName())) {
+                auto* sessPfn = module->getBuilder()->GetInsertBlock()
+                                    ->getParent();
+                if (sessPfn && sessPfn->getName().find(scriptEntryName())
+                                   != llvm::StringRef::npos) {
+                    module->getScopeStack().peek()->restoreOwnership(
+                        field->getName());
+                }
+            }
             field->getOrCreateAllocation();
 
             // 5.2.3 — the initializer's IR (including the call) was emitted by
@@ -1329,6 +1344,50 @@ namespace cajeta {
                                 initIsBorrow = true;
                             }
                         }
+                    }
+                }
+            }
+
+            // script-units U4 (spec §4.6) — a session binding cannot HOLD a
+            // borrow: the binding outlives the unit's frame, but the
+            // borrowed owner may drop or rebind in any later unit, so the
+            // borrow would dangle across the seam. Only the alias shapes
+            // reject (identifier / field-read / element-read); literal
+            // borrows of static storage and runtime-flagged call results
+            // stay legal at top level.
+            if (initIsBorrow && !initIsFlaggedCall && module->isScriptUnit()
+                && module->isScriptBindingName(field->getName())) {
+                bool aliasShaped = false;
+                if (auto escVi = dynamic_pointer_cast<VariableInitializer>(
+                        initializer)) {
+                    auto& escKids = escVi->getChildren();
+                    if (!escKids.empty()) {
+                        aliasShaped =
+                            dynamic_pointer_cast<IdentifierExpression>(
+                                escKids[0]) != nullptr
+                            || dynamic_pointer_cast<DotExpression>(
+                                escKids[0]) != nullptr
+                            || dynamic_pointer_cast<ArrayIndexExpression>(
+                                escKids[0]) != nullptr;
+                    }
+                }
+                if (aliasShaped) {
+                    auto* escPfn = module->getBuilder()->GetInsertBlock()
+                                       ->getParent();
+                    if (escPfn && escPfn->getName().find(scriptEntryName())
+                                      != llvm::StringRef::npos) {
+                        throw Exception(
+                            "top-level binding `" + field->getName()
+                                + "` cannot hold a borrow: session bindings "
+                                  "outlive the unit, and the borrowed owner "
+                                  "may drop or rebind in a later unit. Fix: "
+                                  "transfer ownership (`" + field->getName()
+                                + " #= ...`), bind a fresh value, or borrow "
+                                  "inside a { } block for frame-local "
+                                  "lifetime",
+                            "CAJETA_ERROR_SESSION_BORROW_ESCAPE",
+                            module->getScriptHostName(), getSourceLine(),
+                            getSourceColumn());
                     }
                 }
             }

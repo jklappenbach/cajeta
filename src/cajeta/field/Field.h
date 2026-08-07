@@ -59,6 +59,12 @@ namespace cajeta {
         llvm::Value* dropEntry = nullptr;
         bool runtimeConditionalOwner = false;
         bool stackInstance = false;
+        // script-units U4 — seeded into a script entry's root scope from the
+        // SessionState table (a binding created by an earlier unit of the
+        // same session). Carries a type but no alloca in this unit; moved
+        // bindings reject reads (spec §4.2), live cross-unit reads land with
+        // the kernel's read-through-session codegen.
+        bool sessionSeeded = false;
         bool ownershipAudited = false;
         // slices 9.2.1 — for OWNING String-element array locals: the stack
         // sidecar shared by the element-store helpers and the element-walk
@@ -194,6 +200,9 @@ namespace cajeta {
         // (stack-return-transfer-error-spec §2.1).
         bool isStackInstance() const { return stackInstance; }
         void setStackInstance(bool v) { stackInstance = v; }
+
+        bool isSessionSeeded() const { return sessionSeeded; }
+        void setSessionSeeded(bool v) { sessionSeeded = v; }
         // title-stores 6.2.1 — this local/formal's drop entry is armed from a
         // RUNTIME bit (transfer word, return flag, or forwarded slot bit), so
         // a plain retaining store of it is the loud-plain-store hazard.

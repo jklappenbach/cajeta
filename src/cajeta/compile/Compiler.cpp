@@ -1241,6 +1241,11 @@ namespace cajeta {
             targetMachine);
         // Propagate compiler-level flags so codegen for this module respects them.
         module->setFlags(flags);
+        // script-units U4 — session compile: hand every module the host's
+        // session table + source name. Only a script unit's entry codegen
+        // reads them (self-gated), so ordinary modules are unaffected.
+        module->setSessionState(sessionState);
+        module->setScriptHostName(sessionHostName);
         // Reproducible builds: now that flags (with --debug-prefix-map) are
         // set, scrub the absolute source path the constructor embedded so the
         // emitted IR is byte-identical across hosts.

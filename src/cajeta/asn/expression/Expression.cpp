@@ -4,6 +4,7 @@
 
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaFunctionType.h"
 #include "cajeta/type/FormalParameter.h"
@@ -3235,6 +3236,11 @@ bool cajetaRhsCarriesRedundantSharp(
                         }
                     }
                 }
+                // script-units U4 (spec §4.2) — a session binding's title
+                // left the session: quiet its registry slot so drop_all
+                // doesn't re-drop what the new owner now holds (self-gated
+                // on script-entry + session-binding name).
+                maybeEmitSessionDisarm(module, mvName);
             }
         } else if (dynamic_pointer_cast<DotExpression>(inner)) {
             // Path-based move (`#person.address.city`). Build the dotted path

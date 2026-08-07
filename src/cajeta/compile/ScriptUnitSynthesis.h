@@ -15,6 +15,7 @@
 //
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,9 @@
 namespace antlr4 { class CommonTokenStream; }
 
 namespace cajeta {
+
+    class CajetaModule;
+    typedef std::shared_ptr<CajetaModule> CajetaModulePtr;
 
     // The synthesized entry-method name, shared with hosts (`cajeta run`,
     // the Jupyter kernel) and tests.
@@ -38,6 +42,30 @@ namespace cajeta {
     // sanitized to an identifier ([A-Za-z0-9_], '_'-prefixed if it would
     // start with a digit; "script" if empty).
     std::string scriptClassStem(const std::string& sourcePath);
+
+    // --- U4: the session seam -------------------------------------------
+    // All three helpers self-gate (no-op unless the module is a script unit
+    // compiling into a session / the builder sits in the script entry), so
+    // call sites stay one line.
+
+    // Seed the script entry's root scope from the module's SessionState:
+    // one Field per earlier-unit binding (sessionSeeded, no alloca), with
+    // moved bindings pre-demoted so reads reject (spec §4.2). Call right
+    // after the entry method's scope is created.
+    void seedSessionScope(CajetaModulePtr module);
+
+    // Write ownership facts back to the SessionState after the entry's body
+    // codegen: this unit's top-level bindings (name, canonical type, moved
+    // state, transfer site) plus moved-state updates for seeded names. Call
+    // before the entry method's scope is destroyed.
+    void writeBackSessionState(CajetaModulePtr module);
+
+    // A `#` transfer moved `name`'s title to a new owner: emit the runtime
+    // call that disarms the session registry slot so drop_all doesn't
+    // double-drop (spec §4.2). No-op unless `name` is a session binding and
+    // the builder is inside the script entry.
+    void maybeEmitSessionDisarm(CajetaModulePtr module,
+                                const std::string& name);
 
     // Build the wrapper compilation-unit source. `outCanonical` receives the
     // implicit class's canonical name (package + '.' + stem) so the caller

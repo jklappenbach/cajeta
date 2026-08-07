@@ -63,6 +63,16 @@ void __cajeta_session_bind(const char* name, void* obj,
     s->drop_fn = drop_fn;
 }
 
+// Ownership left the session (a `#` transfer moved the binding's title to a
+// new owner): quiet the slot WITHOUT dropping — the new owner drops. The
+// name keeps its position; a later rebind reoccupies the same slot.
+void __cajeta_session_disarm(const char* name) {
+    cajeta_session_slot* slot = cajeta_session_find(name);
+    if (!slot) return;
+    slot->obj = 0;
+    slot->drop_fn = 0;
+}
+
 void* __cajeta_session_get(const char* name) {
     cajeta_session_slot* slot = cajeta_session_find(name);
     return slot ? slot->obj : 0;

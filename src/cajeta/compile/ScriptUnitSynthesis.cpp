@@ -5,6 +5,13 @@
 
 #include "CommonTokenStream.h"
 
+#include "CajetaModule.h"
+#include "SessionState.h"
+#include "../field/HeapField.h"
+#include "../method/Method.h"
+#include "../type/CajetaType.h"
+#include "../type/Scope.h"
+
 namespace cajeta {
 
     namespace {
@@ -152,6 +159,108 @@ namespace cajeta {
 
         if (outCanonical) *outCanonical = pkgName + "." + stem;
         return out;
+    }
+
+    // --- U4: the session seam -------------------------------------------
+
+    namespace {
+
+        // Shared gate: the module is a script unit compiling into a session
+        // AND the current method is the synthesized entry. Returns the
+        // session (or null when the gate fails).
+        SessionState* sessionOfEntry(const CajetaModulePtr& module) {
+            if (!module || !module->isScriptUnit()) return nullptr;
+            SessionState* session = module->getSessionState();
+            if (!session) return nullptr;
+            auto method = module->getCurrentMethod();
+            if (!method || method->getName() != scriptEntryName()) {
+                return nullptr;
+            }
+            return session;
+        }
+
+        // Tag a transfer-site note with the unit it happened in, so a later
+        // unit's diagnostic can point back across the seam.
+        std::string decorateSite(const std::string& note,
+                                 const std::string& hostName) {
+            if (note.empty() || hostName.empty()) return note;
+            return note + " in unit " + hostName;
+        }
+
+    }  // namespace
+
+    void seedSessionScope(CajetaModulePtr module) {
+        SessionState* session = sessionOfEntry(module);
+        if (!session) return;
+        ScopePtr scope = module->getScopeStack().peek();
+        if (!scope) return;
+        for (auto& fact : session->all()) {
+            // Resolve the recorded canonical in THIS unit's type world; a
+            // miss seeds name-only — the ownership checks don't need the
+            // type, and a live read rejects before touching it.
+            CajetaTypePtr type = CajetaType::find(fact.typeCanonical);
+            auto field =
+                std::make_shared<HeapField>(module, fact.name, type);
+            field->setSessionSeeded(true);
+            scope->putField(field);
+            if (fact.moved) scope->demoteToBorrow(fact.name, fact.transferSite);
+        }
+    }
+
+    void writeBackSessionState(CajetaModulePtr module) {
+        SessionState* session = sessionOfEntry(module);
+        if (!session) return;
+        ScopePtr scope = module->getScopeStack().peek();
+        if (!scope) return;
+        // Earlier units' bindings: carry this unit's move-state changes.
+        // The transfer note is (re)recorded only on a fresh move — a
+        // still-moved binding keeps the note of the unit that moved it.
+        for (auto& fact : session->all()) {
+            bool nowMoved = scope->isBorrow(fact.name);
+            if (nowMoved && !fact.moved) {
+                fact.transferSite = decorateSite(
+                    scope->transferSiteOf(fact.name),
+                    module->getScriptHostName());
+            } else if (!nowMoved) {
+                fact.transferSite.clear();
+            }
+            fact.moved = nowMoved;
+        }
+        // This unit's own top-level bindings (a redeclared seeded name lands
+        // here too — its Field replaced the seed). put() keeps first-binding
+        // order for names that already exist.
+        for (auto& name : module->getScriptBindingNames()) {
+            FieldPtr field = scope->localBinding(name);
+            if (!field || field->isSessionSeeded()) continue;
+            SessionBindingFact fact;
+            fact.name = name;
+            if (field->getType() && field->getType()->getQName()) {
+                fact.typeCanonical =
+                    field->getType()->getQName()->toCanonical();
+            }
+            fact.moved = scope->isBorrow(name);
+            fact.transferSite = decorateSite(scope->transferSiteOf(name),
+                                             module->getScriptHostName());
+            session->put(std::move(fact));
+        }
+    }
+
+    void maybeEmitSessionDisarm(CajetaModulePtr module,
+                                const std::string& name) {
+        if (!module || !module->isScriptUnit()) return;
+        if (!module->isScriptBindingName(name)) return;
+        auto* builder = module->getBuilder();
+        if (!builder || !builder->GetInsertBlock()) return;
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        if (!parentFn
+            || parentFn->getName().find(scriptEntryName())
+                   == llvm::StringRef::npos) {
+            return;
+        }
+        llvm::Function* disarmFn =
+            module->getRuntimeFunction("__cajeta_session_disarm");
+        if (!disarmFn) return;
+        builder->CreateCall(disarmFn, {builder->CreateGlobalString(name)});
     }
 
 }  // namespace cajeta
