@@ -67,6 +67,12 @@ namespace vulkan {
         // device), mirrors coopMatrixAvailable.
         static bool shaderAtomicFloatMinMaxAvailable();
 
+        // True iff the first compute device exposes VK_KHR_shader_atomic_int64
+        // (core in 1.2) with shaderBufferInt64Atomics — required to back the
+        // Int64Atomics capability that Buffer<int64|uint64>.atomic* (64-bit
+        // OpAtomicI*) declares. Self-contained, mirrors the float2 probe.
+        static bool shaderAtomicInt64Available();
+
         VulkanDriver() = default;
         ~VulkanDriver();
         VulkanDriver(const VulkanDriver&) = delete;

@@ -295,11 +295,12 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
     std::vector<const char*> devExts;
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT afEn{};
     VkPhysicalDeviceShaderAtomicFloat2FeaturesEXT af2En{};
+    VkPhysicalDeviceShaderAtomicInt64Features ai64En{};
     {
         auto enumExt = reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
             d.getInstanceProcAddr(d.instance,
                                   "vkEnumerateDeviceExtensionProperties"));
-        bool hasAf = false, hasAf2 = false;
+        bool hasAf = false, hasAf2 = false, hasAi64 = false;
         if (enumExt) {
             uint32_t n = 0;
             enumExt(d.phys, nullptr, &n, nullptr);
@@ -313,7 +314,29 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
                     else if (!strcmp(e.extensionName,
                                      VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME))
                         hasAf2 = true;
+                    else if (!strcmp(e.extensionName,
+                                     VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME))
+                        hasAi64 = true;
                 }
+            }
+        }
+        // KHR_shader_atomic_int64 (core in 1.2, still advertised as an extension):
+        // Buffer<int64|uint64>.atomic* lowers to 64-bit OpAtomicI*, which declares
+        // the Int64Atomics capability — VUID-VkShaderModuleCreateInfo-pCode-08740
+        // requires shaderBufferInt64Atomics enabled to back it.
+        if (getF2 && hasAi64) {
+            VkPhysicalDeviceShaderAtomicInt64Features qa64{};
+            qa64.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+            VkPhysicalDeviceFeatures2 q64{};
+            q64.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            q64.pNext = &qa64;
+            getF2(d.phys, &q64);
+            if (qa64.shaderBufferInt64Atomics) {
+                devExts.push_back(VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME);
+                ai64En.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+                ai64En.shaderBufferInt64Atomics = VK_TRUE;
+                ai64En.pNext = const_cast<void*>(dci.pNext);
+                dci.pNext = &ai64En;
             }
         }
         if (getF2 && (hasAf || hasAf2)) {
@@ -683,6 +706,86 @@ bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() {
     return ok;
 }
 
+bool VulkanDriver::shaderAtomicInt64Available() {
+    // Self-contained probe (mirrors shaderAtomicFloatMinMaxAvailable): does the
+    // first compute device expose VK_KHR_shader_atomic_int64 (core in 1.2) with
+    // shaderBufferInt64Atomics? 64-bit OpAtomicI* declares the Int64Atomics
+    // capability, which that feature must back. Broadly supported on desktop
+    // (RADV, NVIDIA, Intel); software rasterizers (llvmpipe) may lack it.
+    void* lib = nullptr;
+#if defined(__APPLE__)
+    for (const char* name : {"libvulkan.1.dylib", "libvulkan.dylib",
+                             "libMoltenVK.dylib"}) {
+#elif defined(_WIN32)
+    for (const char* name : {"vulkan-1.dll"}) {
+#else
+    for (const char* name : {"libvulkan.so.1", "libvulkan.so"}) {
+#endif
+        lib = dlopen(name, RTLD_NOW | RTLD_LOCAL);
+        if (lib) break;
+    }
+    if (!lib) return false;
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
+        dlsym(lib, "vkGetInstanceProcAddr"));
+    if (!gipa) { dlclose(lib); return false; }
+    auto createInstance = reinterpret_cast<PFN_vkCreateInstance>(
+        gipa(VK_NULL_HANDLE, "vkCreateInstance"));
+    if (!createInstance) { dlclose(lib); return false; }
+    VkApplicationInfo app{};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{};
+    ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
+        dlclose(lib);
+        return false;
+    }
+    auto destroyInstance = reinterpret_cast<PFN_vkDestroyInstance>(
+        gipa(inst, "vkDestroyInstance"));
+    auto enumDevs = reinterpret_cast<PFN_vkEnumeratePhysicalDevices>(
+        gipa(inst, "vkEnumeratePhysicalDevices"));
+    auto enumExt =
+        reinterpret_cast<PFN_vkEnumerateDeviceExtensionProperties>(
+            gipa(inst, "vkEnumerateDeviceExtensionProperties"));
+    auto getF2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+        gipa(inst, "vkGetPhysicalDeviceFeatures2"));
+
+    bool ok = false;
+    if (destroyInstance && enumDevs && enumExt && getF2) {
+        uint32_t count = 0;
+        enumDevs(inst, &count, nullptr);
+        std::vector<VkPhysicalDevice> devs(count);
+        if (count) enumDevs(inst, &count, devs.data());
+        for (VkPhysicalDevice pd : devs) {
+            uint32_t n = 0;
+            enumExt(pd, nullptr, &n, nullptr);
+            if (!n || n > 4096) continue;
+            std::vector<VkExtensionProperties> ep(n);
+            enumExt(pd, nullptr, &n, ep.data());
+            bool hasExt = false;
+            for (auto& e : ep)
+                if (!strcmp(e.extensionName,
+                            VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) {
+                    hasExt = true;
+                    break;
+                }
+            if (!hasExt) continue;
+            VkPhysicalDeviceShaderAtomicInt64Features ai64{};
+            ai64.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+            VkPhysicalDeviceFeatures2 f2{};
+            f2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            f2.pNext = &ai64;
+            getF2(pd, &f2);
+            if (ai64.shaderBufferInt64Atomics) { ok = true; break; }
+        }
+    }
+    if (destroyInstance) destroyInstance(inst, nullptr);
+    dlclose(lib);
+    return ok;
+}
+
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t bytes) {
     if (!impl || bytes == 0) return 0;
     Impl& d = *impl;
@@ -922,6 +1025,7 @@ bool VulkanDriver::available() { return false; }
 bool VulkanDriver::rayQueryAvailable() { return false; }
 bool VulkanDriver::coopMatrixAvailable() { return false; }
 bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() { return false; }
+bool VulkanDriver::shaderAtomicInt64Available() { return false; }
 bool VulkanDriver::init() { return false; }
 VulkanDriver::Buffer VulkanDriver::alloc(std::size_t) { return 0; }
 bool VulkanDriver::upload(Buffer, const void*, std::size_t) { return false; }
