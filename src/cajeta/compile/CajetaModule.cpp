@@ -331,6 +331,12 @@ namespace cajeta {
     }
 
     void CajetaModule::onPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) {
+        // A script unit may omit the package declaration entirely (script-units
+        // spec §2.5/§3.2 — the implicit class defaults to the reserved
+        // `cajeta.script` package, applied by the U2 synthesis pass). Nothing to
+        // record here; every source before script units carried a package line,
+        // which is why this null was never seen.
+        if (ctx == nullptr) return;
         std::vector<CajetaParser::IdentifierContext*> identifiers = ctx->qualifiedName()->identifier();
         auto itr = identifiers.begin();
         string packageName = (*itr)->getText();

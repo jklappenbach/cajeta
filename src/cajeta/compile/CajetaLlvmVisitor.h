@@ -516,7 +516,22 @@ namespace cajeta {
             for (auto& typeDeclarationContext: ctx->typeDeclaration()) {
                 pModule->onStructureDeclaration(visitChildren(typeDeclarationContext));
             }
+            // Script units (script-units spec §2): type declarations inside
+            // scriptMembers register as ordinary structures. Loose statements
+            // and top-level methods are inert here until the U2 implicit-class
+            // synthesis pass consumes them — parsing them must not corrupt an
+            // ordinary compile.
+            for (auto& scriptMemberContext: ctx->scriptMember()) {
+                if (scriptMemberContext->typeDeclaration() != nullptr) {
+                    pModule->onStructureDeclaration(
+                        visitChildren(scriptMemberContext->typeDeclaration()));
+                }
+            }
             return std::any(nullptr);
+        }
+
+        virtual std::any visitScriptMember(CajetaParser::ScriptMemberContext* ctx) override {
+            return visitChildren(ctx);
         }
 
         virtual std::any visitPackageDeclaration(CajetaParser::PackageDeclarationContext* ctx) override {
