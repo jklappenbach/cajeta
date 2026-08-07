@@ -215,6 +215,21 @@ TEST(RunCommandTests, uncaughtThrowNonZeroWithTrace) {
         << "stdout: " << r.out << "\nstderr: " << r.err;
 }
 
+// 6.3.3(a) regression — variable obscures type. A single-letter file stem
+// makes the implicit class `t`, which collides with stdlib method LOCALS
+// named `t`; before the obscuring fix, stdlib codegen under the JIT host
+// died with "no member 'scheme' on 't'". The whole stdlib compiles behind
+// this run, so it pins the fix at full breadth.
+TEST(RunCommandTests, singleLetterScriptStemRuns) {
+    auto dir = freshTempDir("stem");
+    writeFile(dir / "t.cajeta",
+        "int32 x = 40;\n"
+        "System.stdout.println(\"t=\" + (x + 2));\n");
+    RunResult r = runScript(dir, "t.cajeta");
+    EXPECT_EQ(0, r.exitCode) << r.err;
+    EXPECT_NE(std::string::npos, r.out.find("t=42")) << r.out;
+}
+
 // U5 5.3.1 at the CLI — a compile error under --diag-format=json carries
 // the script's path in the record's `file` field and a host line.
 TEST(RunCommandTests, compileErrorJsonCarriesHostFile) {
