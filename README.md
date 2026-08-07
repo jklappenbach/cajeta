@@ -18,7 +18,7 @@ Create amazing things with Cajeta.
 
 ## Version
 
-**Current:** `0.16.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
+**Current:** `0.17.4` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
 
 Versioning is manual and tied to releases. The flow:
 
