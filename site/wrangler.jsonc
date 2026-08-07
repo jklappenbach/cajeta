@@ -3,6 +3,9 @@
 // Deploy with: npm run deploy   (regen + wrangler deploy)
 {
   "name": "cajeta-site",
+  // Pin the account that owns the cajeta.dev zone (same account as
+  // cajeta-olla / olla.cajeta.dev) so deploys never prompt for a choice.
+  "account_id": "93232a5aaa10deafb429cb2e6b25bb49",
   "compatibility_date": "2026-07-01",
   // static site only — no Worker script
   "assets": {
