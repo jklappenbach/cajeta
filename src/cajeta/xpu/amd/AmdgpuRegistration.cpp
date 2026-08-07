@@ -57,9 +57,9 @@ namespace amd {
 
         // void __cajeta_xpu_register_module(i8* name, i8* image, i64 len)
         llvm::FunctionType* regTy =
-            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
-            hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+            hostModule.getOrInsertFunction("__cajeta_xpu_register_module_be", regTy);
 
         // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
         //                                          i8* kind, i32* byteSize)
@@ -127,7 +127,8 @@ namespace amd {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, hsacoGV,
-                                 llvm::ConstantInt::get(i64Ty, hsaco.size())});
+                                 llvm::ConstantInt::get(i64Ty, hsaco.size()),
+                                 llvm::ConstantInt::get(i32Ty, 1)});  // CAJ_XPU_HIP
 
             // Per-kernel parameter kinds (scalar/buffer/texture/sampler) so the
             // HIP launch path can translate Texture2D args into texture objects.

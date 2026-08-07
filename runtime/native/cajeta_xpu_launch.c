@@ -320,7 +320,7 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
         }
     }
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName, CAJ_XPU_CUDA);
     if (e) {
         if (!e->module) {
             if (g_xpu_cuda.cuModuleLoadData(&e->module, e->image) != 0)
@@ -574,7 +574,7 @@ static void cajeta_xpu_launch_hip(const char* kernelName,
                                   int64_t streamHandle,
                                   int32_t specCount, const int32_t* specValues) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName, CAJ_XPU_HIP);
     if (e) {
         if (!e->module) {
             if (g_xpu_hip.hipModuleLoadData(&e->module, e->image) != 0)
@@ -800,7 +800,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     }
 
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    struct cajeta_xpu_module* e = cajeta_xpu_find_module(launchName);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(launchName, CAJ_XPU_VULKAN);
     const void* spirv = e ? e->image : NULL;
     uint64_t len = e ? e->len : 0;
     pthread_mutex_unlock(&g_xpu_cuda_lock);
@@ -1052,29 +1052,42 @@ void __cajeta_xpu_launch(const char* kernelName,
                            streamHandle, /*deviceId=*/-1);
 }
 
-// Register a kernel's compiled cubin image under its PTX entry name. The
-// device-cubin pass emits a module global constructor that calls this; the
-// launch path (above) loads the CUDA module + resolves the function lazily on
-// first use. The image pointer lives in the host module's constant data and
-// stays valid for the process lifetime.
-void __cajeta_xpu_register_module(const char* kernelName, const void* image,
-                                  uint64_t len) {
+// Register a kernel's compiled device image under its entry name + backend id.
+// Each backend's registration ctor calls this; the launch path (above) resolves
+// by (name, active backend) and loads lazily on first use. The image pointer
+// lives in the host module's constant data and stays valid for the process
+// lifetime.
+static void cajeta_xpu_register_module_impl(const char* kernelName,
+                                            const void* image, uint64_t len,
+                                            int backend) {
     if (!kernelName || !image) return;
     pthread_mutex_lock(&g_xpu_cuda_lock);
-    // Dedup by name, OVERWRITING on re-registration (mirrors the kparams registry).
-    // A second JIT'd program in the same process that reuses a kernel name (the
-    // test suite; any multi-program JIT host) MUST adopt the NEW image: the old
-    // one was embedded in the first program's module and is freed when that JIT is
-    // torn down, so keeping the stale pointer is a use-after-free at the next
-    // cuModuleLoadData (wrong kernel / crash). Resetting module+function forces a
-    // reload from the live image. (The old CUmodule/hipModule handle is leaked;
-    // re-registration is rare and the alternative — unloading without the owning
-    // backend context here — is unsafe.)
-    struct cajeta_xpu_module* e = cajeta_xpu_find_module(kernelName);
+    // Dedup by (name, backend), OVERWRITING on re-registration (mirrors the
+    // kparams registry). A second JIT'd program in the same process that reuses
+    // a kernel name (the test suite; any multi-program JIT host) MUST adopt the
+    // NEW image: the old one was embedded in the first program's module and is
+    // freed when that JIT is torn down, so keeping the stale pointer is a
+    // use-after-free at the next cuModuleLoadData (wrong kernel / crash).
+    // Resetting module+function forces a reload from the live image. (The old
+    // CUmodule/hipModule handle is leaked; re-registration is rare and the
+    // alternative — unloading without the owning backend context here — is
+    // unsafe.) Distinct backends deliberately do NOT collide: a multi-backend
+    // build stores one image per backend under the same name.
+    int i;
+    struct cajeta_xpu_module* e = NULL;
+    for (i = 0; i < g_xpu_module_count; i++) {
+        if (g_xpu_modules[i].backend == backend &&
+            strncmp(g_xpu_modules[i].name, kernelName,
+                    sizeof(g_xpu_modules[i].name)) == 0) {
+            e = &g_xpu_modules[i];
+            break;
+        }
+    }
     if (!e && g_xpu_module_count < CAJETA_XPU_MAX_MODULES) {
         e = &g_xpu_modules[g_xpu_module_count++];
         strncpy(e->name, kernelName, sizeof(e->name) - 1);
         e->name[sizeof(e->name) - 1] = '\0';
+        e->backend = backend;
     }
     if (e) {
         e->image = image;
@@ -1083,5 +1096,18 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
         e->function = NULL;
     }
     pthread_mutex_unlock(&g_xpu_cuda_lock);
+}
+
+// Backend-tagged registration — what the per-backend ctors emit.
+void __cajeta_xpu_register_module_be(const char* kernelName, const void* image,
+                                     uint64_t len, int32_t backend) {
+    cajeta_xpu_register_module_impl(kernelName, image, len, (int) backend);
+}
+
+// Legacy 3-arg entry point (pre-backend-tag binaries): registers as backend -1,
+// which the lookup treats as serves-any. Frozen: keep this signature stable.
+void __cajeta_xpu_register_module(const char* kernelName, const void* image,
+                                  uint64_t len) {
+    cajeta_xpu_register_module_impl(kernelName, image, len, -1);
 }
 

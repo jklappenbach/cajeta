@@ -1,11 +1,17 @@
 // === Cajeta runtime fragment — TEXTUALLY #included into cajeta_runtime.c
 // === (single-TU build; not a standalone compilation unit).
-// --- registered kernel modules (cubin images keyed by PTX entry name) -------
-// The device-cubin pass emits a global constructor that calls
-// __cajeta_xpu_register_module once per @Kernel; the launch path loads the
-// CUDA module + resolves the function lazily on first use of each name.
+// --- registered kernel modules (device images keyed by entry name + backend) -
+// Each backend's registration ctor calls __cajeta_xpu_register_module_be once
+// per @Kernel with ITS image and backend id; the launch path resolves by
+// (name, active backend) and loads lazily on first use. A multi-backend build
+// registers one image per backend under the same name — keying by name alone
+// made the last ctor win, so on a nvptx,amdgpu,vulkan,cpu build the CUDA and
+// HIP paths saw the SPIR-V image ("no registered kernel" via the magic check,
+// or a RADV crash in the reverse order). backend == -1 marks a legacy 3-arg
+// registration and matches any requested backend.
 struct cajeta_xpu_module {
     char name[256];
+    int backend;      // CAJ_XPU_* id of the image's consumer, or -1 (legacy/any)
     const void* image;
     uint64_t len;     // image byte length (SPIR-V needs it; CUDA/HIP ignore it)
     void* module;     // CUmodule/hipModule, lazily loaded
@@ -15,15 +21,25 @@ struct cajeta_xpu_module {
 static struct cajeta_xpu_module g_xpu_modules[CAJETA_XPU_MAX_MODULES];
 static int g_xpu_module_count;
 
-// Caller holds g_xpu_cuda_lock.
-static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name) {
+// Caller holds g_xpu_cuda_lock. `backend` is the requesting consumer's
+// CAJ_XPU_* id, or -1 for the legacy don't-care lookup. Exact backend match
+// wins; a legacy (-1) entry serves any requester.
+static struct cajeta_xpu_module* cajeta_xpu_find_module(const char* name,
+                                                        int backend) {
     int i;
+    struct cajeta_xpu_module* wild = NULL;
     for (i = 0; i < g_xpu_module_count; i++) {
         if (strncmp(g_xpu_modules[i].name, name,
                     sizeof(g_xpu_modules[i].name)) == 0) {
-            return &g_xpu_modules[i];
+            if (backend == -1 || g_xpu_modules[i].backend == backend) {
+                return &g_xpu_modules[i];
+            }
+            if (g_xpu_modules[i].backend == -1 && !wild) {
+                wild = &g_xpu_modules[i];
+            }
         }
     }
+    if (wild) { return wild; }
     return NULL;
 }
 
