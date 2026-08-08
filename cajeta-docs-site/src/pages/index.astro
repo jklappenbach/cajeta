@@ -15,9 +15,43 @@ const metadata = {
   <HeroText
     tagline="Cajeta"
     title="A hybrid Java / C++ / Rust-style language."
-    subtitle="Single-owner memory model. AoT aspect weaving. High-throughput async runtime. LLVM-backed compilation — JIT or native, CPU or GPU."
+    subtitle="Single-owner memory model. AoT aspect weaving. High-throughput async runtime. LLVM-backed compilation — JIT or native, CPU or GPU. And designed around AI agents from the ground up: the compiler is an MCP server, and every library ships the guidance an agent needs to use it."
     callToAction={{ text: 'Read the docs', href: getPermalink('/docs'), icon: 'tabler:book' }}
     callToAction2={{ text: 'GitHub', href: 'https://github.com/jklappenbach/cajeta', target: '_blank', icon: 'tabler:brand-github' }}
+  />
+
+  <Features
+    id="agents"
+    tagline="Agents"
+    title="Built for agents, from the ground up"
+    subtitle="What limits an agent on an unfamiliar language is not reasoning — it is access to authoritative, specific guidance at the moment it writes the line. Cajeta ships that guidance in the toolchain, next to the code it describes, over a protocol the agent already speaks."
+    columns={2}
+    items={[
+      {
+        title: 'The compiler is an MCP server',
+        description:
+          '`cajeta compiler-mcp` speaks Model Context Protocol over stdio — no second binary, no daemon, no network. It exposes searchSkills, listSkills, and getSkills, and its initialize instructions tell the agent to look guidance up before it writes code.',
+        icon: 'tabler:plug-connected',
+      },
+      {
+        title: 'Skills, not scraped docs',
+        description:
+          'Hand-written guides keyed to a library, package, class, or method — written against the failure modes that make a Java-fluent model crash, not as a second API reference. More than 180 ship embedded in the compiler, covering the language, the toolchain, and every stdlib package.',
+        icon: 'tabler:book',
+      },
+      {
+        title: 'Every library ships its skills',
+        description:
+          'Skills are part of the .cja archive format: put them in skills/*.md and the build validates, indexes, and packages them beside the bitcode. Resolve a dependency and you have its guidance — offline, pinned to the version you resolved.',
+        icon: 'tabler:package',
+      },
+      {
+        title: 'Search that survives a typo',
+        description:
+          'Matching is fuzzy and hierarchical: a misspelled name still resolves, and one query returns the symbol, its neighbours, and the overview above it. Every result is a stable cja-skill:// URI — a valid cache key, identical on every machine.',
+        icon: 'tabler:search',
+      },
+    ]}
   />
 
   <Features

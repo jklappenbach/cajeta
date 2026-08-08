@@ -133,4 +133,16 @@ Core semantics: types, ownership, memory, dispatch.
   [windows-release-ci-spec](buildtool/windows-release-ci-spec.md) — the Windows release leg.
 - [Debugging](debugging/Debugging.md) — the DAP server and debug story.
 - [Embedded](embedded/Embedded.md) — the embedded roadmap.
-- [CajetaMcp](mcp/CajetaMcp.md) — the MCP server for the toolchain.
+
+## Agents — `mcp/`
+
+Cajeta is designed around AI agents from the ground up: the compiler is an MCP
+server, and skills — hand-written implementation guidance — ship inside every
+library archive.
+
+- [CompilerMcp](mcp/CompilerMcp.md) — the MCP server built into the compiler
+  (`cajeta compiler-mcp`): transport, lifecycle, and the three skill tools.
+- [Skills](mcp/Skills.md) — what a skill is, the authoring levels, how libraries
+  package them into the `.cja`, URIs, and match semantics.
+- [CajetaMcp](mcp/CajetaMcp.md) — the external, Cajeta-written server adding
+  `compile` and `jit_execute` over an execution cache.

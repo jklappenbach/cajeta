@@ -81,6 +81,8 @@ void printUsage(const char* progname) {
               << "                     (ide install | uninstall | list).\n"
               << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
               << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
+              << "  compiler-mcp       Model Context Protocol server over stdio, serving skills\n"
+              << "                     (searchSkills | listSkills | getSkills) to a coding agent.\n"
               << "  stdlib <cmd>       Embedded stdlib source access (stdlib list |\n"
               << "                     stdlib extract <dir>) — extraction preserves package\n"
               << "                     paths and writes a .cajeta-stdlib.json identity marker.\n"

@@ -27,6 +27,11 @@ What comes with the toolchain:
   file and network I/O, time, hashing, codecs, math, and GPU kernels.
 - Compile-time dependency injection and aspects — no runtime container.
 - A capability model: a program touches only what its manifest declares.
+- Built-in support for AI agents: `cajeta compiler-mcp` is a Model Context
+  Protocol server inside the compiler, serving **skills** — hand-written
+  implementation guidance for the language, the toolchain, and every library.
+  More than 180 ship in the binary, and every published library carries its own
+  ([chapter 03](03-your-first-project.md)).
 
 ## How the documentation fits together
 

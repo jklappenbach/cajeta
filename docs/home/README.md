@@ -5,7 +5,9 @@
     Cajeta is a compiled systems language in the C++/Java family with
     Rust-style ownership: explicit <code>stack</code>/<code>heap</code>
     allocation, a static borrow checker, and no garbage collector — the
-    safety is settled at compile time, the runtime just runs.
+    safety is settled at compile time, the runtime just runs. And it is
+    designed around AI agents from the ground up: the compiler is an MCP
+    server, and every library ships the guidance an agent needs to use it.
   </p>
   <div class="hero-ctas">
     <a class="button primary" href="../guide/README.md">Read the guide</a>
@@ -42,6 +44,38 @@ language as the host program.
     <p>Collections, streams, fibers and channels, JSON/CSV codecs, networking, reflection — a coherent stdlib, one doc per class.</p>
   </div>
 </div>
+
+## Built for agents
+
+Most Cajeta from here on will be written with an agent in the loop. What limits
+an agent on an unfamiliar language is not reasoning — it is access to
+authoritative, specific guidance at the moment it writes the line. So Cajeta
+ships that guidance *in the toolchain*, next to the code it describes, served
+over a protocol the agent already speaks.
+
+<div class="feature-grid">
+  <div class="feature">
+    <h3>The compiler is an MCP server</h3>
+    <p><code>cajeta compiler-mcp</code> speaks Model Context Protocol over stdio — no second binary, no daemon, no network. It exposes <code>searchSkills</code>, <code>listSkills</code>, and <code>getSkills</code>, and its <code>initialize</code> instructions tell the agent to look guidance up <em>before</em> it writes code.</p>
+  </div>
+  <div class="feature">
+    <h3>Skills, not scraped docs</h3>
+    <p>Hand-written guides keyed to a library, package, class, or method — written against the failure modes that make a Java-fluent model crash, not as a second API reference. More than 180 ship embedded in the compiler, covering the language, the toolchain, and every stdlib package.</p>
+  </div>
+  <div class="feature">
+    <h3>Every library ships its skills</h3>
+    <p>Skills are part of the <code>.cja</code> archive format: put them in <code>skills/*.md</code> and the build validates, indexes, and packages them beside the bitcode. Resolve a dependency and you have its guidance — offline, pinned to the version you resolved.</p>
+  </div>
+  <div class="feature">
+    <h3>Search that survives a typo</h3>
+    <p>Matching is fuzzy and hierarchical: a misspelled name still resolves, and one query returns the symbol, its neighbours, and the overview above it. Every result is a stable <code>cja-skill://</code> URI — a valid cache key, identical on every machine.</p>
+  </div>
+</div>
+
+The same three operations are available to humans and CI as
+`cajeta search-skill` / `list-skills` / `get-skills`, from the same in-process
+cores. See [the built-in MCP server](../specification/mcp/CompilerMcp.md) and
+[the skill system](../specification/mcp/Skills.md).
 
 ## From IR to silicon
 
@@ -116,6 +150,9 @@ visual computing — written once, running across vendors and devices.
   walk from installation to reflection, in 22 short chapters.
 - **Looking up an API?** The [stdlib reference](../stdlib/README.md) has one
   document per public class.
+- **Wiring up an agent?** [CompilerMcp](../specification/mcp/CompilerMcp.md) has
+  the server and its tools; [Skills](../specification/mcp/Skills.md) covers the
+  format, the authoring levels, and how to ship skills with your own library.
 - **Designing against the language?** The [specification index](../specification/README.md)
   holds the deep-dive documents behind every subsystem.
 - **Wondering about speed?** The [benchmarks](../../bench/README.md) compare
