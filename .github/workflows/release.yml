@@ -359,9 +359,9 @@ jobs:
       - name: Fetch prebuilt LLVM toolchain (from the cajeta-spirv fork)
         env:
           # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
-          # patches). r4 is the first release that publishes ALL four targets
-          # (linux-x64/arm64, macos-arm64, windows-x64).
-          LLVM_RELEASE_TAG: cajeta-llvm-23-r4
+          # patches). r6 adds Int64Atomics to the Vulkan/Shader flavor (64-bit
+          # OpAtomic*); r4 was the first with all four targets.
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r6
         run: |
           set -euo pipefail
           # The fork names assets by host (asset_os), NOT by cajeta's target triple:

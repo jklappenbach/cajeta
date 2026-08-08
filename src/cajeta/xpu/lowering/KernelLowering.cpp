@@ -2598,6 +2598,29 @@ private:
                 return name == "all" ? target.quadAll(builder, mod, pred)
                                      : target.quadAny(builder, mod, pred);
             }
+        } else if (recv == "Cajeta") {
+            // Cajeta.f32ToBits / bitsToF32 / f64ToBits / bitsToF64 — IEEE bit
+            // reinterpretation, mirroring the host lowering (a plain bitcast on
+            // every backend; SPIR-V selects OpBitcast). Needed in-kernel by the
+            // SFU-table `__fdividef` replication (U12 split scoring): the table
+            // index is the denominator's mantissa bits.
+            const auto& cargs = mc->getParameters();
+            if ((name == "f32ToBits" || name == "bitsToF32" ||
+                 name == "f64ToBits" || name == "bitsToF64") &&
+                cargs.size() == 1) {
+                llvm::Value* v = lowerExpr(cargs[0].expression);
+                llvm::Type* to =
+                    name == "f32ToBits"
+                        ? (llvm::Type*) llvm::Type::getInt32Ty(builder.getContext())
+                  : name == "bitsToF32"
+                        ? (llvm::Type*) llvm::Type::getFloatTy(builder.getContext())
+                  : name == "f64ToBits"
+                        ? (llvm::Type*) llvm::Type::getInt64Ty(builder.getContext())
+                        : (llvm::Type*) llvm::Type::getDoubleTy(builder.getContext());
+                return builder.CreateBitCast(v, to, "cajeta.bits");
+            }
+            unsupported("Cajeta." + name + " in a kernel (supported: "
+                        "f32ToBits, bitsToF32, f64ToBits, bitsToF64)");
         } else if (recv == "Bits") {
             // Per-invocation bit manipulation. No seam: these lower to
             // *generic* LLVM intrinsics that every backend (incl. the
@@ -2668,9 +2691,13 @@ private:
         // buf[i]); every form returns the OLD value.
         //   Buffer<float32>: atomic{Add,Min,Max}(index, value) — the parallel-
         //     reduction / histogram lever (SPV_EXT_shader_atomic_float on Vulkan).
-        //   Buffer<int32|uint32>: atomic{Add,Sub,Min,Max,And,Or,Xor,Exchange}
-        //     (index, value) and atomicCompareExchange(index, expected, desired) —
-        //     core OpAtomicI*/CompareExchange; the universal concurrency primitive.
+        //   Buffer<int32|uint32|int64|uint64>: atomic{Add,Sub,Min,Max,And,Or,Xor,
+        //     Exchange}(index, value) and atomicCompareExchange(index, expected,
+        //     desired) — core OpAtomicI*/CompareExchange; the universal concurrency
+        //     primitive. 64-bit forms need Int64Atomics on Vulkan (the runtime
+        //     enables shaderBufferInt64Atomics when the device has it); native on
+        //     CUDA/HIP/CPU. int64 atomicAdd is the exact-parallel-reduction lever
+        //     (integer adds commute → order-independent bit-identical sums).
         if (!recv.empty() && bufferBases.count(recv) &&
             (name == "atomicAdd" || name == "atomicSub" || name == "atomicMin" ||
              name == "atomicMax" || name == "atomicAnd" || name == "atomicOr" ||
@@ -2702,7 +2729,8 @@ private:
             const bool elemSigned =
                 bufferElemSigned.count(recv) ? bufferElemSigned[recv] : true;
             const bool elemIsFloat = elemTy->isFloatTy();
-            const bool elemIsI32 = elemTy->isIntegerTy(32);
+            const bool elemIsInt =
+                elemTy->isIntegerTy(32) || elemTy->isIntegerTy(64);
             llvm::Value* idx = lowerExpr(args[0].expression);
             llvm::Type* i64 = llvm::Type::getInt64Ty(ctx);
             if (idx->getType() != i64)
@@ -2712,9 +2740,9 @@ private:
                                                        bufferBases[recv],
                                                        elemTy, idx);
             if (isCas) {
-                if (!elemIsI32)
+                if (!elemIsInt)
                     unsupported("Buffer.atomicCompareExchange requires an "
-                                "int32/uint32 buffer (v1)");
+                                "int32/uint32/int64/uint64 buffer");
                 llvm::Value* expected =
                     coerceTo(lowerExpr(args[1].expression), elemTy);
                 llvm::Value* desired =
@@ -2737,7 +2765,7 @@ private:
                             "buffers (float atomics: atomicAdd/atomicMin/"
                             "atomicMax only)");
             }
-            if (elemIsI32) {
+            if (elemIsInt) {
                 LoweringTarget::AtomicIntOp op =
                     name == "atomicAdd"  ? LoweringTarget::AtomicIntOp::Add
                   : name == "atomicSub"  ? LoweringTarget::AtomicIntOp::Sub
@@ -2750,8 +2778,8 @@ private:
                 return target.atomicIntRMW(builder, mod, op, ptr, val,
                                            elemSigned, order);
             }
-            unsupported("Buffer." + name + " requires a float32 or int32/uint32 "
-                        "buffer (v1)");
+            unsupported("Buffer." + name + " requires a float32, int32/uint32, "
+                        "or int64/uint64 buffer");
         }
         // Matrix<T,R,C> instance methods (B1): transpose/identity/row/col/
         // hadamard. Checked BEFORE the vector branch — a matrix local's slot is

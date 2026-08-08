@@ -1,0 +1,21 @@
+# Environment audit for the phoenix-wsl runner — dispatch-only.
+name: gpu-env-audit
+on: workflow_dispatch
+jobs:
+  audit:
+    runs-on: [self-hosted, wsl]
+    steps:
+      - name: Audit the WSL GPU environment
+        run: |
+          set -x
+          uname -a
+          cat /etc/os-release | head -2
+          nvidia-smi || echo "NO nvidia-smi"
+          nvcc --version || ls /usr/local/cuda*/bin/nvcc 2>/dev/null || echo "NO nvcc"
+          python3 --version || echo "NO python3"
+          pip3 --version || echo "NO pip3"
+          git --version
+          df -h . | tail -1
+          free -g | head -2
+          nproc
+          sudo -n true 2>/dev/null && echo "passwordless sudo: YES" || echo "passwordless sudo: NO"

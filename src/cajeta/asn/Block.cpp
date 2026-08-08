@@ -6,6 +6,7 @@
 #include "LocalVariableDeclaration.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/ScriptUnitSynthesis.h"
 #include "../type/Scope.h"
 #include "cajeta/dbg/DebugLocTable.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
@@ -198,7 +199,17 @@ namespace cajeta {
             // mark had not run yet the frame would still carry the PREVIOUS
             // statement's line — `cjbreak F.cajeta:14` would stop and `cjstack`
             // would report :13 (external-debug §5.1).
-            if (lineInfo) dbg::emitLineMark(module, child->getSourceLine());
+            // script-units U5 — statements in a script module live in
+            // wrapper coordinates; translate to the HOST line for the
+            // line-info shadow stack, and stamp it on the module so an
+            // unlocated semantic error thrown by this statement can be
+            // located (remapScriptException reads it).
+            int markLine = child->getSourceLine();
+            if (module->isScriptUnit()) {
+                markLine = module->mapScriptLine(markLine);
+                module->setScriptCurrentHostLine(markLine);
+            }
+            if (lineInfo) dbg::emitLineMark(module, markLine);
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
             child->generateCode(module);
@@ -221,7 +232,21 @@ namespace cajeta {
                 exited = true;
             }
             if (exited) {
-                linScope->retractMovesSince(moveMark);
+                // script-units U4 — inside the script entry the marks feed
+                // the SESSION write-back: a `return` terminates the unit,
+                // not a join, so retracting would erase the very facts a
+                // later unit's compile must see (spec §4.2). Keep them —
+                // conservative in the safe direction (a moved-looking
+                // binding errors on a cross-unit read; a retracted one
+                // would read dangling).
+                bool scriptEntry = false;
+                if (module->isScriptUnit()) {
+                    auto cm = module->getCurrentMethod();
+                    scriptEntry = cm && cm->getName() == scriptEntryName();
+                }
+                if (!scriptEntry) {
+                    linScope->retractMovesSince(moveMark);
+                }
             }
         }
 

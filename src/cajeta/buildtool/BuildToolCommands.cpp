@@ -2737,7 +2737,8 @@ namespace cajeta::buildtool {
                 cmd == "verify-reproducible" ||
                 cmd == "sandbox-info" ||
                 cmd == "install" ||
-                cmd == "toolchain") {
+                cmd == "toolchain" ||
+                cmd == "run") {   // script-units §7 — first-class verb
                 return false;
             }
             // Anything starting with `-` is a flag for the existing

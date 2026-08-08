@@ -21,6 +21,7 @@
 #include "CajetaModule.h"
 #include "NativeLink.h"
 #include "CajetaLlvmVisitor.h"
+#include "ScriptUnitSynthesis.h"
 #include "Optimizer.h"
 #include "StdlibEmbedded.h"
 #include "cajeta/dbg/DebugCodegen.h"
@@ -679,6 +680,34 @@ namespace cajeta {
         if (syntaxErrors > 0) {
             throw SyntaxErrorException(static_cast<int>(syntaxErrors));
         }
+        // Script units (script-units spec §2-§3): a unit that took the script
+        // alternative is rewritten — original token text spliced verbatim —
+        // into the implicit-class form and re-parsed; the wrapper is an
+        // ordinary unit, so the recursion terminates after one level. The
+        // semantic visitor only ever sees ordinary units.
+        {
+            auto* unitCtx = dynamic_cast<CajetaParser::CompilationUnitContext*>(parseTree);
+            if (isScriptUnit(unitCtx)) {
+                std::string stem = scriptClassStem(module->getSourcePath());
+                std::string canonical;
+                std::vector<std::string> bindings;
+                ScriptLineMap lineMap;
+                std::string wrapper =
+                    synthesizeScriptUnit(tokens, unitCtx, stem, &canonical,
+                                         &bindings, &lineMap);
+                module->setScriptUnit(true);
+                module->setScriptBindingNames(std::move(bindings));
+                module->setScriptLineMap(std::move(lineMap));
+                antlr4::ANTLRInputStream wrapperInput(wrapper);
+                parseSource(module, wrapperInput, label, quiet);
+                auto& structures = module->getStructures();
+                auto it = structures.find(canonical);
+                if (it != structures.end() && it->second != nullptr) {
+                    it->second->setScriptSynthesized(true);
+                }
+                return;
+            }
+        }
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(module);
         // RAII: the semantic visitor throws on many inputs, so restore the
@@ -1214,6 +1243,11 @@ namespace cajeta {
             targetMachine);
         // Propagate compiler-level flags so codegen for this module respects them.
         module->setFlags(flags);
+        // script-units U4 — session compile: hand every module the host's
+        // session table + source name. Only a script unit's entry codegen
+        // reads them (self-gated), so ordinary modules are unaffected.
+        module->setSessionState(sessionState);
+        module->setScriptHostName(sessionHostName);
         // Reproducible builds: now that flags (with --debug-prefix-map) are
         // set, scrub the absolute source path the constructor embedded so the
         // emitted IR is byte-identical across hosts.
@@ -2899,7 +2933,23 @@ namespace cajeta {
             }
             return prod;
         };
-        for (auto& module : modules) {
+        // @Kernel methods DEFINED in classpath deps must register like the
+        // primary compilation's own: at Obj/Exe emit the deps' bodies are
+        // re-driven through this codegen (the linkClasspathDeps re-drive
+        // above), so their kernels lower here exactly like source kernels —
+        // but this walk historically saw only `modules`, leaving a library
+        // kernel with no device code, no registration ctor, and (when the
+        // consumer itself has no kernels) no backend manifest at all: launch
+        // fell to "no available backend among {}". Discovered by
+        // cajeta-xgboost U12's GpuHistogram (the first library-resident
+        // kernel that unconditionally launches).
+        std::vector<CajetaModulePtr> xpuModules(modules.begin(), modules.end());
+        if ((emitMode == EmitMode::Obj || emitMode == EmitMode::Exe)
+                && !externalModules.empty()) {
+            xpuModules.insert(xpuModules.end(),
+                              externalModules.begin(), externalModules.end());
+        }
+        for (auto& module : xpuModules) {
             auto mir = cajeta::xpu::mir::XpuMirBuilder::buildForModule(module);
             if (!mir) continue;
             for (auto& site : mir->launchSites) {
@@ -2917,7 +2967,7 @@ namespace cajeta {
         }
         for (const auto& k : kernelUnboundedBlock) kernelMaxThreads.erase(k);
 
-        for (auto& module : modules) {
+        for (auto& module : xpuModules) {
             std::vector<MethodPtr> kernels;
             std::vector<MethodPtr> shaders;
             for (auto& method : module->getAllMethods()) {

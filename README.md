@@ -2,7 +2,19 @@
 
 Cajeta is a hybrid systems / application language combining C++-style true templates, multiple-inheritance, and operator overloading.  It's also Java-style class semantics and annotations, It's Rust-inspired ownership for memory management — with a single explicit allocation idiom that lets the caller pick stack or heap at initialization.
 
-The compiler is LLVM-backed (LLVM 23) and produces either IR or native binaries.  Cajeta believes in a compiler that walks you or an AI through the code with abundant linting and verbose error messages. 
+The compiler is LLVM-backed (LLVM 23) and produces either IR — distributed in compressed archives and executed by an optimized, caching JIT — or native binaries per target (see [Compilation and execution](#compilation-and-execution)).
+
+**Cajeta is designed around agents from the ground up.** The compiler *is* an MCP
+server: `cajeta compiler-mcp` speaks Model Context Protocol over stdio — no
+separate install, no daemon, no network — and it serves **skills**, hand-written
+implementation guides an agent retrieves *before* it writes code. More than 180
+ship embedded in the binary, covering the language itself, the toolchain, and
+every stdlib package; and **every library published for Cajeta ships its own
+skills inside its `.cja` archive**, discovered through the lockfile and served by
+that same server. The diagnostics follow the same principle — abundant linting
+and verbose, prescriptive error messages that walk a human *or* a model to the
+fix. See [Built for agents](#built-for-agents).
+
 
 Cajeta may not be your choice for embedded, but it's lean enough to perform that role.  A future roadmap will produce a version that will be able to exist even in the most austere environments.
 
@@ -18,7 +30,7 @@ Create amazing things with Cajeta.
 
 ## Version
 
-**Current:** `0.8.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
+**Current:** `0.18.0` &nbsp;·&nbsp; baked into the binary at configure time — `cajeta --version` reports it.
 
 Versioning is manual and tied to releases. The flow:
 
@@ -41,6 +53,14 @@ Supported binary targets (see [RELEASING.md](RELEASING.md) for the full matrix):
 
 - [Version](#version)
 - [Quick taste](#quick-taste)
+- [Built for agents](#built-for-agents)
+  - [The compiler is an MCP server](#the-compiler-is-an-mcp-server)
+  - [Skills](#skills)
+  - [Every library ships its skills](#every-library-ships-its-skills)
+  - [The same discovery from the CLI](#the-same-discovery-from-the-cli)
+  - [The rest of the agent surface](#the-rest-of-the-agent-surface)
+- [Compilation and execution](#compilation-and-execution)
+- [Ecosystem](#ecosystem)
 - [Installing](#installing)
 - [Building](#building)
 - [Running the tests](#running-the-tests)
@@ -93,6 +113,277 @@ public final class App {
 ```
 
 `stack`/`heap` are mandatory at every allocation. `new` is removed.
+
+No class is required to get started — a file of loose statements is a
+[script unit](docs/specification/lang/ScriptUnits.md), and `cajeta run`
+executes it directly with the same type checking, borrow checking, and JIT
+as any program:
+
+```cajeta
+// tool.cajeta — cajeta run tool.cajeta
+int32 x = 40;
+System.stdout.println("answer = " + (x + 2));
+```
+
+---
+
+## Built for agents
+
+Most of the code written in any new language from here on will be written with
+an agent in the loop. What limits an agent on an unfamiliar language is not
+reasoning — it is **access to authoritative, current, specific guidance** at the
+moment it is about to write a line. Left without it, a model falls back on its
+Java/C++/Rust priors, and in Cajeta those priors produce code that compiles and
+then dies: a borrow stored where a transfer was required, a container element
+returned as if the container had given up ownership.
+
+So the guidance ships *in the toolchain*, next to the code it describes,
+retrievable over a protocol the agent already speaks.
+
+### The compiler is an MCP server
+
+```sh
+cajeta compiler-mcp        # JSON-RPC 2.0 over stdio; stdout is the protocol channel
+```
+
+No second binary, no install step, no network. The server is a subcommand of the
+compiler, so **wherever the compiler is, the skills server is**, and the corpus
+it serves is version-locked to that compiler. It answers from any working
+directory — with no project and no `cajeta.lock` — and when a project *is*
+present, that lockfile's resolved archives are added to the search context.
+
+Three tools, with JSON-Schema inputs:
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `searchSkills` | `{name, version?, from?, exact?}` | ranked matches: `uri`, `matchedName`, `tier`, `distance` |
+| `listSkills` | `{scope?, version?, from?}` | catalog rows: `uri`, `title`, `names` |
+| `getSkills` | `{uris: [...]}` | the Markdown payload per URI (batched, partial success allowed) |
+
+The `initialize` result carries **instructions** that tell the agent what to do
+with them: search before writing or editing Cajeta code, fetch the payload for
+any returned URI it does not already hold, and follow that guidance over its own
+prior assumptions.
+
+Register it with your agent host — this repo's [`.mcp.json`](.mcp.json) does the
+same, pointed at the local build:
+
+```json
+{
+  "mcpServers": {
+    "cajeta-skills": {
+      "type": "stdio",
+      "command": "cajeta",
+      "args": ["compiler-mcp"]
+    }
+  }
+}
+```
+
+A search-then-fetch round trip, verbatim:
+
+```jsonc
+→ {"jsonrpc":"2.0","id":1,"method":"tools/call",
+   "params":{"name":"searchSkills","arguments":{"name":"cajeta/language/ownership"}}}
+← {"id":1,"jsonrpc":"2.0","result":{"results":[
+     {"uri":"cja-skill://cajeta.language@1.0/language-ownership",
+      "matchedName":"cajeta/language/ownership","tier":"exact","distance":0},
+     {"uri":"cja-skill://cajeta.language@1.0/language-overview",
+      "matchedName":"cajeta/language/ownership","tier":"ancestorOverview","distance":0}]}}
+```
+
+Matching is **hierarchical and prefix-inclusive** — a search for a package
+returns that package's overview *plus* the skills bound to its classes and
+methods — and **fuzzy**, so a typo'd or half-remembered name still resolves and
+the response reports which name it matched. `exact` disables the fuzz;
+`version` and `from` pin resolution in multi-version (diamond) builds.
+
+### Skills
+
+A skill is a Markdown document with YAML frontmatter. The frontmatter is
+machine-facing and drives search; the body is the guidance.
+
+```markdown
+---
+id: language-ownership
+applies-to: [cajeta/language/ownership, cajeta/language/borrowing, cajeta/language/slices]
+title: Ownership, borrowing, # transfer, drops, and slices
+description: The rules that keep cajeta memory-safe at compile time.
+---
+# Ownership & transfer — read this before storing, returning, or passing heap values
+...
+```
+
+Skills are **hand-written, not generated**, and they are written against the
+agent's failure modes rather than as a second API reference. A skill earns its
+place in the catalog only if its absence would make a competent agent (a) crash
+or corrupt — code that compiles and dies; (b) fail to compile blind — rejected
+for a reason the error text alone does not teach; (c) silently miscompile intent
+— code that runs and does the wrong thing; or (d) dead-end — hunt for a
+capability that does not exist or lives elsewhere. Anything a model would infer
+correctly from Java intuition is deliberately left out.
+
+They exist at the granularity of the thing being explained: **library** (routing
+and orientation), **package** (the neighborhood map), **component** (how a set of
+classes collaborate), **class** (how to use this type), and **method** (the
+sharp, the complex, the protocol-bearing).
+
+The embedded corpus — always present, zstd-compressed into the binary, no
+lockfile required — currently runs to **181 skills**:
+
+| Domain | Count | What it covers |
+|---|---|---|
+| `cajeta.language` | 9 | Ownership, types & allocation, classes & MI, templates, lambdas, concurrency, errors, annotations, and the overview that routes between them |
+| `cajeta.toolchain` | 7 | Project layout and `cajeta.json`, build, `jit-run`, AOT compile, tasks, testing, skill discovery itself |
+| `cajeta.stdlib` | 1 | The root router: a task → package table over the whole standard library |
+| stdlib packages | 164 | One corpus per package — `io` (17), `collection` (14), `reflect` (13), `math` (13), `lang` (13), `xpu` (12), `ifx` (12), `concurrent` (12), `codec` (12), `time` (11), `hash` (10), `process` (7), `search` (6), `wire` (4), `error` (4), `nucleo` (2), `gfx` (2) |
+
+### Every library ships its skills
+
+Skills are not a compiler-only privilege. **Every library produced for Cajeta
+releases with its skills as part of its archive format.**
+
+Put them in `skills/*.md` at the package root. At build time the toolchain
+discovers, validates, and indexes them, then embeds them into the `.cja`
+alongside the bitcode:
+
+```
+mylib.cja
+├── … compiled bitcode members
+├── skills/index.json      ← canonical-name → ids, id → {title, member-path}
+├── skills/opening-files.md
+└── skills/retry-policy.md
+```
+
+Consequences, all of them deliberate:
+
+- **They travel with the dependency.** Resolve the package and you have its
+  guidance — `getSkills` never touches the network.
+- **They are versioned with the code they describe.** There is no per-skill
+  version field; a skill is pinned by its library's *resolved* version, so
+  updating guidance means publishing a version.
+- **URIs are stable identities.** `cja-skill://<library>@<version>/<skill-id>`
+  resolves the same payload on every machine, which makes a held URI a valid
+  cache key — an agent that already has the payload skips the fetch.
+- **First-party scoping.** A search across your dependency graph returns each
+  dependency's own skills for the symbols that dependency defines.
+- **Compressed at rest.** Skill members ride the `CAJETA01` archive's zstd path
+  and are decompressed only when read.
+
+An author who publishes without skills publishes a library agents have to guess
+at. The registry at [olla.cajeta.dev](https://olla.cajeta.dev) treats them as
+part of a complete release.
+
+### The same discovery from the CLI
+
+The MCP tools and the CLI subcommands call the same in-process cores — identical
+results are a test, not a convention. Useful for humans, for CI, and for agents
+that drive a shell rather than a protocol:
+
+```sh
+$ cajeta search-skill cajeta/collection/ArrayList
+cja-skill://cajeta.collection@1.0/collection-ArrayList	cajeta/collection/ArrayList
+
+$ cajeta list-skills cajeta/language
+cja-skill://cajeta.language@1.0/language-ownership	Ownership, borrowing, # transfer, drops, and slices
+…
+
+$ cajeta get-skills cja-skill://cajeta.language@1.0/language-ownership
+# cja-skill://cajeta.language@1.0/language-ownership
+---
+id: language-ownership
+…
+```
+
+Add `--json` to any of the three for the machine shape, `--exact` to disable
+fuzzy matching, and `--version` / `--from` to pin version resolution.
+`get-skills` takes a comma-delimited URI list and fetches in one call.
+
+### The rest of the agent surface
+
+- **Diagnostics written to be read by a model.** Verbose errors that name the
+  rule and the fix, "did you mean…?" suggestions (`--diag-hints`), and a lint
+  catalog with per-declaration suppression — see [`LintRules.md`](docs/specification/lang/LintRules.md).
+- **A fast edit→verify loop.** `cajeta jit-run <root> <pkg.Class.method>`
+  compiles and runs an entry point in-process, so an agent can check its work in
+  one command without producing a binary.
+- **Protocol access to the toolchain.** A DAP server (`cajeta dap`) for
+  breakpoint-level inspection, and the external
+  [`cajeta-mcp`](docs/specification/mcp/CajetaMcp.md) server (written *in*
+  Cajeta, under `tools/mcp/`) which adds `compile` and `jit_execute` tools over
+  an in-memory source tree, backed by an on-disk execution cache.
+
+Deep dives: [`CompilerMcp.md`](docs/specification/mcp/CompilerMcp.md) (the
+built-in server), [`Skills.md`](docs/specification/mcp/Skills.md) (the skill
+system, authoring, and packaging), [`CajetaMcp.md`](docs/specification/mcp/CajetaMcp.md)
+(the external server).
+
+---
+
+## Compilation and execution
+
+Cajeta is built on LLVM. The compiler lowers source to LLVM's intermediate
+representation (IR), runs it through the optimizer pipeline — including the
+loop and SLP vectorizers, so numeric code uses the host's wide SIMD
+registers — and converts the result directly into machine code for the
+processors that will execute it. From there, programs ship and run in three
+shapes:
+
+**IR archives — write once, run anywhere.** `cajeta build` emits a `.cja`: a
+zstd-compressed archive carrying the program as LLVM bitcode (plus sources,
+resources, and agent skills). Both libraries and executables distribute this
+way. At run time an optimized JIT lowers the bitcode for whatever CPU it
+lands on, and the resulting **machine code is cached** (an `llvm::ObjectCache`
+plus whole-program cache slots) — so a warm start skips compilation entirely
+and execution is fast from the first call. One artifact, every platform the
+toolchain supports.
+
+**Native binaries.** `--emit=exe` produces a conventional executable for a
+specific target triple — same IR, same optimizer, but ahead-of-time, for
+deployments that want to forego the JIT machinery altogether.
+
+**GPU kernels.** `@Kernel` methods lower through LLVM's device backends
+directly to each GPU architecture: NVPTX → `ptxas` → cubin (NVIDIA),
+AMDGCN → lld → hsaco (AMD), and **SPIR-V** for the Vulkan-portable path —
+with a CPU backend as the universal fallback. You can pin the device
+explicitly (`--xpu-backend=<list>`, `--xpu-arch=<arch>`, e.g. `sm_89`), or
+leave it unset and the toolchain selects the best execution profile for the
+silicon it finds, falling back where a backend lacks a capability —
+ultimately to the CPU path, so kernel code always runs. Vendor-exclusive
+features (tensor-core peak paths and the like) live in explicit vendor
+libraries rather than the portable core.
+
+Throughout, linking is **lazy**: the runtime and standard library are linked
+as bitcode, and only what your program actually references is materialized
+into the output — which keeps both JIT working sets and native binaries
+small.
+
+---
+
+## Ecosystem
+
+**Libraries.** The public package registry at
+[olla.cajeta.dev](https://olla.cajeta.dev) hosts a growing set of libraries,
+published as signed `.cja` archives and resolved by the build tool
+(`cajeta.json` names the dependency; the toolchain fetches, sha256-verifies,
+and caches it). Each archive carries the library's **agent skills** along with
+its bitcode, so resolving a dependency also resolves the guidance for using it
+([Built for agents](#built-for-agents)).
+
+**Data science and machine learning** are first-class. The stdlib's
+`cajeta.math` provides the tensor and matrix core — n-dimensional
+`Tensor<T>`, `linalg` (QR, SVD, eigendecomposition, solvers), `fft`,
+`random`, and ML-oriented reduced-precision types (`bfloat16`, the `float8`
+family) — with kernel-level execution spanning **SIMD CPU** (auto-vectorized
+through LLVM) and **GPU** (`cajeta.xpu`'s compute primitives, including
+cooperative-matrix / tensor-core matmul). On top of that core, registry
+libraries cover the applied layers: `dev.cajeta.ml` (the
+scikit-learn/statsmodels + torch roles), `dev.cajeta.graph` (network
+analysis), `dev.cajeta.xgboost`, and more.
+
+**IDE support** is currently limited to the IntelliJ-family IDEs — the
+plugin ships embedded in the compiler (`cajeta ide install`, see
+[Installing](#installing)). VS Code support is planned next.
 
 ---
 
@@ -577,6 +868,9 @@ The deep-dive specs live in `docs/`:
 | Topic                       | Doc |
 |-----------------------------|-----|
 | **Language guide (start here)** | [`LanguageGuide.md`](docs/guide/drafts/LanguageGuide.md) |
+| **Agents: built-in MCP server** | [`CompilerMcp.md`](docs/specification/mcp/CompilerMcp.md) |
+| **Agents: the skill system**    | [`Skills.md`](docs/specification/mcp/Skills.md) |
+| Agents: external MCP server | [`CajetaMcp.md`](docs/specification/mcp/CajetaMcp.md) |
 | Class model + allocation    | [`UnifiedClasses.md`](docs/specification/lang/UnifiedClasses.md) |
 | System I/O + env + properties | [`lang/System.md`](docs/specification/lang/System.md) |
 | Memory + ownership          | [`MemoryModel.md`](docs/specification/lang/MemoryModel.md) |

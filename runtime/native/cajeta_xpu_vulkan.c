@@ -280,7 +280,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // Max} (OpAtomicFAddEXT / OpAtomicF{Min,Max}EXT). NVIDIA (unlike RADV) FAULTS
     // — VK_ERROR_DEVICE_LOST — if a shader uses these without the extension+feature
     // enabled at device creation. Probed here, enabled below when supported.
+    // wantAtomicInt64: VK_KHR_shader_atomic_int64 (core in 1.2) backs
+    // Buffer<int64|uint64>.atomic* — 64-bit OpAtomicI* declares the Int64Atomics
+    // capability, which shaderBufferInt64Atomics must be enabled to satisfy.
     int wantRayQuery = 0, wantAtomicFloat = 0, wantAtomicFloat2 = 0;
+    int wantAtomicInt64 = 0;
     if (enumDevExt && getFeatures2) {
         uint32_t extCount = 0;
         enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
@@ -290,7 +294,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             if (exts) {
                 enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
                 int hasAccel = 0, hasRayQ = 0, hasDefer = 0, hasBDA = 0;
-                int hasAtomicFloat = 0, hasAtomicFloat2 = 0;
+                int hasAtomicFloat = 0, hasAtomicFloat2 = 0, hasAtomicInt64 = 0;
                 for (uint32_t i = 0; i < extCount; ++i) {
                     const char* en = exts[i].extensionName;
                     if (!strcmp(en, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) hasAccel = 1;
@@ -299,8 +303,25 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                     else if (!strcmp(en, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME)) hasBDA = 1;
                     else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME)) hasAtomicFloat = 1;
                     else if (!strcmp(en, VK_EXT_SHADER_ATOMIC_FLOAT_2_EXTENSION_NAME)) hasAtomicFloat2 = 1;
+                    else if (!strcmp(en, VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME)) hasAtomicInt64 = 1;
                 }
                 free(exts);
+
+                // Atomic-int64 feature query (gated on the extension being
+                // advertised, like the float path — enabling an extension the
+                // device lacks fails vkCreateDevice outright).
+                if (hasAtomicInt64) {
+                    VkPhysicalDeviceShaderAtomicInt64Features ai64;
+                    memset(&ai64, 0, sizeof(ai64));
+                    ai64.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+                    VkPhysicalDeviceFeatures2 aif2;
+                    memset(&aif2, 0, sizeof(aif2));
+                    aif2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+                    aif2.pNext = &ai64;
+                    getFeatures2(g_xpu_vk.phys, &aif2);
+                    if (ai64.shaderBufferInt64Atomics)
+                        wantAtomicInt64 = 1;
+                }
 
                 // Atomic-float feature query: enable only the bits the device
                 // advertises (the SPIR-V emit declares both add and min/max).
@@ -399,7 +420,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // (RT/ray-query, EXT_shader_atomic_float{,2}). Enabling an unsupported
     // extension fails vkCreateDevice outright, so each path is gated on its probe
     // above; absent all of them the device is created exactly as before.
-    const char* devExts[8];
+    const char* devExts[12];
     uint32_t nDevExts = 0;
     VkPhysicalDeviceRayQueryFeaturesKHR enRqf;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR enAsf;
@@ -442,6 +463,17 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         enAf2.shaderBufferFloat32AtomicMinMax = VK_TRUE;
         enAf2.pNext = (void*) dci.pNext;
         dci.pNext = &enAf2;
+    }
+    // KHR_shader_atomic_int64: backs Buffer<int64|uint64>.atomic* (the
+    // Int64Atomics capability the 64-bit OpAtomicI* forms declare).
+    VkPhysicalDeviceShaderAtomicInt64Features enAi64;
+    if (wantAtomicInt64) {
+        devExts[nDevExts++] = VK_KHR_SHADER_ATOMIC_INT64_EXTENSION_NAME;
+        memset(&enAi64, 0, sizeof(enAi64));
+        enAi64.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES;
+        enAi64.shaderBufferInt64Atomics = VK_TRUE;
+        enAi64.pNext = (void*) dci.pNext;
+        dci.pNext = &enAi64;
     }
     if (nDevExts > 0) {
         dci.enabledExtensionCount = nDevExts;

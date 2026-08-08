@@ -30,6 +30,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #include <optional>
+#include <cstdio>
 
 namespace cajeta {
 namespace xpu {
@@ -57,9 +58,9 @@ namespace vulkan {
 
         // void __cajeta_xpu_register_module(i8* name, i8* image, i64 len)
         llvm::FunctionType* regTy =
-            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
-            hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+            hostModule.getOrInsertFunction("__cajeta_xpu_register_module_be", regTy);
 
         // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
         //                                          i8* kind, i32* byteSize)
@@ -88,9 +89,15 @@ namespace vulkan {
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, devMod, software, regName);
-            } catch (cajeta::Exception&) {
-                // Unsupported construct (XPU-N01) — leave this kernel to the
-                // host path; don't fail the whole compile.
+            } catch (cajeta::Exception& ex) {
+                // Unsupported construct (XPU-N01) — this kernel gets NO device
+                // code for this backend; a launch that lands here at run time
+                // fails with "no registered kernel". Say so at build time —
+                // the silent skip cost a real debugging session (U12).
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no vulkan device "
+                        "code — %s\n",
+                        regName.c_str(), ex.getMessage().c_str());
                 return false;
             }
             if (!kfn) return false;
@@ -117,7 +124,8 @@ namespace vulkan {
             llvm::Value* nameStr =
                 b.CreateGlobalString(regName, "xpu.kname." + regName);
             b.CreateCall(regFn, {nameStr, spvGV,
-                                 llvm::ConstantInt::get(i64Ty, spirv.size())});
+                                 llvm::ConstantInt::get(i64Ty, spirv.size()),
+                                 llvm::ConstantInt::get(i32Ty, 2)});  // CAJ_XPU_VULKAN
 
             // Per-kernel parameter metadata: which args are buffers vs scalars,
             // and the scalar byte sizes — so the runtime can bind buffers and
@@ -220,16 +228,17 @@ namespace vulkan {
 
         llvm::LLVMContext& ctx = hostModule.getContext();
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* voidTy = llvm::Type::getVoidTy(ctx);
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::IRBuilder<> b(ctx);
 
-        // void __cajeta_xpu_register_module(i8* name, i8* image, i64 len) — the
-        // same backend-neutral hook the kernel path registers modules through.
+        // void __cajeta_xpu_register_module_be(name, image, len, backend) — the
+        // same backend-tagged hook the kernel path registers modules through.
         llvm::FunctionType* regTy =
-            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
-            hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+            hostModule.getOrInsertFunction("__cajeta_xpu_register_module_be", regTy);
 
         int emitted = 0;
         for (auto& method : shaders) {
@@ -280,7 +289,8 @@ namespace vulkan {
             llvm::Value* nameStr =
                 b.CreateGlobalString(regName, "xpu.kname." + regName);
             b.CreateCall(regFn, {nameStr, spvGV,
-                                 llvm::ConstantInt::get(i64Ty, spirv.size())});
+                                 llvm::ConstantInt::get(i64Ty, spirv.size()),
+                                 llvm::ConstantInt::get(i32Ty, 2)});  // CAJ_XPU_VULKAN
             b.CreateRetVoid();
 
             // Run at module-init time (LLJIT: jit->initialize; native: startup).

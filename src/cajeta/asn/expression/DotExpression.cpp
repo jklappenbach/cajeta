@@ -261,6 +261,25 @@ namespace cajeta {
             }
         }
 
+        // Variable obscures type (script-units 6.3.3(a); JLS 6.4.2's
+        // obscuring rule): a bare identifier naming BOTH an in-scope
+        // variable and a class means the VARIABLE. Codegen is sequential,
+        // so the scope holds exactly the locals declared so far — a use
+        // BEFORE the local's declaration still means the class. Checked
+        // once here, consumed by both the static shortcut below (which
+        // must not hijack `S.total` when `S` is a local) and the
+        // pinned-type repair before the property walk (the resolver
+        // PRE-PASS runs before body locals register, so its
+        // static-reference fallback can pin the CLASS on a receiver that
+        // is really a local — the poison that broke stdlib codegen for
+        // any user class named like a stdlib method's local, e.g. `t`).
+        FieldPtr obscuringLocal;
+        if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+            if (auto sc = module->getScopeStack().peek()) {
+                obscuringLocal = sc->getField(idLhs->getTextValue());
+            }
+        }
+
         // Static-field-on-class-name shortcut: `Counter.total`. LHS is a
         // bare identifier naming a class (not a local). The instance
         // GEP path below assumes LHS resolves to an instance and would
@@ -271,7 +290,9 @@ namespace cajeta {
         // path handles writes.
         if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
             // ofScoped, not the raw short-name key (see resolveTypes above).
-            auto scoped = CajetaType::ofScoped(idLhs->getTextValue(), module);
+            auto scoped = obscuringLocal
+                ? nullptr
+                : CajetaType::ofScoped(idLhs->getTextValue(), module);
             {
                 if (auto staticKlass = dynamic_pointer_cast<CajetaClass>(scoped)) {
                     // Walk the hierarchy: a static declared on a base
@@ -308,6 +329,15 @@ namespace cajeta {
         auto lhs = dynamic_pointer_cast<Expression>(children[0]);
         if (!lhs) {
             return nullptr;
+        }
+        // Variable obscures type, part 2: when the receiver IS an in-scope
+        // local, its declared type wins over whatever the pre-pass pinned
+        // (the pin can be a same-named CLASS — see the comment above the
+        // shortcut). The value (`base`) already came from the local's slot;
+        // this makes the TYPE agree with it.
+        if (obscuringLocal && obscuringLocal->getType()
+            && obscuringLocal->getType() != lhs->getResolvedType()) {
+            lhs->setResolvedType(obscuringLocal->getType());
         }
         // Re-run resolveTypes if the lhs wasn't resolved during the pre-pass —
         // local variables aren't added to the scope until their declarations

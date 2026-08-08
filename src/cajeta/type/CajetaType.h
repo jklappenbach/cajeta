@@ -214,6 +214,11 @@ class CajetaType : public Modifiable, public Annotatable,
         // their own binding for the one shared object. Default false → inline
         // (unchanged behavior) until the stdlib is frozen in 6.4.
         bool frozen = false;
+        // Script units (script-units spec §3.4): true only on the implicit
+        // class a script-shaped compilation unit synthesizes — tooling and
+        // reflection filter on it. User-declared types, including types
+        // declared INSIDE a script unit, stay false.
+        bool scriptSynthesized = false;
         string canonical;
         string generic;
         CajetaTypeFlags typeFlags;
@@ -221,6 +226,8 @@ class CajetaType : public Modifiable, public Annotatable,
     public:
         void markFrozen() { frozen = true; }
         bool isFrozen() const { return frozen; }
+        void setScriptSynthesized(bool v) { scriptSynthesized = v; }
+        bool isScriptSynthesized() const { return scriptSynthesized; }
         CajetaType() {
             this->typeFlags = STRUCT_FLAG;
             llvmType = nullptr;

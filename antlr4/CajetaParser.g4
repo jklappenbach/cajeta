@@ -33,9 +33,25 @@ parser grammar CajetaParser;
 
 options { tokenVocab=CajetaLexer; }
 
+// Two unit shapes (script-units spec §2). The ordinary alternative is listed
+// first and unchanged in shape, so existing sources parse to the same tree;
+// the EOF anchors force full consumption (previously trailing input after the
+// last typeDeclaration was silently ignored). A unit containing at least one
+// loose statement or top-level method takes the script alternative and is a
+// SCRIPT UNIT — an implicit class + synthetic entry, synthesized in the
+// front end, never spelled in source.
 compilationUnit
-    : packageDeclaration? importDeclaration* typeDeclaration*
-    | EOF
+    : packageDeclaration? importDeclaration* typeDeclaration* EOF
+    | packageDeclaration? importDeclaration* scriptMember+ EOF
+    ;
+
+// typeDeclaration first so a top-level class in a script registers as a
+// normal type (spec §3.3) rather than a localTypeDeclaration; a method is
+// distinguished from a local variable declaration by its formalParameters.
+scriptMember
+    : typeDeclaration
+    | modifier* methodDeclaration
+    | blockStatement
     ;
 
 packageDeclaration

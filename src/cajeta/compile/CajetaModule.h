@@ -29,11 +29,14 @@ using std::ofstream;
 #define CAJETA_EXTENSION            ".cajeta"
 #define CAJETA_IR_EXTENSION         ".ll"
 
+#include "ScriptLineMap.h"
+
 namespace cajeta {
     class StructureMetadata;
     typedef shared_ptr<StructureMetadata> StructureMetadataPtr;
 
     class CajetaClass;
+    class SessionState;
 
     class CajetaModule : public enable_shared_from_this<CajetaModule> {
     public:
@@ -253,6 +256,19 @@ namespace cajeta {
         map<string, map<string, QualifiedNamePtr>> imports;
         QualifiedNamePtr qName;
         string sourcePath;
+        bool scriptUnit = false;
+        std::set<string> scriptBindingNames;
+        // script-units U4 — the session this unit compiles into (owned by
+        // the host, may span many unit compiles) and the host's name for
+        // this unit's source (a file path, a cell id) for diagnostics.
+        // Null / empty outside a session compile.
+        SessionState* sessionState = nullptr;
+        string scriptHostName;
+        // script-units U5 — wrapper→host line spans from the synthesis, and
+        // the current statement's HOST line (stamped by Block during script
+        // codegen) used to locate exceptions thrown without a location.
+        ScriptLineMap scriptLineMap;
+        int scriptCurrentHostLine = 0;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -483,6 +499,50 @@ namespace cajeta {
         void setSourcePath(const string& sourcePath) {
             this->sourcePath = sourcePath;
         }
+
+        // Script units (script-units spec §3.2): true when this module's source
+        // was a script-shaped unit rewritten into the implicit-class form. The
+        // wrapper's declared package (`cajeta.script` by default) need not
+        // match the host-chosen file location, so the package/path agreement
+        // check is skipped for script modules.
+        void setScriptUnit(bool v) { scriptUnit = v; }
+        bool isScriptUnit() const { return scriptUnit; }
+
+        // The unit's session-binding names (script-units spec §4): top-level
+        // declarations collected by the synthesis pass. Codegen promotes these
+        // owners to the runtime session registry instead of the entry's drop
+        // frame.
+        void setScriptBindingNames(std::vector<string> names) {
+            scriptBindingNames = std::set<string>(names.begin(), names.end());
+        }
+        bool isScriptBindingName(const string& name) const {
+            return scriptBindingNames.find(name) != scriptBindingNames.end();
+        }
+        const std::set<string>& getScriptBindingNames() const {
+            return scriptBindingNames;
+        }
+
+        // script-units U4 — the session table this unit compiles into and
+        // the host's name for this unit's source (diagnostics). Set by the
+        // Compiler's session plumbing before parse; null/empty otherwise.
+        void setSessionState(SessionState* s) { sessionState = s; }
+        SessionState* getSessionState() const { return sessionState; }
+        void setScriptHostName(const string& n) { scriptHostName = n; }
+        const string& getScriptHostName() const { return scriptHostName; }
+
+        // script-units U5 — diagnostic translation. mapScriptLine turns a
+        // wrapper line into the host line (identity for ordinary modules /
+        // an empty map); scriptDiagFile is the name diagnostics should
+        // carry (host name when the host supplied one, source path else).
+        void setScriptLineMap(ScriptLineMap m) { scriptLineMap = std::move(m); }
+        int mapScriptLine(int wrapperLine) const {
+            return cajeta::mapScriptLine(scriptLineMap, wrapperLine);
+        }
+        string scriptDiagFile() const {
+            return scriptHostName.empty() ? sourcePath : scriptHostName;
+        }
+        void setScriptCurrentHostLine(int line) { scriptCurrentHostLine = line; }
+        int getScriptCurrentHostLine() const { return scriptCurrentHostLine; }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is

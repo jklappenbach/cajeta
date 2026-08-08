@@ -46,11 +46,14 @@ namespace nvidia {
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::IRBuilder<> b(ctx);
 
-        // void __cajeta_xpu_register_module(i8* name, i8* image, i64 len)
+        // void __cajeta_xpu_register_module_be(i8* name, i8* image, i64 len,
+        //                                        i32 backend) — backend-tagged
+        // so a multi-backend build keeps one image per backend (name alone
+        // was last-writer-wins across backends).
         llvm::FunctionType* regTy =
-            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty}, false);
+            llvm::FunctionType::get(voidTy, {ptrTy, ptrTy, i64Ty, i32Ty}, false);
         llvm::FunctionCallee regFn =
-            hostModule.getOrInsertFunction("__cajeta_xpu_register_module", regTy);
+            hostModule.getOrInsertFunction("__cajeta_xpu_register_module_be", regTy);
 
         // void __cajeta_xpu_register_kernel_params(i8* name, i32 count,
         //                                          i8* kind, i32* byteSize)
@@ -91,9 +94,15 @@ namespace nvidia {
             llvm::Function* kfn = nullptr;
             try {
                 kfn = lowerKernel(method, devMod);
-            } catch (cajeta::Exception&) {
-                // Unsupported construct (XPU-N01) — leave this kernel to the
-                // CPU-emulation path; don't fail the whole compile.
+            } catch (cajeta::Exception& ex) {
+                // Unsupported construct (XPU-N01) — this kernel gets NO device
+                // code for this backend; a launch that lands here at run time
+                // fails with "no registered kernel". Say so at build time —
+                // the silent skip cost a real debugging session (U12).
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no nvptx device "
+                        "code — %s\n",
+                        entryName.c_str(), ex.getMessage().c_str());
                 continue;
             }
             if (!kfn) continue;
@@ -122,7 +131,8 @@ namespace nvidia {
             llvm::Value* nameStr =
                 b.CreateGlobalString(entryName, "xpu.kname." + entryName);
             b.CreateCall(regFn, {nameStr, cubinGV,
-                                 llvm::ConstantInt::get(i64Ty, cubin.size())});
+                                 llvm::ConstantInt::get(i64Ty, cubin.size()),
+                                 llvm::ConstantInt::get(i32Ty, 0)});  // CAJ_XPU_CUDA
 
             // Per-kernel parameter kinds (scalar/buffer/texture/sampler/image/
             // buffer-array) so the CUDA launch path can translate texture/image

@@ -1230,6 +1230,77 @@ TEST(XpuVulkanEmitTests, lowersIntAtomicsToSpirv) {
     }
 }
 
+// 64-bit integer atomics: Buffer<int64>.atomic* lowers to the same atomicrmw path
+// as int32, at i64 width — which on SPIR-V requires the Int64Atomics capability
+// (the backend must infer and declare it; the runtime enables
+// shaderBufferInt64Atomics to back it). The exact-parallel-reduction lever:
+// integer adds commute, so a 64-bit atomicAdd histogram is bit-identical in any
+// accumulation order.
+TEST(XpuVulkanEmitTests, lowersInt64AtomicsToSpirv) {
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "public class A {\n"
+        "    @Kernel\n"
+        "    public static void latomics(KernelBuffer<int64> a, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) {\n"
+        "            int64 v = (int64) i;\n"
+        "            a.atomicAdd(0, v);\n"
+        "            a.atomicMin(1, v);\n"
+        "            a.atomicMax(2, v);\n"
+        "            a.atomicExchange(3, v);\n"
+        "            a.atomicCompareExchange(4, v, v + (int64) 1);\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.A");
+    auto k = findMethod(module->getStructures()["test.A"], "latomics");
+    ASSERT_NE(k, nullptr);
+
+    auto tmIr = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmIr, nullptr);
+    llvm::LLVMContext irCtx;
+    llvm::Module irModule("xpu_i64atomic_ir", irCtx);
+    configureDeviceModule(irModule, *tmIr);
+    ASSERT_NE(lowerKernel(k, irModule), nullptr);
+    std::string ir = printModule(irModule);
+    EXPECT_NE(ir.find("atomicrmw add"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("i64"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("syncscope(\"device\") acq_rel"), std::string::npos) << ir;
+
+    auto tmText = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmText, nullptr);
+    llvm::LLVMContext textCtx;
+    llvm::Module textModule("xpu_i64atomic_text", textCtx);
+    configureDeviceModule(textModule, *tmText);
+    lowerKernel(k, textModule);
+    std::string text = emitSpirvText(textModule, *tmText);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpCapability Int64Atomics"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicIAdd"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicSMin"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicSMax"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicExchange"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpAtomicCompareExchange"), std::string::npos) << text;
+
+    auto tmBin = createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tmBin, nullptr);
+    llvm::LLVMContext binCtx;
+    llvm::Module binModule("xpu_i64atomic_bin", binCtx);
+    configureDeviceModule(binModule, *tmBin);
+    lowerKernel(k, binModule);
+    std::vector<uint8_t> spirv = emitSpirv(binModule, *tmBin);
+    ASSERT_FALSE(spirv.empty());
+    if (auto valid = validateSpirv(spirv)) {
+        EXPECT_TRUE(*valid) << "spirv-val rejected the int64-atomics module";
+    } else {
+        GTEST_SUCCEED() << "spirv-val not installed; skipped binary validation";
+    }
+}
+
 // Shared-memory atomics: an atomic on `shared T[]` (Workgroup storage) must carry
 // WORKGROUP scope, while an atomic on a global KernelBuffer carries DEVICE scope — the
 // scope is picked from the pointer's address space. This kernel does both, so the

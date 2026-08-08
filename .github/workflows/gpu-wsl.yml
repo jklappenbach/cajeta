@@ -1,0 +1,122 @@
+# GPU work for cajeta-xgboost on phoenix-wsl (the self-hosted Linux/WSL
+# runner registered to THIS repo — personal-account runners are per-repo,
+# which is why the workflow lives here while the sources live in
+# cajeta-xgboost). The WSL sibling of gpu-probe.yml.
+#
+# Tasks:
+#   fixture-check — regenerate golden fixtures with xgboost-gpu 3.1.2 in
+#     WSL and `git diff --exit-code` them against the committed references
+#     (generated on native Windows). Bit-identity here certifies WSL as
+#     reference hardware: same silicon, same driver JIT, same bits.
+#   sfu-probe — recompile + rerun the SFU capture probes (MUFU.RCP /
+#     MUFU.EX2) under WSL and compare sha256 against the tables published
+#     as cajeta-xgboost v0.3.0 release assets.
+name: gpu-wsl
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'What to run'
+        required: true
+        type: choice
+        options: [fixture-check, sfu-probe, xgboost-suite]
+        default: fixture-check
+      xgboost-ref:
+        description: 'cajeta-xgboost ref to check out'
+        required: true
+        default: 'main'
+      fixtures:
+        description: 'fixture-check only: gen_reference.py --only list'
+        required: false
+        default: 'tiny_reg,tiny_binary,tiny_multi,large_reg'
+      cajeta-version:
+        description: 'xgboost-suite only: toolchain release to install'
+        required: false
+        default: 'v0.17.1'
+
+jobs:
+  run:
+    runs-on: [self-hosted, wsl]
+    timeout-minutes: 90
+    steps:
+      - name: Checkout cajeta-xgboost
+        uses: actions/checkout@v4
+        with:
+          repository: jklappenbach/cajeta-xgboost
+          ref: ${{ inputs.xgboost-ref }}
+
+      - name: GPU + toolchain sanity
+        run: |
+          nvidia-smi -L
+          nvcc --version | tail -1
+
+      - name: Regenerate fixtures and diff against the committed reference
+        if: ${{ inputs.task == 'fixture-check' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz | tar xz
+          export UV_PYTHON_INSTALL_DIR="$PWD/uv-pythons" UV_CACHE_DIR="$PWD/uv-cache"
+          ./uv-x86_64-unknown-linux-gnu/uv venv xgbenv --python 3.12
+          ./uv-x86_64-unknown-linux-gnu/uv pip install --python xgbenv/bin/python --quiet 'xgboost==3.1.2' numpy
+          xgbenv/bin/python tools/fixtures/gen_reference.py --only '${{ inputs.fixtures }}'
+          echo "== git diff after regeneration (full) =="
+          git diff --stat -- tools/fixtures || true
+          # The assertion covers what CUDA determines: trees, margins, preds,
+          # model.json, cuts, bins, X, y. Excluded from the hard check:
+          #   grad.npy / hess.npy — the manifests label them "reconstructed
+          #     float64" (host numpy, version-sensitive by ULPs); the device
+          #     ground truth is device_grad.npy, probed separately.
+          #   manifest.json — generate.py schema drift (the "external" field
+          #     postdates the committed fixtures).
+          echo "== hard check (device-determined artifacts) =="
+          git diff --exit-code --quiet -- tools/fixtures \
+            ':(exclude)tools/fixtures/*/grad.npy' \
+            ':(exclude)tools/fixtures/*/hess.npy' \
+            ':(exclude)tools/fixtures/*/manifest.json' \
+            && echo "BIT-IDENTICAL: every device-determined artifact matches the committed native-Windows reference" \
+            || { echo "DIVERGED: a device-determined artifact differs"; git diff --stat -- tools/fixtures; exit 1; }
+
+      # xgboost-suite: the full cajeta-xgboost suite on the 4090 through the
+      # CUDA/nvptx backend — U12's §8.2 NVIDIA leg. run-tests.sh compiles the
+      # @Kernel code for every backend; the runtime picks CUDA here, so
+      # GpuHistogramTest's CPU-vs-GPU bit-identity assertions run on real
+      # NVIDIA silicon (and the whole CPU parity suite rides along).
+      - name: Install cajeta toolchain + run the suite
+        if: ${{ inputs.task == 'xgboost-suite' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # No passwordless sudo on this runner — extract the deb into the
+          # workspace instead of installing it; the payload is relocatable
+          # (usr/bin/cajeta -> ../lib/cajeta/cajeta inside the tree).
+          gh release download '${{ inputs.cajeta-version }}' --repo jklappenbach/cajeta \
+            --pattern 'cajeta_*_amd64.deb' --dir .
+          dpkg-deb -x cajeta_*_amd64.deb "$PWD/toolchain"
+          rm -f cajeta_*_amd64.deb
+          export CAJETA="$PWD/toolchain/usr/bin/cajeta"
+          export LD_LIBRARY_PATH="$PWD/toolchain/usr/lib:${LD_LIBRARY_PATH:-}"
+          "$CAJETA" --version
+          ./run-tests.sh
+
+      - name: Rerun the SFU probes and compare against the published tables
+        if: ${{ inputs.task == 'sfu-probe' }}
+        run: |
+          set -euo pipefail
+          ( cd tools/fdividef && nvcc -arch=native -O2 probe_rcp.cu -o probe_rcp && ./probe_rcp )
+          ( cd tools/expf && nvcc -arch=native -O2 probe_expf.cu -o probe_expf && ./probe_expf )
+          sha256sum tools/fdividef/rcp_mantissa.npy tools/expf/ex2_table.npy
+          echo "234796e0057823853e8f8843556bfc23a362e76cb0871b9ae082a612568f61ae  tools/fdividef/rcp_mantissa.npy" | sha256sum -c -
+          echo "fe6720ac0a3685e6925f4d739cdbfe462184df30e1b2e8e4ed5b026dae680c64  tools/expf/ex2_table.npy" | sha256sum -c -
+          echo "SFU tables under WSL are bit-identical to the published v0.3.0 captures"
+
+      - name: Upload probe outputs
+        if: ${{ inputs.task == 'sfu-probe' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: sfu-probe-wsl
+          path: |
+            tools/fdividef/rcp_mantissa.npy
+            tools/expf/ex2_table.npy
+            tools/expf/expf_sweep.npy

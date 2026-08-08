@@ -15,9 +15,90 @@ const metadata = {
   <HeroText
     tagline="Cajeta"
     title="A hybrid Java / C++ / Rust-style language."
-    subtitle="Single-owner memory model. AoT aspect weaving. High-throughput async runtime. LLVM-backed compilation, period."
+    subtitle="Single-owner memory model. AoT aspect weaving. High-throughput async runtime. LLVM-backed compilation — JIT or native, CPU or GPU. And designed around AI agents from the ground up: the compiler is an MCP server, and every library ships the guidance an agent needs to use it."
     callToAction={{ text: 'Read the docs', href: getPermalink('/docs'), icon: 'tabler:book' }}
     callToAction2={{ text: 'GitHub', href: 'https://github.com/jklappenbach/cajeta', target: '_blank', icon: 'tabler:brand-github' }}
+  />
+
+  <Features
+    id="agents"
+    tagline="Agents"
+    title="Built for agents, from the ground up"
+    subtitle="What limits an agent on an unfamiliar language is not reasoning — it is access to authoritative, specific guidance at the moment it writes the line. Cajeta ships that guidance in the toolchain, next to the code it describes, over a protocol the agent already speaks."
+    columns={2}
+    items={[
+      {
+        title: 'The compiler is an MCP server',
+        description:
+          '`cajeta compiler-mcp` speaks Model Context Protocol over stdio — no second binary, no daemon, no network. It exposes searchSkills, listSkills, and getSkills, and its initialize instructions tell the agent to look guidance up before it writes code.',
+        icon: 'tabler:plug-connected',
+      },
+      {
+        title: 'Skills, not scraped docs',
+        description:
+          'Hand-written guides keyed to a library, package, class, or method — written against the failure modes that make a Java-fluent model crash, not as a second API reference. More than 180 ship embedded in the compiler, covering the language, the toolchain, and every stdlib package.',
+        icon: 'tabler:book',
+      },
+      {
+        title: 'Every library ships its skills',
+        description:
+          'Skills are part of the .cja archive format: put them in skills/*.md and the build validates, indexes, and packages them beside the bitcode. Resolve a dependency and you have its guidance — offline, pinned to the version you resolved.',
+        icon: 'tabler:package',
+      },
+      {
+        title: 'Search that survives a typo',
+        description:
+          'Matching is fuzzy and hierarchical: a misspelled name still resolves, and one query returns the symbol, its neighbours, and the overview above it. Every result is a stable cja-skill:// URI — a valid cache key, identical on every machine.',
+        icon: 'tabler:search',
+      },
+    ]}
+  />
+
+  <Features
+    id="toolchain"
+    tagline="Toolchain"
+    title="From IR to silicon"
+    subtitle="Cajeta is built on LLVM: source lowers to LLVM's intermediate representation (IR), is optimized, and is converted directly into machine code for the processors that will execute it."
+    columns={3}
+    items={[
+      {
+        title: 'Write once, run anywhere',
+        description:
+          'Executables and libraries ship as IR in compressed .cja archives. The optimized JIT lowers them for whatever CPU they land on and caches the machine code — warm starts skip compilation entirely.',
+        icon: 'tabler:package',
+      },
+      {
+        title: 'Native binaries',
+        description:
+          'The same IR compiles ahead-of-time into a conventional executable for a specific target — for deployments that want to forego the JIT machinery altogether.',
+        icon: 'tabler:binary',
+      },
+      {
+        title: 'GPU, portably',
+        description:
+          'Kernels lower through LLVM directly to GPU architectures — NVIDIA PTX, AMD GCN, and SPIR-V for the Vulkan-portable path. Pin a device target explicitly, or let the toolchain select the best execution profile for the silicon it finds, with a CPU fallback so kernel code always runs.',
+        icon: 'tabler:cpu-2',
+      },
+      {
+        title: 'Lazy linking',
+        description:
+          'The runtime and standard library link as bitcode, and only what your program references is materialized — keeping binaries and JIT working sets small.',
+        icon: 'tabler:link',
+      },
+      {
+        title: 'Tensor math at kernel level',
+        description:
+          'Strong support for data science and machine learning: cajeta.math tensors, linalg, and FFT execute over SIMD CPU (auto-vectorized through LLVM) and GPU (cooperative-matrix / tensor-core paths).',
+        icon: 'tabler:math-function',
+      },
+      {
+        title: 'A growing library ecosystem',
+        description:
+          'The public Olla registry hosts signed packages: machine learning (dev.cajeta.ml), network analysis (dev.cajeta.graph), gradient boosting, HTTP, logging, and more.',
+        icon: 'tabler:world',
+        callToAction: { text: 'Browse Olla', href: 'https://olla.cajeta.dev', target: '_blank' },
+      },
+    ]}
   />
 
   <Features
@@ -65,7 +146,7 @@ const metadata = {
       {
         title: 'Build, compile, debug',
         description:
-          'Single `cajeta` binary covers init, build, test, doc, lint. LLVM backend, DAP + LSP for editors.',
+          'Single `cajeta` binary covers init, build, test, doc, lint. LLVM backend, DAP + LSP for editors. IDE support is IntelliJ-family today (`cajeta ide install`); VS Code is next.',
         icon: 'tabler:tools',
         callToAction: { text: 'Read', href: getPermalink('/docs/BuildTool') },
       },

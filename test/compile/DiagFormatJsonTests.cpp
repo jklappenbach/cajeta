@@ -113,6 +113,21 @@ bool everyNonEmptyLineIsJson(const std::string& text) {
     return sawOne;
 }
 
+// True when `phrase` never appears as RAW console text — i.e. it occurs only
+// on lines that are structured records. A record legitimately quotes the
+// underlying tool's wording inside a field (ANTLR's message becomes the
+// diagnostic's `message`), so a whole-stream substring search cannot tell a
+// leak from the structured report of the same error; the line's SHAPE can.
+bool phraseOnlyInsideRecords(const std::string& text, const std::string& phrase) {
+    std::istringstream ss(text);
+    std::string line;
+    while (std::getline(ss, line)) {
+        if (line.empty() || line[0] == '{') continue;   // structured record
+        if (line.find(phrase) != std::string::npos) return false;
+    }
+    return true;
+}
+
 // The first non-empty line, or "" when there is none.
 std::string firstLine(const std::string& text) {
     std::istringstream ss(text);
@@ -397,7 +412,11 @@ TEST(DiagFormatJson, JitRunSyntaxErrorIsALocatedDiagnosticRecord) {
         << "the diagnostic names no file; stderr:\n" << err;
     // ANTLR's console listener must be off: its raw text is what the record
     // replaces, and leaving both means the stream is not machine-readable.
-    EXPECT_EQ(err.find("no viable alternative"), std::string::npos)
+    // Scoped to NON-record lines: JsonSyntaxErrorListener passes ANTLR's own
+    // message through as the diagnostic's `message` (since 56e7d646), so the
+    // phrase appears inside the record BY DESIGN — the old whole-stream
+    // search read that as a leak and failed a healthy stream.
+    EXPECT_TRUE(phraseOnlyInsideRecords(err, "no viable alternative"))
         << "raw ANTLR console text leaked; stderr:\n" << err;
     EXPECT_TRUE(everyNonEmptyLineIsJson(err))
         << "free text in the json stream:\n" << err;

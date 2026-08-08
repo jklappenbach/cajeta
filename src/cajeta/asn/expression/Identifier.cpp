@@ -65,6 +65,34 @@ namespace cajeta {
         // captures.
         FieldPtr field = scope ? scope->getField(identifier) : nullptr;
         if (field) {
+            // script-units U4 (spec §4.2) — a binding SEEDED from an earlier
+            // unit of the session. The in-unit demoted-read rule does not
+            // cross the seam: a moved-out session binding's borrow validity
+            // cannot be seen from a later unit, so the read is rejected
+            // until the name is rebound. (A redeclaration in this unit
+            // replaces the seeded field, so this branch never fires for it.)
+            if (field->isSessionSeeded()) {
+                if (scope->isBorrow(identifier)) {
+                    string note = scope->transferSiteOf(identifier);
+                    throw Exception(
+                        "session binding `" + identifier + "` was moved out "
+                        "in an earlier unit"
+                        + (note.empty() ? "" : " (" + note + ")")
+                        + "; rebind it (`" + identifier + " = ...`) before "
+                        "reading",
+                        "CAJETA_ERROR_MOVE_OF_BORROW",
+                        module->getScriptHostName(), getSourceLine(),
+                        getSourceColumn());
+                }
+                throw Exception(
+                    "session binding `" + identifier + "` was bound by an "
+                    "earlier unit; cross-unit reads land with the kernel's "
+                    "read-through-session path (jupyter-kernel plan) and are "
+                    "not yet supported here",
+                    "CAJETA_ERROR_NOT_IMPLEMENTED",
+                    module->getScriptHostName(), getSourceLine(),
+                    getSourceColumn());
+            }
             return static_cast<llvm::Value*>(field->getOrCreateAllocation());
         }
         // Implicit-this fallback: emit the equivalent of `this.identifier`

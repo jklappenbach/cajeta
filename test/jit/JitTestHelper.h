@@ -22,6 +22,7 @@
 namespace cajeta {
     class Compiler;
     class CajetaModule;
+    class SessionState;
 }
 
 namespace cajeta_test {
@@ -91,6 +92,12 @@ public:
         // Override the per-backend default device arch. May be a comma-separated
         // list ("gfx1100,gfx1151") to build a multi-arch bundle. Empty = default.
         std::string xpuArch;
+        // script-units U4 — session compile. When set, script units compile
+        // INTO this host-owned session table (ownership facts seed/write
+        // back across compiles) and located diagnostics carry
+        // sessionHostName as the source name. Null for ordinary compiles.
+        cajeta::SessionState* session = nullptr;
+        std::string sessionHostName;
         // Capture the post-codegen, post-AlwaysInline (O0) host LLVM IR into the
         // returned CajetaJit, readable via getModuleIr(). Captured after the O0
         // optimizeModule pass so a test can see whether a @ValueType operator

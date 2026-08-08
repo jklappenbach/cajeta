@@ -105,9 +105,29 @@ authoritative guidance for a class, package, or language topic **before** it
 writes code, instead of guessing.
 
 The corpus is embedded in the binary, so it works with no project, no
-lockfile, and no network — and it covers the language itself
+lockfile, and no network — more than 180 skills covering the language itself
 (`cajeta.language`), the toolchain (`cajeta.toolchain`), and every stdlib
 package.
+
+**Your library ships skills too.** Skills are part of the `.cja` archive
+format, not a compiler privilege: write them as `skills/*.md` at your package
+root, and `cajeta build` validates, indexes, and embeds them beside the
+bitcode. Anyone who resolves your dependency gets your guidance offline,
+pinned to the version they resolved, discoverable by name.
+
+```
+mylib.cja
+├── … compiled bitcode members
+├── skills/index.json
+├── skills/opening-files.md
+└── skills/retry-policy.md
+```
+
+The format is a Markdown body under YAML frontmatter (`id`, `applies-to`,
+`title`, `description`) — see [Skills](../specification/mcp/Skills.md) for the
+authoring levels and the review checklist, and
+[CompilerMcp](../specification/mcp/CompilerMcp.md) for the server's tools and
+lifecycle.
 
 For the longer walk — dependencies, publishing, uber-archives end to end — see
 the [build tool reference](../specification/buildtool/BuildTool.md).

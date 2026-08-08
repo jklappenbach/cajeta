@@ -115,8 +115,9 @@ TEST(GfxGraphicsRegistrationTests, vertexAndFragmentShadersAutoRegister) {
         cajeta::xpu::Backend::Spirv, shaders, host, "vulkan1.3");
     ASSERT_EQ(emitted, 2) << "both graphics shaders should be embedded + registered";
 
-    // The backend-neutral runtime hook must be declared/used.
-    EXPECT_NE(host.getFunction("__cajeta_xpu_register_module"), nullptr);
+    // The backend-tagged runtime hook must be declared/used (graphics
+    // registers under CAJ_XPU_VULKAN like every other image registration).
+    EXPECT_NE(host.getFunction("__cajeta_xpu_register_module_be"), nullptr);
 
     // Each shader's SPIR-V is embedded as a private constant and a registration
     // ctor is emitted, keyed by entry (method) name.

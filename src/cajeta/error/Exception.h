@@ -17,6 +17,7 @@ namespace cajeta {
         string file;
         int line = -1;    // 1-based; <= 0 means "no location"
         int column = -1;  // 1-based
+        bool scriptRemapped = false;  // see markScriptRemapped()
     public:
         Exception() { }
 
@@ -45,6 +46,19 @@ namespace cajeta {
         int getColumn() const { return column; }
 
         bool hasLocation() const { return line > 0; }
+
+        // script-units U5 — the script-diagnostic remap rewrites a caught
+        // exception into host coordinates before rethrowing. The remap flag
+        // makes the rewrite once-only: nested method codegen rethrows
+        // through several remap boundaries, and a second translation would
+        // treat an already-host line as a wrapper line.
+        void setLocation(const string& f, int l, int c) {
+            file = f;
+            line = l;
+            column = c;
+        }
+        bool isScriptRemapped() const { return scriptRemapped; }
+        void markScriptRemapped() { scriptRemapped = true; }
     };
 
     // Thrown after parsing when the user source has syntax errors. The per-error

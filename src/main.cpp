@@ -81,6 +81,8 @@ void printUsage(const char* progname) {
               << "                     (ide install | uninstall | list).\n"
               << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
               << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
+              << "  compiler-mcp       Model Context Protocol server over stdio, serving skills\n"
+              << "                     (searchSkills | listSkills | getSkills) to a coding agent.\n"
               << "  stdlib <cmd>       Embedded stdlib source access (stdlib list |\n"
               << "                     stdlib extract <dir>) — extraction preserves package\n"
               << "                     paths and writes a .cajeta-stdlib.json identity marker.\n"
@@ -270,6 +272,14 @@ int main(int argc, const char* argv[]) {
     // claimed by either falls through to the legacy compile flow below.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
+    }
+
+    // `cajeta run <file>.cajeta` — compile the file as a script unit and
+    // execute it as a one-unit session under the JIT host (script-units
+    // spec §7). Dispatched BEFORE the build-tool task probe (and excluded
+    // from it), so a manifest task named "run" can never shadow the verb.
+    if (argc >= 2 && std::string(argv[1]) == "run") {
+        return cajeta::jit::dispatchRun(argc, argv);
     }
     {
         int btExit = 0;

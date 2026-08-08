@@ -1,0 +1,348 @@
+package cajeta.math.sfu;
+
+import cajeta.math.Tensor;
+import cajeta.math.npio.Npy;
+import cajeta.xpu.KernelBuffer;
+
+/**
+ * Bit-exact reproductions of the CUDA SFU (Special Function Unit) fast-math
+ * operations: `__fdividef` (via `MUFU.RCP`) and device `expf` (via `MUFU.EX2`).
+ *
+ * Why this exists: cross-backend bit-parity. When a GPU algorithm's reference
+ * semantics are defined by CUDA silicon (as XGBoost's GPU split scoring is, the
+ * originating consumer), reproducing it bit for bit on the CPU — and on HIP and
+ * Vulkan devices via {@link #fdividefDev} — requires the exact SFU value, not the
+ * correctly-rounded one. Both SFU ops bottom out in a silicon lookup table with
+ * no closed form, and both are handled the same way: a one-time GPU capture is
+ * the ground truth (33 MB each, never committed), loaded at runtime from an
+ * env-var path — `RCP_TABLE` / `EX2_TABLE`, each naming an int32 .npy of 2^23 bit
+ * patterns. When the capture is absent each model falls back to correctly-rounded
+ * accurate math: not the SFU value, but close enough to keep non-knife-edge
+ * results right and the plumbing testable off-GPU. Callers that REQUIRE
+ * bit-exactness must gate on {@link #hasRcpTable} / {@link #hasEx2Table} and
+ * refuse (or fall back to their accurate path) rather than serve approximate
+ * results as exact ones.
+ *
+ * ---
+ *
+ * `__fdividef(a, b)` — CUDA's fast approximate division. Probed on the reference
+ * GPU (RTX 4090, sm_89): `__fdividef` is exactly the `div.approx.f32`
+ * instruction, and for every normal-range `b` it equals `a * rcp.approx.f32(b)`
+ * bit-for-bit. (The two differ only when `|b|` is near `FLT_MAX`, where
+ * `__fdividef` flushes to 0; {@link #fdividef} matches that flush for
+ * completeness.) `MUFU.RCP` has no closed form — it is a silicon lookup table
+ * (±2 ULP vs IEEE, deterministic), NOT the correctly-rounded reciprocal. But
+ * reciprocal factors exactly by the exponent:
+ *
+ *     rcp(b) = rcp(2^E · m) = ldexp(rcp(m), −E),   m ∈ [1, 2)
+ *
+ * (a power-of-two scaling, exact in float32 — also verified by the probe), so the
+ * whole instruction is captured by a 2^23-entry table over the mantissa m, then
+ * an exponent adjust and one float32 multiply. {@link #rcpMantissa} is that table
+ * — the single point that swaps from the placeholder (accurate reciprocal, for
+ * plumbing tests) to the probed hardware table.
+ */
+public final class SfuMath {
+
+    // The probed 2^23 `rcp.approx.f32` mantissa table (int32 bit patterns), loaded
+    // once from the `RCP_TABLE` npy path. Absent (no capture) → placeholder.
+    private static Tensor<int32> rcpTable;
+    private static boolean rcpTried;
+
+    static void ensureRcpTable() {
+        if (!SfuMath.rcpTried) {
+            SfuMath.rcpTried = true;
+            String p = System.env.get("RCP_TABLE");
+            if (p != null) { SfuMath.rcpTable #= Npy.loadI32(p); }
+        }
+    }
+
+    /** True once the probed SFU reciprocal table is loaded — {@link #fdividef} is then bit-exact. */
+    public static boolean hasRcpTable() {
+        SfuMath.ensureRcpTable();
+        return SfuMath.rcpTable != null;
+    }
+
+    /**
+     * The raw 2^23-entry SFU reciprocal table (int32 bit patterns) for callers
+     * that need direct access — e.g. to upload as a device buffer so an in-kernel
+     * `__fdividef` reads the SAME table this class reads ({@link #deviceRcpTable}
+     * does exactly that). Null when the capture is absent; callers gate on
+     * {@link #hasRcpTable}.
+     */
+    public static Tensor<int32> rcpTableRef() {
+        SfuMath.ensureRcpTable();
+        return SfuMath.rcpTable;
+    }
+
+    /**
+     * `rcp.approx.f32(m)` for `m = bitsToF32(0x3F800000 | idx)`, i.e. the float32
+     * in `[1, 2)` whose 23-bit mantissa is `idx`. Result is in `(0.5, 1]`.
+     *
+     * Uses the probed SFU table when present (bit-exact `__fdividef`); otherwise
+     * the correctly-rounded reciprocal — NOT the SFU value, but close enough to
+     * keep non-knife-edge results correct, and it keeps the plumbing testable
+     * off-GPU.
+     */
+    public static float32 rcpMantissa(int32 idx) {
+        SfuMath.ensureRcpTable();
+        int32 i = idx & (int32) 0x7FFFFF;
+        if (SfuMath.rcpTable != null) {
+            return Cajeta.bitsToF32(SfuMath.rcpTable.flatGet((int64) i));
+        }
+        float32 m = Cajeta.bitsToF32(((int32) 0x3F800000) | i);
+        return (float32) ((float64) 1.0 / (float64) m);
+    }
+
+    /**
+     * `__fdividef(a, b)` for `b` a positive normal float32. Falls back to
+     * accurate division outside that domain (matching the device flush behavior
+     * where it matters; kept for safety elsewhere).
+     */
+    public static float32 fdividef(float32 a, float32 b) {
+        int32 bb = Cajeta.f32ToBits(b);
+        int32 expBiased = (bb >> (int32) 23) & (int32) 0xFF;
+        // Only positive normal b is in-domain (sign bit 0, exp in [1,254]).
+        if (bb < (int32) 0 || expBiased == (int32) 0 || expBiased == (int32) 0xFF) {
+            return (float32) ((float64) a / (float64) b);
+        }
+        int32 e = expBiased - (int32) 127;                 // unbiased exponent of b
+        int32 manIdx = bb & (int32) 0x7FFFFF;              // mantissa index into the table
+
+        float32 rcpM = SfuMath.rcpMantissa(manIdx);        // rcp(m), m ∈ [1,2) → (0.5,1]
+        int32 rmb = Cajeta.f32ToBits(rcpM);
+        int32 rmExp = (rmb >> (int32) 23) & (int32) 0xFF;
+        int32 newExp = rmExp - e;                          // ldexp(rcpM, −e): exact exp adjust
+        if (newExp < (int32) 1 || newExp > (int32) 254) {
+            return (float32) ((float64) a / (float64) b);  // out of normal range
+        }
+        int32 rcpBbits = (rmb & (int32) 0x807FFFFF) | (newExp << (int32) 23);
+        float32 rcpB = Cajeta.bitsToF32(rcpBbits);
+        return a * rcpB;                                    // single float32 multiply
+    }
+
+    /**
+     * In-kernel `__fdividef` — {@link #fdividef} verbatim against an uploaded
+     * copy of the SAME table ({@link #deviceRcpTable}), so device and host
+     * compute identical bits on every backend. `@Device`: callable from
+     * `@Kernel` bodies (cross-class device resolution); also compiles as an
+     * ordinary host method.
+     */
+    @Device
+    public static float32 fdividefDev(float32 a, float32 b, KernelBuffer<int32> rcpTab) {
+        int32 bb = Cajeta.f32ToBits(b);
+        int32 expBiased = (bb >> 23) & 0xFF;
+        if (bb < 0 || expBiased == 0 || expBiased == 0xFF) {
+            return (float32) ((float64) a / (float64) b);
+        }
+        int32 e = expBiased - 127;
+        int32 manIdx = bb & 0x7FFFFF;
+        float32 rcpM = Cajeta.bitsToF32(rcpTab[(uint32) manIdx]);
+        int32 rmb = Cajeta.f32ToBits(rcpM);
+        int32 rmExp = (rmb >> 23) & 0xFF;
+        int32 newExp = rmExp - e;
+        if (newExp < 1 || newExp > 254) {
+            return (float32) ((float64) a / (float64) b);
+        }
+        int32 rcpBbits = (rmb & 0x807FFFFF) | (newExp << 23);
+        float32 rcpB = Cajeta.bitsToF32(rcpBbits);
+        return a * rcpB;
+    }
+
+    // Device-resident SFU reciprocal table, uploaded once per process (32 MB).
+    private static KernelBuffer<int32> dRcp;
+    private static boolean dRcpTried;
+
+    /**
+     * The SFU reciprocal table as a device buffer for kernels calling
+     * {@link #fdividefDev} — uploaded once per process from {@link #rcpTableRef}.
+     * Null when the capture is absent; callers gate on {@link #hasRcpTable}.
+     */
+    public static KernelBuffer<int32> deviceRcpTable() {
+        if (!SfuMath.dRcpTried) {
+            SfuMath.dRcpTried = true;
+            Tensor<int32> t = SfuMath.rcpTableRef();
+            if (t != null) {
+                int64 n = t.size();
+                int32[] host = heap int32[n];
+                int64 i = (int64) 0;
+                while (i < n) { host[i] = t.flatGet(i); i = i + (int64) 1; }
+                KernelBuffer<int32> d = heap KernelBuffer<int32>(n);
+                d.upload(host);
+                SfuMath.dRcp #= d;
+            }
+        }
+        return SfuMath.dRcp;
+    }
+
+    // ---- ex2.approx.f32 — the core of device `expf` -------------------------------
+    //
+    // Recovered from the CUDA toolchain's `__nv_expf` libdevice IR. Device `expf`
+    // is NOT a minimax polynomial — it reduces its argument into [0,1) and
+    // evaluates the SFU `ex2.approx` there, reapplying `2^n` as a separate float32
+    // multiply.
+    //
+    // Like `MUFU.RCP`, `MUFU.EX2` is a silicon table with no closed form, so the
+    // same capture-and-load treatment applies. The captured table holds
+    // `ex2.approx(i/2^23)` for `i` in [0, 2^23) — exactly the reduced-argument
+    // domain, so no exponent factoring is needed here.
+
+    // The probed 2^23 `ex2.approx.f32` table over [0,1) (int32 bit patterns), loaded
+    // once from the `EX2_TABLE` npy path. Absent (no capture) → placeholder.
+    private static Tensor<int32> ex2Table;
+    private static boolean ex2Tried;
+
+    static void ensureEx2Table() {
+        if (!SfuMath.ex2Tried) {
+            SfuMath.ex2Tried = true;
+            String p = System.env.get("EX2_TABLE");
+            if (p != null) { SfuMath.ex2Table #= Npy.loadI32(p); }
+        }
+    }
+
+    /** True once the probed SFU exp2 table is loaded — {@link #expf} is then bit-exact. */
+    public static boolean hasEx2Table() {
+        SfuMath.ensureEx2Table();
+        return SfuMath.ex2Table != null;
+    }
+
+    /**
+     * `ex2.approx.f32(f)` for `f = idx / 2^23`, the float32 in `[0, 1)` whose
+     * 23-bit fraction is `idx`. Result is in `[1, 2)`.
+     *
+     * The device indexes this table by **truncating** the reduced argument's
+     * fraction to 23 bits, not rounding it — round-to-nearest indexing mismatches
+     * 29% of the domain, truncation 0.23% (and that remainder is only the denormal
+     * tail, which no capture covers). Callers must therefore pass
+     * `floor(f · 2^23)`; {@link #expf} does.
+     *
+     * Uses the probed SFU table when present (bit-exact device `expf`); otherwise
+     * the correctly-rounded `exp2` — NOT the SFU value, but it keeps the plumbing
+     * testable off-GPU.
+     */
+    public static float32 ex2Mantissa(int32 idx) {
+        SfuMath.ensureEx2Table();
+        int32 i = idx & (int32) 0x7FFFFF;
+        if (SfuMath.ex2Table != null) {
+            return Cajeta.bitsToF32(SfuMath.ex2Table.flatGet((int64) i));
+        }
+        return (float32) Math.exp2((float64) i / (float64) 8388608.0);
+    }
+
+    // ---- device `expf` ------------------------------------------------------------
+
+    /** `log2(e)` split high/low so `a·log2(e)` carries more than float32 precision. */
+    static float32 L2E_HI() { return (float32) 1.442695021629333496; }
+    static float32 L2E_LO() { return (float32) 1.925962991460541939e-8; }
+
+    /**
+     * `fmaf(a, b, c)` — `a·b + c` with a **single** rounding to float32.
+     *
+     * Reconstructed exactly without an FMA intrinsic: `a·b` is exact in float64
+     * (24+24 = 48 ≤ 53 significand bits), leaving the add as the only rounding;
+     * Knuth's 2Sum recovers that rounding error exactly, so the true sum is the
+     * unevaluated pair `(s, err)`.
+     *
+     * Casting `s` straight to float32 would round twice — exact → 53 bits → 24 bits
+     * — which can land on the wrong side of a float32 midpoint. Rounding `s` to odd
+     * first makes the second rounding safe: a float32 midpoint needs 25 significand
+     * bits, so as a float64 its low bits are zero and it is never odd. An odd
+     * float64 therefore can never be a float32 tie, and round-to-nearest cannot
+     * break the wrong way. This is exact because 53 ≥ 2·24 + 2.
+     */
+    public static float32 fmaf(float32 a, float32 b, float32 c) {
+        float64 p = (float64) a * (float64) b;      // exact
+        float64 cc = (float64) c;
+        float64 s = p + cc;                          // the one rounding
+
+        float64 bv = s - p;                          // 2Sum — exact for any inputs
+        float64 err = (p - (s - bv)) + (cc - bv);    // p + cc == s + err, exactly
+
+        if (err != (float64) 0.0) {
+            int64 sb = Cajeta.f64ToBits(s);
+            if ((sb & (int64) 1) == (int64) 0) {     // already odd → already unambiguous
+                // Bit patterns grow away from zero, so the step flips sign with s.
+                boolean up = err > (float64) 0.0;
+                if (s >= (float64) 0.0) {
+                    sb = up ? sb + (int64) 1 : sb - (int64) 1;
+                } else {
+                    sb = up ? sb - (int64) 1 : sb + (int64) 1;
+                }
+                s = Cajeta.bitsToF64(sb);
+            }
+        }
+        return (float32) s;
+    }
+
+    /**
+     * `ex2.approx.f32(y)` for an arbitrary `y`, factoring `2^y = 2^floor(y) · 2^frac(y)`
+     * so the [0,1) table covers it. The reduction in {@link #expf} normally lands `y`
+     * in [0,1) and `floor(y)` is 0; it only leaves the unit interval where `saturate`
+     * clamped, i.e. `|x| > 126/log2(e) ≈ 87.34`.
+     */
+    static float32 ex2Approx(float32 y) {
+        float64 yd = (float64) y;
+        float64 nf = Math.floor(yd);
+        float64 fr = yd - nf;                        // [0,1), exact — same binade
+        int64 idx = (int64) Math.floor(fr * (float64) 8388608.0);
+        if (idx < (int64) 0) { idx = (int64) 0; }
+        if (idx > (int64) 8388607) { idx = (int64) 8388607; }
+
+        float32 base = SfuMath.ex2Mantissa((int32) idx);
+        int64 e = (int64) nf;
+        if (e == (int64) 0) { return base; }
+        if (e < (int64) -1022 || e > (int64) 1023) {
+            return (float32) ((float64) base * Math.pow((float64) 2.0, nf));
+        }
+        // 2^e built from bits: exact, and base·2^e is an exponent shift, also exact.
+        float64 p2 = Cajeta.bitsToF64((e + (int64) 1023) << (int64) 52);
+        return (float32) ((float64) base * p2);
+    }
+
+    /**
+     * Device CUDA `expf(x)`, bit-exact on every normal result once the probed
+     * `ex2.approx` table is loaded.
+     *
+     * Transcribed from the CUDA toolchain's `__nv_expf` libdevice IR: the argument
+     * is reduced into [0,1) against a two-part `log2(e)`, the SFU table is evaluated
+     * there, and `2^n` is reapplied as a separate float32 multiply.
+     *
+     * Two IR operations have no direct equivalent here and are reconstructed
+     * exactly: the FMAs go through {@link #fmaf}, and the round-toward-−∞ FMA that
+     * splits off the exponent becomes a `floor`. That substitution is exact, not an
+     * approximation — see the comment on the `k` computation below.
+     *
+     * Verified against the RTX 4090 capture over `[-90, 90]`: all 8,310,140
+     * normal-output points bit-exact. The residual mismatches are entirely the
+     * **denormal** tail (`x ⪅ -87.3`, result < 2^-126, ≤ 2 ULP), where the device
+     * flushes differently; sigmoid/softmax-style consumers saturate long before
+     * that.
+     */
+    public static float32 expf(float32 x) {
+        // C = log2(e)/252, folded once at float32 precision exactly as the IR does.
+        float32 c = (float32) ((float64) SfuMath.L2E_HI() / (float64) 252.0);
+
+        float32 j = SfuMath.fmaf(x, c, (float32) 0.5);
+        // saturate: NaN → 0, then clamp to [0,1]. NaN fails `>=`, so this catches it.
+        if (!(j >= (float32) 0.0)) { j = (float32) 0.0; }
+        if (j > (float32) 1.0) { j = (float32) 1.0; }
+
+        // The IR does `i = fma_rd(j, 252, 2^23+1)`, round-toward-−∞. No
+        // rounding-mode control is needed: the exact value lands in
+        // [2^23+1, 2^23+253], a range where every float32 IS an integer (ulp == 1),
+        // so rounding toward −∞ is plain floor — and
+        //   floor(2^23+1 + j·252) = 2^23+1 + floor(j·252).
+        // `j·252` needs at most 30 significand bits, so it is exact in float64 and
+        // so is its floor. `k` is that floor; the IR's `i` is `2^23+1+k`, `n` is
+        // `i − (2^23+127)`, and `s = 2^n` is `i`'s bits shifted left 23 — which is
+        // just the exponent field `k+1`.
+        int32 k = (int32) Math.floor((float64) j * (float64) 252.0);   // 0..252
+        float32 n = (float32) (k - (int32) 126);                       // −126..126
+        float32 s = Cajeta.bitsToF32((k + (int32) 1) << (int32) 23);   // 2^n
+
+        float32 f = SfuMath.fmaf(x, SfuMath.L2E_HI(), -n);
+        f = SfuMath.fmaf(x, SfuMath.L2E_LO(), f);
+
+        return SfuMath.ex2Approx(f) * s;
+    }
+}
