@@ -6,6 +6,7 @@
 #include "../type/CajetaType.h"
 #include "../type/StructureProperty.h"
 #include "../type/QualifiedName.h"
+#include "../error/Diagnostics.h"
 
 #include <iostream>
 #include <sstream>
@@ -29,6 +30,9 @@ namespace cajeta {
     // IEEE-754 bits and there is no float-from-bits seam yet.
     enum class Decode {
         IntVarint,    // int8/16/32/64 + uint* — readVarint, cast to the field width
+        ZigzagVarint, // sint32/sint64 — readZigzag, cast to the field width
+        Fixed32Int,   // fixed32/sfixed32 — readFixed32 (wire type I32)
+        Fixed64Int,   // fixed64/sfixed64 — readFixed64 (wire type I64)
         BoolVarint,   // boolean — readVarint != 0
         StringLen,    // cajeta.lang.String — readBytes → String
         BytesLen,     // int8[] — readBytes directly
@@ -36,12 +40,31 @@ namespace cajeta {
         Unsupported
     };
 
+    // The `encoding = "..."` option on @ProtoField. Absent → Default, which
+    // must reproduce pre-option behavior byte for byte.
+    enum class Encoding { Default, Zigzag, Fixed };
+
     struct Bind {
         int number;            // explicit @ProtoField wire number
         std::string name;      // field name
         std::string canon;     // field type canonical (for the width cast)
         Decode decode;
     };
+
+    bool isSignedIntCanon(const std::string& c) {
+        return c == "int8" || c == "int16" || c == "int32" || c == "int64";
+    }
+
+    bool isIntCanon(const std::string& c) {
+        return isSignedIntCanon(c) || c == "uint8" || c == "uint16"
+            || c == "uint32" || c == "uint64";
+    }
+
+    // 32- vs 64-bit for the fixed forms. protobuf offers fixed32 and fixed64
+    // only, so narrower fields ride in the 32-bit form.
+    bool isWide64Canon(const std::string& c) {
+        return c == "int64" || c == "uint64";
+    }
 
     // Classify a field's type into a decode strategy.
     Decode classify(const CajetaTypePtr& ty, const std::string& canon) {
@@ -78,22 +101,59 @@ namespace cajeta {
         return -1;
     }
 
+    // Apply @ProtoField's `encoding` option to the type-inferred decode kind.
+    // An option the field's type cannot carry is a compile error, not a silent
+    // fallback to the default — a wrong encoding is a wire-format bug that would
+    // otherwise surface as garbage at the far end.
+    Decode applyEncoding(const CajetaClassPtr& T,
+                         const StructurePropertyPtr& prop,
+                         const std::string& canon, Decode base) {
+        auto ann = prop ? prop->findAnnotation("ProtoField") : nullptr;
+        if (!ann) return base;
+        std::string enc = ann->getString("encoding");
+        if (enc.empty()) return base;
+
+        const std::string where = T->getQName()->toCanonical() + "."
+            + prop->getName() + " (" + canon + ")";
+        const int line = prop->getDeclLine();
+        const int col = prop->getDeclColumn();
+
+        if (enc == "zigzag") {
+            if (base != Decode::IntVarint || !isSignedIntCanon(canon)) {
+                reportOrThrow(line, col, "CAJETA_ERROR_PROTO_ENCODING",
+                    "@ProtoField(encoding = \"zigzag\") on " + where
+                    + " — zigzag maps protobuf sint32/sint64 and applies only "
+                      "to a signed integer field");
+                return base;
+            }
+            return Decode::ZigzagVarint;
+        }
+        if (enc == "fixed") {
+            if (base != Decode::IntVarint || !isIntCanon(canon)) {
+                reportOrThrow(line, col, "CAJETA_ERROR_PROTO_ENCODING",
+                    "@ProtoField(encoding = \"fixed\") on " + where
+                    + " — fixed maps protobuf fixed32/fixed64 and applies only "
+                      "to an integer field");
+                return base;
+            }
+            return isWide64Canon(canon) ? Decode::Fixed64Int
+                                        : Decode::Fixed32Int;
+        }
+        reportOrThrow(line, col, "CAJETA_ERROR_PROTO_ENCODING",
+            "@ProtoField(encoding = \"" + enc + "\") on " + where
+            + " — unknown encoding; expected \"zigzag\" or \"fixed\"");
+        return base;
+    }
+
+    std::vector<Bind> collectBinds(const CajetaClassPtr& T);
+
     // Synthesize `parse(int8[] bytes, int64 length) -> #T` for message T.
     std::string synthesizeMessageParseBody(const CajetaClassPtr& T) {
         const std::string Tc = T->getQName()->toCanonical();
 
-        std::vector<Bind> binds;
-        for (auto& prop : T->getPropertyList()) {
-            if (!prop) continue;
-            int number = protoFieldNumber(prop);
-            if (number < 0) continue;            // unannotated → not bound
-            auto ty = prop->getType();
-            if (!ty || !ty->getQName()) continue;
-            const std::string canon = ty->getQName()->toCanonical();
-            Decode d = classify(ty, canon);
-            if (d == Decode::Unsupported) continue;
-            binds.push_back({number, prop->getName(), canon, d});
-        }
+        // Shared with the encode arm, so the two can never disagree on which
+        // fields bind or how each is encoded.
+        std::vector<Bind> binds = collectBinds(T);
 
         const std::string PC = "dev.cajeta.codec.protobuf.ProtobufCursor";
         std::ostringstream os;
@@ -113,6 +173,33 @@ namespace cajeta {
                     } else {
                         os << "        e." << b.name << " = (" << b.canon
                            << ") cur.readVarint(" << slot << ");\n";
+                    }
+                    break;
+                case Decode::ZigzagVarint:
+                    if (b.canon == "int64") {
+                        os << "        e." << b.name << " = cur.readZigzag("
+                           << slot << ");\n";
+                    } else {
+                        os << "        e." << b.name << " = (" << b.canon
+                           << ") cur.readZigzag(" << slot << ");\n";
+                    }
+                    break;
+                case Decode::Fixed32Int:
+                    if (b.canon == "int32") {
+                        os << "        e." << b.name << " = cur.readFixed32("
+                           << slot << ");\n";
+                    } else {
+                        os << "        e." << b.name << " = (" << b.canon
+                           << ") cur.readFixed32(" << slot << ");\n";
+                    }
+                    break;
+                case Decode::Fixed64Int:
+                    if (b.canon == "int64") {
+                        os << "        e." << b.name << " = cur.readFixed64("
+                           << slot << ");\n";
+                    } else {
+                        os << "        e." << b.name << " = (" << b.canon
+                           << ") cur.readFixed64(" << slot << ");\n";
                     }
                     break;
                 case Decode::BoolVarint:
@@ -222,6 +309,7 @@ namespace cajeta {
             const std::string canon = ty->getQName()->toCanonical();
             Decode d = classify(ty, canon);
             if (d == Decode::Unsupported) continue;
+            d = applyEncoding(T, prop, canon, d);
             binds.push_back({number, prop->getName(), canon, d});
         }
         return binds;
@@ -244,6 +332,18 @@ namespace cajeta {
                 case Decode::IntVarint:
                     os << "    int64 " << fv << " = (int64) value." << b.name << ";\n";
                     os << "    w.writeVarintField(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::ZigzagVarint:
+                    os << "    int64 " << fv << " = (int64) value." << b.name << ";\n";
+                    os << "    w.writeZigzagField(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::Fixed32Int:
+                    os << "    int32 " << fv << " = (int32) value." << b.name << ";\n";
+                    os << "    w.writeFixed32Field(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::Fixed64Int:
+                    os << "    int64 " << fv << " = (int64) value." << b.name << ";\n";
+                    os << "    w.writeFixed64Field(" << tag << ", " << fv << ");\n";
                     break;
                 case Decode::BoolVarint:
                     // `if`, not a ternary — `boolean ? intLit : intLit` miscompiles.
