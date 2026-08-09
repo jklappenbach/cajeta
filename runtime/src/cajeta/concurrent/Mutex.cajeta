@@ -42,8 +42,9 @@ public class Mutex<T> {
     T value;
 
     /**
-     * Wrap `initial` in a fresh mutex, taking ownership of the value;
-     * all later access is gated by the lock.
+     * Wrap `initial` in a fresh mutex — taking ownership of the value when
+     * the caller transfers it (`heap Mutex(#v)`), otherwise holding a borrow
+     * the caller must outlive; all later access is gated by the lock.
      * ```cajeta
      * Mutex<int> guarded = heap Mutex(0);
      * ```

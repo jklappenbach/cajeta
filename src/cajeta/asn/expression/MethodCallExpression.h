@@ -15,10 +15,14 @@ namespace cajeta {
         string label;
         ExpressionPtr expression;
         // Phase 1 of two-sided transfer (docs/specification/lang/OwnershipTransfer.md).
-        // `#x` at the argument position sets this; the call-site transfer
-        // machinery in MethodCallExpression.cpp / CreatorRest.cpp fires the
-        // drop deactivation when EITHER this is true OR the matching formal
-        // is `#T`-marked. Either suffices; either acknowledges transfer.
+        // `#x` at the argument position sets this. ONLY this flag fires the
+        // drop deactivation in MethodCallExpression.cpp / CreatorRest.cpp —
+        // the call-site `#` always transfers and is always sufficient. A `#T`
+        // FORMAL never transfers on its own: when the formal is `#T` and this
+        // flag is false, the callee-side pass raises
+        // CAJETA_ERROR_TRANSFER_REQUIRED, compelling the caller to write `#`.
+        // The two sides are asymmetric — the formal's `#` is an obligation,
+        // not an acknowledgement.
         bool callerTransferred = false;
     };
 

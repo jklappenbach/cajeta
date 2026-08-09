@@ -9637,10 +9637,12 @@ namespace cajeta {
             builder->SetInsertPoint(nullSafeCallBB);
         }
 
-        // # transfer at call site (auto): when the callee's formal
-        // parameter is marked `#T` (isTransferred), the corresponding
-        // caller-side argument's drop entry must be deactivated — the
-        // callee takes ownership. Without this, a caller pattern like
+        // # transfer at call site: when the CALLER writes `#x`
+        // (parameters[i].callerTransferred), the argument's drop entry is
+        // deactivated — the callee takes ownership. A `#T` formal alone
+        // deactivates nothing; the callee-side pass below instead rejects a
+        // plain argument with CAJETA_ERROR_TRANSFER_REQUIRED so the caller
+        // must spell `#`. Without this, a caller pattern like
         //   #Stream<T> piece = ...trySplit();
         //   shares[i] = head.cloneChainOver(piece);  // piece's drop
         //                                            // stays active
@@ -9811,8 +9813,10 @@ namespace cajeta {
                 }
             }
             // Helper: deactivate the named local's drop entry at the
-            // current insertion point. Used by both the caller-side and
-            // callee-side transfer passes below.
+            // current insertion point. Used by the caller-side `#x` pass
+            // below — that is the only site that deactivates anything, since
+            // a `#T` formal alone deactivates nothing (it only obligates the
+            // caller to spell `#`).
             auto deactivateIfClassLocal = [&](size_t argIdx) {
                 if (argIdx >= parameters.size()) return;
                 auto argExprBase = parameters[argIdx].expression;
@@ -9990,6 +9994,24 @@ namespace cajeta {
                     size_t argIdx = fIdx - xferParamOffset;
                     if (argIdx >= parameters.size()) break;
                     ++fIdx;
+                    // NO `#b`-ON-A-PLAIN-FORMAL DIAGNOSTIC HERE, in either
+                    // direction. A `[transfer-of-unowned-param]` warning was
+                    // tried 2026-08-09 and REMOVED the same day: `#formal` is
+                    // not a smell, it is the REQUIRED spelling for forwarding
+                    // the caller's mode through a wrapper. Measured with a
+                    // drop counter: `fwd(ArrayList<Box> keep, Box b)` doing
+                    // `keep.add(b)` frees the box AT THE CALL'S RETURN while
+                    // the list still points at it (drops=1), while
+                    // `keep.add(#b)` reaches the list intact (drops=0). The
+                    // warning fired on the correct form and its fix-it text
+                    // ("otherwise drop the `#` and lend") described the edit
+                    // that introduces the use-after-free — it fired on the
+                    // stdlib's own repair while that repair was being verified.
+                    //
+                    // The underlying request — "a method that forwards `#b`
+                    // should require ownership on the way in" — is sound but
+                    // NOT statically decidable here: forwarding a lend is
+                    // exactly what makes an ownership-agnostic wrapper work.
                     // NO STATIC "transferring a borrow" CHECK HERE — see
                     // the BORROW_PARAM_ESCAPES retirement at ~9820 (spec §4
                     // rev 2). A plain CLASS-typed formal is not statically a
@@ -10022,9 +10044,14 @@ namespace cajeta {
                     // element is not a borrow of anything: an int32 has no
                     // title to forge a second owner of. The shape check
                     // predates `#T` element formals, when only droppable
-                    // types reached it; with containers declaring `#T` it
-                    // now sees `list.add(items[i])` on an
-                    // `ArrayList<int32>` and rejects code that cannot leak.
+                    // types reached it. Collection INSERTION formals
+                    // (add/put/push) are plain `T` now — lending to a
+                    // collection is legal — so this shape check fires only
+                    // for formals that genuinely still declare `#T`:
+                    // containers whose storage outlives the caller's frame,
+                    // plus the collection ctors and `HashMap.operator[]=`
+                    // that still consume. The scalar carve-out remains
+                    // correct for those.
                     // Arrays keep the check — they carry PRIMITIVE_FLAG in
                     // this type system but are droppable buffers, which is
                     // the `int8[]` consuming-native hazard the rule exists
@@ -10091,15 +10118,30 @@ namespace cajeta {
                     // same hazard — worse, since the arena reset would free
                     // memory the callee now owns.
                     //
-                    // Found 2026-08-03 by uniform-transfer 2.1.4: `a.add(s)` on
-                    // an `ArrayList<String>` compiled CLEAN because the concat
-                    // local `String s = "e" + i` was arena-routed. The escape
-                    // walk counts only `#name` as an escape, so a plain lend was
-                    // invisible to it AND to this check — each deferring to the
-                    // other. Asking the method directly breaks the cycle: the
-                    // plain form now errors, and the `#` form marks the name
-                    // escaping, which un-elects it from the arena and gives it a
-                    // real drop entry.
+                    // So the probe exists for the formals that genuinely still
+                    // declare `#T` — `HashMap.operator[]=` (`#K key, #V value`)
+                    // and the collection ctors (`ArrayList(#T[] items)`,
+                    // `HashMap(#Pair<K, V>[] entries)`, `HashSet(#T[] items)`,
+                    // `LinkedList(#T[] items)`), which consume what they are
+                    // handed. Those demand `#` even when the source local has
+                    // no drop entry because it was arena-routed — the arena
+                    // reset would free a buffer the collection now owns. The
+                    // escape walk counts only `#name` as an escape, so a plain
+                    // lend is invisible to it; asking the method directly
+                    // breaks the cycle, and the `#` form marks the name
+                    // escaping, which un-elects it from the arena and gives it
+                    // a real drop entry.
+                    //
+                    // Insertion calls never reach here at all: `ArrayList.add`,
+                    // `HashMap.put`, `Cache.put` and friends declare plain `T`,
+                    // so the `!fp->isTransferred()` gate above skips them —
+                    // `a.add(s)` on an `ArrayList<String>` is NOT an error
+                    // today, because a plain argument lends by design
+                    // (`add(v)` lends, `add(#v)` transfers). The `#` their
+                    // callers spell (DnsCache.store.put,
+                    // ActionResult.outputsMap.put) is the author electing to
+                    // hand the title to a store that outlives the frame, not a
+                    // formal demanding it.
                     bool callerOwns = field->getDropEntry() != nullptr;
                     if (!callerOwns) {
                         if (auto cm = module->getCurrentMethod()) {
@@ -10107,11 +10149,18 @@ namespace cajeta {
                                 idExpr->getTextValue());
                         }
                     }
-                    // Don't advise `#name` when `name` is PROVABLY a borrow:
-                    // CAJETA_ERROR_TRANSFER_OF_BORROW rejects that spelling, so
-                    // the suggestion would send the reader in a circle. A
-                    // borrowed formal has no title to surrender at all — the
-                    // fix is a different value, not different syntax.
+                    // Don't advise `#name` when `name` is a PLAIN formal of the
+                    // enclosing method. The spelling is legal — `#formal`
+                    // forwards whatever bit the caller handed over (see the
+                    // BORROW_PARAM_ESCAPES retirement above) and is in fact the
+                    // required spelling for forwarding a caller's mode — but it
+                    // is not a title this frame can PROMISE: whether anything
+                    // transfers
+                    // depends on the outer caller, which is exactly what a `#T`
+                    // formal is asking to be guaranteed. Suggesting it would
+                    // send the reader in a circle; the fix is to declare the
+                    // enclosing formal `#T` so callers must surrender, or to
+                    // pass a value this frame owns.
                     bool srcIsBorrowedFormal = false;
                     if (auto cmb = module->getCurrentMethod()) {
                         for (auto& cp : cmb->getParameterList()) {

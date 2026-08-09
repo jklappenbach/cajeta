@@ -103,10 +103,10 @@ public final class HashSet<T> {
      * @Param value the member to add.
      */
     public void add(T value) {
-        // uniform-transfer 2.3 — the set OWNS its members. The `#` forward
-        // is now the only legal spelling rather than a mode-matching trick:
-        // the map's key formal is `#K`, so the title moves straight through.
-        this.map.put(value, 1);
+        // The set does not own its members by default: the formal is plain
+        // and the forward to `map.put` passes the mode through — `add(#v)`
+        // gives the set title, `add(v)` lends.
+        this.map.put(#value, 1);
     }
 
     /**

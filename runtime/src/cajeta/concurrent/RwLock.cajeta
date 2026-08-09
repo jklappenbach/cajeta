@@ -32,7 +32,9 @@ public class RwLock<T> {
     T value;
 
     /**
-     * Wrap `initial` in a fresh lock, taking ownership of it (`#T`).
+     * Wrap `initial` in a fresh lock. The formal is plain:
+     * `heap RwLock(#v)` gives the lock title to the value,
+     * `heap RwLock(v)` lends it (and the caller must keep it alive).
      * ```cajeta
      * RwLock<i32> hits = heap RwLock(0);
      * ```

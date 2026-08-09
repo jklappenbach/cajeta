@@ -9,8 +9,9 @@ package cajeta.collection;
  *
  * The list owns the nodes — `LinkedList.add` heap-allocates a node
  * and links it in; `remove` unlinks and lets the dropped node fall
- * off the drop chain. The node likewise OWNS its value (uniform-transfer
- * 2.3): the ctor takes `#T`, so dropping a node always drops its value.
+ * off the drop chain. The ctor takes a plain `T` and stores it with
+ * `#=`, so the node owns its value only when the caller transferred it;
+ * dropping a node drops the value only in that case.
  *
  * ## v1 surface
  *
@@ -23,8 +24,8 @@ package cajeta.collection;
 public final class LinkedListNode<T> {
     public T value;
     // The value field's ownership BIT is the single truth, set by the
-    // ctor's `#value` store. Under uniform-transfer 2.3 the node always
-    // owns, so pops take the title with a single move (`T t #= node.value`).
+    // ctor's `#=` store from whatever mode the caller tendered; a pop's
+    // single move (`T t #= node.value`) carries that bit back out.
     public LinkedListNode<T> prev;
     public LinkedListNode<T> next;
 
@@ -39,11 +40,9 @@ public final class LinkedListNode<T> {
      * ```
      */
     public LinkedListNode(T value) {
-        // uniform-transfer 2.3 — the node OWNS its value, so the formal is
-        // `#T` and the store is an unconditional transfer. The old comment
-        // described a value that was owned "iff the caller #-transferred
-        // it"; that conditional is exactly what the uniform contract
-        // abolishes. A node's drop now always drops its value.
+        // The formal is plain `T` and `#=` stores whichever mode the caller
+        // tendered — a `#`-transferred value is owned by the node (and drops
+        // with it), a lent one is not.
         this.value #= value;
         this.prev = null;
         this.next = null;

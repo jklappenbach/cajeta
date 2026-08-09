@@ -1310,8 +1310,12 @@ namespace cajeta {
             // through a double Move, which only `#= #` produced, and that
             // spelling is now rejected outright. The capability retires with
             // its one caller: the rehash forwarded a member's bit verbatim
-            // because a slot might hold a borrow, and spec 2.3 removed that
-            // possibility. `grep '#= #' runtime/src` is 0.
+            // because a slot might hold a borrow — which is STILL true
+            // (collections do not own by default). What retired the capability
+            // is the rejection of the `#= #` spelling in Unit 3, not the
+            // disappearance of borrowed slots; the SINGLE-sharp fwdLhs/fwdSrc
+            // arm above is now the only forwarding primitive.
+            // `grep '#= #' runtime/src` is 0.
         }
         // array-literals §3.2 — for `lhs = [...]`, target-type the RHS literal
         // from the LHS array element type BEFORE the operands generate below

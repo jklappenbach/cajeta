@@ -105,8 +105,9 @@ public final class Heap<T> {
         if (this.sizeCount >= this.capacity) {
             this.grow();
         }
-        // uniform-transfer 2.3 — the heap OWNS its elements: one
-        // unconditional transfer, no caller-spelling to match.
+        // The heap does not own by default — the formal is plain and this
+        // `#=` stores whatever mode the argument arrived in (`push(#v)`
+        // transfers, `push(v)` lends).
         this.data[this.sizeCount] #= v;
         // Sift up from the new leaf toward the root. Ownership bits travel
         // with their elements through every swap.

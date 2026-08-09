@@ -39,10 +39,16 @@ package cajeta.collection;
  * ## Storage
  *
  * Heap-allocates one `LinkedListNode`<T> per insert. The list owns the
- * nodes, and each node OWNS its value (uniform-transfer 2.3: the add
- * formals are `#T`). Dropping a node — via `remove(T)`, a pop, or list
- * teardown — therefore drops its value, unless a pop handed the title
- * back to the caller first.
+ * nodes; it does NOT own their values. The add formals are plain `T`
+ * and `addTail` / `addHead` hand the value on to the `heap
+ * LinkedListNode`<T> ctor PLAIN, so the node's store records a
+ * borrow whatever the caller spelled — and `add(#v)` merely moves the
+ * title onto the add's formal, which releases it when the add returns,
+ * leaving the node aliasing freed storage. Values must therefore
+ * outlive the list, and nothing diagnoses a value that does not.
+ * Dropping a node — via `remove(T)`, a pop, or list teardown — frees
+ * the node alone. The pops' remove-shaped return reads the value field
+ * as it stands, so it hands back a borrow (flag 0).
  */
 public final class LinkedList<T> {
 
@@ -88,7 +94,7 @@ public final class LinkedList<T> {
      * deque-style `addTail`).
      */
     public void add(T value) {
-        this.addTail(value);
+        this.addTail(#value);
     }
 
     /**
@@ -96,7 +102,7 @@ public final class LinkedList<T> {
      * `addHead`.
      */
     public void addFirst(T value) {
-        this.addHead(value);
+        this.addHead(#value);
     }
 
     /**
@@ -108,7 +114,7 @@ public final class LinkedList<T> {
      * ```
      */
     public void addTail(T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         // Title spelling (title-tracking §5): the FORWARD chain owns —
         // headNode / each node's `next` take titles (`#`); tailNode and
         // `prev` are borrows. Borrow-stores precede the owning store,
@@ -134,7 +140,7 @@ public final class LinkedList<T> {
      * ```
      */
     public void addHead(T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(value);
+        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
             this.tailNode = node;
             this.headNode #= node;

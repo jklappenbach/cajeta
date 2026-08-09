@@ -100,10 +100,11 @@ namespace cajeta {
 // narrower "is the operand a BARE IDENTIFIER", because a FIELD or ELEMENT
 // source needed the double sharp for the "fused claim": a forward of whatever
 // mode the source slot held, owned or borrowed, VERBATIM, where a plain `#=`
-// asserts an unconditional transfer. That existed for exactly one reason — a
-// container slot MIGHT hold a borrow. Spec 2.3 removes the premise (containers
-// own their elements) and Unit 2 collapsed all 20 stdlib fused claims to single
-// moves, so the exemption now buys a second spelling and nothing else.
+// into a LOCAL demands a title. That existed for exactly one reason — a
+// container slot MIGHT hold a borrow. That premise is BACK: collections are not
+// containers and do not own by default (the stdlib collection insertion formals
+// were relaxed `#T` -> `T`), so a slot can legitimately hold a borrow. The
+// `#= #` exemption was nonetheless retired in Unit 3.
 //
 // ELEMENT→ELEMENT stores keep forwarding under the SINGLE sharp: the
 // fwdLhs/fwdSrc arm in BinaryOpExpression::generateCode never required the
@@ -183,9 +184,14 @@ bool cajetaRhsCarriesRedundantSharp(
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->SHARP_ASSIGN()) {
-            // title-stores §2.1 — `dst #= v` is the fused spelling of
-            // `dst = #v`: one assignment node, RHS wrapped in a
-            // MoveExpression at the attach loop below.
+            // title-stores §2.1 — `dst #= v` builds one assignment node with
+            // the RHS wrapped in a MoveExpression at the attach loop below.
+            // It is a MODE-CARRYING store, NOT an unconditional `dst = #v`:
+            // the destination slot's title bit is armed only when a title was
+            // actually tendered (e.g. a plain formal whose caller passed `#`);
+            // when no title was tendered the store records a borrow. Measured:
+            // with a plain (borrowing) formal, `m.put(#k, i)` keeps 200/200
+            // keys alive, `m.put(k, i)` keeps 2/200.
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
             sharpAssign = true;
         } else if (ctx->COLONCOLON()) {

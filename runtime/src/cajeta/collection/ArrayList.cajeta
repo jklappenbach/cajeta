@@ -9,10 +9,12 @@ import cajeta.lang.stream.Stream;
  * the workhorse list of the collections package and the default
  * accumulator behind `Collectors.toList<T>()`.
  *
- * The list OWNS its elements (uniform-transfer 2.3): `add`, `set`,
- * and `insert` take `#T`, `removeAt` and the extracting subscript
- * hand the title back out, and teardown drops exactly the owned
- * slots via the backing array's tail bitmap.
+ * The list does NOT own its elements by default: `add`, `set` and
+ * `insert` take a plain `T`, so `xs.add(v)` LENDS and `xs.add(#v)`
+ * transfers. The `#=` store inside records whichever mode arrived,
+ * per slot; `removeAt` and the extracting subscript hand a title back
+ * out, and teardown drops exactly the slots whose title was tendered
+ * via the backing array's tail bitmap.
  *
  * ```cajeta
  * ArrayList<int32> xs = heap ArrayList<int32>();
@@ -29,9 +31,11 @@ import cajeta.lang.stream.Stream;
  *
  * ## Surface
  * Ctors (empty / `#T[]` literal), `count` / `isEmpty`, `get` / `set`,
- * `add` / `insert` / `removeAt` / `clear`, `appendAll` (consuming
- * combiner), subscripts (`[]` borrow read, `[]=` transfer write,
- * `#[]` extraction), `stream`, `sort` / `sortStable`. Out-of-range
+ * `add` / `insert` / `removeAt` / `clear`, `appendAll` (combiner — moves
+ * the right list's elements out), subscripts (`[]` borrow read, `[]=`
+ * lending write — transfers only when the caller spells `#`, `#[]`
+ * extraction),
+ * `stream`, `sort` / `sortStable`. Out-of-range
  * indexes on get/set/insert/removeAt throw a Recoverable Exception.
  */
 public final class ArrayList<T> {
@@ -64,9 +68,11 @@ public final class ArrayList<T> {
     /**
      * Create a list holding every element of `items`, in order. Backs the
      * collection-literal form `ArrayList<int32> xs = heap ArrayList<int32>([1,2,3])`
-     * (array-literals §6). The literal array is CONSUMED (`#T[]`) — the
-     * list owns its elements, so each one moves out of the source. The
-     * backing array is sized to the element count up front (one
+     * (array-literals §6). The literal ARRAY is CONSUMED (`#T[]`) — its
+     * storage is the list's from here on. Per element the rule is the class
+     * header's: the forwarding move below carries whatever mode the literal's
+     * slot held, and teardown drops exactly the slots whose title came with
+     * it. The backing array is sized to the element count up front (one
      * allocation, no re-grow during the fill).
      *
      * ```cajeta
@@ -110,8 +116,10 @@ public final class ArrayList<T> {
 
     /**
      * Replace the element at `i`. The slot store's displaced release
-     * (title-stores §3.2) drops the old occupant, which the list owns.
-     * Throws when out of range.
+     * (title-stores §3.2) drops the old occupant only when that slot held
+     * title; a slot holding a borrow is simply overwritten and its occupant
+     * left to its owner. The new element records whichever mode arrived
+     * (`set(i, v)` lends, `set(i, #v)` transfers). Throws when out of range.
      */
     public void set(int32 i, T v) {
         if (i < 0 || i >= this.sizeCount) {
@@ -247,12 +255,21 @@ public final class ArrayList<T> {
     }
 
     /**
-     * Append every element of `other` onto this list, in order — and
-     * CONSUME `other`: a list owns its elements, so the elements move
-     * across and the right-hand list is dead at the call. This is the
-     * combiner for `Collectors.toList<T>()` under a parallel collect —
-     * per-worker partials are folded right-onto-left and discarded.
-     * Reserves the merged size once (no re-doubling inside the loop).
+     * Append every element of `other` onto this list, in order.
+     *
+     * DESTRUCTIVE ON `other`'s ELEMENTS. The formal is plain, so the list
+     * OBJECT is not consumed — the caller still holds it (write
+     * `appendAll(#other)` to hand the object over too) — but each element
+     * store below is a forwarding move: the title rides out of
+     * `other.data[i]` into this list's slot and the source slot decays to a
+     * borrow, exactly as `#[]` extraction decays a slot. `other.sizeCount`
+     * is left alone, so after the call `other` still lists every element,
+     * now as borrows aliasing this list's. Dropping this list dangles them.
+     * That is why it is the combiner for `Collectors.toList<T>()` under a
+     * parallel collect — per-worker partials are folded right-onto-left and
+     * discarded on the spot — and why it is the wrong call for two lists the
+     * caller means to keep. Reserves the merged size once (no re-doubling
+     * inside the loop).
      */
     public void appendAll(ArrayList<T> other) {
         this.reserve(this.sizeCount + other.sizeCount);
@@ -336,11 +353,12 @@ public final class ArrayList<T> {
      * ```
      *
      * OWNERSHIP CAVEAT: sorting permutes elements WITHOUT their ownership
-     * bits. Every resident element is owned (the list's stores all
-     * transfer), so the bits are uniformly set and permutation is safe —
-     * UNLESS a slot's title was `#[]`-extracted: that slot's bit is clear
-     * while its neighbors' are set, and sorting would attach the bits to
-     * the wrong slots (leak + double free). Do not sort after extraction.
+     * bits. A list may hold any mix of lent and transferred slots (the
+     * stores record whichever mode the caller tendered), and `#[]`
+     * extraction clears a bit, so the bits are NOT uniform in general and
+     * sorting would attach them to the wrong slots (leak + double free).
+     * Only sort a list whose elements were all added in the same mode and
+     * never extracted.
      */
     public void sort() {
         Sort.sort<T>(this.data, this.sizeCount);
@@ -348,7 +366,7 @@ public final class ArrayList<T> {
 
     /**
      * Sort the live elements in place into ascending natural order, **stable**
-     * (merge sort — equal elements keep their input order). Same extraction
+     * (merge sort — equal elements keep their input order). Same ownership
      * caveat as `sort()`. See {@link cajeta.collection.Sort}.
      */
     public void sortStable() {

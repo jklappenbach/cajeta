@@ -36,9 +36,12 @@ public final class RedBlackNode<K, V> {
      * ```
      */
     public RedBlackNode(K key, V value) {
-        // uniform-transfer 2.3 — the node OWNS its key and value; the
-        // formals are `#` and the stores are unconditional transfers. The
-        // node's drop walk reclaims both when the registry releases it.
+        // The formals are plain, and `RedBlackTree.put` hands key and value
+        // in PLAIN as well — a plain argument lends, so these stores record
+        // borrows whatever mode the tree's `put` was called in, and the
+        // node's drop walk reclaims neither. The `#=` spelling keeps each
+        // alias AS-IS rather than resolve-copying it into a field the drop
+        // walk would never release.
         this.key #= key;
         this.value #= value;
         this.left = null;

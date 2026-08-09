@@ -247,11 +247,12 @@ namespace cajeta {
             //      to inspect the callee. Required for synthesized
             //      ctors (e.g. view ctors) where resolveMethod misses.
             //
-            //   2. Callee-side: any formal marked `#T` that didn't get
-            //      handled by pass 1 (caller wrote plain `x`) gets the
-            //      same deactivation. Phase 2 will tighten this with a
-            //      (#T-formal, plain-x) compile error; Phase 1 stays
-            //      additive.
+            //   2. Callee-side: a formal marked `#T` whose argument the
+            //      caller did NOT mark `#` is a CONTRACT VIOLATION, not an
+            //      implicit transfer — pass 2 throws
+            //      CAJETA_ERROR_TRANSFER_REQUIRED. A `#T` formal never
+            //      deactivates a caller drop entry on its own; only the
+            //      caller's `#` does.
             //
             // Primitives, literals, and locals without drop entries
             // naturally degrade to no-op (the inner gate fires only on

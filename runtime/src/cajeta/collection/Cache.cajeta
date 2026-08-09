@@ -182,28 +182,41 @@ public final class Cache<K, V> {
      * ```
      */
     public void put(K key, V value) {
-        // The cache OWNS its key (callers transfer it): a cache entry must
-        // outlive the caller's key local — a borrowed cache key would dangle
-        // once the caller returns (e.g. DnsCache builds a fresh key per call).
-        // Ownership is forwarded to the backing HashMap, the canonical owner,
-        // which frees it on removal/clear.
+        // The formals are plain. Apart from the replace path's `node.value
+        // #= value` — the one store that reads a formal directly — every
+        // store reaches them through ANOTHER call (the node ctor, and
+        // `entries.put(key, #fresh)`) with `key` / `value` spelled PLAIN. A
+        // plain argument lends even when the formal is holding a title the
+        // caller tendered: the title stays on the formal here and is released
+        // when this call returns. So the stored key is a borrow whichever way
+        // the caller spells the call, and `cache.put(#k, v)` frees `k` at
+        // this return while the entry is still in the table. Key and value
+        // must outlive the entry on the caller's own account; nothing
+        // diagnoses the shortfall (DnsCache builds a fresh key per call and
+        // transfers it — exactly the shape that dangles).
         int64 now = Cajeta.currentTimeNanos();
         // HashMap.get returns the value directly (null on a miss for a
         // class V), NOT an Optional — null-check rather than isPresent().
         CacheNode<K, V> node = this.entries.get(key);
         if (node != null) {
-            // The cache owns its values too now: an unconditional
-            // transfer that displaced-releases the old occupant.
+            // The one store that reads the formal DIRECTLY, so this `#=` does
+            // record whichever mode the caller tendered — and it
+            // displaced-releases the old occupant only if that slot held title.
             node.value #= value;
             node.accessedAt = now;
             this.moveToHead(node);
             // Existing entry keeps its stored key; the incoming duplicate `key`
-            // is dropped at scope exit (we own it and don't store it).
+            // is dropped at scope exit when the caller transferred title (we
+            // hold it and don't store it) and left alone when it was lent.
             return;
         }
-        // The node borrows the key for reverse lookup on eviction; the map
-        // takes ownership of the canonical key via the `#key` transfer below.
-        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, now);
+        // The node borrows the key for reverse lookup on eviction, and the
+        // map's key slot borrows it too: both `key` and `value` are handed on
+        // PLAIN (here, and in `put(key, #fresh)` below), so neither slot takes
+        // title no matter what the caller tendered. The insert path stores
+        // borrows of both — unlike the replace path above, whose `#=` reads
+        // the formal directly.
+        CacheNode<K, V> fresh = heap CacheNode<K, V>(#key, #value, now);
         // Link while `fresh` is still ours — after the `#fresh` transfer the
         // map owns the node and the local is moved-out (title-tracking §3.1.3).
         this.linkAtHead(fresh);
@@ -225,9 +238,10 @@ public final class Cache<K, V> {
 
     /** Drop every entry and reset the LRU list to empty. */
     public void clear() {
-        // Replace the table wholesale — its teardown drops every node
-        // (and each node its value) exactly once. Same small start as
-        // the ctor.
+        // Replace the table wholesale — its teardown drops every node exactly
+        // once. The nodes are what the table owns; the keys and values they
+        // point at are borrows (see `put`) and are left to their owners. Same
+        // small start as the ctor.
         this.entries = heap HashMap<K, CacheNode<K, V>>(16);
         this.mruHead = null;
         this.lruTail = null;

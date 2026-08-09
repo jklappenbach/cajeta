@@ -2785,8 +2785,20 @@ namespace cajeta {
             InitializerPtr initializer = nullptr;
 
             if (ctx->variableInitializer() != nullptr) {
-                // title-stores §2.2.3 — `T x #= v` is `T x = #v`: wrap the
-                // initializer expression in a MoveExpression.
+                // title-stores §2.2.3 — `T x #= v` wraps the initializer
+                // expression in a MoveExpression. For a PLAIN-IDENTIFIER
+                // source (a local, or a formal carrying its caller's flag)
+                // that is a MODE-CARRYING claim rather than an unconditional
+                // `T x = #v`: the store takes whatever title the source
+                // actually holds, so a lend stays a lend. A SLOT source is
+                // stricter. The declaration form never takes the verbatim
+                // forwarding path (isForwardingSlotMove(), which
+                // BinaryOpExpression sets only for ELEMENT->ELEMENT stores),
+                // so `T x #= o.f` / `T x #= a[i]` DEMAND a title and a
+                // titleless slot panics CAJETA_PANIC_TITLE_MISS — the reading
+                // spelled out at cajetaRhsCarriesRedundantSharp in
+                // Expression.cpp. Take a plain borrow (`T x = o.f`) when that
+                // is what was meant.
                 if (ctx->SHARP_ASSIGN() != nullptr
                         && ctx->variableInitializer()->expression() != nullptr) {
                     // `T x #= #v` — the transfer spelled twice. `#=` IS the
