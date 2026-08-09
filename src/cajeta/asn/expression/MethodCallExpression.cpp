@@ -9990,45 +9990,19 @@ namespace cajeta {
                     size_t argIdx = fIdx - xferParamOffset;
                     if (argIdx >= parameters.size()) break;
                     ++fIdx;
-                    // `#x` AT THE CALL SITE ASSERTS THE CALLER OWNS `x`.
-                    // Rejected only when `x` is PROVABLY a borrow: a plain
-                    // (non-`#`) formal of the enclosing method. This frame
-                    // demonstrably holds no title to such a name, so
-                    // surrendering it is the unsound direction — the callee
-                    // records a title it does not have and both sides free it.
-                    //
-                    // Deliberately NOT "reject whatever we cannot prove owned":
-                    // the available proof (an armed drop entry) is incomplete —
-                    // an owned local from a `#R`-returning call can lack one
-                    // (DnsCache's `resolved`, from `Resolver.resolve() ->
-                    // #SocketAddress[]`). The neighbouring TRANSFER_REQUIRED
-                    // check tolerates that gap because a miss there merely
-                    // fails to DEMAND a `#`; a miss here would REJECT valid
-                    // code. Same evidence, opposite safety — so this side only
-                    // fires on positive proof of a borrow.
-                    if (parameters[argIdx].callerTransferred) {
-                        if (auto mvId = dynamic_pointer_cast<IdentifierExpression>(
-                                parameters[argIdx].expression)) {
-                            if (auto cm = module->getCurrentMethod()) {
-                                const std::string& nm = mvId->getTextValue();
-                                for (auto& cp : cm->getParameterList()) {
-                                    if (!cp || cp->getName() != nm) continue;
-                                    if (cp->isTransferred()) break;   // owned formal
-                                    if (cp->getName() == "this") break;
-                                    throw Exception(
-                                        "`#" + nm + "` surrenders ownership, but `"
-                                        + nm + "` is a BORROWED parameter of `"
-                                        + cm->getName() + "` — this frame holds no "
-                                        "title to give. Pass it plainly to lend it, "
-                                        "declare the parameter `#" + nm + "` to take "
-                                        "ownership from your caller, or transfer a "
-                                        "value this frame owns. See "
-                                        "docs/specification/lang/OwnershipTransfer.md.",
-                                        "CAJETA_ERROR_TRANSFER_OF_BORROW");
-                                }
-                            }
-                        }
-                    }
+                    // NO STATIC "transferring a borrow" CHECK HERE — see
+                    // the BORROW_PARAM_ESCAPES retirement at ~9820 (spec §4
+                    // rev 2). A plain CLASS-typed formal is not statically a
+                    // borrow: it is a RUNTIME owner whose title is the
+                    // caller's flag, so `#formal` forwards that flag rather
+                    // than forging a title. Measured 2026-08-09: `inner(l, b)`
+                    // doing `l.add(#b)` with a lent `b` returns the right
+                    // answer twice and exits clean — the list takes a lend and
+                    // the owner frees exactly once. A static rejection here
+                    // breaks working documented code (MemoryModel.md's
+                    // `intern`/`adopt` showcase, FiberLocal.where callers).
+                    // Interfaces and non-class formals keep the old rule,
+                    // which the retirement block above still applies.
                     if (!fp->isTransferred()) continue;
                     if (parameters[argIdx].callerTransferred) continue;
                     auto argExpr = parameters[argIdx].expression;
