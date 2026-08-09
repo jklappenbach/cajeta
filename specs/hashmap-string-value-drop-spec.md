@@ -106,6 +106,23 @@ in every working instantiation).
 Looking the template up by canonical name does NOT help: `canonicalMap`
 holds the placeholder too (`canonSame=1`).
 
+## 5b. It is NOT the calling code — and a SHIPPED STDLIB API is broken
+
+Checked directly, because the natural suspicion is that the caller got the
+borrow/transfer spelling wrong (`#=`, `#`-moves):
+
+- `put(#k, "" + "beta")` — bare temp value: faults.
+- `put(#k, #v)` from two owned locals: faults.
+- A wrapper with `#String` formals doing `m.put(#key, #value)` — the
+  EXACT shape `ActionResult.output` uses: faults.
+- **`cajeta.buildtool.plugin.ActionResult.output(#key, #value)` itself
+  — stdlib code, reviewed and shipped — faults.** Its `outputsMap` is a
+  `HashMap<String, String>`.
+
+So the calling convention is not the trigger, and this is not a
+test-only curiosity: `ActionResult.output` is unusable at runtime today,
+which means any build-tool plugin that records an output hits it.
+
 ## 6. What was tried and did NOT work
 
 Three fixes at the value-type decision point were implemented and
@@ -115,7 +132,10 @@ measured; **none changed the emitted layout**, which stayed
 1. consult `getTemplateOrigin()->findAnnotation("ValueType")`;
 2. additionally resolve the template through `CajetaType::of(canonical)`;
 3. additionally call `CajetaModule::userMaterializeHook` on the
-   placeholder first, then re-query.
+   placeholder first, then re-query;
+4. materialize the placeholder TEMPLATE at the top of
+   `CajetaClass::instantiateInternal`, before the annotation transfer —
+   i.e. never instantiate from an unwalked template.
 
 That the layout is unmoved by all three says the flag assignment in
 `generatePrototype` is **not what decides this class's layout** — the
