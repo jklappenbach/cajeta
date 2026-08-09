@@ -94,20 +94,38 @@ language. The engine is rewritten against `cajeta.math.Tensor` and
 `Ewise.cajeta` already proves placement dispatch at 14 call sites
 (`arithF32Op:54`, `matmulF32Op:360`, and siblings), but nothing calls it —
 `Ewise` has two references repo-wide outside its own file and tests. Roughly
-200 `Tensor` ops ignore placement entirely. This section generalizes the
-pattern and unpins f32; everything else in this spec depends on it.
+200 `Tensor` ops ignore placement entirely. This section gives the op surface
+one placement policy and unpins f32; everything else in this spec depends on
+it.
+
+What "one policy" can mean is bounded by the language. A kernel launch needs a
+concrete element type, so `Tensor`'s dtype-generic ops cannot dispatch to
+kernels at all (2.1). The policy they share is therefore the *guard*, not the
+dispatch: every op asks the same question about residency, and answers it by
+taking the kernel path (concrete dtype), rejecting (split operands), or tiering
+to the host with a note (generic, or no kernel for the dtype). The failure this
+prevents is the one worth naming: an op that reads `Storage`'s stale host
+mirror while the live data sits on the device, and returns a wrong answer
+quietly.
 
 Requirements:
 
-- Placement dispatch is a property of the op surface, not a per-op
-  hand-write.
+- Placement is decided in one place, not hand-written per op.
+- No op reads element data without first establishing where that data lives.
 - Tensor ops are generic over floating dtype rather than pinned to f32.
 - Host/device coherence has a defined model instead of a convention.
 
 Use cases:
 
-- **2.1** When every operand of an op is device-resident, the op executes as
-  an XPU kernel and its result is device-resident.
+- **2.1** When every operand of an op with a kernel for its dtype is
+  device-resident, the op executes as an XPU kernel and its result is
+  device-resident. The kernel path is reached through dtype-specific entry
+  points (`Ewise.arithF32Op`, `Ewise.matmulF32Op`); a dtype-generic op cannot
+  take it, because kernel-name resolution needs a concrete element type and a
+  launch from a body parameterized on `E` does not compile (`XPU-N02`). Generic
+  ops therefore guard placement and tier (2.7). This is a language limit, not a
+  policy choice: it would lift if a concrete element type could be carried
+  across a generic boundary.
 - **2.2** When an op's operands are split across host and device, it raises a
   located error naming both operands and their residency. It does not
   silently migrate and does not silently download.
@@ -129,12 +147,20 @@ Use cases:
   to f32. No half-precision tensor is instantiated anywhere in the repo
   today.
 - **2.6** When a GEMM's M, N, or K is not a multiple of 16, the
-  cooperative-matrix path handles the tail; `Ewise.cajeta:355` rejects such
-  shapes today.
-- **2.7** When no kernel exists for an op at a given dtype and backend, the
-  compiler emits a tiering note naming op, dtype, and backend, and the CPU
-  path runs — mirroring the existing `note: [mma-tiering]` convention rather
-  than failing or silently degrading.
+  cooperative-matrix path handles the tail. The original claim here — that
+  `Ewise.cajeta:355` *rejects* such shapes — was wrong, found 2026-08-08 while
+  writing the test: it did not reject, it truncated all three dimensions to the
+  tile grid and returned a wrong matrix silently. A 17×17×17 GEMM computed
+  16×16×16. That is the more serious defect, and it is why this use case is a
+  correctness gate rather than a coverage gap.
+- **2.7** When no kernel exists for an op at a given dtype, a tiering note
+  naming op and dtype is emitted, device-resident operands are brought back to
+  the host, and the CPU path runs — mirroring the existing
+  `note: [mma-tiering]` convention rather than failing or silently degrading.
+  The note is emitted at **runtime**, not by the compiler: which ops tier
+  depends on the residency an operand has at the call, which is not knowable
+  when the module is compiled. It names op and dtype but not backend — a
+  runtime note has exactly one backend in play.
 - **2.8** When `argmax`/`argmin` are called with an axis, they reduce along
   that axis; today only a global flat-index form exists
   (`Tensor.cajeta:4125,4098`), which the sampler needs.
@@ -146,7 +172,10 @@ Use cases:
   (`src/cajeta/compile/Compiler.h:182`), so the default host-only build gains
   no compile time and no binary size.
 - **2.10** When a tiering note is emitted (2.7), it is emitted once per
-  op/dtype/backend combination, not per call.
+  `(op, dtype)` combination, not per call — otherwise a tiered op inside a
+  decode loop reports once per layer per token. The dedupe is scoped to the
+  compiled module rather than the process, so a fresh compilation starts clean
+  and a test observes its own note instead of one an earlier run consumed.
 
 ## 3. Weight loading and large-file correctness
 
@@ -896,6 +925,24 @@ the recommendation they were filed with; both are marked.
   arrival timing, so its reduction shapes genuinely change and a same-backend
   equality gate would be unsound. Checking this requires logging the top-2
   logit gap at each divergence point.
+- **13.23 Dtype-generic ops guard placement and tier; they do not dispatch to
+  kernels.** *(Amends §2.1, established 2026-08-09 during Unit 1.)* The
+  original reading of §2 was that `Tensor`'s op surface would route to the
+  `Ewise` kernel seam. It cannot: kernel-name resolution needs a concrete
+  element type, so a launch from a body parameterized on `E` fails codegen with
+  `XPU-N02: launch receiver is not a kernel name` — even though the identical
+  call from a non-generic method compiles and runs. Established by building it,
+  not by inspection.
+  Two plausible explanations were tested and are wrong, recorded so they are
+  not retried: it is not an ownership/retyping hazard (the safe inline-cast
+  idiom exists, and allocating the output as `Tensor<E>` avoids the question),
+  and `[[cajeta-kernel-no-generic-monomorph]]` forbids *declaring* generic
+  kernels, not calling a concrete one from a generic caller.
+  So generic ops guard and tier (2.7), and kernels stay reachable from
+  concrete-dtype code. The cost to this project is small: the forward pass
+  calls concrete f32/f16 paths, so the engine never depends on the generic
+  surface routing. Lifting this needs a compiler change — carrying a concrete
+  element type across a generic boundary — which is out of scope here.
 
 ## 14. Open questions
 
