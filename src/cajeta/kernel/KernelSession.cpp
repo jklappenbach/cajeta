@@ -27,6 +27,7 @@
 #include "cajeta/compile/SessionState.h"
 #include "cajeta/compile/StdlibReuseCore.h"
 #include "cajeta/error/Exception.h"
+#include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/jit/JitModulePrep.h"
 
 namespace cajeta::kernel {
@@ -450,10 +451,22 @@ CellResult KernelSession::execute(const std::string& source,
         }
     }
 
-    // Run the cell's entry.
-    if (void* entry = lookupSymbol("__cajeta_script_entry")) {
-        result.value = reinterpret_cast<int32_t (*)()>(entry)();
+    // Run the cell's entry — its top-level statements.
+    //
+    // The symbol is MANGLED (`cajeta.script.In_3_::__cajeta_script_entry()`),
+    // so an exact lookup of the bare name never matches; lookupShort's
+    // `::name(` scan does, and prefers the newest unit class — this cell.
+    // Missing it is a HARD failure: the previous version skipped execution
+    // silently and still reported ok, so every cell compiled, ran nothing,
+    // and looked successful. Statics stayed 0 not because the session seam
+    // leaked them but because no assignment had ever executed.
+    void* entry = lookupShort(scriptEntryName());
+    if (!entry) {
+        result.errorId = "CAJETA_ERROR_INTERNAL";
+        result.message = "cell entry symbol not found after materialization";
+        return result;
     }
+    result.value = reinterpret_cast<int32_t (*)()>(entry)();
     result.ok = true;
     return result;
 }

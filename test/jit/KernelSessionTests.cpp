@@ -90,6 +90,26 @@ TEST(KernelSessionTests, staticsPersistAcrossCells) {
     EXPECT_EQ(42, readTotal());   // 41 survived from cell 1
 }
 
+// Boundary pin for staticsPersistAcrossCells: does a static survive at all
+// WITHIN its defining cell? If this passes and the cross-cell version fails,
+// the fault is the session seam (each cell resolving its own copy of the
+// global); if this fails too, the assignment or read is broken before the
+// seam is ever involved, and the cross-cell test is blaming the wrong thing.
+TEST(KernelSessionTests, staticVisibleWithinDefiningCell) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute(
+        "public class Counter { public static int32 total; }\n"
+        "Counter.total = 41;\n"
+        "int32 readHere() { return Counter.total; }\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+
+    auto readHere = s->lookup<int32_t (*)()>("readHere");
+    ASSERT_NE(nullptr, readHere);
+    EXPECT_EQ(41, readHere());
+}
+
 // 1.1.3 / script-units 5.2 — redefinition is last-write-wins. Cell 2
 // redefines `value()`; cell 3's call and a direct lookup BOTH get the new
 // body. Requires per-cell resource-tracker shadowing: two strong definitions
