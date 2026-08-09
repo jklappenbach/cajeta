@@ -4,8 +4,8 @@
 > the why, surveys each upstream library, and decides *what gets ported and what gets
 > dropped*. The per-module specs (núcleo core, then the façades) follow from it.
 >
-> It reconciles and partially supersedes the earlier `docs/CajetaTorch.md`,
-> `docs/CajetaToffee.md`, and `docs/CajetaML.md`, which predate two facts: numpy is now
+> It reconciles and supersedes the earlier `CajetaTorch.md`, `CajetaToffee.md`, and
+> `CajetaML.md` (all three since retired and deleted), which predate two facts: numpy is now
 > **done** in stdlib `cajeta.math`, and the consolidation decision below replaces the
 > "one big cajeta.ml library" framing with a consolidated core (`núcleo`) plus thin façades.
 
