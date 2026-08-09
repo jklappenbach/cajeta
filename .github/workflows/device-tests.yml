@@ -42,6 +42,15 @@ on:
     # 07:00 UTC nightly. Device runs are long (a 69-test Vulkan sweep took
     # ~73 min on proton), so this is deliberately not a per-push gate.
     - cron: '0 7 * * *'
+  # TEMPORARY — REMOVE BEFORE MERGING TO main.
+  # workflow_dispatch is only offered for workflows that already exist on the
+  # default branch, so a file that has never been merged cannot be dispatched
+  # at all. This branch-scoped push trigger is the only way to exercise it
+  # before it lands. Delete this block once the workflow is on main; the
+  # nightly + dispatch triggers above are the intended surface, and leaving a
+  # push trigger on a 4-hour GPU job would be actively hostile.
+  push:
+    branches: [ci/device-tests]
 
 concurrency:
   # The runners are single-box; a queued nightly stacking behind a manual run
