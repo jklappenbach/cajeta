@@ -218,7 +218,7 @@ that debug-view panel for the selected target.
 ### 10.1 Requirements
 For Jetson-class AI targets (`cradle`), a deploy+run flow for on-device inference
 and accelerator telemetry (GPU/XPU utilization, memory, inference latency)
-plotted via §7, tying into the núcleo / CajetaTorch stack where present.
+plotted via §7, tying into the núcleo / torch-façade stack where present.
 
 ### 10.2 Use cases
 - **10.2.1** As a developer, when I deploy a model to a Jetson, then I run
