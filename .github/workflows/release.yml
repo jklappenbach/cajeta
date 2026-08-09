@@ -523,12 +523,24 @@ jobs:
       # leg looks green in the API too. Keep this a hard gate.
       - name: Run release tests
         env:
-          # Windows JIT compiles are ~40-60s each (vs ~15s on macOS, ~5s on
-          # Linux); tests that JIT multiple programs (the uber-archive dedup,
-          # the double-compile stderr-routing test) legitimately exceed the
-          # 120s per-test default and were killed mid-progress. Give the
-          # Windows leg headroom; the fast legs keep the default.
-          TEST_TIMEOUT: ${{ matrix.target == 'x86_64-w64-mingw32' && '300' || '120' }}
+          # TEST_TIMEOUT is a HANG bound, not a speed limit — a healthy test
+          # killed mid-progress is a false red, and the only honest floor is
+          # one no healthy test can reach on the SLOWEST runner in the matrix.
+          #
+          # Windows got 300 first (JIT compiles ~40-60s each there vs ~15s on
+          # macOS, ~5s on a fast Linux box). That fixed Windows and left every
+          # other leg at 120 — which is calibrated to a developer workstation,
+          # not to GitHub's shared runners. Both Linux legs then failed the
+          # v0.18.0 dry-run with 73 and 79 timeouts, ZERO failures and ZERO
+          # crashes, every one killed at 120s after running 129-162s: healthy
+          # tests, still progressing, shot by the floor (ParallelStreamP1Tests
+          # and friends, which spawn and are slow on any hardware).
+          #
+          # So the floor is 300 everywhere. A genuine hang still trips it; a
+          # slow-but-healthy test on a small runner no longer does. Note the
+          # budget is per-test max(TEST_TIMEOUT, measured * BATCH_SLACK), so
+          # tests with recorded history already scale above this.
+          TEST_TIMEOUT: 300
           # Shared test run: BATCH=1 runs each suite as ONE process and reuse
           # (default-on in cajeta_tests.sh's parallel path) primes the ~14s stdlib
           # ONCE per suite instead of once per test. This helps MOST where the
