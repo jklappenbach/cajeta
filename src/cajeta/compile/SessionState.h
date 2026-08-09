@@ -36,8 +36,24 @@ namespace cajeta {
     class SessionState {
         // First-binding order, mirroring the runtime registry's slot order.
         std::vector<SessionBindingFact> facts;
+        // Implicit class of each unit compiled into this session, OLDEST
+        // first. A later unit's bare call to an earlier unit's top-level
+        // method resolves by walking this newest-first (jupyter-kernel
+        // 1.2.4): each unit is its own implicit class, so without it the
+        // call only ever sees the current unit's members.
+        std::vector<std::string> unitClasses;
 
     public:
+        void addUnitClass(const std::string& canonical) {
+            for (auto& c : unitClasses) {
+                if (c == canonical) return;      // redefinition keeps its slot
+            }
+            unitClasses.push_back(canonical);
+        }
+        const std::vector<std::string>& getUnitClasses() const {
+            return unitClasses;
+        }
+
         SessionBindingFact* find(const std::string& name) {
             for (auto& f : facts) {
                 if (f.name == name) return &f;

@@ -43,6 +43,7 @@
 #include "cajeta/buildtool/NativeProvision.h"
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaType.h"
@@ -337,90 +338,9 @@ void assignDbgLocRanges(const std::string& cacheDir,
     }
 }
 
-// Per-module delivery requires SELF-CONTAINED module IR. Under the resident
-// reuse path, instantiation emission can leave instruction operands pointing
-// at GlobalValues homed in ANOTHER module (e.g. Optional<UserType> methods
-// emitted into the user module still referencing the stdlib module's
-// __cajeta_alloc / sibling methods / #VTable object) — the JIT test harness
-// legalized these implicitly with its whole-program merge; per-module ORC
-// delivery has none. Rewrite every foreign GlobalValue use to a same-named
-// DECLARATION in this module; ORC then resolves by name at materialization.
-// All modules share one LLVMContext in both build modes, so types carry over.
-void legalizeCrossModuleRefs(llvm::Module* m) {
-    auto localDecl = [m](llvm::GlobalValue* gv) -> llvm::Value* {
-        if (auto* fn = llvm::dyn_cast<llvm::Function>(gv)) {
-            return m->getOrInsertFunction(fn->getName(),
-                                          fn->getFunctionType()).getCallee();
-        }
-        if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(gv)) {
-            if (auto* existing = m->getGlobalVariable(g->getName(), true))
-                return existing;
-            return new llvm::GlobalVariable(
-                *m, g->getValueType(), g->isConstant(),
-                llvm::GlobalValue::ExternalLinkage, nullptr, g->getName());
-        }
-        return nullptr;
-    };
-
-    // Collect every foreign GlobalValue reachable from this module's
-    // instructions and global initializers. Constants are uniqued per
-    // context (shared across modules), so replacement must REBUILD constant
-    // trees via ValueMapper rather than mutate in place.
-    llvm::ValueToValueMapTy vm;
-    std::function<void(llvm::Constant*)> scan = [&](llvm::Constant* c) {
-        if (auto* gv = llvm::dyn_cast<llvm::GlobalValue>(c)) {
-            if (gv->getParent() != m && !vm.count(gv))
-                if (llvm::Value* repl = localDecl(gv)) vm[gv] = repl;
-            return;
-        }
-        for (unsigned i = 0; i < c->getNumOperands(); ++i)
-            if (auto* op = llvm::dyn_cast<llvm::Constant>(c->getOperand(i)))
-                scan(op);
-    };
-    for (auto& F : *m)
-        for (auto& BB : F)
-            for (auto& I : BB)
-                for (unsigned i = 0; i < I.getNumOperands(); ++i)
-                    if (auto* c = llvm::dyn_cast<llvm::Constant>(I.getOperand(i)))
-                        scan(c);
-    for (auto& g : m->globals())
-        if (g.hasInitializer()) scan(g.getInitializer());
-    if (vm.empty()) return;
-
-    for (auto& F : *m)
-        for (auto& BB : F)
-            for (auto& I : BB)
-                llvm::RemapInstruction(&I, vm,
-                    llvm::RF_IgnoreMissingLocals | llvm::RF_ReuseAndMutateDistinctMDs);
-    for (auto& g : m->globals())
-        if (g.hasInitializer())
-            g.setInitializer(llvm::cast<llvm::Constant>(
-                llvm::MapValue(g.getInitializer(), vm,
-                               llvm::RF_IgnoreMissingLocals)));
-}
-
-// Template instantiations are ODR: under residency the persistent stdlib
-// module can retain a prior session's instantiation body while the new
-// session re-emits the same symbol into the active user module (restore
-// drops REGISTRATIONS, not emitted IR), and two strong definitions in one
-// JITDylib fail addIRModule ("duplicate definition", seen on tour with
-// Sort::pdqLomCycLt<int64>). Demote every instantiation-mangled definition
-// (name carries '<') to weak_odr so ORC picks one — the drop-thunk
-// treatment. Non-template symbols keep their linkage.
-void demoteInstantiationsToWeakODR(llvm::Module* m) {
-    for (auto& F : *m)
-        if (!F.isDeclaration() && F.getName().contains("<")
-                && F.getLinkage() == llvm::GlobalValue::ExternalLinkage) {
-            F.setLinkage(llvm::GlobalValue::WeakODRLinkage);
-            F.setComdat(nullptr);
-        }
-    for (auto& g : m->globals())
-        if (g.hasInitializer() && g.getName().contains("<")
-                && g.getLinkage() == llvm::GlobalValue::ExternalLinkage) {
-            g.setLinkage(llvm::GlobalValue::WeakODRLinkage);
-            g.setComdat(nullptr);
-        }
-}
+// legalizeCrossModuleRefs / demoteInstantiationsToWeakODR moved to
+// jit/JitModulePrep.{h,cpp} — the kernel session (jupyter-kernel U1)
+// delivers a module per cell and needs the same preparation.
 
 // Content-addressed pools (resident-debug-server 2.2.3): every module's
 // bitcode and compiled object live under <cacheDir>/jit/{bcpool,objpool}/

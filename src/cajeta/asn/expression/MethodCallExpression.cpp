@@ -7,6 +7,7 @@
 #include "../../error/DiagnosticEngine.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
+#include "cajeta/compile/SessionState.h"
 #include "cajeta/xref/XrefIndex.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/type/CajetaArray.h"
@@ -7002,6 +7003,45 @@ namespace cajeta {
                 return nullptr;
             }
             targetClass = module->getStructureStack().back();
+
+            // jupyter-kernel 1.2.4 — the session's cumulative namespace.
+            // Each unit of a session is its OWN implicit class, so a bare
+            // call in cell N to a top-level method defined in cell M<N
+            // misses: the enclosing class simply has no such member. Walk
+            // the session's earlier unit classes NEWEST-FIRST and adopt the
+            // most recent one that declares the name (script-units 5.2,
+            // last-write-wins). Confined to session compiles; an ordinary
+            // unit has no SessionState and takes none of this.
+            if (SessionState* sess = module->getSessionState()) {
+                bool hereAlready = false;
+                for (auto& mm : targetClass->getMethodList()) {
+                    if (mm && mm->getName() == methodCallName) {
+                        hereAlready = true;
+                        break;
+                    }
+                }
+                if (!hereAlready) {
+                    const auto& units = sess->getUnitClasses();
+                    for (auto it = units.rbegin(); it != units.rend(); ++it) {
+                        if (*it == targetClass->getQName()->toCanonical())
+                            continue;
+                        auto prior = dynamic_pointer_cast<CajetaClass>(
+                            CajetaType::find(*it));
+                        if (!prior) continue;
+                        bool declares = false;
+                        for (auto& mm : prior->getMethodList()) {
+                            if (mm && mm->getName() == methodCallName) {
+                                declares = true;
+                                break;
+                            }
+                        }
+                        if (declares) {
+                            targetClass = prior;
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         // transform-intrinsics U7 — annotation sugar: a call to a static method
