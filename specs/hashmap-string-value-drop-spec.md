@@ -84,10 +84,56 @@ in `cajeta.runtime.__stdlib__.ll` under
 `HashMap<String,String>::put`. Also cajeta-cloud @ 863164d^ (the
 pre-workaround `Capabilities`).
 
-## 5. Status
+## 5. Why the monomorph is a reference class — instrumented 2026-08-08
 
-NOT fixed. Diagnosed to the lowering above on branch
-`fix/registered-defects`, where the neighbouring defects were repaired;
-this one needs the generics/value-type layout owner, since the fix is a
-consistency question about monomorph identity rather than a local
-codegen slip.
+Printing the value-type decision for every `MapEntry` instantiation at
+`generatePrototype` gives:
+
+```
+MapEntry<String,CacheNode<...>>  marked=1 originPlaceholder=0 canonVT=1
+MapEntry<String,String>          marked=0 originPlaceholder=1 canonVT=0
+```
+
+Both name the same template origin, `cajeta.collection.MapEntry`, but
+for the broken one **the origin is a PLACEHOLDER** — a stand-in
+registered before the template's own declaration walk, carrying no
+annotations. `TemplateInstantiator` copies the template's annotation
+instances onto the instantiation, so copying from a placeholder yields
+nothing, `@ValueType` is never seen, and the instantiation prototypes as
+a reference class: vtable at slot 0, `key` at field 1 (it is at field 0
+in every working instantiation).
+
+Looking the template up by canonical name does NOT help: `canonicalMap`
+holds the placeholder too (`canonSame=1`).
+
+## 6. What was tried and did NOT work
+
+Three fixes at the value-type decision point were implemented and
+measured; **none changed the emitted layout**, which stayed
+`{ptr,ptr,ptr,i64}`:
+
+1. consult `getTemplateOrigin()->findAnnotation("ValueType")`;
+2. additionally resolve the template through `CajetaType::of(canonical)`;
+3. additionally call `CajetaModule::userMaterializeHook` on the
+   placeholder first, then re-query.
+
+That the layout is unmoved by all three says the flag assignment in
+`generatePrototype` is **not what decides this class's layout** — the
+likely reading is that the stdlib is embedded/frozen and this
+instantiation is restored from a baseline with its `typeFlags` already
+baked, so the prototype-time assignment either never runs for it or is
+overwritten afterwards. The next step is to find where a restored
+instantiation's `typeFlags` come from, not to keep patching
+`generatePrototype`.
+
+All three attempts were REVERTED rather than left in the tree: they
+change code without fixing anything, and an unverified edit that looks
+like a fix is worse than none.
+
+## 7. Status
+
+NOT fixed. Diagnosed to the placeholder-origin mechanism above on branch
+`fix/registered-defects`, where the neighbouring defects were repaired.
+Needs the generics/value-type layout owner: the fix is about monomorph
+identity and where a frozen instantiation's flags are restored from,
+not a local codegen slip.
