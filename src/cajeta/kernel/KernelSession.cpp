@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <random>
 #include <vector>
 
@@ -83,6 +84,17 @@ struct KernelSession::Impl {
     // codegen can emit into the stdlib module (template instantiations), so
     // "what is new this cell" is decided by identity, not by list position.
     std::set<llvm::Module*> delivered;
+    // Modules belonging to a cell that FAILED to compile. The Compiler keeps
+    // them in its module list with half-built methods, so a later cell's
+    // codegen fixpoint would re-run generateCode over them and re-throw the
+    // dead cell's error — poisoning every subsequent cell. Skipped forever
+    // (script-units 5.5: a failed cell leaves the session unchanged).
+    std::set<llvm::Module*> poisoned;
+    // Globals DEFINED by an already-delivered cell. Statics are session-
+    // lived: the declaring cell owns the storage and later cells must
+    // REFERENCE it, never emit a fresh zero-initialized copy that their own
+    // (first-searched) dylib would then resolve to.
+    std::set<std::string> definedGlobals;
 
     // Set the per-cell link order EXPLICITLY. createJITDylib seeds the order
     // with the process-symbol main dylib FIRST; leaving that in place makes
@@ -222,7 +234,12 @@ CellResult KernelSession::execute(const std::string& source,
         // pays a stdlib-codegen phase.)
         auto codegenMods = [&]() {
             auto own = impl.compiler->getModules();
-            std::vector<CajetaModulePtr> mods(own.begin(), own.end());
+            std::vector<CajetaModulePtr> mods;
+            for (auto& m : own) {
+                if (m && m->getLlvmModule()
+                    && impl.poisoned.count(m->getLlvmModule())) continue;
+                mods.push_back(m);
+            }
             if (auto stdlib = CajetaModule::getStdlibModule()) {
                 mods.push_back(stdlib);
             }
@@ -265,6 +282,9 @@ CellResult KernelSession::execute(const std::string& source,
         result.message = e.getMessage();
         result.file = e.getFile().empty() ? cellName : e.getFile();
         result.line = e.getLine();
+        if (cellModule && cellModule->getLlvmModule()) {
+            impl.poisoned.insert(cellModule->getLlvmModule());
+        }
         return result;
     } catch (std::exception& e) {
         result.errorId = "CAJETA_ERROR_INTERNAL";
@@ -288,7 +308,8 @@ CellResult KernelSession::execute(const std::string& source,
         }
         for (auto& m : candidates) {
             if (m && m->getLlvmModule()
-                && !impl.delivered.count(m->getLlvmModule())) {
+                && !impl.delivered.count(m->getLlvmModule())
+                && !impl.poisoned.count(m->getLlvmModule())) {
                 fresh.push_back(m);
             }
         }
@@ -310,6 +331,33 @@ CellResult KernelSession::execute(const std::string& source,
         cajeta::jit::legalizeCrossModuleRefs(m->getLlvmModule());
         impl.stats.weakDemotedInstantiations +=
             cajeta::jit::demoteInstantiationsToWeakODR(m->getLlvmModule());
+    }
+
+    // Session-lived statics. A later cell that merely REFERENCES a class
+    // static re-emits the global with an initializer; because a cell's own
+    // dylib is searched first, it would then read its private zero copy
+    // instead of the value the declaring cell set. Turn any global an
+    // earlier cell already defined back into a declaration.
+    // EXTERNAL linkage only. Names like `.rtti.str`, `.rtti.methods` and
+    // `.cajeta.framedesc` are PRIVATE per-module globals that every module
+    // emits under the same name — they are not shared session state, and
+    // matching them by name stripped each new cell's own copies into
+    // unresolvable declarations ("Symbols not found: .rtti.ctors, ...").
+    // A session-lived static is externally linked; nothing else qualifies.
+    auto sharedGlobal = [](const llvm::GlobalVariable& g) {
+        return g.hasInitializer() && !g.hasLocalLinkage()
+            && !g.hasAppendingLinkage()
+            && g.getLinkage() != llvm::GlobalValue::PrivateLinkage
+            && g.getLinkage() != llvm::GlobalValue::InternalLinkage;
+    };
+    for (auto& m : fresh) {
+        for (auto& g : m->getLlvmModule()->globals()) {
+            if (!sharedGlobal(g)) continue;
+            if (!impl.definedGlobals.count(g.getName().str())) continue;
+            g.setInitializer(nullptr);
+            g.setComdat(nullptr);
+            g.setLinkage(llvm::GlobalValue::ExternalLinkage);
+        }
     }
 
     auto jdOrErr = impl.jit->createJITDylib(
@@ -374,6 +422,9 @@ CellResult KernelSession::execute(const std::string& source,
             return result;
         }
         impl.delivered.insert(lm);
+        for (auto& g : lm->globals()) {
+            if (sharedGlobal(g)) impl.definedGlobals.insert(g.getName().str());
+        }
     }
 
     if (auto err = impl.jit->initialize(cellJD)) {
@@ -428,28 +479,44 @@ void* KernelSession::lookupSymbol(const std::string& exactName) {
 }
 
 void* KernelSession::lookupShort(const std::string& shortName) {
-    // Cajeta mangles as `pkg.Class::method(params)`; a cell's top-level
-    // methods land on the cell's implicit class. Try the exact name first
-    // (free functions / runtime symbols), then scan for the mangled form.
+    // Exact first: runtime symbols and anything unmangled.
     if (void* exact = lookupSymbol(shortName)) return exact;
     Impl& impl = *impl_;
-    for (auto it = impl.cellJDs.rbegin(); it != impl.cellJDs.rend(); ++it) {
-        // ORC has no name-pattern lookup, so the mangled candidates are
-        // reconstructed from what the session compiled.
-        for (auto& m : impl.compiler->getModules()) {
-            if (!m || !m->getLlvmModule()) continue;
-            for (auto& F : *m->getLlvmModule()) {
-                llvm::StringRef n = F.getName();
-                size_t sep = n.find("::");
-                if (sep == llvm::StringRef::npos) continue;
-                llvm::StringRef after = n.substr(sep + 2);
-                size_t paren = after.find('(');
-                if (paren == llvm::StringRef::npos) continue;
-                if (after.substr(0, paren) != shortName) continue;
-                if (void* hit = lookupSymbol(n.str())) return hit;
-            }
+
+    // Candidates come from the ACTUAL emitted IR, not from a reconstructed
+    // mangling: Method::getLlvmSymbolName() does not match the symbol ORC
+    // resolves, and building the name by hand returned null for every short
+    // lookup. Scan `pkg.Class::name(params)` shapes and keep the owning
+    // class, so the choice among several definitions can be ORDERED.
+    std::map<std::string, std::string> byOwner;   // class canonical -> symbol
+    std::vector<std::string> anyOwner;
+    for (auto& m : impl.compiler->getModules()) {
+        if (!m || !m->getLlvmModule()) continue;
+        if (impl.poisoned.count(m->getLlvmModule())) continue;
+        for (auto& F : *m->getLlvmModule()) {
+            llvm::StringRef n = F.getName();
+            size_t sep = n.find("::");
+            if (sep == llvm::StringRef::npos) continue;
+            llvm::StringRef after = n.substr(sep + 2);
+            size_t paren = after.find('(');
+            if (paren == llvm::StringRef::npos) continue;
+            if (after.substr(0, paren) != shortName) continue;
+            byOwner.emplace(n.substr(0, sep).str(), n.str());
+            anyOwner.push_back(n.str());
         }
-        break;   // the scan above already covers every module
+    }
+    // Prefer the NEWEST unit class that defines the name (script-units 5.2
+    // last-write-wins). Scanning in module order returned the OLDEST
+    // definition, which made redefinition look broken through a direct
+    // lookup even though calls resolved correctly.
+    const auto& units = impl.sessionState.getUnitClasses();
+    for (auto it = units.rbegin(); it != units.rend(); ++it) {
+        auto f = byOwner.find(*it);
+        if (f == byOwner.end()) continue;
+        if (void* hit = lookupSymbol(f->second)) return hit;
+    }
+    for (auto& c : anyOwner) {
+        if (void* hit = lookupSymbol(c)) return hit;
     }
     return nullptr;
 }
