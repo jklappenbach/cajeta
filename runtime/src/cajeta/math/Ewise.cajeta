@@ -315,6 +315,44 @@ public final class Ewise {
     }
 
     /**
+     * Copy an `(irows, icols)` matrix into the top-left corner of an
+     * `(orows, ocols)` one, zero-filling the rest (spec §2.6 support). The tiled
+     * GEMM below owns whole 16x16 tiles, so a ragged shape is squared up here
+     * rather than by teaching every tile load a bounds check: zeros contribute
+     * nothing to a dot product, so the padded product's leading `(m, n)` block is
+     * exactly the unpadded answer.
+     */
+    @Kernel
+    public static void padF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                              uint32 orows, uint32 ocols, uint32 irows, uint32 icols) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < orows * ocols) {
+            uint32 r = i / ocols;
+            uint32 c = i % ocols;
+            float32 v = 0.0f;
+            if (r < irows) {
+                if (c < icols) { v = in[r * icols + c]; }
+            }
+            out[i] = v;
+        }
+    }
+
+    /**
+     * The inverse of {@link #padF32}: copy the leading `(orows, ocols)` block out of
+     * a matrix whose row stride is `icols`.
+     */
+    @Kernel
+    public static void cropF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                               uint32 orows, uint32 ocols, uint32 icols) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < orows * ocols) {
+            uint32 r = i / ocols;
+            uint32 c = i % ocols;
+            out[i] = in[r * icols + c];
+        }
+    }
+
+    /**
      * Tiled float32 GEMM `C = A·B` on the matrix cores (numpy-porting Phase 6, 6e
      * — the `matmul` GPU lowering). Each workgroup owns one 16x16 output tile,
      * decoded from {@link Workgroup#x()}: zero an accumulator tile, then K-loop
@@ -367,13 +405,59 @@ public final class Ewise {
         Tensor<float32> out = Tensor.zeros<float32>(shp);
         if (Placement.pair("matmulF32", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
-            uint32 um = (uint32) m;
-            uint32 un = (uint32) n;
-            uint32 uk = (uint32) k;
             KernelStream s = KernelStream.current();
-            matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
-            s.sync();
+            int64 mp = ((m + 15) / 16) * 16;
+            int64 np = ((n + 15) / 16) * 16;
+            int64 kp = ((k + 15) / 16) * 16;
+            if (mp == m && np == n && kp == k) {
+                uint32 um = (uint32) m;
+                uint32 un = (uint32) n;
+                uint32 uk = (uint32) k;
+                matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                    (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                s.sync();
+            } else {
+                // Ragged shape (spec §2.6). The kernel owns whole 16x16 tiles and
+                // truncates on every dimension — grid drops the partial row/col
+                // tiles and the K-loop drops the partial depth slice — so a 17x17
+                // multiply would silently compute a 16x16 one. Square the operands
+                // up with zero padding, multiply, crop back.
+                int64[] ashp = heap int64[2];
+                ashp[0] = mp;
+                ashp[1] = kp;
+                Tensor<float32> ap = Tensor.zeros<float32>(ashp);
+                ap.gpu();
+                int64[] bshp = heap int64[2];
+                bshp[0] = kp;
+                bshp[1] = np;
+                Tensor<float32> bp = Tensor.zeros<float32>(bshp);
+                bp.gpu();
+                int64[] cshp = heap int64[2];
+                cshp[0] = mp;
+                cshp[1] = np;
+                Tensor<float32> cp = Tensor.zeros<float32>(cshp);
+                cp.gpu();
+                uint32 ump = (uint32) mp;
+                uint32 unp = (uint32) np;
+                uint32 ukp = (uint32) kp;
+                uint32 um = (uint32) m;
+                uint32 un = (uint32) n;
+                uint32 uk = (uint32) k;
+                uint32 an = ump * ukp;
+                padF32.launch(s, grid: [(an + 63) / 64], block: [64])
+                    (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
+                uint32 bn = ukp * unp;
+                padF32.launch(s, grid: [(bn + 63) / 64], block: [64])
+                    (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
+                s.sync();
+                matmulF32.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
+                    (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
+                s.sync();
+                uint32 on = um * un;
+                cropF32.launch(s, grid: [(on + 63) / 64], block: [64])
+                    (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
+                s.sync();
+            }
         } else {
             int64 i = 0;
             while (i < m) {
