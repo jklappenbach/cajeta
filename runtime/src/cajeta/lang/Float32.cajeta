@@ -23,18 +23,6 @@ public final class Float32 extends Number {
     /** Heap box — the boxing entry point (Java-style `valueOf`). */
     public static #Float32 of(float32 value) { return heap Float32(value); }
 
-    /**
-     * The raw IEEE-754 bits of `value`, **reinterpreted, not converted** —
-     * `toBits(0.5f)` is 0x3F000000, where `(int32) 0.5f` is 0. The float32
-     * twin of `Float64.toBits`; see there for why binary formats need it.
-     */
-    @Native("__cajeta_f32_to_bits")
-    public static int32 toBits(float32 value);
-
-    /** Rebuild a float32 from raw IEEE-754 bits — the inverse of `toBits`. */
-    @Native("__cajeta_f32_from_bits")
-    public static float32 fromBits(int32 bits);
-
     /** The wrapped primitive. */
     @Inline
     public float32 value() { return this.value; }

@@ -27,8 +27,8 @@ namespace cajeta {
     // How a bound field decodes off the cursor. Wire type is inferred from the
     // Cajeta field type (see the @ProtoField doc): integer/bool → VARINT,
     // String/bytes/message → LEN, float32/float64 → I32/I64 carrying raw
-    // IEEE-754 bits (via Float32/Float64.toBits, which reinterpret rather than
-    // convert). @ProtoField's `encoding` option then overrides the integer
+    // IEEE-754 bits (via Cajeta.f64ToBits/bitsToF64, which reinterpret rather
+    // than convert). @ProtoField's `encoding` option then overrides the integer
     // choice with zigzag or fixed-width. A field type with no mapping is a
     // compile error, never a silent omission.
     enum class Decode {
@@ -82,8 +82,9 @@ namespace cajeta {
         if (canon == "cajeta.lang.String") return Decode::StringLen;
         if (canon == "boolean") return Decode::BoolVarint;
         // protobuf `float` / `double` are I32 / I64 carrying raw IEEE-754 bits.
-        // Float32/Float64.toBits reinterprets rather than converting — a
+        // Cajeta.f32ToBits/f64ToBits reinterpret rather than convert — a
         // `(int32) someFloat` would truncate 0.5 to 0 and put that on the wire.
+        // These are compiler intrinsics lowering to a bitcast, so no call.
         if (canon == "float32") return Decode::Float32Bits;
         if (canon == "float64") return Decode::Float64Bits;
         if (canon == "int8" || canon == "int16" || canon == "int32"
@@ -232,9 +233,9 @@ namespace cajeta {
             if (b.decode == Decode::BoolVarint) {
                 os << "        " << a << "[" << i << "] = " << v << " != (int64) 0;\n";
             } else if (b.decode == Decode::Float32Bits) {
-                os << "        " << a << "[" << i << "] = Float32.fromBits(" << v << ");\n";
+                os << "        " << a << "[" << i << "] = Cajeta.bitsToF32(" << v << ");\n";
             } else if (b.decode == Decode::Float64Bits) {
-                os << "        " << a << "[" << i << "] = Float64.fromBits(" << v << ");\n";
+                os << "        " << a << "[" << i << "] = Cajeta.bitsToF64(" << v << ");\n";
             } else {
                 os << "        " << a << "[" << i << "] = (" << b.canon << ") " << v << ";\n";
             }
@@ -319,9 +320,9 @@ namespace cajeta {
                     os << "            if (" << v << ") { bx_" << b.name << " = (int64) 1; }\n";
                     os << "            " << t << "[" << i << "] = bx_" << b.name << ";\n";
                 } else if (b.decode == Decode::Float32Bits) {
-                    os << "            " << t << "[" << i << "] = Float32.toBits(" << v << ");\n";
+                    os << "            " << t << "[" << i << "] = Cajeta.f32ToBits(" << v << ");\n";
                 } else if (b.decode == Decode::Float64Bits) {
-                    os << "            " << t << "[" << i << "] = Float64.toBits(" << v << ");\n";
+                    os << "            " << t << "[" << i << "] = Cajeta.f64ToBits(" << v << ");\n";
                 } else {
                     os << "            " << t << "[" << i << "] = (" << wantElem << ") " << v << ";\n";
                 }
@@ -358,10 +359,10 @@ namespace cajeta {
                 os << "            w.writeFixed64Field(" << N << ", (int64) " << v << ");\n";
                 break;
             case Decode::Float32Bits:
-                os << "            w.writeFixed32Field(" << N << ", Float32.toBits(" << v << "));\n";
+                os << "            w.writeFixed32Field(" << N << ", Cajeta.f32ToBits(" << v << "));\n";
                 break;
             case Decode::Float64Bits:
-                os << "            w.writeFixed64Field(" << N << ", Float64.toBits(" << v << "));\n";
+                os << "            w.writeFixed64Field(" << N << ", Cajeta.f64ToBits(" << v << "));\n";
                 break;
             case Decode::StringLen:
                 os << "            if (" << v << " != null) {\n";
@@ -450,12 +451,12 @@ namespace cajeta {
                     break;
                 case Decode::Float32Bits:
                     os << "        e." << b.name
-                       << " = Float32.fromBits(cur.readFixed32("
+                       << " = Cajeta.bitsToF32(cur.readFixed32("
                        << slot << "));\n";
                     break;
                 case Decode::Float64Bits:
                     os << "        e." << b.name
-                       << " = Float64.fromBits(cur.readFixed64("
+                       << " = Cajeta.bitsToF64(cur.readFixed64("
                        << slot << "));\n";
                     break;
                 case Decode::StringLen: {
@@ -690,12 +691,12 @@ namespace cajeta {
                     os << "    w.writeVarintField(" << tag << ", " << fv << ");\n";
                     break;
                 case Decode::Float32Bits:
-                    os << "    int32 " << fv << " = Float32.toBits(value."
+                    os << "    int32 " << fv << " = Cajeta.f32ToBits(value."
                        << b.name << ");\n";
                     os << "    w.writeFixed32Field(" << tag << ", " << fv << ");\n";
                     break;
                 case Decode::Float64Bits:
-                    os << "    int64 " << fv << " = Float64.toBits(value."
+                    os << "    int64 " << fv << " = Cajeta.f64ToBits(value."
                        << b.name << ");\n";
                     os << "    w.writeFixed64Field(" << tag << ", " << fv << ");\n";
                     break;
