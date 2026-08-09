@@ -616,29 +616,35 @@ namespace cajeta {
             }
             d = applyEncoding(T, prop, canon, d);
 
-            // `packed` is meaningful only for a repeated numeric field.
-            // Accepting it silently elsewhere would let an author believe a
-            // field was compact when nothing changed.
-            bool packed = false;
-            if (auto ann = prop->findAnnotation("ProtoField")) {
-                packed = ann->getBool("packed", false);
-            }
-            if (packed && !repeated) {
+            // `packed` is tri-state: unset means "use the default", which for a
+            // repeated numeric field is PACKED. That matches proto3 and edition
+            // 2023 (`features.repeated_field_encoding = PACKED`); only proto2
+            // defaulted to expanded. Changing the default is wire-safe because
+            // the format *requires* parsers to accept both forms whatever a
+            // field declares — the declaration only picks what we write.
+            auto ann = prop->findAnnotation("ProtoField");
+            const bool packedDeclared = ann && ann->findArg("packed");
+            const bool packedAsked = packedDeclared && ann->getBool("packed", false);
+
+            if (packedDeclared && !repeated) {
                 reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
                     "CAJETA_ERROR_PROTO_ENCODING",
-                    "@ProtoField(packed = true) on "
+                    "@ProtoField(packed = ...) on "
                     + T->getQName()->toCanonical() + "." + prop->getName()
                     + " — packed applies only to a repeated (array) field");
-                packed = false;
-            } else if (packed && !isPackableKind(d)) {
+            } else if (packedAsked && !isPackableKind(d)) {
                 reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
                     "CAJETA_ERROR_PROTO_ENCODING",
                     "@ProtoField(packed = true) on "
                     + T->getQName()->toCanonical() + "." + prop->getName()
                     + " — packed applies only to repeated numeric elements, "
                       "not '" + canon + "'");
-                packed = false;
             }
+
+            // Non-numeric elements are never packed, declared or not: strings,
+            // bytes and messages carry their own length and have no packed form.
+            bool packed = repeated && isPackableKind(d)
+                && (packedDeclared ? packedAsked : true);
 
             binds.push_back({number, prop->getName(), canon, d,
                              repeated, packed});
