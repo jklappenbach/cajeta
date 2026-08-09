@@ -1,4 +1,4 @@
-# argument-title-carry — a plain formal must carry the argument's ownership mode
+# argument-title-carry — transfer must be caller-initiated, and a requiring formal must compel it
 
 ## 1. Definition
 
@@ -7,27 +7,12 @@ finding was wrong and is retracted — see §2.** `#=` does carry the
 argument's ownership mode; the relaxed formals are sound. What remains
 is a missing DIAGNOSTIC, not a missing mechanism.
 
-`MethodCallExpression.h:20` states the current rule:
-
-> the call-site transfer machinery fires the drop deactivation when
-> EITHER this is true OR the matching formal is `#T`-marked.
-
-Relaxing the formals removed the second disjunct. Nothing else replaced
-it, so a plain call no longer surrenders title.
-
-### 1.1 Measured
-
-200-key `HashMap<String,int32>` round trip, two runs of the same binary:
-
-| how the key is passed | run 1 | run 2 |
-|---|---|---|
-| temporary `m.put("k"+i, i)` | 1/200 | 95/200 |
-| named local `m.put(k, i)` | 2/200 | 2/200 |
-| explicit `m.put(#k, i)` | 200/200 | 200/200 |
-
-Nondeterminism across runs of one binary is the use-after-free
-signature. This is the cause of the `HashMapTests.stringKeysThousandRoundTrip`
-failure.
+The reversal relaxed 12 collection formals from `#T` to `T`, so
+collections borrow by default and the developer opts into transfer. The
+question this spec opened was whether that leaves owned values stranded.
+It does not (§2). The two defects it did surface are a silent transfer
+where the rule wants an error (§3) and an undiagnosed lifetime error
+(§4.2).
 
 ## 2. Retraction — `#=` already carries the mode
 
