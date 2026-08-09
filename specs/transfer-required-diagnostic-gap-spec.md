@@ -77,3 +77,33 @@ unverified.
 `60d9404d^`, against `HashSet.add(#T)`. A smaller repro should be
 written as step one: a static-field `HashSet<T>` and a plain local
 argument.
+
+## 7. Measured 2026-08-09 — both hypotheses DISPROVEN
+
+Built against cajeta main + the collection ownership reversal. Two
+probes, each an explicit `#T` formal (`Sink.take(#Bx)`):
+
+- **7.1 Receiver shape is NOT the discriminator.** §3.1/§3.2 proposed
+  that a non-local receiver was the hole. A **static field** receiver
+  (`R.stat.take(k)`, `k` a plain owned local) is REJECTED correctly with
+  `CAJETA_ERROR_TRANSFER_REQUIRED`. The §3.2 worry — that every non-local
+  receiver is a silent hole — is unfounded.
+- **7.2 An unprovable-ownership source is NOT a hole either.** Passing a
+  BORROWED formal onward to a requiring formal (`fwd(Bx b)` calling
+  `R.stat.take(b)`) is also REJECTED. The `!callerOwns → continue` path
+  does not leak in this shape.
+
+So the gap does not reproduce in either hypothesized shape. Either
+intervening work closed it, or `Placement.tiered.add(k)` had a third
+shape not yet identified. **§5.1/§5.2 remain worth pinning**, but the
+receiver-shape framing in §3 is withdrawn.
+
+### 7.3 A real defect found while probing
+
+The §7.2 rejection advised "write `#b`" — which
+`CAJETA_ERROR_TRANSFER_OF_BORROW` then rejects for the same underlying
+reason, sending the reader in a circle. Fixed: when the source is
+provably a borrowed formal, the diagnostic now says so and advises
+declaring the parameter `#b` (taking ownership from the caller) or
+passing a value the frame owns, rather than suggesting a spelling that
+cannot work.
