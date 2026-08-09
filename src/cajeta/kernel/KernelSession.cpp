@@ -387,6 +387,18 @@ CellResult KernelSession::execute(const std::string& source,
     ++impl.stats.cellsCompiled;
     ++impl.stats.cellDylibsCreated;
 
+    // Register this cell's implicit class in the session's cumulative
+    // namespace so LATER cells' bare calls can reach its top-level methods
+    // (jupyter-kernel 1.2.4). Recorded only on success, so a failed cell
+    // contributes nothing (script-units 5.5).
+    if (cellModule && !cellModule->getStructures().empty()) {
+        for (auto& [canonical, klass] : cellModule->getStructures()) {
+            if (klass && klass->isScriptSynthesized()) {
+                impl.sessionState.addUnitClass(canonical);
+            }
+        }
+    }
+
     // Run the cell's entry.
     if (void* entry = lookupSymbol("__cajeta_script_entry")) {
         result.value = reinterpret_cast<int32_t (*)()>(entry)();
