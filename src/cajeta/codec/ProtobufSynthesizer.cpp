@@ -26,8 +26,11 @@ namespace cajeta {
 
     // How a bound field decodes off the cursor. Wire type is inferred from the
     // Cajeta field type (see the @ProtoField doc): integer/bool → VARINT,
-    // String/bytes → LEN. float (I32/I64) is deferred — protobuf carries the
-    // IEEE-754 bits and there is no float-from-bits seam yet.
+    // String/bytes/message → LEN, float32/float64 → I32/I64 carrying raw
+    // IEEE-754 bits (via Float32/Float64.toBits, which reinterpret rather than
+    // convert). @ProtoField's `encoding` option then overrides the integer
+    // choice with zigzag or fixed-width. A field type with no mapping is a
+    // compile error, never a silent omission.
     enum class Decode {
         IntVarint,    // int8/16/32/64 + uint* — readVarint, cast to the field width
         ZigzagVarint, // sint32/sint64 — readZigzag, cast to the field width
