@@ -183,6 +183,19 @@ jobs:
         run: |
           set -euo pipefail
           export CAJETA_SKIP_DEPS=1
+          # These runners reuse their workspace, and CMake CACHES negative
+          # find_package results. So a configure that failed for a genuinely
+          # missing package keeps failing after the package is installed —
+          # CURL_LIBRARY-NOTFOUND is still sitting in the cache. Drop the cache
+          # (but NOT the object files) when it holds any NOTFOUND, so a fixed
+          # host actually takes effect on the next run. release.yml documents
+          # the same workspace-reuse trap for CAJETA_LLVM_LINK.
+          if [ -f build/CMakeCache.txt ] && grep -q 'NOTFOUND' build/CMakeCache.txt; then
+            echo "stale CMakeCache holds NOTFOUND entries — removing it to force a clean configure:"
+            grep 'NOTFOUND' build/CMakeCache.txt | head -10
+            rm -f build/CMakeCache.txt
+            rm -rf build/CMakeFiles/CMakeError.log
+          fi
           CMAKE_EXTRA=()
           if [ "${{ runner.os }}" = "Windows" ]; then
             # Build cajeta's own C++ with mingw g++, not the fork's clang++:
