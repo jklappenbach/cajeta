@@ -2,6 +2,8 @@
 // Created by James Klappenbach on 4/19/23.
 //
 
+#include <cstdlib>
+#include <cstdio>
 #include "MethodCallExpression.h"
 #include "CallExpression.h"
 #include "../../error/DiagnosticEngine.h"
@@ -9988,6 +9990,45 @@ namespace cajeta {
                     size_t argIdx = fIdx - xferParamOffset;
                     if (argIdx >= parameters.size()) break;
                     ++fIdx;
+                    // `#x` AT THE CALL SITE ASSERTS THE CALLER OWNS `x`.
+                    // Rejected only when `x` is PROVABLY a borrow: a plain
+                    // (non-`#`) formal of the enclosing method. This frame
+                    // demonstrably holds no title to such a name, so
+                    // surrendering it is the unsound direction — the callee
+                    // records a title it does not have and both sides free it.
+                    //
+                    // Deliberately NOT "reject whatever we cannot prove owned":
+                    // the available proof (an armed drop entry) is incomplete —
+                    // an owned local from a `#R`-returning call can lack one
+                    // (DnsCache's `resolved`, from `Resolver.resolve() ->
+                    // #SocketAddress[]`). The neighbouring TRANSFER_REQUIRED
+                    // check tolerates that gap because a miss there merely
+                    // fails to DEMAND a `#`; a miss here would REJECT valid
+                    // code. Same evidence, opposite safety — so this side only
+                    // fires on positive proof of a borrow.
+                    if (parameters[argIdx].callerTransferred) {
+                        if (auto mvId = dynamic_pointer_cast<IdentifierExpression>(
+                                parameters[argIdx].expression)) {
+                            if (auto cm = module->getCurrentMethod()) {
+                                const std::string& nm = mvId->getTextValue();
+                                for (auto& cp : cm->getParameterList()) {
+                                    if (!cp || cp->getName() != nm) continue;
+                                    if (cp->isTransferred()) break;   // owned formal
+                                    if (cp->getName() == "this") break;
+                                    throw Exception(
+                                        "`#" + nm + "` surrenders ownership, but `"
+                                        + nm + "` is a BORROWED parameter of `"
+                                        + cm->getName() + "` — this frame holds no "
+                                        "title to give. Pass it plainly to lend it, "
+                                        "declare the parameter `#" + nm + "` to take "
+                                        "ownership from your caller, or transfer a "
+                                        "value this frame owns. See "
+                                        "docs/specification/lang/OwnershipTransfer.md.",
+                                        "CAJETA_ERROR_TRANSFER_OF_BORROW");
+                                }
+                            }
+                        }
+                    }
                     if (!fp->isTransferred()) continue;
                     if (parameters[argIdx].callerTransferred) continue;
                     auto argExpr = parameters[argIdx].expression;
@@ -10091,6 +10132,36 @@ namespace cajeta {
                             callerOwns = cm->isArenaEligibleLocal(
                                 idExpr->getTextValue());
                         }
+                    }
+                    // Don't advise `#name` when `name` is PROVABLY a borrow:
+                    // CAJETA_ERROR_TRANSFER_OF_BORROW rejects that spelling, so
+                    // the suggestion would send the reader in a circle. A
+                    // borrowed formal has no title to surrender at all — the
+                    // fix is a different value, not different syntax.
+                    bool srcIsBorrowedFormal = false;
+                    if (auto cmb = module->getCurrentMethod()) {
+                        for (auto& cp : cmb->getParameterList()) {
+                            if (!cp || cp->getName() != idExpr->getTextValue())
+                                continue;
+                            srcIsBorrowedFormal = !cp->isTransferred()
+                                && cp->getName() != "this";
+                            break;
+                        }
+                    }
+                    if (srcIsBorrowedFormal) {
+                        throw Exception(
+                            "method `" + methodCallName + "` declares parameter `"
+                                + fp->getName() + "` as `#T` (ownership transfer "
+                                "required), but `" + idExpr->getTextValue()
+                                + "` is a BORROWED parameter of `"
+                                + module->getCurrentMethod()->getName()
+                                + "` — this frame holds no title to surrender, and "
+                                "`#" + idExpr->getTextValue() + "` would be rejected "
+                                "for the same reason. Declare the parameter `#"
+                                + idExpr->getTextValue() + "` to take ownership from "
+                                "your caller, or pass a value this frame owns. "
+                                "See docs/specification/lang/OwnershipTransfer.md.",
+                            "CAJETA_ERROR_TRANSFER_REQUIRED");
                     }
                     if (!callerOwns) continue;
                     throw Exception(
