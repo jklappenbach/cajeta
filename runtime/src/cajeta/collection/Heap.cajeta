@@ -99,7 +99,7 @@ public final class Heap<T> {
      * h.push(1);   // peek() == 1 after each insert
      * ```
      */
-    public void push(#T v) {
+    public void push(T v) {
         // Hot path stays tiny; the cold doubling lives out-of-line in
         // grow() so push inlines cleanly (same split ArrayList documents).
         if (this.sizeCount >= this.capacity) {

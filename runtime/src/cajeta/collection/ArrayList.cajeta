@@ -113,7 +113,7 @@ public final class ArrayList<T> {
      * (title-stores §3.2) drops the old occupant, which the list owns.
      * Throws when out of range.
      */
-    public void set(int32 i, #T v) {
+    public void set(int32 i, T v) {
         if (i < 0 || i >= this.sizeCount) {
             throw heap Exception("ArrayList.set: index out of range");
         }
@@ -131,14 +131,19 @@ public final class ArrayList<T> {
      * ```
      */
     @Inline
-    public void add(#T v) {
+    public void add(T v) {
         // Hot path: the slot is already there. Kept tiny (a load, a compare, a
         // store, an increment) and free of the growth machinery so the optimizer
         // inlines it straight into the caller's append loop — matching the
         // inlined `push`/`push_back` of Rust `Vec` / C++ `std::vector`. The cold
         // doubling lives out-of-line in `reserve()`, so it never bloats this
-        // body. One unconditional transfer — the hottest store in the language,
-        // and it carries no runtime branch on ownership.
+        // The formal is PLAIN `T`, not `#T`: a collection does not own by
+        // default. `#=` below carries whatever mode the argument arrived in —
+        // a borrow stores as a borrow, an owned value moves its title in — so
+        // the element's ownership is the CALLER's choice (`add(v)` lends,
+        // `add(#v)` transfers), recorded per-slot and honoured at drop.
+        // Forcing `#T` here made every collection a container and brought back
+        // the edge cases `#=` exists to remove.
         if (this.sizeCount >= this.capacity) {
             this.reserve(this.sizeCount + 1);
         }
@@ -151,7 +156,7 @@ public final class ArrayList<T> {
      * `i == count()` appends. O(n - i). Throws when `i` is out of
      * `[0, count]`.
      */
-    public void insert(int32 i, #T v) {
+    public void insert(int32 i, T v) {
         if (i < 0 || i > this.sizeCount) {
             throw heap Exception("ArrayList.insert: index out of range");
         }
@@ -249,7 +254,7 @@ public final class ArrayList<T> {
      * per-worker partials are folded right-onto-left and discarded.
      * Reserves the merged size once (no re-doubling inside the loop).
      */
-    public void appendAll(#ArrayList<T> other) {
+    public void appendAll(ArrayList<T> other) {
         this.reserve(this.sizeCount + other.sizeCount);
         int32 i = 0;
         while (i < other.sizeCount) {
@@ -269,11 +274,13 @@ public final class ArrayList<T> {
         return this.get(i);
     }
 
-    /** Subscript write: `xs[i] = v` → `set(i, v)`. Both the formal and the
-     *  forward are `#` under uniform-transfer 2.3: the list owns its
-     *  elements, so an indexed store is a transfer like any other. */
-    public void operator[]= (int32 i, #T v) {
-        this.set(i, #v);
+    /** Subscript write: `xs[i] = v` → `set(i, v)`. Plain on both sides: a
+     *  list does not own by default, so an indexed store LENDS unless the
+     *  caller opts in with `#`, and `#=` inside carries whichever mode
+     *  arrived. (Was `#T` + `#v` under uniform-transfer 2.3, which made
+     *  every list a container.) */
+    public void operator[]= (int32 i, T v) {
+        this.set(i, v);
     }
 
     /**

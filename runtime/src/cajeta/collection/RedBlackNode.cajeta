@@ -35,7 +35,7 @@ public final class RedBlackNode<K, V> {
      * // node.red == true && node.left == null && node.parent == null
      * ```
      */
-    public RedBlackNode(#K key, #V value) {
+    public RedBlackNode(K key, V value) {
         // uniform-transfer 2.3 — the node OWNS its key and value; the
         // formals are `#` and the stores are unconditional transfers. The
         // node's drop walk reclaims both when the registry releases it.

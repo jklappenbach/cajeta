@@ -181,7 +181,7 @@ public final class Cache<K, V> {
      * cache.put("session-7f3a", session);
      * ```
      */
-    public void put(#K key, #V value) {
+    public void put(K key, V value) {
         // The cache OWNS its key (callers transfer it): a cache entry must
         // outlive the caller's key local — a borrowed cache key would dangle
         // once the caller returns (e.g. DnsCache builds a fresh key per call).
@@ -203,11 +203,11 @@ public final class Cache<K, V> {
         }
         // The node borrows the key for reverse lookup on eviction; the map
         // takes ownership of the canonical key via the `#key` transfer below.
-        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, #value, now);
+        CacheNode<K, V> fresh = heap CacheNode<K, V>(key, value, now);
         // Link while `fresh` is still ours — after the `#fresh` transfer the
         // map owns the node and the local is moved-out (title-tracking §3.1.3).
         this.linkAtHead(fresh);
-        this.entries.put(#key, #fresh);
+        this.entries.put(key, #fresh);
         if (this.entries.count() > this.maxEntries) {
             this.evictLru();
         }

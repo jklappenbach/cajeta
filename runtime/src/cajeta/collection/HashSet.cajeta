@@ -102,11 +102,11 @@ public final class HashSet<T> {
      *
      * @Param value the member to add.
      */
-    public void add(#T value) {
+    public void add(T value) {
         // uniform-transfer 2.3 — the set OWNS its members. The `#` forward
         // is now the only legal spelling rather than a mode-matching trick:
         // the map's key formal is `#K`, so the title moves straight through.
-        this.map.put(#value, 1);
+        this.map.put(value, 1);
     }
 
     /**

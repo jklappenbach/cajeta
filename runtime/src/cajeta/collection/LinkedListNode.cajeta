@@ -38,7 +38,7 @@ public final class LinkedListNode<T> {
      * // node.prev == null && node.next == null
      * ```
      */
-    public LinkedListNode(#T value) {
+    public LinkedListNode(T value) {
         // uniform-transfer 2.3 — the node OWNS its value, so the formal is
         // `#T` and the store is an unconditional transfer. The old comment
         // described a value that was owned "iff the caller #-transferred

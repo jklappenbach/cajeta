@@ -87,16 +87,16 @@ public final class LinkedList<T> {
      * `addTail` — one implementation, two names (List-style `add`,
      * deque-style `addTail`).
      */
-    public void add(#T value) {
-        this.addTail(#value);
+    public void add(T value) {
+        this.addTail(value);
     }
 
     /**
      * Prepend `value` to the head of the list. O(1). Synonym of
      * `addHead`.
      */
-    public void addFirst(#T value) {
-        this.addHead(#value);
+    public void addFirst(T value) {
+        this.addHead(value);
     }
 
     /**
@@ -107,8 +107,8 @@ public final class LinkedList<T> {
      * nums.addTail(42);   // [..., 42]
      * ```
      */
-    public void addTail(#T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
+    public void addTail(T value) {
+        LinkedListNode<T> node = heap LinkedListNode<T>(value);
         // Title spelling (title-tracking §5): the FORWARD chain owns —
         // headNode / each node's `next` take titles (`#`); tailNode and
         // `prev` are borrows. Borrow-stores precede the owning store,
@@ -133,8 +133,8 @@ public final class LinkedList<T> {
      * nums.addHead(0);    // [0, ...]
      * ```
      */
-    public void addHead(#T value) {
-        LinkedListNode<T> node = heap LinkedListNode<T>(#value);
+    public void addHead(T value) {
+        LinkedListNode<T> node = heap LinkedListNode<T>(value);
         if (this.headNode == null) {
             this.tailNode = node;
             this.headNode #= node;

@@ -92,7 +92,7 @@ public final class BPlusTree<K, V> {
      * index.put(1, "uno");   // same key updates in place, count stays 1
      * ```
      */
-    public void put(#K key, #V value) {
+    public void put(K key, V value) {
         // uniform-transfer 2.3 — the container OWNS its keys and values:
         // one unconditional transfer, no caller spelling to match.
         if (this.root == null) {

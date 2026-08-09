@@ -169,7 +169,7 @@ public final class HashMap<K, V> {
     /**
      * Insert or replace the value at `key`.
      */
-    public void put(#K key, #V value) {
+    public void put(K key, V value) {
         // uniform-transfer 2.3 — the map OWNS its keys and values, so there
         // is no caller spelling left to match and the dual-role reads are
         // gone. Every store below is an unconditional transfer.
@@ -410,7 +410,7 @@ public final class HashMap<K, V> {
      *  forward would read all-borrow and record every indexed store as
      *  borrowed regardless of the caller's spelling. */
     public void operator[]= (#K key, #V value) {
-        this.put(#key, #value);
+        this.put(key, value);
     }
 
     /**

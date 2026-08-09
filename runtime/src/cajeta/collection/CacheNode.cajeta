@@ -35,7 +35,7 @@ public final class CacheNode<K, V> {
      * CacheNode<K, V> fresh #= heap CacheNode<K, V>(key, value, Cajeta.currentTimeNanos());
      * ```
      */
-    public CacheNode(K key, #V value, int64 accessedAt) {
+    public CacheNode(K key, V value, int64 accessedAt) {
         // The node BORROWS the key — the backing map owns the canonical
         // wrapper and outlives the node (Cache.put stores `#key` into the
         // map). `#key` stores the alias AS-IS: a plain store would
