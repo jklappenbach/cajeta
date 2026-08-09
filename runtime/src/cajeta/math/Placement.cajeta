@@ -134,7 +134,9 @@ public final class Placement {
         if (Placement.tiered.contains(k)) {
             return;
         }
-        Placement.tiered.add(k);
+        // `#k` — the set owns its members (uniform-transfer 2.3; `HashSet.add`
+        // takes `#T`). `k` is dead after this, so the move costs nothing.
+        Placement.tiered.add(#k);
         StringBuilder sb = stack StringBuilder();
         sb.append("note: [op-tiering] ");
         sb.append(op);
