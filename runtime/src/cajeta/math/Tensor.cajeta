@@ -624,10 +624,12 @@ public class Tensor<T> {
      * Rebuild a concrete `Tensor<E>` sharing the protocol's borrowed `Storage`
      * (zero-copy): downcast the erased `Object` backing back to `Storage<E>` (sound
      * because the dispatch in {@link #fromProtocol} matched the dtype), then wrap it
-     * as a non-owning shared view. Returned as `#Tensor<?>` (the `Tensor<E>` widens).
+     * as a non-owning shared view. Returned as `#Tensor<E>` — the body already builds
+     * exactly that, and `fromProtocol`'s `#Tensor<?>` returns widen it at each arm, so
+     * declaring the wildcard here only threw the type away for every other caller.
      * Internal — driven by `fromProtocol`'s dtype switch.
      */
-    static #Tensor<?> rebuildShared<E>(TensorProtocol p) {
+    static #Tensor<E> rebuildShared<E>(TensorProtocol p) {
         int64[] shp = p.shapeCopy();
         int64[] strd = p.strideCopy();
         // Pass the borrowed backing DIRECTLY (no named `Storage<E> s` local): a
@@ -1581,6 +1583,13 @@ public class Tensor<T> {
         int64 m = a.shapeAt(0);
         int64 k = a.shapeAt(1);
         int64 n = b.shapeAt(1);
+        // NOTE (cajeta-llama 1.2.2, 2026-08-09): the device seam does NOT land here.
+        // Handing this method's `KernelBuffer<E>` to `Ewise.matmulF32Into`'s
+        // `KernelBuffer<float32>` parameter fails codegen with
+        // `XPU-N02: launch receiver is not a kernel name` — the symbolic element type
+        // defeats kernel-name resolution inside the callee, even though the identical
+        // call from non-generic `matmulF32Op` compiles and runs. Concrete-dtype
+        // callers reach the kernel through `Ewise.matmulF32Op`. See the plan.
         Storage<E> st = heap Storage<E>(m * n);
         int64 i = 0;
         while (i < m) {

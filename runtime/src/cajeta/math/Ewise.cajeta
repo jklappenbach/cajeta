@@ -405,6 +405,44 @@ public final class Ewise {
         Tensor<float32> out = Tensor.zeros<float32>(shp);
         if (Placement.pair("matmulF32", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
+            Ewise.matmulF32Into(out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), m, n, k);
+        } else {
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float32 acc = 0.0f;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + a.get2(i, p) * b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /**
+     * The device GEMM, writing into a **caller-provided** output buffer (spec §2.1).
+     *
+     * A kernel can only be launched from the class that declares it (`XPU-N02`), so
+     * the launches have to live here. Taking the destination as a `KernelBuffer`
+     * rather than returning a fresh `Tensor<float32>` is what lets a dtype-generic
+     * caller — `Tensor.matmul<E>` — allocate its own `Tensor<E>`, hand over its
+     * buffer, and never have to retype a foreign result on the way back. Retyping an
+     * owned result is the hazard that sinks the obvious alternative: every rebuild
+     * helper produces a `markSharedView` handle, so the source tensor's drop would
+     * free the buffer out from under it.
+     *
+     * Handles ragged shapes by padding (see {@link #padF32}); tile-aligned shapes
+     * take the single-launch path.
+     */
+    public static void matmulF32Into(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                                     KernelBuffer<float32> b, int64 m, int64 n, int64 k) {
             KernelStream s = KernelStream.current();
             int64 mp = ((m + 15) / 16) * 16;
             int64 np = ((n + 15) / 16) * 16;
@@ -414,7 +452,7 @@ public final class Ewise {
                 uint32 un = (uint32) n;
                 uint32 uk = (uint32) k;
                 matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                    (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+                    (c, a, b, um, un, uk);
                 s.sync();
             } else {
                 // Ragged shape (spec §2.6). The kernel owns whole 16x16 tiles and
@@ -445,37 +483,19 @@ public final class Ewise {
                 uint32 uk = (uint32) k;
                 uint32 an = ump * ukp;
                 padF32.launch(s, grid: [(an + 63) / 64], block: [64])
-                    (ap.deviceBuffer(), a.deviceBuffer(), ump, ukp, um, uk);
+                    (ap.deviceBuffer(), a, ump, ukp, um, uk);
                 uint32 bn = ukp * unp;
                 padF32.launch(s, grid: [(bn + 63) / 64], block: [64])
-                    (bp.deviceBuffer(), b.deviceBuffer(), ukp, unp, uk, un);
+                    (bp.deviceBuffer(), b, ukp, unp, uk, un);
                 s.sync();
                 matmulF32.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
                     (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
                 s.sync();
                 uint32 on = um * un;
                 cropF32.launch(s, grid: [(on + 63) / 64], block: [64])
-                    (out.deviceBuffer(), cp.deviceBuffer(), um, un, unp);
+                    (c, cp.deviceBuffer(), um, un, unp);
                 s.sync();
             }
-        } else {
-            int64 i = 0;
-            while (i < m) {
-                int64 j = 0;
-                while (j < n) {
-                    float32 acc = 0.0f;
-                    int64 p = 0;
-                    while (p < k) {
-                        acc = acc + a.get2(i, p) * b.get2(p, j);
-                        p = p + 1;
-                    }
-                    out.flatSet(i * n + j, acc);
-                    j = j + 1;
-                }
-                i = i + 1;
-            }
-        }
-        return #out;
     }
 
     /**
