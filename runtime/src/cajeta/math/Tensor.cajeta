@@ -320,6 +320,7 @@ public class Tensor<T> {
      * `Y[i,j] = y[i]` (varies down rows). Each output owns its own shape/strides.
      */
     public static #Tensor<E>[] meshgrid<E>(Tensor<E> x, Tensor<E> y) {
+        Placement.guardPair<E>("Tensor.meshgrid", "x", x, "y", y);
         int64 nx = x.size();
         int64 ny = y.size();
         int64 total = nx * ny;
@@ -1163,6 +1164,7 @@ public class Tensor<T> {
     /** Join `parts` along an existing `axis` (numpy `concatenate`): every part must
      *  match on all other axes; the result's `axis` extent is the sum. Fresh copy. */
     public static #Tensor<E> concatenate<E>(Tensor<E>[] parts, int32 axis) {
+        Placement.guardMany<E>("Tensor.concatenate", parts);
         int32 np = (int32) parts.count();
         Tensor<E> p0 = parts[0];
         int32 nd = p0.ndim();
@@ -1206,6 +1208,7 @@ public class Tensor<T> {
     /** Join equal-shaped `parts` along a **new** `axis` (numpy `stack`): result ndim
      *  is one more than the inputs, the new axis having extent `parts.count()`. */
     public static #Tensor<E> stackTensors<E>(Tensor<E>[] parts, int32 axis) {
+        Placement.guardMany<E>("Tensor.stackTensors", parts);
         int32 np = (int32) parts.count();
         Tensor<E> p0 = parts[0];
         int32 m = p0.ndim();
@@ -1253,6 +1256,7 @@ public class Tensor<T> {
     /** Split `t` into `nparts` equal sections along `axis` (numpy `split`): returns an
      *  array of independent copies; `axis` extent must be divisible by `nparts`. */
     public static #Tensor<E>[] split<E>(Tensor<E> t, int32 nparts, int32 axis) {
+        Placement.guardSingle<E>("Tensor.split", t);
         int32 nd = t.ndim();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -1277,6 +1281,7 @@ public class Tensor<T> {
     /** Tile `t` by `reps[i]` along each axis (numpy `tile`, per-axis reps matching
      *  ndim): result axis `i` has extent `shape[i] * reps[i]`; element wraps modulo. */
     public static #Tensor<E> tile<E>(Tensor<E> t, int64[] reps) {
+        Placement.guardSingle<E>("Tensor.tile", t);
         int32 nd = t.ndim();
         int64[] outShape = heap int64[nd];
         int32 i = 0;
@@ -1309,6 +1314,7 @@ public class Tensor<T> {
     /** Repeat each element `n` times along `axis` (numpy `repeat`): result axis extent
      *  is `shape[axis] * n`; output index `j` maps to source `j / n`. */
     public static #Tensor<E> repeat<E>(Tensor<E> t, int32 n, int32 axis) {
+        Placement.guardSingle<E>("Tensor.repeat", t);
         int32 nd = t.ndim();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -1345,6 +1351,7 @@ public class Tensor<T> {
     /** Constant-pad each axis by `before[i]`/`after[i]` with `value` (numpy `pad`,
      *  mode='constant'): result axis extent is `before[i] + shape[i] + after[i]`. */
     public static #Tensor<E> pad<E>(Tensor<E> t, int64[] before, int64[] after, E value) {
+        Placement.guardSingle<E>("Tensor.pad", t);
         int32 nd = t.ndim();
         int64[] outShape = heap int64[nd];
         int32 i = 0;
@@ -1384,6 +1391,7 @@ public class Tensor<T> {
     /** Cyclically shift elements by `shift` along `axis` (numpy `roll`): output index
      *  `j` maps to source `(j - shift) mod L`. Same shape as the input. */
     public static #Tensor<E> roll<E>(Tensor<E> t, int64 shift, int32 axis) {
+        Placement.guardSingle<E>("Tensor.roll", t);
         int32 nd = t.ndim();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -1423,6 +1431,7 @@ public class Tensor<T> {
     /** The `offset`-th diagonal of a 2-D tensor as a 1-D **copy** (numpy `diagonal`):
      *  `offset > 0` is above the main diagonal, `< 0` below. */
     public static #Tensor<E> diagonal<E>(Tensor<E> t, int64 offset) {
+        Placement.guardSingle<E>("Tensor.diagonal", t);
         int64 m = t.shapeAt(0);
         int64 n = t.shapeAt(1);
         int64 r0 = 0;
@@ -1447,6 +1456,7 @@ public class Tensor<T> {
     /** Lower triangle of a 2-D tensor (numpy `tril`): elements with `col <= row + k`
      *  are kept, the rest zeroed. Fresh copy, same shape. */
     public static #Tensor<E> tril<E extends Numeric>(Tensor<E> t, int64 k) {
+        Placement.guardSingle<E>("Tensor.tril", t);
         int64 m = t.shapeAt(0);
         int64 n = t.shapeAt(1);
         Storage<E> st = heap Storage<E>(m * n);
@@ -1472,6 +1482,7 @@ public class Tensor<T> {
     /** Upper triangle of a 2-D tensor (numpy `triu`): elements with `col >= row + k`
      *  are kept, the rest zeroed. Fresh copy, same shape. */
     public static #Tensor<E> triu<E extends Numeric>(Tensor<E> t, int64 k) {
+        Placement.guardSingle<E>("Tensor.triu", t);
         int64 m = t.shapeAt(0);
         int64 n = t.shapeAt(1);
         Storage<E> st = heap Storage<E>(m * n);
@@ -1503,6 +1514,7 @@ public class Tensor<T> {
      *  `t.shapeAt(axis)`) is true (numpy `compress`): a fresh copy whose `axis`
      *  extent is the number of true entries. */
     public static #Tensor<E> compress<E>(Tensor<E> t, Tensor<boolean> cond, int32 axis) {
+        Placement.guardPair2<E, boolean>("Tensor.compress", t, cond);
         int32 nd = t.ndim();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -1547,6 +1559,11 @@ public class Tensor<T> {
     /** Pick each element from one of `choices` by an `indices` tensor (numpy `choose`):
      *  all same shape; `out[e] = choices[indices[e]][e]`. Fresh copy. */
     public static #Tensor<E> choose<E>(Tensor<int64> indices, Tensor<E>[] choices) {
+        // Heterogeneous operands: the index tensor and the choice set are
+        // guarded independently, so a split BETWEEN them tiers both rather than
+        // rejecting. Neither can then read a stale mirror, which is the point.
+        Placement.guardSingle<int64>("Tensor.choose", indices);
+        Placement.guardMany<E>("Tensor.choose", choices);
         int32 nd = indices.ndim();
         int64[] outShape = Tensor.shapeOf<int64>(indices);
         int64 n = Tensor.productOf(outShape);
@@ -1946,6 +1963,7 @@ public class Tensor<T> {
      * fast path is a later unit. Accumulates in the element dtype `E`.
      */
     public static #Tensor<E> einsum<E extends Numeric>(String spec, Tensor<E>[] operands) {
+        Placement.guardMany<E>("Tensor.einsum", operands);
         int32 specLen = (int32) spec.count();
         // Locate the explicit "->" (45='-', 62='>'); fall back to sum-all if absent.
         int32 arrow = -1;
@@ -2115,6 +2133,7 @@ public class Tensor<T> {
      * tensor; the input is untouched.
      */
     public static #Tensor<E> sort<E extends Numeric>(Tensor<E> t, int32 axis) {
+        Placement.guardSingle<E>("Tensor.sort", t);
         Tensor<E> out = t.copy();
         int32 nd = t.ndim();
         int64 axisLen = t.shapeAt(axis);
@@ -2174,6 +2193,7 @@ public class Tensor<T> {
      * index list (the CPU floor).
      */
     public static #Tensor<int64> argsort<E extends Numeric>(Tensor<E> t, int32 axis) {
+        Placement.guardSingle<E>("Tensor.argsort", t);
         int32 nd = t.ndim();
         int64 axisLen = t.shapeAt(axis);
         int64[] shp = heap int64[nd];
@@ -2246,6 +2266,7 @@ public class Tensor<T> {
      * `Tensor<int64>` shaped like `values`.
      */
     public static #Tensor<int64> searchsorted<E extends Numeric>(Tensor<E> sorted, Tensor<E> values, int32 side) {
+        Placement.guardPair<E>("Tensor.searchsorted", "sorted", sorted, "values", values);
         int64 n = sorted.size();
         int64 m = values.size();
         int64[] shp = heap int64[1];
@@ -2365,6 +2386,7 @@ public class Tensor<T> {
      * {@link #introselectLane} introselect (O(n) average, O(n log n) worst case).
      */
     public static #Tensor<E> partition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
+        Placement.guardSingle<E>("Tensor.partition", t);
         Tensor<E> out = t.copy();
         int32 nd = t.ndim();
         int64 axisLen = t.shapeAt(axis);
@@ -2468,6 +2490,7 @@ public class Tensor<T> {
      * introselected in perm-space by {@link #introselectPerm} (O(n) average).
      */
     public static #Tensor<int64> argpartition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
+        Placement.guardSingle<E>("Tensor.argpartition", t);
         int32 nd = t.ndim();
         int64 axisLen = t.shapeAt(axis);
         int64[] shp = heap int64[nd];
@@ -2517,6 +2540,7 @@ public class Tensor<T> {
      * walk, sorts, then drops adjacent duplicates.
      */
     public static #Tensor<E> unique<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.unique", t);
         int64 n = t.size();
         int64[] s1 = heap int64[1];
         s1[0] = n;
@@ -2571,6 +2595,7 @@ public class Tensor<T> {
      * element is not the zero of `E`. Two walks — count, then fill.
      */
     public static #Tensor<int64> flatnonzero<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.flatnonzero", t);
         int64 n = t.size();
         int32 nd = t.ndim();
         E zero = (E) 0;
@@ -2621,6 +2646,7 @@ public class Tensor<T> {
      * numpy tuple-of-index-arrays, as a cajeta array.
      */
     public static #Tensor<int64>[] nonzero<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.nonzero", t);
         int64 n = t.size();
         int32 nd = t.ndim();
         E zero = (E) 0;
@@ -2680,6 +2706,7 @@ public class Tensor<T> {
      * `arr[condition != 0]`; the boolean-mask form is {@link #maskedSelect}.
      */
     public static #Tensor<E> extract<E extends Numeric>(Tensor<E> condition, Tensor<E> arr) {
+        Placement.guardPair<E>("Tensor.extract", "condition", condition, "arr", arr);
         int64 n = arr.size();
         E zero = (E) 0;
         int64 cnt = 0;
@@ -3006,8 +3033,19 @@ public class Tensor<T> {
      * caller picks it), so mixed pairs compare at the promoted value without a
      * width-induced false mismatch. `op`: `0`=eq `1`=ne `2`=lt `3`=le `4`=gt `5`=ge.
      */
+    /** The public op name behind a {@link #cmp} op code, for tiering notes. */
+    static String cmpName(int32 op) {
+        if (op == 1) { return "Tensor.ne"; }
+        if (op == 2) { return "Tensor.lt"; }
+        if (op == 3) { return "Tensor.le"; }
+        if (op == 4) { return "Tensor.gt"; }
+        if (op == 5) { return "Tensor.ge"; }
+        return "Tensor.eq";
+    }
+
     static #Tensor<boolean> cmp<A extends Numeric, B extends Numeric, C extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
+        Placement.guardPair2<A, B>(Tensor.cmpName(op), a, b);
         int64[] rshape = Tensor.broadcastShape<C>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<boolean> st = heap Storage<boolean>(n);
@@ -3286,7 +3324,15 @@ public class Tensor<T> {
      * operands by broadcast index; `op`: `0`=and (`&&`), `1`=or (`||`), `2`=xor (`!=`).
      * `boolean` is not `Numeric`, so these are concrete (non-generic) over boolean.
      */
+    /** The public op name behind a {@link #logic} op code, for tiering notes. */
+    static String logicName(int32 op) {
+        if (op == 1) { return "Tensor.or"; }
+        if (op == 2) { return "Tensor.xor"; }
+        return "Tensor.and";
+    }
+
     static #Tensor<boolean> logic(Tensor<boolean> a, Tensor<boolean> b, int32 op) {
+        Placement.guardPair<boolean>(Tensor.logicName(op), "a", a, "b", b);
         int64[] rshape = Tensor.broadcastShape<boolean>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<boolean> st = heap Storage<boolean>(n);
@@ -3336,6 +3382,7 @@ public class Tensor<T> {
     }
     /** Elementwise logical NOT of a boolean tensor. */
     public static #Tensor<boolean> not(Tensor<boolean> a) {
+        Placement.guardSingle<boolean>("Tensor.not", a);
         int32 nd = (int32) a.shapeDims.count();
         int64[] rshape = heap int64[nd];
         int32 c = 0;
@@ -3515,6 +3562,7 @@ public class Tensor<T> {
      * comes back bias-shaped (nucleo-nn-optim U4).
      */
     public static #Tensor<E> sumTo<E extends Numeric>(Tensor<E> g, Tensor<E> like) {
+        Placement.guardPair<E>("Tensor.sumTo", "g", g, "like", like);
         int32 gd = (int32) g.shapeDims.count();
         int32 ld = (int32) like.shapeDims.count();
         int64[] ls = heap int64[ld];
@@ -3582,6 +3630,8 @@ public class Tensor<T> {
      */
     public static #Tensor<R> where<A extends Numeric, B extends Numeric, R extends Numeric>(
             Tensor<boolean> cond, Tensor<A> a, Tensor<B> b) {
+        Placement.guardSingle<boolean>("Tensor.where", cond);
+        Placement.guardPair2<A, B>("Tensor.where", a, b);
         int64[] s1 = Tensor.broadcastShape<R>(cond.shapeDims, a.shapeDims);
         int64[] rshape = Tensor.broadcastShape<R>(s1, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
@@ -3623,6 +3673,7 @@ public class Tensor<T> {
      * the operand dtype `E`. Inlined `< / >` compares (no nested `Math.clamp` generic).
      */
     public static #Tensor<E> clip<E extends Numeric>(Tensor<E> t, E lo, E hi) {
+        Placement.guardSingle<E>("Tensor.clip", t);
         int32 nd = (int32) t.shapeDims.count();
         int64[] rshape = heap int64[nd];
         int32 c = 0;
@@ -3727,6 +3778,7 @@ public class Tensor<T> {
      * same-category {@link #scalarOp}).
      */
     static #Tensor<float64> scalarOpF<E extends Integral>(Tensor<E> t, float64 s, int32 op) {
+        Placement.guardSingle<E>(Tensor.scalarOpName(op), t);
         int32 nd = (int32) t.shapeDims.count();
         int64[] rshape = heap int64[nd];
         int32 c = 0;
@@ -3911,6 +3963,7 @@ public class Tensor<T> {
     /** Arithmetic mean over all elements in floating `R` (numpy `a.mean(dtype=R)`):
      *  `Σ / n`. Empty → `0/0` (nan), matching numpy's empty-mean. */
     public static R mean<E extends Numeric, R extends Floating>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.mean", t);
         R acc = (R) 0;
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
@@ -4009,6 +4062,7 @@ public class Tensor<T> {
     /** Π along `axis` accumulated in `R` (numpy `a.prod(axis=, dtype=R, keepdims=)`). */
     public static #Tensor<R> prodAxis<E extends Numeric, R extends Numeric>(
             Tensor<E> t, int32 axis, boolean keepdims) {
+        Placement.guardSingle<E>("Tensor.prodAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -4135,6 +4189,7 @@ public class Tensor<T> {
      *  keepdims=)`): `Σ / axisLen`. */
     public static #Tensor<R> meanAxis<E extends Numeric, R extends Floating>(
             Tensor<E> t, int32 axis, boolean keepdims) {
+        Placement.guardSingle<E>("Tensor.meanAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -4388,6 +4443,7 @@ public class Tensor<T> {
 
     /** `true` iff any element of a boolean mask is `true` (numpy `(a > b).any()`). */
     public static boolean anyTrue(Tensor<boolean> t) {
+        Placement.guardSingle<boolean>("Tensor.anyTrue", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4411,6 +4467,7 @@ public class Tensor<T> {
 
     /** `true` iff every element of a boolean mask is `true` (numpy `(a > b).all()`). */
     public static boolean allTrue(Tensor<boolean> t) {
+        Placement.guardSingle<boolean>("Tensor.allTrue", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4440,6 +4497,7 @@ public class Tensor<T> {
     /** Variance over all elements in floating `R` (numpy `a.var(ddof=, dtype=R)`):
      *  `Σ(x-μ)² / (n - ddof)`. Two passes (mean, then squared deviations). */
     public static R variance<E extends Numeric, R extends Floating>(Tensor<E> t, int32 ddof) {
+        Placement.guardSingle<E>("Tensor.variance", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4489,6 +4547,7 @@ public class Tensor<T> {
 
     /** Σ over the non-NaN elements (numpy `nansum`); NaN treated as zero. */
     public static R nansum<E extends Floating, R extends Floating>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.nansum", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4513,6 +4572,7 @@ public class Tensor<T> {
 
     /** Mean of the non-NaN elements (numpy `nanmean`): `Σ_notnan / count_notnan`. */
     public static R nanmean<E extends Floating, R extends Floating>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.nanmean", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4544,6 +4604,7 @@ public class Tensor<T> {
     /** Cumulative sum over the C-order flattening, in `R` (numpy `cumsum(a)`): a 1-D
      *  result of length `size`. */
     public static #Tensor<R> cumsum<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.cumsum", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         Storage<R> st = heap Storage<R>(n);
@@ -4575,6 +4636,7 @@ public class Tensor<T> {
     /** Cumulative product over the C-order flattening, in `R` (numpy `cumprod(a)`):
      *  a 1-D result of length `size`. */
     public static #Tensor<R> cumprod<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.cumprod", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         Storage<R> st = heap Storage<R>(n);
@@ -4606,6 +4668,7 @@ public class Tensor<T> {
     /** Cumulative sum along `axis` in `R` (numpy `cumsum(a, axis=)`): same shape as
      *  the input, each position holding the prefix sum along the axis. */
     public static #Tensor<R> cumsumAxis<E extends Numeric, R extends Numeric>(Tensor<E> t, int32 axis) {
+        Placement.guardSingle<E>("Tensor.cumsumAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -4652,6 +4715,7 @@ public class Tensor<T> {
     /** Cumulative product along `axis` in `R` (numpy `cumprod(a, axis=)`): same shape
      *  as the input, each position holding the prefix product along the axis. */
     public static #Tensor<R> cumprodAxis<E extends Numeric, R extends Numeric>(Tensor<E> t, int32 axis) {
+        Placement.guardSingle<E>("Tensor.cumprodAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }

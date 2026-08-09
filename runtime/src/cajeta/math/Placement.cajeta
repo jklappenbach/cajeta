@@ -161,11 +161,21 @@ public final class Placement {
      * data instead of {@link Storage}'s stale mirror. Ops that want the kernel go
      * through {@link Ewise}'s dtype-specific entry points.
      *
-     * Operands are named `a` and `b` — the parameter names these ops actually use.
-     * An op naming them otherwise calls {@link #pair} directly.
+     * Operands are named `a` and `b` — the parameter names most of these ops use.
+     * An op naming them otherwise takes the five-argument overload.
      */
     public static void guardPair<E>(String op, Tensor<E> a, Tensor<E> b) {
-        if (Placement.pair(op, "a", a.isOnGpu(), "b", b.isOnGpu())) {
+        Placement.guardPair<E>(op, "a", a, "b", b);
+    }
+
+    /**
+     * {@link #guardPair} for an op whose operands are not called `a` and `b` —
+     * `searchsorted(sorted, values)`, `extract(condition, arr)`. The names reach
+     * the rejection message, so they have to be the ones the caller wrote.
+     */
+    public static void guardPair<E>(String op, String aName, Tensor<E> a,
+                                    String bName, Tensor<E> b) {
+        if (Placement.pair(op, aName, a.isOnGpu(), bName, b.isOnGpu())) {
             Placement.tierNote(op, DType.of<E>());
             a.cpu();
             b.cpu();
@@ -193,5 +203,73 @@ public final class Placement {
             Placement.tierNote(op, DType.of<E>());
             t.cpu();
         }
+    }
+
+    /**
+     * The placement guard for an op taking an **array** of tensors —
+     * `concatenate`, `stackTensors`, `choose`, `einsum`.
+     *
+     * {@link #guardPair} cannot express this: the split can sit anywhere in the
+     * array rather than between two named parameters, so the question is "are
+     * they all in the same place?" and the message has to say which ones
+     * disagree. An empty array is a no-op — the op's own shape validation owns
+     * that case.
+     */
+    public static void guardMany<E>(String op, Tensor<E>[] parts) {
+        int64 n = (int64) parts.count();
+        if (n == 0) {
+            return;
+        }
+        int64 onDevice = 0;
+        int64 i = 0;
+        while (i < n) {
+            if (parts[i].isOnGpu()) { onDevice = onDevice + 1; }
+            i = i + 1;
+        }
+        if (onDevice == 0) {
+            return;
+        }
+        if (onDevice < n) {
+            StringBuilder sb = stack StringBuilder();
+            sb.append(op);
+            sb.append(": operands are split across host and device — ");
+            i = 0;
+            while (i < n) {
+                if (i > 0) { sb.append(", "); }
+                sb.append("[");
+                sb.append(Placement.indexName(i));
+                sb.append("] is ");
+                if (parts[i].isOnGpu()) {
+                    sb.append("device-resident");
+                } else {
+                    sb.append("on the host");
+                }
+                i = i + 1;
+            }
+            sb.append(". Move them all to the same place first — gpu() or cpu(). ");
+            sb.append("This op does not migrate: it would either spend bandwidth ");
+            sb.append("you did not ask for, or read a stale host mirror.");
+            throw heap PlacementException(sb.toString());
+        }
+        Placement.tierNote(op, DType.of<E>());
+        i = 0;
+        while (i < n) {
+            parts[i].cpu();
+            i = i + 1;
+        }
+    }
+
+    /** A small non-negative index as text, for {@link #guardMany}'s message.
+     *  `StringBuilder.append` takes a `String` only, and these arrays are short. */
+    public static String indexName(int64 i) {
+        if (i == 0) { return "0"; }
+        if (i == 1) { return "1"; }
+        if (i == 2) { return "2"; }
+        if (i == 3) { return "3"; }
+        if (i == 4) { return "4"; }
+        if (i == 5) { return "5"; }
+        if (i == 6) { return "6"; }
+        if (i == 7) { return "7"; }
+        return "n";
     }
 }

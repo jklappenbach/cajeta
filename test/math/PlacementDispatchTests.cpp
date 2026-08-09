@@ -279,6 +279,94 @@ TEST(PlacementDispatchTests, genericOpRejectsMixedResidency) {
     EXPECT_EQ(runI32Xpu(src), 1);
 }
 
+// 1.1.8 — the op families 1.2.2 left out (structural/view, sort, cumulative,
+// einsum, nansum) guard and tier on the same terms as the three it covered.
+// Until 1.2.6 these read element data with no placement check at all, so a
+// device-resident tensor was silently reduced/sorted/tiled from Storage's stale
+// host mirror.
+//
+// One tensor per family, because tiering brings its operand home: reusing a
+// tensor would find it host-resident and correctly emit nothing the second
+// time. Values are asserted too, not just the notes — a guard that tiered but
+// read the wrong buffer would still print the right note.
+TEST(PlacementDispatchTests, remainingFamiliesTierToCpuWithNote) {
+    std::string src = std::string(PRE) +
+        "public final class D {\n"
+        "    public static #Tensor<float64> mk() {\n"
+        "        float64[] d = [ 3.0, 1.0, 2.0, 4.0 ];\n"
+        "        int64[] s = heap int64[1]; s[0] = 4;\n"
+        "        return Tensor.of<float64>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float64> a = D.mk();\n"
+        "        a.gpu();\n"
+        "        Tensor<float64> srt = Tensor.sort<float64>(a, 0);\n"        // sort family
+        "        if (srt.get1(0) != 1.0) { return -1; }\n"
+        "        if (srt.get1(3) != 4.0) { return -2; }\n"
+        "        if (a.isOnGpu()) { return -3; }\n"
+        "        Tensor<float64> b = D.mk();\n"
+        "        b.gpu();\n"
+        "        Tensor<float64> cs = Tensor.cumsum<float64, float64>(b);\n"  // cumulative
+        "        if (cs.get1(3) != 10.0) { return -4; }\n"
+        "        if (b.isOnGpu()) { return -5; }\n"
+        "        Tensor<float64> c = D.mk();\n"
+        "        c.gpu();\n"
+        "        int64[] reps = heap int64[1]; reps[0] = 2;\n"
+        "        Tensor<float64> tl = Tensor.tile<float64>(c, reps);\n"       // structural/view
+        "        if (tl.get1(0) != 3.0) { return -6; }\n"
+        "        if (tl.get1(4) != 3.0) { return -7; }\n"
+        "        if (c.isOnGpu()) { return -8; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    testing::internal::CaptureStderr();
+    int32_t rc = runI32Xpu(src);
+    std::string err = testing::internal::GetCapturedStderr();
+    EXPECT_EQ(rc, 1);
+    EXPECT_NE(err.find("Tensor.sort"), std::string::npos)
+        << "sort family must tier with a note; stderr was:\n" << err;
+    EXPECT_NE(err.find("Tensor.cumsum"), std::string::npos)
+        << "cumulative family must tier with a note; stderr was:\n" << err;
+    EXPECT_NE(err.find("Tensor.tile"), std::string::npos)
+        << "structural family must tier with a note; stderr was:\n" << err;
+}
+
+// 1.1.9 — an op taking an ARRAY of tensors rejects a set split across host and
+// device. This is the case `guardPair` cannot express: `concatenate`,
+// `stackTensors`, `choose` and `einsum` take `Tensor<E>[]`, so the split can sit
+// anywhere in the array rather than between two named parameters.
+TEST(PlacementDispatchTests, tensorArrayOpRejectsMixedResidency) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.PlacementException;\n"
+        "public final class D {\n"
+        "    public static #Tensor<float32> mk() {\n"
+        "        float32[] d = [ 1.0f, 2.0f ];\n"
+        "        int64[] s = heap int64[1]; s[0] = 2;\n"
+        "        return Tensor.of<float32>(d, s);\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Tensor<float32>[] ps = heap Tensor<float32>[3];\n"
+        "        ps[0] = D.mk();\n"
+        "        ps[1] = D.mk();\n"
+        "        ps[2] = D.mk();\n"
+        "        ps[1].gpu();\n"                                  // split sits mid-array
+        "        boolean threw = false;\n"
+        "        try {\n"
+        "            Tensor<float32> c = Tensor.concatenate<float32>(ps, 0);\n"
+        "        } catch (PlacementException ex) {\n"
+        "            threw = true;\n"
+        "        }\n"
+        "        if (!threw) { return -1; }\n"
+        "        if (ps[0].isOnGpu()) { return -2; }\n"           // nothing migrated up
+        "        if (!ps[1].isOnGpu()) { return -3; }\n"          // nothing downloaded
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
+}
+
 // 1.1.6 — axis-wise argmax/argmin match the host reference (spec 2.8).
 // `Tensor.argmax<E>(t)` exists today but returns only the C-order FLATTENED
 // index; numpy's `a.argmax(axis=)` has no counterpart.
