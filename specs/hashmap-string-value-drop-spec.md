@@ -1,57 +1,93 @@
-# hashmap-string-value-drop — HashMap with a String VALUE type double-frees on map drop
+# hashmap-string-value-drop — a String-VALUED HashMap lowers its slot access wrongly and faults inside `put`
+
+> **Diagnosis corrected 2026-08-08.** The original entry called this a
+> double-free on map DROP, inferred from the drop-chain dump printed at
+> crash time. That was wrong: the dump is context the handler prints on
+> any fault, not the failing operation. Under a debugger the fault is a
+> **store through a null base inside `put` itself** — nothing is freed
+> twice, and the map never reaches its drop. The title and §1 below are
+> the corrected account; the workaround is unchanged and still correct.
 
 ## 1. Definition
 
 Found 2026-08-07 implementing cajeta-cloud U2 (`Capabilities`, backed by
-`HashMap<String, String>`). A map whose **value** type is `String`
-double-frees a stored string when the map itself drops — one `put` is
-enough:
+`HashMap<String, String>`). One `put` is enough:
 
 ```cajeta
 HashMap<String, String> m = heap HashMap<String, String>();
 String k = "" + "alpha";
-m.put(#k, "" + "beta");
-// scope exit: SIGSEGV — drop chain shows the stored String
-// (alloc at the `String k` line) with active=0 being dropped again
-// while the map (active=1) drops
+m.put(#k, "" + "beta");     // SIGSEGV here, fault addr 0x28
 ```
 
-Bounding probes:
-- `HashMap<String, Int64>` with the identical shape (`put(#k,
-  Int64.of(...))`) — clean. This is the only value-type family the
-  shipped ecosystem exercises (Vectorizer, DocSet, Subword,
-  Interactions), which is why the defect never surfaced.
-- An empty `HashMap<String, String>` (no put) — clean.
-- The arg spelling is irrelevant: moved locals (`#k, #v`), a bare
-  fresh temp (`"" + s`), and an explicit `#(expr)` wrapper all crash
-  identically once a String value is stored.
+The faulting instruction is `mov %rdx,0x28(%rax)` with **`rax = 0`**.
 
-Likely mechanism (from `HashMap.remove`'s own comments): the String
-**field-store emitter old-drops the previous field value
-unconditionally** — remove() already documents having to clear the key
-slot from a stack-sourced zero to dodge this ("the 6.2.6b DnsCache
-eviction SIGSEGV"). The `put` path's String **val**-slot store appears
-to hit the same emitter without the equivalent guard, releasing a
-stored string that the map's drop walk then frees a second time.
+`MapEntry<K,V>` is `@ValueType`, so `slots` holds entries INLINE and
+`slots[i]` IS the entry's address. The emitted IR nevertheless LOADS A
+POINTER out of the slot and GEPs through it:
+
+```llvm
+%80 = getelementptr %"#array.MapEntry<String,String>[]", ptr %72, i64 0, i32 1, i64 %73
+%81 = load ptr, ptr %80                         ; <-- element read as a REFERENCE
+%val = getelementptr %"MapEntry<String,String>", ptr %81, i32 0, i32 2
+call void @llvm.memcpy(ptr %val, ptr %82, i64 40, i1 false)
+```
+
+On a fresh (zeroed) table that load yields null, so the store writes
+through null. The 40-byte memcpy is a second inconsistency: the `val`
+slot is a single `ptr`, and `cajeta.lang.String` is an ordinary
+reference class (not `@ValueType`), so a String value has no business
+being copied by value at all.
+
+The layouts disagree across instantiations of the same generic:
+
+| instantiation | struct |
+|---|---|
+| `MapEntry<String, CacheNode<…>>` | `{ ptr, ptr, i64 }` — key, val, ownership word |
+| `MapEntry<String, String>` | `{ ptr, ptr, ptr, i64 }` — an extra leading pointer |
+
+The 4-field shape and the pointer load are what a REFERENCE class gets
+(vtable at slot 0, accessed by pointer), so the `<String,String>`
+monomorph appears to lose its `@ValueType`-ness in the member-access
+path while the ARRAY element type keeps it — the array is laid out
+inline, the access reads it as a reference, and they cannot both be
+right.
+
+Bounding probes (all clean, so the trigger is narrow):
+- `HashMap<String, Int64>`, `HashMap<Int64, String>` — fine.
+- `HashMap<Int64, Int64>` — fine, so `K == V` is NOT the trigger.
+- `HashMap<String, CacheNode<…>>` — fine (the 3-field layout above).
+- Only a **String VALUE** type has reproduced it.
 
 ## 2. Requirements
 
-- **2.1** `HashMap<K, String>` stores, gets, overwrites, removes, and
-  drops without double-free for String and class K.
-- **2.2** A regression pin puts at least two `String` values (fresh
-  key and overwrite of an existing key), reads them back, and lets the
-  map drop.
+- **2.1** A `@ValueType` array element is accessed INLINE — no pointer
+  load — in every path, for every instantiation of the generic.
+- **2.2** A monomorph's `@ValueType`-ness is identical in the array
+  element layout and in the member-access lowering; the two cannot
+  disagree.
+- **2.3** A reference-typed field is stored as a pointer, never copied
+  by value.
+- **2.4** A regression pin puts and reads back through
+  `HashMap<String, String>`.
 
 ## 3. Workaround (in use)
 
-Avoid String-valued HashMaps entirely: cajeta-cloud `Capabilities`
-keeps parallel `ArrayList<String>` lists (names + caveat notes) with a
-linear `indexOf` scan — adapters declare fewer than a dozen
-capabilities, so the scan is free.
+Avoid String-valued HashMaps: cajeta-cloud `Capabilities` keeps parallel
+`ArrayList<String>` lists (names + caveat notes) with a linear
+`indexOf` scan — adapters declare fewer than a dozen capabilities, so
+the scan is free.
 
 ## 4. Reproduction
 
-The 11-line program above as a standalone `--emit=exe` run under
-v0.17.4; also cajeta-cloud @ 863164d^ (the pre-workaround
-`Capabilities`) — `CapabilityTest::supportsAnswersDefinitively`
-SIGSEGVs on its first `declare`.
+The four-line program in §1 as a standalone `--emit=exe` run; the IR is
+in `cajeta.runtime.__stdlib__.ll` under
+`HashMap<String,String>::put`. Also cajeta-cloud @ 863164d^ (the
+pre-workaround `Capabilities`).
+
+## 5. Status
+
+NOT fixed. Diagnosed to the lowering above on branch
+`fix/registered-defects`, where the neighbouring defects were repaired;
+this one needs the generics/value-type layout owner, since the fix is a
+consistency question about monomorph identity rather than a local
+codegen slip.
