@@ -1,0 +1,67 @@
+package cajeta.math;
+
+import cajeta.lang.String;
+import cajeta.lang.StringBuilder;
+
+/**
+ * The placement decision for a tensor op, in one place (spec §2.1, §2.2).
+ *
+ * Every routed op asks the same question — do I take the kernel path or the
+ * host floor? — and until this existed the answer was hand-copied at fourteen
+ * sites in {@link Ewise}, each spelling it `if (a.isOnGpu() && b.isOnGpu())`.
+ * That shape is correct for a matched pair and silently wrong for a split one:
+ * the `else` arm runs the host floor over a device-resident operand, reading
+ * {@link Storage}'s stale host mirror. Centralizing it turns a policy that was
+ * implicit in fourteen conditionals into one that is stated once and enforced.
+ *
+ * This is a decision helper, not a dispatcher: it answers *which path*, and the
+ * op still writes both. That keeps kernel launches at their call sites, where
+ * the grid and block shapes live.
+ */
+public final class Placement {
+    public Placement() { }
+
+    /**
+     * The path for a two-operand op. `true` — both operands are device-resident,
+     * take the kernel path. `false` — both are on the host, take the CPU floor.
+     * A split pair throws {@link PlacementException} naming both operands and
+     * their residency, rather than picking either arm (spec §2.2, decision
+     * 13.1).
+     *
+     * `op` names the operation and `aName`/`bName` the parameters as the caller
+     * declares them, so the message points at something the caller can act on.
+     */
+    public static boolean pair(String op, String aName, boolean aOnGpu,
+                               String bName, boolean bOnGpu) {
+        if (aOnGpu && bOnGpu) { return true; }
+        if (!aOnGpu && !bOnGpu) { return false; }
+        StringBuilder sb = stack StringBuilder();
+        sb.append(op);
+        sb.append(": operands are split across host and device — ");
+        sb.append(aName);
+        if (aOnGpu) {
+            sb.append(" is device-resident, ");
+        } else {
+            sb.append(" is on the host, ");
+        }
+        sb.append(bName);
+        if (bOnGpu) {
+            sb.append(" is device-resident");
+        } else {
+            sb.append(" is on the host");
+        }
+        sb.append(". Move both to the same place first — gpu() or cpu(). This op ");
+        sb.append("does not migrate: it would either spend bandwidth you did not ");
+        sb.append("ask for, or read a stale host mirror.");
+        throw heap PlacementException(sb.toString());
+    }
+
+    /**
+     * The path for a single-operand op. There is no split to reject, so this is
+     * the operand's own residency — routed through here anyway so that every op
+     * reads the same way and a future policy change lands in one place.
+     */
+    public static boolean single(boolean tOnGpu) {
+        return tOnGpu;
+    }
+}

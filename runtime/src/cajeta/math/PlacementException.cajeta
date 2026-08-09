@@ -1,0 +1,26 @@
+package cajeta.math;
+
+import cajeta.error.RecoverableException;
+import cajeta.lang.String;
+
+/**
+ * Thrown when a tensor op's operands are split across host and device — one
+ * device-resident, the other on the host (tensor placement, spec §2.2).
+ *
+ * The op **rejects** rather than reconciling. Migrating the host operand up
+ * would spend bandwidth the caller never asked for and hide it inside an
+ * arithmetic expression; downloading the device operand is worse, because
+ * {@link Storage} keeps a host mirror alongside the device buffer and never
+ * checks it for staleness, so the host path would silently read bytes that
+ * predate the last kernel. Neither is a good default, and the caller always
+ * knows which side it meant — so it says, with `gpu()` or `cpu()`.
+ *
+ * Recoverable: a residency mismatch is a normal, caller-handleable condition,
+ * the same discipline as {@link BroadcastException}.
+ */
+public class PlacementException extends RecoverableException {
+    public PlacementException(String message) {
+        this.message = message;
+        this.cause = 0;
+    }
+}

@@ -4147,6 +4147,117 @@ public class Tensor<T> {
         return bestIdx;
     }
 
+    // Axis-wise arg reductions (spec §2.8) — numpy `a.argmin(axis=)`/`argmax(axis=)`.
+    // The result drops `axis` from the shape and holds, for each remaining position,
+    // the index ALONG `axis` of the extremum there; ties resolve to the first
+    // occurrence, as in the flattened forms above. Requires `ndim >= 2`: on a 1-D
+    // tensor numpy yields a scalar, which is exactly what the flattened overloads
+    // already return, so the axis form would only be a worse spelling of it.
+
+    /** Index along `axis` of the minimum (numpy `a.argmin(axis=)`); first occurrence
+     *  on ties. Result shape is the input shape with `axis` removed. */
+    public static #Tensor<int64> argmin<E extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = (int32) t.shapeDims.count();
+        if (nd < 2) { throw heap BroadcastException("argmin(axis): requires ndim >= 2"); }
+        if (axis < 0) { throw heap BroadcastException("argmin(axis): axis out of range"); }
+        if (axis >= nd) { throw heap BroadcastException("argmin(axis): axis out of range"); }
+        int64 alen = t.shapeDims[axis];
+        int64[] oshape = heap int64[nd - 1];
+        int32 w = 0;
+        int32 k = 0;
+        while (k < nd) {
+            if (k != axis) { oshape[w] = t.shapeDims[k]; w = w + 1; }
+            k = k + 1;
+        }
+        Tensor<int64> out = Tensor.zeros<int64>(oshape);
+        int64 outN = Tensor.productOf(oshape);
+        int64[] oidx = heap int64[nd - 1];
+        int32 z = 0;
+        while (z < nd - 1) { oidx[z] = 0; z = z + 1; }
+        int64[] full = heap int64[nd];
+        int64 o = 0;
+        while (o < outN) {
+            int32 s = 0;
+            int32 d = 0;
+            while (d < nd) {
+                if (d != axis) { full[d] = oidx[s]; s = s + 1; }
+                d = d + 1;
+            }
+            full[axis] = 0;
+            E best = t.readBroadcast(full);
+            int64 bestI = 0;
+            int64 j = 1;
+            while (j < alen) {
+                full[axis] = j;
+                E e = t.readBroadcast(full);
+                if (e < best) { best = e; bestI = j; }
+                j = j + 1;
+            }
+            out.flatSet(o, bestI);
+            o = o + 1;
+            int32 ax = nd - 2;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= oshape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #out;
+    }
+
+    /** Index along `axis` of the maximum (numpy `a.argmax(axis=)`); first occurrence
+     *  on ties. Result shape is the input shape with `axis` removed. */
+    public static #Tensor<int64> argmax<E extends Numeric>(Tensor<E> t, int32 axis) {
+        int32 nd = (int32) t.shapeDims.count();
+        if (nd < 2) { throw heap BroadcastException("argmax(axis): requires ndim >= 2"); }
+        if (axis < 0) { throw heap BroadcastException("argmax(axis): axis out of range"); }
+        if (axis >= nd) { throw heap BroadcastException("argmax(axis): axis out of range"); }
+        int64 alen = t.shapeDims[axis];
+        int64[] oshape = heap int64[nd - 1];
+        int32 w = 0;
+        int32 k = 0;
+        while (k < nd) {
+            if (k != axis) { oshape[w] = t.shapeDims[k]; w = w + 1; }
+            k = k + 1;
+        }
+        Tensor<int64> out = Tensor.zeros<int64>(oshape);
+        int64 outN = Tensor.productOf(oshape);
+        int64[] oidx = heap int64[nd - 1];
+        int32 z = 0;
+        while (z < nd - 1) { oidx[z] = 0; z = z + 1; }
+        int64[] full = heap int64[nd];
+        int64 o = 0;
+        while (o < outN) {
+            int32 s = 0;
+            int32 d = 0;
+            while (d < nd) {
+                if (d != axis) { full[d] = oidx[s]; s = s + 1; }
+                d = d + 1;
+            }
+            full[axis] = 0;
+            E best = t.readBroadcast(full);
+            int64 bestI = 0;
+            int64 j = 1;
+            while (j < alen) {
+                full[axis] = j;
+                E e = t.readBroadcast(full);
+                if (e > best) { best = e; bestI = j; }
+                j = j + 1;
+            }
+            out.flatSet(o, bestI);
+            o = o + 1;
+            int32 ax = nd - 2;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= oshape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #out;
+    }
+
     /** Count of nonzero elements (numpy `count_nonzero(a)`). */
     public static int64 countNonzero<E extends Numeric>(Tensor<E> t) {
         int64 n = Tensor.productOf(t.shapeDims);
