@@ -2,6 +2,8 @@
 """Answer the three questions that shrink a test battery.
 
   report    per-file coverage, worst first — where is the compiler unexercised?
+  overlap   pairwise overlap between units — what should be FOLDED, what is
+            genuinely separate, and which units hold no unique lines at all?
   optimize  which units are redundant, and what is the minimal covering subset?
   gaps      which files/functions are covered by NOTHING?
 
@@ -17,8 +19,7 @@ IMPORTANT — what this cannot see. Line coverage is not behaviour. Two tests
 covering identical lines can assert different things, and a test that adds zero
 new lines may still be the only one pinning a value, an ordering, or an error
 message. Treat "redundant" as a CANDIDATE list for human review, never as a
-delete list. The `--keep-asserting` heuristic below is a partial guard, not a
-substitute for reading the test.
+delete list. Nothing here is a substitute for reading the test.
 """
 import argparse, json, os, re, sys
 from collections import defaultdict
@@ -66,6 +67,143 @@ def cmd_report(units):
     print()
     print('Lowest-covered files are listed first: these are where the compiler')
     print('is least exercised, and where a new test buys the most.')
+
+
+def _bitmaps(units):
+    """Each unit as an int bitmask over a global line index.
+
+    Python ints make intersection/union single machine-word-loop operations and
+    .bit_count() is O(words), so the O(n^2) pass below stays tractable: 806
+    suites is ~325k pairs, 5871 tests is ~17M.
+    """
+    ids, masks = {}, {}
+    for u, files in units.items():
+        m = 0
+        for f, lines in files.items():
+            for ln in lines:
+                k = (f, ln)
+                b = ids.get(k)
+                if b is None:
+                    b = len(ids)
+                    ids[k] = b
+                m |= 1 << b
+        masks[u] = m
+    return masks
+
+
+def cmd_overlap(units, jaccard_min=0.90, top=30):
+    masks = _bitmaps(units)
+    names = sorted(masks)
+    sizes = {u: masks[u].bit_count() for u in names}
+
+    # --- unique lines per unit: covered by this unit and NOTHING else --------
+    # The single most actionable number here. A unit with zero unique lines
+    # earns its place only through its ASSERTIONS, never its reach.
+    union_all = 0
+    for u in names:
+        union_all |= masks[u]
+    unique = {}
+    for u in names:
+        others = 0
+        for v in names:
+            if v != u:
+                others |= masks[v]
+        unique[u] = (masks[u] & ~others).bit_count()
+
+    subsumed, near = [], []
+    for i, a in enumerate(names):
+        ma, sa = masks[a], sizes[a]
+        if sa == 0:
+            continue
+        for b in names[i + 1:]:
+            mb, sb = masks[b], sizes[b]
+            if sb == 0:
+                continue
+            inter = (ma & mb).bit_count()
+            if inter == 0:
+                continue
+            union = sa + sb - inter
+            j = inter / union if union else 0.0
+            if inter == sa and inter == sb:
+                near.append((1.0, a, b, inter, 'IDENTICAL'))
+            elif inter == sa:
+                subsumed.append((sa, a, b))          # a's lines ⊆ b's
+            elif inter == sb:
+                subsumed.append((sb, b, a))          # b's lines ⊆ a's
+            elif j >= jaccard_min:
+                near.append((j, a, b, inter, 'NEAR'))
+
+    near.sort(reverse=True)
+    subsumed.sort(reverse=True)
+    zero_unique = sorted((sizes[u], u) for u in names if unique[u] == 0 and sizes[u])
+
+    print(f'units: {len(names)}   distinct lines: {union_all.bit_count()}')
+    print()
+    print(f'=== units holding NO unique lines ({len(zero_unique)}) ===')
+    print('  every line is reachable from some other unit, so these earn their')
+    print('  place through assertions alone — review, do not auto-delete')
+    for n, u in zero_unique[:top]:
+        print(f'    {n:>7} lines  {u}')
+    if len(zero_unique) > top:
+        print(f'    ... and {len(zero_unique)-top} more')
+    print()
+    print(f'=== subsumed: A covers a strict SUBSET of B ({len(subsumed)}) ===')
+    print('  strongest fold signal — A walks no code B does not already walk')
+    for n, a, b in subsumed[:top]:
+        print(f'    {n:>7} lines  {a}')
+        print(f'    {"":>7}         `-- inside --> {b}')
+    if len(subsumed) > top:
+        print(f'    ... and {len(subsumed)-top} more')
+    print()
+    print(f'=== near-duplicate pairs (Jaccard >= {jaccard_min:.2f}) ({len(near)}) ===')
+    for j, a, b, inter, kind in near[:top]:
+        print(f'    {j:.3f} {kind:<9} {inter:>6} shared')
+        print(f'          {a}')
+        print(f'          {b}')
+    if len(near) > top:
+        print(f'    ... and {len(near)-top} more')
+
+    # --- fold clusters: connected components over the near-duplicate graph ---
+    parent = {u: u for u in names}
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for _, a, b, _, _ in near:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+    groups = {}
+    for u in names:
+        groups.setdefault(find(u), []).append(u)
+    clusters = [g for g in groups.values() if len(g) > 1]
+    clusters.sort(key=len, reverse=True)
+
+    print()
+    print(f'=== fold clusters ({len(clusters)}) ===')
+    print('  mutually near-duplicate units — candidates to merge into ONE')
+    print('  program, which keeps every assertion but pays ONE process start')
+    for g in clusters[:12]:
+        print(f'    [{len(g)}] ' + ', '.join(sorted(g)[:6])
+              + (' ...' if len(g) > 6 else ''))
+
+    out = {'zero_unique': [u for _, u in zero_unique],
+           'subsumed': [{'inner': a, 'outer': b} for _, a, b in subsumed],
+           'near_duplicates': [{'jaccard': round(j, 4), 'a': a, 'b': b}
+                               for j, a, b, _, _ in near],
+           'fold_clusters': clusters,
+           'unique_lines': unique}
+    with open('coverage-overlap.json', 'w') as fh:
+        json.dump(out, fh, indent=1)
+    print()
+    print('wrote coverage-overlap.json')
+    print()
+    print('FOLD is not DELETE. Two units with identical coverage can assert')
+    print('different things — the lend/transfer pins in this repo walk the same')
+    print('ArrayList lines while checking opposite title outcomes. Merging them')
+    print('into one program keeps both assertions and removes one process')
+    print('startup, which is where this battery actually spends its time.')
 
 
 def cmd_optimize(units, target=0.995, keep_asserting=True):
@@ -186,10 +324,12 @@ def cmd_gaps(units, root):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['report', 'optimize', 'gaps'])
+    ap.add_argument('cmd', choices=['report', 'overlap', 'optimize', 'gaps'])
     ap.add_argument('--data', required=True)
     ap.add_argument('--root', default='.')
     ap.add_argument('--target', type=float, default=0.995)
+    ap.add_argument('--jaccard', type=float, default=0.90)
+    ap.add_argument('--top', type=int, default=30)
     a = ap.parse_args()
 
     units = load(a.data)
@@ -198,6 +338,8 @@ def main():
         return 1
     if a.cmd == 'report':
         cmd_report(units)
+    elif a.cmd == 'overlap':
+        cmd_overlap(units, jaccard_min=a.jaccard, top=a.top)
     elif a.cmd == 'optimize':
         cmd_optimize(units, target=a.target)
     else:
