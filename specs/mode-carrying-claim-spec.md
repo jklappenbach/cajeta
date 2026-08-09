@@ -105,8 +105,15 @@ reintroduces a leak.
 - **5.5** `Heap.pop`, `HashMap.remove` and `LinkedList.popHead` return a
   borrow for a lent element and a title for a transferred one, via
   `return #= x` (already landed).
-- **5.6** No behaviour change for any collection holding only owned
-  elements — the pre-reversal path stays bit-identical.
+- **5.6** No OBSERVABLE behaviour change for a workload in which every
+  element is owned, measured against a named baseline: the branch tip
+  immediately before Unit 1 lands (45dcde99 unless the plan records a later
+  one). "Observable" means the pass/fail set of the owned-path pins and
+  the drop counts they record — NOT the emitted IR, which necessarily
+  differs (a phi and a branch replace a panic block).
+  The baseline is deliberately NOT the pre-reversal tree: collections
+  borrowing by default is an intended change, so comparing against it
+  would flag the intent as a regression.
 
 ## 6. Use cases
 
@@ -133,7 +140,13 @@ reintroduces a leak.
 ## 8. Regression risk
 
 The claim is the single most load-bearing primitive in the title system
-— every container store, extraction and teardown walks through it. The
-mitigation is §5.6: an owned-only workload must be bit-identical, so the
-existing owned-path pins are the guard rail, and any diff in them is a
-stop.
+— every container store, extraction and teardown walks through it.
+
+The mitigation is §5.6, and its value depends entirely on the baseline
+being RECORDED rather than remembered: capture the owned-path pin results
+and their drop counts at 45dcde99 before touching a take site, then diff
+after each unit. Any change in that set is a stop.
+
+This criterion is an authoring judgement, not an inherited project
+standard — it is written down here so it can be argued with rather than
+assumed.
