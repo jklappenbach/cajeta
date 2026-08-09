@@ -139,18 +139,33 @@ TEST(ContainerSweepTests, arrayListOwnedAddDropsAtListTeardown) {
 // dangles — the accepted v1 exposure (MemoryModel §1.7), not something these
 // tests can pin.
 
-TEST(ContainerSweepTests, arrayListLendIsRejected) {
+// `xs.add(mine)` — a LEND. Collections do not own by default, so the plain
+// spelling compiles: the list stores a BORROW, `mine` keeps title and is the
+// one that frees at scope exit. The leak count proves the element is freed
+// exactly once — a list that wrongly took title would double-free, and one
+// that leaked would show a survivor.
+TEST(ContainerSweepTests, arrayListLendStoresABorrow) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell mine = heap Cell(9);\n"
+        "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
+        "            xs.add(mine);\n"
+        "            if (xs.get(0).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
         "    public static int32 run() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
-        "        xs.add(mine);\n"
-        "        return xs.get(0).n;\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 9);
 }
 
 TEST(ContainerSweepTests, arrayListTransferLeavesSourceReadable) {
@@ -336,19 +351,32 @@ TEST(ContainerSweepTests, heapOwnedPushPopReclaims) {
 
 // 2.1.8 (Heap) — the borrow-premise pair. See the ArrayList block above for
 // why this is a rewrite and not a `#` patch.
-TEST(ContainerSweepTests, heapLendIsRejected) {
+// A LEND into a Heap. `pop()` is remove-shaped, so it hands the borrow back
+// out; `mine` held title throughout and frees once at scope exit.
+TEST(ContainerSweepTests, heapLendStoresABorrow) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell mine = heap Cell(9);\n"
+        "            Heap<Cell> h = heap Heap<Cell>();\n"
+        "            h.push(mine);\n"
+        "            if (h.pop().n != 9) { return -98; }\n"
+        "            t = mine.n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
         "    public static int32 run() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        Heap<Cell> h = heap Heap<Cell>();\n"
-        "        h.push(mine);\n"
-        "        return h.pop().n;\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 9);
 }
+
 
 // The transferring spelling round-trips through sift and pop: the heap takes
 // the title on push and hands it back on pop, so `back` owns it and reclaims
@@ -466,19 +494,34 @@ TEST(ContainerSweepTests, linkedListOwnedAddDropsAtTeardown) {
 }
 
 // 2.1.8 (LinkedList) — the borrow-premise pair.
-TEST(ContainerSweepTests, linkedListLendIsRejected) {
+// A LEND into a LinkedList. Collections do not own by default, so the plain
+// spelling compiles: the a LinkedList stores a BORROW and `mine` keeps title,
+// freeing exactly once at scope exit (leaked == 0 proves neither a
+// double-free nor a survivor).
+TEST(ContainerSweepTests, linkedListLendStoresABorrow) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell mine = heap Cell(9);\n"
+        "            LinkedList<Cell> list = heap LinkedList<Cell>();\n"
+        "            list.add(mine);\n"
+        "            if (list.get(0).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
         "    public static int32 run() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        LinkedList<Cell> list = heap LinkedList<Cell>();\n"
-        "        list.add(mine);\n"
-        "        return list.get(0).n;\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 9);
 }
+
 
 // The node's value store forwards the caller's flag through the ctor — a
 // static-1 word here once stamped every add owned and the teardown freed the
@@ -597,19 +640,34 @@ TEST(ContainerSweepTests, redBlackOwnedPutReclaimsAtTeardown) {
 }
 
 // 2.1.8 (RedBlackTree) — the borrow-premise pair.
-TEST(ContainerSweepTests, redBlackLendIsRejected) {
+// A LEND into a RedBlackTree. Collections do not own by default, so the plain
+// spelling compiles: the a RedBlackTree stores a BORROW and `mine` keeps title,
+// freeing exactly once at scope exit (leaked == 0 proves neither a
+// double-free nor a survivor).
+TEST(ContainerSweepTests, redBlackLendStoresABorrow) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell mine = heap Cell(9);\n"
+        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
+        "            m.put(1, mine);\n"
+        "            if (m.get(1).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
         "    public static int32 run() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
-        "        m.put(1, mine);\n"
-        "        return m.get(1).n;\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 9);
 }
+
 
 // The transferred value survives fixup (rotations + recolours) and the tree
 // reclaims it at teardown.
@@ -717,19 +775,34 @@ TEST(ContainerSweepTests, bplusOwnedPutSurvivesSplitReclaimsAtTeardown) {
 }
 
 // 2.1.8 (BPlusTree) — the borrow-premise pair.
-TEST(ContainerSweepTests, bplusLendIsRejected) {
+// A LEND into a BPlusTree. Collections do not own by default, so the plain
+// spelling compiles: the a BPlusTree stores a BORROW and `mine` keeps title,
+// freeing exactly once at scope exit (leaked == 0 proves neither a
+// double-free nor a survivor).
+TEST(ContainerSweepTests, bplusLendStoresABorrow) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
+        "    public static int32 work() {\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Cell mine = heap Cell(9);\n"
+        "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
+        "            m.put(1, mine);\n"
+        "            if (m.get(1).n != 9) { return -98; }\n"
+        "            t = mine.n;\n"
+        "        }\n"
+        "        return t;\n"
+        "    }\n"
         "    public static int32 run() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
-        "        m.put(1, mine);\n"
-        "        return m.get(1).n;\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#mine"), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 9);
 }
+
 
 // The transferred value survives the leaf shifts and the split cascade (50
 // entries over order 32 forces splits) and the tree reclaims it at teardown.
