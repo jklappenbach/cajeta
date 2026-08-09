@@ -207,21 +207,32 @@ TEST(PlacementDispatchTests, gemmHandlesNonMultipleOf16) {
 // warning, so it must not fail the build; the op must still produce the right
 // answer on the host floor.
 //
-// RED until 1.2.5 emits `note: [op-tiering]`. The result assertion below should
-// pass today (the CPU floor already runs); the note capture is the new part.
+// The op used here is `Tensor`'s E-generic `add`, which is the whole tiering
+// population after 1.2.2 was redefined: a generic body cannot resolve a kernel
+// name (XPU-N02), so EVERY generic op tiers, whatever the dtype. f64 is used
+// anyway because no earlier test in this file touches it, which keeps the
+// once-per-(op,dtype) dedupe in Placement from being consumed elsewhere.
+//
+// The note is a severity below warning, so it must not fail the build; the op
+// must still produce the right answer on the host floor, and the operands must
+// come home rather than leaving the CPU floor reading a stale host mirror.
 TEST(PlacementDispatchTests, missingKernelTiersToCpuWithNote) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        int64[] shp = heap int64[2];\n"
-        "        shp[0] = 16;\n"
-        "        shp[1] = 16;\n"                              // matmul needs 2-D; 16 = one clean tile
-        "        Tensor<float64> a = Tensor.zeros<float64>(shp);\n"
-        "        Tensor<float64> b = Tensor.zeros<float64>(shp);\n"
+        "        float64[] da = [ 1.0, 2.0, 3.0, 4.0 ];\n"
+        "        float64[] db = [ 10.0, 20.0, 30.0, 40.0 ];\n"
+        "        int64[] shp = heap int64[1];\n"
+        "        shp[0] = 4;\n"
+        "        Tensor<float64> a = Tensor.of<float64>(da, shp);\n"
+        "        Tensor<float64> b = Tensor.of<float64>(db, shp);\n"
         "        a.gpu();\n"
         "        b.gpu();\n"
-        "        Tensor<float64> c = Ewise.matmulF64Op(a, b);\n"   // f64 has no native MMA
-        "        c.cpu();\n"
+        "        Tensor<float64> c = Tensor.add<float64>(a, b);\n"  // generic op: no kernel reachable
+        "        if (c.get1(0) != 11.0) { return -1; }\n"           // CPU floor ran, on live data
+        "        if (c.get1(3) != 44.0) { return -2; }\n"
+        "        if (a.isOnGpu()) { return -3; }\n"                 // operands were brought home...
+        "        if (b.isOnGpu()) { return -4; }\n"
         "        return 1;\n"
         "    }\n"
         "}\n";
@@ -230,7 +241,42 @@ TEST(PlacementDispatchTests, missingKernelTiersToCpuWithNote) {
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
     EXPECT_NE(err.find("[op-tiering]"), std::string::npos)
-        << "expected a `note: [op-tiering]` naming op, dtype and backend; stderr was:\n" << err;
+        << "expected a `note: [op-tiering]` naming op and dtype; stderr was:\n" << err;
+    EXPECT_NE(err.find("float64"), std::string::npos)
+        << "the note must name the dtype that tiered; stderr was:\n" << err;
+}
+
+// 1.1.3, on the generic surface. `mixedResidencyRejects` covers Ewise's
+// dtype-specific entry points; this covers the guard 1.2.2 puts in front of
+// Tensor's E-generic ops, which is a separate code path and the one that had no
+// placement check at all before this unit.
+TEST(PlacementDispatchTests, genericOpRejectsMixedResidency) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.math.Tensor;\n"
+        "import cajeta.math.PlacementException;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        float32[] da = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
+        "        float32[] db = [ 5.0f, 6.0f, 7.0f, 8.0f ];\n"
+        "        int64[] shp = heap int64[1];\n"
+        "        shp[0] = 4;\n"
+        "        Tensor<float32> a = Tensor.of<float32>(da, shp);\n"
+        "        Tensor<float32> b = Tensor.of<float32>(db, shp);\n"
+        "        b.gpu();\n"
+        "        boolean threw = false;\n"
+        "        try {\n"
+        "            Tensor<float32> c = Tensor.add<float32>(a, b);\n"
+        "        } catch (PlacementException ex) {\n"
+        "            threw = true;\n"
+        "        }\n"
+        "        if (!threw) { return -1; }\n"
+        "        if (a.isOnGpu()) { return -2; }\n"
+        "        if (!b.isOnGpu()) { return -3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32Xpu(src), 1);
 }
 
 // 1.1.6 — axis-wise argmax/argmin match the host reference (spec 2.8).
