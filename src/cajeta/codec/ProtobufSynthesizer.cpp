@@ -52,8 +52,11 @@ namespace cajeta {
     struct Bind {
         int number;            // explicit @ProtoField wire number
         std::string name;      // field name
-        std::string canon;     // field type canonical (for the width cast)
-        Decode decode;
+        std::string canon;     // scalar: field type canonical. repeated: the
+                               // ELEMENT type canonical (the width cast target)
+        Decode decode;         // scalar: the kind. repeated: the ELEMENT kind
+        bool repeated = false; // an array field (except int8[], which is bytes)
+        bool packed = false;   // repeated numeric written as one LEN record
     };
 
     bool isSignedIntCanon(const std::string& c) {
@@ -71,17 +74,11 @@ namespace cajeta {
         return c == "int64" || c == "uint64";
     }
 
-    // Classify a field's type into a decode strategy.
-    Decode classify(const CajetaTypePtr& ty, const std::string& canon) {
-        // int8[] (LEN payload) — an array of int8.
-        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
-            auto el = arr->getElementType();
-            if (el && el->getQName()
-                    && el->getQName()->toCanonical() == "int8") {
-                return Decode::BytesLen;
-            }
-            return Decode::Unsupported;
-        }
+    // Classify a NON-array type into a decode strategy. Also used for the
+    // element type of a repeated field, so the two stay in step by
+    // construction: a repeated int64 encodes each element exactly as a scalar
+    // int64 would.
+    Decode classifyScalar(const CajetaTypePtr& ty, const std::string& canon) {
         if (canon == "cajeta.lang.String") return Decode::StringLen;
         if (canon == "boolean") return Decode::BoolVarint;
         // protobuf `float` / `double` are I32 / I64 carrying raw IEEE-754 bits.
@@ -99,6 +96,32 @@ namespace cajeta {
         // (already handled above) are not CajetaClass, so they don't reach here.
         if (std::dynamic_pointer_cast<CajetaClass>(ty)) return Decode::MessageLen;
         return Decode::Unsupported;
+    }
+
+    // Classify a field's type as a scalar. The only array that lands here is
+    // int8[], which is protobuf `bytes`; every other array is a repeated field
+    // and `collectBinds` peels it to its element type before asking.
+    Decode classify(const CajetaTypePtr& ty, const std::string& canon) {
+        if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
+            auto el = arr->getElementType();
+            if (el && el->getQName()
+                    && el->getQName()->toCanonical() == "int8") {
+                return Decode::BytesLen;
+            }
+            return Decode::Unsupported;
+        }
+        return classifyScalar(ty, canon);
+    }
+
+    // Is this element kind carried by a numeric wire type, i.e. can it be
+    // packed? protobuf allows packing only for primitive numeric fields —
+    // never for String, bytes, or a nested message, whose lengths vary and
+    // which therefore need their own LEN framing per element.
+    bool isPackableKind(Decode d) {
+        return d == Decode::IntVarint || d == Decode::ZigzagVarint
+            || d == Decode::Fixed32Int || d == Decode::Fixed64Int
+            || d == Decode::BoolVarint || d == Decode::Float32Bits
+            || d == Decode::Float64Bits;
     }
 
     // The @ProtoField(N) wire number on a field, or -1 if absent.
@@ -156,6 +179,213 @@ namespace cajeta {
 
     std::vector<Bind> collectBinds(const CajetaClassPtr& T);
 
+    // ---- repeated-field emit ------------------------------------------------
+    //
+    // Decode a repeated field into `e.<name>`. Unlike a scalar, this is emitted
+    // OUTSIDE any slot guard: protobuf cannot distinguish an absent repeated
+    // field from an empty one, so the result is always an array and never null.
+    // The cursor readers already accept both the packed and unpacked wire
+    // forms, so nothing here depends on how the peer chose to send it.
+    void emitRepeatedParse(std::ostringstream& os, const Bind& b) {
+        const std::string N = "(int32) " + std::to_string(b.number);
+        const std::string r = "r_" + b.name;      // raw values off the cursor
+        const std::string a = "a_" + b.name;      // the typed array we build
+        const std::string n = "n_" + b.name;
+        const std::string i = "i_" + b.name;
+        const std::string v = "v_" + b.name;
+
+        // Numeric kinds: one cursor call yields every element, already
+        // concatenated across however many records carried them.
+        std::string reader;
+        std::string rawElem;
+        switch (b.decode) {
+            case Decode::IntVarint:   reader = "readRepeatedVarint";  rawElem = "int64"; break;
+            case Decode::ZigzagVarint:reader = "readRepeatedZigzag";  rawElem = "int64"; break;
+            case Decode::BoolVarint:  reader = "readRepeatedVarint";  rawElem = "int64"; break;
+            case Decode::Fixed32Int:  reader = "readRepeatedFixed32"; rawElem = "int32"; break;
+            case Decode::Float32Bits: reader = "readRepeatedFixed32"; rawElem = "int32"; break;
+            case Decode::Fixed64Int:  reader = "readRepeatedFixed64"; rawElem = "int64"; break;
+            case Decode::Float64Bits: reader = "readRepeatedFixed64"; rawElem = "int64"; break;
+            default: break;
+        }
+
+        if (!reader.empty()) {
+            os << "    " << rawElem << "[] " << r << " = cur." << reader
+               << "(" << N << ");\n";
+            // When the element type already matches what the reader returns,
+            // hand the array straight over — no copy.
+            const bool direct = (b.decode == Decode::IntVarint
+                                 || b.decode == Decode::ZigzagVarint
+                                 || b.decode == Decode::Fixed32Int
+                                 || b.decode == Decode::Fixed64Int)
+                                && b.canon == rawElem;
+            if (direct) {
+                os << "    e." << b.name << " = #" << r << ";\n";
+                return;
+            }
+            os << "    int32 " << n << " = (int32) " << r << ".count();\n";
+            os << "    " << b.canon << "[] " << a << " = heap " << b.canon
+               << "[" << n << "];\n";
+            os << "    int32 " << i << " = 0;\n";
+            os << "    while (" << i << " < " << n << ") {\n";
+            os << "        " << rawElem << " " << v << " = " << r << "[" << i << "];\n";
+            if (b.decode == Decode::BoolVarint) {
+                os << "        " << a << "[" << i << "] = " << v << " != (int64) 0;\n";
+            } else if (b.decode == Decode::Float32Bits) {
+                os << "        " << a << "[" << i << "] = Float32.fromBits(" << v << ");\n";
+            } else if (b.decode == Decode::Float64Bits) {
+                os << "        " << a << "[" << i << "] = Float64.fromBits(" << v << ");\n";
+            } else {
+                os << "        " << a << "[" << i << "] = (" << b.canon << ") " << v << ";\n";
+            }
+            os << "        " << i << " = " << i << " + 1;\n";
+            os << "    }\n";
+            os << "    e." << b.name << " = #" << a << ";\n";
+            return;
+        }
+
+        // LEN-framed elements — String and nested messages. Each occurrence is
+        // one element; packing does not apply, so these walk the slots.
+        const std::string s = "s_" + b.name;
+        const std::string bv = "b_" + b.name;
+        os << "    int32 " << n << " = cur.repeatedCount(" << N << ");\n";
+        os << "    " << b.canon << "[] " << a << " = heap " << b.canon
+           << "[" << n << "];\n";
+        os << "    int32 " << i << " = 0;\n";
+        os << "    while (" << i << " < " << n << ") {\n";
+        os << "        int32 " << s << " = cur.slotOfNth(" << N << ", " << i << ");\n";
+        os << "        int8[] " << bv << " = cur.readBytes(" << s << ");\n";
+        if (b.decode == Decode::StringLen) {
+            os << "        int32 bn_" << b.name << " = (int32) " << bv << ".count();\n";
+            os << "        cajeta.lang.String str_" << b.name
+               << " = heap cajeta.lang.String(#" << bv << ", bn_" << b.name << ");\n";
+            os << "        " << a << "[" << i << "] = #str_" << b.name << ";\n";
+        } else {
+            os << "        " << b.canon << " m_" << b.name << " = Protobuf.parse<"
+               << b.canon << ">(" << bv << ", (int64) " << bv << ".count());\n";
+            os << "        " << a << "[" << i << "] = #m_" << b.name << ";\n";
+        }
+        os << "        " << i << " = " << i << " + 1;\n";
+        os << "    }\n";
+        os << "    e." << b.name << " = #" << a << ";\n";
+    }
+
+    // Encode a repeated field. A null array writes nothing — the same treatment
+    // String and bytes get, and it decodes back as empty.
+    void emitRepeatedEncode(std::ostringstream& os, const Bind& b) {
+        const std::string N = "(int32) " + std::to_string(b.number);
+        const std::string a = "a_" + b.name;
+        const std::string n = "n_" + b.name;
+        const std::string i = "i_" + b.name;
+        const std::string v = "v_" + b.name;
+        const std::string t = "t_" + b.name;
+
+        os << "    " << b.canon << "[] " << a << " = value." << b.name << ";\n";
+        os << "    if (" << a << " != null) {\n";
+        os << "        int32 " << n << " = (int32) " << a << ".count();\n";
+
+        if (b.packed) {
+            // Packed wants one contiguous run of values. Where the element type
+            // already matches the writer's parameter, pass it straight through;
+            // otherwise widen/reinterpret into a scratch array first.
+            std::string writer;
+            std::string wantElem;
+            switch (b.decode) {
+                case Decode::IntVarint:   writer = "writePackedVarintField";  wantElem = "int64"; break;
+                case Decode::ZigzagVarint:writer = "writePackedZigzagField";  wantElem = "int64"; break;
+                case Decode::BoolVarint:  writer = "writePackedVarintField";  wantElem = "int64"; break;
+                case Decode::Fixed32Int:  writer = "writePackedFixed32Field"; wantElem = "int32"; break;
+                case Decode::Float32Bits: writer = "writePackedFixed32Field"; wantElem = "int32"; break;
+                case Decode::Fixed64Int:  writer = "writePackedFixed64Field"; wantElem = "int64"; break;
+                case Decode::Float64Bits: writer = "writePackedFixed64Field"; wantElem = "int64"; break;
+                default: break;
+            }
+            const bool direct = (b.decode == Decode::IntVarint
+                                 || b.decode == Decode::ZigzagVarint
+                                 || b.decode == Decode::Fixed32Int
+                                 || b.decode == Decode::Fixed64Int)
+                                && b.canon == wantElem;
+            if (direct) {
+                os << "        w." << writer << "(" << N << ", " << a
+                   << ", " << n << ");\n";
+            } else {
+                os << "        " << wantElem << "[] " << t << " = heap "
+                   << wantElem << "[" << n << "];\n";
+                os << "        int32 " << i << " = 0;\n";
+                os << "        while (" << i << " < " << n << ") {\n";
+                os << "            " << b.canon << " " << v << " = " << a << "[" << i << "];\n";
+                if (b.decode == Decode::BoolVarint) {
+                    os << "            int64 bx_" << b.name << " = (int64) 0;\n";
+                    os << "            if (" << v << ") { bx_" << b.name << " = (int64) 1; }\n";
+                    os << "            " << t << "[" << i << "] = bx_" << b.name << ";\n";
+                } else if (b.decode == Decode::Float32Bits) {
+                    os << "            " << t << "[" << i << "] = Float32.toBits(" << v << ");\n";
+                } else if (b.decode == Decode::Float64Bits) {
+                    os << "            " << t << "[" << i << "] = Float64.toBits(" << v << ");\n";
+                } else {
+                    os << "            " << t << "[" << i << "] = (" << wantElem << ") " << v << ";\n";
+                }
+                os << "            " << i << " = " << i << " + 1;\n";
+                os << "        }\n";
+                os << "        w." << writer << "(" << N << ", " << t
+                   << ", " << n << ");\n";
+            }
+            os << "    }\n";
+            return;
+        }
+
+        // Unpacked: one tagged record per element, using the same writer call
+        // the scalar form of this type would make.
+        os << "        int32 " << i << " = 0;\n";
+        os << "        while (" << i << " < " << n << ") {\n";
+        os << "            " << b.canon << " " << v << " = " << a << "[" << i << "];\n";
+        switch (b.decode) {
+            case Decode::IntVarint:
+                os << "            w.writeVarintField(" << N << ", (int64) " << v << ");\n";
+                break;
+            case Decode::ZigzagVarint:
+                os << "            w.writeZigzagField(" << N << ", (int64) " << v << ");\n";
+                break;
+            case Decode::BoolVarint:
+                os << "            int64 bx_" << b.name << " = (int64) 0;\n";
+                os << "            if (" << v << ") { bx_" << b.name << " = (int64) 1; }\n";
+                os << "            w.writeVarintField(" << N << ", bx_" << b.name << ");\n";
+                break;
+            case Decode::Fixed32Int:
+                os << "            w.writeFixed32Field(" << N << ", (int32) " << v << ");\n";
+                break;
+            case Decode::Fixed64Int:
+                os << "            w.writeFixed64Field(" << N << ", (int64) " << v << ");\n";
+                break;
+            case Decode::Float32Bits:
+                os << "            w.writeFixed32Field(" << N << ", Float32.toBits(" << v << "));\n";
+                break;
+            case Decode::Float64Bits:
+                os << "            w.writeFixed64Field(" << N << ", Float64.toBits(" << v << "));\n";
+                break;
+            case Decode::StringLen:
+                os << "            if (" << v << " != null) {\n";
+                os << "                int8[] sb_" << b.name << " = " << v << ".toBytes();\n";
+                os << "                w.writeLenField(" << N << ", sb_" << b.name
+                   << ", (int32) sb_" << b.name << ".count());\n";
+                os << "            }\n";
+                break;
+            case Decode::MessageLen:
+                os << "            if (" << v << " != null) {\n";
+                os << "                int8[] mb_" << b.name << " = Protobuf.toBytes<"
+                   << b.canon << ">(" << v << ");\n";
+                os << "                w.writeLenField(" << N << ", mb_" << b.name
+                   << ", (int32) mb_" << b.name << ".count());\n";
+                os << "            }\n";
+                break;
+            default:
+                break;
+        }
+        os << "            " << i << " = " << i << " + 1;\n";
+        os << "        }\n";
+        os << "    }\n";
+    }
+
     // Synthesize `parse(int8[] bytes, int64 length) -> #T` for message T.
     std::string synthesizeMessageParseBody(const CajetaClassPtr& T) {
         const std::string Tc = T->getQName()->toCanonical();
@@ -170,6 +400,9 @@ namespace cajeta {
         os << "    " << PC << " cur = heap " << PC << "(bytes, length);\n";
         os << "    " << Tc << " e = heap " << Tc << "();\n";
         for (auto& b : binds) {
+            // Repeated fields bind unconditionally — absent means empty, not
+            // skipped — so they sit outside the slot guard below.
+            if (b.repeated) { emitRepeatedParse(os, b); continue; }
             const std::string slot = "s_" + b.name;
             os << "    int32 " << slot << " = cur.slotOf((int32) "
                << b.number << ");\n";
@@ -278,12 +511,20 @@ namespace cajeta {
         const std::string Ec = E->getQName()->toCanonical();
         std::ostringstream os;
         os << "public static #" << Ec << "[] parse(int8[] bytes, int64 length) {\n";
-        // Pass 1: count frames.
+        // Pass 1: count frames. Every read is bounded by `length`, and each
+        // frame is checked to fit before it is counted — a truncated journal
+        // (a closed socket, a partial write) otherwise walked past the buffer
+        // and then allocated a frame from a length it had already overrun.
         os << "    int32 count = 0;\n";
         os << "    int64 p = (int64) 0;\n";
         os << "    while (p < length) {\n";
-        os << "        int64 fl = ProtobufWire.decodeVarint(bytes, p);\n";
-        os << "        int64 hl = ProtobufWire.varintLen(bytes, p);\n";
+        os << "        int64 fl = ProtobufWire.decodeVarint(bytes, p, length);\n";
+        os << "        int64 hl = ProtobufWire.varintLen(bytes, p, length);\n";
+        os << "        if (fl < (int64) 0 || p + hl + fl > length) {\n";
+        os << "            throw heap dev.cajeta.codec.protobuf."
+              "ProtobufParseException(\n";
+        os << "                \"truncated protobuf delimited frame\", p);\n";
+        os << "        }\n";
         os << "        p = p + hl + fl;\n";
         os << "        count = count + 1;\n";
         os << "    }\n";
@@ -292,8 +533,8 @@ namespace cajeta {
         os << "    p = (int64) 0;\n";
         os << "    int32 i = 0;\n";
         os << "    while (p < length) {\n";
-        os << "        int64 fl = ProtobufWire.decodeVarint(bytes, p);\n";
-        os << "        int64 hl = ProtobufWire.varintLen(bytes, p);\n";
+        os << "        int64 fl = ProtobufWire.decodeVarint(bytes, p, length);\n";
+        os << "        int64 hl = ProtobufWire.varintLen(bytes, p, length);\n";
         os << "        int64 start = p + hl;\n";
         os << "        int32 fln = (int32) fl;\n";
         os << "        int8[] frame = heap int8[fln];\n";
@@ -325,8 +566,36 @@ namespace cajeta {
             if (number < 0) continue;
             auto ty = prop->getType();
             if (!ty || !ty->getQName()) continue;
-            const std::string canon = ty->getQName()->toCanonical();
-            Decode d = classify(ty, canon);
+            std::string canon = ty->getQName()->toCanonical();
+
+            // An array field is a repeated field — except int8[], which is
+            // protobuf `bytes`: one LEN record, not a repeated int8. That
+            // exception is why the array case cannot simply delegate.
+            bool repeated = false;
+            CajetaTypePtr scalarTy = ty;
+            if (auto arr = std::dynamic_pointer_cast<CajetaArray>(ty)) {
+                auto el = arr->getElementType();
+                const std::string elCanon = (el && el->getQName())
+                    ? el->getQName()->toCanonical() : std::string();
+                if (elCanon != "int8") {
+                    if (elCanon.empty()) {
+                        reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
+                            "CAJETA_ERROR_PROTO_FIELD_TYPE",
+                            "@ProtoField(" + std::to_string(number) + ") on "
+                            + T->getQName()->toCanonical() + "."
+                            + prop->getName()
+                            + " — repeated field has no resolvable element type");
+                        continue;
+                    }
+                    repeated = true;
+                    scalarTy = el;
+                    canon = elCanon;      // binds now describe the ELEMENT
+                }
+            }
+
+            Decode d = repeated
+                ? classifyScalar(scalarTy, canon)
+                : classify(ty, canon);
             if (d == Decode::Unsupported) {
                 // Previously `continue` — the field was dropped from both the
                 // parse and the encode arm with no diagnostic anywhere. A
@@ -341,11 +610,38 @@ namespace cajeta {
                     + T->getQName()->toCanonical() + "." + prop->getName()
                     + " — no protobuf wire mapping for type '" + canon
                     + "'. Supported: integer, boolean, float32/float64, String, "
-                      "int8[] (bytes), and a nested message class.");
+                      "int8[] (bytes), a nested message class, and arrays of "
+                      "those (repeated).");
                 continue;
             }
             d = applyEncoding(T, prop, canon, d);
-            binds.push_back({number, prop->getName(), canon, d});
+
+            // `packed` is meaningful only for a repeated numeric field.
+            // Accepting it silently elsewhere would let an author believe a
+            // field was compact when nothing changed.
+            bool packed = false;
+            if (auto ann = prop->findAnnotation("ProtoField")) {
+                packed = ann->getBool("packed", false);
+            }
+            if (packed && !repeated) {
+                reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
+                    "CAJETA_ERROR_PROTO_ENCODING",
+                    "@ProtoField(packed = true) on "
+                    + T->getQName()->toCanonical() + "." + prop->getName()
+                    + " — packed applies only to a repeated (array) field");
+                packed = false;
+            } else if (packed && !isPackableKind(d)) {
+                reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
+                    "CAJETA_ERROR_PROTO_ENCODING",
+                    "@ProtoField(packed = true) on "
+                    + T->getQName()->toCanonical() + "." + prop->getName()
+                    + " — packed applies only to repeated numeric elements, "
+                      "not '" + canon + "'");
+                packed = false;
+            }
+
+            binds.push_back({number, prop->getName(), canon, d,
+                             repeated, packed});
         }
         return binds;
     }
@@ -361,6 +657,7 @@ namespace cajeta {
         os << "public static #int8[] toBytes(" << Tc << " value) {\n";
         os << "    " << PW << " w = heap " << PW << "();\n";
         for (auto& b : binds) {
+            if (b.repeated) { emitRepeatedEncode(os, b); continue; }
             const std::string fv = "f_" + b.name;
             const std::string tag = "(int32) " + std::to_string(b.number);
             switch (b.decode) {
