@@ -1,0 +1,195 @@
+package cajeta.math;
+
+import cajeta.collection.HashSet;
+import cajeta.io.file.FileWriter;
+import cajeta.lang.String;
+import cajeta.lang.StringBuilder;
+
+/**
+ * The placement decision for a tensor op, in one place (spec §2.1, §2.2).
+ *
+ * Every routed op asks the same question — do I take the kernel path or the
+ * host floor? — and until this existed the answer was hand-copied at fourteen
+ * sites in {@link Ewise}, each spelling it `if (a.isOnGpu() && b.isOnGpu())`.
+ * That shape is correct for a matched pair and silently wrong for a split one:
+ * the `else` arm runs the host floor over a device-resident operand, reading
+ * {@link Storage}'s stale host mirror. Centralizing it turns a policy that was
+ * implicit in fourteen conditionals into one that is stated once and enforced.
+ *
+ * This is a decision helper, not a dispatcher: it answers *which path*, and the
+ * op still writes both. That keeps kernel launches at their call sites, where
+ * the grid and block shapes live.
+ */
+public final class Placement {
+    public Placement() { }
+
+    /**
+     * The path for a two-operand op. `true` — both operands are device-resident,
+     * take the kernel path. `false` — both are on the host, take the CPU floor.
+     * A split pair throws {@link PlacementException} naming both operands and
+     * their residency, rather than picking either arm (spec §2.2, decision
+     * 13.1).
+     *
+     * `op` names the operation and `aName`/`bName` the parameters as the caller
+     * declares them, so the message points at something the caller can act on.
+     */
+    public static boolean pair(String op, String aName, boolean aOnGpu,
+                               String bName, boolean bOnGpu) {
+        if (aOnGpu && bOnGpu) { return true; }
+        if (!aOnGpu && !bOnGpu) { return false; }
+        StringBuilder sb = stack StringBuilder();
+        sb.append(op);
+        sb.append(": operands are split across host and device — ");
+        sb.append(aName);
+        if (aOnGpu) {
+            sb.append(" is device-resident, ");
+        } else {
+            sb.append(" is on the host, ");
+        }
+        sb.append(bName);
+        if (bOnGpu) {
+            sb.append(" is device-resident");
+        } else {
+            sb.append(" is on the host");
+        }
+        sb.append(". Move both to the same place first — gpu() or cpu(). This op ");
+        sb.append("does not migrate: it would either spend bandwidth you did not ");
+        sb.append("ask for, or read a stale host mirror.");
+        throw heap PlacementException(sb.toString());
+    }
+
+    /**
+     * The path for a single-operand op. There is no split to reject, so this is
+     * the operand's own residency — routed through here anyway so that every op
+     * reads the same way and a future policy change lands in one place.
+     */
+    public static boolean single(boolean tOnGpu) {
+        return tOnGpu;
+    }
+
+    // ───────────────────────────── tiering (spec §2.7) ────────────────────────
+
+    // (op, dtype) pairs already noted, so a tiered op inside a decode loop reports
+    // once rather than once per call. Lazily built on first tier — a module-load
+    // clinit is not guaranteed to have the allocator up (the BackendRegistry
+    // precedent). Scoped to the compiled module, so each JIT instance starts clean
+    // and a test observes its own note rather than one an earlier run consumed.
+    private static HashSet<String> tiered;
+
+    /**
+     * The dtype's spelling for a diagnostic — `float64`, `int32`, `bfloat16`.
+     * {@link DType} carries kind/width/variant codes but no name, and a note that
+     * says "kind 3 width 64" is not a note anyone can act on.
+     */
+    public static String dtypeName(DType d) {
+        if (d.isBool()) { return "boolean"; }
+        int32 bits = d.bits();
+        if (d.isFloating()) {
+            int32 v = d.variant();
+            if (v == DType.VAR_BF16) { return "bfloat16"; }
+            if (v != DType.VAR_STD)  { return "float8/6/4"; }
+            if (bits == 16)  { return "float16"; }
+            if (bits == 32)  { return "float32"; }
+            if (bits == 64)  { return "float64"; }
+            if (bits == 128) { return "float128"; }
+            return "float";
+        }
+        if (d.isUnsignedInt()) {
+            if (bits == 8)   { return "uint8"; }
+            if (bits == 16)  { return "uint16"; }
+            if (bits == 32)  { return "uint32"; }
+            if (bits == 64)  { return "uint64"; }
+            if (bits == 128) { return "uint128"; }
+            return "uint";
+        }
+        if (bits == 8)   { return "int8"; }
+        if (bits == 16)  { return "int16"; }
+        if (bits == 32)  { return "int32"; }
+        if (bits == 64)  { return "int64"; }
+        if (bits == 128) { return "int128"; }
+        return "int";
+    }
+
+    /**
+     * Emit the `[op-tiering]` note: this op has no device kernel for this dtype,
+     * so its operands came back to the host and the CPU floor ran (spec §2.7,
+     * acceptance 1.3.2 — no op changes residency silently).
+     *
+     * Mirrors the compiler's `[mma-tiering]` wording, but this one is a *runtime*
+     * note by necessity: which ops tier depends on the residency a tensor has at
+     * the call, which is not known when the module is compiled. It goes to fd 2
+     * through {@link FileWriter}, never closed — closing would take stderr down
+     * with it.
+     */
+    public static void tierNote(String op, DType d) {
+        String dtype = Placement.dtypeName(d);
+        StringBuilder key = stack StringBuilder();
+        key.append(op);
+        key.append("/");
+        key.append(dtype);
+        String k = key.toString();
+        if (Placement.tiered == null) {
+            Placement.tiered = heap HashSet<String>(64);
+        }
+        if (Placement.tiered.contains(k)) {
+            return;
+        }
+        Placement.tiered.add(k);
+        StringBuilder sb = stack StringBuilder();
+        sb.append("note: [op-tiering] ");
+        sb.append(op);
+        sb.append(" on ");
+        sb.append(dtype);
+        sb.append(": no device kernel for this dtype — operands downloaded to the ");
+        sb.append("host and the CPU floor ran. For a kernel path, call the ");
+        sb.append("dtype-specific Ewise entry point directly.\n");
+        FileWriter w = heap FileWriter(2);
+        w.writeString(sb.toString());
+    }
+
+    /**
+     * The placement guard for a two-operand **generic** op — the shape every
+     * `E`-generic op on {@link Tensor} opens with.
+     *
+     * A generic op cannot launch a kernel: kernel-name resolution needs a concrete
+     * element type, so a launch from a body parameterized on `E` does not compile
+     * (`XPU-N02`). That is a language limit, not a policy choice, and it fixes what
+     * this guard can do: reject a split pair, and for a device-resident pair emit
+     * the tiering note and bring both operands home so the CPU floor reads live
+     * data instead of {@link Storage}'s stale mirror. Ops that want the kernel go
+     * through {@link Ewise}'s dtype-specific entry points.
+     *
+     * Operands are named `a` and `b` — the parameter names these ops actually use.
+     * An op naming them otherwise calls {@link #pair} directly.
+     */
+    public static void guardPair<E>(String op, Tensor<E> a, Tensor<E> b) {
+        if (Placement.pair(op, "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            Placement.tierNote(op, DType.of<E>());
+            a.cpu();
+            b.cpu();
+        }
+    }
+
+    /**
+     * {@link #guardPair} for a **cross-dtype** op — the `<A, B, R>` overloads whose
+     * operands carry different element types (`div`, `fdivmod`, `bitop`). The note
+     * names `A`'s dtype: a cross-dtype op has no single dtype to report, and `A` is
+     * the one the result width is derived from.
+     */
+    public static void guardPair2<A, B>(String op, Tensor<A> a, Tensor<B> b) {
+        if (Placement.pair(op, "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            Placement.tierNote(op, DType.of<A>());
+            a.cpu();
+            b.cpu();
+        }
+    }
+
+    /** {@link #guardPair} for a one-operand generic op — nothing to reject, so this
+     *  is the note plus the download. */
+    public static void guardSingle<E>(String op, Tensor<E> t) {
+        if (t.isOnGpu()) {
+            Placement.tierNote(op, DType.of<E>());
+            t.cpu();
+        }
+    }
+}

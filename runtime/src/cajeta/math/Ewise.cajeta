@@ -54,7 +54,7 @@ public final class Ewise {
     public static #Tensor<float32> arithF32Op(Tensor<float32> a, Tensor<float32> b, int32 op) {
         Tensor<float32> out = Tensor.zerosLike<float32>(a);
         int64 n = a.size();
-        if (a.isOnGpu() && b.isOnGpu()) {
+        if (Placement.pair("arith", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 un = (uint32) n;
             KernelStream s = KernelStream.current();
@@ -98,7 +98,7 @@ public final class Ewise {
      */
     public static float32 sumF32(Tensor<float32> t) {
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
             Tensor<float32> acc = Tensor.zeros<float32>(os);   // accumulator out[0] = 0
@@ -142,7 +142,7 @@ public final class Ewise {
      */
     public static float32 minF32(Tensor<float32> t) {
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
             Tensor<float32> acc = Tensor.zeros<float32>(os);
@@ -169,7 +169,7 @@ public final class Ewise {
     /** Full-array maximum (companion to {@link #minF32}; accumulator seeded to `-FLT_MAX`). */
     public static float32 maxF32(Tensor<float32> t) {
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
             Tensor<float32> acc = Tensor.zeros<float32>(os);
@@ -215,7 +215,7 @@ public final class Ewise {
         int64[] os = heap int64[1];
         os[0] = m;
         Tensor<float32> out = Tensor.zeros<float32>(os);
-        if (t.isOnGpu() && idx.isOnGpu()) {
+        if (Placement.pair("take", "t", t.isOnGpu(), "idx", idx.isOnGpu())) {
             out.gpu();
             uint32 um = (uint32) m;
             KernelStream s = KernelStream.current();
@@ -255,7 +255,7 @@ public final class Ewise {
         int64[] os = heap int64[1];
         os[0] = outLen;
         Tensor<float32> out = Tensor.zeros<float32>(os);
-        if (values.isOnGpu() && idx.isOnGpu()) {
+        if (Placement.pair("scatter", "values", values.isOnGpu(), "idx", idx.isOnGpu())) {
             out.gpu();                                 // uploads the zero-init buffer
             uint32 um = (uint32) m;
             KernelStream s = KernelStream.current();
@@ -295,7 +295,7 @@ public final class Ewise {
         os[0] = outLen;
         Tensor<int32> counts = Tensor.zeros<int32>(os);
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             counts.gpu();                              // uploads the zero-init histogram
             uint32 un = (uint32) n;
             KernelStream s = KernelStream.current();
@@ -312,6 +312,44 @@ public final class Ewise {
             }
         }
         return #counts;
+    }
+
+    /**
+     * Copy an `(irows, icols)` matrix into the top-left corner of an
+     * `(orows, ocols)` one, zero-filling the rest (spec §2.6 support). The tiled
+     * GEMM below owns whole 16x16 tiles, so a ragged shape is squared up here
+     * rather than by teaching every tile load a bounds check: zeros contribute
+     * nothing to a dot product, so the padded product's leading `(m, n)` block is
+     * exactly the unpadded answer.
+     */
+    @Kernel
+    public static void padF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                              uint32 orows, uint32 ocols, uint32 irows, uint32 icols) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < orows * ocols) {
+            uint32 r = i / ocols;
+            uint32 c = i % ocols;
+            float32 v = 0.0f;
+            if (r < irows) {
+                if (c < icols) { v = in[r * icols + c]; }
+            }
+            out[i] = v;
+        }
+    }
+
+    /**
+     * The inverse of {@link #padF32}: copy the leading `(orows, ocols)` block out of
+     * a matrix whose row stride is `icols`.
+     */
+    @Kernel
+    public static void cropF32(KernelBuffer<float32> out, KernelBuffer<float32> in,
+                               uint32 orows, uint32 ocols, uint32 icols) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < orows * ocols) {
+            uint32 r = i / ocols;
+            uint32 c = i % ocols;
+            out[i] = in[r * icols + c];
+        }
     }
 
     /**
@@ -365,15 +403,9 @@ public final class Ewise {
         shp[0] = m;
         shp[1] = n;
         Tensor<float32> out = Tensor.zeros<float32>(shp);
-        if (a.isOnGpu() && b.isOnGpu()) {
+        if (Placement.pair("matmulF32", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
-            uint32 um = (uint32) m;
-            uint32 un = (uint32) n;
-            uint32 uk = (uint32) k;
-            KernelStream s = KernelStream.current();
-            matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
-                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
-            s.sync();
+            Ewise.matmulF32Into(out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), m, n, k);
         } else {
             int64 i = 0;
             while (i < m) {
@@ -392,6 +424,78 @@ public final class Ewise {
             }
         }
         return #out;
+    }
+
+    /**
+     * The device GEMM, writing into a **caller-provided** output buffer (spec §2.1).
+     *
+     * A kernel can only be launched from the class that declares it (`XPU-N02`), so
+     * the launches have to live here. Taking the destination as a `KernelBuffer`
+     * rather than returning a fresh `Tensor<float32>` is what lets a dtype-generic
+     * caller — `Tensor.matmul<E>` — allocate its own `Tensor<E>`, hand over its
+     * buffer, and never have to retype a foreign result on the way back. Retyping an
+     * owned result is the hazard that sinks the obvious alternative: every rebuild
+     * helper produces a `markSharedView` handle, so the source tensor's drop would
+     * free the buffer out from under it.
+     *
+     * Handles ragged shapes by padding (see {@link #padF32}); tile-aligned shapes
+     * take the single-launch path.
+     */
+    public static void matmulF32Into(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                                     KernelBuffer<float32> b, int64 m, int64 n, int64 k) {
+            KernelStream s = KernelStream.current();
+            int64 mp = ((m + 15) / 16) * 16;
+            int64 np = ((n + 15) / 16) * 16;
+            int64 kp = ((k + 15) / 16) * 16;
+            if (mp == m && np == n && kp == k) {
+                uint32 um = (uint32) m;
+                uint32 un = (uint32) n;
+                uint32 uk = (uint32) k;
+                matmulF32.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                    (c, a, b, um, un, uk);
+                s.sync();
+            } else {
+                // Ragged shape (spec §2.6). The kernel owns whole 16x16 tiles and
+                // truncates on every dimension — grid drops the partial row/col
+                // tiles and the K-loop drops the partial depth slice — so a 17x17
+                // multiply would silently compute a 16x16 one. Square the operands
+                // up with zero padding, multiply, crop back.
+                int64[] ashp = heap int64[2];
+                ashp[0] = mp;
+                ashp[1] = kp;
+                Tensor<float32> ap = Tensor.zeros<float32>(ashp);
+                ap.gpu();
+                int64[] bshp = heap int64[2];
+                bshp[0] = kp;
+                bshp[1] = np;
+                Tensor<float32> bp = Tensor.zeros<float32>(bshp);
+                bp.gpu();
+                int64[] cshp = heap int64[2];
+                cshp[0] = mp;
+                cshp[1] = np;
+                Tensor<float32> cp = Tensor.zeros<float32>(cshp);
+                cp.gpu();
+                uint32 ump = (uint32) mp;
+                uint32 unp = (uint32) np;
+                uint32 ukp = (uint32) kp;
+                uint32 um = (uint32) m;
+                uint32 un = (uint32) n;
+                uint32 uk = (uint32) k;
+                uint32 an = ump * ukp;
+                padF32.launch(s, grid: [(an + 63) / 64], block: [64])
+                    (ap.deviceBuffer(), a, ump, ukp, um, uk);
+                uint32 bn = ukp * unp;
+                padF32.launch(s, grid: [(bn + 63) / 64], block: [64])
+                    (bp.deviceBuffer(), b, ukp, unp, uk, un);
+                s.sync();
+                matmulF32.launch(s, grid: [(ump / 16) * (unp / 16)], block: [64])
+                    (cp.deviceBuffer(), ap.deviceBuffer(), bp.deviceBuffer(), ump, unp, ukp);
+                s.sync();
+                uint32 on = um * un;
+                cropF32.launch(s, grid: [(on + 63) / 64], block: [64])
+                    (c, cp.deviceBuffer(), um, un, unp);
+                s.sync();
+            }
     }
 
     /**
@@ -437,7 +541,7 @@ public final class Ewise {
         shp[0] = m;
         shp[1] = n;
         Tensor<float64> out = Tensor.zeros<float64>(shp);
-        if (a.isOnGpu() && b.isOnGpu()) {
+        if (Placement.pair("matmulF64", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 um = (uint32) m;
             uint32 un = (uint32) n;
@@ -505,7 +609,7 @@ public final class Ewise {
      */
     public static #Tensor<float32> sortF32Op(Tensor<float32> t) {
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             t.cpu();                                   // stage input to host to seed the copy
             int64[] shp = heap int64[1];
             shp[0] = n;
@@ -558,7 +662,7 @@ public final class Ewise {
      */
     public static #Tensor<float32> cumsumF32Op(Tensor<float32> t) {
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             t.cpu();                                   // stage input to seed buffer A
             int64[] sa = heap int64[1]; sa[0] = n;
             Tensor<float32> a = Tensor.zeros<float32>(sa);
@@ -623,7 +727,7 @@ public final class Ewise {
         int64[] os = heap int64[1];
         os[0] = na + nb;
         Tensor<float32> out = Tensor.zeros<float32>(os);
-        if (a.isOnGpu() && b.isOnGpu()) {
+        if (Placement.pair("concat", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 una = (uint32) na;
             uint32 unb = (uint32) nb;
@@ -652,7 +756,7 @@ public final class Ewise {
         int64[] os = heap int64[1];
         os[0] = len;
         Tensor<float32> out = Tensor.zeros<float32>(os);
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             out.gpu();
             uint32 ul = (uint32) len;
             uint32 us = (uint32) start;
@@ -683,7 +787,7 @@ public final class Ewise {
      */
     public static float32 normFroF32(Tensor<float32> t) {
         int64 n = t.size();
-        if (t.isOnGpu()) {
+        if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
             Tensor<float32> acc = Tensor.zeros<float32>(os);

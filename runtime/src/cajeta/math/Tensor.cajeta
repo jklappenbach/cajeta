@@ -624,10 +624,12 @@ public class Tensor<T> {
      * Rebuild a concrete `Tensor<E>` sharing the protocol's borrowed `Storage`
      * (zero-copy): downcast the erased `Object` backing back to `Storage<E>` (sound
      * because the dispatch in {@link #fromProtocol} matched the dtype), then wrap it
-     * as a non-owning shared view. Returned as `#Tensor<?>` (the `Tensor<E>` widens).
+     * as a non-owning shared view. Returned as `#Tensor<E>` — the body already builds
+     * exactly that, and `fromProtocol`'s `#Tensor<?>` returns widen it at each arm, so
+     * declaring the wildcard here only threw the type away for every other caller.
      * Internal — driven by `fromProtocol`'s dtype switch.
      */
-    static #Tensor<?> rebuildShared<E>(TensorProtocol p) {
+    static #Tensor<E> rebuildShared<E>(TensorProtocol p) {
         int64[] shp = p.shapeCopy();
         int64[] strd = p.strideCopy();
         // Pass the borrowed backing DIRECTLY (no named `Storage<E> s` local): a
@@ -1578,6 +1580,15 @@ public class Tensor<T> {
     /** 2-D matrix product `(m,k)·(k,n) → (m,n)` (numpy `matmul`/`@` for matrices):
      *  `out[i,j] = Σ_p a[i,p] * b[p,j]`. */
     public static #Tensor<E> matmul<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        // The device seam does NOT land here (cajeta-llama 1.2.2, 2026-08-09).
+        // Handing this method's `KernelBuffer<E>` to `Ewise.matmulF32Into`'s
+        // `KernelBuffer<float32>` parameter fails codegen with
+        // `XPU-N02: launch receiver is not a kernel name` — the symbolic element type
+        // defeats kernel-name resolution inside the callee, even though the identical
+        // call from non-generic `matmulF32Op` compiles and runs. So this op guards and
+        // tiers like every other generic op, and concrete-dtype callers that want the
+        // kernel go through `Ewise.matmulF32Op`.
+        Placement.guardPair<E>("Tensor.matmul", a, b);
         int64 m = a.shapeAt(0);
         int64 k = a.shapeAt(1);
         int64 n = b.shapeAt(1);
@@ -1612,6 +1623,7 @@ public class Tensor<T> {
      * `getAt` so strided (non-contiguous) inputs work.
      */
     public static #Tensor<E> matmulBatched<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.matmulBatched", a, b);
         int64 batch = a.shapeAt(0);
         int64 m = a.shapeAt(1);
         int64 k = a.shapeAt(2);
@@ -1650,6 +1662,7 @@ public class Tensor<T> {
 
     /** 1-D inner product `Σ a[i] * b[i]` as a scalar (numpy `dot` of two vectors). */
     public static E dot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.dot", a, b);
         int64 n = a.size();
         E acc = (E) 0;
         int64 i = 0;
@@ -1663,6 +1676,7 @@ public class Tensor<T> {
     /** Inner product over the **flattened** elements of two equal-shaped tensors as a
      *  scalar (numpy `vdot`, real case): `Σ a·b` over the full C-order walk. */
     public static E vdot<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.vdot", a, b);
         int64 n = a.size();
         int32 nd = a.ndim();
         int64[] idx = heap int64[nd];
@@ -1687,6 +1701,7 @@ public class Tensor<T> {
     /** Outer product of two 1-D vectors → 2-D `(m,n)` (numpy `outer`):
      *  `out[i,j] = a[i] * b[j]`. */
     public static #Tensor<E> outer<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.outer", a, b);
         int64 m = a.size();
         int64 n = b.size();
         Storage<E> st = heap Storage<E>(m * n);
@@ -1709,6 +1724,7 @@ public class Tensor<T> {
 
     /** Sum of the `offset`-th diagonal of a 2-D tensor as a scalar (numpy `trace`). */
     public static E trace<E extends Numeric>(Tensor<E> a, int64 offset) {
+        Placement.guardSingle<E>("Tensor.trace", a);
         int64 m = a.shapeAt(0);
         int64 n = a.shapeAt(1);
         int64 r0 = 0;
@@ -1729,6 +1745,7 @@ public class Tensor<T> {
     /** Kronecker product of two 2-D tensors `(m,n)⊗(p,q) → (m*p, n*q)` (numpy `kron`):
      *  `out[i*p+r, j*q+s] = a[i,j] * b[r,s]`. */
     public static #Tensor<E> kron<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.kron", a, b);
         int64 m = a.shapeAt(0);
         int64 n = a.shapeAt(1);
         int64 p = b.shapeAt(0);
@@ -1766,6 +1783,9 @@ public class Tensor<T> {
      *  `n == 0` is the identity; otherwise repeated `matmul`. (Negative powers need the
      *  inverse — Phase 11.) */
     public static #Tensor<E> matrixPower<E extends Numeric>(Tensor<E> a, int32 n) {
+        // Guarded here rather than relying on the `matmul` below: `n == 0` and `n == 1`
+        // never reach it, and those paths read `a` too.
+        Placement.guardSingle<E>("Tensor.matrixPower", a);
         int64 d = a.shapeAt(0);
         if (n == 0) { return Tensor.eye<E>(d); }
         Tensor<E> result = a.copy();
@@ -1785,6 +1805,7 @@ public class Tensor<T> {
      * `matmul`. The contracted dims of `a` and `b` must match.
      */
     public static #Tensor<E> tensordot<E extends Numeric>(Tensor<E> a, Tensor<E> b, int32 naxes) {
+        Placement.guardPair<E>("Tensor.tensordot", a, b);
         int32 ndA = a.ndim();
         int32 ndB = b.ndim();
         int32 freeAn = ndA - naxes;
@@ -1858,6 +1879,7 @@ public class Tensor<T> {
      * `ndim` is 0). Unlike `dot`, `inner` contracts the last axis of *both* operands.
      */
     public static #Tensor<E> inner<E extends Numeric>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.inner", a, b);
         int32 ndA = a.ndim();
         int32 ndB = b.ndim();
         int64 k = a.shapeAt(ndA - 1);
@@ -2789,6 +2811,7 @@ public class Tensor<T> {
      * never wrapped in droppable views (no early free of the inputs' `Storage`).
      */
     public static #Tensor<E> add<E>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.add", a, b);
         int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
@@ -2825,6 +2848,7 @@ public class Tensor<T> {
     /** Elementwise `a - b` with broadcasting (numpy `-`). See {@link #add} on why the
      *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
     public static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.sub", a, b);
         int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
@@ -2861,6 +2885,7 @@ public class Tensor<T> {
     /** Elementwise `a * b` with broadcasting (numpy `*`). See {@link #add} on why the
      *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
     public static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b) {
+        Placement.guardPair<E>("Tensor.mul", a, b);
         int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
@@ -2906,8 +2931,17 @@ public class Tensor<T> {
      * fresh C-contiguous `Tensor<R>` owns storage. One kernel covers every numeric
      * `(A,B,R)`; only those instantiated are monomorphized.
      */
+    /** The public op name behind a {@link #binop} op code, for tiering notes. */
+    static String binopName(int32 op) {
+        if (op == 1) { return "Tensor.sub"; }
+        if (op == 2) { return "Tensor.mul"; }
+        if (op == 3) { return "Tensor.div"; }
+        return "Tensor.add";
+    }
+
     static #Tensor<R> binop<A extends Numeric, B extends Numeric, R extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
+        Placement.guardPair2<A, B>(Tensor.binopName(op), a, b);
         int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
@@ -3091,6 +3125,11 @@ public class Tensor<T> {
      */
     static #Tensor<R> fdivmod<A extends Numeric, B extends Numeric, R extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
+        if (op == 1) {
+            Placement.guardPair2<A, B>("Tensor.mod", a, b);
+        } else {
+            Placement.guardPair2<A, B>("Tensor.floorDiv", a, b);
+        }
         int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
@@ -3155,8 +3194,18 @@ public class Tensor<T> {
      * arithmetic for signed `R`, matching numpy). All of `A`,`B`,`R` are bounded
      * `Integral`, so a floating type argument is a compile-time error (6.2.4).
      */
+    /** The public op name behind a {@link #bitop} op code, for tiering notes. */
+    static String bitopName(int32 op) {
+        if (op == 1) { return "Tensor.bitOr"; }
+        if (op == 2) { return "Tensor.bitXor"; }
+        if (op == 3) { return "Tensor.shiftL"; }
+        if (op == 4) { return "Tensor.shiftR"; }
+        return "Tensor.bitAnd";
+    }
+
     static #Tensor<R> bitop<A extends Integral, B extends Integral, R extends Integral>(
             Tensor<A> a, Tensor<B> b, int32 op) {
+        Placement.guardPair2<A, B>(Tensor.bitopName(op), a, b);
         int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
@@ -3330,7 +3379,23 @@ public class Tensor<T> {
      * `3`=exp `4`=log `5`=floor `6`=ceil `7`=round. `E` is `Floating`, so an integer type
      * argument is a compile-time error (6.2.5).
      */
+    /** The public op name behind a {@link #ufloat} op code, so a tiering note names
+     *  `Tensor.sqrt` rather than the shared funnel the caller never wrote. */
+    static String ufloatName(int32 op) {
+        if (op == 1) { return "Tensor.sin"; }
+        if (op == 2) { return "Tensor.cos"; }
+        if (op == 3) { return "Tensor.exp"; }
+        if (op == 4) { return "Tensor.log"; }
+        if (op == 5) { return "Tensor.floor"; }
+        if (op == 6) { return "Tensor.ceil"; }
+        if (op == 7) { return "Tensor.round"; }
+        if (op == 8) { return "Tensor.relu"; }
+        if (op == 9) { return "Tensor.reluMask"; }
+        return "Tensor.sqrt";
+    }
+
     static #Tensor<E> ufloat<E extends Floating>(Tensor<E> a, int32 op) {
+        Placement.guardSingle<E>(Tensor.ufloatName(op), a);
         int32 nd = (int32) a.shapeDims.count();
         int64[] rshape = heap int64[nd];
         int32 c = 0;
@@ -3382,6 +3447,11 @@ public class Tensor<T> {
      * (`Math.abs`). `E` is `Numeric` — these are valid on integers and floats alike.
      */
     static #Tensor<E> unum<E extends Numeric>(Tensor<E> a, int32 op) {
+        if (op == 1) {
+            Placement.guardSingle<E>("Tensor.abs", a);
+        } else {
+            Placement.guardSingle<E>("Tensor.neg", a);
+        }
         int32 nd = (int32) a.shapeDims.count();
         int64[] rshape = heap int64[nd];
         int32 c = 0;
@@ -3599,7 +3669,16 @@ public class Tensor<T> {
      * `DType.promote`, no dispatch). `op`: `0`=add `1`=sub `2`=mul. Value-irrelevant: an
      * out-of-range int literal simply wraps (NEP-50 weak semantics).
      */
+    /** The public op name behind a {@link #scalarOp} op code, for tiering notes. */
+    static String scalarOpName(int32 op) {
+        if (op == 1) { return "Tensor.subScalar"; }
+        if (op == 2) { return "Tensor.mulScalar"; }
+        if (op == 3) { return "Tensor.divScalar"; }
+        return "Tensor.addScalar";
+    }
+
     static #Tensor<E> scalarOp<E extends Numeric>(Tensor<E> t, E s, int32 op) {
+        Placement.guardSingle<E>(Tensor.scalarOpName(op), t);
         int32 nd = (int32) t.shapeDims.count();
         int64[] rshape = heap int64[nd];
         int32 c = 0;
@@ -3731,6 +3810,7 @@ public class Tensor<T> {
 
     /** Σ of all elements, accumulated in `R` (numpy `a.sum(dtype=R)`). Empty → `0`. */
     public static R sum<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.sum", t);
         R acc = (R) 0;
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
@@ -3755,6 +3835,7 @@ public class Tensor<T> {
 
     /** Π of all elements, accumulated in `R` (numpy `a.prod(dtype=R)`). Empty → `1`. */
     public static R prod<E extends Numeric, R extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.prod", t);
         R acc = (R) 1;
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
@@ -3779,6 +3860,7 @@ public class Tensor<T> {
 
     /** Minimum over all elements (numpy `a.min()`). Requires a non-empty tensor. */
     public static E min<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.min", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -3803,6 +3885,7 @@ public class Tensor<T> {
 
     /** Maximum over all elements (numpy `a.max()`). Requires a non-empty tensor. */
     public static E max<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.max", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -3884,6 +3967,7 @@ public class Tensor<T> {
     /** Σ along `axis` accumulated in `R` (numpy `a.sum(axis=, dtype=R, keepdims=)`). */
     public static #Tensor<R> sumAxis<E extends Numeric, R extends Numeric>(
             Tensor<E> t, int32 axis, boolean keepdims) {
+        Placement.guardSingle<E>("Tensor.sumAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -3966,6 +4050,7 @@ public class Tensor<T> {
     /** Minimum along `axis` (numpy `a.min(axis=, keepdims=)`); requires axis length >= 1. */
     public static #Tensor<E> minAxis<E extends Numeric>(
             Tensor<E> t, int32 axis, boolean keepdims) {
+        Placement.guardSingle<E>("Tensor.minAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -4007,6 +4092,7 @@ public class Tensor<T> {
     /** Maximum along `axis` (numpy `a.max(axis=, keepdims=)`); requires axis length >= 1. */
     public static #Tensor<E> maxAxis<E extends Numeric>(
             Tensor<E> t, int32 axis, boolean keepdims) {
+        Placement.guardSingle<E>("Tensor.maxAxis", t);
         int32 nd = (int32) t.shapeDims.count();
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
@@ -4096,6 +4182,7 @@ public class Tensor<T> {
     /** Flattened (C-order) index of the minimum element (numpy `a.argmin()`); first
      *  occurrence on ties. Requires a non-empty tensor. */
     public static int64 argmin<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.argmin", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4123,6 +4210,7 @@ public class Tensor<T> {
     /** Flattened (C-order) index of the maximum element (numpy `a.argmax()`); first
      *  occurrence on ties. Requires a non-empty tensor. */
     public static int64 argmax<E extends Numeric>(Tensor<E> t) {
+        Placement.guardSingle<E>("Tensor.argmax", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
@@ -4147,8 +4235,124 @@ public class Tensor<T> {
         return bestIdx;
     }
 
+    // Axis-wise arg reductions (spec §2.8) — numpy `a.argmin(axis=)`/`argmax(axis=)`.
+    // The result drops `axis` from the shape and holds, for each remaining position,
+    // the index ALONG `axis` of the extremum there; ties resolve to the first
+    // occurrence, as in the flattened forms above. Requires `ndim >= 2`: on a 1-D
+    // tensor numpy yields a scalar, which is exactly what the flattened overloads
+    // already return, so the axis form would only be a worse spelling of it.
+
+    /** Index along `axis` of the minimum (numpy `a.argmin(axis=)`); first occurrence
+     *  on ties. Result shape is the input shape with `axis` removed. */
+    public static #Tensor<int64> argmin<E extends Numeric>(Tensor<E> t, int32 axis) {
+        Placement.guardSingle<E>("Tensor.argmin", t);
+        int32 nd = (int32) t.shapeDims.count();
+        if (nd < 2) { throw heap BroadcastException("argmin(axis): requires ndim >= 2"); }
+        if (axis < 0) { throw heap BroadcastException("argmin(axis): axis out of range"); }
+        if (axis >= nd) { throw heap BroadcastException("argmin(axis): axis out of range"); }
+        int64 alen = t.shapeDims[axis];
+        int64[] oshape = heap int64[nd - 1];
+        int32 w = 0;
+        int32 k = 0;
+        while (k < nd) {
+            if (k != axis) { oshape[w] = t.shapeDims[k]; w = w + 1; }
+            k = k + 1;
+        }
+        Tensor<int64> out = Tensor.zeros<int64>(oshape);
+        int64 outN = Tensor.productOf(oshape);
+        int64[] oidx = heap int64[nd - 1];
+        int32 z = 0;
+        while (z < nd - 1) { oidx[z] = 0; z = z + 1; }
+        int64[] full = heap int64[nd];
+        int64 o = 0;
+        while (o < outN) {
+            int32 s = 0;
+            int32 d = 0;
+            while (d < nd) {
+                if (d != axis) { full[d] = oidx[s]; s = s + 1; }
+                d = d + 1;
+            }
+            full[axis] = 0;
+            E best = t.readBroadcast(full);
+            int64 bestI = 0;
+            int64 j = 1;
+            while (j < alen) {
+                full[axis] = j;
+                E e = t.readBroadcast(full);
+                if (e < best) { best = e; bestI = j; }
+                j = j + 1;
+            }
+            out.flatSet(o, bestI);
+            o = o + 1;
+            int32 ax = nd - 2;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= oshape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #out;
+    }
+
+    /** Index along `axis` of the maximum (numpy `a.argmax(axis=)`); first occurrence
+     *  on ties. Result shape is the input shape with `axis` removed. */
+    public static #Tensor<int64> argmax<E extends Numeric>(Tensor<E> t, int32 axis) {
+        Placement.guardSingle<E>("Tensor.argmax", t);
+        int32 nd = (int32) t.shapeDims.count();
+        if (nd < 2) { throw heap BroadcastException("argmax(axis): requires ndim >= 2"); }
+        if (axis < 0) { throw heap BroadcastException("argmax(axis): axis out of range"); }
+        if (axis >= nd) { throw heap BroadcastException("argmax(axis): axis out of range"); }
+        int64 alen = t.shapeDims[axis];
+        int64[] oshape = heap int64[nd - 1];
+        int32 w = 0;
+        int32 k = 0;
+        while (k < nd) {
+            if (k != axis) { oshape[w] = t.shapeDims[k]; w = w + 1; }
+            k = k + 1;
+        }
+        Tensor<int64> out = Tensor.zeros<int64>(oshape);
+        int64 outN = Tensor.productOf(oshape);
+        int64[] oidx = heap int64[nd - 1];
+        int32 z = 0;
+        while (z < nd - 1) { oidx[z] = 0; z = z + 1; }
+        int64[] full = heap int64[nd];
+        int64 o = 0;
+        while (o < outN) {
+            int32 s = 0;
+            int32 d = 0;
+            while (d < nd) {
+                if (d != axis) { full[d] = oidx[s]; s = s + 1; }
+                d = d + 1;
+            }
+            full[axis] = 0;
+            E best = t.readBroadcast(full);
+            int64 bestI = 0;
+            int64 j = 1;
+            while (j < alen) {
+                full[axis] = j;
+                E e = t.readBroadcast(full);
+                if (e > best) { best = e; bestI = j; }
+                j = j + 1;
+            }
+            out.flatSet(o, bestI);
+            o = o + 1;
+            int32 ax = nd - 2;
+            boolean carry = true;
+            while (ax >= 0 && carry) {
+                oidx[ax] = oidx[ax] + 1;
+                if (oidx[ax] >= oshape[ax]) { oidx[ax] = 0; ax = ax - 1; }
+                else { carry = false; }
+            }
+        }
+        return #out;
+    }
+
     /** Count of nonzero elements (numpy `count_nonzero(a)`). */
     public static int64 countNonzero<E extends Numeric>(Tensor<E> t) {
+        // `any` and `all` delegate here, so they are guarded too — the note names
+        // countNonzero, which is the reduction that actually reads the data.
+        Placement.guardSingle<E>("Tensor.countNonzero", t);
         int64 n = Tensor.productOf(t.shapeDims);
         int32 nd = (int32) t.shapeDims.count();
         int64[] idx = heap int64[nd];
