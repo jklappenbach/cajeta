@@ -28,8 +28,8 @@ If your critical region protects state that is **not** a single value, use `Lock
 
 | Type | Role | You instantiate? |
 |------|------|------------------|
-| `Mutex<T>` | owns `T`, gates all access behind the lock | yes (`heap Mutex<T>(initial)`) |
-| `RwLock<T>` | owns `T`, splits shared read / exclusive write | yes (`heap RwLock<T>(initial)`) |
+| `Mutex<T>` | holds `T`, gates all access behind the lock | yes (`heap Mutex<T>(initial)`) |
+| `RwLock<T>` | holds `T`, splits shared read / exclusive write | yes (`heap RwLock<T>(initial)`) |
 | `WriteGuard` | RAII guard; drop releases `RwLock`'s write lock | no — `withWrite` owns it |
 
 `Mutex`'s exclusive critical sections are guarded internally by a method-scoped
@@ -75,8 +75,10 @@ Not present yet: a compute-only read variant (`withRead((T) -> R)`), a non-block
 
 ## Ownership and lifecycle (the part that bites)
 
-- **Construction takes ownership**: `Mutex(#T initial)` / `RwLock(#T initial)` move
-  `initial` into the container. After `heap Mutex<T>(x)`, the container owns the value.
+- **Construction carries the caller's mode**: `Mutex(T initial)` / `RwLock(T initial)`
+  are plain formals that store with `#=`. `heap Mutex<T>(#x)` moves the value in and the
+  container owns it; `heap Mutex<T>(x)` stores a borrow — the caller keeps title and must
+  outlive the container.
 - **Closure return is `#T`**: the value `fn` returns is moved back into the container as
   the new protected value. Build the new value inside the closure; do not stash a
   reference to the old one.

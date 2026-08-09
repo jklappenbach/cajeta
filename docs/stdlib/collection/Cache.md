@@ -30,7 +30,7 @@ if (hit.isPresent()) {
 | `boolean isEmpty()` | `count() == 0` |
 | `boolean containsKey(K key)` | True when `key` is present AND not expired |
 | `Optional<V> get(K key)` | Look up `key`; present hit is promoted to most-recently-used |
-| `void put(#K key, V value)` | Insert (or replace) `key`'s value |
+| `void put(K key, V value)` | Insert (or replace) `key`'s value; pass `#key` if you want the cache to take title |
 | `void remove(K key)` | Drop `key` and its LRU node if present; a no-op otherwise |
 | `void clear()` | Drop every entry and reset the LRU list to empty |
 | `void evict()` | Manual eviction pass — drops everything currently expired under the TTL |

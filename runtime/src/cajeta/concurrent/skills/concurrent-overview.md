@@ -46,11 +46,13 @@ at a yield point — `await`, channel receive, `Lock.acquire`, etc.).
 - **`tryAcquire()` is the exception.** A successful `Lock.tryAcquire()` (returns
   `1`) gives you **no guard** — you must call `releaseLock()` yourself. `0` means
   already held. Never `releaseLock()` a lock taken via `acquire()`.
-- **`#` transfers ownership of guarded values.** Constructors that take ownership
-  use `#T` (`Mutex(#T initial)`, `RwLock(#T initial)`, `FiberContext` snapshots,
-  channel items into `SelectResult`). The protected value never escapes its
-  locked region — there is no `value` handle; you operate on it only inside the
-  `withLock`/`withWrite` closure.
+- **`#` at the CALL SITE transfers ownership of guarded values.** `Mutex(T initial)`,
+  `RwLock(T initial)` and `SelectResult(int32 index, T value)` declare plain formals
+  and store with `#=`, so transfer is the caller's opt-in: `heap Mutex<T>(#v)` moves
+  the value in, `heap Mutex<T>(v)` stores a borrow. (`FiberContext.capture()` does
+  return a `#FiberContext` — that is a return, not a formal.) The protected value
+  never escapes its locked region — there is no `value` handle; you operate on it
+  only inside the `withLock`/`withWrite` closure.
 - **Returns are stack `Optional<T>`, not null.** `Channel.receive`/`tryReceive`,
   `Tasks.withTimeout`/`selectReceive` return a **stack** `Optional` (no per-item
   heap alloc): present = value, empty = terminal (closed-and-drained / timeout /
@@ -61,8 +63,9 @@ at a yield point — `await`, channel receive, `Lock.acquire`, etc.).
   consume the throw for you (e.g. `withTimeout` swallows the cancellation
   sentinel).
 - **v1 targets value/primitive `T`.** For a heap-class `T`, `Mutex.get`/`read`
-  hand out a reference that outlives the lock, and `Channel` does not drop
-  buffered-but-unreceived items at destruction — drain first.
+  hand out a reference that outlives the lock, and `Channel` lends its slots —
+  it never drops a buffered item, so the sender must keep the item alive until
+  a receiver takes it (drain before the *producer's* scope ends).
 
 ## Canonical example
 
@@ -99,11 +102,12 @@ while (x.isPresent()) { use(x.get()); x = ch.receive(); }  // empty => done
 ## Disambiguation
 
 - **Lock vs Mutex** — `Lock` is a no-data RAII gate for state not fused into one
-  value; `Mutex<T>` owns the data and only exposes it through a locked closure.
+  value; `Mutex<T>` holds the data and only exposes it through a locked closure.
   Prefer `Mutex` when there is exactly one piece of data to protect.
-- **Mutex vs RwLock** — both own their `T`; `RwLock` adds shared reads. Reach for
-  `RwLock` only when reads vastly dominate writes (writer-preference avoids
-  writer starvation).
+- **Mutex vs RwLock** — both hold their `T` (owning it only when the caller
+  transferred with `#`, per the call-site rule above); `RwLock` adds shared
+  reads. Reach for `RwLock` only when reads vastly dominate writes
+  (writer-preference avoids writer starvation).
 - **Semaphore vs scope** — if work is statically "K at a time", a chunked
   `scope { spawn K times }` expresses the limit structurally; use `Semaphore`
   only when consumers are unbounded and no scope bounds them.
@@ -111,8 +115,9 @@ while (x.isPresent()) { use(x.get()); x = ch.receive(); }  // empty => done
   (counters, ids, CAS); a lock once you need to make two updates consistent.
   Default ops are seq_cst; weaker orderings are separate named methods
   (`loadAcquire`, `storeRelease`, …), not a parameter.
-- **Channel vs Mutex** — `Channel` moves ownership of items between fibers
-  (producer/consumer); `Mutex` shares in-place mutable state.
+- **Channel vs Mutex** — `Channel` hands items between fibers with backpressure
+  (producer/consumer), lending its slots rather than taking title — never write
+  `send(#item)`; `Mutex` shares in-place mutable state.
 
 ## Setup
 

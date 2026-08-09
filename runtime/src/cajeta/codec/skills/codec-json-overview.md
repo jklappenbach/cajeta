@@ -68,10 +68,13 @@ debugging Tier-1 codegen.
 - `#` on a return = owned, caller's drop chain frees it: `Json.parse` → `#JsonValue`,
   `Json.toBytes`/`JsonWriter.toBytes` → `#int8[]`, `JsonReader.currentBytes`/
   `currentString` → fresh owned copy.
-- `#` on a param = transfer in: `JsonObject.put(#int8[] key, len, #JsonValue)`,
-  `JsonArray.add(#JsonValue)`, `JsonValue.setArray/setObject(#…)`,
-  `JsonValue.setStringOwned(#int8[],len)` all take ownership; the caller local
-  deactivates.
+- `#` on a param = transfer **required** in. `JsonObject.put(#int8[] key, len, #JsonValue)`,
+  `JsonArray.add(#JsonValue)`, `JsonValue.setArray/setObject(#…)` and
+  `JsonValue.setStringOwned(#int8[],len)` oblige you to surrender title at the call
+  site — `obj.put(#key, len, #val)`, `arr.add(#v)`, `v.setArray(#a)`, `v.setObject(#o)`,
+  `v.setStringOwned(#bytes, len)`. The plain spelling (`arr.add(v)`) is
+  `CAJETA_ERROR_TRANSFER_REQUIRED`. The call-site `#` is what transfers, and only then
+  does the caller's local deactivate.
 - Borrowed (do NOT free, copy to keep beyond the source's lifetime): `JsonValue.asBytes()`
   and the bytes behind `JsonValue.setString(bytes,len)` are views; `JsonObject.get(...)`
   and `JsonArray.get(i)` return borrowed elements owned by the container; the input
@@ -91,9 +94,9 @@ import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.lang.String;
 
-#JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
+JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
 int64 id = v.asObject().get("id").asInt64();       // 1
-#String name = v.asObject().getString("name").get();
+String name = v.asObject().getString("name").get();
 ```
 
 SAX — count keys in one streaming pass:

@@ -46,7 +46,8 @@ String value = hit.isPresent() ? hit.get() : compute(42);
   `Optional.get()` on empty throws (`CAJETA_ERROR_NONE_UNWRAP`), it does not return null.
 - **`void put(K key, V value)`** — insert or replace; replacing bumps access time + moves
   to head. Inserting past `maxEntries` evicts the LRU tail immediately.
-- **`void remove(K key)`** — drop key + its node; no-op if absent.
+- **`void remove(K key)`** — unlink the key's entry and free its node (the lent key and
+  value are untouched); no-op if absent.
 - **`void evict()`** — manual TTL sweep: drops every currently-expired entry. **No-op
   when TTL is disabled.** The size cap is already enforced on every `put`, so `evict` only
   matters for releasing stale entries from an idle cache (call it from a timer/heartbeat).
@@ -58,11 +59,24 @@ String value = hit.isPresent() ? hit.get() : compute(42);
 
 ## Ownership & values crossing the boundary
 
-`put` stores `key`/`value` by the normal field-assignment convention (no `#` transfer at
-the call site) — class-typed values you put in are your same instances. `get` returns a
-`stack Optional<V>` holding the stored `V` (the cache keeps owning the entry; you receive
-the value out, not the node). Entry `CacheNode`s are heap-allocated and owned by the
-cache; you never see them.
+`put(K key, V value)` declares plain formals and the cache **lends**: `cache.put(k, v)`
+stores your same instances and the cache never frees them. Both the key and the value
+must outlive the entry, and **nothing diagnoses it today** if they do not — a cache
+normally outlives the locals it caches, so that lifetime is yours to arrange.
+
+**Do not transfer into `put`.** Neither `cache.put(id, #session)` nor a fresh
+`cache.put(id, #heap Session(...))` is the owning spelling: `put` passes both formals
+*plainly* into `heap CacheNode<K, V>(key, value, now)`, so a title that arrives stops in
+`put`'s frame and its formal drop frees the value at return — measured, the value's
+destructor runs before `put` returns and the following `get` reads freed memory, while
+the lent form reads back intact. The `DnsCache.resolve` sites that spell
+`this.store.put(#key, #DnsCacheEntry...)` are on the wrong side of this; they are not a
+pattern to copy. Until `Cache.put` stores with `#=` itself, keep key and value owned by
+something that outlives the cached entry.
+
+`get` returns a `stack Optional<V>` holding the stored `V` (you receive the value out,
+not the node). Entry `CacheNode`s are heap-allocated and owned by the cache; you never
+see them.
 
 ## Lifecycle & concurrency
 

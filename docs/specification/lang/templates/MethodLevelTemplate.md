@@ -321,7 +321,7 @@ public class Collectors {
     public static <T> Collector<T, ArrayList<T>> toList() {
         return heap Collector<T, ArrayList<T>>(
             heap ArrayList<T>(),
-            (ArrayList<T> acc, T x) -> { acc.add(#x); return acc; }
+            (ArrayList<T> acc, T x) -> { acc.add(x); return acc; }
         );
     }
 
@@ -329,16 +329,19 @@ public class Collectors {
         groupingBy((T) -> K keyFn) {
         return heap Collector<T, HashMap<K, ArrayList<T>>>(
             heap HashMap<K, ArrayList<T>>(),
-            // Containers own their elements (`#K`, `#V`), so an accumulator
-            // surrenders what it accumulates. `key` is read again after
-            // `acc.put(#key, ...)` — a transfer demotes its source to a
-            // borrow, it does not invalidate the binding.
+            // `HashMap.put` takes plain `K, V` — the call site decides. The
+            // accumulator surrenders `key` BECAUSE the map outlives the lambda
+            // frame, not because the signature demands it. `key` is read again
+            // after `acc.put(#key, ...)` — a transfer demotes its source to a
+            // borrow, it does not invalidate the binding. `x` is a plain lambda
+            // formal, so it is lent onward; a collector that must take title to
+            // its elements declares the formal `#T x`.
             (HashMap<K, ArrayList<T>> acc, T x) -> {
                 K key = keyFn(x);
                 if (!acc.containsKey(key)) {
                     acc.put(#key, heap ArrayList<T>());
                 }
-                acc.get(key).add(#x);
+                acc.get(key).add(x);
                 return acc;
             }
         );

@@ -61,13 +61,25 @@ null window floor). There is no remove/unregister and no list-all accessor.
 
 ## Ownership / lifecycle
 
-- `register*(backend)` **takes ownership** of the `heap`-allocated backend; the registry
-  holds it in a per-domain `ArrayList` for the process lifetime. Pass a freshly allocated
-  instance: `r.registerWindow(heap Win32WindowBackend())`.
+- `register*(backend)` declares a **plain** interface formal (`WindowBackend backend`) and
+  forwards it to a plain `ArrayList.add`, so the registry **holds a borrow**, not a title.
+  **Do not write `#` at the call site.** A title handed to a plain formal is dropped when
+  *that* frame returns rather than travelling on to the list, so `r.registerWindow(#backend)`
+  frees the backend as `registerWindow` returns and leaves the registry holding a freed
+  pointer (measured for exactly this shape — a plain formal forwarded plainly into
+  `ArrayList.add`: the argument's destructor runs at the callee's return and the stored
+  element reads back as garbage).
+- **The backend must be owned by something that outlives every `select*` call.** For the
+  same reason, a construction passed straight into the call —
+  `r.registerWindow(heap Win32WindowBackend())` — is not self-sustaining either: the fresh
+  temporary's title lands in `registerWindow`'s formal and drops at its return. Keep the
+  instance in a binding that spans the process (a `main`-level local, a static) and lend
+  that binding to `register*`. Never register a backend whose storage can go away — the
+  registry keeps using it and nothing diagnoses a dangling entry.
 - `select*()` and `supports*()` return a **borrowed** reference into the registry — owned by
   the registry, valid for the process. Do **not** free it.
 
-## Example (idiomatic, mirrors test/ifx/IfxRegistryTests.cpp)
+## Example (idiomatic; the registry surface exercised by test/ifx/IfxRegistryTests.cpp)
 
 ```cajeta
 import cajeta.ifx.BackendRegistry;
@@ -75,8 +87,11 @@ import cajeta.ifx.WindowBackend;
 import cajeta.ifx.Feature;
 import cajeta.ifx.IfxException;
 
-// An OS backend registers itself at load (the null floor is already there via instance()):
-BackendRegistry.instance().registerWindow(heap Win32WindowBackend());
+// An OS backend registers itself at load (the null floor is already there via instance()).
+// Hold the instance in a binding that outlives every select*/supports* call, and LEND it —
+// no `#`, and not a temporary built inside the call.
+Win32WindowBackend win32 = heap Win32WindowBackend();
+BackendRegistry.instance().registerWindow(win32);
 
 // The app binds for this launch. Interactive request: throws IfxException if only the
 // silent floor is viable (no real cajeta-ifx-<os> linked).

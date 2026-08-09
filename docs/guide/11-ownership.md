@@ -29,8 +29,8 @@ Point c #= a;                 // transfer — c owns now; a is moved
 int32 d = c.distSq();
 ```
 
-After the transfer, `a` is dead. Reading it again is a compile error, not a
-runtime surprise:
+After the transfer, `a` is demoted to a borrow of the same live instance —
+reading it is still legal, but transferring it again is a compile error:
 
 <!-- snippet: skip -->
 ```cajeta
@@ -102,7 +102,8 @@ deactivated — no double free is possible. There is no `delete`.
 
 ## The borrow checker
 
-The checker is static and scope-based. Beyond use-after-move it rejects:
+The checker is static and scope-based. Beyond transfer-from-a-borrow
+(`CAJETA_ERROR_MOVE_OF_BORROW`) it rejects:
 
 - **Borrow escape** — returning or storing a borrow that would outlive its
   source (including the stack-local return from chapter 10).

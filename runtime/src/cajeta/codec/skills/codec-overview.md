@@ -47,9 +47,13 @@ here** — this library is Base64 + CSV + JSON only.
   because cajeta primitive arrays don't yet expose `.count()` as a property accessor; pass
   `(buf, (int64) buf.count())`. `String` overloads exist on every facade and forward to the
   byte form using the String's UTF-8 payload directly (no copy).
-- **Ownership is marked with `#`.** A `#` on a **return type** means *the caller owns* the
-  fresh buffer/object (it drops at the caller's scope). A `#` on a **parameter** means
-  *ownership transfers in* and the caller's local deactivates. A bare (no-`#`) return is a
+- **Ownership is marked with `#`, and the `#` that transfers is the one at the CALL SITE.**
+  A `#` on a **return type** means *the caller owns* the fresh buffer/object (it drops at
+  the caller's scope). A `#` on a **parameter** does not itself transfer: it *obliges* you
+  to surrender title by writing `#arg` at the call site (a plain `arg` is
+  `CAJETA_ERROR_TRANSFER_REQUIRED`). A plain `T` parameter accepts either spelling —
+  `f(x)` lends, `f(#x)` transfers — so the call-site `#` is always what moves the title,
+  and only then does the caller's local deactivate. A bare (no-`#`) return is a
   **borrowed view** the caller must not free and must not outlive the source — e.g.
   `JsonValue.asBytes()` and `JsonObject.get(...)` hand back borrows into the `JsonValue`
   tree (copy to keep them past the tree's lifetime).
@@ -95,8 +99,8 @@ Base64 in two lines:
 ```cajeta
 import cajeta.codec.Base64;
 
-#String text = Base64.encode(raw, (int64) raw.count());   // standard, padded; caller owns
-#int8[] back = Base64.decode(text);                       // throws Base64Exception on garbage
+String text = Base64.encode(raw, (int64) raw.count());   // standard, padded; caller owns
+int8[] back = Base64.decode(text);                       // throws Base64Exception on garbage
 ```
 
 ## Disambiguation — which JSON tier

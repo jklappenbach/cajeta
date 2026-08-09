@@ -27,10 +27,12 @@ tier — a `JsonValue` is ~48 bytes regardless of kind.
 - A `JsonValue` of kind OBJECT/ARRAY **owns** its `JsonObject`/`JsonArray`, which
   in turn own their child `#JsonValue`s. The whole tree is reclaimed by dropping
   the root — usually the `#JsonValue` returned from `Json.parse(...)`.
-- Putting/adding into the tree **transfers ownership** (`#`):
+- Putting/adding into the tree **requires you to transfer ownership**:
   `JsonArray.add(#JsonValue)`, `JsonObject.put(#int8[] key, int32 keyLen, #JsonValue)`,
   `JsonValue.setArray(#JsonArray)`, `setObject(#JsonObject)`,
-  `setStringOwned(#int8[], len)`. After the call the caller's local deactivates.
+  `setStringOwned(#int8[], len)`. A `#` formal never transfers on its own — it obliges
+  you to write `#` at the **call site** (`arr.add(#v)`; a plain `arr.add(v)` is
+  `CAJETA_ERROR_TRANSFER_REQUIRED`). Only after that does the caller's local deactivate.
 - **Borrowed (do NOT free, copy to keep beyond the tree's life):** `asBytes()`
   returns the node's `int8[]` view; `JsonObject.get(...)`, `valueAt`, `JsonArray.get`
   return **borrowed `JsonValue`** references still owned by the tree.
@@ -47,7 +49,7 @@ import cajeta.codec.json.JsonObject;
 import cajeta.lang.Optional;
 import cajeta.lang.String;
 
-#JsonValue root = Json.parse("{\"name\":\"alice\",\"tags\":[\"a\",\"b\"]}");
+JsonValue root = Json.parse("{\"name\":\"alice\",\"tags\":[\"a\",\"b\"]}");   // owned — the factory returns `#JsonValue`
 if (root.kind() == JsonValue.OBJECT) {
     JsonObject obj = root.asObject();          // borrowed, owned by root
 
@@ -61,7 +63,7 @@ if (root.kind() == JsonValue.OBJECT) {
         JsonArray a = tags.asArray();
         int32 i = 0;
         while (i < a.count()) {
-            #String s = a.get(i).asString();   // owned; null if elem not STRING
+            String s = a.get(i).asString();   // owned; null if elem not STRING
             i = i + 1;
         }
     }
@@ -82,10 +84,10 @@ skips non-string elements). For the hot path use the byte-buffer forms
 import cajeta.codec.json.JsonValue;
 import cajeta.codec.json.JsonArray;
 
-#JsonArray arr = heap JsonArray();
-arr.add(heap JsonValue().setNumber(1));        // setX mutate `this` and chain
-arr.add(heap JsonValue().setBoolean(true));
-#JsonValue v = heap JsonValue().setArray(arr); // takes ownership of arr
+JsonArray arr = heap JsonArray();
+arr.add(#heap JsonValue().setNumber(1));        // setX mutate `this` and chain;
+arr.add(#heap JsonValue().setBoolean(true));    // `#` prefixes the whole argument
+JsonValue v = heap JsonValue().setArray(#arr);  // the call-site `#` is what transfers
 ```
 
 ## What this DOM does NOT do

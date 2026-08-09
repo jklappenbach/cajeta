@@ -2,7 +2,7 @@
 id: concurrent-Channel
 applies-to: [cajeta/concurrent/Channel]
 title: Channel<T> — bounded MPMC queue (blocking send/receive)
-description: Fixed-capacity multi-producer/multi-consumer queue; blocking send/receive, one-way close, drain-after-close semantics, heap-T drain-before-drop caveat.
+description: Fixed-capacity multi-producer/multi-consumer queue; blocking send/receive, one-way close, drain-after-close semantics, heap-T sender-lifetime caveat.
 ---
 
 # Channel\<T\>
@@ -35,14 +35,19 @@ which destroys the lock and condvar.
 ## The methods that matter
 
 - `void send(T item)` — enqueue, blocking (parking the fiber) while full.
-  **Raises when the channel is closed** (see Errors). For a heap `T`, the
-  buffered item is owned by the channel until received.
+  **Raises when the channel is closed** (see Errors). The channel **lends** its
+  slots: for a heap `T` the sender keeps ownership of the buffered item and must
+  keep it alive until a receiver takes it. Do **not** write `send(#item)` — the
+  title would land in `send`'s frame and drop there, freeing the item while it is
+  still buffered. An owning channel is deliberate future work.
 - `Optional<T> receive()` — dequeue, blocking while empty *and* open. Returns
   a **stack** `Optional<T>` (no per-item heap alloc): present with the item
   while items remain — *including after close, until drained* — and empty
-  once the channel is closed AND drained. Extracted value is moved out
-  (`#item`); for heap `T` you own it. Inspect with `isPresent()`/`isEmpty()`,
-  read with `get()` (see `cajeta/lang/Optional`).
+  once the channel is closed AND drained. The slot is vacated as the value
+  moves out, but it comes back in the mode it was sent: with a lending channel
+  a heap `T` is still the sender's instance, so read it, do not free it.
+  Inspect with `isPresent()`/`isEmpty()`, read with `get()` (see
+  `cajeta/lang/Optional`).
 - `Optional<T> tryReceive()` — non-blocking dequeue. Returns empty
   immediately if nothing is currently buffered, *even when still open*. Never
   parks. Building block for select loops.
@@ -60,12 +65,14 @@ which destroys the lock and condvar.
 - Distinguishing "transiently empty" from "closed and drained" requires both
   signals: `maybe.isEmpty() && ch.isClosed()` after a `tryReceive()` —
   `tryReceive` alone cannot tell them apart.
-- **Drop caveat for heap `T`:** the destructor releases the lock/condvar and
-  frees the ring-buffer *array*, but does NOT free elements still buffered.
-  Items sent but never received leak when the channel drops. Workaround:
-  drain explicitly (`receive()` in a loop until empty) before dropping.
-  v1 targets value/primitive `T`; the heap-`T` element-drop refinement is
-  future work.
+- **Sender-lifetime caveat for heap `T`:** the destructor releases the
+  lock/condvar and frees the ring-buffer *array*, and it does not touch the
+  elements — under the lending model they are not the channel's to free, so an
+  unreceived item is not a leak; its sender still owns it. The exposure is the
+  inverse: a sender whose local drops while the item is still buffered leaves a
+  dangling slot for the next receiver, and nothing diagnoses it. Keep sent items
+  alive until they are received — drain with `receive()` before the *producer's*
+  scope ends. v1 targets value/primitive `T`; an owning channel is future work.
 
 ## Errors
 

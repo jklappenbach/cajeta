@@ -541,15 +541,15 @@ MyClass f;                                       // null reference; rejected on 
 
 ### Ownership and `#`-transfer
 
-Every owned value has exactly one owner. Plain assignment is a borrow; `#name` transfers ownership.
+Every owned value has exactly one owner. Plain assignment is a borrow; a store transfers with `#=`, and `#name` transfers at call arguments and returns.
 
 <!-- snippet: skip -->
 ```cajeta
 public void demo() {
     MyClass a = heap MyClass();
     MyClass b = a;            // borrow — a still owns; b dangles after a's drop
-    MyClass c = #a;           // transfer — c owns; reading `a` after this is a compile error
-    // a is no longer readable here
+    MyClass c #= a;           // transfer — c owns; `a` is demoted to a borrow of the same instance
+    // reading a is still legal; transferring it again is CAJETA_ERROR_MOVE_OF_BORROW
 }
 ```
 
