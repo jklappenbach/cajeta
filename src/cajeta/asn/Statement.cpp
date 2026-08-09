@@ -365,7 +365,10 @@ namespace cajeta {
             ExpressionPtr returnExpr = ctx->expression()
                 ? Expression::fromContext(ctx->expression())
                 : nullptr;
-            result = make_shared<ReturnStatement>(token, returnExpr);
+            // `return #= x` — the mode-carrying form. SHARP_ASSIGN is its own
+            // token, so this never reaches the `REFERENCE expression` path.
+            result = make_shared<ReturnStatement>(
+                token, returnExpr, ctx->SHARP_ASSIGN() != nullptr);
         } else if (ctx->THROW()) {
             ExpressionPtr throwExpr = ctx->expression()
                 ? Expression::fromContext(ctx->expression())
@@ -1603,6 +1606,41 @@ namespace cajeta {
         // 5.2.2 — runtime title flag riding out with this return (formal
         // pass-through or `#x`); null -> emitReturnFlag uses the static mode.
         llvm::Value* returnTitleFlag = nullptr;
+        // argument-title-carry — `return #= x`: release WHATEVER title this
+        // frame holds. `__cajeta_drop_take_active` reads the local's drop
+        // entry and disarms it in one step, so the prior value becomes the
+        // flagged return's runtime bit: 1 when we owned it (the caller now
+        // does), 0 when we only ever held a borrow (so does the caller).
+        //
+        // Distinct from `return #x`, which forces ownership and is a contract
+        // violation with none, and from `return x`, which lends and leaves our
+        // title armed. Needed because a collection slot may now hold either an
+        // owned value or a borrow (collections no longer own by default), so a
+        // remove-shaped return cannot decide statically.
+        if (modeCarrying && expression) {
+            if (auto mcId = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                if (auto scope = module->getScopeStack().peek()) {
+                    if (FieldPtr mcFld = scope->getField(mcId->getTextValue())) {
+                        if (llvm::Value* mcEntry = mcFld->getDropEntry()) {
+                            if (llvm::Function* takeFn = module->getRuntimeFunction(
+                                    "__cajeta_drop_take_active")) {
+                                llvm::Value* was = builder->CreateCall(
+                                    takeFn, {mcEntry}, "title.release");
+                                returnTitleFlag = builder->CreateZExt(
+                                    was, llvm::Type::getInt64Ty(
+                                        *module->getLlvmContext()),
+                                    "title.release.i64");
+                            }
+                        }
+                    }
+                }
+            }
+            // No drop entry (arena local, borrowed formal, non-droppable) means
+            // this frame holds no title to release: flag 0, a lend.
+            if (!returnTitleFlag) {
+                returnTitleFlag = builder->getInt64(0);
+            }
+        }
         if (!expression) {
             // A4: fire @After advice before scope-exit + drops, on
             // the same ordering rule the fall-through return uses in
@@ -1899,8 +1937,15 @@ namespace cajeta {
             // freshly-constructed Matrix trips the fresh-return check spuriously.
             bool returnsByValuePrimitive =
                 rtype && (rtype->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+            // argument-title-carry — `return #= x` is exempt from BOTH shapes
+            // below. The guard exists because a non-`#` signature makes the
+            // caller register no drop entry, so a released title would leak.
+            // The mode-carrying return closes exactly that hole: it ships the
+            // title's runtime bit in the return flag, and the caller's `#=`
+            // receipt registers a drop entry when the bit is 1. Without this
+            // exemption the guard rejects the very form built to satisfy it.
             if (!isLambda && !m->isReturnsOwnership() && !returnsValueType
-                    && !returnsByValuePrimitive) {
+                    && !returnsByValuePrimitive && !modeCarrying) {
                 auto newExpr = dynamic_pointer_cast<NewExpression>(expression);
                 auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(expression);
                 if (newExpr || aggExpr) {

@@ -397,6 +397,23 @@ void __cajeta_drop_pop_run(struct cajeta_drop_entry* e) {
 // Mark an entry inactive (the owner has been moved out via `#`). The entry
 // remains on the chain so scope-exit pop logic still finds it, but the drop
 // function won't run.
+// argument-title-carry — the `return #= x` primitive: read whether this frame
+// still holds title and release it in one step. Returns 1 if the entry was
+// armed (we owned it, and the caller now does), 0 if it was already inactive
+// or absent (we only ever held a borrow, and the caller gets one too).
+//
+// Separate from mark_inactive because the RETURN needs the prior value: it
+// becomes the flagged return's runtime bit. A plain mark_inactive discards
+// exactly the fact the caller has to be told.
+int8_t __cajeta_drop_take_active(struct cajeta_drop_entry* e) {
+    if (e == NULL) {
+        return 0;
+    }
+    int8_t was = e->active;
+    e->active = 0;
+    return was != 0 ? 1 : 0;
+}
+
 void __cajeta_drop_mark_inactive(struct cajeta_drop_entry* e) {
     if (__cajeta_drop_chain_validate_enabled) {
         if (e == NULL) {

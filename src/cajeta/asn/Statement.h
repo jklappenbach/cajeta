@@ -375,9 +375,18 @@ namespace cajeta {
     class ReturnStatement : public Statement {
     private:
         ExpressionPtr expression;
+        bool modeCarrying = false;
     public:
-        ReturnStatement(antlr4::Token* token, ExpressionPtr expression = nullptr)
-            : Statement(token), expression(expression) { }
+        ReturnStatement(antlr4::Token* token, ExpressionPtr expression = nullptr,
+                        bool modeCarrying = false)
+            : Statement(token), expression(expression),
+              modeCarrying(modeCarrying) { }
+
+        // `return #= x` (argument-title-carry): release WHATEVER title this
+        // frame holds. `return x` lends; `return #x` forces ownership and is a
+        // contract violation with none. A collection slot may now hold either,
+        // so remove-shaped returns cannot decide statically.
+        bool isModeCarrying() const { return modeCarrying; }
 
         // Like ExpressionStatement, the returned expression isn't in `children`.
         void resolveTypes(CajetaModulePtr module) override;
