@@ -34,6 +34,8 @@ namespace cajeta {
         Fixed32Int,   // fixed32/sfixed32 — readFixed32 (wire type I32)
         Fixed64Int,   // fixed64/sfixed64 — readFixed64 (wire type I64)
         BoolVarint,   // boolean — readVarint != 0
+        Float32Bits,  // float32 — I32 carrying raw IEEE-754 bits
+        Float64Bits,  // float64 — I64 carrying raw IEEE-754 bits
         StringLen,    // cajeta.lang.String — readBytes → String
         BytesLen,     // int8[] — readBytes directly
         MessageLen,   // nested message (a class) — readBytes → recurse parse<Sub>
@@ -79,6 +81,11 @@ namespace cajeta {
         }
         if (canon == "cajeta.lang.String") return Decode::StringLen;
         if (canon == "boolean") return Decode::BoolVarint;
+        // protobuf `float` / `double` are I32 / I64 carrying raw IEEE-754 bits.
+        // Float32/Float64.toBits reinterprets rather than converting — a
+        // `(int32) someFloat` would truncate 0.5 to 0 and put that on the wire.
+        if (canon == "float32") return Decode::Float32Bits;
+        if (canon == "float64") return Decode::Float64Bits;
         if (canon == "int8" || canon == "int16" || canon == "int32"
                 || canon == "int64" || canon == "uint8" || canon == "uint16"
                 || canon == "uint32" || canon == "uint64") {
@@ -86,8 +93,7 @@ namespace cajeta {
         }
         // A non-String class field is a nested message — decode its LEN payload
         // and recurse through the synthesizer (Protobuf.parse<Sub>). Primitives
-        // (already handled above) are not CajetaClass, so they don't reach here;
-        // float32/float64 fall through to Unsupported (deferred — IEEE-754 bits).
+        // (already handled above) are not CajetaClass, so they don't reach here.
         if (std::dynamic_pointer_cast<CajetaClass>(ty)) return Decode::MessageLen;
         return Decode::Unsupported;
     }
@@ -206,6 +212,16 @@ namespace cajeta {
                     os << "        e." << b.name << " = cur.readVarint("
                        << slot << ") != (int64) 0;\n";
                     break;
+                case Decode::Float32Bits:
+                    os << "        e." << b.name
+                       << " = Float32.fromBits(cur.readFixed32("
+                       << slot << "));\n";
+                    break;
+                case Decode::Float64Bits:
+                    os << "        e." << b.name
+                       << " = Float64.fromBits(cur.readFixed64("
+                       << slot << "));\n";
+                    break;
                 case Decode::StringLen: {
                     const std::string bv = "b_" + b.name;
                     os << "        int8[] " << bv << " = cur.readBytes("
@@ -308,7 +324,23 @@ namespace cajeta {
             if (!ty || !ty->getQName()) continue;
             const std::string canon = ty->getQName()->toCanonical();
             Decode d = classify(ty, canon);
-            if (d == Decode::Unsupported) continue;
+            if (d == Decode::Unsupported) {
+                // Previously `continue` — the field was dropped from both the
+                // parse and the encode arm with no diagnostic anywhere. A
+                // @ProtoField the author explicitly numbered would simply not
+                // appear on the wire, and the far end would see it as absent
+                // and substitute a default. Failing the build is the only
+                // honest answer: the author asked for a field the codec cannot
+                // carry, and silence turns that into lost data.
+                reportOrThrow(prop->getDeclLine(), prop->getDeclColumn(),
+                    "CAJETA_ERROR_PROTO_FIELD_TYPE",
+                    "@ProtoField(" + std::to_string(number) + ") on "
+                    + T->getQName()->toCanonical() + "." + prop->getName()
+                    + " — no protobuf wire mapping for type '" + canon
+                    + "'. Supported: integer, boolean, float32/float64, String, "
+                      "int8[] (bytes), and a nested message class.");
+                continue;
+            }
             d = applyEncoding(T, prop, canon, d);
             binds.push_back({number, prop->getName(), canon, d});
         }
@@ -350,6 +382,16 @@ namespace cajeta {
                     os << "    int64 " << fv << " = (int64) 0;\n";
                     os << "    if (value." << b.name << ") { " << fv << " = (int64) 1; }\n";
                     os << "    w.writeVarintField(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::Float32Bits:
+                    os << "    int32 " << fv << " = Float32.toBits(value."
+                       << b.name << ");\n";
+                    os << "    w.writeFixed32Field(" << tag << ", " << fv << ");\n";
+                    break;
+                case Decode::Float64Bits:
+                    os << "    int64 " << fv << " = Float64.toBits(value."
+                       << b.name << ");\n";
+                    os << "    w.writeFixed64Field(" << tag << ", " << fv << ");\n";
                     break;
                 case Decode::StringLen:
                     os << "    cajeta.lang.String " << fv << " = value." << b.name << ";\n";

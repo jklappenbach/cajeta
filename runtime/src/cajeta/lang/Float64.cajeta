@@ -20,6 +20,24 @@ public final class Float64 extends Number {
     /** Heap box — the boxing entry point (Java-style `valueOf`). */
     public static #Float64 of(float64 value) { return heap Float64(value); }
 
+    /**
+     * The raw IEEE-754 bits of `value`, **reinterpreted, not converted**.
+     * `toBits(19.5)` is 0x4033800000000000; `(int64) 19.5` is 19. Note the
+     * contrast with `asInt64()` below, which is the numeric conversion.
+     *
+     * This is the seam binary formats need: protobuf `double`, Avro, Ion,
+     * Parquet and ORC all store the bit pattern, so a numeric conversion
+     * silently corrupts them. Total in both directions — `-0.0` keeps its sign
+     * bit and each NaN keeps its payload, unlike `hash()`, which deliberately
+     * canonicalizes both.
+     */
+    @Native("__cajeta_f64_to_bits")
+    public static int64 toBits(float64 value);
+
+    /** Rebuild a float64 from raw IEEE-754 bits — the inverse of `toBits`. */
+    @Native("__cajeta_f64_from_bits")
+    public static float64 fromBits(int64 bits);
+
     /** The wrapped primitive. */
     @Inline
     public float64 value() { return this.value; }

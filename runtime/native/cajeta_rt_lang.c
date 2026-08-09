@@ -758,4 +758,40 @@ void __cajeta_file_close(int32_t fd) {
     close(fd);
 }
 
+// --- IEEE-754 bit reinterpretation ------------------------------------------
+// The seam between a float and its raw bits. A cajeta `(int64) someDouble` is a
+// numeric *conversion* — it truncates 19.5 to 19 — so it cannot serve any
+// format that stores IEEE-754 bit patterns, which is all of them: protobuf
+// double/float, Avro, Ion, Parquet, ORC. Without this, a float field could only
+// be dropped or mangled.
+//
+// memcpy, not a pointer cast, so there is no strict-aliasing violation; every
+// compiler lowers it to a register move. Total functions: every bit pattern is
+// a valid input, including signalling NaNs, so nothing here can trap. -0.0 and
+// the individual NaN payloads pass through untouched — unlike the hash natives
+// above, which deliberately canonicalize them.
+int64_t __cajeta_f64_to_bits(double value) {
+    int64_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+double __cajeta_f64_from_bits(int64_t bits) {
+    double value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+int32_t __cajeta_f32_to_bits(float value) {
+    int32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    return bits;
+}
+
+float __cajeta_f32_from_bits(int32_t bits) {
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
 // ===========================================================================
