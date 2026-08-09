@@ -1134,6 +1134,42 @@ namespace cajeta {
         // compilation, Phase 2/3 — docs/IncrementalCompilation.md).
         CajetaClassPtr instantiateInternal(vector<CajetaTypePtr> args);
 
+        // DEFERRED INSTANTIATION (option B).
+        //
+        // A template that has only been forward-referenced is a PLACEHOLDER: it
+        // has no fields and no annotations yet. Instantiating from one cannot
+        // produce a correct class — the layout is derived from fields nobody
+        // has seen, and @ValueType is copied from an annotation list that is
+        // still empty, so the instantiation silently became a REFERENCE class.
+        // That is how `MapEntry<String,String>` (instantiated from
+        // buildtool/plugin/ActionResult at manifest line 69, thirty-eight lines
+        // before collection/MapEntry declares the template) got a vtable slot
+        // and a `{ptr,ptr,ptr,i64}` layout while every other MapEntry got
+        // `{ptr,ptr,i64}` — and why `HashMap<String,String>.put` then stored
+        // through a null base.
+        //
+        // Rather than guess, we DEFER: register a placeholder under the
+        // instantiation's canonical name so every reference shares one
+        // identity, and complete it once the template is real. Completion
+        // fills that same object in place (fillFromDeclaration), so holders
+        // that captured the placeholder see the finished class.
+        struct DeferredInstantiation {
+            CajetaClassPtr templateClass;      // the placeholder template
+            vector<CajetaTypePtr> args;
+            CajetaClassPtr target;             // placeholder to fill in place
+            string canonical;
+        };
+        static vector<DeferredInstantiation>& deferredInstantiations();
+        // Completes every deferred instantiation whose template has since
+        // materialized. Returns true if it completed any (the caller's
+        // fixpoint re-runs while progress is being made).
+        static bool drainDeferredInstantiations();
+        // Set while a deferred instantiation is being completed: the
+        // instantiation path fills THIS object instead of allocating a new
+        // one, preserving the identity every earlier reference captured.
+        static CajetaClassPtr& instantiationReuseTarget();
+
+
         // Diamond-operator inference (TPL-7). Given the argument types of a
         // `new Box<>(args)` call site, examine this template's constructor
         // signatures and return the type-parameter bindings (in declaration

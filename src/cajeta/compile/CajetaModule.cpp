@@ -1339,6 +1339,14 @@ namespace cajeta {
         bool changed = true;
         while (changed) {
             changed = false;
+            // Complete any instantiation that was deferred because its
+            // TEMPLATE had only been forward-referenced at the use site (see
+            // CajetaClass::DeferredInstantiation). This runs inside the
+            // fixpoint because completing one can both make new classes
+            // eligible and defer further instantiations of its own.
+            if (CajetaClass::drainDeferredInstantiations()) {
+                changed = true;
+            }
             for (auto& [key, type] : CajetaType::getCanonicalMap()) {
                 auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
                 if (!klass) continue;

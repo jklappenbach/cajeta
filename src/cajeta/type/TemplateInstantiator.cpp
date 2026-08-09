@@ -79,6 +79,46 @@ namespace cajeta {
         return out;
     }
 
+    vector<CajetaClass::DeferredInstantiation>&
+    CajetaClass::deferredInstantiations() {
+        static thread_local vector<DeferredInstantiation> pending;
+        return pending;
+    }
+
+    CajetaClassPtr& CajetaClass::instantiationReuseTarget() {
+        static thread_local CajetaClassPtr target;
+        return target;
+    }
+
+    bool CajetaClass::drainDeferredInstantiations() {
+        auto& pending = deferredInstantiations();
+        if (pending.empty()) return false;
+        bool progressed = false;
+        // Index-based: completing one instantiation can defer others (a
+        // template body that names another not-yet-declared template), and
+        // those append while we iterate.
+        for (size_t i = 0; i < pending.size(); ++i) {
+            auto& d = pending[i];
+            if (!d.templateClass || !d.target) continue;
+            if (d.templateClass->isPlaceholder()) continue;   // still unseen
+            if (!d.target->isPlaceholder()) continue;         // already done
+            CajetaClassPtr& reuse = instantiationReuseTarget();
+            CajetaClassPtr saved = reuse;
+            reuse = d.target;
+            // The template is real now, so this takes the normal path and
+            // fills `d.target` in place instead of allocating.
+            d.templateClass->instantiateInternal(d.args);
+            reuse = saved;
+            if (!d.target->isPlaceholder()) progressed = true;
+        }
+        // Drop the completed entries.
+        pending.erase(std::remove_if(pending.begin(), pending.end(),
+            [](const DeferredInstantiation& d) {
+                return !d.target || !d.target->isPlaceholder();
+            }), pending.end());
+        return progressed;
+    }
+
     CajetaClassPtr CajetaClass::instantiate(vector<CajetaTypePtr> args) {
         CajetaClassPtr result = instantiateInternal(std::move(args));
         // Incremental compilation (Phase 2/3): if this produced a genuine
@@ -408,8 +448,13 @@ namespace cajeta {
         }
 
         auto& structures = module->getStructures();
+        // While DRAINING a deferral the canonical name is already registered —
+        // to the placeholder we are about to fill — so the caches must be
+        // bypassed or the drain hands back the very placeholder it came to
+        // complete and nothing ever progresses.
+        const bool drainingThis = (bool) instantiationReuseTarget();
         auto cached = structures.find(instCanonical);
-        if (cached != structures.end()) {
+        if (!drainingThis && cached != structures.end()) {
             return cached->second;
         }
         // Process-wide check via the structureToModule registry. Templated
@@ -424,7 +469,7 @@ namespace cajeta {
         {
             auto& structToMod = CajetaModule::getStructureToModule();
             auto stIt = structToMod.find(instCanonical);
-            if (stIt != structToMod.end() && stIt->second) {
+            if (!drainingThis && stIt != structToMod.end() && stIt->second) {
                 auto& owningStructures = stIt->second->getStructures();
                 auto cachedGlobal = owningStructures.find(instCanonical);
                 if (cachedGlobal != owningStructures.end()) {
@@ -770,7 +815,47 @@ namespace cajeta {
         // land in the user module in reuse mode. Set emit BEFORE the walk: the
         // body walk emits method IR (prototype-on-reference), so the emit target
         // must already be in place.
-        auto inst = make_shared<CajetaClass>(module, instQName, instExtended, instImplemented);
+        // DEFER when the template itself is only a forward reference. Building
+        // now would derive the layout from fields nobody has parsed and copy an
+        // annotation list that is still empty — see DeferredInstantiation in
+        // CajetaClass.h. Registered under the instantiation's canonical name so
+        // every reference shares one identity, then filled in place once the
+        // template is real. `instantiationReuseTarget` is set only while
+        // draining (template already materialized), so this cannot loop.
+        if (isPlaceholder() && !instantiationReuseTarget()) {
+            auto ph = make_shared<CajetaClass>(module, instQName,
+                                               instExtended, instImplemented);
+            ph->setPlaceholder(true);
+            module->getStructures()[instCanonical] = ph;
+            CajetaModule::getStructureToModule()[instCanonical] = module;
+            CajetaType::canonicalMap[instCanonical] =
+                static_pointer_cast<CajetaType>(ph);
+            DeferredInstantiation d;
+            d.templateClass = static_pointer_cast<CajetaClass>(shared_from_this());
+            d.args = args;
+            d.target = ph;
+            d.canonical = instCanonical;
+            deferredInstantiations().push_back(d);
+            return ph;
+        }
+
+        CajetaClassPtr inst;
+        if (CajetaClassPtr reuse = instantiationReuseTarget()) {
+            // CONSUME it immediately. The body walk below instantiates other
+            // templates, and a target left set would make each of those bypass
+            // its cache and try to fill this same object — unbounded
+            // recursion. It applies to exactly one instantiation: this one.
+            instantiationReuseTarget() = nullptr;
+            // Completing a deferral: populate the very object earlier
+            // references captured, so their shared_ptr stays valid and now
+            // points at a finished class.
+            inst = reuse;
+            inst->fillFromDeclaration(module, instQName, instExtended,
+                                      instImplemented);
+        } else {
+            inst = make_shared<CajetaClass>(module, instQName, instExtended,
+                                            instImplemented);
+        }
         // The instantiation happens at the use site, but the code lives in the
         // template's file — that is what its frames must name.
         inst->setDeclaringFile(getDeclaringFile());
