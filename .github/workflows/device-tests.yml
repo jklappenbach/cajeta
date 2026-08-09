@@ -1,0 +1,243 @@
+# Device-test gate for cajeta itself, on the self-hosted GPU runners.
+#
+# Why this exists: every XPU test compiles into the single cajeta_test binary
+# on every platform, and each device test gates itself at run time through
+# test/xpu/XpuDeviceTestUtil.h (cudaAvailable / hipAvailable / vulkanAvailable)
+# — so a box without a given vendor's GPU SKIPS rather than fails. That is the
+# right design, and it has a consequence nobody was watching: on a machine with
+# no NVIDIA card the CUDA legs skip silently and the suite still reports green.
+# Measured 2026-08-09 on `proton` (AMD Strix Halo, no NVIDIA): a full 129-test
+# math regression passed without a single CUDA kernel ever executing.
+#
+# This workflow is what makes the device legs actually run. It builds cajeta
+# from source on the runners that have the hardware, then runs the device
+# filter there.
+#
+# The three older GPU workflows in this repo (gpu-audit, gpu-probe, gpu-wsl)
+# test cajeta-xgboost, not cajeta — they live here only because personal-account
+# runners are per-repo. This is the first one that builds and tests cajeta.
+#
+# Build recipe is lifted from release.yml's build job rather than reinvented,
+# including the self-hosted-runner quirks it already paid for: MSYS2's $HOME is
+# a read-only mount on PHOENIX (so the toolchain is anchored in the workspace),
+# and the fork's relocated LLVMConfig.cmake exports a stale tools dir (so the
+# runtime-bitcode clang and llvm-link are pinned explicitly). Keep the two in
+# sync when release.yml's recipe changes.
+name: device-tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      legs:
+        description: 'Which runners to use'
+        required: true
+        type: choice
+        options: [both, wsl, windows]
+        default: both
+      filter:
+        description: 'gtest filter (device tests only by default)'
+        required: false
+        default: '*DeviceTests*'
+  schedule:
+    # 07:00 UTC nightly. Device runs are long (a 69-test Vulkan sweep took
+    # ~73 min on proton), so this is deliberately not a per-push gate.
+    - cron: '0 7 * * *'
+
+concurrency:
+  # The runners are single-box; a queued nightly stacking behind a manual run
+  # just serializes badly. Newest wins.
+  group: device-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Matrix is computed rather than literal so the `legs` input can filter it —
+  # a job-level `if:` cannot reference `matrix`. Same pattern as release.yml.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          WSL='{"name":"wsl-nvidia","key":"wsl","os":["self-hosted","wsl"],"asset_os":"linux-x64","shell":"bash"}'
+          WIN='{"name":"windows-nvidia","key":"windows","os":["self-hosted","Windows","X64","gpu"],"asset_os":"windows-x64","shell":"msys2 {0}"}'
+          # A scheduled run has no inputs; default it to both.
+          LEGS='${{ inputs.legs }}'
+          [ -z "$LEGS" ] && LEGS=both
+          case "$LEGS" in
+            wsl)     INC="[$WSL]" ;;
+            windows) INC="[$WIN]" ;;
+            both)    INC="[$WSL,$WIN]" ;;
+            *) echo "::error::unknown legs value '$LEGS'"; exit 1 ;;
+          esac
+          echo "matrix={\"include\":$INC}" >> "$GITHUB_OUTPUT"
+
+  device:
+    needs: setup
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      # Java before MSYS2: setup-java puts java on the Windows PATH, and MSYS2
+      # is configured with path-type: inherit so its bash sees it. (antlr4 needs
+      # a JRE at build time.)
+      - name: Setup Java (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      # This leg's default shell is `msys2 {0}`, so MSYS2 must exist before any
+      # run: step — including the toolchain fetch, which needs its curl/zstd/tar.
+      # Package list and `update: true` MUST match release.yml: the fork ships
+      # dynamically-linked mingw clang/lld, and an older base image's DLLs fail
+      # to load them (0xC0000139). Deliberately NO mingw llvm/clang/lld here —
+      # a second stock LLVM would mis-resolve at link against the fork's v23.
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-antlr4-runtime-cpp
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-glog
+            mingw-w64-x86_64-gtest
+            mingw-w64-x86_64-vulkan-headers
+            tar
+
+      # Report the hardware before building, so a skipped-everything run is
+      # diagnosable from the log rather than looking like a pass. Non-fatal:
+      # a leg whose vendor stack is missing should still build and run whatever
+      # it CAN (the test-level probes decide), and the summary step below is
+      # what turns "everything skipped" into a visible result.
+      - name: GPU inventory
+        continue-on-error: true
+        run: |
+          echo "== nvidia =="; nvidia-smi -L || echo "(no nvidia-smi)"
+          echo "== vulkan ==";  vulkaninfo --summary 2>/dev/null | grep -i deviceName || echo "(no vulkaninfo)"
+
+      # Stock LLVM cannot build cajeta (it references fork-only intrinsic enums),
+      # so there is no fallback path here by design.
+      - name: Fetch prebuilt LLVM toolchain (cajeta-spirv fork)
+        env:
+          # Keep in lockstep with release.yml's LLVM_RELEASE_TAG.
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r6
+        run: |
+          set -euo pipefail
+          ASSET="${LLVM_RELEASE_TAG}-${{ matrix.asset_os }}.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+          # MSYS2's $HOME on the self-hosted Windows runner is '/' (read-only),
+          # so anchor in the always-writable workspace there.
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            DEST="$PWD/cajeta-llvm"
+          else
+            DEST="$HOME/cajeta-llvm"
+          fi
+          mkdir -p "$DEST"
+          curl -fsSL "$URL" -o llvm.tar.zst
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # mingw tar's --zstd plugin lookup is unreliable; pipe zstd explicitly.
+            zstd -dc llvm.tar.zst | tar -x -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$(cygpath -m "$DEST")/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$(cygpath -w "$DEST")\\bin" >> "$GITHUB_PATH"
+          else
+            tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$DEST/bin" >> "$GITHUB_PATH"
+          fi
+          rm -f llvm.tar.zst
+
+      # CAJETA_SKIP_DEPS=1 on BOTH legs. Windows got its deps from pacman above;
+      # the WSL runner has no passwordless sudo, so its build dependencies must
+      # be preinstalled on the box. If configure fails here for a missing
+      # package, install it on phoenix-wsl once — do not add sudo to this file.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          export CAJETA_SKIP_DEPS=1
+          CMAKE_EXTRA=()
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Build cajeta's own C++ with mingw g++, not the fork's clang++:
+            # the fork bin is first on PATH and clang++ on mingw doesn't
+            # auto-link winpthreads, failing LLVM/libstdc++ pthread_* at link.
+            export CC=gcc CXX=g++
+            # Pin the runtime-bitcode clang AND llvm-link to the fork (LLVM 23).
+            # The fork's relocated LLVMConfig.cmake exports a stale
+            # LLVM_TOOLS_BINARY_DIR, so find_program would fall through to
+            # MSYS2's LLVM 22 — and this runner reuses its workspace, so a
+            # stale CMakeCache can pin the wrong one across runs.
+            FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
+            CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang.exe")
+            CMAKE_EXTRA+=("-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link.exe")
+          fi
+          ./setup.sh "${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}"
+
+      - name: Build
+        run: cmake --build build --config Release -- -j 4
+
+      - name: Smoke test
+        run: ./build/src/cajeta --version
+
+      # The real work. --gtest_brief is NOT used: it hides skips, and a skip is
+      # precisely the outcome this workflow exists to make visible. Output is
+      # kept so the summary step can count what actually executed.
+      - name: Run device tests
+        env:
+          CAJETA_SOURCE_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          FILTER='${{ inputs.filter }}'
+          [ -z "$FILTER" ] && FILTER='*DeviceTests*'
+          echo "filter: $FILTER"
+          ./build/test/cajeta_test --gtest_filter="$FILTER" 2>&1 | tee device-tests.log
+
+      # A run where every device test skipped is green to gtest and useless to
+      # us — that is the exact failure mode this workflow was built to catch, so
+      # it must not be reported as success.
+      - name: Fail if nothing actually ran on hardware
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f device-tests.log ] || { echo "::error::no test log produced"; exit 1; }
+          RAN=$(grep -c '^\[       OK \]' device-tests.log || true)
+          SKIPPED=$(grep -c 'SKIPPED' device-tests.log || true)
+          echo "executed on hardware: $RAN    skipped: $SKIPPED"
+          {
+            echo "### ${{ matrix.name }}"
+            echo ""
+            echo "| outcome | count |"
+            echo "|---|---|"
+            echo "| ran on hardware | $RAN |"
+            echo "| skipped (no such device) | $SKIPPED |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$RAN" -eq 0 ]; then
+            echo "::error::every device test skipped — this runner exercised no GPU at all"
+            exit 1
+          fi
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: device-tests-${{ matrix.name }}
+          path: device-tests.log
+          if-no-files-found: warn
