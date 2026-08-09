@@ -84,14 +84,55 @@ namespace cajeta {
                         module->getScriptHostName(), getSourceLine(),
                         getSourceColumn());
                 }
-                throw Exception(
-                    "session binding `" + identifier + "` was bound by an "
-                    "earlier unit; cross-unit reads land with the kernel's "
-                    "read-through-session path (jupyter-kernel plan) and are "
-                    "not yet supported here",
-                    "CAJETA_ERROR_NOT_IMPLEMENTED",
-                    module->getScriptHostName(), getSourceLine(),
-                    getSourceColumn());
+                // jupyter-kernel U2 — READ-THROUGH-SESSION. The binding is
+                // alive in the runtime session registry, not in this unit's
+                // frame, so materialize it: ask the registry for the current
+                // occupant and stage it in a local slot, which is the same
+                // shape (a slot holding the value) every other identifier
+                // read returns. Re-read on EVERY access rather than caching
+                // once per unit: an earlier statement in THIS unit may have
+                // rebound the name, and a stale cache would hand back the
+                // dropped value.
+                auto* builder = module->getBuilder();
+                llvm::Function* getFn =
+                    module->getRuntimeFunction("__cajeta_session_get");
+                llvm::AllocaInst* slot = field->getOrCreateAllocation();
+                if (getFn && slot) {
+                    llvm::Value* nameStr =
+                        builder->CreateGlobalString(identifier);
+                    llvm::Value* live = builder->CreateCall(getFn, {nameStr});
+                    auto& lctx = *module->getLlvmContext();
+                    llvm::Type* slotTy = slot->getAllocatedType();
+                    (void) lctx;
+                    (void) slotTy;
+                    // Discriminate on the FIELD'S CAJETA TYPE, not on the
+                    // alloca's LLVM type: HeapField allocates a POINTER slot
+                    // whatever it holds, so a primitive's slot is pointer-
+                    // typed too and an LLVM-level check silently passes it
+                    // through (it returned 983626000 for `40 + 2`).
+                    CajetaTypePtr ft = field->getType();
+                    bool primitive = ft && (ft->getTypeFlags() & PRIMITIVE_FLAG);
+                    if (primitive) {
+                        // Only OWNERS reach the session registry: U3's
+                        // promotion rides the drop-entry choke point, and a
+                        // primitive has no drop entry, so nothing ever called
+                        // __cajeta_session_bind for it. Reading it here would
+                        // load through a null occupant and hand back garbage
+                        // — a notebook silently computing wrong numbers is
+                        // strictly worse than a refusal, so refuse.
+                        throw Exception(
+                            "session binding `" + identifier + "` holds a "
+                            "primitive value, which is not yet carried across "
+                            "units: only owning (heap) bindings register with "
+                            "the session. Fix: bind a heap value, or restate "
+                            "the literal in this unit",
+                            "CAJETA_ERROR_NOT_IMPLEMENTED",
+                            module->getScriptHostName(), getSourceLine(),
+                            getSourceColumn());
+                    }
+                    builder->CreateStore(live, slot);
+                }
+                return static_cast<llvm::Value*>(slot);
             }
             return static_cast<llvm::Value*>(field->getOrCreateAllocation());
         }
