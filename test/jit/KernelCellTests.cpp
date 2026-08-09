@@ -113,6 +113,36 @@ TEST(KernelCellTests, rebindInLaterCellRestoresReadability) {
     EXPECT_EQ(9, c4.value);
 }
 
+// 2.1.5 / spec 2.4 — a stdlib template instantiated over a USER type defined
+// in an earlier cell. This is the audited hazard: under stdlib reuse, a
+// specialization over a per-session user type is exactly the shape that
+// triggers ReuseHazardAbort in the test harness, and the instantiation's IR
+// is owned by the stdlib module while the type is owned by a cell. Cell 3
+// re-using it must not re-emit a second strong definition either.
+TEST(KernelCellTests, userTypeInstantiationSurvivesAcrossCells) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute(
+        "public class Foo { public int32 v; public Foo(int32 v) { this.v = v; } }\n").ok);
+
+    CellResult c2 = s->execute(
+        "import cajeta.collection.ArrayList;\n"
+        "ArrayList<Foo> foos = heap ArrayList<Foo>();\n"
+        "foos.add(heap Foo(3));\n"
+        "return (int32) foos.count();\n");
+    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
+    EXPECT_EQ(1, c2.value);
+
+    // Third cell uses the SAME specialization again — one definition, and the
+    // live binding from cell 2 is still the object being appended to.
+    CellResult c3 = s->execute(
+        "foos.add(heap Foo(4));\n"
+        "return (int32) foos.count();\n");
+    ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
+    EXPECT_EQ(2, c3.value);
+}
+
 // 2.1.2 / spec 2.2 — a failed cell leaves BINDINGS intact, not merely the
 // symbol table: the session must be usable after a typo, and the value bound
 // before the failure must still be there.

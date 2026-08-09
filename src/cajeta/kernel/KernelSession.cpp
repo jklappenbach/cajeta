@@ -462,8 +462,20 @@ CellResult KernelSession::execute(const std::string& source,
     // leaked them but because no assignment had ever executed.
     void* entry = lookupShort(scriptEntryName());
     if (!entry) {
-        result.errorId = "CAJETA_ERROR_INTERNAL";
-        result.message = "cell entry symbol not found after materialization";
+        // A DECLARATION-ONLY cell (`public class Foo { ... }` and nothing
+        // else) has no loose statements, so it is an ORDINARY unit and no
+        // entry is synthesized (script-units 2.4). That is a perfectly
+        // normal notebook cell: it defines a type for later cells and has
+        // nothing to run. Only a cell that IS a script unit must have an
+        // entry — there, a missing one is the silent-skip bug that let
+        // every cell "succeed" while executing nothing.
+        if (cellModule && cellModule->isScriptUnit()) {
+            result.errorId = "CAJETA_ERROR_INTERNAL";
+            result.message =
+                "script cell entry symbol not found after materialization";
+            return result;
+        }
+        result.ok = true;
         return result;
     }
     result.value = reinterpret_cast<int32_t (*)()>(entry)();
