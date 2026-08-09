@@ -224,7 +224,34 @@ namespace cajeta {
             // Coerce the value's LLVM type to the field's declared type
             // (integer-literal int64 → declared int32, etc.). Mirrors the
             // small coercion ladder in StackField::getOrCreateAllocation.
+            // Coerce toward the SLOT's real type, read from the class body
+            // struct — not `prop->getType()->getLlvmType()`, which answers a
+            // different question for reference-shaped fields. A heap array
+            // `T[]` reports its own `{i64, [0 x T]}` struct there, while the
+            // slot that holds it is a plain pointer; comparing against the
+            // struct made every array-typed field look like a type mismatch
+            // and land in the `isAggregateType()` rejection below. The
+            // effect was that a record could DECLARE an array field but
+            // never be constructed — it had no value form at all.
             llvm::Type* fieldTy = prop->getType()->getLlvmType();
+            // ARRAY fields only. A heap array `T[]` reports its own
+            // `{i64,[0 x T]}` struct here while the slot holding it is a
+            // plain pointer, so comparing against the struct made every
+            // array binding look like a mismatch and hit the
+            // `isAggregateType()` rejection below — a record could declare
+            // an array field but never be constructed. Every OTHER field
+            // kind keeps the declared-type comparison: widening this to all
+            // fields turned the slot into a bare pointer for class-typed
+            // fields too, and a genuinely wrong binding (an `int32[]` bound
+            // to a record-typed field) then coerced pointer-to-pointer and
+            // was accepted silently.
+            if (dynamic_pointer_cast<CajetaArray>(prop->getType())) {
+                if (auto* bodyStruct = llvm::dyn_cast<llvm::StructType>(bodyTy)) {
+                    if (fieldIdx < bodyStruct->getNumElements()) {
+                        fieldTy = bodyStruct->getElementType(fieldIdx);
+                    }
+                }
+            }
             if (value->getType() != fieldTy) {
                 llvm::Type* srcTy = value->getType();
                 if (fieldTy->isIntegerTy() && srcTy->isIntegerTy()) {

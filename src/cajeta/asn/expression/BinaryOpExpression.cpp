@@ -687,8 +687,14 @@ namespace cajeta {
         return builder->CreateIntToPtr(v, l->getType(), "deadptr.res");
     }
 
+    // `lhsSigned`/`rhsSigned` decide the FILL BIT when one operand is
+    // narrower and has to widen. They default to signed, which preserves the
+    // historical behaviour for the callers that have no type flags to hand;
+    // the binary-op path passes the AST-derived truth, so a uint32 widens
+    // zero-extended instead of turning into a 64-bit run of ones.
     static std::pair<llvm::Value*, llvm::Value*> coerceArithPair(
-            CajetaModulePtr module, llvm::Value* l, llvm::Value* r) {
+            CajetaModulePtr module, llvm::Value* l, llvm::Value* r,
+            bool lhsSigned = true, bool rhsSigned = true) {
         auto* builder = module->getBuilder();
         llvm::Type* lt = l->getType();
         llvm::Type* rt = r->getType();
@@ -729,8 +735,8 @@ namespace cajeta {
         if (lt->isIntegerTy() && rt->isIntegerTy()) {
             unsigned lb = lt->getScalarSizeInBits();
             unsigned rb = rt->getScalarSizeInBits();
-            if (lb < rb) l = builder->CreateIntCast(l, rt, /*isSigned=*/true);
-            else if (rb < lb) r = builder->CreateIntCast(r, lt, /*isSigned=*/true);
+            if (lb < rb) l = builder->CreateIntCast(l, rt, lhsSigned);
+            else if (rb < lb) r = builder->CreateIntCast(r, lt, rhsSigned);
             return {l, r};
         }
         return {l, r};
@@ -1734,8 +1740,125 @@ namespace cajeta {
         }
         fallthrough_to_builtin:;
 
-        long lhsTypeFlags = CajetaType::getTypeFlagsOf(lhs);
-        long rhsTypeFlags = CajetaType::getTypeFlagsOf(rhs);
+        // SIGNEDNESS CANNOT BE RECOVERED FROM AN llvm::Value. `getTypeFlagsOf`
+        // looks up `llvmTypeIdMap`, which is keyed by llvm::Type::TypeID — and
+        // every integer width shares `IntegerTyID`, so the map holds ONE entry
+        // for all of int8..uint64 and whichever integer type registered last
+        // decides what every integer value appears to be. Reading SIGNED_FLAG
+        // from it therefore answers a question about the type system with a
+        // fact about LLVM's type IDs, and the ops that branch on it (`/`, `%`,
+        // `>>`) silently pick the wrong instruction — signed `int64 / int64`
+        // was emitting `udiv`, so -8 / 2 evaluated to 9223372036854775804.
+        //
+        // The AST's resolved type does know int64 from uint64, so ask it first
+        // and keep the value-derived flags only as a fallback for operands
+        // with no resolvable AST (synthesized temporaries).
+        // READ-ONLY: consult the resolved type only if it is ALREADY there.
+        // Forcing `resolveTypes` here would re-enter type resolution from the
+        // middle of codegen for every binary op — a far broader change than
+        // the question being asked, and it destabilised generic member stores
+        // (a HashMap<String,Int64> put began faulting).
+        auto typeFlagsFor = [&](const ExpressionPtr& ast,
+                                llvm::Value* v) -> long {
+            if (ast) {
+                if (CajetaTypePtr rt = ast->getResolvedType()) {
+                    if ((rt->getTypeFlags() & PRIMITIVE_FLAG) != 0) {
+                        return (long) rt->getTypeFlags();
+                    }
+                }
+                // A bare identifier usually has NO resolved type here, and
+                // that is the common shape — `int64 a = -8; a / b`. Falling
+                // back to the value-derived flags for it left signed division
+                // emitting `udiv` (the literal-operand form happened to work,
+                // which is why a constants-only probe passed and the
+                // locals-based pin failed). Read the DECLARED type out of the
+                // scope instead: a plain lookup, no re-entry into type
+                // resolution — forcing `resolveTypes` here is what previously
+                // destabilised generic member stores.
+                // A CAST names its target type outright, and `getDestType`
+                // is available without running resolution. This matters for
+                // `/` and `%`, which OR the two operands' flags: one operand
+                // falling back to the lossy value-derived path drags the whole
+                // operation to signed, so `someUint64 / (uint64) 2` emitted
+                // `sdiv` and 2^64-2 / 2 evaluated to 2^64-1 (i.e. -2 / 2 = -1)
+                // even though the same division with a uint64 LOCAL divisor
+                // was correct.
+                if (auto cast = dynamic_pointer_cast<CastExpression>(ast)) {
+                    if (CajetaTypePtr dt = cast->getDestType()) {
+                        if ((dt->getTypeFlags() & PRIMITIVE_FLAG) != 0) {
+                            return (long) dt->getTypeFlags();
+                        }
+                    }
+                }
+                if (auto id = dynamic_pointer_cast<IdentifierExpression>(ast)) {
+                    if (auto sc = module->getScopeStack().peek()) {
+                        if (FieldPtr f = sc->getField(id->getTextValue())) {
+                            if (CajetaTypePtr ft = f->getType()) {
+                                if ((ft->getTypeFlags() & PRIMITIVE_FLAG) != 0) {
+                                    return (long) ft->getTypeFlags();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return (long) CajetaType::getTypeFlagsOf(v);
+        };
+        long lhsTypeFlags = typeFlagsFor(lhsAst, lhs);
+        long rhsTypeFlags = typeFlagsFor(rhsAst, rhs);
+
+        // KNOWN signedness, tri-state: 1 signed, 0 unsigned, -1 undetermined.
+        // The distinction matters because the value-derived fallback cannot
+        // tell int64 from uint64 and reports SIGNED_FLAG clear — i.e. it
+        // LOOKS unsigned. Under a plain "unsigned wins" rule an undetermined
+        // operand would therefore drag `int64Local / 2` to `udiv`, which is
+        // the very bug this work started from, with the sign reversed. So an
+        // operand only votes when its type was actually determined.
+        auto knownSignedness = [&](const ExpressionPtr& ast) -> int {
+            if (!ast) return -1;
+            auto fromType = [](const CajetaTypePtr& t) -> int {
+                if (!t) return -1;
+                if ((t->getTypeFlags() & PRIMITIVE_FLAG) == 0) return -1;
+                return (t->getTypeFlags() & SIGNED_FLAG) != 0 ? 1 : 0;
+            };
+            if (CajetaTypePtr rt = ast->getResolvedType()) {
+                int r = fromType(rt);
+                if (r >= 0) return r;
+            }
+            if (auto cast = dynamic_pointer_cast<CastExpression>(ast)) {
+                int r = fromType(cast->getDestType());
+                if (r >= 0) return r;
+            }
+            if (auto id = dynamic_pointer_cast<IdentifierExpression>(ast)) {
+                if (auto sc = module->getScopeStack().peek()) {
+                    if (FieldPtr f = sc->getField(id->getTextValue())) {
+                        int r = fromType(f->getType());
+                        if (r >= 0) return r;
+                    }
+                }
+            }
+            // A bare integer literal is a SIGNED int by default. Saying so is
+            // what makes `someUint64 / 2` come out unsigned under the rule
+            // below rather than falling into the undetermined branch.
+            if (dynamic_pointer_cast<IntegerLiteralExpression>(ast)) return 1;
+            return -1;
+        };
+        const int lhsSignKnown = knownSignedness(lhsAst);
+        const int rhsSignKnown = knownSignedness(rhsAst);
+
+        // USUAL ARITHMETIC CONVERSIONS at equal rank: UNSIGNED WINS. `uint64`
+        // is an unsigned type, so `someUint64 / 2` is an unsigned division —
+        // the previous rule ("either operand signed => signed") had it exactly
+        // backwards and made that expression `sdiv`. Operands are already
+        // width-coerced by coerceArithPair, so rank is settled and sign is all
+        // that is left to decide. With neither operand determined, keep the
+        // historical flag-OR so nothing silently changes shape.
+        const bool signednessDetermined =
+            (lhsSignKnown >= 0) || (rhsSignKnown >= 0);
+        const bool intOpIsSigned = signednessDetermined
+            ? !(lhsSignKnown == 0 || rhsSignKnown == 0)
+            : (((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) != 0);
+
         llvm::Value* result = nullptr;
 
         // Replace bare loadIfAlloca with loadIfLValue passing the relevant ast where useful.
@@ -3238,8 +3361,15 @@ namespace cajeta {
                             return builder->CreateCall(fn, {widened});
                         }
                         if (t->isIntegerTy()) {
-                            v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/true);
-                            llvm::Function* fn = module->getRuntimeFunction("__cajeta_i64_to_str");
+                            // Widen and format by the operand's OWN signedness:
+                            // a uint64 past 2^63 has no signed rendering, and
+                            // the int64 path silently prints it negative.
+                            const bool uns = vt
+                                && (vt->getTypeFlags() & PRIMITIVE_FLAG) != 0
+                                && (vt->getTypeFlags() & SIGNED_FLAG) == 0;
+                            v = builder->CreateIntCast(v, i64Ty, /*isSigned=*/!uns);
+                            llvm::Function* fn = module->getRuntimeFunction(
+                                uns ? "__cajeta_u64_to_str" : "__cajeta_i64_to_str");
                             return builder->CreateCall(fn, {v});
                         }
                         if (t->isFloatingPointTy()) {
@@ -3278,16 +3408,26 @@ namespace cajeta {
                         if (!isClassStringType(vt)) {
                             llvm::Type* t = v->getType();
                             if (t->isIntegerTy() && !t->isIntegerTy(1)) {
+                                // Same signedness rule as `stringify`: an
+                                // unsigned operand widens zero-extended and
+                                // formats through the u64 helper.
+                                const bool uns = vt
+                                    && (vt->getTypeFlags() & PRIMITIVE_FLAG) != 0
+                                    && (vt->getTypeFlags() & SIGNED_FLAG) == 0;
                                 llvm::Value* iv = builder->CreateIntCast(
-                                    v, i64Ty, /*isSigned=*/true);
+                                    v, i64Ty, /*isSigned=*/!uns);
                                 // Entry-block scratch (24 bytes: 20-digit i64 + sign +
                                 // slack), hoisted + reused across loop iterations.
                                 llvm::IRBuilder<> entryB(&parentFn0->getEntryBlock(),
                                     parentFn0->getEntryBlock().begin());
                                 llvm::Value* buf = entryB.CreateAlloca(
                                     llvm::ArrayType::get(i8Ty, 24), nullptr, "concat.itoa");
+                                llvm::Function* bufFn = uns
+                                    ? module->getRuntimeFunction(
+                                        "__cajeta_u64_to_buf")
+                                    : i64BufFn;
                                 llvm::Value* len = builder->CreateCall(
-                                    i64BufFn, {iv, buf}, "concat.ilen");
+                                    bufFn, {iv, buf}, "concat.ilen");
                                 return { true, iv, buf, len };
                             }
                         }
@@ -3519,7 +3659,9 @@ namespace cajeta {
                 break;
             }
             case BINARY_OP_SUB: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
                     result = deadPtrArith(module, l, r, BINARY_OP_SUB);
                     break;
@@ -3540,7 +3682,9 @@ namespace cajeta {
                 break;
             }
             case BINARY_OP_MUL: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
                     result = deadPtrArith(module, l, r, BINARY_OP_MUL);
                     break;
@@ -3561,7 +3705,9 @@ namespace cajeta {
                 break;
             }
             case BINARY_OP_DIV: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (l->getType()->isPointerTy() && r->getType()->isPointerTy()) {
                     result = deadPtrArith(module, l, r, BINARY_OP_DIV);
                     break;
@@ -3574,31 +3720,36 @@ namespace cajeta {
                         llvm::Value* isZero = builder->CreateICmpEQ(r, zero, "ubt.div.z");
                         emitUbTrap(module, *builder, isZero, "div");
                     }
-                    if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
-                        result = builder->CreateSDiv(l, r);
-                    } else {
-                        result = builder->CreateUDiv(l, r);
-                    }
+                    result = intOpIsSigned ? builder->CreateSDiv(l, r)
+                                           : builder->CreateUDiv(l, r);
                 }
                 break;
             }
             case BINARY_OP_BITAND: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 result = builder->CreateAnd(l, r);
                 break;
             }
             case BINARY_OP_BITOR: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 result = builder->CreateOr(l, r);
                 break;
             }
             case BINARY_OP_BITXOR: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 result = builder->CreateXor(l, r);
                 break;
             }
             case BINARY_OP_SHIFTRIGHT: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (module->getFlags().ubTraps) {
                     unsigned width = l->getType()->getScalarSizeInBits();
                     llvm::Value* widthC = llvm::ConstantInt::get(r->getType(), width);
@@ -3607,11 +3758,23 @@ namespace cajeta {
                     llvm::Value* bad = builder->CreateICmpUGE(r, widthC, "ubt.shr.over");
                     emitUbTrap(module, *builder, bad, "shr");
                 }
-                result = builder->CreateAShr(l, r);
+                // `>>` follows the SHIFTED operand's signedness: arithmetic
+                // for a signed type, logical for an unsigned one. Only the
+                // LEFT flags may be consulted — the right operand is a
+                // shift COUNT, and its signedness says nothing about the
+                // fill bit. (Folding in rhs the way `/` does would make
+                // `someUint64 >> 33` arithmetic, because the literal count
+                // is a signed int32 — which is exactly how a uint64 came
+                // to shift in ones.) `>>>` stays unconditionally logical.
+                result = ((lhsTypeFlags & SIGNED_FLAG) != 0)
+                    ? builder->CreateAShr(l, r)
+                    : builder->CreateLShr(l, r);
                 break;
             }
             case BINARY_OP_USHIFTRIGHT: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (module->getFlags().ubTraps) {
                     unsigned width = l->getType()->getScalarSizeInBits();
                     llvm::Value* widthC = llvm::ConstantInt::get(r->getType(), width);
@@ -3622,7 +3785,9 @@ namespace cajeta {
                 break;
             }
             case BINARY_OP_SHIFTLEFT: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (module->getFlags().ubTraps) {
                     unsigned width = l->getType()->getScalarSizeInBits();
                     llvm::Value* widthC = llvm::ConstantInt::get(r->getType(), width);
@@ -3633,7 +3798,9 @@ namespace cajeta {
                 break;
             }
             case BINARY_OP_MOD: {
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 if (l->getType()->isFPOrFPVectorTy()) {
                     result = builder->CreateFRem(l, r);
                 } else {
@@ -3642,11 +3809,8 @@ namespace cajeta {
                         llvm::Value* isZero = builder->CreateICmpEQ(r, zero, "ubt.mod.z");
                         emitUbTrap(module, *builder, isZero, "mod");
                     }
-                    if ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) {
-                        result = builder->CreateSRem(l, r);
-                    } else {
-                        result = builder->CreateURem(l, r);
-                    }
+                    result = intOpIsSigned ? builder->CreateSRem(l, r)
+                                           : builder->CreateURem(l, r);
                 }
                 break;
             }
@@ -3740,10 +3904,15 @@ namespace cajeta {
                         }
                     }
                 }
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 llvm::Value* newVal = nullptr;
                 bool isFp = l->getType()->isFloatingPointTy();
-                bool isSigned = ((lhsTypeFlags | rhsTypeFlags) & SIGNED_FLAG) != 0;
+                // Same usual-arithmetic-conversion rule as the standalone
+                // `/` and `%`: unsigned wins once either operand's type is
+                // actually known.
+                bool isSigned = intOpIsSigned;
                 // Signed-overflow check for the arithmetic compound ops
                 // mirrors the standalone +/-/× path. Sign is read from
                 // the AST's resolvedType so a uint*-typed lhs/rhs skips
@@ -3807,7 +3976,13 @@ namespace cajeta {
                     case BINARY_OP_BITAND_EQUALS:     newVal = builder->CreateAnd(l, r);  break;
                     case BINARY_OP_BITOR_EQUALS:      newVal = builder->CreateOr(l, r);   break;
                     case BINARY_OP_BITXOR_EQUALS:     newVal = builder->CreateXor(l, r);  break;
-                    case BINARY_OP_SHIFTRIGHT_EQUALS: newVal = builder->CreateAShr(l, r); break;
+                    // As with the standalone `>>`: the fill bit follows the
+                    // SHIFTED operand alone, never the count's signedness.
+                    case BINARY_OP_SHIFTRIGHT_EQUALS:
+                        newVal = ((lhsTypeFlags & SIGNED_FLAG) != 0)
+                            ? builder->CreateAShr(l, r)
+                            : builder->CreateLShr(l, r);
+                        break;
                     case BINARY_OP_USHIFTRIGHT_EQUALS:newVal = builder->CreateLShr(l, r); break;
                     case BINARY_OP_SHIFTLEFT_EQUALS:  newVal = builder->CreateShl(l, r);  break;
                     case BINARY_OP_MOD_EQUALS:
@@ -3891,7 +4066,9 @@ namespace cajeta {
                         }
                     }
                 }
-                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs));
+                auto [l, r] = coerceArithPair(module, loadL(lhs), loadR(rhs),
+                    (lhsTypeFlags & SIGNED_FLAG) != 0,
+                    (rhsTypeFlags & SIGNED_FLAG) != 0);
                 bool isFp = l->getType()->isFloatingPointTy();
                 // Signedness from the AST's resolved types AS WELL AS getTypeFlagsOf.
                 // getTypeFlagsOf keys on the LLVM value's type (i32 for BOTH int32

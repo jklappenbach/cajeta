@@ -492,6 +492,41 @@ int64_t __cajeta_i64_to_buf(int64_t v, char* dst) {
     return n;
 }
 
+// The UNSIGNED twins of the three helpers above. A uint64 above 2^63 has no
+// signed rendering — formatting it through the int64 path wraps it negative,
+// which is how a hash printed as -5808556873153909620 while comparing equal
+// to 12638187200555641996. The concat lowering picks the pair by the
+// operand's declared signedness; these never emit a sign character.
+char* __cajeta_u64_to_str(uint64_t v) {
+    char buf[24];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long) v);
+    if (n < 0) n = 0;
+    char* out = (char*) malloc((size_t) n + 1);
+    if (!out) return NULL;
+    memcpy(out, buf, (size_t) n);
+    out[n] = '\0';
+    return out;
+}
+
+int64_t __cajeta_u64_str_len(uint64_t v) {
+    int64_t n = 0;
+    uint64_t u = v;
+    if (u == 0) return 1;
+    while (u) { u /= 10u; n++; }
+    return n;
+}
+
+int64_t __cajeta_u64_to_buf(uint64_t v, char* dst) {
+    char tmp[20];
+    int i = 0;
+    uint64_t u = v;
+    if (u == 0) { dst[0] = '0'; return 1; }
+    while (u) { tmp[i++] = (char) ('0' + (int) (u % 10u)); u /= 10u; }
+    int64_t n = 0;
+    while (i > 0) { dst[n++] = tmp[--i]; }
+    return n;
+}
+
 char* __cajeta_f64_to_str(double v) {
     char buf[64];
     int n = snprintf(buf, sizeof(buf), "%g", v);

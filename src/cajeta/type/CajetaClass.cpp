@@ -3116,11 +3116,25 @@ namespace cajeta {
     void CajetaClass::patchVirtualTableDropFn() {
         bool& dropFnPatched = dropFnPatchedRef();
         if (dropFnPatched) return;
-        llvm::Function* dropFn = getOrCreateDropFunction();
-        if (!dropFn) return;
+        // CHEAP READINESS CHECKS FIRST. `getOrCreateDropFunction` does not
+        // merely look a function up — on a first call it EMITS the whole drop
+        // body, which walks this class's fields and recurses into their
+        // classes. Doing that before the early-outs forced a body for a class
+        // whose prototype was still being generated: `generatePrototype ->
+        // synthesizeInterfaceVTables -> getOrCreateDropFunction ->
+        // emitDropBodyInline -> patchVirtualTableDropFn -> ...`, and the
+        // re-entered body read `rawLlvmType()` while it was still null,
+        // SIGSEGVing the compiler at fault 0x8. A class whose vtable or LLVM
+        // struct is not built yet has nothing to patch, so returning here
+        // costs nothing and breaks the cycle at its source: the patch will
+        // run again once the class is materialized (the flag is only set on
+        // a completed patch).
         llvm::GlobalVariable* vtGlobal = vtableGlobalRef();
         llvm::StructType* vtType = vtableTypeRef();
         if (!vtGlobal || !vtType) return;
+        if (!rawLlvmType()) return;
+        llvm::Function* dropFn = getOrCreateDropFunction();
+        if (!dropFn) return;
         llvm::Constant* init = vtGlobal->getInitializer();
         if (!init) return;
         auto* structInit = llvm::dyn_cast<llvm::ConstantStruct>(init);
