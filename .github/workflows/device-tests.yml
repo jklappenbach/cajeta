@@ -228,7 +228,13 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='${{ inputs.filter }}'
-          [ -z "$FILTER" ] && FILTER='*DeviceTests*'
+          # TEMPORARY (remove with the push trigger before merging): widen the
+          # push-run default to include the Ewise-compiling host suites — no
+          # *DeviceTests* suite imports cajeta.math, so only these compile the
+          # new f16/bf16 coop-matrix kernels for real NVPTX (ptxas present) and
+          # answer whether they lower or hit the mixed-tier abort
+          # (specs/spirv-coop-mixed-tier-abort-spec.md).
+          [ -z "$FILTER" ] && FILTER='*DeviceTests*:NumpyOpsTests.*:XpuCpuPoolTeardownTests.*:HalfPrecisionTests.*:PlacementDispatchTests.*'
           echo "filter: $FILTER"
           ./build/test/cajeta_test --gtest_filter="$FILTER" 2>&1 | tee device-tests.log
 
