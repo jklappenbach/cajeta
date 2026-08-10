@@ -1117,7 +1117,9 @@ namespace cajeta {
                                           "construction. See "
                                           "docs/specification/lang/"
                                           "OwnershipTransfer.md.",
-                                        "CAJETA_ERROR_TRANSFER_REQUIRED");
+                                        "CAJETA_ERROR_TRANSFER_REQUIRED",
+                                        module->getSourcePath(),
+                                        (int) getSourceLine(), -1);
                                 }
                             }
                             // title-tracking 6.2.1 — the transfer word for the

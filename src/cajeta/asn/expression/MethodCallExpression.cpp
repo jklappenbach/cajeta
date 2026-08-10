@@ -10100,7 +10100,8 @@ namespace cajeta {
                                 + " — a borrow. Pass a fresh copy (`#heap ...`) "
                                 "or an owned local surrendered with `#`. "
                                 "See docs/specification/lang/OwnershipTransfer.md.",
-                            "CAJETA_ERROR_TRANSFER_REQUIRED");
+                            "CAJETA_ERROR_TRANSFER_REQUIRED",
+                        module->getSourcePath(), (int) getSourceLine(), -1);
                     }
                     auto idExpr = std::dynamic_pointer_cast<IdentifierExpression>(
                         argExpr);
@@ -10184,7 +10185,8 @@ namespace cajeta {
                                 + idExpr->getTextValue() + "` to take ownership from "
                                 "your caller, or pass a value this frame owns. "
                                 "See docs/specification/lang/OwnershipTransfer.md.",
-                            "CAJETA_ERROR_TRANSFER_REQUIRED");
+                            "CAJETA_ERROR_TRANSFER_REQUIRED",
+                        module->getSourcePath(), (int) getSourceLine(), -1);
                     }
                     if (!callerOwns) continue;
                     throw Exception(
@@ -10194,7 +10196,8 @@ namespace cajeta {
                             "to surrender ownership of the source local, or pass a "
                             "fresh `heap T(...)` / `stack T(...)` construction. "
                             "See docs/specification/lang/OwnershipTransfer.md.",
-                        "CAJETA_ERROR_TRANSFER_REQUIRED");
+                        "CAJETA_ERROR_TRANSFER_REQUIRED",
+                        module->getSourcePath(), (int) getSourceLine(), -1);
                 }
             }
         }

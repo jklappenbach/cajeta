@@ -671,10 +671,20 @@ namespace cajeta {
                     if (auto outerMv = dynamic_pointer_cast<MoveExpression>(
                             fwdKids[0])) {
                         if (!outerMv->getChildren().empty()) {
-                            auto src = outerMv->getChildren()[0];
-                            if (dynamic_pointer_cast<ArrayIndexExpression>(src)
-                                    || dynamic_pointer_cast<DotExpression>(src)) {
-                                outerMv->setForwardingSlotMove(true);
+                            // Walk down any nested moves: `#= src[i]` gives
+                            // one MoveExpression, the redundant `#= #src[i]`
+                            // gives two, and both must forward. The flag goes
+                            // on whichever move directly wraps the slot — that
+                            // is the one whose generateCode emits the take.
+                            auto slotMv = outerMv;
+                            while (slotMv && !slotMv->getChildren().empty()) {
+                                auto src = slotMv->getChildren()[0];
+                                if (dynamic_pointer_cast<ArrayIndexExpression>(src)
+                                        || dynamic_pointer_cast<DotExpression>(src)) {
+                                    slotMv->setForwardingSlotMove(true);
+                                    break;
+                                }
+                                slotMv = dynamic_pointer_cast<MoveExpression>(src);
                             }
                         }
                     }

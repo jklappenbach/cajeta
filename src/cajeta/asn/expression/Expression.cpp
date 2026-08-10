@@ -599,25 +599,15 @@ bool cajetaRhsCarriesRedundantSharp(
                     ExpressionPtr child = Expression::fromContext(childContext);
                     if (sharpAssign && childIndex == 1
                             && cajetaRhsCarriesRedundantSharp(childContext)) {
-                        // `x #= #y` — the transfer spelled twice. `#=` IS the
-                        // transfer: the STORE site carries it, which is what
-                        // makes "a store uses `#=`; everything else uses `#v`"
-                        // a rule you can apply without looking at the other
-                        // side. A second `#` on the RHS adds nothing and reads
-                        // as a deliberate extra claim that does not exist.
-                        //
-                        // It compiled silently until 2026-08-02, which is how
-                        // the stdlib's LinkedList.popHead/popTail came to carry
-                        // `T title #= #node.value`. Rejected so the intent has
-                        // exactly one spelling. (The legacy `dst = #v` is a
-                        // different, deprecated-not-rejected form and is
-                        // handled below — narrowing that one is a breaking
-                        // change and not this rule's business.)
-                        throw Exception(
-                            std::string("`#=` already acquires ownership when "
-                                        "the source has it — drop the `#` on the "
-                                        "right-hand side and write `dst #= src`"),
-                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                        // `x #= #y` — the transfer spelled twice. TECHNICALLY
+                        // VALID: it means exactly what `x #= y` means, since
+                        // `#=` already carries the source's mode. So it warns
+                        // rather than rejects — flagged here, reported from
+                        // MoveExpression::generateCode where the module (and
+                        // therefore the source path) is in hand.
+                        if (auto redMv = dynamic_pointer_cast<MoveExpression>(child)) {
+                            redMv->setRedundantSharp(true);
+                        }
                     }
                     if (sharpAssign && childIndex == 1) {
                         auto mv = make_shared<MoveExpression>(
@@ -2685,6 +2675,16 @@ bool cajetaRhsCarriesRedundantSharp(
         // that both spellings do NOT share: `dst #= v` synthesises its own
         // wrapper and never sets the flag. Deliberately silent at call args,
         // returns, and extraction reads (spec §2.3) — nothing marks those.
+        if (redundantSharp) {
+            if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                eng->report("warning", "CAJETA_WARN_REDUNDANT_TRANSFER",
+                    "`#= #x` spells the transfer twice — `#=` already carries "
+                    "the source's mode (a title when it has one, a borrow "
+                    "otherwise), so the second `#` adds nothing. Write "
+                    "`dst #= x`.",
+                    module->getSourcePath(), (int) getSourceLine(), -1);
+            }
+        }
         if (legacyTransferAssign) {
             if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
                 std::string rhs;

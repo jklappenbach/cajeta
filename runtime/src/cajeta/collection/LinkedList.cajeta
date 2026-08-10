@@ -225,7 +225,10 @@ public final class LinkedList<T> {
         // `title` verbatim — owned hands the title out, a borrow rides
         // back flag-0 — and `return #title` carries it (flagged return).
         T title #= node.value;
-        return #title;
+        // `#= ` claim forwards the node slot's mode; `return #= ` carries it
+        // out. `return #title` FORCED ownership and panicked on a lent value —
+        // which popHead/popTail never promised: both return a plain `T`.
+        return #= title;
     }
 
     /**
@@ -260,7 +263,10 @@ public final class LinkedList<T> {
         // `title` verbatim — owned hands the title out, a borrow rides
         // back flag-0 — and `return #title` carries it (flagged return).
         T title #= node.value;
-        return #title;
+        // `#= ` claim forwards the node slot's mode; `return #= ` carries it
+        // out. `return #title` FORCED ownership and panicked on a lent value —
+        // which popHead/popTail never promised: both return a plain `T`.
+        return #= title;
     }
 
     /**

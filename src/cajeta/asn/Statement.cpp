@@ -116,13 +116,22 @@ namespace cajeta {
                     // syntactically on the initializer's expression context.
                     if (auto* viCtx = vdCtx->variableInitializer()) {
                         if (auto* eCtx = viCtx->expression()) {
+                            // `T x #= #v` — the transfer spelled twice.
+                            // Technically valid (`#=` already carries the
+                            // source's mode), so it warns rather than rejects.
+                            // Flagged here; reported from
+                            // MoveExpression::generateCode.
                             if (cajeta::cajetaRhsCarriesRedundantSharp(eCtx)) {
-                                throw Exception(
-                                    std::string("`#=` already acquires ownership "
-                                                "when the source has it — drop the "
-                                                "`#` on the right-hand side and "
-                                                "write `T x #= src`"),
-                                    std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                                if (auto vi0 = dynamic_pointer_cast<
+                                        VariableInitializer>(initializer)) {
+                                    if (!vi0->getChildren().empty()) {
+                                        if (auto redMv = dynamic_pointer_cast<
+                                                MoveExpression>(
+                                                    vi0->getChildren()[0])) {
+                                            redMv->setRedundantSharp(true);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

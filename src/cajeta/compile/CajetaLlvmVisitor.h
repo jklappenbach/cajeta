@@ -2794,11 +2794,11 @@ namespace cajeta {
                 // stricter. The declaration form never takes the verbatim
                 // forwarding path (isForwardingSlotMove(), which
                 // BinaryOpExpression sets only for ELEMENT->ELEMENT stores),
-                // so `T x #= o.f` / `T x #= a[i]` DEMAND a title and a
-                // titleless slot panics CAJETA_PANIC_TITLE_MISS — the reading
-                // spelled out at cajetaRhsCarriesRedundantSharp in
-                // Expression.cpp. Take a plain borrow (`T x = o.f`) when that
-                // is what was meant.
+                // A SLOT source is mode-carrying too: `T x #= o.f` /
+                // `T x #= a[i]` FORWARD the slot's actual bit (a title when the
+                // caller transferred, a borrow when it lent) rather than
+                // demanding a title, which panicked TITLE_MISS on every
+                // borrowed slot once collections stopped owning by default.
                 if (ctx->SHARP_ASSIGN() != nullptr
                         && ctx->variableInitializer()->expression() != nullptr) {
                     // `T x #= #v` — the transfer spelled twice. `#=` IS the
@@ -2806,17 +2806,19 @@ namespace cajeta {
                     // reads as a claim that does not exist. Same rule as the
                     // assignment form in Expression::fromContext and the
                     // Statement.cpp declaration path this mirrors.
-                    if (cajeta::cajetaRhsCarriesRedundantSharp(
-                            ctx->variableInitializer()->expression())) {
-                        throw cajeta::Exception(
-                            std::string("`#=` already acquires ownership when the source "
-                                        "has it — drop the `#` "
-                                        "on the right-hand side and write "
-                                        "`T x #= src`"),
-                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
-                    }
+                    bool redundant = cajeta::cajetaRhsCarriesRedundantSharp(
+                        ctx->variableInitializer()->expression());
                     auto inner = any_cast<ExpressionPtr>(
                         visitExpression(ctx->variableInitializer()->expression()));
+                    // Technically valid — `#=` already carries the source's
+                    // mode, so the second `#` restates it. Warned, not
+                    // rejected; reported from MoveExpression::generateCode.
+                    if (redundant) {
+                        if (auto redMv = dynamic_pointer_cast<
+                                cajeta::MoveExpression>(inner)) {
+                            redMv->setRedundantSharp(true);
+                        }
+                    }
                     auto mv = make_shared<MoveExpression>(
                         ctx->variableInitializer()->getStart());
                     mv->addChild(inner);
