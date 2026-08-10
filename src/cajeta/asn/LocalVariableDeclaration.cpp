@@ -932,7 +932,7 @@ namespace cajeta {
                             llvm::Constant* vtableRef = nullptr;
                             if (auto gv = rhsClass->getInterfaceVTable(ifaceCanonical)) {
                                 vtableRef = CajetaModule::ensureGlobalInModule(
-                                    module->getLlvmModule(), gv);
+                                    module->emitTargetLlvmModule(), gv);
                             }
                             if (!vtableRef) {
                                 vtableRef = llvm::ConstantPointerNull::get(

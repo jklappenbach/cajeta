@@ -534,7 +534,7 @@ namespace cajeta {
                 CajetaType::of("String"))) {
             if (auto* vt = stringClass->getVirtualTableGlobal()) {
                 vtableRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), vt);
+                    module->emitTargetLlvmModule(), vt);
             }
         }
         acc = b.CreateCall(strWrap,

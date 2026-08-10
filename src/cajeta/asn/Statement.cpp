@@ -1301,7 +1301,7 @@ namespace cajeta {
                 if (catchClass && !universalCatch) {
                     if (auto* vt = catchClass->getVirtualTableGlobal()) {
                         catchVt = CajetaModule::ensureGlobalInModule(
-                            module->getLlvmModule(), vt);
+                            module->emitTargetLlvmModule(), vt);
                     }
                 }
                 if (catchVt && excMatches) {
@@ -2617,7 +2617,7 @@ namespace cajeta {
                     llvm::Constant* vtableRef = nullptr;
                     if (auto gv = srcCls->getInterfaceVTable(ifaceCanonical)) {
                         vtableRef = CajetaModule::ensureGlobalInModule(
-                            module->getLlvmModule(), gv);
+                            module->emitTargetLlvmModule(), gv);
                     }
                     if (!vtableRef) {
                         vtableRef = llvm::ConstantPointerNull::get(

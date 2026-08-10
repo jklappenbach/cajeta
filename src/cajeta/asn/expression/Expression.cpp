@@ -2573,7 +2573,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 + "' — its reflection metadata was not emitted",
                 "CAJETA_ERROR_CLASS_LITERAL");
         }
-        return CajetaModule::ensureGlobalInModule(module->getLlvmModule(), co);
+        return CajetaModule::ensureGlobalInModule(module->emitTargetLlvmModule(), co);
     }
 
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {

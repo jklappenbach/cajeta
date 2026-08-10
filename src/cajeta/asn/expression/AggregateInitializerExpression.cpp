@@ -139,7 +139,7 @@ namespace cajeta {
         if (classType->hasVtablePointerAtSlotZero()) {
             if (llvm::GlobalVariable* vt = classType->getVirtualTableGlobal()) {
                 llvm::Constant* vtRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), vt);
+                    module->emitTargetLlvmModule(), vt);
                 llvm::Value* vtableSlot = builder->CreateStructGEP(
                     bodyTy, bodyPtr, /*idx=*/0, "vtable_slot");
                 builder->CreateStore(vtRef, vtableSlot);

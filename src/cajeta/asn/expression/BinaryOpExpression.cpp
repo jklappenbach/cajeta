@@ -140,7 +140,7 @@ namespace cajeta {
             llvm::Constant* vtableRef = nullptr;
             if (auto gv = rhsClass->getInterfaceVTable(ifaceCanonical)) {
                 vtableRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), gv);
+                    module->emitTargetLlvmModule(), gv);
             }
             if (!vtableRef) {
                 // The implementer hasn't synthesized this per-(class,
@@ -3554,7 +3554,7 @@ namespace cajeta {
                         llvm::cast<llvm::PointerType>(ptrTy));
                     if (auto* vt = stringKlass->getVirtualTableGlobal()) {
                         vtableRef = CajetaModule::ensureGlobalInModule(
-                            module->getLlvmModule(), vt);
+                            module->emitTargetLlvmModule(), vt);
                     }
                     builder->CreateStore(vtableRef,
                         builder->CreateStructGEP(stringStructTy, sPtr, 0,

@@ -327,7 +327,7 @@ namespace cajeta {
         // first virtual call segfaults on the zeroed slot).
         if (llvm::GlobalVariable* vtable = getVirtualTableGlobal()) {
             llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
-                module->getLlvmModule(), vtable);
+                module->emitTargetLlvmModule(), vtable);
             llvm::Value* vtablePtrSlot = builder->CreateStructGEP(
                 structTy, instance, /*idx=*/0, "vtable_slot");
             builder->CreateStore(vtableRef, vtablePtrSlot);
@@ -339,7 +339,7 @@ namespace cajeta {
             llvm::GlobalVariable* secVT = getOrCreateSecondaryVTable(sub.ancestor);
             if (!secVT) continue;
             llvm::Constant* secRef = CajetaModule::ensureGlobalInModule(
-                module->getLlvmModule(), secVT);
+                module->emitTargetLlvmModule(), secVT);
             llvm::Value* secSlot = builder->CreateStructGEP(
                 structTy, instance, (unsigned) sub.slot,
                 std::string("sec_vtable_slot_")
