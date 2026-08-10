@@ -26,30 +26,29 @@ def index_unit(args):
 
     files = {}
     with tempfile.TemporaryDirectory() as tmp:
-        # gcov wants to find the .gcno next to the object; -o points at the
-        # object dir inside the instrumented build tree.
+        # gcov (GCC 15) resolves BOTH the .gcno and the .gcda from one
+        # directory: with `-o objdir` it recomposes the DATA path under objdir
+        # too and ignores the positional gcda ("cannot open data file,
+        # assuming not executed"). So instead of -o, symlink each object's
+        # .gcno from the build tree NEXT TO the unit's .gcda and let gcov use
+        # the positional path's directory for both.
         for g in gcda:
             rel = os.path.relpath(g, unit_dir)
             obj_dir = os.path.join(build_dir, os.path.dirname(rel))
+            gcno_src = os.path.abspath(os.path.join(
+                build_dir, rel[:-len('.gcda')] + '.gcno'))
+            gcno_dst = g[:-len('.gcda')] + '.gcno'
             if not os.path.isdir(obj_dir):
                 continue
-            try:
-                subprocess.run(
-                    ['gcov', '--json-format', '--stdout', '-o', obj_dir, g],
-                    cwd=tmp, capture_output=True, timeout=120, check=False,
-                    stdout=None)
-            except Exception:
-                continue
-        # gcov --stdout writes gzipped JSON to stdout; re-run capturing it.
-        for g in gcda:
-            rel = os.path.relpath(g, unit_dir)
-            obj_dir = os.path.join(build_dir, os.path.dirname(rel))
-            if not os.path.isdir(obj_dir):
-                continue
+            if os.path.exists(gcno_src) and not os.path.exists(gcno_dst):
+                try:
+                    os.symlink(gcno_src, gcno_dst)
+                except OSError:
+                    continue
             try:
                 p = subprocess.run(
-                    ['gcov', '--json-format', '--stdout', '-o', obj_dir, g],
-                    capture_output=True, timeout=120, check=False)
+                    ['gcov', '--json-format', '--stdout', os.path.abspath(g)],
+                    cwd=tmp, capture_output=True, timeout=120, check=False)
                 raw = p.stdout
                 if raw[:2] == b'\x1f\x8b':
                     raw = gzip.decompress(raw)

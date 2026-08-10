@@ -77,19 +77,45 @@ cmd_run() {
     # GCOV_PREFIX redirects .gcda writes into a per-unit tree. GCOV_PREFIX_STRIP
     # drops the absolute build path components so the trees stay shallow.
     local strip; strip=$(echo "$COV_BUILD" | tr -cd '/' | wc -c)
-    # Suite units need the trailing * (Suite.* matches its tests); a TEST unit
-    # must match exactly — `Suite.testFoo*` would also run testFooBar and
-    # smear both tests' coverage into one tree.
-    local glob="*"
-    [ "$per" = "test" ] && glob=""
-    echo "$units" | xargs -P "$COV_JOBS" -I{} bash -c '
-        u="{}"; safe="${u//\//_}"; safe="${safe//:/_}"
-        out="'"$COV_DATA"'/units/$safe"
-        mkdir -p "$out"
-        GCOV_PREFIX="$out" GCOV_PREFIX_STRIP='"$strip"' \
-          "'"$TEST_BIN"'" --gtest_filter="$u'"$glob"'" >"$out/stdout.txt" 2>&1
-        echo "$?" > "$out/rc"
-    '
+    if [ "$per" = "test" ]; then
+        # Fork-per-test servers (compile-cache plan Unit 3F): the stdlib prime
+        # is 77% front-end and CANNOT be cached to disk, but fork() shares it.
+        # One server per job slot primes once, then forks a COW child per test;
+        # each child dumps its own gcda tree (CAJETA_FORK_GCOV_DIR), and the
+        # server's post-prime __gcov_reset keeps the prime OUT of every tree.
+        # ~120s prime per UNIT becomes ~1 prime per SLOT.
+        local n=0
+        local tmpl="$COV_DATA/slice"
+        rm -f "$tmpl".*
+        echo "$units" | while IFS= read -r u; do
+            echo "$u" >> "$tmpl.$(( n % COV_JOBS ))"
+            n=$(( n + 1 ))
+        done
+        local slot
+        for slot in $(seq 0 $(( COV_JOBS - 1 ))); do
+            [ -f "$tmpl.$slot" ] || continue
+            (
+                filter=$(paste -sd: "$tmpl.$slot")
+                CAJETA_FORK_PER_TEST=1 \
+                CAJETA_FORK_GCOV_DIR="$COV_DATA/units" \
+                GCOV_PREFIX_STRIP="$strip" \
+                  "$TEST_BIN" --gtest_filter="$filter" \
+                  >"$COV_DATA/server.$slot.log" 2>&1
+            ) &
+        done
+        wait
+        rm -f "$tmpl".*
+        echo ">> fork-server logs in $COV_DATA/server.*.log"
+    else
+        echo "$units" | xargs -P "$COV_JOBS" -I{} bash -c '
+            u="{}"; safe="${u//\//_}"; safe="${safe//:/_}"
+            out="'"$COV_DATA"'/units/$safe"
+            mkdir -p "$out"
+            GCOV_PREFIX="$out" GCOV_PREFIX_STRIP='"$strip"' \
+              "'"$TEST_BIN"'" --gtest_filter="$u*" >"$out/stdout.txt" 2>&1
+            echo "$?" > "$out/rc"
+        '
+    fi
     echo ">> raw coverage in $COV_DATA/units"
 }
 

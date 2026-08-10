@@ -31,11 +31,24 @@ static void appendMsysCoreutilsToPath() {
 extern "C" __attribute__((weak)) void __gcov_dump(void);
 #endif
 
+#if !defined(_WIN32)
+// The fork-per-test prime server (ForkPerTest.cpp): prime once, fork a COW
+// child per test. Dispatched by CAJETA_FORK_PER_TEST=1.
+int cajetaForkPerTestMain();
+#endif
+
 int main(int argc, char **argv) {
 #if defined(_WIN32)
     appendMsysCoreutilsToPath();
 #endif
     ::testing::InitGoogleTest(&argc, argv);
+#if !defined(_WIN32)
+    if (std::getenv("CAJETA_FORK_PER_TEST")) {
+        const int frc = cajetaForkPerTestMain();
+        std::fflush(nullptr);
+        std::_Exit(frc);
+    }
+#endif
     const int rc = RUN_ALL_TESTS();
 
     // Bypass the C/C++ exit-handler chain (atexit/static dtors) and terminate
