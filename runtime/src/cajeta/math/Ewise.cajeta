@@ -773,13 +773,18 @@ public final class Ewise {
      * **bfloat16 accumulator**, unlike f16's f32 one. Not a numerics choice: no
      * Vulkan driver exposes a bf16 cooperative-matrix config, so on SPIR-V a bf16
      * tile is Portable-tier while an f32 accumulator would be Native-tier, and a
-     * kernel's tiles must share one tier (`SpirvKernelLowering.coopMatrixTier`).
-     * All-bf16 keeps the GEMM one tier everywhere: portable on Vulkan/CPU, native
-     * `wmma.bf16.16x16x16.bf16` on AMD. The cost, stated per 2.3.2: the portable
-     * tier accumulates at bf16 per K-step (8 mantissa bits), so large-K products
-     * of inexact values round harder than {@link #matmulF16}'s — callers needing
-     * a wide accumulator at bf16 storage should widen to f32 and use
-     * {@link #matmulF32}.
+     * mixed-tier kernel ABORTS SPIR-V lowering today
+     * (specs/spirv-coop-mixed-tier-abort). All-bf16 keeps the GEMM one tier on
+     * the backends that lower it: portable on Vulkan and CPU. On the AMD backend
+     * bf16 is native only as an OPERAND tile — the native accumulator set is
+     * f32/i32 (`AmdgpuKernelLowering.coopMatrixTier`) — so there this kernel is
+     * mixed-tier and takes the graceful `[xpu-kernel-skipped]` note, the same
+     * standing situation as {@link #matmulF32} on AMD; wiring the hardware's
+     * `wmma.bf16.16x16x16.bf16` config would make it native (plan 2.2.6). The
+     * cost, stated per 2.3.2: the portable tier accumulates at bf16 per K-step
+     * (8 mantissa bits), so large-K products of inexact values round harder than
+     * {@link #matmulF16}'s — callers needing a wide accumulator at bf16 storage
+     * should widen to f32 and use {@link #matmulF32}.
      */
     @Kernel
     public static void matmulBf16(KernelBuffer<bfloat16> c, KernelBuffer<bfloat16> a,
