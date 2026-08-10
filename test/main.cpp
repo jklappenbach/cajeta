@@ -25,6 +25,12 @@ static void appendMsysCoreutilsToPath() {
 }
 #endif
 
+#if defined(__GNUC__) && !defined(_WIN32)
+// Weak so uninstrumented builds resolve it to null — see the coverage note at
+// the _Exit below.
+extern "C" __attribute__((weak)) void __gcov_dump(void);
+#endif
+
 int main(int argc, char **argv) {
 #if defined(_WIN32)
     appendMsysCoreutilsToPath();
@@ -43,5 +49,11 @@ int main(int argc, char **argv) {
     // safe and lets ctest see the real pass/fail exit code. CPU-only runs (no 2nd
     // LLVM) were unaffected either way.
     std::fflush(nullptr);
+#if defined(__GNUC__) && !defined(_WIN32)
+    // _Exit below skips the atexit chain (see above) — which also skips the
+    // gcov counter dump in CAJETA_COVERAGE builds, silently producing zero
+    // .gcda. Dump explicitly first; null in uninstrumented builds.
+    if (__gcov_dump) __gcov_dump();
+#endif
     std::_Exit(rc);
 }

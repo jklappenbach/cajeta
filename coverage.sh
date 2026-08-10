@@ -77,12 +77,17 @@ cmd_run() {
     # GCOV_PREFIX redirects .gcda writes into a per-unit tree. GCOV_PREFIX_STRIP
     # drops the absolute build path components so the trees stay shallow.
     local strip; strip=$(echo "$COV_BUILD" | tr -cd '/' | wc -c)
+    # Suite units need the trailing * (Suite.* matches its tests); a TEST unit
+    # must match exactly — `Suite.testFoo*` would also run testFooBar and
+    # smear both tests' coverage into one tree.
+    local glob="*"
+    [ "$per" = "test" ] && glob=""
     echo "$units" | xargs -P "$COV_JOBS" -I{} bash -c '
         u="{}"; safe="${u//\//_}"; safe="${safe//:/_}"
         out="'"$COV_DATA"'/units/$safe"
         mkdir -p "$out"
         GCOV_PREFIX="$out" GCOV_PREFIX_STRIP='"$strip"' \
-          "'"$TEST_BIN"'" --gtest_filter="$u*" >"$out/stdout.txt" 2>&1
+          "'"$TEST_BIN"'" --gtest_filter="$u'"$glob"'" >"$out/stdout.txt" 2>&1
         echo "$?" > "$out/rc"
     '
     echo ">> raw coverage in $COV_DATA/units"
