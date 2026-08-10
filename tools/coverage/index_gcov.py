@@ -99,11 +99,28 @@ def main():
     ap.add_argument('--build', required=True)
     ap.add_argument('--data', required=True)
     ap.add_argument('--jobs', type=int, default=8)
+    ap.add_argument('--skip-existing', action='store_true',
+                    help='skip units already present in index/ (incremental pass)')
+    ap.add_argument('--min-age', type=int, default=0,
+                    help='only index unit dirs older than this many seconds '
+                         '(avoid trees still being dumped by a live run)')
     a = ap.parse_args()
 
     units_root = os.path.join(a.data, 'units')
-    unit_dirs = [os.path.join(units_root, d) for d in sorted(os.listdir(units_root))
-                 if os.path.isdir(os.path.join(units_root, d))]
+    import time
+    now = time.time()
+    idx_dir = os.path.join(a.data, 'index')
+    unit_dirs = []
+    for d in sorted(os.listdir(units_root)):
+        full = os.path.join(units_root, d)
+        if not os.path.isdir(full):
+            continue
+        if a.skip_existing and os.path.exists(
+                os.path.join(idx_dir, d + '.json')):
+            continue
+        if a.min_age and now - os.path.getmtime(full) < a.min_age:
+            continue
+        unit_dirs.append(full)
     if not unit_dirs:
         print('index: no unit directories', file=sys.stderr)
         return 1

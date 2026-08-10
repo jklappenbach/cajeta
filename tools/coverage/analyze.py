@@ -229,28 +229,40 @@ def cmd_optimize(units, target=0.995, keep_asserting=True):
         return
 
     # --- redundancy: units adding nothing beyond the union of the others ---
-    redundant = []
-    for u, s in unit_sets.items():
-        others = set().union(*(v for k, v in unit_sets.items() if k != u)) \
-                 if len(unit_sets) > 1 else set()
-        if s <= others:
-            redundant.append((len(s), u))
+    # Count-based, O(total lines): a unit is redundant iff none of its lines
+    # has coverage-count 1. (The naive per-unit union-of-others is O(n^2) in
+    # set inserts and ran for DAYS at ~5,900 units.)
+    from collections import Counter
+    line_count = Counter()
+    for s in unit_sets.values():
+        line_count.update(s)
+    redundant = [(len(s), u) for u, s in unit_sets.items()
+                 if s and not any(line_count[i] == 1 for i in s)]
     redundant.sort(reverse=True)
 
     # --- greedy set cover to `target` of the achievable universe ---
+    # Big-int bitmaps: AND/OR/bit_count run at C speed.
+    masks = {}
+    for u, s in unit_sets.items():
+        m = 0
+        for i in s:
+            m |= 1 << i
+        masks[u] = m
     goal = int(len(universe) * target)
-    chosen, got = [], set()
-    pool = dict(unit_sets)
-    while len(got) < goal and pool:
+    chosen = []
+    got = 0
+    pool = dict(masks)
+    while got.bit_count() < goal and pool:
         best_u, best_gain = None, -1
-        for u, s in pool.items():
-            gain = len(s - got)
+        for u, m in pool.items():
+            gain = (m & ~got).bit_count()
             if gain > best_gain:
                 best_u, best_gain = u, gain
         if best_gain <= 0:
             break
         chosen.append((best_u, best_gain))
         got |= pool.pop(best_u)
+    got = {i for i in universe if (got >> i) & 1}
 
     dropped = [u for u in unit_sets if u not in dict(chosen)]
 
