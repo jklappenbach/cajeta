@@ -114,18 +114,19 @@ std::string compileExpectError(const std::string& src,
 }
 
 // 2.1.1 — a plain owned local into a container is now an error naming `#v`.
-TEST(UniformTransferTests, plainAddOfOwnedLocalIsTransferRequired) {
+// 2.1.1 REVERSED — a plain owned local into a collection LENDS. The list
+// stores a borrow; `c` keeps title and drops it at scope exit.
+TEST(UniformTransferTests, plainAddOfOwnedLocalLends) {
     std::string src = std::string(kSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
         "        Cell c = heap Cell(3);\n"
         "        xs.add(c);\n"
-        "        return 1;\n"
+        "        return xs.get(0).n + c.n;\n"     // borrow readable both ways
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#c"), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 6);
 }
 
 // 2.1.2 — the surrendered spelling compiles.

@@ -149,7 +149,10 @@ TEST(OwnershipLeakProbe, ownedElementsBalanceAtScale) {
 // made String a fully owned class, so BOTH halves of that fixture are now
 // diagnosed. This pins the two diagnostics it turns into — the add-the-same-
 // element-twice hazard the original was quietly relying on is now named.
-TEST(OwnershipLeakProbe, arrayListStringLendIsRejected) {
+// A LEND of a String into an ArrayList. Collections do not own by default, so
+// the plain spelling compiles and the list stores a BORROW: `keep` keeps title
+// and is still readable after the add, and the list must not free it.
+TEST(OwnershipLeakProbe, arrayListStringLendStoresABorrow) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.ArrayList;\n"
@@ -161,8 +164,10 @@ TEST(OwnershipLeakProbe, arrayListStringLendIsRejected) {
         "        return (int64) keep.count();\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#keep"), std::string::npos) << msg;
+    // "keep7".count() == 5 — the borrow is intact after the list took it.
+    auto jit = CajetaJit::compile(src, "test.F");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), 5);
 }
 
 // The same binding cannot be surrendered twice: the first `#keep` demotes it

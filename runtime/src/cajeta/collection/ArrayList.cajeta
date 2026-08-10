@@ -297,7 +297,12 @@ public final class ArrayList<T> {
      *  arrived. (Was `#T` + `#v` under uniform-transfer 2.3, which made
      *  every list a container.) */
     public void operator[]= (int32 i, T v) {
-        this.set(i, v);
+        // `#v` forwards the mode: a plain argument contributes 0 to the
+        // transfer word, so `xs[i] = #c` would lend and the later `#xs[i]`
+        // extraction would find no title and panic TITLE_MISS. Same
+        // title-losing plain forward that was fixed in HashSet/LinkedList/
+        // RedBlackTree/Cache/HashMap; this one was missed.
+        this.set(i, #v);
     }
 
     /**
