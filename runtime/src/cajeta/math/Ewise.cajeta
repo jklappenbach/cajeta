@@ -770,19 +770,23 @@ public final class Ewise {
 
     /**
      * The {@link #matmulF16} GEMM at **bfloat16** (cajeta-llama 2.2.3) — but with a
-     * **bfloat16 accumulator**, unlike f16's f32 one. Not a numerics choice: no
-     * Vulkan driver exposes a bf16 cooperative-matrix config, so on SPIR-V a bf16
-     * tile is Portable-tier while an f32 accumulator would be Native-tier, and a
-     * mixed-tier kernel ABORTS SPIR-V lowering today
-     * (specs/spirv-coop-mixed-tier-abort). All-bf16 keeps the GEMM one tier on
-     * the backends that lower it: portable on Vulkan and CPU. On the AMD backend
-     * bf16 is native only as an OPERAND tile — the native accumulator set is
-     * f32/i32 (`AmdgpuKernelLowering.coopMatrixTier`) — so there this kernel is
-     * mixed-tier and takes the graceful `[xpu-kernel-skipped]` note, the same
-     * standing situation as {@link #matmulF32} on AMD; wiring the hardware's
-     * `wmma.bf16.16x16x16.bf16` config would make it native (plan 2.2.6). The
-     * cost, stated per 2.3.2: the portable tier accumulates at bf16 per K-step
-     * (8 mantissa bits), so large-K products of inexact values round harder than
+     * **bfloat16 accumulator**, unlike f16's f32 one. A coverage choice, not a
+     * numerics one: with an f32 accumulator this kernel is mixed-tier wherever
+     * bf16 A/B has no native config — no Vulkan driver exposes one — so on
+     * SPIR-V it would take the `[xpu-kernel-skipped]` note and leave Vulkan-only
+     * machines with no bf16 device path at all. All-bf16 stays one tier where
+     * coverage matters: portable, and working, on Vulkan and CPU. The flip
+     * side: NVIDIA and AMD have bf16 as a native OPERAND tile only — their
+     * native accumulator sets are f32/i32 (`NvptxKernelLowering` /
+     * `AmdgpuKernelLowering` `.coopMatrixTier`) — so THERE this kernel is the
+     * mixed-tier one and takes the skip note (observed on the WSL/NVIDIA runner
+     * 2026-08-10), the same standing situation as {@link #matmulF32} on those
+     * backends. The bf16-operand/f32-accumulator shape is native silicon on
+     * both — its NVPTX lowering abort is fixed
+     * (specs/nvptx-coop-bf16-fragment-abort, PR #3) — but has no Vulkan device
+     * path; weighing a per-backend split is plan 2.2.6. The cost, stated per
+     * 2.3.2: the portable tier accumulates at bf16 per K-step (8 mantissa
+     * bits), so large-K products of inexact values round harder than
      * {@link #matmulF16}'s — callers needing a wide accumulator at bf16 storage
      * should widen to f32 and use {@link #matmulF32}.
      */
