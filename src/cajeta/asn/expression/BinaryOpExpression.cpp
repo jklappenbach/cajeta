@@ -2325,7 +2325,22 @@ namespace cajeta {
                             }
                         }
                         if (rhsIsString) {
-                            llvm::Function* resolveFn = rhsIsLvalue
+                            // Mode-carrying `#=` of a PLAIN formal: the
+                            // MoveExpression captured the caller's word bit
+                            // (Expression.cpp, entry-less formal capture). A
+                            // bit of 0 means the caller kept/reclaims the
+                            // wrapper — the field must RESOLVE its own, or it
+                            // adopts a temp the 3.4.3 reclaim then frees (the
+                            // HashMap<String,·>.put post-resize corruption:
+                            // `slots[i].key #= key` adopted the caller's
+                            // concat temp, the reclaim freed it, and the
+                            // rehash surfaced the recycled bytes).
+                            llvm::Value* mvBit = nullptr;
+                            if (auto fldMv = dynamic_pointer_cast<
+                                    MoveExpression>(rhsAst)) {
+                                mvBit = fldMv->getRuntimeTitleFlag();
+                            }
+                            llvm::Function* resolveFn = (rhsIsLvalue || mvBit)
                                 ? module->getRuntimeFunction("__cajeta_string_resolve")
                                 : nullptr;
                             // 7.2.2 — the mask is the enclosing
@@ -2341,20 +2356,22 @@ namespace cajeta {
                             // field takes a FRESH resolved one (copy ≤
                             // threshold / stake on a large heap root / static
                             // alias). Rvalue RHS (literal, call result,
-                            // concat, `#`-move): the wrapper transfers as-is.
-                            // Plain-formal lvalue: runtime moveMask branch —
-                            // move when the caller transferred, resolve
-                            // otherwise.
+                            // concat, static `#`-move): the wrapper transfers
+                            // as-is. Plain-formal lvalue OR flag-carrying
+                            // `#`-move: runtime branch — move when the caller
+                            // transferred, resolve otherwise.
                             llvm::Value* fresh = nullptr;
-                            if (maskWord) {
+                            if (maskWord || (mvBit && resolveFn)) {
                                 auto& lctx = *module->getLlvmContext();
-                                llvm::Value* bit = builder->CreateAnd(
-                                    builder->CreateLShr(maskWord, maskBit),
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt64Ty(lctx), 1));
+                                llvm::Value* bit = maskWord
+                                    ? builder->CreateAnd(
+                                          builder->CreateLShr(maskWord, maskBit),
+                                          llvm::ConstantInt::get(
+                                              llvm::Type::getInt64Ty(lctx), 1))
+                                    : mvBit;
                                 llvm::Value* isMove = builder->CreateICmpNE(
                                     bit, llvm::ConstantInt::get(
-                                        llvm::Type::getInt64Ty(lctx), 0),
+                                        bit->getType(), 0),
                                     "fld_is_move");
                                 llvm::Function* fnOwner =
                                     builder->GetInsertBlock()->getParent();
