@@ -10342,6 +10342,34 @@ namespace cajeta {
                     // free.
                     moveMask |= ((int64_t) 1) << mmi;
                     continue;
+                } else if (auto ownRet = dynamic_pointer_cast<MethodCallExpression>(
+                        parameters[mmi].expression)) {
+                    // A call to a `#R`-declared method is a fresh owned rvalue
+                    // in exactly the sense the two arms above are: the callee
+                    // promised us title and nobody else holds it, so passing it
+                    // plainly must hand that title on — an anonymous temporary
+                    // has no other owner to fall back to.
+                    //
+                    // The stash above (argTitleFlags) already covers this for
+                    // most types, but droppableTempClass() EXCLUDES
+                    // cajeta.lang.String, so a String temp never became a flag
+                    // carrier and the word went out as 0. Harmless while
+                    // collections took `#T` (the transfer rode a different
+                    // path); with plain-`T` collections the plain path is the
+                    // only path, and the exclusion became a dangling pointer:
+                    // `a.add(s.substring(0, n))` stored a BORROW of a temporary
+                    // freed at end of statement, and the next read SIGSEGVed
+                    // (OwnershipLeakProbe.stringElementTransferSpellings).
+                    //
+                    // Keyed on the declared contract rather than the type, so it
+                    // fixes String and every other `#R` returner the predicate
+                    // filters out, without special-casing String again.
+                    MethodPtr orm = ownRet->getResolvedMethod();
+                    if (orm && orm->isReturnsOwnership()) {
+                        moveMask |= ((int64_t) 1) << mmi;
+                        continue;
+                    }
+                    continue;
                 } else {
                     continue;
                 }
