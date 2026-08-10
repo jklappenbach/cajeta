@@ -181,12 +181,16 @@ public final class Heap<T> {
         }
         // Fused claim: the root's bit rides into `top` verbatim; the
         // `return #top` below carries it to the caller (flagged return).
+        // Fused claim (`#= #slot`): forwards whatever the root slot holds —
+        // a title when the caller transferred, a borrow when it lent. A plain
+        // `#= this.data[0]` DEMANDS a title and panics TITLE_MISS on a lent
+        // element, which pop() never promised: its return type is plain `T`.
         T top #= this.data[0];
         this.sizeCount = this.sizeCount - 1;
         if (this.sizeCount == 0) {
             // Last element popped: nothing to sift, and the alternative is
             // a pointless data[0] #= data[0] self-move.
-            return #top;
+            return #= top;
         }
         // Move the last element (and its bit) to the root and sift down.
         this.data[0] #= this.data[this.sizeCount];
@@ -215,7 +219,7 @@ public final class Heap<T> {
                 i = smallest;
             }
         }
-        return #top;
+        return #= top;
     }
 
     // title-stores Unit 5 — no bespoke destructor: data's tail-bit field

@@ -2991,6 +2991,23 @@ bool cajetaRhsCarriesRedundantSharp(
                                             taken,
                                             llvm::ConstantPointerNull::get(tptr),
                                             "slot.take.miss");
+                                        // MODE-CARRYING claim (`T x #= src[i]`):
+                                        // a miss means the slot held a BORROW,
+                                        // which is legitimate now that
+                                        // collections do not own by default —
+                                        // hand back the element unchanged and
+                                        // let the local arm from the slot's
+                                        // actual bit. A select, not a branch:
+                                        // the take is a no-op on a miss.
+                                        //
+                                        // Only the DEMANDING claim still panics,
+                                        // which is what a declared `#R` / `#T`
+                                        // contract needs (ArrayList.operator#[]).
+                                        if (isForwardingSlotMove()) {
+                                            value = b->CreateSelect(
+                                                miss, value, taken, "slot.fwd");
+                                            slotTaken = true;
+                                        } else {
                                         llvm::Function* fn =
                                             b->GetInsertBlock()->getParent();
                                         llvm::BasicBlock* panicBB =
@@ -3014,6 +3031,7 @@ bool cajetaRhsCarriesRedundantSharp(
                                         b->SetInsertPoint(okBB);
                                         value = taken;
                                         slotTaken = true;
+                                        }
                                     }
                                 } else if (llvm::Function* takeFn =
                                         module->getRuntimeFunction(

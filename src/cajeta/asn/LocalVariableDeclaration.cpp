@@ -652,9 +652,18 @@ namespace cajeta {
                     declarator->isReference(), modifiers, annotations, initializer);
             }
             // title-stores §2.1 — `T x #= #src[i]` (the DOUBLE-Move shape
-            // the #= desugar produces over a parsed slot extraction) is a
-            // FORWARDING CLAIM: the local arms from the slot's actual bit,
-            // no panic. Single-Move `T x = #src[i]` keeps the guarded panic.
+            // `T x #= src[i]` / `T x #= p.f` — the SLOT CLAIM, and it is
+            // MODE-CARRYING: the local arms from the slot's actual bit rather
+            // than demanding a title. `#=` means "preserve borrow or take
+            // ownership", so the source's SHAPE must not change the spelling —
+            // `#= #src[i]` is the transfer written twice and stays rejected
+            // (CAJETA_ERROR_DOUBLE_TRANSFER).
+            //
+            // Demanding a title here panicked CAJETA_PANIC_TITLE_MISS on any
+            // borrowed slot, which is the common case now that collections do
+            // not own by default: it broke Heap.pop, HashMap.remove and
+            // LinkedList.popHead, all three declaring PLAIN returns that never
+            // promised ownership.
             if (auto fwdVi = dynamic_pointer_cast<VariableInitializer>(
                     declarator->getInitializer())) {
                 auto& fwdKids = fwdVi->getChildren();
@@ -662,21 +671,10 @@ namespace cajeta {
                     if (auto outerMv = dynamic_pointer_cast<MoveExpression>(
                             fwdKids[0])) {
                         if (!outerMv->getChildren().empty()) {
-                            if (auto innerMv = dynamic_pointer_cast<
-                                    MoveExpression>(outerMv->getChildren()[0])) {
-                                if (!innerMv->getChildren().empty()
-                                        && (dynamic_pointer_cast<
-                                                ArrayIndexExpression>(
-                                                innerMv->getChildren()[0])
-                                            // §3.3.2 — member claims
-                                            // (`V out #= #slots[i].val`)
-                                            // forward the member bit the
-                                            // same way.
-                                            || dynamic_pointer_cast<
-                                                   DotExpression>(
-                                                   innerMv->getChildren()[0]))) {
-                                    innerMv->setForwardingSlotMove(true);
-                                }
+                            auto src = outerMv->getChildren()[0];
+                            if (dynamic_pointer_cast<ArrayIndexExpression>(src)
+                                    || dynamic_pointer_cast<DotExpression>(src)) {
+                                outerMv->setForwardingSlotMove(true);
                             }
                         }
                     }

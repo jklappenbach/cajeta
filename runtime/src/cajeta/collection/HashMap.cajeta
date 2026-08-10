@@ -384,7 +384,7 @@ public final class HashMap<K, V> {
             V out #= this.slots[i].val;
             this.setCtrl(i, (int8) 0xFE);
             this.sizeCount = this.sizeCount - 1;
-            return #out;
+            return #= out;
         }
         V[] missDefault = stack V[1];
         return Cajeta.flagged(missDefault[0], false);
