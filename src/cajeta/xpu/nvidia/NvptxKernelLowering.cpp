@@ -391,14 +391,21 @@ public:
                                   llvm::Value* a, llvm::Value* bMat,
                                   llvm::Value* c, llvm::Type* /*matrixType*/)
             override {
-        // Pick mma by the A operand's scalar: half → f16.f32, bfloat → bf16.
-        llvm::Type* aScalar = llvm::cast<llvm::FixedVectorType>(
-            llvm::cast<llvm::StructType>(a->getType())->getElementType(0))
-            ->getElementType();
+        // Pick mma by the A fragment's SHAPE, not a scalar probe: f16 A/B
+        // fragments are {<2 x half> x 8}, while bf16 fragments pack two values
+        // per .b32 register and are {i32 x 4} (IntrinsicsNVVM.td
+        // "m16n16k16:a:bf16") — element 0 is a scalar i32, not a vector, so
+        // casting it to FixedVectorType aborted the whole compiling process on
+        // the first bf16 coop-matrix kernel (an LLVM assert is not catchable).
+        // The tier table admits only f16/bf16 A/B natively, so a non-vector
+        // fragment element IS bf16; revisit if an int8 wmma seam lands.
+        //
         // f16/bf16 A·B with an f32 C accumulator AND f32 D output: the suffix is
         // the (C,D) element pair — both f32 here (A/B f16 is implicit in the float
         // wmma family; the bf16 family has only the f32/f32 accumulate variant).
-        llvm::Intrinsic::ID id = aScalar->isBFloatTy()
+        auto* aFrag = llvm::cast<llvm::StructType>(a->getType());
+        bool bf = !llvm::isa<llvm::FixedVectorType>(aFrag->getElementType(0));
+        llvm::Intrinsic::ID id = bf
             ? llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_bf16
             : llvm::Intrinsic::nvvm_wmma_m16n16k16_mma_row_row_f32_f32;
         std::vector<llvm::Value*> args;
@@ -418,6 +425,14 @@ public:
         if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(fe)) {
             elemVal = b.CreateVectorSplat(
                 vt->getNumElements(), coerceScalar(b, value, vt->getElementType()));
+        } else if (fe->isIntegerTy(32)) {
+            // bf16 A/B fragment ({i32 x 4}): build the .b32 register image —
+            // the value twice, packed as <2 x bfloat>, bitcast to i32. A plain
+            // coerceScalar would insert an unpacked bfloat into an i32 slot.
+            llvm::Type* bfTy = llvm::Type::getBFloatTy(b.getContext());
+            llvm::Value* pair =
+                b.CreateVectorSplat(2, coerceScalar(b, value, bfTy));
+            elemVal = b.CreateBitCast(pair, fe);
         } else {
             elemVal = coerceScalar(b, value, fe);
         }
@@ -594,13 +609,21 @@ private:
     }
 
     // The fragment's scalar element from a matrixType built by coopMatrixType:
-    // the vector element for an A/B operand ({<2 x T> x 8}), the struct element
-    // for the f32 accumulator ({float x 8}). Used to re-select the load intrinsic.
+    // the vector element for an f16 A/B operand ({<2 x half> x 8}), bfloat for
+    // a bf16 A/B operand ({i32 x 4} — two bf16 packed per .b32 register, so
+    // the i32 is a register image, not the element type), the struct element
+    // for the f32 accumulator ({float x 8}). Used to re-select the load
+    // intrinsic — returning the raw i32 here made a bf16 tile re-select the
+    // f16 load intrinsic, silently mismatching the alloca's fragment type.
+    // i32-packed == bf16 while only f16/bf16 operands are native (tier table);
+    // revisit if an int8 wmma seam lands.
     static llvm::Type* nvFragScalar(llvm::Type* matrixType) {
         llvm::Type* e0 =
             llvm::cast<llvm::StructType>(matrixType)->getElementType(0);
         if (auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(e0))
             return vt->getElementType();
+        if (e0->isIntegerTy(32))
+            return llvm::Type::getBFloatTy(matrixType->getContext());
         return e0;
     }
 
