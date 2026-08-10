@@ -295,25 +295,26 @@ TEST(LocalLinearityTests, bareDeclMoveAssignAcrossScopes) {
 // `#=` IS the transfer — the store site carries it (language-ownership: "a
 // store uses `#=`; everything else uses `#v`"). Writing `#` on the RHS as well
 // says "transfer" twice and does nothing the single sharp did not already do.
-// It compiled silently, which let the stdlib's LinkedList.popHead/popTail carry
-// `T title #= #node.value` — a spelling that reads as a deliberate extra claim
-// and is not one. Reject it so the intent has exactly one spelling.
+// It is TECHNICALLY VALID — `#=` already carries the source's mode, so the
+// second `#` restates it rather than asking for anything different — which is
+// why it WARNS (CAJETA_WARN_REDUNDANT_TRANSFER) rather than failing the build.
+// The code must still compile and behave identically to the single sharp.
 
-TEST(LocalLinearityTests, doubleSharpStoreIsCompileError) {
+TEST(LocalLinearityTests, doubleSharpStoreWarnsAndCompiles) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell a = heap Cell(3);\n"
-        "        Cell b #= #a;\n"           // double sharp — reject
+        "        Cell b #= #a;\n"           // double sharp — redundant, not wrong
         "        return b.n;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
-    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 3);
+    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
 }
 
 // The same on a FIELD store — the shape the stdlib actually used.
-TEST(LocalLinearityTests, doubleSharpFieldStoreIsCompileError) {
+TEST(LocalLinearityTests, doubleSharpFieldStoreWarnsAndCompiles) {
     std::string src = std::string(kCellSrc) +
         "public class Box {\n"
         "    public Cell held;\n"
@@ -322,11 +323,14 @@ TEST(LocalLinearityTests, doubleSharpFieldStoreIsCompileError) {
         "public final class D {\n"
         "    public static int32 run() { return 1; }\n"
         "}\n";
-    compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
+    EXPECT_EQ(runI32(src), 1);
+    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
 }
 
-// uniform-transfer-semantics Unit 3 — the rule is now BLANKET: `#` on the RHS
-// of `#=` is an error whatever the source's shape.
+// The rule is BLANKET in the same way it always was — `#` on the RHS of `#=`
+// restates the store whatever the source's shape — but it is a WARNING, and a
+// SLOT source additionally forwards that slot's mode exactly as the single
+// sharp does.
 //
 // It used to be narrowed to bare-identifier sources so that a FIELD or ELEMENT
 // source could keep the "fused claim" — a double sharp that forwarded whatever
@@ -346,7 +350,7 @@ TEST(LocalLinearityTests, doubleSharpFieldStoreIsCompileError) {
 
 // 3.1.1 — a FIELD source. This test previously asserted the opposite; it is
 // inverted rather than deleted so the history shows the rule changing.
-TEST(LocalLinearityTests, doubleSharpFromFieldIsCompileError) {
+TEST(LocalLinearityTests, doubleSharpFromFieldWarnsAndForwards) {
     std::string src = std::string(kCellSrc) +
         "public class Node2 {\n"
         "    public Cell value;\n"
@@ -355,12 +359,13 @@ TEST(LocalLinearityTests, doubleSharpFromFieldIsCompileError) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Node2 n = heap Node2(heap Cell(4));\n"
-        "        Cell t #= #n.value;\n"     // was the fused claim — now rejected
+        "        Cell t #= #n.value;\n"     // redundant sharp over a MEMBER slot
         "        return t.n;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
-    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+    // Forwards the member's mode exactly as `#= n.value` does, and warns.
+    EXPECT_EQ(runI32(src), 4);
+    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
 }
 
 // 3.1.5 (field half) — the origin guard. The SAME fixture with the sharp
@@ -385,18 +390,19 @@ TEST(LocalLinearityTests, doubleSharpFromFieldSingleSharpControlCompiles) {
 }
 
 // 3.1.2 — an ARRAY-ELEMENT source.
-TEST(LocalLinearityTests, doubleSharpFromElementIsCompileError) {
+TEST(LocalLinearityTests, doubleSharpFromElementWarnsAndForwards) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell[] arr = heap Cell[2];\n"
         "        arr[0] #= heap Cell(5);\n"
-        "        Cell t #= #arr[0];\n"      // element source — rejected
+        "        Cell t #= #arr[0];\n"      // redundant sharp over an ELEMENT slot
         "        return t.n;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
-    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+    // Forwards the element's mode exactly as `#= arr[0]` does, and warns.
+    EXPECT_EQ(runI32(src), 5);
+    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
 }
 
 // 3.1.5 (element half) — the same fixture minus the sharp.
@@ -415,17 +421,17 @@ TEST(LocalLinearityTests, doubleSharpFromElementSingleSharpControlCompiles) {
 
 // 3.1.3 — a CALL-RESULT source. `make()` already hands back a title (`#Cell`),
 // so `#make()` claims a title that is already the caller's.
-TEST(LocalLinearityTests, doubleSharpFromCallResultIsCompileError) {
+TEST(LocalLinearityTests, doubleSharpFromCallResultWarnsAndCompiles) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static #Cell make() { return heap Cell(6); }\n"
         "    public static int32 run() {\n"
-        "        Cell t #= #make();\n"      // call-result source — rejected
+        "        Cell t #= #make();\n"      // redundant sharp over a `#R` result
         "        return t.n;\n"
         "    }\n"
         "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_DOUBLE_TRANSFER");
-    EXPECT_NE(msg.find("#="), std::string::npos) << msg;
+    EXPECT_EQ(runI32(src), 6);
+    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
 }
 
 // 3.1.5 (call half) — the same fixture minus the sharp.
