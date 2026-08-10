@@ -190,11 +190,11 @@ TEST(OwnershipLeakProbe, arrayListStringAddedTwiceIsRejected) {
     compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
 }
 
-// 2.1.4 — the three spellings, all in one place. `add(s)` is rejected;
-// `add(#s)` surrenders the one String; a fresh copy (`substring` returns
-// `#String`) gives the list its own element and leaves `s` an owner. The
-// plan wrote this third form as `s.clone()`; String has no clone — a
-// full-width `substring` is the copy idiom it does have.
+// 2.1.4 — the transfer spellings, all in one place. `add(#s)` surrenders the
+// one String (the slot takes its wrapper); a fresh `#String` temp (`substring`
+// result) is RESOLVED into the slot and the temp reclaimed after the call —
+// String slots always own their wrappers, so both reads survive any later
+// adds and the teardown frees exactly the two resident wrappers.
 TEST(OwnershipLeakProbe, stringElementTransferSpellings) {
     std::string src =
         "package test;\n"
@@ -217,6 +217,40 @@ TEST(OwnershipLeakProbe, stringElementTransferSpellings) {
     auto jit = CajetaJit::compile(src, "test.G");
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 10);
+}
+
+// string-temp-title-forwarding — one program pinning every String element
+// store mode against ArrayList's plain-`T` add: a LEND (slot resolves its own
+// copy; the lender keeps its wrapper and outlives the list), a CONCAT temp and
+// a `#String`-returning-call temp (both resolved in; the anonymous wrapper is
+// reclaimed caller-side after the call), with reads after later adds and a
+// lender read after teardown. Slots always owning their wrappers is what makes
+// each read safe; leaked == 0 is what proves the temps were still reclaimed.
+TEST(OwnershipLeakProbe, stringElementModeMatrix) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ArrayList;\n"
+        "public final class G {\n"
+        "    public static int64 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int64 t = 0;\n"
+        "        String k = \"keep\" + 7;\n"
+        "        {\n"
+        "            ArrayList<String> a = heap ArrayList<String>();\n"
+        "            a.add(k);\n"                    // lend
+        "            a.add(k + \"!\");\n"            // concat temp
+        "            a.add(k.substring(0, 4));\n"    // #R-call temp
+        "            t = (int64) (a.get(0).count() + a.get(1).count()\n"
+        "                + a.get(2).count());\n"     // 5 + 6 + 4
+        "        }\n"
+        "        t = t + (int64) k.count();\n"       // lender survives teardown
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return leaked * 100 + t;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.G");
+    auto fn = jit->lookup<int64_t (*)()>("run");
+    EXPECT_EQ(fn(), 20);
 }
 
 // Bench-faithful: build a #-keyed HashMap<String,int32> AND do n lookups (each a

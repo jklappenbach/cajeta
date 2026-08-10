@@ -10354,21 +10354,24 @@ namespace cajeta {
                     // has no other owner to fall back to.
                     //
                     // The stash above (argTitleFlags) already covers this for
-                    // most types, but droppableTempClass() EXCLUDES
-                    // cajeta.lang.String, so a String temp never became a flag
-                    // carrier and the word went out as 0. Harmless while
-                    // collections took `#T` (the transfer rode a different
-                    // path); with plain-`T` collections the plain path is the
-                    // only path, and the exclusion became a dangling pointer:
-                    // `a.add(s.substring(0, n))` stored a BORROW of a temporary
-                    // freed at end of statement, and the next read SIGSEGVed
-                    // (OwnershipLeakProbe.stringElementTransferSpellings).
+                    // droppable classes; this arm covers the `#R` returners the
+                    // predicate filters out.
                     //
-                    // Keyed on the declared contract rather than the type, so it
-                    // fixes String and every other `#R` returner the predicate
-                    // filters out, without special-casing String again.
+                    // cajeta.lang.String is deliberately NOT covered: a String
+                    // temp rides the 3.4.3 dual-role protocol instead — the
+                    // word bit stays 0, a consuming store RESOLVES its own
+                    // wrapper (String slots always own their wrappers), and
+                    // the caller-side 3.4.3 reclaim frees the temp after the
+                    // call. Setting the bit here handed the wrapper itself
+                    // into the slot while the reclaim still freed it — the
+                    // stringElementTransferSpellings SIGSEGV — and skipping
+                    // the reclaim instead would leak every `#String` temp a
+                    // callee chose not to store (String formals have no drop
+                    // entries to reclaim them: emitFormalDropEntries excludes
+                    // String by design).
                     MethodPtr orm = ownRet->getResolvedMethod();
-                    if (orm && orm->isReturnsOwnership()) {
+                    if (orm && orm->isReturnsOwnership()
+                            && !freshOwnedStringTemp(parameters[mmi].expression)) {
                         moveMask |= ((int64_t) 1) << mmi;
                         continue;
                     }

@@ -3258,6 +3258,40 @@ bool cajetaRhsCarriesRedundantSharp(
                                 "__cajeta_drop_mark_inactive")) {
                             module->getBuilder()->CreateCall(mark, {entry});
                         }
+                    } else if (auto pfMv =
+                            dynamic_pointer_cast<ParameterField>(field)) {
+                        // 6.2.1's store-form twin — an ENTRY-LESS plain formal
+                        // moved by `#=`/`= #v` (String: emitFormalDropEntries
+                        // deliberately skips it) still has runtime truth in the
+                        // enclosing function's transfer word. Capture that bit
+                        // so the consuming store carries the CALLER's mode
+                        // instead of a constant 1 — the constant is what let
+                        // `data[i] #= v` take a lent String's wrapper (and let
+                        // the 3.4.3 temp reclaim free a wrapper a slot had just
+                        // adopted). A `#`-declared formal keeps the static 1:
+                        // its ownership is the contract, not the word.
+                        auto fpMv = pfMv->getFormalParameter();
+                        auto cmMv = module->getCurrentMethod();
+                        llvm::Value* inWordMv =
+                            cmMv ? cmMv->getTransferWordArg() : nullptr;
+                        if (fpMv && !fpMv->isTransferred() && inWordMv) {
+                            int fposMv = -1, seenMv = -1;
+                            for (auto& fp : cmMv->getParameterList()) {
+                                if (!fp || fp->getName() == "this") continue;
+                                ++seenMv;
+                                if (fp->getName() == idExpr->getTextValue()) {
+                                    fposMv = seenMv;
+                                    break;
+                                }
+                            }
+                            if (fposMv >= 0 && fposMv < 64) {
+                                auto* bMv = module->getBuilder();
+                                runtimeTitleFlag = bMv->CreateAnd(
+                                    bMv->CreateLShr(inWordMv,
+                                        bMv->getInt64((uint64_t) fposMv)),
+                                    bMv->getInt64(1), "mv_word_bit");
+                            }
+                        }
                     }
                 }
                 // script-units U4 (spec §4.2) — a session binding's title

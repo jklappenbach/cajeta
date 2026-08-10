@@ -2935,6 +2935,17 @@ namespace cajeta {
                             bool takesOwnership =
                                 dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            // Mode-carrying `#=`: a move of a plain formal
+                            // captured the CALLER's word bit — decide owned
+                            // (take the wrapper) vs alias (resolve a copy) at
+                            // runtime, exactly as the field-store path does.
+                            // A null flag keeps the static classification
+                            // (declared-`#` formals, fresh temps, elem takes).
+                            llvm::Value* takesRt = nullptr;
+                            if (auto rtMv = dynamic_pointer_cast<MoveExpression>(
+                                    rhsAst)) {
+                                takesRt = rtMv->getRuntimeTitleFlag();
+                            }
                             if (!takesOwnership) {
                                 if (auto rid = dynamic_pointer_cast<
                                         IdentifierExpression>(rhsAst)) {
@@ -2946,11 +2957,36 @@ namespace cajeta {
                                     }
                                 }
                             }
-                            llvm::Function* setFn = module->getRuntimeFunction(
-                                takesOwnership
-                                    ? "__cajeta_string_array_elem_set_owned"
-                                    : "__cajeta_string_array_elem_set_alias");
-                            if (setFn) {
+                            llvm::Function* ownFn = module->getRuntimeFunction(
+                                "__cajeta_string_array_elem_set_owned");
+                            llvm::Function* aliasFn = module->getRuntimeFunction(
+                                "__cajeta_string_array_elem_set_alias");
+                            if (takesRt && ownFn && aliasFn) {
+                                auto& scCtx = *module->getLlvmContext();
+                                llvm::Value* isOwn = builder->CreateICmpNE(
+                                    takesRt,
+                                    llvm::ConstantInt::get(
+                                        takesRt->getType(), 0),
+                                    "selem_is_own");
+                                llvm::Function* scFn =
+                                    builder->GetInsertBlock()->getParent();
+                                auto* bbOwn = llvm::BasicBlock::Create(
+                                    scCtx, "selem_own", scFn);
+                                auto* bbAlias = llvm::BasicBlock::Create(
+                                    scCtx, "selem_alias", scFn);
+                                auto* bbJoin = llvm::BasicBlock::Create(
+                                    scCtx, "selem_join", scFn);
+                                builder->CreateCondBr(isOwn, bbOwn, bbAlias);
+                                builder->SetInsertPoint(bbOwn);
+                                builder->CreateCall(ownFn, {sidecar, lhs, rhsVal});
+                                builder->CreateBr(bbJoin);
+                                builder->SetInsertPoint(bbAlias);
+                                builder->CreateCall(aliasFn, {sidecar, lhs, rhsVal});
+                                builder->CreateBr(bbJoin);
+                                builder->SetInsertPoint(bbJoin);
+                                storedViaElemOwn = true;
+                            } else if (llvm::Function* setFn =
+                                    takesOwnership ? ownFn : aliasFn) {
                                 builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
                                 storedViaElemOwn = true;
                             }
@@ -2973,6 +3009,15 @@ namespace cajeta {
                             bool seTakes =
                                 dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            // Mode-carrying `#=` (see the sidecar branch): a
+                            // plain formal's captured word bit IS `takes` —
+                            // the native already branches move-vs-resolve on
+                            // it. Null flag → static classification.
+                            llvm::Value* seTakesRt = nullptr;
+                            if (auto seMv = dynamic_pointer_cast<MoveExpression>(
+                                    rhsAst)) {
+                                seTakesRt = seMv->getRuntimeTitleFlag();
+                            }
                             if (!seTakes) {
                                 if (auto rid = dynamic_pointer_cast<
                                         IdentifierExpression>(rhsAst)) {
@@ -2986,12 +3031,17 @@ namespace cajeta {
                             }
                             if (llvm::Function* seFn = module->getRuntimeFunction(
                                     "__cajeta_string_elem_store")) {
+                                llvm::Type* seI64 = llvm::Type::getInt64Ty(
+                                    *module->getLlvmContext());
+                                llvm::Value* takesArg = seTakesRt
+                                    ? (seTakesRt->getType() == seI64
+                                          ? seTakesRt
+                                          : builder->CreateZExt(
+                                                seTakesRt, seI64))
+                                    : (llvm::Value*) llvm::ConstantInt::get(
+                                          seI64, seTakes ? 1 : 0);
                                 builder->CreateCall(seFn,
-                                    {lhs, rhsVal,
-                                     llvm::ConstantInt::get(
-                                         llvm::Type::getInt64Ty(
-                                             *module->getLlvmContext()),
-                                         seTakes ? 1 : 0)});
+                                    {lhs, rhsVal, takesArg});
                                 storedViaElemOwn = true;
                             }
                         }

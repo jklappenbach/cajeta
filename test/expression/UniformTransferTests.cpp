@@ -160,11 +160,13 @@ TEST(UniformTransferTests, primitiveElementAddNeedsNoSharp) {
         "}\n"), 11);
 }
 
-// 1.1.5, INVERTED by Unit 3 as promised. The baseline this test used to pin —
-// "the DOUBLE sharp is still accepted for a field source, because it forwards
-// the slot's mode verbatim" — is exactly what 3.2.1 overturned. Kept and
-// flipped rather than deleted so the change reads as deliberate.
-TEST(UniformTransferTests, doubleSharpFromFieldIsRejectedByUnit3) {
+// 1.1.5, twice inverted and now settled as a WARNING: Unit 3 rejected the
+// double sharp outright (CAJETA_ERROR_DOUBLE_TRANSFER); the mode-carrying
+// claim work re-legalized it — `#=` already carries the source's mode, so the
+// second `#` restates the store rather than asking for anything different.
+// Technically valid, redundant, warned (CAJETA_WARN_REDUNDANT_TRANSFER), and
+// it must behave IDENTICALLY to the single-sharp spelling pinned below.
+TEST(UniformTransferTests, doubleSharpFromFieldWarnsAndForwards) {
     std::string src = std::string(kSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
@@ -174,12 +176,8 @@ TEST(UniformTransferTests, doubleSharpFromFieldIsRejectedByUnit3) {
         "        return t.n;\n"
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        ADD_FAILURE() << "expected CAJETA_ERROR_DOUBLE_TRANSFER";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_DOUBLE_TRANSFER");
-    }
+    EXPECT_EQ(runI32(src), 7);
+    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
 }
 
 // …and the single sharp does the job, with the same value. The pair is the

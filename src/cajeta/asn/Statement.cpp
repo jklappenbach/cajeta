@@ -2697,6 +2697,47 @@ namespace cajeta {
             returnTitleFlag = mvRet->getRuntimeTitleFlag()
                 ? mvRet->getRuntimeTitleFlag()
                 : (llvm::Value*) builder->getInt64(1);
+            // mode-carrying-claim §5.4 — a `#R`-declared return is a CONTRACT:
+            // the caller is promised a title. A runtime flag of 0 here means
+            // the frame only ever held a borrow (the mode-carrying claim
+            // forwarded a borrowed slot's bit, or a plain formal's word bit
+            // was 0), and silently returning it would hand out a forged
+            // title — the caller's static-owner claim frees the real owner's
+            // value. Panic TITLE_MISS instead (`operator#[]` on a borrowed /
+            // already-extracted slot). `return #= x` (modeCarrying) is the
+            // sanctioned escape: it declares the return carries the mode.
+            if (auto mM = module->getCurrentMethod()) {
+                if (mM->isReturnsOwnership() && !modeCarrying
+                        && returnTitleFlag
+                        && !llvm::isa<llvm::ConstantInt>(returnTitleFlag)) {
+                    auto& rctx = *module->getLlvmContext();
+                    llvm::Value* hasTitle = builder->CreateICmpNE(
+                        returnTitleFlag,
+                        llvm::ConstantInt::get(returnTitleFlag->getType(), 0),
+                        "ret_contract_ok");
+                    llvm::Function* rfn =
+                        builder->GetInsertBlock()->getParent();
+                    auto* panicBB = llvm::BasicBlock::Create(
+                        rctx, "ret_title_panic", rfn);
+                    auto* okBB = llvm::BasicBlock::Create(
+                        rctx, "ret_title_ok", rfn);
+                    builder->CreateCondBr(hasTitle, okBB, panicBB);
+                    builder->SetInsertPoint(panicBB);
+                    // CAJETA_PANIC_TITLE_MISS = 3, integer-throw shape
+                    // (< 4096 ⇒ first catch clause binds it) — same code the
+                    // claim's own take sites use.
+                    if (llvm::Function* throwFn =
+                            module->getRuntimeFunction("__cajeta_throw")) {
+                        llvm::Value* code = builder->CreateIntToPtr(
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(rctx), 3),
+                            llvm::PointerType::get(rctx, 0));
+                        builder->CreateCall(throwFn, {code});
+                    }
+                    builder->CreateUnreachable();
+                    builder->SetInsertPoint(okBB);
+                }
+            }
         }
         // 6.2.2 — `return Cajeta.flagged(v, owned)`: the container's own
         // bookkeeping decides the flag.
