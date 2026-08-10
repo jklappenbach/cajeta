@@ -236,17 +236,34 @@ namespace cajeta {
             // template's own parent class (persistent stdlib class), so its method
             // map outlives the per-test modules. No-op in production (epoch never
             // bumps; the cache is empty).
-            if (parent) {
-                for (auto& entry : methodInstantiationCache) {
-                    if (entry.second) {
-                        // Full unregister from EVERY per-class map (not just
-                        // `methods`): addMethod's duplicate-static check reads
-                        // unlabeledMethodMap, so a partial erase would re-trip it.
-                        parent->removeMethod(entry.second);
-                    }
+            // Evict ONLY the instantiations whose IR lives in a per-test emit
+            // module (emitModule override set) — those pointers dangle once the
+            // test's module is freed. A specialization built INTO the
+            // persistent stdlib (e.g. Sort::pdqFindRun<int64> instantiated
+            // during the stdlib prime) is module-stable: its Function outlives
+            // every test, so it must stay cached. Evicting it made the next
+            // user-module trigger REBUILD it with emitOwner = the user module,
+            // producing a second DEFINITION of the same symbol — the
+            // "multiply defined" stdlib-clone merge failure under
+            // CAJETA_REUSE_FORCE_EMIT (CollectionLiteralTests.
+            // ElementTypeFromTarget).
+            for (auto it = methodInstantiationCache.begin();
+                    it != methodInstantiationCache.end();) {
+                MethodPtr inst = it->second;
+                bool stdlibResident = inst
+                    && inst->getEmitModule() == inst->getModule();
+                if (stdlibResident) {
+                    ++it;
+                    continue;
                 }
+                if (inst && parent) {
+                    // Full unregister from EVERY per-class map (not just
+                    // `methods`): addMethod's duplicate-static check reads
+                    // unlabeledMethodMap, so a partial erase would re-trip it.
+                    parent->removeMethod(inst);
+                }
+                it = methodInstantiationCache.erase(it);
             }
-            methodInstantiationCache.clear();
             methodInstantiationCacheEpoch = epoch;
         }
 
