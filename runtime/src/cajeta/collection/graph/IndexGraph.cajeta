@@ -1,0 +1,513 @@
+package cajeta.collection.graph;
+
+/**
+ * The index-level directed-graph engine: nodes are implicit dense ids
+ * `0..nodeCount()-1`, edges are `int32` pairs, adjacency is CSR built lazily
+ * by counting sort, and the algorithms (multi-root reachability, BFS/DFS
+ * orders, Kahn topological sort, Kosaraju SCC) run on flat arrays only.
+ *
+ * This is the layer to build on when your data ALREADY has dense indices —
+ * an analytics library's node table, a compiler's numbered basic blocks, a
+ * matrix's row space. [[Digraph]] is the interning veneer over this engine
+ * for when identity arrives as payloads instead; its first real consumer
+ * (dev.cajeta.graph, which keeps its own String<->index map) is exactly why
+ * the engine is exposed separately — forcing pre-indexed data through
+ * payload interning would round-trip every id through hashing for nothing.
+ *
+ * Nodes come into existence via `ensureNodes(count)` (or transitively via
+ * [[Digraph]]`.intern`); `addEdge` ignores out-of-range endpoints rather
+ * than trapping, because graphs assembled from external data meet dangling
+ * references routinely and dropping the edge is the wanted degradation.
+ */
+public class IndexGraph {
+    int32 nodeN;
+
+    /** Edge staging: parallel from/to id lists, in insertion order. */
+    int32[] eFrom;
+    int32[] eTo;
+    int32 eCount;
+    int32 eCap;
+
+    /** CSR indexes, rebuilt lazily; `fresh` false after any mutation. */
+    boolean fresh;
+    int32[] outOff;     // nodeCount+1 offsets into outTgt
+    int32[] outTgt;
+    int32[] inOff;      // nodeCount+1 offsets into inSrc
+    int32[] inSrc;
+
+    public IndexGraph() {
+        this.nodeN = 0;
+        this.eCap = 16;
+        this.eFrom #= heap int32[16];
+        this.eTo #= heap int32[16];
+        this.eCount = 0;
+        this.fresh = false;
+        this.outOff #= heap int32[1];
+        this.outTgt #= heap int32[1];
+        this.inOff #= heap int32[1];
+        this.inSrc #= heap int32[1];
+    }
+
+    /** Grow the node space to at least `count` implicit nodes. */
+    public void ensureNodes(int32 count) {
+        if (count > this.nodeN) {
+            this.nodeN = count;
+            this.fresh = false;
+        }
+    }
+
+    public int32 nodeCount() { return this.nodeN; }
+    public int32 edgeCount() { return this.eCount; }
+
+    public void addEdge(int32 from, int32 to) {
+        if (from < 0 || from >= this.nodeN) { return; }
+        if (to < 0 || to >= this.nodeN) { return; }
+        if (this.eCount >= this.eCap) { this.growEdges(); }
+        this.eFrom[this.eCount] = from;
+        this.eTo[this.eCount] = to;
+        this.eCount = this.eCount + 1;
+        this.fresh = false;
+    }
+
+    /** Out-degree of `id`. */
+    public int32 outDegree(int32 id) {
+        this.ensureCsr();
+        if (id < 0 || id >= this.nodeN) { return 0; }
+        return this.outOff[id + 1] - this.outOff[id];
+    }
+
+    /** The `k`-th successor of `id`. */
+    public int32 outAt(int32 id, int32 k) {
+        this.ensureCsr();
+        if (id < 0 || id >= this.nodeN) { return -1; }
+        int32 base = this.outOff[id];
+        if (k < 0 || base + k >= this.outOff[id + 1]) { return -1; }
+        return this.outTgt[base + k];
+    }
+
+    /** In-degree of `id`. */
+    public int32 inDegree(int32 id) {
+        this.ensureCsr();
+        if (id < 0 || id >= this.nodeN) { return 0; }
+        return this.inOff[id + 1] - this.inOff[id];
+    }
+
+    /** The `k`-th predecessor of `id`. */
+    public int32 inAt(int32 id, int32 k) {
+        this.ensureCsr();
+        if (id < 0 || id >= this.nodeN) { return -1; }
+        int32 base = this.inOff[id];
+        if (k < 0 || base + k >= this.inOff[id + 1]) { return -1; }
+        return this.inSrc[base + k];
+    }
+
+    /**
+     * Multi-root reachability: a mask of length `nodeCount()` with 1 at every
+     * id reachable from any of `roots` (roots included). Multi-root is the
+     * primitive — single-root is the one-element case, while the reverse
+     * (running single-root N times) is N full traversals.
+     */
+    public #int8[] reachableFrom(int32[] roots) {
+        this.ensureCsr();
+        int32 n = this.nodeN;
+        int8[] seen #= heap int8[n];
+        int32[] work #= heap int32[n];
+        // Explicit zeroing: allocation-time contents are not relied upon
+        // (recycled memory is poison-filled under the debug allocator).
+        int32 z = 0;
+        while (z < n) {
+            seen[z] = 0;
+            z = z + 1;
+        }
+        int32 top = 0;
+
+        int32 r = 0;
+        int32 rn = (int32) roots.count();
+        while (r < rn) {
+            int32 id = roots[r];
+            if (id >= 0 && id < n) {
+                if (seen[id] == 0) {
+                    seen[id] = 1;
+                    work[top] = id;
+                    top = top + 1;
+                }
+            }
+            r = r + 1;
+        }
+
+        while (top > 0) {
+            top = top - 1;
+            int32 cur = work[top];
+            int32 e = this.outOff[cur];
+            int32 end = this.outOff[cur + 1];
+            while (e < end) {
+                int32 nxt = this.outTgt[e];
+                if (seen[nxt] == 0) {
+                    seen[nxt] = 1;
+                    work[top] = nxt;
+                    top = top + 1;
+                }
+                e = e + 1;
+            }
+        }
+        return #seen;
+    }
+
+    /**
+     * Breadth-first visit order from `root`. Unreachable nodes are absent;
+     * an invalid root yields an empty array.
+     */
+    public #int32[] bfsOrder(int32 root) {
+        this.ensureCsr();
+        int32 n = this.nodeN;
+        if (root < 0 || root >= n) {
+            int32[] empty #= heap int32[0];
+            return #empty;
+        }
+        int8[] seen #= heap int8[n];
+        int32[] queue #= heap int32[n];
+        int32 z = 0;
+        while (z < n) {
+            seen[z] = 0;
+            z = z + 1;
+        }
+        int32 head = 0;
+        int32 tail = 0;
+        seen[root] = 1;
+        queue[tail] = root;
+        tail = tail + 1;
+        while (head < tail) {
+            int32 cur = queue[head];
+            head = head + 1;
+            int32 e = this.outOff[cur];
+            int32 end = this.outOff[cur + 1];
+            while (e < end) {
+                int32 nxt = this.outTgt[e];
+                if (seen[nxt] == 0) {
+                    seen[nxt] = 1;
+                    queue[tail] = nxt;
+                    tail = tail + 1;
+                }
+                e = e + 1;
+            }
+        }
+        int32[] order #= heap int32[tail];
+        int32 i = 0;
+        while (i < tail) {
+            order[i] = queue[i];
+            i = i + 1;
+        }
+        return #order;
+    }
+
+    /**
+     * Depth-first preorder from `root` — the order a RECURSIVE dfs would
+     * produce, successors explored in adjacency order. Iterative with a
+     * frame stack plus per-node cursors into the adjacency (the same
+     * technique the SCC pass uses), so the stack is bounded by nodeCount()
+     * and deep chains cannot overflow. A simpler mark-on-push stack is NOT
+     * equivalent: on diamond shapes it can surface a node through a
+     * shallower branch before the recursive order reaches it, and consumers
+     * (dev.cajeta.graph's determinism fixtures) pin the recursive order.
+     * Unreachable nodes are absent; an invalid root yields an empty array.
+     */
+    public #int32[] dfsOrder(int32 root) {
+        this.ensureCsr();
+        int32 n = this.nodeN;
+        if (root < 0 || root >= n) {
+            int32[] empty #= heap int32[0];
+            return #empty;
+        }
+        int8[] seen #= heap int8[n];
+        int32[] cursor #= heap int32[n];
+        int32 z = 0;
+        while (z < n) {
+            seen[z] = 0;
+            cursor[z] = 0;
+            z = z + 1;
+        }
+        int32[] frames #= heap int32[n];
+        int32[] order #= heap int32[n];
+        int32 top = 0;
+        int32 w = 0;
+        seen[root] = 1;
+        order[w] = root;
+        w = w + 1;
+        frames[top] = root;
+        top = top + 1;
+        while (top > 0) {
+            int32 cur = frames[top - 1];
+            int32 base = this.outOff[cur];
+            int32 deg = this.outOff[cur + 1] - base;
+            boolean descended = false;
+            while (cursor[cur] < deg && descended == false) {
+                int32 nxt = this.outTgt[base + cursor[cur]];
+                cursor[cur] = cursor[cur] + 1;
+                if (seen[nxt] == 0) {
+                    seen[nxt] = 1;
+                    order[w] = nxt;
+                    w = w + 1;
+                    frames[top] = nxt;
+                    top = top + 1;
+                    descended = true;
+                }
+            }
+            if (descended == false) {
+                top = top - 1;
+            }
+        }
+        int32[] trimmed #= heap int32[w];
+        int32 i = 0;
+        while (i < w) {
+            trimmed[i] = order[i];
+            i = i + 1;
+        }
+        return #trimmed;
+    }
+
+    /**
+     * Topological order (Kahn). When the graph is cyclic the result is
+     * SHORTER than `nodeCount()` — the members of cycles are absent — so
+     * `topoOrder().count() < nodeCount()` is the cycle test, exposed as
+     * `isCyclic()`.
+     */
+    public #int32[] topoOrder() {
+        this.ensureCsr();
+        int32 n = this.nodeN;
+        int32[] indeg #= heap int32[n];
+        int32 i = 0;
+        while (i < n) {
+            indeg[i] = this.inOff[i + 1] - this.inOff[i];
+            i = i + 1;
+        }
+        int32[] queue #= heap int32[n];
+        int32 head = 0;
+        int32 tail = 0;
+        i = 0;
+        while (i < n) {
+            if (indeg[i] == 0) {
+                queue[tail] = i;
+                tail = tail + 1;
+            }
+            i = i + 1;
+        }
+        while (head < tail) {
+            int32 cur = queue[head];
+            head = head + 1;
+            int32 e = this.outOff[cur];
+            int32 end = this.outOff[cur + 1];
+            while (e < end) {
+                int32 nxt = this.outTgt[e];
+                indeg[nxt] = indeg[nxt] - 1;
+                if (indeg[nxt] == 0) {
+                    queue[tail] = nxt;
+                    tail = tail + 1;
+                }
+                e = e + 1;
+            }
+        }
+        int32[] order #= heap int32[tail];
+        i = 0;
+        while (i < tail) {
+            order[i] = queue[i];
+            i = i + 1;
+        }
+        return #order;
+    }
+
+    /** True when at least one directed cycle exists. */
+    public boolean isCyclic() {
+        int32[] order #= this.topoOrder();
+        return (int32) order.count() < this.nodeN;
+    }
+
+    /**
+     * Strongly connected components (Kosaraju): a label per node, labels
+     * dense `0..count-1`. Nodes share a label exactly when each can reach
+     * the other; a node on no cycle is its own singleton component.
+     *
+     * Labels carry an ordering guarantee worth designing against: they
+     * ascend in a topological order of the condensation, so every
+     * cross-component edge goes from a smaller label to a larger one.
+     * Processing components by ascending label IS processing the
+     * condensation dependency-first.
+     *
+     * Kosaraju over Tarjan deliberately: both passes are plain iterative
+     * walks (no recursion to overflow, no lowlink bookkeeping), and the
+     * transpose adjacency the second pass needs is the reverse CSR this
+     * class already maintains for `inDegree`/`inAt`.
+     */
+    public #int32[] sccLabels() {
+        this.ensureCsr();
+        int32 n = this.nodeN;
+
+        // Pass 1: DFS postorder (finish order) over the FORWARD graph,
+        // iterative with an explicit stack of nodes plus a per-node cursor
+        // into its adjacency — the cursor is what lets one stack express
+        // "descend, then finish" without recursion.
+        int8[] seen #= heap int8[n];
+        int32[] cursor #= heap int32[n];
+        int32 z = 0;
+        while (z < n) {
+            seen[z] = 0;
+            cursor[z] = 0;
+            z = z + 1;
+        }
+        int32[] fin #= heap int32[n];
+        int32 fCount = 0;
+        int32[] stk #= heap int32[n];
+
+        int32 root = 0;
+        while (root < n) {
+            if (seen[root] == 0) {
+                seen[root] = 1;
+                int32 top = 0;
+                stk[top] = root;
+                top = top + 1;
+                while (top > 0) {
+                    int32 cur = stk[top - 1];
+                    int32 base = this.outOff[cur];
+                    int32 deg = this.outOff[cur + 1] - base;
+                    if (cursor[cur] < deg) {
+                        int32 nxt = this.outTgt[base + cursor[cur]];
+                        cursor[cur] = cursor[cur] + 1;
+                        if (seen[nxt] == 0) {
+                            seen[nxt] = 1;
+                            stk[top] = nxt;
+                            top = top + 1;
+                        }
+                    } else {
+                        top = top - 1;
+                        fin[fCount] = cur;
+                        fCount = fCount + 1;
+                    }
+                }
+            }
+            root = root + 1;
+        }
+
+        // Pass 2: sweep nodes in DECREASING finish order; each unlabeled
+        // node roots a walk over the TRANSPOSE (the reverse CSR), and
+        // everything that walk labels is one component.
+        int32[] comp #= heap int32[n];
+        z = 0;
+        while (z < n) {
+            comp[z] = -1;
+            z = z + 1;
+        }
+        int32 nextLabel = 0;
+        int32 i = fCount;
+        while (i > 0) {
+            i = i - 1;
+            int32 seed = fin[i];
+            if (comp[seed] == -1) {
+                comp[seed] = nextLabel;
+                int32 top = 0;
+                stk[top] = seed;
+                top = top + 1;
+                while (top > 0) {
+                    top = top - 1;
+                    int32 cur = stk[top];
+                    int32 e = this.inOff[cur];
+                    int32 end = this.inOff[cur + 1];
+                    while (e < end) {
+                        int32 prev = this.inSrc[e];
+                        if (comp[prev] == -1) {
+                            comp[prev] = nextLabel;
+                            stk[top] = prev;
+                            top = top + 1;
+                        }
+                        e = e + 1;
+                    }
+                }
+                nextLabel = nextLabel + 1;
+            }
+        }
+        return #comp;
+    }
+
+    /** Number of strongly connected components. */
+    public int32 sccCount() {
+        int32[] labels #= this.sccLabels();
+        int32 n = (int32) labels.count();
+        int32 maxLabel = -1;
+        int32 i = 0;
+        while (i < n) {
+            if (labels[i] > maxLabel) { maxLabel = labels[i]; }
+            i = i + 1;
+        }
+        return maxLabel + 1;
+    }
+
+    // ── internals ──────────────────────────────────────────────
+
+    void growEdges() {
+        int32 next = this.eCap * 2;
+        int32[] bFrom #= heap int32[next];
+        int32[] bTo #= heap int32[next];
+        int32 i = 0;
+        while (i < this.eCount) {
+            bFrom[i] = this.eFrom[i];
+            bTo[i] = this.eTo[i];
+            i = i + 1;
+        }
+        this.eFrom #= bFrom;
+        this.eTo #= bTo;
+        this.eCap = next;
+    }
+
+    /** Counting-sort CSR build, forward and reverse, O(V + E). */
+    void ensureCsr() {
+        if (this.fresh) { return; }
+        int32 n = this.nodeN;
+        int32 m = this.eCount;
+
+        int32[] oOff #= heap int32[n + 1];
+        int32[] iOff #= heap int32[n + 1];
+        int32 z = 0;
+        while (z <= n) {
+            oOff[z] = 0;
+            iOff[z] = 0;
+            z = z + 1;
+        }
+        int32 e = 0;
+        while (e < m) {
+            oOff[this.eFrom[e] + 1] = oOff[this.eFrom[e] + 1] + 1;
+            iOff[this.eTo[e] + 1] = iOff[this.eTo[e] + 1] + 1;
+            e = e + 1;
+        }
+        int32 i = 0;
+        while (i < n) {
+            oOff[i + 1] = oOff[i + 1] + oOff[i];
+            iOff[i + 1] = iOff[i + 1] + iOff[i];
+            i = i + 1;
+        }
+
+        int32[] oTgt #= heap int32[m];
+        int32[] iSrc #= heap int32[m];
+        int32[] oCur #= heap int32[n];
+        int32[] iCur #= heap int32[n];
+        z = 0;
+        while (z < n) {
+            oCur[z] = 0;
+            iCur[z] = 0;
+            z = z + 1;
+        }
+        e = 0;
+        while (e < m) {
+            int32 f = this.eFrom[e];
+            int32 t = this.eTo[e];
+            oTgt[oOff[f] + oCur[f]] = t;
+            oCur[f] = oCur[f] + 1;
+            iSrc[iOff[t] + iCur[t]] = f;
+            iCur[t] = iCur[t] + 1;
+            e = e + 1;
+        }
+
+        this.outOff #= oOff;
+        this.outTgt #= oTgt;
+        this.inOff #= iOff;
+        this.inSrc #= iSrc;
+        this.fresh = true;
+    }
+}
