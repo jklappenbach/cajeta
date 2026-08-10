@@ -503,6 +503,10 @@ namespace cajeta {
         // The module this class's own IR is CREATED in (see emitModule). Falls
         // back to the resolution module when unset — production / non-reuse.
         CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        // True only when an emit target was explicitly assigned (a reuse-path
+        // instantiation emit-owned by a user module) — lets Method's emit-module
+        // fallback distinguish a real override from the resolution default.
+        bool hasEmitModuleOverride() const { return emitModule != nullptr; }
         void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
         list<CajetaClassPtr>& getSuperClasses() {

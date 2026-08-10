@@ -728,8 +728,11 @@ namespace cajeta {
         CajetaModulePtr getModule() { return module; }
 
         // The module this method's IR is CREATED in (see emitModule). Falls back
-        // to the resolution module when unset — i.e. production / non-reuse.
-        CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        // to the DECLARING CLASS's emit module — a class-template instantiation
+        // emitted into a user module carries every method with it — then to the
+        // resolution module (production / non-reuse). Out-of-line: needs
+        // CajetaClass::getEmitModule.
+        CajetaModulePtr getEmitModule();
         void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
         const string toCanonical(bool labeled = false) {

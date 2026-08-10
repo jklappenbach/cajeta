@@ -488,17 +488,24 @@ namespace cajeta {
         // the fresh fallback path; a primed (already-cached) instantiation
         // returned above and never reaches here.
         //
-        // Unlike the method-template gate (MethodTemplateInstantiator.cpp), this
-        // class-template gate has NO CAJETA_REUSE_FORCE_EMIT escape hatch: the
-        // cross-module CLASS-template emit path is NOT yet correct under reuse.
-        // The 2026-06-10 W=24 FORCE_EMIT run caught it producing an invalid GEP
-        // into test.Holder<int32>'s interface vtable slots
-        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch). This
-        // gate is what keeps that miscompile from shipping — it must stay an
-        // unconditional fresh fallback until the struct/vtable layout pointers get
-        // the same emit-module reparenting the method path received.
+        // Twin of the method-template gate (MethodTemplateInstantiator.cpp).
+        // The cross-module CLASS-template emit path was NOT correct under
+        // reuse: the 2026-06-10 W=24 FORCE_EMIT run caught it producing an
+        // invalid GEP into test.Holder<int32>'s interface vtable slots
+        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch),
+        // because vtable/layout globals were resolved against the RESOLUTION
+        // module instead of the EMIT module. The 23-site emit-module
+        // reparenting (ensureGlobalInModule → emitTargetLlvmModule) is the
+        // fix; CAJETA_REUSE_FORCE_EMIT=1 selects the reused emit path so it
+        // can be validated the same way the method path was. Default stays
+        // the conservative fresh fallback until a clean full-suite FORCE_EMIT
+        // run blesses it.
         if (Compiler::isReuseHazardArmed() && emitOwner != module) {
-            throw cajeta::ReuseHazardAbort{};
+            static const bool kForceEmit =
+                std::getenv("CAJETA_REUSE_FORCE_EMIT") != nullptr;
+            if (!kForceEmit) {
+                throw cajeta::ReuseHazardAbort{};
+            }
         }
 
         // Templated-interface instantiation. We re-parse the captured
