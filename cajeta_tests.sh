@@ -62,6 +62,18 @@ cd "$SCRIPT_DIR"
 # the path (a grep, an editor, this script's own argv) is never hit — and a
 # runner only counts if it is a *shell executing this script* — never this `stop`
 # invocation, another `stop`, an editor with the file open, or this `pgrep`.
+# `stress` — run ONLY the stress battery (test/stress_filter.txt), which the
+# default sweep excludes. Reuses the CAJETA_TESTS_FILE injection seam.
+if [ "${1:-}" = "stress" ]; then
+    shift
+    _stress_src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test/stress_filter.txt"
+    [ -f "$_stress_src" ] || { echo "error: $_stress_src not found" >&2; exit 1; }
+    _stress_tmp="$(mktemp)"
+    grep -vE '^\s*(#|$)' "$_stress_src" > "$_stress_tmp"
+    export CAJETA_TESTS_FILE="$_stress_tmp"
+    export PARALLEL="${PARALLEL:-1}"
+fi
+
 if [ "${1:-}" = "stop" ]; then
     self=$$
     victims=()
@@ -329,6 +341,23 @@ else
             fi
         fi
     done <<< "$raw_list"
+fi
+
+# Default sweep: exclude the stress battery (test/stress_filter.txt). The
+# stress subcommand injects the same file via CAJETA_TESTS_FILE, which skips
+# this block (tests came from the file, not discovery).
+if [ -z "${CAJETA_TESTS_FILE:-}" ] && [ -f "$SCRIPT_DIR/test/stress_filter.txt" ]; then
+    _kept=()
+    for _t in "${tests[@]}"; do
+        if ! grep -qxF "$_t" "$SCRIPT_DIR/test/stress_filter.txt"; then
+            _kept+=("$_t")
+        fi
+    done
+    _excluded=$(( ${#tests[@]} - ${#_kept[@]} ))
+    if [ "$_excluded" -gt 0 ]; then
+        echo ">> stress battery: excluded $_excluded test(s) (run them with './cajeta_tests.sh stress')"
+    fi
+    tests=("${_kept[@]}")
 fi
 
 num_tests=${#tests[@]}
