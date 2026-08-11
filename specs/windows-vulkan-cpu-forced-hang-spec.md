@@ -1,4 +1,27 @@
-# windows-vulkan-cpu-forced-hang — defect (open; un-masked by the COFF JITLink fix)
+# windows-vulkan-cpu-forced-hang — defect (FIXED 2026-08-11; un-masked by the COFF JITLink fix)
+
+**Resolution.** Not Vulkan, not the env override, not JITLink — the CPU
+kernel pool's pthread primitives (`cajeta_xpu_dispatch.c` `g_caj_kpool`
+mu/go/done) were plain zero-initialized statics, valid only where
+`PTHREAD_*_INITIALIZER` happens to be all-zero (glibc). On winpthreads the
+initializers are -1 sentinels and a zeroed mutex/condvar is an invalid
+object; with the default `WORKER_SPIN=0` both workers and the joining caller
+enter `pthread_cond_wait` on invalid primitives with unchecked return codes —
+the first CPU-rung kernel launch on Windows hung forever. This test was
+simply the first CPU-rung launch in Windows history: every earlier run died
+at the COFF abort before reaching it, and all 40 post-COFF-fix green tests
+were vulkan/nvptx.
+
+**Attribution (1.4) answered by two bounded runner experiments**: the hang
+reproduced in isolation on both the post-JITLink (run 31488253978) and
+pre-JITLink (run 31492808199) binaries — pre-existing, the COFF fix merely
+un-masked it. **Fix** (`fix/windows-cpu-pool-pthread-init`): designated
+`PTHREAD_*_INITIALIZER`s on the pool struct — bit-identical to zero-init on
+glibc, correct on winpthreads. Runtime sweep found no sibling offenders.
+**Validated run 31536611067**: Windows passes `bundledVulkanCpuForcedToCpu`
+in bounded time; Linux controls (the test + `XpuCpuPoolTeardown`) green.
+Acceptance 2.1/2.3/2.4 met; 2.2 (full-suite Windows sweep) rides the next
+full device-tests run.
 
 ## 1. Definition
 
