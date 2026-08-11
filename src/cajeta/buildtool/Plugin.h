@@ -65,6 +65,19 @@ namespace cajeta::buildtool {
         // a plugin appears here — anything outside the allowlist
         // would have caused resolvePlugins() to error.
         std::set<std::string> capabilities;
+        // The sidecar's `details.plugin.main` — a static no-arg method
+        // (`pkg.Class.method`) that reads the protocol request from stdin.
+        // When set and `binary` is absent, the runtime compiles the .cja
+        // into a cached binary on first use (auto-homed in the local olla
+        // store) — running-the-cja is the DEFAULT distribution model;
+        // an explicit `binary` remains the override.
+        std::string mainEntry;
+        // The sidecar manifest's raw bytes — written through when the
+        // artifact is auto-homed into the local store.
+        std::string manifestJson;
+        // Artifacts of the plugin's own (flat, v1) `settings.dependencies`,
+        // resolved beside the plugin — the compile classpath.
+        std::vector<std::string> depArtifacts;
         // The plugin's `details.plugin.binary` field, resolved to an
         // absolute path. Empty until the plugin lands a binary —
         // pure-source plugin packages parse successfully but can't

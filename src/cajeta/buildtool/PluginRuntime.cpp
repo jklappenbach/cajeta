@@ -63,12 +63,18 @@
 #include "cajeta/buildtool/PluginRuntime.h"
 
 #include "cajeta/buildtool/JsonC.h"
+#include "cajeta/buildtool/OllaStore.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <cerrno>
+#include <filesystem>
+#include <fstream>
+#if !defined(_WIN32)
+#  include <unistd.h>
+#endif
 #include <cstring>
 #include <iostream>
 #include <cstdio>
@@ -85,6 +91,164 @@ namespace cajeta::buildtool {
         llvm::Error err(const std::string& msg) {
             return llvm::createStringError(
                 llvm::inconvertibleErrorCode(), msg);
+        }
+
+        // ── compile-from-cja: the default plugin distribution model ──
+        //
+        // A plugin ships as a .cja like any other package; a native binary
+        // is a DERIVED artifact. When the sidecar declares `main` (a static
+        // no-arg protocol entry) and no explicit `binary`, the runtime:
+        //
+        //   1. auto-homes the artifact + sidecar into the local olla store
+        //      (so the cache has a stable, name/version-addressed home),
+        //   2. AOT-compiles it once — a synthesized one-class source shim
+        //      calls `main`, because entry-point lookup reads user sources,
+        //      not classpath archives — into <store>/<name>/<version>/bin/,
+        //   3. stamps the binary with the artifact's sha and reuses it until
+        //      the artifact changes.
+        //
+        // An explicit sidecar `binary` skips all of this (the escape hatch
+        // for plugins that ship prebuilt executables).
+
+        std::string runningExecutable() {
+#if !defined(_WIN32)
+            char buf[4096];
+            ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+            if (n > 0) {
+                buf[n] = 0;
+                return std::string(buf);
+            }
+#endif
+            return "cajeta";
+        }
+
+        llvm::Expected<std::string> ensurePluginBinary(
+            const ResolvedPlugin& plugin) {
+            namespace fs = std::filesystem;
+
+            OllaStore store(OllaStore::resolveRoot());
+
+            // 1. Auto-home the artifact (idempotent).
+            if (!store.read(plugin.name, plugin.version)) {
+                fs::path tmpManifest =
+                    fs::temp_directory_path() /
+                    ("cajeta-plugin-sidecar-" + plugin.name + ".json");
+                {
+                    std::ofstream out(tmpManifest, std::ios::binary);
+                    if (!out) {
+                        return err("plugin " + plugin.name +
+                                   ": cannot stage sidecar for the store");
+                    }
+                    out << plugin.manifestJson;
+                }
+                auto homed = store.write(plugin.name, plugin.version,
+                                         plugin.artifactPath,
+                                         tmpManifest.string());
+                std::error_code ec;
+                fs::remove(tmpManifest, ec);
+                if (!homed) return homed.takeError();
+            }
+
+            fs::path verDir = fs::path(store.root()) / plugin.name /
+                              plugin.version;
+            fs::path binDir = verDir / "bin";
+            fs::path bin = binDir / plugin.name;
+            fs::path stamp = binDir / (plugin.name + ".sha256");
+
+            // 2. Reuse when the cached binary matches this artifact AND its
+            // dependency closure — a dep-only update (same plugin version,
+            // new library build) must invalidate the cache too, or stale
+            // library code keeps running silently.
+            std::string stampPayload = plugin.sha256;
+            for (const auto& d : plugin.depArtifacts) {
+                stampPayload += "+" + ArtifactCache::sha256OfFile(d);
+            }
+            {
+                std::error_code ec;
+                if (fs::is_regular_file(bin, ec)) {
+                    std::ifstream in(stamp);
+                    std::string prior;
+                    if (in) std::getline(in, prior);
+                    if (!prior.empty() && prior == stampPayload) {
+                        return bin.string();
+                    }
+                }
+            }
+
+            // 3. Compile. Split `main` into pkg.Class + method for the shim.
+            auto lastDot = plugin.mainEntry.find_last_of('.');
+            if (lastDot == std::string::npos || lastDot == 0 ||
+                lastDot + 1 >= plugin.mainEntry.size()) {
+                return err("plugin " + plugin.name +
+                           ": details.plugin.main must be pkg.Class.method, "
+                           "got '" + plugin.mainEntry + "'");
+            }
+            std::string cls = plugin.mainEntry.substr(0, lastDot);
+            std::string method = plugin.mainEntry.substr(lastDot + 1);
+            auto clsDot = cls.find_last_of('.');
+            std::string clsShort = (clsDot == std::string::npos)
+                                       ? cls
+                                       : cls.substr(clsDot + 1);
+
+            std::error_code ec;
+            fs::path synthRoot = binDir / ".synth" / "src";
+            fs::path synthPkg = synthRoot / "cajeta" / "plugin" / "synth";
+            fs::path buildTmp = binDir / ".synth" / "out";
+            fs::create_directories(synthPkg, ec);
+            fs::create_directories(buildTmp, ec);
+            {
+                std::ofstream out(synthPkg / "Main.cajeta");
+                if (!out) {
+                    return err("plugin " + plugin.name +
+                               ": cannot write the entry shim");
+                }
+                out << "package cajeta.plugin.synth;\n\n"
+                    << "import " << cls << ";\n\n"
+                    << "/** Synthesized entry shim: entry-point lookup reads\n"
+                    << " *  user sources, so this one-liner bridges to the\n"
+                    << " *  plugin archive's declared main. */\n"
+                    << "public class Main {\n"
+                    << "    public static void main() {\n"
+                    << "        " << clsShort << "." << method << "();\n"
+                    << "    }\n"
+                    << "}\n";
+            }
+
+            std::string classpath = plugin.artifactPath;
+            for (const auto& d : plugin.depArtifacts) {
+                classpath += "," + d;
+            }
+
+            std::cout << "[plugin] compiling " << plugin.name << "@"
+                      << plugin.version << " from its archive (one-time; "
+                      << "cached in the local olla store)\n";
+
+            SubprocessOptions opt;
+            opt.argv = {runningExecutable(),
+                        "--emit=exe",
+                        "--classpath=" + classpath,
+                        "-o", bin.string(),
+                        "cajeta.plugin.synth.Main.main",
+                        synthRoot.string(),
+                        buildTmp.string()};
+            std::string outData, errData;
+            opt.outData = &outData;
+            opt.errData = &errData;
+            auto res = runSubprocess(opt);
+            if (!res.launched || res.exitCode != 0) {
+                std::string tail = errData.size() > 800
+                                       ? errData.substr(errData.size() - 800)
+                                       : errData;
+                return err("plugin " + plugin.name +
+                           ": compiling the archive failed: " + tail);
+            }
+
+            // 4. Stamp for reuse (artifact + dependency closure).
+            {
+                std::ofstream out(stamp);
+                out << stampPayload << "\n";
+            }
+            return bin.string();
         }
 
         // Build the request JSON the plugin reads from stdin.
@@ -128,6 +292,36 @@ namespace cajeta::buildtool {
                 caps.push_back(c);
             }
             context["capabilities"] = std::move(caps);
+
+            // Toolchain paths, so a plugin can orchestrate compilation
+            // without machine-specific configuration: `cajeta` is this
+            // process; `llc` is the toolchain LLVM this binary was built
+            // against; `cc` resolves from PATH.
+            llvm::json::Object toolchain;
+            toolchain["cajeta"] = runningExecutable();
+#ifdef CAJETA_LLVM_TOOLS_BIN
+            toolchain["llc"] = std::string(CAJETA_LLVM_TOOLS_BIN) + "/llc";
+            toolchain["llvm-dis"] =
+                std::string(CAJETA_LLVM_TOOLS_BIN) + "/llvm-dis";
+#else
+            toolchain["llc"] = std::string("llc");
+            toolchain["llvm-dis"] = std::string("llvm-dis");
+#endif
+            toolchain["cc"] = std::string("cc");
+            context["toolchain"] = std::move(toolchain);
+
+            // The plugin's own resolved artifacts — its archive and its
+            // dependency closure — so it can extract bundled bitcode
+            // (e.g. a probe runtime) from the packages it shipped in,
+            // instead of knowing an install location.
+            llvm::json::Object pluginObj;
+            pluginObj["artifact"] = plugin.artifactPath;
+            llvm::json::Array deps;
+            for (const auto& d : plugin.depArtifacts) {
+                deps.push_back(d);
+            }
+            pluginObj["deps"] = std::move(deps);
+            context["plugin"] = std::move(pluginObj);
             req["context"] = std::move(context);
 
             std::string out;
@@ -262,10 +456,19 @@ namespace cajeta::buildtool {
         const llvm::json::Object& params,
         TaskContext& ctx) {
 
-        if (plugin.binaryPath.empty()) {
+        // Explicit `binary` wins; otherwise `main` selects the default
+        // distribution model — compile the archive on first use and cache
+        // the binary in the local olla store.
+        std::string binaryPath = plugin.binaryPath;
+        if (binaryPath.empty() && !plugin.mainEntry.empty()) {
+            auto built = ensurePluginBinary(plugin);
+            if (!built) return built.takeError();
+            binaryPath = *built;
+        }
+        if (binaryPath.empty()) {
             return err("plugin '" + plugin.name +
-                       "' has no binary declared in its sidecar " +
-                       "(details.plugin.binary) — cannot dispatch '" +
+                       "' declares neither details.plugin.binary nor "
+                       "details.plugin.main — cannot dispatch '" +
                        actionName + "'");
         }
 
@@ -280,13 +483,13 @@ namespace cajeta::buildtool {
         std::string stdoutBuf;
         std::string stderrBuf;
         SubprocessOptions so;
-        so.argv = {plugin.binaryPath};
+        so.argv = {binaryPath};
         so.stdinData = &requestJson;
         so.outData = &stdoutBuf;
         so.errData = &stderrBuf;
         SubprocessResult procRes = runSubprocess(so);
         if (!procRes.launched) {
-            return err("plugin: cannot execute '" + plugin.binaryPath +
+            return err("plugin: cannot execute '" + binaryPath +
                        "': " + procRes.error);
         }
 

@@ -1,0 +1,164 @@
+package cajeta.collection.graph;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+
+/**
+ * A directed graph over interned nodes — the payload-identity veneer over
+ * [[IndexGraph]], the index-level engine that owns adjacency and algorithms.
+ *
+ * ## The shape: intern once, then dense `int32` ids everywhere
+ *
+ * Node payloads are surrendered to the graph exactly once (`intern(#N)`), and
+ * every operation after that speaks dense ids. This is the design that fits
+ * cajeta's ownership model: the graph is the single owner of its payloads, so
+ * algorithms never touch ownership at all — they walk flat `int32[]` arrays
+ * inside the engine. Consumers whose data already carries dense indices
+ * should use [[IndexGraph]] directly and skip interning altogether.
+ *
+ * ## The N contract
+ *
+ * `N` must be a class type providing `int64 hash()` (every class inherits it
+ * from `Object`; `String`'s is content-based) and `boolean equals(N)`.
+ * Interning matches by hash first and confirms with `equals`, so collisions
+ * cost a comparison, never a wrong id. For primitive keys, box them.
+ *
+ * ## Build vs query
+ *
+ * `intern` / `addEdge` may be called freely; the engine's CSR indexes are
+ * (re)built lazily on the first query after a mutation. Queries never mutate,
+ * so a built graph is safe to share read-only.
+ *
+ * ```cajeta
+ * Digraph<String> g = heap Digraph<String>();
+ * int32 a = g.intern("a");
+ * int32 b = g.intern("b");
+ * g.addEdge(a, b);
+ * int8[] seen = g.reachableFrom(roots);   // roots: int32[] of ids
+ * ```
+ */
+public class Digraph<N> {
+    /** id -> payload; the single owner of every node. */
+    ArrayList<N> nodes;
+    /** id -> payload hash, for O(1)-ish interning without double ownership. */
+    int64[] hashes;
+    int32 hashCap;
+    /** The index-level engine: adjacency + algorithms. */
+    IndexGraph core;
+
+    public Digraph() {
+        this.nodes #= heap ArrayList<N>();
+        this.hashCap = 16;
+        this.hashes #= heap int64[16];
+        this.core #= heap IndexGraph();
+    }
+
+    public int32 nodeCount() { return this.core.nodeCount(); }
+    public int32 edgeCount() { return this.core.edgeCount(); }
+
+    /**
+     * Add-or-get: the id of `node`, interning it when new. The payload is
+     * surrendered either way — when an equal node is already present, the
+     * offered one is consumed and dropped, and the existing id returns.
+     */
+    public int32 intern(#N node) {
+        int64 h = node.hash();
+        int32 found = this.scan(h, node);
+        if (found >= 0) {
+            return found;
+        }
+        int32 id = this.nodes.count();
+        this.nodes.add(#node);
+        if (id >= this.hashCap) { this.growHashes(); }
+        this.hashes[id] = h;
+        this.core.ensureNodes(id + 1);
+        return id;
+    }
+
+    /** The id of `node`, or -1. Borrows; never interns. */
+    public int32 idOf(N node) {
+        return this.scan(node.hash(), node);
+    }
+
+    /** The payload at `id` (borrow). Throws on an out-of-range id. */
+    public N nodeAt(int32 id) {
+        return this.nodes.get(id);
+    }
+
+    /** The underlying engine (borrow) — for consumers mixing both levels. */
+    public IndexGraph engine() {
+        return this.core;
+    }
+
+    /** Record `from -> to`; unknown ids are dropped, not trapped. */
+    public void addEdge(int32 from, int32 to) {
+        this.core.addEdge(from, to);
+    }
+
+    public int32 outDegree(int32 id) { return this.core.outDegree(id); }
+    public int32 outAt(int32 id, int32 k) { return this.core.outAt(id, k); }
+    public int32 inDegree(int32 id) { return this.core.inDegree(id); }
+    public int32 inAt(int32 id, int32 k) { return this.core.inAt(id, k); }
+
+    /** Multi-root reachability mask; see [[IndexGraph]]`.reachableFrom`. */
+    public #int8[] reachableFrom(int32[] roots) {
+        return this.core.reachableFrom(roots);
+    }
+
+    /** Breadth-first visit order from `root`. */
+    public #int32[] bfsOrder(int32 root) {
+        return this.core.bfsOrder(root);
+    }
+
+    /** Depth-first preorder from `root`. */
+    public #int32[] dfsOrder(int32 root) {
+        return this.core.dfsOrder(root);
+    }
+
+    /** Kahn topological order; short when cyclic. */
+    public #int32[] topoOrder() {
+        return this.core.topoOrder();
+    }
+
+    /** True when at least one directed cycle exists. */
+    public boolean isCyclic() {
+        return this.core.isCyclic();
+    }
+
+    /** Kosaraju SCC labels, ascending in condensation-topological order. */
+    public #int32[] sccLabels() {
+        return this.core.sccLabels();
+    }
+
+    /** Number of strongly connected components. */
+    public int32 sccCount() {
+        return this.core.sccCount();
+    }
+
+    // ── internals ──────────────────────────────────────────────
+
+    /** Hash-then-equals scan. Linear over ids, but only compares on hash hits. */
+    int32 scan(int64 h, N node) {
+        int32 n = this.nodes.count();
+        int32 i = 0;
+        while (i < n) {
+            if (this.hashes[i] == h) {
+                if (this.nodes.get(i).equals(node)) { return i; }
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    void growHashes() {
+        int32 next = this.hashCap * 2;
+        int64[] bigger #= heap int64[next];
+        int32 i = 0;
+        while (i < this.hashCap) {
+            bigger[i] = this.hashes[i];
+            i = i + 1;
+        }
+        this.hashes #= bigger;
+        this.hashCap = next;
+    }
+}
