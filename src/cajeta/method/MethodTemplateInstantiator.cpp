@@ -375,7 +375,37 @@ namespace cajeta {
             for (auto& fp : parameterList) {
                 if (!fp) continue;
                 if (fp->getName() == "this") continue;
-                paramTypes.push_back(fp->getType());
+                CajetaTypePtr pt = fp->getType();
+                // Present type-parameter-typed formals under THIS
+                // instantiation's bindings. The captured formal resolved its
+                // bare type name at TEMPLATE-PARSE time, where a method type
+                // parameter (`T value`) isn't a resolvable class — so it
+                // lands parse-order-dependently as null or, worse, as an
+                // archive-vouched placeholder for an UNRELATED class that
+                // shares the short name (a test's own `test.T` entry class
+                // was the observed case: every codec's toBytes<T> matcher
+                // saw canonical 'test.T', declined, and the placeholder
+                // throw-body shipped — "synthesizer not engaged"). Within
+                // the template's scope the name DENOTES the type parameter,
+                // so rebind by declared simple name; body synthesizers then
+                // dispatch on the concrete canonical.
+                const std::string& declared = fp->getDeclaredTypeParamName();
+                for (size_t ti = 0; ti < methodTypeParameters.size()
+                        && ti < args.size(); ++ti) {
+                    if (methodTypeParameters[ti].isNonType) continue;
+                    const std::string& tpName = methodTypeParameters[ti].name;
+                    // Primary key: the declaration-time stamp (immutable).
+                    // Fallback: the resolved type's simple name still being
+                    // the T-var name (pre-stamp captures, e.g. a restored
+                    // reuse baseline primed by an older binary).
+                    if (tpName == declared
+                            || (declared.empty() && pt && pt->getQName()
+                                && pt->getQName()->getTypeName() == tpName)) {
+                        pt = args[ti];
+                        break;
+                    }
+                }
+                paramTypes.push_back(pt);
             }
             // Dispatch through the source-synthesis registry (spec §2). The
             // codec if-else chain that used to live here is now registered body

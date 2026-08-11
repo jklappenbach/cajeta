@@ -38,6 +38,8 @@ namespace cajeta {
         // so the evaluation is lazy (Python-like) and respects the
         // caller-side scope rather than a value frozen at declaration time.
         ExpressionPtr defaultValue;
+        // See getDeclaredTypeParamName below. Empty = not T-var-typed.
+        string declaredTypeParamName;
     public:
         ExpressionPtr getDefaultValue() const { return defaultValue; }
         void setDefaultValue(ExpressionPtr e) { defaultValue = std::move(e); }
@@ -59,6 +61,23 @@ namespace cajeta {
 
         bool isTransferred() const { return transferred; }
         void setTransferred(bool v) { transferred = v; }
+
+        // Set at DECLARATION time when this formal's type is a method-level
+        // template parameter (`toBytes<T>(T value)` -> "T"): the visitor
+        // compares the formal's resolved type against the placeholder it
+        // just pushed for each T-var. The resolved CajetaTypePtr is NOT a
+        // reliable record of this fact — the shared placeholder machinery
+        // can later fill/replace that object with an unrelated concrete
+        // class (observed: the buildtool's first Json.toBytes<Finding>
+        // instantiation left the TEMPLATE's formal claiming 'Finding', so
+        // every codec body synthesizer declined and the placeholder
+        // throw-body shipped). This name is immutable once captured.
+        const string& getDeclaredTypeParamName() const {
+            return declaredTypeParamName;
+        }
+        void setDeclaredTypeParamName(const string& n) {
+            declaredTypeParamName = n;
+        }
 
         MethodPtr getParent() const;
 

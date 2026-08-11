@@ -2533,6 +2533,30 @@ namespace cajeta {
                     }
                 }
             }
+            // Stamp T-var-typed formals with the DECLARED type-parameter
+            // name while the fact is still knowable: right here, the
+            // formal's type resolved through the substitution frame just
+            // pushed, so a type object equal to a T-var's binding means the
+            // source spelled that type parameter. The resolved type OBJECT
+            // is later mutable (placeholder fill/refresh can repoint it at
+            // a concrete class); this stamp is not — the method-template
+            // instantiator uses it to present formals under each
+            // instantiation's bindings (codec body-synthesizer dispatch).
+            if (isMethodTemplate) {
+                if (auto frame = pModule->getCurrentTypeSubstitution()) {
+                    for (auto& fp : formalParameters) {
+                        if (!fp || !fp->getType()) continue;
+                        for (auto& tp : methodTypeParameters) {
+                            auto b = frame->find(tp.name);
+                            if (b != frame->end()
+                                    && b->second == fp->getType()) {
+                                fp->setDeclaredTypeParamName(tp.name);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
             if (ctx->typeTypeOrVoid() != nullptr && !returnType) {
                 // A null return type must not reach generatePrototype —
