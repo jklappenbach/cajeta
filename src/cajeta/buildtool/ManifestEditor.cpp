@@ -591,6 +591,38 @@ namespace cajeta::buildtool {
             return b;
         }
 
+        // The plugins block accepts a string shorthand
+        // (`"cajeta.coverage": "1.0.*"` — the form `cajeta init`'s
+        // archetypes ship) as well as the object form findCoverageBlock
+        // needs. When the shorthand is present, rewrite it in place to
+        // `{ "version": "1.0.*" }` so the exclude editor can proceed —
+        // refusing a manifest the plugin resolver itself accepts made
+        // `cajeta coverage ignore` unusable on every fresh project.
+        // Returns nullopt when no string-form declaration exists.
+        std::optional<std::string> upgradeCoverageShorthand(
+            const std::string& src) {
+            size_t pluginsOpen = findObjectOpenAfterKey(src, 0, "plugins");
+            if (pluginsOpen == std::string::npos) return std::nullopt;
+            size_t pluginsClose = findMatchingClose(src, pluginsOpen);
+            if (pluginsClose == std::string::npos) return std::nullopt;
+            size_t keyPos = src.find("\"cajeta.coverage\"", pluginsOpen);
+            if (keyPos == std::string::npos || keyPos >= pluginsClose) {
+                return std::nullopt;
+            }
+            size_t colon = src.find(':', keyPos + 17);
+            if (colon == std::string::npos) return std::nullopt;
+            size_t v = colon + 1;
+            while (v < src.size() &&
+                   std::isspace(static_cast<unsigned char>(src[v]))) ++v;
+            if (v >= src.size() || src[v] != '"') return std::nullopt;
+            size_t vEnd = src.find('"', v + 1);
+            if (vEnd == std::string::npos) return std::nullopt;
+            std::string out = src;
+            out.replace(v, vEnd - v + 1,
+                        "{ \"version\": " + src.substr(v, vEnd - v + 1) + " }");
+            return out;
+        }
+
         // Walk an array's interior and yield positions for each
         // object-literal entry. Returns (objectOpen, objectClose)
         // pairs where `objectOpen` is the position just after `{`
@@ -763,14 +795,23 @@ namespace cajeta::buildtool {
                        "'file', 'package', 'symbol' (got '" + kind + "')");
         }
 
+        std::string upgraded;
+        const std::string* effective = &source;
         auto bounds = findCoverageBlock(source);
+        if (!bounds) {
+            if (auto up = upgradeCoverageShorthand(source)) {
+                upgraded = std::move(*up);
+                bounds = findCoverageBlock(upgraded);
+                if (bounds) effective = &upgraded;
+            }
+        }
         if (!bounds) {
             return err("no cajeta.coverage plugin declared in "
                        "plugins; add it before calling "
                        "`cajeta coverage ignore`");
         }
 
-        auto ensured = ensureExcludeArray(source,
+        auto ensured = ensureExcludeArray(*effective,
                                           bounds->pluginOpen,
                                           bounds->pluginClose);
         if (!ensured) return ensured.takeError();
@@ -897,6 +938,12 @@ namespace cajeta::buildtool {
 
         auto bounds = findCoverageBlock(source);
         if (!bounds) {
+            // A string-shorthand declaration can't hold entries; that's
+            // "nothing to remove", not an undeclared plugin.
+            if (upgradeCoverageShorthand(source)) {
+                return err("no exclude entries in cajeta.coverage "
+                           "(no config block)");
+            }
             return err("no cajeta.coverage plugin declared in plugins");
         }
         // Don't use ensureExcludeArray here — we'd rather error out
