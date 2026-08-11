@@ -123,14 +123,27 @@ namespace cajeta::synth {
         // If `t` is a concrete Tensor<E> instantiation, return E; else null.
         CajetaTypePtr tensorElementOf(const CajetaTypePtr& t) {
             auto cls = std::dynamic_pointer_cast<CajetaClass>(t);
-            if (!cls || !cls->isInstantiation()) return nullptr;
+            if (!cls) return nullptr;
             auto origin = cls->getTemplateOrigin();
             const std::string name = (origin && origin->getQName())
                 ? origin->getQName()->getTypeName()
                 : (cls->getQName() ? cls->getQName()->getTypeName() : std::string());
             if (name != "Tensor" && name.rfind("Tensor<", 0) != 0) return nullptr;
             const auto& args = cls->getTypeArguments();
-            return args.size() == 1 ? args[0] : nullptr;
+            if (args.size() == 1) return args[0];
+            // Validate-first runs at DECLARATION time, where the signature's
+            // `Tensor<float32>` may still be the forward placeholder
+            // registered under the instantiation canonical — a CajetaClass
+            // with the right name but no typeArguments/templateOrigin yet.
+            // The canonical still names the element; recover it by name.
+            if (args.empty() && name.rfind("Tensor<", 0) == 0
+                    && name.back() == '>') {
+                std::string inner = name.substr(7, name.size() - 8);
+                if (!inner.empty() && inner.find(',') == std::string::npos) {
+                    return CajetaType::of(inner);
+                }
+            }
+            return nullptr;
         }
 
         // Validate-first (spec §4.2, §6.1): check the contraction spec against
