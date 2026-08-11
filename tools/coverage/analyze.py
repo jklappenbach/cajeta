@@ -334,14 +334,63 @@ def cmd_gaps(units, root):
     print('Confirm reachability before writing a test or deleting the code.')
 
 
+def cmd_percent(units, totals_path, extra_dirs, exclude):
+    """test-battery-restructure 3.2 — covered/total/percent per file + overall.
+
+    The denominator is totals.json (index_gcov.py --totals): every executable
+    line gcov attributes to src/cajeta, including files no test touches. The
+    numerator is the union of covered lines across the given index dirs.
+    --exclude drops device-gated files from BOTH sides (spec 4.4: they count
+    only on runners with the device)."""
+    with open(totals_path) as fh:
+        totals = {f: set(v) for f, v in json.load(fh)['files'].items()}
+    covered = total_lines(units)
+    for d in extra_dirs:
+        for f, lines in total_lines(load(d)).items():
+            covered.setdefault(f, set()).update(lines)
+    pats = [re.compile(p) for p in exclude]
+    rows = []
+    tot_num = tot_den = 0
+    for f, ex_lines in sorted(totals.items()):
+        short = f.split('/src/cajeta/')[-1]
+        if any(p.search(short) for p in pats):
+            continue
+        # Clamp the numerator to the denominator's line set: a covered line
+        # not in the gcno table (compiler version skew) must not inflate %.
+        cov = len(covered.get(f, set()) & ex_lines)
+        rows.append((cov / len(ex_lines) if ex_lines else 1.0,
+                     cov, len(ex_lines), short))
+        tot_num += cov
+        tot_den += len(ex_lines)
+    rows.sort()
+    print(f'{"pct":>6}  {"cov":>6}  {"total":>6}  file')
+    for pct, cov, tot, short in rows:
+        print(f'{pct*100:5.1f}%  {cov:6d}  {tot:6d}  {short}')
+    print()
+    n90 = sum(1 for r in rows if r[0] >= 0.90)
+    print(f'files at >=90%: {n90}/{len(rows)}')
+    print(f'OVERALL: {tot_num}/{tot_den} = {tot_num/tot_den*100:.2f}%'
+          f'  (target: 90% of executable src/cajeta lines, spec 4.5)')
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('cmd', choices=['report', 'overlap', 'optimize', 'gaps'])
+    ap.add_argument('cmd', choices=['report', 'overlap', 'optimize', 'gaps',
+                                    'percent'])
     ap.add_argument('--data', required=True)
     ap.add_argument('--root', default='.')
     ap.add_argument('--target', type=float, default=0.995)
     ap.add_argument('--jaccard', type=float, default=0.90)
     ap.add_argument('--top', type=int, default=30)
+    ap.add_argument('--totals', default=None,
+                    help='percent: totals.json from index_gcov.py --totals '
+                         '(default <data>/totals.json)')
+    ap.add_argument('--also', action='append', default=[],
+                    help='percent: additional index data dirs to union into '
+                         'the numerator (e.g. a refold measurement)')
+    ap.add_argument('--exclude', action='append', default=[],
+                    help='percent: regex of files excluded from the metric '
+                         '(device-gated code, spec 4.4)')
     a = ap.parse_args()
 
     units = load(a.data)
@@ -354,6 +403,9 @@ def main():
         cmd_overlap(units, jaccard_min=a.jaccard, top=a.top)
     elif a.cmd == 'optimize':
         cmd_optimize(units, target=a.target)
+    elif a.cmd == 'percent':
+        cmd_percent(units, a.totals or os.path.join(a.data, 'totals.json'),
+                    a.also, a.exclude)
     else:
         cmd_gaps(units, a.root)
     return 0

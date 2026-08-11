@@ -94,6 +94,57 @@ def index_unit(args):
     return unit, {k: sorted(v) for k, v in files.items()}, len(gcda)
 
 
+def index_totals(build_dir, data_dir):
+    """Denominator pass (test-battery-restructure 3.1): run gcov over EVERY
+    cajeta_lib .gcno — with or without a .gcda beside it — and record each
+    source file's full executable-line set. A file no test ever touched has
+    no gcda anywhere, so per-unit indexing can never see its lines; the gcno
+    alone still carries the line table (counts 0, irrelevant here). Headers'
+    executable lines ride every including object; the union dedups them."""
+    gcno = []
+    for dirpath, _, names in os.walk(build_dir):
+        rel = os.path.relpath(dirpath, build_dir)
+        if 'cajeta_lib.dir' not in rel:
+            continue
+        if '__/generated' in rel or '/antlr' in rel:
+            continue
+        gcno += [os.path.abspath(os.path.join(dirpath, n))
+                 for n in names if n.endswith('.gcno')]
+    if not gcno:
+        print('totals: no .gcno under cajeta_lib.dir', file=sys.stderr)
+        return 1
+    files = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for at in range(0, len(gcno), 200):
+            batch = gcno[at:at + 200]
+            p = subprocess.run(
+                ['gcov', '--json-format', '--stdout'] + batch,
+                cwd=tmp, capture_output=True, timeout=600, check=False)
+            raw = p.stdout
+            if raw[:2] == b'\x1f\x8b':
+                raw = gzip.decompress(raw)
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line.startswith(b'{'):
+                    continue
+                doc = json.loads(line)
+                for f in doc.get('files', []):
+                    src = f.get('file', '')
+                    if '/src/cajeta/' not in src:
+                        continue
+                    lns = {ln['line_number'] for ln in f.get('lines', [])}
+                    if lns:
+                        files.setdefault(src, set()).update(lns)
+    out = os.path.join(data_dir, 'totals.json')
+    with open(out, 'w') as fh:
+        json.dump({'files': {k: sorted(v) for k, v in sorted(files.items())}},
+                  fh)
+    total = sum(len(v) for v in files.values())
+    print(f'>> totals: {len(files)} files, {total} executable lines -> {out}',
+          file=sys.stderr)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--build', required=True)
@@ -104,7 +155,13 @@ def main():
     ap.add_argument('--min-age', type=int, default=0,
                     help='only index unit dirs older than this many seconds '
                          '(avoid trees still being dumped by a live run)')
+    ap.add_argument('--totals', action='store_true',
+                    help='denominator pass: executable-line totals from every '
+                         'cajeta_lib .gcno (no per-unit gcda needed)')
     a = ap.parse_args()
+
+    if a.totals:
+        return index_totals(a.build, a.data)
 
     units_root = os.path.join(a.data, 'units')
     import time
