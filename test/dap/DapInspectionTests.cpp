@@ -527,3 +527,137 @@ TEST(DapInspectionTests, entryStopAndExceptionBreakpoint) {
     EXPECT_TRUE(server.handle(
         makeRequest(seq++, "disconnect", Json::object()), emit));
 }
+
+// A conditional breakpoint stops only when `<local> <op> <literal>` holds
+// at the breakpoint line; a never-true condition never stops the program.
+TEST(DapInspectionTests, conditionalBreakpointStopsWhenConditionHolds) {
+    TempProgram prog(
+        "package test;\n"                          // 1
+        "public final class D {\n"                 // 2
+        "    public static int32 run() {\n"        // 3
+        "        int32 acc = 0;\n"                 // 4
+        "        int32 i = 0;\n"                   // 5
+        "        while (i < 5) {\n"                // 6
+        "            acc = acc + i;\n"             // 7   <- conditional bp
+        "            i = i + 1;\n"                 // 8
+        "        }\n"                              // 9
+        "        return acc;\n"                    // 10
+        "    }\n"
+        "}\n");
+
+    DapServer server;
+    Collector out;
+    auto emit = out.emit();
+    int seq = 1;
+
+    EXPECT_TRUE(server.handle(
+        makeRequest(seq++, "initialize", Json::object()), emit));
+    {
+        Json args = Json::object();
+        args["entry-method"] = std::string("test.D.run");
+        args["sourceRoot"] = prog.root.string();
+        args["stopOnEntry"] = false;
+        ASSERT_TRUE(server.handle(makeRequest(seq++, "launch", args), emit));
+    }
+    {
+        Json src = Json::object();
+        src["path"] = prog.file.string();
+        Json bp = Json::object();
+        bp["line"] = 7;
+        bp["condition"] = std::string("i == 3");
+        Json bps = Json::array();
+        bps.push_back(std::move(bp));
+        Json args = Json::object();
+        args["source"] = std::move(src);
+        args["breakpoints"] = std::move(bps);
+        ASSERT_TRUE(server.handle(
+            makeRequest(seq++, "setBreakpoints", args), emit));
+    }
+    ASSERT_TRUE(server.handle(
+        makeRequest(seq++, "configurationDone", Json::object()), emit));
+
+    // The loop's earlier iterations (i = 0..2) must not stop; the first
+    // stop arrives with i == 3.
+    const Json* stopped = out.lastEvent("stopped");
+    ASSERT_NE(stopped, nullptr) << out.dumpAll();
+    EXPECT_EQ(stopped->at("body").at("reason").asString(), "breakpoint")
+        << out.dumpAll();
+    const int threadId = stopped->at("body").at("threadId").asInt();
+    {
+        Json args = Json::object();
+        args["expression"] = std::string("i");
+        args["frameId"] = 0;
+        ASSERT_TRUE(server.handle(makeRequest(seq++, "evaluate", args), emit));
+        const Json* r = out.lastResponseTo("evaluate");
+        ASSERT_TRUE(r->at("success").asBool()) << r->dump();
+        EXPECT_EQ(r->at("body").at("result").asString(), "3") << r->dump();
+    }
+
+    // Continue: i == 3 never holds again → run to exit (0+1+2+3+4 = 10).
+    {
+        Json args = Json::object();
+        args["threadId"] = threadId;
+        ASSERT_TRUE(server.handle(makeRequest(seq++, "continue", args), emit));
+        const Json* exited = out.lastEvent("exited");
+        ASSERT_NE(exited, nullptr) << out.dumpAll();
+        EXPECT_EQ(exited->at("body").at("exitCode").asInt(), 10)
+            << out.dumpAll();
+    }
+    EXPECT_TRUE(server.handle(
+        makeRequest(seq++, "disconnect", Json::object()), emit));
+}
+
+// A never-true condition suppresses every hit — the program runs straight
+// to termination without a single stopped event.
+TEST(DapInspectionTests, neverTrueConditionNeverStops) {
+    TempProgram prog(
+        "package test;\n"                          // 1
+        "public final class D {\n"                 // 2
+        "    public static int32 run() {\n"        // 3
+        "        int32 i = 0;\n"                   // 4
+        "        while (i < 3) {\n"                // 5
+        "            i = i + 1;\n"                 // 6   <- bp, condition false
+        "        }\n"                              // 7
+        "        return i;\n"                      // 8
+        "    }\n"
+        "}\n");
+
+    DapServer server;
+    Collector out;
+    auto emit = out.emit();
+    int seq = 1;
+
+    EXPECT_TRUE(server.handle(
+        makeRequest(seq++, "initialize", Json::object()), emit));
+    {
+        Json args = Json::object();
+        args["entry-method"] = std::string("test.D.run");
+        args["sourceRoot"] = prog.root.string();
+        args["stopOnEntry"] = false;
+        ASSERT_TRUE(server.handle(makeRequest(seq++, "launch", args), emit));
+    }
+    {
+        Json src = Json::object();
+        src["path"] = prog.file.string();
+        Json bp = Json::object();
+        bp["line"] = 6;
+        bp["condition"] = std::string("i == 99");
+        Json bps = Json::array();
+        bps.push_back(std::move(bp));
+        Json args = Json::object();
+        args["source"] = std::move(src);
+        args["breakpoints"] = std::move(bps);
+        ASSERT_TRUE(server.handle(
+            makeRequest(seq++, "setBreakpoints", args), emit));
+    }
+    ASSERT_TRUE(server.handle(
+        makeRequest(seq++, "configurationDone", Json::object()), emit));
+
+    EXPECT_EQ(out.lastEvent("stopped"), nullptr) << out.dumpAll();
+    const Json* exited = out.lastEvent("exited");
+    ASSERT_NE(exited, nullptr) << out.dumpAll();
+    EXPECT_EQ(exited->at("body").at("exitCode").asInt(), 3) << out.dumpAll();
+
+    EXPECT_TRUE(server.handle(
+        makeRequest(seq++, "disconnect", Json::object()), emit));
+}
