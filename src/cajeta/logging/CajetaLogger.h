@@ -6,8 +6,6 @@
 
 #include "antlr4-runtime.h"
 #include <string>
-#include "../error/Exception.h"
-#include "../asn/AbstractSyntaxNode.h"
 
 using namespace std;
 
@@ -23,11 +21,6 @@ namespace cajeta {
             string sourcePath,
             string errorId,
             string message);
-
-        static void log(LoggingLevel level,
-            CajetaModule* cajetaModule,
-            AbstractSyntaxNode* node,
-            Exception& e);
     };
 
     typedef shared_ptr<CajetaLogger> CajetaLoggerPtr;

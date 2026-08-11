@@ -357,7 +357,7 @@ namespace cajeta {
             if (DiagnosticEngine::active()) return;
             string message = "Declared package name " + packageName + " must match the compilation unit path of " +
                 qName->getPackageName();
-            CajetaLogger::log(ERROR, ctx, "CAJETA_ERROR_PACKAGE_MISMATCH", sourcePath, message);
+            CajetaLogger::log(ERROR, ctx, sourcePath, "CAJETA_ERROR_PACKAGE_MISMATCH", message);
         }
     }
 
