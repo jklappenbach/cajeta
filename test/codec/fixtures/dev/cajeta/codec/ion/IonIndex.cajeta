@@ -1,0 +1,148 @@
+package dev.cajeta.codec.ion;
+
+import cajeta.lang.String;
+
+/**
+ * Structural index over one Ion 1.0 struct (Phase 3.1c). A single forward scan
+ * of the struct's `(fieldNameSID, value)` pairs records, per field in wire
+ * order, its name SID, **resolved name text**, type code, the value's
+ * type-descriptor position, and the byte bounds of its value
+ * `[valueStart, valueEnd)`.
+ *
+ * The index does **not** own a symbol table — names are resolved against a
+ * borrowed table at build time (the table is stream-global; `IonCursor` holds
+ * the single instance and threads it into each container's index via `buildAt`,
+ * so nested structs share it without a reparse). The typed bind (3.2,
+ * `Ion.parse<T>`) walks this index and matches each field by name — Ion is
+ * self-describing, so binding is by name, not by number.
+ *
+ * Supported type codes mirror the protobuf-parity v1 subset: null, bool,
+ * pos/neg int, float, symbol, string, blob, list, struct. Decimal (5),
+ * timestamp (6), clob (9), sexp (12), reserved (15), and annotated field values
+ * (14) **fail loud** (`IonParseException`) — deferred to P-ION-RICHTYPES.
+ */
+public final class IonIndex {
+    int64[] nameSids;
+    String[] names;
+    int32[] typeCodes;
+    int64[] valueTds;      // the value's type-descriptor octet position
+    int64[] valueStarts;
+    int64[] valueEnds;
+    int32 count;
+
+    public IonIndex(#int64[] nameSids, #String[] names, #int32[] typeCodes,
+                    #int64[] valueTds, #int64[] valueStarts, #int64[] valueEnds,
+                    int32 count) {
+        this.nameSids = #nameSids;
+        this.names = #names;
+        this.typeCodes = #typeCodes;
+        this.valueTds = #valueTds;
+        this.valueStarts = #valueStarts;
+        this.valueEnds = #valueEnds;
+        this.count = count;
+    }
+
+    /**
+     * Convenience: parse the symbol table from the first `n` bytes of `b`, then
+     * index the top-level struct. Standalone callers that don't need the table
+     * afterward (the cursor parses + retains its own).
+     */
+    public static #IonIndex build(int8[] b, int64 n) {
+        IonSymbolTable table = IonSymbolTable.parse(b, n);
+        return IonIndex.buildAt(b, table.userValueStart(), table);
+    }
+
+    /**
+     * Index the struct whose type descriptor is at `tdPos`, resolving field
+     * names against the (borrowed) `table`. Fails loud if the value is not a
+     * struct or a field carries an unsupported type code. This is the seam that
+     * lets nested structs share the one stream-global symbol table.
+     */
+    public static #IonIndex buildAt(int8[] b, int64 tdPos, IonSymbolTable table) {
+        int8 td = b[tdPos];
+        int32 topTc = IonWire.typeCode(td);
+        if (topTc != IonWire.tcStruct()) {
+            throw heap IonParseException("Ion value is not a struct", tdPos);
+        }
+
+        int64 structHeader = IonWire.headerLen(b, tdPos);
+        int64 structContent = IonWire.contentLength(b, tdPos);
+        int64 fStart = tdPos + structHeader;
+        int64 fEnd = fStart + structContent;
+
+        int64 cap = structContent + (int64) 1;
+        int64[] nsids = heap int64[cap];
+        String[] nms = heap String[cap];
+        int32[] tcs = heap int32[cap];
+        int64[] vtds = heap int64[cap];
+        int64[] vss = heap int64[cap];
+        int64[] ves = heap int64[cap];
+        int32 c = 0;
+
+        int64 p = fStart;
+        boolean go = true;
+        while (go) {
+            if (p >= fEnd) { go = false; }
+            else {
+                int64 sidLen = IonWire.varUIntLen(b, p);
+                int64 sid = IonWire.decodeVarUInt(b, p);
+                int64 vpos = p + sidLen;
+                int8 vtd = b[vpos];
+                int32 tc = IonWire.typeCode(vtd);
+
+                if (tc == 5 || tc == 6 || tc == 9 || tc == 12 || tc == 15) {
+                    throw heap IonParseException(
+                        "unsupported Ion type code", vpos);
+                }
+                if (tc == IonWire.tcAnnotation()) {
+                    throw heap IonParseException(
+                        "annotated field values unsupported in v1", vpos);
+                }
+
+                int64 vHeader = IonWire.headerLen(b, vpos);
+                int64 vContent = IonWire.contentLength(b, vpos);
+                int64 vStart = vpos + vHeader;
+                int64 vEnd = vStart + vContent;
+
+                nsids[c] = sid;
+                nms[c] = table.resolve(sid);
+                tcs[c] = tc;
+                vtds[c] = vpos;
+                vss[c] = vStart;
+                ves[c] = vEnd;
+                c = c + 1;
+                p = vEnd;
+            }
+        }
+
+        return heap IonIndex(#nsids, #nms, #tcs, #vtds, #vss, #ves, c);
+    }
+
+    /** Number of struct fields indexed. */
+    public int32 fieldCount() { return this.count; }
+    /** Symbol ID of the i-th field's name. */
+    public int64 fieldNameSid(int32 i) { return this.nameSids[i]; }
+    /** Resolved name text of the i-th field. */
+    public String fieldName(int32 i) { return this.names[i]; }
+    /** Ion type code of the i-th field's value. */
+    public int32 typeCode(int32 i) { return this.typeCodes[i]; }
+    /** Type-descriptor octet position of the i-th field's value. */
+    public int64 valueTd(int32 i) { return this.valueTds[i]; }
+    /** First byte of the i-th field's value (inclusive). */
+    public int64 valueStart(int32 i) { return this.valueStarts[i]; }
+    /** One past the i-th field's value (exclusive). */
+    public int64 valueEnd(int32 i) { return this.valueEnds[i]; }
+
+    /** Index of the first field whose name equals `name`, or -1 if absent. */
+    public int32 indexOfName(String name) {
+        int32 i = 0;
+        while (i < this.count) {
+            String fn = this.names[i];
+            if (fn != null) {
+                if (fn.equals(name)) { return i; }
+            }
+            i = i + 1;
+        }
+        return -1;
+    }
+}

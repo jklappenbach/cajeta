@@ -1,0 +1,19 @@
+package dev.cajeta.codec.ion;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown when an Ion 1.0 binary stream cannot be indexed/decoded — a missing
+ * binary version marker, an unsupported type code (decimal/timestamp/clob/sexp
+ * or reserved), an unsupported symbol-table import, or a truncated value.
+ * `position` is the byte offset (0-based) where the problem was noticed.
+ */
+public class IonParseException extends RecoverableException {
+    public int64 position;
+
+    public IonParseException(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.position = position;
+    }
+}

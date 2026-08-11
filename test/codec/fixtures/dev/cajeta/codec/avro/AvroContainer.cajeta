@@ -1,0 +1,130 @@
+package dev.cajeta.codec.avro;
+
+import cajeta.lang.String;
+// FIXTURE TRIM (this repo only): the deflate/snappy block codecs are cut —
+// they pull in dev.cajeta.codec.compress, which the synthesizer under test
+// never references. Synthesized encode writes null-codec files, so the
+// round-trip only needs the null arm; a compressed input now throws the
+// same AvroParseException the unknown-codec arm always threw.
+
+/**
+ * Avro Object Container File reader (Phase 5.1b/5.2). Layout: the 4-byte magic
+ * `Obj\x01`, a metadata **map** (`avro.schema` JSON + `avro.codec`), a 16-byte
+ * sync marker, then data **blocks** — each a long object-count, a long byte-size,
+ * the (codec-compressed) serialized objects, and a repeat of the sync marker.
+ *
+ * Stateful block iteration: `nextBlock()` advances; `currentObjectCount()` and
+ * `currentData()` expose the current block (decompressed per `codec()` — 5.2).
+ * The typed bind (`Avro.parse<T[]>`, 5.1c) decodes each block's objects in T's
+ * field order via `AvroCursor`.
+ */
+public final class AvroContainer {
+    int8[] b;
+    int64 n;
+    String codecName;
+    int64 dataStart;      // first block offset (after the header)
+    int64 pos;            // start of the next block
+    int64 curCount;
+    int64 curDataStart;
+    int64 curDataLen;
+
+    /**
+     * Parse the header (magic + metadata map + sync). A constructor (not a static
+     * factory) so synthesized `Avro.parse<T[]>` bodies can build it via a
+     * fully-qualified `heap` — a FQ static *call* in synthesized code NULL_OPERANDs
+     * (P-COMPILER-FQN), but a FQ constructor is fine.
+     */
+    public AvroContainer(int8[] b, int64 n) {
+        this.b = b;
+        this.n = n;
+        int32 m0 = ((int32) b[0]) & 0xFF;
+        int32 m1 = ((int32) b[1]) & 0xFF;
+        int32 m2 = ((int32) b[2]) & 0xFF;
+        int32 m3 = ((int32) b[3]) & 0xFF;
+        if (m0 != 0x4F || m1 != 0x62 || m2 != 0x6A || m3 != 0x01) {
+            throw heap AvroParseException("bad Avro container magic", (int64) 0);
+        }
+        AvroCursor c = heap AvroCursor(b, (int64) 4);
+        String codec = "null";
+        boolean go = true;
+        while (go) {
+            int64 cnt = c.readLong();
+            if (cnt == (int64) 0) { go = false; }
+            else {
+                int64 mm = cnt;
+                if (mm < (int64) 0) {
+                    mm = (int64) 0 - mm;
+                    c.readLong();
+                }
+                int64 k = (int64) 0;
+                while (k < mm) {
+                    String key = c.readString();
+                    int8[] val = c.readBytes();
+                    if (key.equals("avro.codec")) {
+                        codec = heap cajeta.lang.String(#val, (int32) val.count());
+                    }
+                    k = k + 1;
+                }
+            }
+        }
+        this.codecName = codec;
+        this.dataStart = c.position() + (int64) 16;
+        this.pos = this.dataStart;
+        this.curCount = (int64) 0;
+        this.curDataStart = (int64) 0;
+        this.curDataLen = (int64) 0;
+    }
+
+    /** Rewind block iteration to the first block (for a second pass). */
+    public void reset() { this.pos = this.dataStart; }
+
+    /** The block compression codec name (`null` / `deflate` / `snappy`). */
+    public String codec() { return this.codecName; }
+
+    /** Advance to the next data block; false at end of file. */
+    public boolean nextBlock() {
+        if (this.pos >= this.n) { return false; }
+        AvroCursor c = heap AvroCursor(this.b, this.pos);
+        int64 count = c.readLong();
+        int64 size = c.readLong();
+        this.curCount = count;
+        this.curDataStart = c.position();
+        this.curDataLen = size;
+        this.pos = c.position() + size + (int64) 16;
+        return true;
+    }
+
+    /** Number of objects in the current block. */
+    public int64 currentObjectCount() { return this.curCount; }
+
+    /** Decompressed bytes of the current block (per `codec()`; caller owns). */
+    public #int8[] currentData() {
+        if (this.codecName.equals("null")) {
+            return this.rawSlice();
+        }
+        throw heap AvroParseException(
+            "unsupported Avro block codec (fixture supports null only)", (int64) 0);
+    }
+
+    int64 beUint32(int8[] b, int64 off) {
+        int64 b0 = (int64) (((int32) b[off]) & 0xFF);
+        int64 o1 = off + (int64) 1;
+        int64 o2 = off + (int64) 2;
+        int64 o3 = off + (int64) 3;
+        int64 b1 = (int64) (((int32) b[o1]) & 0xFF);
+        int64 b2 = (int64) (((int32) b[o2]) & 0xFF);
+        int64 b3 = (int64) (((int32) b[o3]) & 0xFF);
+        return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
+    }
+
+    #int8[] rawSlice() {
+        int8[] out = heap int8[this.curDataLen];
+        int64 k = (int64) 0;
+        while (k < this.curDataLen) {
+            int64 si = this.curDataStart + k;
+            out[k] = this.b[si];
+            k = k + 1;
+        }
+        return #out;
+    }
+}

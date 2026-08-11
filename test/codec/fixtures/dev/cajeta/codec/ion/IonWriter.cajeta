@@ -1,0 +1,307 @@
+package dev.cajeta.codec.ion;
+
+import cajeta.lang.String;
+
+/**
+ * Ion 1.0 binary writer (Phase 3.3). Builds a document into one growable buffer;
+ * containers (struct/list/annotation) are framed by **shift-insert** — open a
+ * container (remember the offset), append its content, then on close compute the
+ * content length, shift the content right, and write the type-descriptor + length
+ * prefix in front. This sidesteps length back-patching while keeping a single
+ * buffer.
+ *
+ * Symbols use the **layered intern** model (ion-java/ion-c/ion-rust): `intern`
+ * returns the system SID (1–9) for a system symbol, else allocates a local SID
+ * from 10; `writeLocalSymbolTable` emits an `$ion_symbol_table` LST listing only
+ * the locals. `Ion.toBytes<T>` drives this: intern all field names, emit BVM +
+ * LST, then emit the struct. Floats are parked (P-ION-FLOAT).
+ */
+public final class IonWriter {
+    int8[] buf;
+    int64 len;
+    int64[] starts;     // offset stack of open containers
+    int32 openCount;
+    String[] locals;    // interned local symbols (index i → SID 10+i)
+    int32 localCount;
+
+    public IonWriter() {
+        int8[] b0 = heap int8[64];
+        this.buf = #b0;
+        this.len = (int64) 0;
+        int64[] s0 = heap int64[16];
+        this.starts = #s0;
+        this.openCount = 0;
+        String[] l0 = heap String[32];
+        this.locals = #l0;
+        this.localCount = 0;
+    }
+
+    // --- buffer primitives -------------------------------------------------
+
+    void ensure(int64 extra) {
+        int64 need = this.len + extra;
+        int64 cap = (int64) this.buf.count();
+        if (need > cap) {
+            int64 ncap = cap * (int64) 2;
+            if (ncap < need) { ncap = need; }
+            int8[] nb = heap int8[ncap];
+            int64 i = (int64) 0;
+            while (i < this.len) {
+                nb[i] = this.buf[i];
+                i = i + 1;
+            }
+            this.buf #= nb;
+        }
+    }
+
+    void appendByte(int8 v) {
+        this.ensure((int64) 1);
+        this.buf[this.len] = v;
+        this.len = this.len + 1;
+    }
+
+    void appendBytes(int8[] src, int32 n) {
+        this.ensure((int64) n);
+        int32 k = 0;
+        while (k < n) {
+            int64 dst = this.len + (int64) k;
+            this.buf[dst] = src[k];
+            k = k + 1;
+        }
+        this.len = this.len + (int64) n;
+    }
+
+    // Number of big-endian magnitude bytes of `v` (0 → 0).
+    static int64 uintMagLen(int64 v) {
+        if (v == (int64) 0) { return (int64) 0; }
+        int64 n = (int64) 0;
+        int64 t = v;
+        while (t > (int64) 0) {
+            n = n + 1;
+            t = t >> 8;
+        }
+        return n;
+    }
+
+    void appendUIntMag(int64 v) {
+        int64 n = IonWriter.uintMagLen(v);
+        int64 i = n - 1;
+        while (i >= (int64) 0) {
+            int64 shift = i * (int64) 8;
+            int32 part = (int32) ((v >> shift) & (int64) 0xFF);
+            this.appendByte((int8) part);
+            i = i - 1;
+        }
+    }
+
+    // Number of VarUInt octets for `v` (0 → 1).
+    static int64 varUIntLenOf(int64 v) {
+        if (v == (int64) 0) { return (int64) 1; }
+        int64 g = (int64) 0;
+        int64 t = v;
+        while (t > (int64) 0) {
+            g = g + 1;
+            t = t >> 7;
+        }
+        return g;
+    }
+
+    void appendVarUInt(int64 v) {
+        int64 g = IonWriter.varUIntLenOf(v);
+        int64 i = g - 1;
+        while (i >= (int64) 0) {
+            int64 shift = i * (int64) 7;
+            int32 part = (int32) ((v >> shift) & (int64) 0x7F);
+            if (i == (int64) 0) { part = part | 0x80; }
+            this.appendByte((int8) part);
+            i = i - 1;
+        }
+    }
+
+    // Write a VarUInt directly at buffer offset `off` (used by container framing).
+    void writeVarUIntAt(int64 off, int64 v) {
+        int64 g = IonWriter.varUIntLenOf(v);
+        int64 j = (int64) 0;
+        while (j < g) {
+            int64 i = g - 1 - j;
+            int64 shift = i * (int64) 7;
+            int32 part = (int32) ((v >> shift) & (int64) 0x7F);
+            if (i == (int64) 0) { part = part | 0x80; }
+            int64 at = off + j;
+            this.buf[at] = (int8) part;
+            j = j + 1;
+        }
+    }
+
+    void appendTypeDescriptor(int32 tc, int64 contentLen) {
+        if (contentLen < (int64) 14) {
+            int32 td = (tc << 4) | (int32) contentLen;
+            this.appendByte((int8) td);
+        } else {
+            int32 td = (tc << 4) | 14;
+            this.appendByte((int8) td);
+            this.appendVarUInt(contentLen);
+        }
+    }
+
+    // --- containers (shift-insert framing) --------------------------------
+
+    /** Open a container — content is appended until the matching close. */
+    public void beginContainer() {
+        this.starts[this.openCount] = this.len;
+        this.openCount = this.openCount + 1;
+    }
+
+    /** Close the innermost container, framing it with type code `tc`. */
+    public void endContainer(int32 tc) {
+        int32 top = this.openCount - 1;
+        int64 start = this.starts[top];
+        this.openCount = top;
+        int64 contentLen = this.len - start;
+
+        int64 hsize;
+        if (contentLen < (int64) 14) {
+            hsize = (int64) 1;
+        } else {
+            hsize = (int64) 1 + IonWriter.varUIntLenOf(contentLen);
+        }
+
+        this.ensure(hsize);
+        // shift [start, len) right by hsize (back-to-front).
+        int64 i = this.len - 1;
+        while (i >= start) {
+            int64 to = i + hsize;
+            this.buf[to] = this.buf[i];
+            i = i - 1;
+        }
+        // write the header at `start`.
+        if (contentLen < (int64) 14) {
+            int32 td = (tc << 4) | (int32) contentLen;
+            this.buf[start] = (int8) td;
+        } else {
+            int32 td = (tc << 4) | 14;
+            this.buf[start] = (int8) td;
+            this.writeVarUIntAt(start + (int64) 1, contentLen);
+        }
+        this.len = this.len + hsize;
+    }
+
+    // --- values ------------------------------------------------------------
+
+    /** Append a struct field-name symbol ID (a VarUInt). */
+    public void writeFieldSid(int64 sid) {
+        this.appendVarUInt(sid);
+    }
+
+    /** Append a bool value (the value is the type-descriptor nibble). */
+    public void writeBoolValue(boolean v) {
+        if (v) { this.appendByte((int8) 0x11); }
+        else { this.appendByte((int8) 0x10); }
+    }
+
+    /** Append an integer value (posint / negint by sign, minimal magnitude). */
+    public void writeIntValue(int64 v) {
+        if (v >= (int64) 0) {
+            int64 n = IonWriter.uintMagLen(v);
+            this.appendTypeDescriptor(2, n);
+            this.appendUIntMag(v);
+        } else {
+            int64 mag = (int64) 0 - v;
+            int64 n = IonWriter.uintMagLen(mag);
+            this.appendTypeDescriptor(3, n);
+            this.appendUIntMag(mag);
+        }
+    }
+
+    /** Append a UTF-8 string value. */
+    public void writeStringValue(int8[] bytes, int32 n) {
+        this.appendTypeDescriptor(8, (int64) n);
+        this.appendBytes(bytes, n);
+    }
+
+    /** Append a blob value. */
+    public void writeBytesValue(int8[] bytes, int32 n) {
+        this.appendTypeDescriptor(10, (int64) n);
+        this.appendBytes(bytes, n);
+    }
+
+    // --- symbols + header --------------------------------------------------
+
+    // System symbol SID for `name`, or -1 if not a system symbol.
+    static int64 systemSidOf(String name) {
+        if (name.equals("$ion")) { return (int64) 1; }
+        if (name.equals("$ion_1_0")) { return (int64) 2; }
+        if (name.equals("$ion_symbol_table")) { return (int64) 3; }
+        if (name.equals("name")) { return (int64) 4; }
+        if (name.equals("version")) { return (int64) 5; }
+        if (name.equals("imports")) { return (int64) 6; }
+        if (name.equals("symbols")) { return (int64) 7; }
+        if (name.equals("max_id")) { return (int64) 8; }
+        if (name.equals("$ion_shared_symbol_table")) { return (int64) 9; }
+        return (int64) -1;
+    }
+
+    /**
+     * Intern a field name to its symbol ID — a system SID if `name` is a system
+     * symbol, else an existing or freshly-allocated local SID (from 10).
+     * Idempotent for already-interned names.
+     */
+    public int64 intern(String name) {
+        int64 sys = IonWriter.systemSidOf(name);
+        if (sys >= (int64) 0) { return sys; }
+        int32 k = 0;
+        while (k < this.localCount) {
+            String e = this.locals[k];
+            if (e.equals(name)) { return (int64) 10 + (int64) k; }
+            k = k + 1;
+        }
+        this.locals[this.localCount] = name;
+        int64 sid = (int64) 10 + (int64) this.localCount;
+        this.localCount = this.localCount + 1;
+        return sid;
+    }
+
+    /** Append the 4-byte binary version marker. */
+    public void writeBvm() {
+        this.appendByte((int8) 0xE0);
+        this.appendByte((int8) 0x01);
+        this.appendByte((int8) 0x00);
+        this.appendByte((int8) 0xEA);
+    }
+
+    /**
+     * Emit an `$ion_symbol_table`-annotated struct listing the interned local
+     * symbols. No-op when only system symbols were used (no locals).
+     */
+    public void writeLocalSymbolTable() {
+        if (this.localCount == 0) { return; }
+        // annotation wrapper: [annot-list-len=1][SID 3][ struct{ symbols:[...] } ]
+        this.beginContainer();
+        this.appendVarUInt((int64) 1);     // annotation-list length (1 octet: SID 3)
+        this.appendVarUInt((int64) 3);     // $ion_symbol_table
+        this.beginContainer();             // LST struct
+        this.appendVarUInt((int64) 7);     // field "symbols"
+        this.beginContainer();             // symbols list
+        int32 k = 0;
+        while (k < this.localCount) {
+            String s = this.locals[k];
+            int8[] sb = s.toBytes();
+            this.writeStringValue(sb, (int32) sb.count());
+            k = k + 1;
+        }
+        this.endContainer(11);             // list
+        this.endContainer(13);             // struct
+        this.endContainer(14);             // annotation wrapper
+    }
+
+    /** Copy out the finished document bytes (caller owns them). */
+    public #int8[] toBytes() {
+        int8[] out = heap int8[this.len];
+        int64 i = (int64) 0;
+        while (i < this.len) {
+            out[i] = this.buf[i];
+            i = i + 1;
+        }
+        return #out;
+    }
+}

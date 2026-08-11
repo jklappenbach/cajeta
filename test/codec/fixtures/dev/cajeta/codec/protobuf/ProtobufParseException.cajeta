@@ -1,0 +1,30 @@
+package dev.cajeta.codec.protobuf;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown when a protobuf message cannot be indexed/decoded:
+ *
+ * - a truncated record — a varint, I32, I64, or LEN payload needing bytes past
+ *   the declared message length,
+ * - an overlong varint (more than the ten bytes a 64-bit value can occupy),
+ * - field number 0, which is not legal protobuf and signals lost sync,
+ * - a declared message length longer than the buffer supplied,
+ * - a deprecated group wire type (3/4) or an unknown one (6/7).
+ *
+ * `position` is the byte offset (0-based) where the problem was noticed, so a
+ * caller can log or seek to it.
+ *
+ * ```cajeta
+ * throw heap ProtobufParseException("unsupported wire type", pos);
+ * ```
+ */
+public class ProtobufParseException extends RecoverableException {
+    public int64 position;
+
+    public ProtobufParseException(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.position = position;
+    }
+}

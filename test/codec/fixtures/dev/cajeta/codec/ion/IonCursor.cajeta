@@ -1,0 +1,163 @@
+package dev.cajeta.codec.ion;
+
+import cajeta.lang.String;
+
+/**
+ * Streaming cursor over an Ion 1.0 binary document (Phase 3.2). Follows the
+ * production Ion-reader pattern (`ion-java`/`ion-c`/`ion-rust`): a SINGLE cursor
+ * holds the one stream-global symbol table plus a **container stack** of indexes
+ * (`frames`).
+ * `stepIn(slot)` descends into a nested struct (re-indexing it against the same
+ * shared table — no reparse, no slice), `stepOut()` ascends. Field lookup is by
+ * **name** (`slotOf` / `has`) since Ion is self-describing; the eager typed bind
+ * (`Ion.parse<T>`) drives this.
+ *
+ * Readers act on the current (innermost) container: `readInt` (pos/neg
+ * magnitude), `readBool` (value in the TD nibble), `readString` (UTF-8),
+ * `readBytes` (blob), `readSymbol` (a symbol ID resolved through the table).
+ * `readFloat` is parked (P-ION-FLOAT). Max nesting depth is fixed (32).
+ */
+public final class IonCursor {
+    int8[] b;
+    int64 n;
+    IonSymbolTable table;
+    IonIndex[] frames;
+    int32 depth;
+    int64 topTd;     // type-descriptor position of the current top-level value
+
+    public IonCursor(int8[] b, int64 n) {
+        this.b = b;
+        this.n = n;
+        IonSymbolTable t = IonSymbolTable.parse(b, n);
+        this.table = #t;
+        IonIndex[] f0 = heap IonIndex[32];
+        this.frames = #f0;
+        this.topTd = this.table.userValueStart();
+        IonIndex root = IonIndex.buildAt(b, this.topTd, this.table);
+        this.frames[0] = #root;
+        this.depth = 1;
+    }
+
+    /**
+     * Advance to the next back-to-back top-level value (re-indexing it against
+     * the same shared symbol table), returning false when the stream is
+     * exhausted. Drives `Ion.parse<T[]>` over a multi-value document.
+     */
+    public boolean nextTopLevel() {
+        int64 hl = IonWire.headerLen(this.b, this.topTd);
+        int64 cl = IonWire.contentLength(this.b, this.topTd);
+        int64 next = this.topTd + hl + cl;
+        if (next >= this.n) { return false; }
+        this.topTd = next;
+        IonIndex idx = IonIndex.buildAt(this.b, next, this.table);
+        this.frames[0] = #idx;
+        this.depth = 1;
+        return true;
+    }
+
+    /** Re-point to the first top-level value (for a second pass). */
+    public void reset() {
+        this.topTd = this.table.userValueStart();
+        IonIndex idx = IonIndex.buildAt(this.b, this.topTd, this.table);
+        this.frames[0] = #idx;
+        this.depth = 1;
+    }
+
+    // The current (innermost) container index.
+    IonIndex cur() {
+        int32 t = this.depth - 1;
+        return this.frames[t];
+    }
+
+    /** Descend into the struct at slot `i`, sharing the one symbol table. */
+    public void stepIn(int32 i) {
+        int64 tdPos = this.cur().valueTd(i);
+        IonIndex child = IonIndex.buildAt(this.b, tdPos, this.table);
+        this.frames[this.depth] = #child;
+        this.depth = this.depth + 1;
+    }
+
+    /** Ascend to the enclosing container. */
+    public void stepOut() {
+        this.depth = this.depth - 1;
+    }
+
+    /** Number of fields in the current container. */
+    public int32 fieldCount() { return this.cur().fieldCount(); }
+    /** Ion type code of the value at slot `i` in the current container. */
+    public int32 typeCode(int32 i) { return this.cur().typeCode(i); }
+
+    /** Index slot of the first field named `name` here, or -1 if absent. */
+    public int32 slotOf(String name) { return this.cur().indexOfName(name); }
+    /** True iff a field named `name` is present in the current container. */
+    public boolean has(String name) { return this.cur().indexOfName(name) >= 0; }
+
+    /** True iff the value at slot `i` is a typed null. */
+    public boolean isNull(int32 i) {
+        int64 tdPos = this.cur().valueTd(i);
+        int8 td = this.b[tdPos];
+        return IonWire.isNull(td);
+    }
+
+    /** Decode the integer at slot `i` (negint type code negates the magnitude). */
+    public int64 readInt(int32 i) {
+        IonIndex ix = this.cur();
+        int64 s = ix.valueStart(i);
+        int64 e = ix.valueEnd(i);
+        int64 mag = IonWire.decodeUIntMag(this.b, s, e - s);
+        if (ix.typeCode(i) == IonWire.tcNegInt()) {
+            return (int64) 0 - mag;
+        }
+        return mag;
+    }
+
+    /** Decode the bool at slot `i` — the value is the type-descriptor nibble. */
+    public boolean readBool(int32 i) {
+        int64 tdPos = this.cur().valueTd(i);
+        int8 td = this.b[tdPos];
+        return IonWire.lengthNibble(td) == 1;
+    }
+
+    /** Decode the UTF-8 string at slot `i` (caller owns the result). */
+    public #String readString(int32 i) {
+        int8[] bb = this.b;
+        IonIndex ix = this.cur();
+        int64 s = ix.valueStart(i);
+        int64 e = ix.valueEnd(i);
+        int64 len = e - s;
+        int8[] out = heap int8[len];
+        int64 k = (int64) 0;
+        while (k < len) {
+            int64 src = s + k;
+            out[k] = bb[src];
+            k = k + 1;
+        }
+        return heap cajeta.lang.String(#out, (int32) len);
+    }
+
+    /** Copy the blob payload bytes at slot `i` (caller owns them). */
+    public #int8[] readBytes(int32 i) {
+        int8[] bb = this.b;
+        IonIndex ix = this.cur();
+        int64 s = ix.valueStart(i);
+        int64 e = ix.valueEnd(i);
+        int64 len = e - s;
+        int8[] out = heap int8[len];
+        int64 k = (int64) 0;
+        while (k < len) {
+            int64 src = s + k;
+            out[k] = bb[src];
+            k = k + 1;
+        }
+        return #out;
+    }
+
+    /** Resolve the symbol value at slot `i` (a symbol ID) to its text. */
+    public String readSymbol(int32 i) {
+        IonIndex ix = this.cur();
+        int64 s = ix.valueStart(i);
+        int64 e = ix.valueEnd(i);
+        int64 sid = IonWire.decodeUIntMag(this.b, s, e - s);
+        return this.table.resolve(sid);
+    }
+}

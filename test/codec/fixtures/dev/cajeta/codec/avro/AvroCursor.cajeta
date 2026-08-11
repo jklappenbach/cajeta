@@ -1,0 +1,67 @@
+package dev.cajeta.codec.avro;
+
+import cajeta.lang.String;
+
+/**
+ * Stateful sequential reader over an Avro binary datum (Phase 5.1a). Because Avro
+ * is untagged, decoding is positional: the typed bind (`Avro.parse<T>`, 5.1c)
+ * calls `readLong` / `readBoolean` / `readString` / `readBytes` in T's field
+ * order, each advancing the cursor. float/double are parked (P-AVRO-FLOAT).
+ */
+public final class AvroCursor {
+    int8[] b;
+    int64 pos;
+
+    public AvroCursor(int8[] b, int64 pos) {
+        this.b = b;
+        this.pos = pos;
+    }
+
+    /** Current byte offset. */
+    public int64 position() { return this.pos; }
+    /** Reposition the cursor (used by the block/container reader). */
+    public void seek(int64 p) { this.pos = p; }
+
+    /** Read a zigzag-varint long (also used for int). */
+    public int64 readLong() {
+        int64 raw = AvroBinary.decodeVarint(this.b, this.pos);
+        int64 ln = AvroBinary.varintLen(this.b, this.pos);
+        this.pos = this.pos + ln;
+        return AvroBinary.zigzagDecode(raw);
+    }
+
+    /** Read a one-byte boolean. */
+    public boolean readBoolean() {
+        int8 v = this.b[this.pos];
+        this.pos = this.pos + 1;
+        return v != (int8) 0;
+    }
+
+    /** Read length-prefixed bytes (caller owns the result). */
+    public #int8[] readBytes() {
+        int64 len = this.readLong();
+        int8[] out = heap int8[len];
+        int64 k = (int64) 0;
+        while (k < len) {
+            int64 si = this.pos + k;
+            out[k] = this.b[si];
+            k = k + 1;
+        }
+        this.pos = this.pos + len;
+        return #out;
+    }
+
+    /** Read a length-prefixed UTF-8 string (caller owns the result). */
+    public #String readString() {
+        int64 len = this.readLong();
+        int8[] out = heap int8[len];
+        int64 k = (int64) 0;
+        while (k < len) {
+            int64 si = this.pos + k;
+            out[k] = this.b[si];
+            k = k + 1;
+        }
+        this.pos = this.pos + len;
+        return heap cajeta.lang.String(#out, (int32) len);
+    }
+}

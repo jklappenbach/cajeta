@@ -1,0 +1,190 @@
+package dev.cajeta.codec.protobuf;
+
+/**
+ * Structural index over a protobuf message (Phase 2.1). A single forward scan
+ * of the tag-length-value records records, per top-level field (in wire order),
+ * its field number, wire type, and the byte bounds of its **value** —
+ * `[valueStart, valueEnd)`. `ProtobufCursor` (2.2) walks this index to skip /
+ * project individual fields without decoding the rest; the eager typed bind
+ * (2.3) drives it for `Protobuf.parse<T>`.
+ *
+ * Value bounds by wire type: VARINT → the varint bytes; I64 → 8 bytes; I32 →
+ * 4 bytes; LEN → the payload AFTER its length prefix. The next field always
+ * begins at the previous field's `valueEnd`.
+ *
+ * **Every accepted record fits entirely within `[0, n)`.** A record is rejected
+ * with `ProtobufParseException`, positioned at the offending byte, when it is
+ * truncated (a varint, I32, I64, or LEN payload that would need bytes past `n`),
+ * when its varint is overlong, when its field number is 0, when `n` itself
+ * exceeds the buffer, or when its wire type is a deprecated group (3/4) or
+ * unknown (6/7). A caller can therefore read any indexed span without a further
+ * bound check of its own.
+ *
+ * Scalar-correct first (this); the SIMD varint/tag boundary scan layers on top
+ * once the oracle is locked.
+ */
+public final class ProtobufIndex {
+    int32[] fieldNumbers;
+    int32[] wireTypes;
+    int64[] valueStarts;   // first byte of the field's value (inclusive)
+    int64[] valueEnds;     // one past the field's value (exclusive)
+    int32 count;
+
+    public ProtobufIndex(#int32[] fieldNumbers, #int32[] wireTypes,
+                         #int64[] valueStarts, #int64[] valueEnds, int32 count) {
+        this.fieldNumbers = #fieldNumbers;
+        this.wireTypes = #wireTypes;
+        this.valueStarts = #valueStarts;
+        this.valueEnds = #valueEnds;
+        this.count = count;
+    }
+
+    /**
+     * An empty index at the initial allocation. `build` appends into this as it
+     * scans, so the arrays follow the field count instead of the message length.
+     */
+    public ProtobufIndex() {
+        int32[] f0 = heap int32[8];
+        int32[] w0 = heap int32[8];
+        int64[] s0 = heap int64[8];
+        int64[] e0 = heap int64[8];
+        this.fieldNumbers = #f0;
+        this.wireTypes = #w0;
+        this.valueStarts = #s0;
+        this.valueEnds = #e0;
+        this.count = 0;
+    }
+
+    /**
+     * Grow the four parallel arrays to hold at least `need` slots, doubling so
+     * the copying stays amortized constant per appended field.
+     *
+     * `#=` on each field, not a plain assign: a plain store lends the fresh
+     * array, which then drops at this method's exit and leaves the field
+     * dangling — the defect `ProtobufWriter.ensure` carries a comment about.
+     */
+    void ensureCapacity(int32 need) {
+        int32 cap = (int32) this.fieldNumbers.count();
+        if (need <= cap) { return; }
+        int32 newCap = cap * 2;
+        while (newCap < need) { newCap = newCap * 2; }
+        int32[] nf = heap int32[newCap];
+        int32[] nw = heap int32[newCap];
+        int64[] ns = heap int64[newCap];
+        int64[] ne = heap int64[newCap];
+        int32 n = this.count;
+        int32 i = 0;
+        while (i < n) {
+            nf[i] = this.fieldNumbers[i];
+            nw[i] = this.wireTypes[i];
+            ns[i] = this.valueStarts[i];
+            ne[i] = this.valueEnds[i];
+            i = i + 1;
+        }
+        this.fieldNumbers #= nf;
+        this.wireTypes #= nw;
+        this.valueStarts #= ns;
+        this.valueEnds #= ne;
+    }
+
+    /** Record one field's number, wire type, and value bounds. */
+    void append(int32 fnum, int32 wt, int64 valStart, int64 valEnd) {
+        this.ensureCapacity(this.count + 1);
+        int32 i = this.count;
+        this.fieldNumbers[i] = fnum;
+        this.wireTypes[i] = wt;
+        this.valueStarts[i] = valStart;
+        this.valueEnds[i] = valEnd;
+        this.count = i + 1;
+    }
+
+    /**
+     * Build the structural index for the first `n` bytes of `b`. Fails loud on
+     * a group (3/4) or unknown (6/7) wire type.
+     */
+    public static #ProtobufIndex build(int8[] b, int64 n) {
+        if (n < (int64) 0) {
+            throw heap ProtobufParseException(
+                "negative protobuf message length", (int64) 0);
+        }
+        // Trusting a declared length longer than the buffer would put every
+        // later bound check on a number the buffer cannot honour.
+        if (n > (int64) b.count()) {
+            throw heap ProtobufParseException(
+                "declared protobuf length exceeds the buffer",
+                (int64) b.count());
+        }
+        ProtobufIndex idx = heap ProtobufIndex();
+        int64 pos = 0;
+        while (pos < n) {
+            // Every varint read below is bounded by `n`, so a truncated record
+            // raises here instead of scanning into whatever follows.
+            int64 tag = ProtobufWire.decodeVarint(b, pos, n);
+            int64 tagLen = ProtobufWire.varintLen(b, pos, n);
+            int32 fnum = ProtobufWire.tagFieldNumber(tag);
+            int32 wt = ProtobufWire.tagWireType(tag);
+            // Field number 0 is not legal protobuf; in practice it means the
+            // reader has lost sync with the record boundaries.
+            if (fnum <= 0) {
+                throw heap ProtobufParseException(
+                    "protobuf field number 0 is not legal", pos);
+            }
+            int64 p = pos + tagLen;
+            int64 valStart = p;
+            int64 valEnd = p;
+            if (wt == 0) {
+                valEnd = p + ProtobufWire.varintLen(b, p, n);
+            } else if (wt == 1) {
+                valEnd = p + (int64) 8;
+                if (valEnd > n) {
+                    throw heap ProtobufParseException(
+                        "truncated protobuf I64 field", pos);
+                }
+            } else if (wt == 2) {
+                int64 len = ProtobufWire.decodeVarint(b, p, n);
+                int64 lenLen = ProtobufWire.varintLen(b, p, n);
+                // A length varint with the top bit set decodes negative; adding
+                // it would move valEnd backwards past valStart.
+                if (len < (int64) 0) {
+                    throw heap ProtobufParseException(
+                        "negative protobuf length prefix", pos);
+                }
+                valStart = p + lenLen;
+                valEnd = valStart + len;
+                if (valEnd > n) {
+                    throw heap ProtobufParseException(
+                        "protobuf LEN payload runs past the message", pos);
+                }
+            } else if (wt == 5) {
+                valEnd = p + (int64) 4;
+                if (valEnd > n) {
+                    throw heap ProtobufParseException(
+                        "truncated protobuf I32 field", pos);
+                }
+            } else {
+                throw heap ProtobufParseException(
+                    "unsupported protobuf wire type (group/unknown)", pos);
+            }
+            idx.append(fnum, wt, valStart, valEnd);
+            pos = valEnd;
+        }
+        return #idx;
+    }
+
+    /** Number of top-level fields indexed. */
+    public int32 fieldCount() { return this.count; }
+    /**
+     * Slots currently allocated. Diagnostic — allocation follows the field
+     * count, not the message length, so a large payload under few fields keeps
+     * a small index.
+     */
+    public int32 capacity() { return (int32) this.fieldNumbers.count(); }
+    /** Field number of the i-th indexed field. */
+    public int32 fieldNumber(int32 i) { return this.fieldNumbers[i]; }
+    /** Wire type of the i-th indexed field. */
+    public int32 wireType(int32 i) { return this.wireTypes[i]; }
+    /** First byte of the i-th field's value (inclusive). */
+    public int64 valueStart(int32 i) { return this.valueStarts[i]; }
+    /** One past the i-th field's value (exclusive). */
+    public int64 valueEnd(int32 i) { return this.valueEnds[i]; }
+}

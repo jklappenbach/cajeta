@@ -1,0 +1,60 @@
+package dev.cajeta.codec.ion;
+
+/**
+ * Amazon Ion facade — the typed entry point for the Ion 1.0 binary format
+ * (Phase 3). Mirrors the `dev.cajeta.codec.protobuf.Protobuf` facade: a Tier-1
+ * synthesizer target whose `parse<T>` body is emitted per-T at the call site
+ * (the cajeta-two `IonSynthesizer` walks T's declared fields and binds each by
+ * NAME against the self-describing struct — Ion carries field names, so no
+ * `@ProtoField`-style number declaration is needed). The structural machinery —
+ * `IonWire`, `IonSymbolTable`, `IonIndex`, `IonCursor` — builds underneath.
+ *
+ * Lives in `dev.cajeta.codec.*` (the standalone codec namespace), so synthesized
+ * bodies reference `dev.cajeta.codec.ion.IonCursor` fully-qualified.
+ */
+public final class Ion {
+    /** Library identity probe. */
+    public static String formatName() {
+        return "ion";
+    }
+
+    /** Canonical media type for the Ion binary format. */
+    public static String wireName() {
+        return "application/ion";
+    }
+
+    /** Build anchor for `--emit=cja` (no runtime role). */
+    public static int32 run() {
+        return 0;
+    }
+
+    /**
+     * Tier-1 templated parse: bind Ion `bytes` (first `length` valid) to a
+     * declared type `T`. The resolver routes `Ion.parse<T>(...)` here via the
+     * explicit type argument; the cajeta-two `IonSynthesizer` replaces this
+     * captured body per-T — walking T's fields and emitting an `IonCursor`-driven
+     * bind matched by field name (single struct → `T`, or a top-level stream →
+     * `T[]` when T is an array).
+     *
+     * Failsafe: a thrown `IonParseException` if the synthesizer does not engage,
+     * rather than a silently default-zeroed result. Mirrors `Protobuf.parse<T>`.
+     */
+    public static T parse<T>(int8[] bytes, int64 length) {
+        throw heap IonParseException(
+            "Ion.parse<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Tier-1 templated encode: serialize a value `T` (or a `T[]` stream) to Ion
+     * binary bytes (BVM + a local symbol table + the struct). The encode mirror
+     * of `parse<T>` — the `IonSynthesizer` interns T's field names (layered:
+     * system SIDs reused, locals from 10), emits the LST, then writes the struct
+     * via `IonWriter`. Validated by round-trip `decode(encode(v)) == v`.
+     *
+     * Failsafe: a thrown `IonParseException` if the synthesizer does not engage.
+     */
+    public static #int8[] toBytes<T>(T value) {
+        throw heap IonParseException(
+            "Ion.toBytes<T>: synthesizer not engaged", (int64) 0);
+    }
+}

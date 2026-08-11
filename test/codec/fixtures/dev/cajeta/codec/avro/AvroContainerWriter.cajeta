@@ -1,0 +1,75 @@
+package dev.cajeta.codec.avro;
+
+import cajeta.lang.String;
+
+/**
+ * Avro Object Container File **writer** (Phase 5.3). Wraps a pre-encoded block of
+ * `count` datums (already serialized back-to-back by `AvroWriter`) into a complete
+ * OCF: the `Obj\x01` magic, a metadata map (`avro.schema` = the emitted JSON,
+ * `avro.codec` = `null`), a 16-byte sync marker, then one data block (object
+ * count, byte size, the bytes, a trailing sync). Read back by `AvroContainer` /
+ * `Avro.parse<T[]>`. Block compression on write is parked (null codec only).
+ */
+public final class AvroContainerWriter {
+    int8[] bytes;
+
+    /**
+     * Build an OCF from a pre-encoded block. A constructor (not just the static
+     * `wrap`) so synthesized `Avro.toBytes<T[]>` bodies can build it via a
+     * fully-qualified `heap` — a FQ static *call* in synthesized code corrupts
+     * codegen (P-COMPILER-FQN), but a FQ constructor is fine (same dodge as
+     * `AvroContainer`).
+     */
+    public AvroContainerWriter(int8[] data, int64 dataLen, int64 count,
+                               String schemaJson) {
+        int8[] w = AvroContainerWriter.wrap(data, dataLen, count, schemaJson);
+        this.bytes = #w;
+    }
+
+    /** The built OCF bytes (a fresh, caller-owned copy). */
+    public #int8[] result() {
+        int64 m = (int64) this.bytes.count();
+        int8[] r = heap int8[m];
+        int64 i = (int64) 0;
+        while (i < m) { r[i] = this.bytes[i]; i = i + 1; }
+        return #r;
+    }
+
+    /** Fixed 16-byte sync marker (bytes 0x00..0x0F). */
+    static #int8[] syncMarker() {
+        int8[] s = heap int8[16];
+        int32 i = 0;
+        while (i < 16) { s[i] = (int8) i; i = i + 1; }
+        return #s;
+    }
+
+    public static #int8[] wrap(int8[] data, int64 dataLen, int64 count,
+                               String schemaJson) {
+        AvroWriter w = heap AvroWriter();
+        // magic Obj\x01
+        w.putByte(0x4F);
+        w.putByte(0x62);
+        w.putByte(0x6A);
+        w.putByte(0x01);
+        // metadata map: 2 entries, then a 0 terminator block. Avro `bytes` and
+        // `string` share a wire shape, so map values reuse writeString.
+        w.writeLong((int64) 2);
+        String kSchema = "avro.schema";
+        w.writeString(kSchema);
+        w.writeString(schemaJson);
+        String kCodec = "avro.codec";
+        w.writeString(kCodec);
+        String vNull = "null";
+        w.writeString(vNull);
+        w.writeLong((int64) 0);
+        // sync marker
+        int8[] sync = AvroContainerWriter.syncMarker();
+        w.writeRaw(sync, 16);
+        // one data block
+        w.writeLong(count);
+        w.writeLong(dataLen);
+        w.writeRaw(data, (int32) dataLen);
+        w.writeRaw(sync, 16);
+        return w.result();
+    }
+}

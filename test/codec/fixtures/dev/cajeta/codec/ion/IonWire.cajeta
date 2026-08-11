@@ -1,0 +1,165 @@
+package dev.cajeta.codec.ion;
+
+/**
+ * Ion 1.0 binary wire-format primitives — the value-stream encodings the
+ * structural index (`IonIndex`, 3.1c) and the symbol table (`IonSymbolTable`,
+ * 3.1b) build on.
+ *
+ * An Ion binary stream opens with a 4-byte **binary version marker**
+ * (`E0 01 00 EA`), then a sequence of values. Each value is a 1-byte **type
+ * descriptor** — high nibble = type code, low nibble = length `L` — optionally
+ * followed by a VarUInt length (when `L == 14`) and then `L` content bytes.
+ *
+ * Two integer encodings appear: a **VarUInt** (lengths, symbol IDs, struct
+ * field names) is big-endian base-128 with the high bit set on the LAST octet —
+ * the opposite terminator convention from a protobuf varint; a **UInt** (an int
+ * value's or symbol's magnitude) is a plain big-endian byte run of known length.
+ *
+ * Type codes: 0 null/NOP · 1 bool · 2 posint · 3 negint · 4 float · 5 decimal ·
+ * 6 timestamp · 7 symbol · 8 string · 9 clob · 10 blob · 11 list · 12 sexp ·
+ * 13 struct · 14 annotation · 15 reserved. This file is purely mechanical;
+ * which type codes are *supported* is enforced by `IonIndex`.
+ */
+public final class IonWire {
+    /** Type code for null / NOP padding. */
+    public static int32 tcNull()      { return 0; }
+    /** Type code for bool (value carried in the length nibble). */
+    public static int32 tcBool()      { return 1; }
+    /** Type code for a positive integer. */
+    public static int32 tcPosInt()    { return 2; }
+    /** Type code for a negative integer. */
+    public static int32 tcNegInt()    { return 3; }
+    /** Type code for an IEEE float. */
+    public static int32 tcFloat()     { return 4; }
+    /** Type code for a symbol (value is a symbol ID). */
+    public static int32 tcSymbol()    { return 7; }
+    /** Type code for a UTF-8 string. */
+    public static int32 tcString()    { return 8; }
+    /** Type code for a blob (raw bytes). */
+    public static int32 tcBlob()      { return 10; }
+    /** Type code for a list. */
+    public static int32 tcList()      { return 11; }
+    /** Type code for a struct. */
+    public static int32 tcStruct()    { return 13; }
+    /** Type code for an annotation wrapper. */
+    public static int32 tcAnnotation(){ return 14; }
+
+    /** Length of the binary version marker (`E0 01 00 EA`). */
+    public static int64 bvmLen() { return (int64) 4; }
+
+    /** True when the 4 bytes at `pos` are the Ion 1.0 binary version marker. */
+    public static boolean isBvm(int8[] b, int64 pos) {
+        int32 b0 = ((int32) b[pos]) & 0xFF;
+        int32 b1 = ((int32) b[pos + 1]) & 0xFF;
+        int32 b2 = ((int32) b[pos + 2]) & 0xFF;
+        int32 b3 = ((int32) b[pos + 3]) & 0xFF;
+        return b0 == 0xE0 && b1 == 0x01 && b2 == 0x00 && b3 == 0xEA;
+    }
+
+    /** Type code (high nibble) of a type-descriptor octet. */
+    public static int32 typeCode(int8 td) {
+        return (((int32) td) & 0xF0) >> 4;
+    }
+
+    /** Length nibble (low nibble) of a type-descriptor octet. */
+    public static int32 lengthNibble(int8 td) {
+        return ((int32) td) & 0x0F;
+    }
+
+    /** True when a type-descriptor octet encodes a typed null (`L == 15`). */
+    public static boolean isNull(int8 td) {
+        return (((int32) td) & 0x0F) == 15;
+    }
+
+    /**
+     * Byte length of the VarUInt starting at `pos` — the count of octets up to
+     * and including the first whose high bit (0x80) is SET (the stop octet).
+     */
+    public static int64 varUIntLen(int8[] b, int64 pos) {
+        int64 i = pos;
+        boolean go = true;
+        while (go) {
+            int8 c = b[i];
+            i = i + 1;
+            if ((((int32) c) & 0x80) != 0) { go = false; }
+        }
+        return i - pos;
+    }
+
+    /**
+     * Decode the big-endian base-128 VarUInt at `pos`. Each octet contributes
+     * its low 7 bits, most-significant group first; the high bit marks the last
+     * octet.
+     */
+    public static int64 decodeVarUInt(int8[] b, int64 pos) {
+        int64 result = (int64) 0;
+        int64 i = pos;
+        boolean go = true;
+        while (go) {
+            int8 c = b[i];
+            int64 lo7 = (int64) (((int32) c) & 0x7F);
+            result = (result << 7) | lo7;
+            i = i + 1;
+            if ((((int32) c) & 0x80) != 0) { go = false; }
+        }
+        return result;
+    }
+
+    /**
+     * Decode a big-endian unsigned magnitude of `len` bytes at `pos` (an Ion
+     * UInt — an int/symbol value's magnitude). `len == 0` yields 0.
+     */
+    public static int64 decodeUIntMag(int8[] b, int64 pos, int64 len) {
+        int64 result = (int64) 0;
+        int64 i = (int64) 0;
+        while (i < len) {
+            int64 byteVal = (int64) (((int32) b[pos + i]) & 0xFF);
+            result = (result << 8) | byteVal;
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /**
+     * Number of header octets of the value whose type descriptor is at `pos` —
+     * the descriptor octet plus any trailing VarUInt length. Content begins at
+     * `pos + headerLen`. Bool, typed nulls, and short (`L < 14`) values have a
+     * 1-octet header; `L == 14` and the ordered-struct form (`struct`, `L == 1`)
+     * add the VarUInt length octets.
+     */
+    public static int64 headerLen(int8[] b, int64 pos) {
+        int8 td = b[pos];
+        int32 tc = IonWire.typeCode(td);
+        int32 l = IonWire.lengthNibble(td);
+        if (l == 15) { return (int64) 1; }
+        if (tc == 1) { return (int64) 1; }
+        if (tc == 13 && l == 1) {
+            return (int64) 1 + IonWire.varUIntLen(b, pos + 1);
+        }
+        if (l == 14) {
+            return (int64) 1 + IonWire.varUIntLen(b, pos + 1);
+        }
+        return (int64) 1;
+    }
+
+    /**
+     * Number of content (value) bytes of the value whose type descriptor is at
+     * `pos`. Bool carries its value in the nibble (content 0); a typed null has
+     * no content; `L == 14` and the ordered-struct form read the length from the
+     * trailing VarUInt; otherwise the length nibble is the content length.
+     */
+    public static int64 contentLength(int8[] b, int64 pos) {
+        int8 td = b[pos];
+        int32 tc = IonWire.typeCode(td);
+        int32 l = IonWire.lengthNibble(td);
+        if (l == 15) { return (int64) 0; }
+        if (tc == 1) { return (int64) 0; }
+        if (tc == 13 && l == 1) {
+            return IonWire.decodeVarUInt(b, pos + 1);
+        }
+        if (l == 14) {
+            return IonWire.decodeVarUInt(b, pos + 1);
+        }
+        return (int64) l;
+    }
+}
