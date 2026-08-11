@@ -321,7 +321,20 @@ if [ ${#patterns[@]} -gt 0 ]; then
     list_filter_args=("--gtest_filter=$lf")
 fi
 tests=()
-if [ -n "${CAJETA_TESTS_FILE:-}" ]; then
+# Routine gate (test-battery-restructure 2.5): with no explicit patterns, no
+# injected list, and no FULL=1, the everyday sweep is the coverage-derived
+# routine set (test/routine_filter.txt — regenerate with
+# tools/coverage/build_routine.py after a per-test coverage measure). The
+# full battery remains one flag away: FULL=1 ./cajeta_tests.sh
+ROUTINE_FILE="${CAJETA_ROUTINE_FILTER:-$SCRIPT_DIR/test/routine_filter.txt}"
+if [ ${#patterns[@]} -eq 0 ] && [ -z "${CAJETA_TESTS_FILE:-}" ] \
+        && [ "${FULL:-0}" != "1" ] && [ -s "$ROUTINE_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue;; esac
+        tests+=("$line")
+    done < "$ROUTINE_FILE"
+    echo ">> Routine gate: ${#tests[@]} tests from ${ROUTINE_FILE#$SCRIPT_DIR/} (FULL=1 runs the whole battery)"
+elif [ -n "${CAJETA_TESTS_FILE:-}" ]; then
     # Injected list (test seam): one fully-qualified Suite.test per line, in the
     # order the suites should group. No binary invoked.
     while IFS= read -r line || [ -n "$line" ]; do
