@@ -322,40 +322,16 @@ TEST(LinkedListClassPopTests, miniBoxUserClassExtractionSurvives) {
         "}\n"), 5);
 }
 
-// PROBE — same MiniBox shape, but the extraction is a PLAIN read instead of a
-// fused claim. §5.1.6 says a plain store "dual-role-resolves a copy"; if the
-// plain READ resolves a copy too, a String field never needs to give up its
-// wrapper and the fix is spelling, not machinery.
-static const char* MINI_PLAIN = R"SRC(
-package test;
-public final class PNode<T> {
-    public T value;
-    public PNode(T v) { this.value #= v; }
-}
-public final class PBox<T> {
-    PNode<T> node;
-    public PBox() { this.node = null; }
-    public void put(T v) { this.node #= heap PNode<T>(#v); }
-    public T take() {
-        PNode<T> n #= this.node;
-        this.node = null;
-        T t = n.value;          // PLAIN read, not `#n.value`
-        return t;
-    }
-}
-)SRC";
-
-TEST(LinkedListClassPopTests, plainReadExtractsStringSafely) {
-    EXPECT_EQ(runI32(std::string(MINI_PLAIN) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        PBox<String> b = heap PBox<String>();\n"
-        "        b.put(\"alpha\");\n"
-        "        String t = b.take();\n"
-        "        return (int32) t.size();\n"
-        "    }\n"
-        "}\n"), 5);
-}
+// The plain-read probe (plainReadExtractsStringSafely) is retired: its
+// hypothesis — that a PLAIN read of a String field resolves a copy, so an
+// extraction never needs the claim — was rejected by mode-carrying-claim §4
+// ("why a plain read is not a substitute": the title must leave the slot
+// WITH the value, which is what the claim does). It only ever passed because
+// String fields then had no ownership bit, so the node's teardown leaked the
+// wrapper and the returned borrow stayed readable by accident; with String
+// field bits landed (39283f70/c322461a) the shape is an ordinary lifetime
+// error. The correct extraction spelling is pinned just below and by
+// miniBoxStringExtractionSurvives above.
 
 // PROBE — Julian's spelling: `#=` store with a PLAIN rhs (single sharp), not
 // the stdlib's `#= n.value` double-sharp.
