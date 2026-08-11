@@ -508,7 +508,20 @@ static struct {
     int             njobs;                   // pool slices dispatched this gen
     int             shutdown;
     const struct cajeta_cpu_grid_slice* slices;  // slices[0..njobs-1] for workers
-} g_caj_kpool;
+} g_caj_kpool = {
+    // The pthread primitives MUST carry their static initializers explicitly.
+    // On glibc PTHREAD_*_INITIALIZER is all-zero, so plain static zero-init
+    // happened to work there — but on winpthreads (MSYS2/MinGW) the
+    // initializers are -1 sentinels that trigger lazy self-init, and a ZEROED
+    // mutex/condvar is an invalid object: pthread_cond_wait on it never
+    // returns (return codes here are unchecked), so the FIRST CPU-rung kernel
+    // launch on Windows hung forever in caj_kpool_wait_gen/caj_kpool_join
+    // (specs/windows-vulkan-cpu-forced-hang-spec.md). Bit-identical to the
+    // old zero-init on glibc; correct everywhere.
+    .mu   = PTHREAD_MUTEX_INITIALIZER,
+    .go   = PTHREAD_COND_INITIALIZER,
+    .done = PTHREAD_COND_INITIALIZER,
+};
 
 // Wait for generation to advance past `seen`. Spin on the atomic generation
 // first (ACQUIRE pairs with dispatch's RELEASE store, so slices/njobs/active are
@@ -588,8 +601,9 @@ static void caj_kpool_ensure(int cap) {
     if (want > CAJETA_XPU_CPU_MAX_WORKERS) want = CAJETA_XPU_CPU_MAX_WORKERS;
     caj_kpool_resolve_spin();
     pthread_mutex_lock(&g_caj_kpool.mu);
-    // mu/go/done are all valid via static zero-init (PTHREAD_*_INITIALIZER is
-    // all-zero on glibc); do NOT pthread_mutex_init(&mu) here -- we hold it.
+    // mu/go/done carry PTHREAD_*_INITIALIZER via g_caj_kpool's designated
+    // initializer (NOT plain zero-init — that is glibc-only and hung Windows);
+    // do NOT pthread_mutex_init(&mu) here -- we hold it.
     g_caj_kpool.started = 1;
     __cajeta_live_set_go_multithreaded();     // second-thread barrier (see live-set)
     while (g_caj_kpool.nthreads < want) {
