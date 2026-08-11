@@ -464,7 +464,7 @@ ViewSafeConsumerTests.toStringViewField
 VqSortInt64Tests.ascendingFastPath
 
 # --- xpu — GPU/accelerator lowering and device execution ----------
-CarameloSpatialIndexDeviceTests.autoRecordsNativeImplOnDevice
+CarameloSpatialIndexDeviceTests.implOverrideRecordingMatrixOnDevice
 CarameloSpatialIndexDeviceTests.forcedOptixUnsupportedShapeFallsBackToSoftware
 XpuAsyncCopyAmdDeviceTests.gfx1151FallsBackToSyncStaging
 XpuAsyncCopyPortabilityTests.swizzledAsyncWmmaCompilesOnAllBackends

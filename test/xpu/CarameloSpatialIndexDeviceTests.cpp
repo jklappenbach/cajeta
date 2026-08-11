@@ -141,13 +141,36 @@ const char* kExactDriver =
     "    }\n"
     "}\n";
 
+// test-battery-restructure 2.2 — SpatialIndex master: countWithin (P1.0, 777)
+// and exact-L2 refinement (P1.1, 888) in ONE compile of the authoritative
+// source. On failure returns scenario*1000 + the scenario's own code; 0 = both
+// use-cases hold.
+const char* kSiAllDriver =
+    "package test;\n"
+    "public class SiAll {\n"
+    "    public static int32 run() {\n"
+    "        int32 r = CarameloRQ.run();\n"
+    "        if (r != 777) { return 1000 + r; }\n"
+    "        r = CarameloExact.run();\n"
+    "        if (r != 888) { return 2000 + r; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
 
-// The Caramelo SpatialIndex primitive, end to end on a real RT device: build a BVH
-// over points, run a fixed-radius neighbour count through the public verb. Proves
-// the foundation's ray-query path (3a/3b) is consumable as a library abstraction
-// (3c) — the user writes `idx.countWithin(...)`, never a ray.
-TEST(CarameloSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
+// The Caramelo SpatialIndex primitive, end to end on a real RT device, both
+// use-cases in ONE compile (test-battery-restructure 2.2; was fixedRadius
+// CountOnDevice + exactL2RefinementOnDevice): (1) P1.0 — build a BVH over
+// points and run a fixed-radius neighbour count through the public verb,
+// proving the foundation's ray-query path (3a/3b) is consumable as a library
+// abstraction (3c) — the user writes `idx.countWithin(...)`, never a ray;
+// (2) P1.1 — exact-L2 refinement via the candidate primitive index (the
+// OpRayQueryGetIntersectionPrimitiveIndexKHR op): the box approximation
+// over-counts (3 of 3 boxes contain the origin); radiusExact recovers each
+// candidate's data point and keeps only the one within the true Euclidean
+// radius (1).
+TEST(CarameloSpatialIndexDeviceTests, spatialIndexCountWithinAndExactL2OnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
@@ -158,43 +181,19 @@ TEST(CarameloSpatialIndexDeviceTests, fixedRadiusCountOnDevice) {
     std::map<std::string, std::string> sources = {
         {"caramelo.spatial.SpatialIndex", lib},
         {"test.CarameloRQ", kDriver},
-    };
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.CarameloRQ", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (10x: countWithin returned the wrong neighbour count)";
-}
-
-// P1.1 — exact-L2 refinement via the candidate primitive index (the new
-// OpRayQueryGetIntersectionPrimitiveIndexKHR op). The box approximation over-counts
-// (3 of 3 boxes contain the origin); radiusExact recovers each candidate's data
-// point and keeps only the one within the true Euclidean radius (1).
-TEST(CarameloSpatialIndexDeviceTests, exactL2RefinementOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::string lib = readSpatialIndexSource();
-    if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
-    }
-    std::map<std::string, std::string> sources = {
-        {"caramelo.spatial.SpatialIndex", lib},
         {"test.CarameloExact", kExactDriver},
+        {"test.SiAll", kSiAllDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.CarameloExact", o);
+    auto jit = CajetaJit::compile(sources, "test.SiAll", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    EXPECT_EQ(r, 888) << "fail code " << r
-                      << " (3xx: box approx != 3; 2xx: exact-L2 count != 1)";
+    EXPECT_EQ(r, 0) << "fail code " << r
+                    << " (11xx countWithin: wrong neighbour count; "
+                       "23xx box approx != 3; 22xx exact-L2 count != 1)";
 }
 
 // Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-caramelo
@@ -437,32 +436,6 @@ const char* kNearestDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, nearestHitOnCpuSoftwareBvh) {
-    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100: committed type; 101: nearest distance; 102: prim)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnCpuSoftwareBvh) {
-    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100: distance; 101: barycentric u; 102: v)";
-}
-
 // Inc 3b: front-face getter. A CCW triangle in z=0 (geometric normal +z): a ray
 // from above (+z, going down) hits the front (true); a ray from below hits the
 // back (false). The cajeta convention (MT det > 0) is set to match Vulkan's
@@ -520,112 +493,77 @@ const char* kFrontDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, frontFaceOnCpuSoftwareBvh) {
-    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
+// ── The RayQuery walk matrix (test-battery-restructure 2.2) ─────────────────
+// The five walk drivers above (AABB count, triangle hit via confirm+committed,
+// nearest-hit commit, candidate getters, front-face) are the SAME sources on
+// every backend leg — that sameness is the point: each backend's 777 must
+// equal the CPU 777, the verb following the noun across backends. Folded, the
+// five per-backend single-scenario compiles become ONE multi-source compile
+// per backend: a master class runs every scenario and encodes the first
+// failure as scenario*1000 + the scenario's own code (0 = all hold). Every
+// original assertion (the per-scenario fail codes) survives in the encoding.
+namespace {
+const char* kWalkAllDriver =
+    "package test;\n"
+    "public class WalkAll {\n"
+    "    public static int32 run() {\n"
+    "        int32 r = RqMin.run();\n"
+    "        if (r != 777) { return 1000 + r; }\n"
+    "        r = TriRq.run();\n"
+    "        if (r != 777) { return 2000 + r; }\n"
+    "        r = NearRq.run();\n"
+    "        if (r != 777) { return 3000 + r; }\n"
+    "        r = BaryRq.run();\n"
+    "        if (r != 777) { return 4000 + r; }\n"
+    "        r = FrontRq.run();\n"
+    "        if (r != 777) { return 5000 + r; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+
+// thousands digit -> scenario; remainder -> that scenario's own fail code.
+const char* kWalkDecode =
+    " (1xxx aabbCount; 2xxx triangleHit; 3xxx nearestHit; 4xxx candidate"
+    "Getters [4100 distance, 4101 baryU, 4102 baryV]; 5xxx frontFace"
+    " [5100 front, 5101 back]; -1 compile, -2 lookup)";
+
+int runWalkMatrix(cajeta::xpu::Backend be) {
+    std::map<std::string, std::string> sources = {
+        {"test.RqMin", kRqMinDriver},   {"test.TriRq", kTriDriver},
+        {"test.NearRq", kNearestDriver}, {"test.BaryRq", kBaryDriver},
+        {"test.FrontRq", kFrontDriver}, {"test.WalkAll", kWalkAllDriver},
+    };
     CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
-    ASSERT_NE(jit, nullptr);
+    o.xpuBackends = {be};
+    auto jit = CajetaJit::compile(sources, "test.WalkAll", o);
+    if (jit == nullptr) return -1;
     auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100: front hit; 101: back hit)";
+    if (fn == nullptr) return -2;
+    return fn();
+}
+} // namespace
+
+// The CPU software path: AccelerationStructure builds the portable software
+// BVH (runtime/native/cajeta_bvh.c) and RayQuery lowers to the cajeta
+// SoftwareRayQuery walk — no device required. The reference every device leg
+// must match.
+TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnCpuSoftwareBvh) {
+    int r = runWalkMatrix(cajeta::xpu::Backend::Cpu);
+    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode;
 }
 
-TEST(CarameloSpatialIndexDeviceTests, frontFaceOnDevice) {
+// The Vulkan NATIVE path (VK_KHR_acceleration_structure BLAS + OpRayQuery;
+// getters via OpRayQueryGetIntersectionT / Barycentrics, Confirm/Generate via
+// the cajeta-llvm fork intrinsics; Möller-Trumbore in hardware; non-opaque
+// geometry so triangle candidates enumerate in the proceed() loop). Must match
+// the CPU leg scenario for scenario.
+TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
-    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (Vulkan native front-face != software)";
-}
-
-// Inc 3b native cross-checks: the SAME getter / nearest-hit sources on the Vulkan
-// NATIVE path (OpRayQueryGetIntersectionT / Barycentrics, Confirm/Generate via the
-// new cajeta-llvm fork intrinsics) must match the CPU software results.
-TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (Vulkan native candidate getters != software)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, nearestHitOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (Vulkan native nearest-hit (confirm) != software)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnCpuSoftwareBvh) {
-    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (CPU software triangle ray query: wrong hit count)";
-}
-
-// The mesh cross-check (inc-2 done bar): the SAME triangle source on the Vulkan
-// NATIVE path (VK_GEOMETRY_TYPE_TRIANGLES_KHR + OpRayQuery, Möller-Trumbore in
-// hardware) must produce the same hit counts as the CPU software walk above.
-// Non-opaque geometry so triangle candidates enumerate in the proceed() loop.
-TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (Vulkan native triangle ray query != software)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
-    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (CPU software ray query: wrong hit count)";
+    int r = runWalkMatrix(cajeta::xpu::Backend::Spirv);
+    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
+                    << " (Vulkan native != software reference)";
 }
 
 // ── Ray-query-to-core (inc 1): the SAME Caramelo source on the CPU SOFTWARE path ──
@@ -636,7 +574,7 @@ TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnCpuSoftwareBvh) {
 // Each ctest case is a fresh process, so the CPU-only bundle selects the CPU
 // backend (priority CUDA>HIP>Vulkan>CPU is moot when only CPU is bundled).
 
-TEST(CarameloSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, spatialIndexCountWithinAndExactL2OnCpuSoftwareBvh) {
     std::string lib = readSpatialIndexSource();
     if (lib.empty()) {
         GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
@@ -644,36 +582,19 @@ TEST(CarameloSpatialIndexDeviceTests, fixedRadiusCountOnCpuSoftwareBvh) {
     std::map<std::string, std::string> sources = {
         {"caramelo.spatial.SpatialIndex", lib},
         {"test.CarameloRQ", kDriver},
-    };
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.CarameloRQ", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (CPU software BVH/RayQuery: wrong neighbour count)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, exactL2RefinementOnCpuSoftwareBvh) {
-    std::string lib = readSpatialIndexSource();
-    if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
-    }
-    std::map<std::string, std::string> sources = {
-        {"caramelo.spatial.SpatialIndex", lib},
         {"test.CarameloExact", kExactDriver},
+        {"test.SiAll", kSiAllDriver},
     };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(sources, "test.CarameloExact", o);
+    auto jit = CajetaJit::compile(sources, "test.SiAll", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    EXPECT_EQ(r, 888) << "fail code " << r
-                      << " (CPU software: 3xx box approx != 3; 2xx exact-L2 != 1)";
+    EXPECT_EQ(r, 0) << "fail code " << r
+                    << " (CPU software: 11xx countWithin wrong neighbour count; "
+                       "23xx box approx != 3; 22xx exact-L2 count != 1)";
 }
 
 // ── Capability heuristic + override (inc-4 brick #3) ────────────────────────
@@ -874,87 +795,59 @@ const char* kImplProbeDriver =
     "    }\n"
     "}\n";
 
-// The honest proof that the AUTO *OnDevice native legs are genuinely native and
-// not silently running the software fallback: the default (AUTO) ctor on a
-// ray-query Vulkan device must RECORD native (implTag 1) -> 701. Before the Win32
-// un-gate of caj_native_rayquery_available(), AUTO resolved to software (-> 700)
-// on Windows even on the 4090, so this test guards the fix on-device.
-TEST(CarameloSpatialIndexDeviceTests, autoRecordsNativeImplOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::map<std::string, std::string> sources = {{"test.RqImpl", kImplProbeDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.RqImpl", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 701) << "fail code " << r
-                      << " (1xx: wrong counts; 700: AUTO recorded SOFTWARE, not "
-                         "native — the Win32 gate is still downgrading on-device)";
-}
+// The Vulkan impl-override matrix (test-battery-restructure 2.2; was auto
+// RecordsNativeImplOnDevice + forcedSoftwareOfApiOnDevice + forcedNativeOfApi
+// OnDevice — the AUTO-native walk reference minimalRayQueryOnDevice lives on
+// in rayQueryWalkMatrixOnDevice): the SAME AABB scene under all three impl
+// selections in ONE compile.
+//   (1) AUTO must RECORD native (implTag 1 -> 701) — the honest proof the
+//       *OnDevice legs are genuinely native, not silently running the software
+//       fallback (which would also produce the correct 1/0/1/1 counts). Before
+//       the Win32 un-gate of caj_native_rayquery_available(), AUTO resolved to
+//       software on Windows even on the 4090; this guards the fix on-device.
+//   (2) FORCED software: AsImpl.Software on the same device builds a software
+//       BVH and runs the $sw variant; its 777 == native == CPU. One backend,
+//       either impl, the verb following the noun.
+//   (3) FORCED native: AsImpl.Native builds the native BLAS + OpRayQuery on
+//       its own, not just as the AUTO default — green even if a future change
+//       alters the AUTO/caj_native_rayquery_available policy.
+namespace {
+const char* kImplAllDriver =
+    "package test;\n"
+    "public class ImplAll {\n"
+    "    public static int32 run() {\n"
+    "        int32 r = RqImpl.run();\n"
+    "        if (r != 701) { return 1000 + r; }\n"
+    "        r = RqMinSw.run();\n"
+    "        if (r != 777) { return 2000 + r; }\n"
+    "        r = RqMinNat.run();\n"
+    "        if (r != 777) { return 3000 + r; }\n"
+    "        return 0;\n"
+    "    }\n"
+    "}\n";
+} // namespace
 
-// Native leg: kRqMinDriver (default Auto ctor) on a ray-query-capable Vulkan
-// device — the native BLAS + OpRayQuery. The reference 777 the forced-software
-// leg below must match.
-TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnDevice) {
+TEST(CarameloSpatialIndexDeviceTests, implOverrideRecordingMatrixOnDevice) {
     if (!VulkanDriver::rayQueryAvailable()) {
         GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
     }
-    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
+    std::map<std::string, std::string> sources = {
+        {"test.RqImpl", kImplProbeDriver},
+        {"test.RqMinSw", kRqMinSoftwareDriver},
+        {"test.RqMinNat", kRqMinNativeDriver},
+        {"test.ImplAll", kImplAllDriver},
+    };
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
+    auto jit = CajetaJit::compile(sources, "test.ImplAll", o);
     ASSERT_NE(jit, nullptr);
     auto fn = jit->lookup<int (*)()>("run");
     ASSERT_NE(fn, nullptr);
     int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (Vulkan native AABB ray query: wrong hit count)";
-}
-
-// Forced-software leg (the brick's proof): AsImpl.Software on the SAME Vulkan
-// device builds a software BVH and runs the $sw variant; its 777 == the native leg
-// above == the CPU leg (minimalRayQueryOnCpuSoftwareBvh). One backend, either
-// impl, the verb following the noun.
-TEST(CarameloSpatialIndexDeviceTests, forcedSoftwareOfApiOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::map<std::string, std::string> sources = {{"test.RqMinSw", kRqMinSoftwareDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.RqMinSw", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (Vulkan FORCED-SOFTWARE via AsImpl.Software != native/CPU)";
-}
-
-// Forced-NATIVE leg: AsImpl.Native on the SAME Vulkan device builds the native
-// VK_KHR_acceleration_structure BLAS and traces via OpRayQuery (the RT-core path);
-// its 777 == the AUTO native leg (minimalRayQueryOnDevice) == the forced-software
-// leg == the CPU leg. The explicit override proves native is selectable on its
-// own, not just as the AUTO default — so this stays green even if a future change
-// alters the AUTO/caj_native_rayquery_available policy.
-TEST(CarameloSpatialIndexDeviceTests, forcedNativeOfApiOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::map<std::string, std::string> sources = {{"test.RqMinNat", kRqMinNativeDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.RqMinNat", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (Vulkan FORCED-NATIVE via AsImpl.Native != AUTO-native/software/CPU)";
+    EXPECT_EQ(r, 0) << "fail code " << r
+                    << " (1xxx AUTO probe: 1700 = AUTO recorded SOFTWARE not "
+                       "native, 11xx wrong counts; 2xxx forced-software; "
+                       "3xxx forced-native; remainder = the leg's own code)";
 }
 
 // ===========================================================================
@@ -981,89 +874,14 @@ namespace { struct AsImplEnvGuard {
     ~AsImplEnvGuard() { unsetenv("CAJETA_GPU_AS_IMPL"); }
 }; }
 
-TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnNvptxSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnNvptxSoftwareBvh) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
     AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
-    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (NVPTX software AABB ray query: wrong hit count)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnNvptxSoftwareBvh) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
-    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (NVPTX software triangle ray query != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, nearestHitOnNvptxSoftwareBvh) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
-    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (NVPTX nearest-hit confirm/committed != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnNvptxSoftwareBvh) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
-    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (NVPTX candidate distance/barycentrics != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, frontFaceOnNvptxSoftwareBvh) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
-    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (NVPTX committed front-face != CPU)";
+    int r = runWalkMatrix(cajeta::xpu::Backend::Nvptx);
+    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
+                    << " (NVPTX software walk != CPU reference)";
 }
 
 // ── NVIDIA OptiX RT-core AS tier (Milestone 1) ──────────────────────────────
@@ -1750,110 +1568,27 @@ TEST(CarameloSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
 // the verb following the noun onto a fifth path. On a box without the OptiX runtime
 // the AS records software and this still returns 777 via the software cubin (the
 // launch's impl branch falls through); on the 4090 it runs on the RT cores.
-TEST(CarameloSpatialIndexDeviceTests, aabbCountRayQueryOnOptixDevice) {
+// The same five walk scenarios on the OptiX RT-core verb (M2 Phases 4/4-B/4-E),
+// CAJETA_GPU_AS_IMPL=optix: the AABB scene dispatches via the launch's impl
+// branch; the triangle scenarios build the AS on the OptiX tier and
+// NvptxRegistration emits the per-shape program sets — nearest-hit (raygen with
+// the baked ray + closesthit committing T/type/prim + miss), candidate getters
+// (anyhit reading the candidate's tmax + optixGetTriangleBarycentrics into
+// out[0..2] then optixIgnoreIntersection), and the CommittedTri per-launch
+// dynamic ray (ray components resolved from the initialize() args as
+// const-or-buffer[i] loads, closesthit writing hit-flag / front-face 1/2) —
+// all dispatched to cajeta_xpu_optix_launch_tri. Each scenario's 777 must
+// equal the software/CPU legs. A 5xxx (front-face) failure showing the
+// back-hit code means OptiX front-face winding differs from cajeta's det>0
+// convention — negate in emitOptixCommittedTriModule.
+TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnOptixDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
     }
     AsImplEnvGuard forceOptix("optix");   // CUDA: optix -> the OptiX RT-core verb
-    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (OptiX RT-core AABB ray query via the compiler != CPU)";
-}
-
-// M2 Phase 4 — the OptiX triangle nearest-hit verb through the full compiler. The
-// SAME kNearestDriver as the software/CPU legs, with CAJETA_GPU_AS_IMPL=optix: the
-// triangle AS builds on the OptiX tier, NvptxRegistration emits the nearest-hit
-// program set (raygen with the baked ray + closesthit committing T/type/prim + miss),
-// and the launch dispatches to cajeta_xpu_optix_launch_tri (built-in triangle
-// traversal). Its 777 must equal the nearestHitOnNvptxSoftwareBvh / CPU legs.
-TEST(CarameloSpatialIndexDeviceTests, nearestHitRayQueryOnOptixDevice) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");
-    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (OptiX RT-core triangle nearest-hit via the compiler != CPU)";
-}
-
-// M2 Phase 4-B — the OptiX triangle candidate-getter verb through the full compiler.
-// The SAME kBaryDriver as the software/CPU legs, with CAJETA_GPU_AS_IMPL=optix: the
-// triangle AS builds on the OptiX tier, NvptxRegistration emits the candidate-getter
-// program set (raygen with the baked ray + anyhit reading the candidate's tmax +
-// optixGetTriangleBarycentrics into out[0..2] then optixIgnoreIntersection + miss),
-// and the launch dispatches to cajeta_xpu_optix_launch_tri (anyhit hitgroup). Its 777
-// (distance=5, u=v=0.25) must equal the candidateGettersOnNvptxSoftwareBvh / CPU legs.
-TEST(CarameloSpatialIndexDeviceTests, candidateGettersRayQueryOnOptixDevice) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");
-    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (OptiX RT-core candidate getters via the compiler != CPU)";
-}
-
-// M2 Phase 4-E — the OptiX committed-triangle per-launch verb (CommittedTri shape).
-// The SAME kTriDriver / kFrontDriver as the software/CPU legs, with
-// CAJETA_GPU_AS_IMPL=optix: a per-launch dynamic ray (ray components resolved from the
-// initialize() args as const-or-buffer[i] loads), built-in triangle traversal,
-// closesthit writes out[i] (hit-flag for the count kernel; front-face 1/2 for the
-// front-face kernel). Each 777 must equal the *OnNvptxSoftwareBvh / CPU legs.
-TEST(CarameloSpatialIndexDeviceTests, triangleCountRayQueryOnOptixDevice) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");
-    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (OptiX RT-core triangle hit-count via the compiler != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, frontFaceRayQueryOnOptixDevice) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");
-    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (OptiX RT-core front-face via the compiler != CPU; if it's "
-                         "the back-hit code, OptiX front-face winding differs from cajeta's "
-                         "det>0 convention — negate in emitOptixCommittedTriModule)";
+    int r = runWalkMatrix(cajeta::xpu::Backend::Nvptx);
+    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
+                    << " (OptiX RT-core verb via the compiler != CPU reference)";
 }
 
 // ===========================================================================
@@ -1867,82 +1602,11 @@ TEST(CarameloSpatialIndexDeviceTests, frontFaceRayQueryOnOptixDevice) {
 // device.
 // ---------------------------------------------------------------------------
 
-TEST(CarameloSpatialIndexDeviceTests, minimalRayQueryOnAmdSoftwareBvh) {
+TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnAmdSoftwareBvh) {
     if (!cajeta::xpu::amd::HipDriver::available()) {
         GTEST_SKIP() << "no ROCm/HIP device available";
     }
-    std::map<std::string, std::string> sources = {{"test.RqMin", kRqMinDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(sources, "test.RqMin", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (AMD software AABB ray query: wrong hit count)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, triangleRayQueryOnAmdSoftwareBvh) {
-    if (!cajeta::xpu::amd::HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    std::map<std::string, std::string> sources = {{"test.TriRq", kTriDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(sources, "test.TriRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (AMD software triangle ray query != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, nearestHitOnAmdSoftwareBvh) {
-    if (!cajeta::xpu::amd::HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    std::map<std::string, std::string> sources = {{"test.NearRq", kNearestDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(sources, "test.NearRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (AMD nearest-hit confirm/committed != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, candidateGettersOnAmdSoftwareBvh) {
-    if (!cajeta::xpu::amd::HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    std::map<std::string, std::string> sources = {{"test.BaryRq", kBaryDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(sources, "test.BaryRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (AMD candidate distance/barycentrics != CPU)";
-}
-
-TEST(CarameloSpatialIndexDeviceTests, frontFaceOnAmdSoftwareBvh) {
-    if (!cajeta::xpu::amd::HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    std::map<std::string, std::string> sources = {{"test.FrontRq", kFrontDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(sources, "test.FrontRq", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (AMD committed front-face != CPU)";
+    int r = runWalkMatrix(cajeta::xpu::Backend::Amdgpu);
+    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
+                    << " (AMD software walk != CPU reference)";
 }
