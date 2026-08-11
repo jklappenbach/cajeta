@@ -77,6 +77,95 @@ public final class Ewise {
         return #out;
     }
 
+    /** {@link #arithF32} at **float16** storage (cajeta-llama 2.2.2): `out[i] = a[i] <op> b[i]`, computed and stored at f16 — elementwise has no accumulation, so the storage dtype is the honest compute dtype. */
+    @Kernel
+    public static void arithF16(KernelBuffer<float16> out, KernelBuffer<float16> a,
+                                KernelBuffer<float16> b, uint32 n, int32 op) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            float16 va = a[i];
+            float16 vb = b[i];
+            float16 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out[i] = vc;
+        }
+    }
+
+    /** {@link #arithF32} at **bfloat16** storage (cajeta-llama 2.2.2). */
+    @Kernel
+    public static void arithBf16(KernelBuffer<bfloat16> out, KernelBuffer<bfloat16> a,
+                                 KernelBuffer<bfloat16> b, uint32 n, int32 op) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            bfloat16 va = a[i];
+            bfloat16 vb = b[i];
+            bfloat16 vc = va + vb;
+            if (op == 1) { vc = va - vb; }
+            if (op == 2) { vc = va * vb; }
+            if (op == 3) { vc = va / vb; }
+            out[i] = vc;
+        }
+    }
+
+    /**
+     * Elementwise arithmetic on two equal-shaped `float16` tensors — {@link #arithF32Op}
+     * at f16, through the {@link #arithF16} kernel. Same placement routing and op codes.
+     */
+    public static #Tensor<float16> arithF16Op(Tensor<float16> a, Tensor<float16> b, int32 op) {
+        Tensor<float16> out = Tensor.zerosLike<float16>(a);
+        int64 n = a.size();
+        if (Placement.pair("arithF16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            out.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            arithF16.launch(s, grid: [(un + 63) / 64], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                float16 va = a.flatGet(i);
+                float16 vb = b.flatGet(i);
+                float16 vc = va + vb;
+                if (op == 1) { vc = va - vb; }
+                if (op == 2) { vc = va * vb; }
+                if (op == 3) { vc = va / vb; }
+                out.flatSet(i, vc);
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
+    /** {@link #arithF16Op} at **bfloat16**, through the {@link #arithBf16} kernel. */
+    public static #Tensor<bfloat16> arithBf16Op(Tensor<bfloat16> a, Tensor<bfloat16> b, int32 op) {
+        Tensor<bfloat16> out = Tensor.zerosLike<bfloat16>(a);
+        int64 n = a.size();
+        if (Placement.pair("arithBf16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
+            out.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            arithBf16.launch(s, grid: [(un + 63) / 64], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
+            s.sync();
+        } else {
+            int64 i = 0;
+            while (i < n) {
+                bfloat16 va = a.flatGet(i);
+                bfloat16 vb = b.flatGet(i);
+                bfloat16 vc = va + vb;
+                if (op == 1) { vc = va - vb; }
+                if (op == 2) { vc = va * vb; }
+                if (op == 3) { vc = va / vb; }
+                out.flatSet(i, vc);
+                i = i + 1;
+            }
+        }
+        return #out;
+    }
+
     /**
      * Atomic parallel-sum reduction kernel: every thread adds its element into the
      * single accumulator `out[0]` via `atomicAdd` (numpy-porting Phase 4, 4e — the
@@ -115,6 +204,81 @@ public final class Ewise {
         int64 i = 0;
         while (i < n) {
             sum = sum + t.flatGet(i);
+            i = i + 1;
+        }
+        return sum;
+    }
+
+    /**
+     * Sum-reduction over **float16** storage into a **float32** accumulator
+     * (cajeta-llama 2.2.2 / 2.1.4 on the device path): each element widens to f32
+     * before the atomic add, so the accumulator never stalls at f16's 2^11
+     * integer ceiling. The accumulator buffer is f32 by signature — the width is
+     * stated, not incidental (2.3.2).
+     */
+    @Kernel
+    public static void reduceSumF16(KernelBuffer<float32> out, KernelBuffer<float16> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicAdd(0, (float32) in[i]); }
+    }
+
+    /** {@link #reduceSumF16} at **bfloat16** storage — same f32 accumulator. */
+    @Kernel
+    public static void reduceSumBf16(KernelBuffer<float32> out, KernelBuffer<bfloat16> in, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) { out.atomicAdd(0, (float32) in[i]); }
+    }
+
+    /**
+     * Full-array sum of a contiguous `float16` tensor, returning **float32** —
+     * {@link #sumF32} at f16 storage, through the {@link #reduceSumF16} widening
+     * reduction on the device path; the CPU floor accumulates at f32 for the same
+     * numerics.
+     */
+    public static float32 sumF16(Tensor<float16> t) {
+        int64 n = t.size();
+        if (Placement.single(t.isOnGpu())) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceSumF16.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return acc.get1(0);
+        }
+        float32 sum = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            sum = sum + (float32) t.flatGet(i);
+            i = i + 1;
+        }
+        return sum;
+    }
+
+    /** {@link #sumF16} at **bfloat16** storage, through {@link #reduceSumBf16}. */
+    public static float32 sumBf16(Tensor<bfloat16> t) {
+        int64 n = t.size();
+        if (Placement.single(t.isOnGpu())) {
+            int64[] os = heap int64[1];
+            os[0] = 1;
+            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            acc.gpu();
+            uint32 un = (uint32) n;
+            KernelStream s = KernelStream.current();
+            reduceSumBf16.launch(s, grid: [(un + 63) / 64], block: [64])
+                (acc.deviceBuffer(), t.deviceBuffer(), un);
+            s.sync();
+            acc.cpu();
+            return acc.get1(0);
+        }
+        float32 sum = 0.0f;
+        int64 i = 0;
+        while (i < n) {
+            sum = sum + (float32) t.flatGet(i);
             i = i + 1;
         }
         return sum;
@@ -566,6 +730,187 @@ public final class Ewise {
                 }
                 i = i + 1;
             }
+        }
+        return #out;
+    }
+
+    /**
+     * Tiled **float16** GEMM with a **float32 accumulator** (cajeta-llama 2.2.2).
+     * Same 16x16 tile / K-loop `mma` structure as {@link #matmulF32}, but the
+     * operand tiles are `float16` while the accumulator tile is `float32` — the
+     * matrix-core shape the hardware exposes (f16 WMMA is a native config on AMD,
+     * so this kernel takes the hardware tier where {@link #matmulF32} takes the
+     * software one; on backends with no native config it tiers to software and
+     * still agrees). The output buffer is `float32` because `store` writes the
+     * accumulator's dtype: the device produces f32, and narrowing back to f16 is
+     * the caller's explicit choice rather than a loss baked into the GEMM.
+     * `rows`/`cols`/`depth` multiples of 16.
+     */
+    @Kernel
+    public static void matmulF16(KernelBuffer<float32> c, KernelBuffer<float16> a,
+                                 KernelBuffer<float16> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid % ntiles;
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<float32,16,16,2> mc;
+        mc.splat(0.0f);
+        CooperativeMatrix<float16,16,16,0> ma;
+        CooperativeMatrix<float16,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);
+            mc.mma(ma, mb);
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * The {@link #matmulF16} GEMM at **bfloat16** (cajeta-llama 2.2.3) — but with a
+     * **bfloat16 accumulator**, unlike f16's f32 one. A coverage choice, not a
+     * numerics one: with an f32 accumulator this kernel is mixed-tier wherever
+     * bf16 A/B has no native config — no Vulkan driver exposes one — so on
+     * SPIR-V it would take the `[xpu-kernel-skipped]` note and leave Vulkan-only
+     * machines with no bf16 device path at all. All-bf16 stays one tier where
+     * coverage matters: portable, and working, on Vulkan and CPU. The flip
+     * side: NVIDIA and AMD have bf16 as a native OPERAND tile only — their
+     * native accumulator sets are f32/i32 (`NvptxKernelLowering` /
+     * `AmdgpuKernelLowering` `.coopMatrixTier`) — so THERE this kernel is the
+     * mixed-tier one and takes the skip note (observed on the WSL/NVIDIA runner
+     * 2026-08-10), the same standing situation as {@link #matmulF32} on those
+     * backends. The bf16-operand/f32-accumulator shape is native silicon on
+     * both — its NVPTX lowering abort is fixed
+     * (specs/nvptx-coop-bf16-fragment-abort, PR #3) — but has no Vulkan device
+     * path; weighing a per-backend split is plan 2.2.6. The cost, stated per
+     * 2.3.2: the portable tier accumulates at bf16 per K-step (8 mantissa
+     * bits), so large-K products of inexact values round harder than
+     * {@link #matmulF16}'s — callers needing a wide accumulator at bf16 storage
+     * should widen to f32 and use {@link #matmulF32}.
+     */
+    @Kernel
+    public static void matmulBf16(KernelBuffer<bfloat16> c, KernelBuffer<bfloat16> a,
+                                  KernelBuffer<bfloat16> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid % ntiles;
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<bfloat16,16,16,2> mc;
+        mc.splat((bfloat16) 0.0);
+        CooperativeMatrix<bfloat16,16,16,0> ma;
+        CooperativeMatrix<bfloat16,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);
+            mc.mma(ma, mb);
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * 2-D **float16** matrix product `(m,k)·(k,n) → (m,n)`, returning **float32**
+     * (the accumulator's dtype — see {@link #matmulF16}), routed on placement:
+     * both on-device and 16-aligned → the {@link #matmulF16} coop GEMM; otherwise
+     * the CPU triple-loop floor, which accumulates at `float32` for the same
+     * numerics (cajeta-llama 2.1.4). Ragged on-device shapes are staged to the
+     * host, computed, and the operands' placement restored — no silent tile
+     * truncation (spec §2.6); a padded device path for ragged f16 needs
+     * `padF16`/`cropF16` siblings (plan 2.2.5).
+     */
+    public static #Tensor<float32> matmulF16Op(Tensor<float16> a, Tensor<float16> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        boolean aligned = (m % 16 == 0) && (n % 16 == 0) && (k % 16 == 0);
+        boolean onDevice = Placement.pair("matmulF16", "a", a.isOnGpu(), "b", b.isOnGpu());
+        if (onDevice && aligned) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            KernelStream s = KernelStream.current();
+            matmulF16.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            boolean staged = onDevice;         // ragged on-device operands compute on the host
+            if (staged) { a.cpu(); b.cpu(); }
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float32 acc = 0.0f;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + (float32) a.get2(i, p) * (float32) b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            if (staged) { a.gpu(); b.gpu(); }  // restore the caller's placement invariant
+        }
+        return #out;
+    }
+
+    /**
+     * 2-D **bfloat16** matrix product returning **bfloat16** — {@link #matmulF16Op}
+     * at bf16 operands, through the {@link #matmulBf16} coop GEMM (cajeta-llama
+     * 2.2.3). Same alignment gate and staging. The return dtype follows the
+     * kernel's accumulator, which is bf16 by tier necessity (see
+     * {@link #matmulBf16}); the CPU floor accumulates at f32 and narrows once at
+     * the store, so floor and portable tier agree exactly on exactly-representable
+     * results and within one bf16 rounding otherwise.
+     */
+    public static #Tensor<bfloat16> matmulBf16Op(Tensor<bfloat16> a, Tensor<bfloat16> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<bfloat16> out = Tensor.zeros<bfloat16>(shp);
+        boolean aligned = (m % 16 == 0) && (n % 16 == 0) && (k % 16 == 0);
+        boolean onDevice = Placement.pair("matmulBf16", "a", a.isOnGpu(), "b", b.isOnGpu());
+        if (onDevice && aligned) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            KernelStream s = KernelStream.current();
+            matmulBf16.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            boolean staged = onDevice;
+            if (staged) { a.cpu(); b.cpu(); }
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    float32 acc = 0.0f;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + (float32) a.get2(i, p) * (float32) b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, (bfloat16) acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            if (staged) { a.gpu(); b.gpu(); }
         }
         return #out;
     }
