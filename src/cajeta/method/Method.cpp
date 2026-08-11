@@ -31,7 +31,6 @@
 #include "../field/BoundClosureField.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
-#include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
 
