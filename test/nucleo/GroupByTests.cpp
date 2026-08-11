@@ -17,6 +17,17 @@
 //    reads only key columns (deferred item 7.1.3), and blocks it when the
 //    predicate reads an aggregate output.
 //
+// Fold shape (test-battery-restructure 2.3): the four original tests each
+// paid their own JIT compile of a program built from the SAME kPrelude +
+// kBuild, and per-test coverage measurement (2026-08-10) showed their
+// compiler line footprints were near-identical (~18.8k shared lines). All
+// four bodies are compile-SUCCESS programs, so they now live as four
+// independent static entry points of one class in ONE compiled program —
+// each rebuilds its own table from kBuild locally and returns its own
+// score, so no scenario can perturb another — and one C++ test asserts each
+// scenario's original score expectation separately. The cajeta bodies are
+// the original run() bodies verbatim; only the method names changed.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -27,12 +38,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -60,6 +65,10 @@ const char* kPrelude =
 //   NYSE rows 1,3:   notional 40+80     = 120, size 4  -> vwap 30.0
 // fee is null for BOTH NYSE rows (an all-null group) and present for
 // every ARCA row.
+//
+// Every entry point below emits this block into its OWN body, so each
+// scenario grouped over its own freshly built table: entries share the
+// program, never the data.
 const char* kBuild =
     "        int64[] tsv = heap int64[5];\n"
     "        tsv[0] = 1000; tsv[1] = 2000; tsv[2] = 3000;\n"
@@ -81,16 +90,21 @@ const char* kBuild =
     "            Column.of<float64>(sv), StringColumn.of(vv),\n"
     "            NullableColumn.of<float64>(fv, fok));\n";
 
-} // namespace
-
-// 8.1.1 — the agg family over float64 and exact int64, and the headline
-// vwap: an elementwise product feeding a reduction, divided by another
-// reduction. Groups come out in FIRST-APPEARANCE order (ARCA, NYSE).
-TEST(GroupByTests, aggFamilyAndVwapMatchHandResults) {
-    auto src = std::string(kPrelude) +
+// The four scenario entry points, one program. Records that used to be
+// declared per-test are declared once here; their names never collided.
+std::string groupByMatrixSrc() {
+    return std::string(kPrelude) +
         "public record VenueVwap { Utf8 venue; float64 vwap; }\n"
+        "public record KeyedN { @Nullable float64 k; float64 v; }\n"
+        "public record VenueStats { Utf8 venue; float64 psum; }\n"
+        "public record WrongStats { Utf8 venue; float64 nope; }\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
+
+        // 8.1.1 — the agg family over float64 and exact int64, and the
+        // headline vwap: an elementwise product feeding a reduction, divided
+        // by another reduction. Groups come out in FIRST-APPEARANCE order
+        // (ARCA, NYSE).
+        "    public static int32 aggFamilyAndVwap() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // The headline: vwap per venue.
@@ -172,18 +186,12 @@ TEST(GroupByTests, aggFamilyAndVwapMatchHandResults) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
-}
 
-// 8.1.2 — null semantics: aggregates skip nulls, so `mean` divides by the
-// NON-NULL count; an all-null group yields null mean/min/max/first/last
-// but sum 0 and count 0; and a null KEY forms its own group.
-TEST(GroupByTests, aggsSkipNullsAndNullKeysGroupTogether) {
-    auto src = std::string(kPrelude) +
-        "public record KeyedN { @Nullable float64 k; float64 v; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 8.1.2 — null semantics: aggregates skip nulls, so `mean` divides by
+        // the NON-NULL count; an all-null group yields null mean/min/max/
+        // first/last but sum 0 and count 0; and a null KEY forms its own
+        // group.
+        "    public static int32 nullSemantics() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // fee is [1, null, 3, null, 5]: ARCA has all three, NYSE none.
@@ -246,20 +254,14 @@ TEST(GroupByTests, aggsSkipNullsAndNullKeysGroupTogether) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 63);
-}
 
-// 8.1.3 — the result is `Table<?>` narrowed by the checked `.as<R>()`, and
-// the malformed shapes fail LOUD at plan build (nothing executes): an
-// unnamed aggregate, a computed group key, an unknown column, and a
-// groupBy left dangling without its agg.
-TEST(GroupByTests, erasedResultNarrowsAndBadAggsFailAtPlanBuild) {
-    auto src = std::string(kPrelude) +
-        "public record VenueStats { Utf8 venue; float64 psum; }\n"
-        "public record WrongStats { Utf8 venue; float64 nope; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 8.1.3 — the result is `Table<?>` narrowed by the checked `.as<R>()`,
+        // and the malformed shapes fail LOUD at plan build (nothing executes):
+        // an unnamed aggregate, a computed group key, an unknown column, and a
+        // groupBy left dangling without its agg. Every failure here is a
+        // cajeta-level FrameException thrown at RUN time, so this scenario
+        // still compiles — it belongs in the fold.
+        "    public static int32 erasedAndBadAggs() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> a = t.lazy().groupBy((TickCols c, Sels s) -> {\n"
@@ -331,18 +333,13 @@ TEST(GroupByTests, erasedResultNarrowsAndBadAggsFailAtPlanBuild) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
-}
 
-// 7.1.3 (deferred from U7) + 8.x — the rewriter sinks a filter below the
-// group when its predicate reads only KEY columns (which pass through
-// unchanged), and blocks it when the predicate reads an aggregate output.
-// Both shapes pin result equality against the unoptimized plan.
-TEST(GroupByTests, filterSinksBelowGroupByOnlyWhenProvable) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 7.1.3 (deferred from U7) + 8.x — the rewriter sinks a filter below
+        // the group when its predicate reads only KEY columns (which pass
+        // through unchanged), and blocks it when the predicate reads an
+        // aggregate output. Both shapes pin result equality against the
+        // unoptimized plan.
+        "    public static int32 filterSink() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // Predicate on the KEY `venue` -> sinks past the group to the scan,
@@ -391,6 +388,45 @@ TEST(GroupByTests, filterSinksBelowGroupByOnlyWhenProvable) {
         "        if (gf.scanCols() == 2) { score = score + 32; }\n"
         "        return score;\n"
         "    }\n"
+
         "}\n";
-    EXPECT_EQ(runI32(src), 63);
+}
+
+} // namespace
+
+// The groupBy/agg use-case matrix, one compiled program (was: GroupByTests.
+// {aggFamilyAndVwapMatchHandResults, aggsSkipNullsAndNullKeysGroupTogether,
+// erasedResultNarrowsAndBadAggsFailAtPlanBuild, filterSinksBelowGroupByOnly
+// WhenProvable} — four compiles of the same prelude, every assertion
+// preserved):
+//   the agg family over float64 + exact int64 and the headline vwap
+//   (8.1.1); nulls skipped by every aggregate, all-null groups, null keys
+//   forming their own group (8.1.2); the erased `Table<?>` narrowed by the
+//   checked `.as<R>()` plus describe() and the five loud plan-build failures
+//   (8.1.3); the filter sinking below the group only when provable, pinned
+//   against the unoptimized plan, plus projection pushdown (7.1.3).
+TEST(GroupByTests, aggFamilyVwapNullsErasureAndFilterSinkMatrix) {
+    auto jit = CajetaJit::compile(groupByMatrixSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto aggFamilyAndVwap = jit->lookup<int32_t (*)()>("aggFamilyAndVwap");
+    auto nullSemantics    = jit->lookup<int32_t (*)()>("nullSemantics");
+    auto erasedAndBadAggs = jit->lookup<int32_t (*)()>("erasedAndBadAggs");
+    auto filterSink       = jit->lookup<int32_t (*)()>("filterSink");
+    ASSERT_NE(aggFamilyAndVwap, nullptr);
+    ASSERT_NE(nullSemantics, nullptr);
+    ASSERT_NE(erasedAndBadAggs, nullptr);
+    ASSERT_NE(filterSink, nullptr);
+
+    // 8.1.1 — agg family over float64 + int64, headline vwap, multi-key.
+    EXPECT_EQ(aggFamilyAndVwap(), 127) << "8.1.1 agg family + vwap";
+
+    // 8.1.2 — aggregates skip nulls; null keys group together.
+    EXPECT_EQ(nullSemantics(), 63) << "8.1.2 null semantics + null keys";
+
+    // 8.1.3 — erased result narrows; malformed shapes fail at plan build.
+    EXPECT_EQ(erasedAndBadAggs(), 127)
+        << "8.1.3 erased narrowing + plan-build failures";
+
+    // 7.1.3 — the filter sinks below the group only when provable.
+    EXPECT_EQ(filterSink(), 63) << "7.1.3 filter sink below groupBy";
 }

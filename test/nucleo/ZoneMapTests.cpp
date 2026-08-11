@@ -17,6 +17,14 @@
 // The chunk width is a source knob (`zoneChunkRows(n)`); the tests set 4 over a
 // 16-row table so the four chunks are individually observable.
 //
+// Fold shape (test-battery-restructure 2.3): the three original tests each paid
+// their own JIT compile of the SAME 16-row grid program — per-test coverage
+// measurement (2026-08-10) showed their compiler line footprints near-identical.
+// One program now carries all three use-cases as separate static entry points
+// (each builds its own table, so no scenario can perturb another's scan
+// counters), compiled once, with one C++ test asserting scenario by scenario
+// against the original score expectations.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -27,12 +35,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -61,16 +63,17 @@ const char* kBuild =
     "            StringColumn.of(gv));\n"
     "        t.zoneChunkRows(4);\n";
 
-} // namespace
-
-// 13.1.2 — zone-maps skip provably-outside chunks; the skip is observable and
-// an overlapping chunk is read + row-filtered (prune != filter). `a > 9.0`
-// keeps 10..15 (6 rows): c0 (max 3) and c1 (max 7) are entirely <= 9 and are
-// SKIPPED; c2 [8..11] overlaps -> read and filtered to {10,11}; c3 kept whole.
-TEST(ZoneMapTests, zoneMapSkipsChunksOutsideRangePredicate) {
-    auto src = std::string(kPrelude) +
+// One program, one entry point per use-case. Each entry rebuilds the grid
+// locally (kBuild) so its scan counters are its own.
+std::string zoneMapMatrixSrc() {
+    return std::string(kPrelude) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 13.1.2 — zone-maps skip provably-outside chunks; the skip is
+        // observable and an overlapping chunk is read + row-filtered (prune !=
+        // filter). `a > 9.0` keeps 10..15 (6 rows): c0 (max 3) and c1 (max 7)
+        // are entirely <= 9 and are SKIPPED; c2 [8..11] overlaps -> read and
+        // filtered to {10,11}; c3 kept whole.
+        "    public static int32 rangeSkipScore() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<Grid> h = t.lazy().filter((GridCols c) -> c.a() > 9.0);\n"
@@ -84,17 +87,11 @@ TEST(ZoneMapTests, zoneMapSkipsChunksOutsideRangePredicate) {
         "        if (h.scanChunksSkipped() == 2) { score = score + 8; }\n" // c0,c1 skipped
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 15);
-}
-
-// 13.1.1 — soundness: the zone-map-accelerated result is row-for-row identical
-// to the full scan (`optimize(false)`), for BOTH a float key (`a > 9.0`) and an
-// int key (`k >= 10`). Skipping never changes the answer, it only skips work.
-TEST(ZoneMapTests, chunkSkipIsSoundVsFullScan) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 13.1.1 — soundness: the zone-map-accelerated result is row-for-row
+        // identical to the full scan (`optimize(false)`), for BOTH a float key
+        // (`a > 9.0`) and an int key (`k >= 10`). Skipping never changes the
+        // answer, it only skips work.
+        "    public static int32 soundVsFullScanScore() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // float key, accelerated vs full scan
@@ -131,19 +128,13 @@ TEST(ZoneMapTests, chunkSkipIsSoundVsFullScan) {
         "        if (samek) { score = score + 4; }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
-
-// 13.1.3 — a non-range predicate and an unindexed column degrade to a full
-// scan, never a wrong answer. `a != 5.0` is not range-shaped -> no chunk is
-// provably outside it -> zero skipped, all 4 chunks read, 15 rows kept. A utf8
-// column carries no zone-map (unindexed) -> the `g == "hi"` filter also skips
-// nothing, and its result matches the full scan.
-TEST(ZoneMapTests, nonRangeAndUnindexedDegradeToFullScan) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 13.1.3 — a non-range predicate and an unindexed column degrade to a
+        // full scan, never a wrong answer. `a != 5.0` is not range-shaped -> no
+        // chunk is provably outside it -> zero skipped, all 4 chunks read, 15
+        // rows kept. A utf8 column carries no zone-map (unindexed) -> the
+        // `g == "hi"` filter also skips nothing, and its result matches the
+        // full scan.
+        "    public static int32 degradeToFullScanScore() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // non-range predicate on an indexed column
@@ -174,5 +165,44 @@ TEST(ZoneMapTests, nonRangeAndUnindexedDegradeToFullScan) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 7);
+}
+
+} // namespace
+
+// The zone-map use-case matrix, one compiled program (was: ZoneMapTests.{zone
+// MapSkipsChunksOutsideRangePredicate, chunkSkipIsSoundVsFullScan, nonRangeAnd
+// UnindexedDegradeToFullScan} — three compiles of the same 16-row grid, every
+// assertion preserved):
+//   13.1.2 a range predicate skips the provably-outside chunks and row-filters
+//   the overlapping one; 13.1.1 the accelerated answer is row-for-row identical
+//   to `optimize(false)` for a float key and an int key; 13.1.3 a non-range
+//   predicate and an unindexed utf8 column degrade to a full scan with zero
+//   skips and the same rows.
+TEST(ZoneMapTests, zoneMapSkipSoundnessAndFullScanDegradationMatrix) {
+    auto jit = CajetaJit::compile(zoneMapMatrixSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto rangeSkipScore        = jit->lookup<int32_t (*)()>("rangeSkipScore");
+    auto soundVsFullScanScore  = jit->lookup<int32_t (*)()>("soundVsFullScanScore");
+    auto degradeToFullScanScore = jit->lookup<int32_t (*)()>("degradeToFullScanScore");
+    ASSERT_NE(rangeSkipScore, nullptr);
+    ASSERT_NE(soundVsFullScanScore, nullptr);
+    ASSERT_NE(degradeToFullScanScore, nullptr);
+
+    // 13.1.2 — bits: 1 rows/values, 2 scanRows()==6, 4 scanChunks()==4,
+    // 8 scanChunksSkipped()==2.
+    EXPECT_EQ(rangeSkipScore(), 15) << "score bits: 1=rows/values 2=scanRows "
+                                       "4=scanChunks 8=scanChunksSkipped";
+
+    // 13.1.1 — bits: 1 float key identical to full scan (and the full scan read
+    // all 16 rows), 2 int key rows + skip counts, 4 int key identical to full
+    // scan.
+    EXPECT_EQ(soundVsFullScanScore(), 7)
+        << "score bits: 1=float-key==fullscan 2=int-key rows/skips "
+           "4=int-key==fullscan";
+
+    // 13.1.3 — bits: 1 non-range predicate skips nothing, 2 unindexed utf8
+    // filter skips nothing, 4 unindexed result identical to full scan.
+    EXPECT_EQ(degradeToFullScanScore(), 7)
+        << "score bits: 1=non-range no-skip 2=unindexed no-skip "
+           "4=unindexed==fullscan";
 }

@@ -15,6 +15,16 @@
 //    showing the pushed predicates and the pruned column set on the scan
 //    leaf, while `describe()` still shows the chain as built.
 //
+// Fold shape (test-battery-restructure 2.3): the four original tests each
+// paid their own JIT compile of the same six-column table program, and the
+// per-test coverage measurement (2026-08-10) showed their compiler line
+// footprints near-identical. The four `run()` bodies are now four static
+// entry points of ONE program — each builds its own table(s) locally, so no
+// measurement or plan handle can leak between scenarios — behind one
+// compile, with one C++ test asserting each scenario's score separately.
+// Every score bit, equality pin, and explain()/describe() string check is
+// carried over verbatim.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -25,12 +35,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -88,16 +92,19 @@ const char* kBuildNW =
     "        Table<NW> t2 = heap Table<NW>(\n"
     "            Column.of<float64>(a2), NullableColumn.of<float64>(n2, ok2));\n";
 
-} // namespace
-
-// 7.1.1 — predicate pushdown: a filter directly above the scan runs AT the
-// scan; rows failing the predicate are never materialized (scanRows()
-// counts what the scan emitted: 3 pushed vs 5 unoptimized), and the result
-// is identical to the unoptimized execution of the same chain.
-TEST(PushdownTests, predicatePushdownScansOnlyPassingRows) {
-    auto src = std::string(kPrelude) +
+// One program, four entry points — one per U7 use case. Each entry builds its
+// own table(s) from kBuild / kBuildNW and returns its own score, so the
+// scan counters (scanRows()/scanCols()) a scenario reads can only come from
+// the plan handles that scenario built.
+std::string pushdownMatrixSrc() {
+    return std::string(kPrelude) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 7.1.1 — predicate pushdown: a filter directly above the scan runs AT
+        // the scan; rows failing the predicate are never materialized
+        // (scanRows() counts what the scan emitted: 3 pushed vs 5
+        // unoptimized), and the result is identical to the unoptimized
+        // execution of the same chain.
+        "    public static int32 predicatePushdown() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<Wide> h = t.lazy().filter((WideCols c) -> c.a() > 25.0);\n"
@@ -126,17 +133,11 @@ TEST(PushdownTests, predicatePushdownScansOnlyPassingRows) {
         "        if (same) { score = score + 32; }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 63);
-}
-
-// 7.1.2 — projection pushdown: a filter + select pipeline touching 2 of 6
-// columns reads exactly those 2 at the scan (scanCols(); 6 unoptimized),
-// composed with the pushed predicate (scanRows()); results identical.
-TEST(PushdownTests, projectionPushdownReadsOnlyReferencedColumns) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 7.1.2 — projection pushdown: a filter + select pipeline touching 2
+        // of 6 columns reads exactly those 2 at the scan (scanCols(); 6
+        // unoptimized), composed with the pushed predicate (scanRows());
+        // results identical.
+        "    public static int32 projectionPushdown() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<Wide> f = t.lazy().filter((WideCols c) -> c.a() > 15.0);\n"
@@ -169,22 +170,16 @@ TEST(PushdownTests, projectionPushdownReadsOnlyReferencedColumns) {
         "        if (same) { score = score + 16; }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 31);
-}
-
-// 7.1.3 — provable reorders only (the groupBy variant lands with U8; the
-// shipped ops pin the rule mechanics): a filter sinks below `with` when its
-// predicate references only pass-through columns and below `fillNull` when
-// it doesn't reference the filled column (reaching the scan both times);
-// a predicate on the computed / filled column BLOCKS the move — pushing it
-// would change the answer (the fillNull case is constructed so the wrong
-// order gives 0 rows, not 2). Result-set equality is pinned against
-// `optimize(false)` for both the moved and the blocked shapes.
-TEST(PushdownTests, provableReordersPreserveResults) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 7.1.3 — provable reorders only (the groupBy variant lands with U8;
+        // the shipped ops pin the rule mechanics): a filter sinks below `with`
+        // when its predicate references only pass-through columns and below
+        // `fillNull` when it doesn't reference the filled column (reaching the
+        // scan both times); a predicate on the computed / filled column BLOCKS
+        // the move — pushing it would change the answer (the fillNull case is
+        // constructed so the wrong order gives 0 rows, not 2). Result-set
+        // equality is pinned against `optimize(false)` for both the moved and
+        // the blocked shapes.
+        "    public static int32 provableReorders() {\n"
         + kBuild + kBuildNW +
         "        int32 score = 0;\n"
         // A: filter on pass-through "b" sinks below the with, to the scan.
@@ -237,18 +232,12 @@ TEST(PushdownTests, provableReordersPreserveResults) {
         "        if (gr2.rowCount() == 2 && gf2.scanRows() == 5) { score = score + 64; }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
-}
-
-// 7.1.4 — the optimized plan is printable (spec §2.5): `explain()` shows
-// the rewritten chain — pushed predicates and the pruned column set marked
-// on the scan leaf — while `describe()` still shows the chain as built.
-// Printing rewrites nothing (the handle collects normally afterwards).
-TEST(PushdownTests, optimizedPlanPrintsTheRewrites) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 7.1.4 — the optimized plan is printable (spec §2.5): `explain()`
+        // shows the rewritten chain — pushed predicates and the pruned column
+        // set marked on the scan leaf — while `describe()` still shows the
+        // chain as built. Printing rewrites nothing (the handle collects
+        // normally afterwards).
+        "    public static int32 planPrinting() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> w = t.lazy().with((WideCols c) -> (c.a() * 2.0).alias(\"dbl\"));\n"
@@ -293,5 +282,47 @@ TEST(PushdownTests, optimizedPlanPrintsTheRewrites) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 31);
+}
+
+} // namespace
+
+// The U7 pushdown use-case matrix, one compiled program (was: PushdownTests.
+// {predicatePushdownScansOnlyPassingRows, projectionPushdownReadsOnlyReferenced
+// Columns, provableReordersPreserveResults, optimizedPlanPrintsTheRewrites} —
+// four compiles' worth of claims, every score bit preserved):
+//   7.1.1 predicate pushdown (scan-level predicate, scanRows()/scanCols(),
+//   equality vs optimize(false)); 7.1.2 projection pushdown (2-of-6 columns
+//   at the scan, composed with the pushed predicate, equality vs
+//   optimize(false)); 7.1.3 provable reorders only (sink below with/fillNull,
+//   blocked on computed/filled columns, equality vs optimize(false));
+//   7.1.4 explain() prints the rewrites while describe() prints the chain as
+//   built, and printing disturbs nothing.
+TEST(PushdownTests, predicateProjectionReorderAndExplainMatrix) {
+    auto jit = CajetaJit::compile(pushdownMatrixSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto predicatePushdown  = jit->lookup<int32_t (*)()>("predicatePushdown");
+    auto projectionPushdown = jit->lookup<int32_t (*)()>("projectionPushdown");
+    auto provableReorders   = jit->lookup<int32_t (*)()>("provableReorders");
+    auto planPrinting       = jit->lookup<int32_t (*)()>("planPrinting");
+    ASSERT_NE(predicatePushdown, nullptr);
+    ASSERT_NE(projectionPushdown, nullptr);
+    ASSERT_NE(provableReorders, nullptr);
+    ASSERT_NE(planPrinting, nullptr);
+
+    // 7.1.1 — score bits: 1 unforced handle, 2 result values, 4 pushed
+    // scanRows()==3, 8 scanCols()==6, 16 unoptimized counts, 32 equality.
+    EXPECT_EQ(predicatePushdown(), 63) << "predicate pushdown (7.1.1)";
+
+    // 7.1.2 — score bits: 1 result values, 2 scanCols()==2, 4 scanRows()==4,
+    // 8 unoptimized counts, 16 equality.
+    EXPECT_EQ(projectionPushdown(), 31) << "projection pushdown (7.1.2)";
+
+    // 7.1.3 — score bits: 1 sunk-below-with counts, 2 with values, 4 blocked
+    // on the computed column, 8 blocked values, 16 blocked equality,
+    // 32 sunk below fillNull, 64 blocked on the filled column.
+    EXPECT_EQ(provableReorders(), 127) << "provable reorders (7.1.3)";
+
+    // 7.1.4 — score bits: 1 describe(), 2 explain(), 4 collect after print,
+    // 8 pruned column set printed, 16 two sunk filters printed.
+    EXPECT_EQ(planPrinting(), 31) << "optimized plan printing (7.1.4)";
 }

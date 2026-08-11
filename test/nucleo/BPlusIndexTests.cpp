@@ -19,6 +19,18 @@
 // POSITION SET (the rows a key predicate selects); the scan sorts the positions
 // ascending before gathering so the output keeps storage order.
 //
+// Fold shape (test-battery-restructure 2.3, spec §3.2b/§3.3): the three
+// original single-claim tests each paid their own JIT compile of a
+// near-identical 16-row table program — per-test coverage measurement
+// (2026-08-10) showed the nucleo table suites' compiler line footprints are
+// shared almost in full (~18.8k lines), so three compiles bought three copies
+// of the same coverage at three times the cost. One program now carries all
+// three claims as SEPARATE STATIC ENTRY POINTS — each builds its own 16-row
+// table locally and returns its own score, so no scenario can perturb another
+// (no shared index state, no shared table) — behind one compile, and one C++
+// test asserts each scenario's score independently so a failure still names the
+// scenario. Every original score bit is preserved unchanged.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -29,12 +41,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -78,14 +84,15 @@ const char* kScrambled =
     "            Column.of<float64>(av), Column.of<int64>(kv),\n"
     "            StringColumn.of(gv));\n";
 
-} // namespace
-
-// 14.1.1 — int key point + range located directly by the B+, and a non-indexed
-// column falls back to the full scan.
-TEST(BPlusIndexTests, intKeyPointAndRangeLocatedByIndex) {
-    auto src = std::string(kPrelude) +
+// The U14 use-case matrix as one program: one entry point per scenario, each
+// self-contained (its own table, its own index, its own score). The bodies are
+// the original per-test `run()` bodies verbatim; only the method names differ.
+std::string bPlusMatrixSrc() {
+    return std::string(kPrelude) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 14.1.1 — int key point + range located directly by the B+, and a
+        // non-indexed column falls back to the full scan.
+        "    public static int32 intKeyPointRangeAndFallback() {\n"
         + kSorted +
         "        t.indexColumn(\"k\");\n"
         "        int32 score = 0;\n"
@@ -110,15 +117,10 @@ TEST(BPlusIndexTests, intKeyPointAndRangeLocatedByIndex) {
         "        if (rf.rowCount() == 10 && hf.scanProbed() == 16) { score = score + 16; }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 31);
-}
-
-// 14.1.1 (float key) — a float key column range lookup, exact vs the full scan.
-TEST(BPlusIndexTests, floatKeyRangeMatchesFullScan) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 14.1.1 (float key) — a float key column range lookup, exact vs the
+        // full scan (the `optimize(false)` re-run is the unoptimized control the
+        // accelerated result is pinned against).
+        "    public static int32 floatKeyRangeVsFullScan() {\n"
         + kSorted +
         "        t.indexColumn(\"a\");\n"
         "        int32 score = 0;\n"
@@ -143,17 +145,11 @@ TEST(BPlusIndexTests, floatKeyRangeMatchesFullScan) {
         "        if (same) { score = score + 4; }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
-
-// 14.1.2 — an unsorted key column: the bulk-load sorts (key, position) pairs
-// internally, so point/range stay exact and the result (positions re-sorted
-// ascending before the gather) is row-for-row identical to the full scan.
-TEST(BPlusIndexTests, unsortedKeyColumnStaysExact) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 14.1.2 — an unsorted key column: the bulk-load sorts (key, position)
+        // pairs internally, so point/range stay exact and the result (positions
+        // re-sorted ascending before the gather) is row-for-row identical to the
+        // full scan.
+        "    public static int32 unsortedKeyStaysExact() {\n"
         + kScrambled +
         "        t.indexColumn(\"k\");\n"
         "        int32 score = 0;\n"
@@ -188,5 +184,51 @@ TEST(BPlusIndexTests, unsortedKeyColumnStaysExact) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 15);
+}
+
+} // namespace
+
+// The U14 B+ use-case matrix, one compiled program (was: BPlusIndexTests.{int
+// KeyPointAndRangeLocatedByIndex, floatKeyRangeMatchesFullScan, unsortedKey
+// ColumnStaysExact} — three compiles' worth of claims, every score bit
+// preserved):
+//   int key point + range located DIRECTLY by the index (scanProbed == match
+//   count, not table size); a predicate over an un-indexed column falls back to
+//   the full scan; a float key column range is exact and pinned row-for-row
+//   against the unoptimized run; an UNSORTED key column stays exact for both
+//   range and point, row-for-row identical to the full scan, and still located
+//   directly.
+TEST(BPlusIndexTests, intAndFloatKeyPointRangeFallbackAndUnsortedKeyMatrix) {
+    auto jit = CajetaJit::compile(bPlusMatrixSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto intKeyPointRangeAndFallback =
+        jit->lookup<int32_t (*)()>("intKeyPointRangeAndFallback");
+    auto floatKeyRangeVsFullScan =
+        jit->lookup<int32_t (*)()>("floatKeyRangeVsFullScan");
+    auto unsortedKeyStaysExact =
+        jit->lookup<int32_t (*)()>("unsortedKeyStaysExact");
+    ASSERT_NE(intKeyPointRangeAndFallback, nullptr);
+    ASSERT_NE(floatKeyRangeVsFullScan, nullptr);
+    ASSERT_NE(unsortedKeyStaysExact, nullptr);
+
+    // 14.1.1 — int key point + range located directly by the B+, and a
+    // non-indexed column falls back to the full scan. Score bits: 1 = point
+    // result exact (1 row, k == 7, a == 7.0); 2 = point probed 1 row, not 16;
+    // 4 = range result exact (5 rows, k 5..9); 8 = range probed 5 rows;
+    // 16 = un-indexed predicate on 'a' returns 10 rows having probed all 16.
+    EXPECT_EQ(intKeyPointRangeAndFallback(), 31)
+        << "int key point/range/fallback score bits (1|2|4|8|16)";
+
+    // 14.1.1 (float key) — score bits: 1 = range result exact (5 rows, a
+    // 5.0..9.0); 2 = range probed 5 rows; 4 = accelerated result equals the
+    // optimize(false) full-scan result row-for-row on both a and k.
+    EXPECT_EQ(floatKeyRangeVsFullScan(), 7)
+        << "float key range score bits (1|2|4)";
+
+    // 14.1.2 — score bits: 1 = scrambled-key range is 5 rows and row-for-row
+    // identical to the unoptimized run; 2 = range probed 5 rows; 4 = scrambled
+    // -key point is 1 row and matches the unoptimized run; 8 = point probed 1
+    // row.
+    EXPECT_EQ(unsortedKeyStaysExact(), 15)
+        << "unsorted key point/range score bits (1|2|4|8)";
 }

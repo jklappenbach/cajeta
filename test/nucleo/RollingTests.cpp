@@ -16,6 +16,18 @@
 //  - The result is a schema-erased `Table<?>`; the time form carries the
 //    anchor time column, the count form the aggregates alone.
 //
+// Fold shape (test-battery-restructure 2.3, spec §3.1/§3.2b): the three
+// original tests compiled three separate programs whose compiler footprints
+// were measured near-identical (the nucleo table family's ~18.8k shared
+// lines, .coverage/index 2026-08-10), each paying its own JIT compile for a
+// handful of assertions. One program now carries all three use-cases as
+// three self-contained static entry points — each builds its own table
+// locally, so no scenario can perturb another — and one C++ test asserts the
+// three score words scenario by scenario, with the original expectations
+// unchanged. No rolling test expects a FAILING compile (the loud-failure
+// claims are runtime `FrameException` catches inside the program), so no
+// test had to stay separate.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -26,12 +38,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -59,14 +65,16 @@ const char* kBuild =
     "        Table<Tick> t = heap Table<Tick>(Column.of<int64>(tsv),\n"
     "            Column.of<float64>(pv));\n";
 
-} // namespace
-
-// 11.1.1 / 11.1.2 — the time-based sliding window (t-60s, t], right-closed,
-// establishes time order; sum/mean/count/last per row match hand results.
-TEST(RollingTests, timeWindowSlidesRightClosedInTimeOrder) {
-    auto src = std::string(kPrelude) +
+// The one rolling program. Each entry point is independent: it builds its own
+// table from local arrays and returns its own score word, so the time form's
+// scrambled input cannot leak into the count form's ordered input.
+std::string rollingMatrixSrc() {
+    return std::string(kPrelude) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 11.1.1 / 11.1.2 — the time-based sliding window (t-60s, t],
+        // right-closed, establishes time order; sum/mean/count/last per row
+        // match hand results.
+        "    public static int32 timeWindow() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> h = t.lazy().rolling((TickCols c) -> c.ts(),\n"
@@ -108,16 +116,9 @@ TEST(RollingTests, timeWindowSlidesRightClosedInTimeOrder) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 31);
-}
-
-// 11.1.1 — the row-count window `rolling(n)`: the trailing n rows in INPUT
-// order, clamped at the start; sum/mean/count/min/max per row.
-TEST(RollingTests, countWindowTrailsInInputOrder) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 11.1.1 — the row-count window `rolling(n)`: the trailing n rows in
+        // INPUT order, clamped at the start; sum/mean/count/min/max per row.
+        "    public static int32 countWindow() {\n"
         // px = 1..5 in input order (no scramble — count form keeps input
         // order, no time column involved).
         "        int64[] tsv = heap int64[5];\n"
@@ -158,16 +159,9 @@ TEST(RollingTests, countWindowTrailsInInputOrder) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 15);
-}
-
-// 11.1.2 — the dynamic time form, and an incomplete rolling (no agg) fails
-// loud, sharing the resample completion contract.
-TEST(RollingTests, dynamicFormAndIncompleteFailsLoud) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 11.1.2 — the dynamic time form, and an incomplete rolling (no agg)
+        // fails loud, sharing the resample completion contract.
+        "    public static int32 dynamicForm() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // Dynamic string time form.
@@ -200,5 +194,44 @@ TEST(RollingTests, dynamicFormAndIncompleteFailsLoud) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 7);
+}
+
+} // namespace
+
+// The rolling use-case matrix, one compiled program (was: RollingTests.{time
+// WindowSlidesRightClosedInTimeOrder, countWindowTrailsInInputOrder, dynamic
+// FormAndIncompleteFailsLoud} — three compiles' worth of claims, every
+// assertion preserved):
+//   the TIME window slides right-closed and establishes time order (lazy
+//   until collect, anchor time carried, sum/mean/count/last by time); the
+//   COUNT window trails in input order clamped at the start (sum/mean/count/
+//   min/max); the DYNAMIC string time form agrees with the typed one, an
+//   un-agg'd rolling cannot be forced, and a non-integer time column fails
+//   loud.
+TEST(RollingTests, timeCountAndDynamicWindowFormsMatrix) {
+    auto jit = CajetaJit::compile(rollingMatrixSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto timeWindow  = jit->lookup<int32_t (*)()>("timeWindow");
+    auto countWindow = jit->lookup<int32_t (*)()>("countWindow");
+    auto dynamicForm = jit->lookup<int32_t (*)()>("dynamicForm");
+    ASSERT_NE(timeWindow, nullptr);
+    ASSERT_NE(countWindow, nullptr);
+    ASSERT_NE(dynamicForm, nullptr);
+
+    // 11.1.1 / 11.1.2 — time window: 1 lazy-until-collect, 2 shape + anchor
+    // time order, 4 sum/count per row, 8 mean, 16 last-by-time.
+    EXPECT_EQ(timeWindow(), 31)
+        << "time window score bits: 1=lazy 2=shape/order 4=sum+count 8=mean"
+           " 16=last-by-time";
+
+    // 11.1.1 — count window: 1 shape (aggregates alone), 2 sum/count with the
+    // start clamp, 4 mean, 8 min/max.
+    EXPECT_EQ(countWindow(), 15)
+        << "count window score bits: 1=shape 2=sum+count 4=mean 8=min/max";
+
+    // 11.1.2 — dynamic form: 1 string time form computes, 2 un-agg'd rolling
+    // refuses to collect, 4 non-integer time column fails loud.
+    EXPECT_EQ(dynamicForm(), 7)
+        << "dynamic form score bits: 1=string-form 2=no-agg-fails"
+           " 4=non-integer-time-fails";
 }
