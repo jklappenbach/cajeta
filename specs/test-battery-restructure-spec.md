@@ -46,6 +46,16 @@ files are untouched. Developer directives (verbatim intent):
   carrying the family's assertions, replacing N single-assertion compiles.
   Assertions are PRESERVED — line coverage is not behavior; nothing is
   dropped solely for adding no lines.
+- **3.2b Use-case discipline (developer directive, 2026-08-10).** No test
+  exists "just to test": each unit of functionality has a purpose — a
+  use-case — and a test must trace to one. Where multiple use-cases overlap,
+  COMBINE them into one program and let the NAME declare what is tested: the
+  convention is `<subject><UseCase>Matrix` / `<subject><UseCaseA>And<UseCaseB>`
+  (e.g. `stringElementModeMatrix` = every String element store mode;
+  `stringKeyResizeRehashRoundTrip` = keys survive rehash across resize).
+  A reader must be able to tell FROM THE NAME which use-cases a folded test
+  carries; a test whose name cannot say what purpose it serves is a candidate
+  for folding or removal.
 - **3.3** Acceptance per fold: the folded test(s) cover ≥ the union of the
   replaced tests' lines (diff via `.coverage/index`), all replaced assertions
   present, suite time reduced by the measured redundancy.
