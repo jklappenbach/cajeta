@@ -867,6 +867,15 @@ namespace cajeta {
             d.target = ph;
             d.canonical = instCanonical;
             deferredInstantiations().push_back(d);
+            // The frame pushed for the supers resolution above must not
+            // outlive this early return: leaking it buries the CALLER's
+            // frame, so e.g. a method template's own `R` stops resolving
+            // for the rest of its declaration walk the moment a formal
+            // triggers a deferred first instantiation
+            // (TableLoaderMaterializationTests, `wrap<R>(#Column<float64>)`
+            // — return type `Table<R>` died on "unresolved template
+            // argument" with Column's {T} sitting on top of the stack).
+            module->popTypeSubstitution();
             return ph;
         }
 
