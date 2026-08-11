@@ -164,24 +164,29 @@ TEST(FieldOwnershipBitsTests, fieldExtractionMovesTitle) {
     EXPECT_EQ(runI32(src), 6);
 }
 
-// 3.1.3b — extraction from a field holding no title (borrowed) panics
-// (Recoverable throw), rather than minting a forged title.
-TEST(FieldOwnershipBitsTests, extractionFromBorrowedFieldPanics) {
+// 3.1.3b — mode-carrying claim (mode-carrying-claim §5.1): `#=` from a
+// field holding no title (borrowed) yields a BORROW rather than panicking
+// or minting a forged title. The field stays resident; the true owner
+// still drops exactly once.
+TEST(FieldOwnershipBitsTests, extractionFromBorrowedFieldYieldsBorrow) {
     std::string src = std::string(kHolderSrc) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        "    public static int32 work() {\n"
         "        Cell mine = heap Cell(8);\n"
         "        Holder h = heap Holder();\n"
         "        h.setBorrow(mine);\n"
-        "        try {\n"
-        "            Cell taken #= h.f;\n"   // no title here → panic
-        "            return -95;\n"
-        "        } catch (Exception e) {\n"
-        "            return 1;\n"
-        "        }\n"
+        "        Cell taken #= h.f;\n"       // no title here → borrow
+        "        if (h.f.n != 8) { return -95; }\n"  // field resident
+        "        return taken.n;\n"          // borrow: no drop of its own
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 1);
+    EXPECT_EQ(runI32(src), 8);
 }
 
 // Unit 4 close-out discovery — STATIC fields carry no ownership bit, so a
