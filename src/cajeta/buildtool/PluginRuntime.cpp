@@ -285,6 +285,36 @@ namespace cajeta::buildtool {
                 caps.push_back(c);
             }
             context["capabilities"] = std::move(caps);
+
+            // Toolchain paths, so a plugin can orchestrate compilation
+            // without machine-specific configuration: `cajeta` is this
+            // process; `llc` is the toolchain LLVM this binary was built
+            // against; `cc` resolves from PATH.
+            llvm::json::Object toolchain;
+            toolchain["cajeta"] = runningExecutable();
+#ifdef CAJETA_LLVM_TOOLS_BIN
+            toolchain["llc"] = std::string(CAJETA_LLVM_TOOLS_BIN) + "/llc";
+            toolchain["llvm-dis"] =
+                std::string(CAJETA_LLVM_TOOLS_BIN) + "/llvm-dis";
+#else
+            toolchain["llc"] = std::string("llc");
+            toolchain["llvm-dis"] = std::string("llvm-dis");
+#endif
+            toolchain["cc"] = std::string("cc");
+            context["toolchain"] = std::move(toolchain);
+
+            // The plugin's own resolved artifacts — its archive and its
+            // dependency closure — so it can extract bundled bitcode
+            // (e.g. a probe runtime) from the packages it shipped in,
+            // instead of knowing an install location.
+            llvm::json::Object pluginObj;
+            pluginObj["artifact"] = plugin.artifactPath;
+            llvm::json::Array deps;
+            for (const auto& d : plugin.depArtifacts) {
+                deps.push_back(d);
+            }
+            pluginObj["deps"] = std::move(deps);
+            context["plugin"] = std::move(pluginObj);
             req["context"] = std::move(context);
 
             std::string out;
