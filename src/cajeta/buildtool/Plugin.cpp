@@ -237,6 +237,55 @@ namespace cajeta::buildtool {
             // library); plugins lacking a binary parse OK but can't
             // be invoked (PluginAction surfaces the error at run).
             const auto& pluginObj = pluginManifest->details.pluginRaw;
+            if (auto s = pluginObj.getString("main")) {
+                r.mainEntry = s->str();
+            }
+            r.manifestJson = manifestJson;
+            // Resolve the plugin's own dependencies (flat, v1 — a plugin
+            // flattens its transitive closure into its manifest) so the
+            // compile-from-cja path has its classpath. Parsed from the raw
+            // sidecar JSON: settings.dependencies { name: constraint }.
+            {
+                auto parsedSidecar = llvm::json::parse(manifestJson);
+                if (parsedSidecar) {
+                    if (const auto* rootObj = parsedSidecar->getAsObject()) {
+                        const auto* settingsObj = rootObj->getObject("settings");
+                        const llvm::json::Object* depsObj =
+                            settingsObj ? settingsObj->getObject("dependencies")
+                                        : nullptr;
+                        if (depsObj) {
+                            for (const auto& dep : *depsObj) {
+                                std::string depName = dep.first.str();
+                                auto depConstraint = dep.second.getAsString();
+                                if (!depConstraint) continue;
+                                bool depFound = false;
+                                for (const auto& repo : repos) {
+                                    auto dv = repo->listVersions(depName);
+                                    if (!dv) return dv.takeError();
+                                    std::string v2 = highestSat(
+                                        *dv, depConstraint->str());
+                                    if (v2.empty()) continue;
+                                    auto dp = repo->fetch(depName, v2);
+                                    if (!dp) return dp.takeError();
+                                    auto dc = cache.insert(*dp);
+                                    if (!dc) return dc.takeError();
+                                    r.depArtifacts.push_back(*dc);
+                                    depFound = true;
+                                    break;
+                                }
+                                if (!depFound) {
+                                    return err("plugins." + spec.name +
+                                               ": dependency '" + depName +
+                                               "' " + depConstraint->str() +
+                                               " not found in any repository");
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    llvm::consumeError(parsedSidecar.takeError());
+                }
+            }
             if (auto s = pluginObj.getString("binary")) {
                 // Resolve relative paths against the artifact's
                 // own directory. The artifact lives in the local

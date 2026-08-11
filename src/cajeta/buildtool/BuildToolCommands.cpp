@@ -7,6 +7,9 @@
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/Lockfile.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Plugin.h"
+#include "cajeta/buildtool/PluginAction.h"
+#include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/OllaStore.h"
@@ -1134,6 +1137,58 @@ namespace cajeta::buildtool {
                 "no workspace member named '" + memberName +
                 "' (known: " + known + ")");
         }
+        // Join the plugin model to the task path: resolve the manifest's
+        // `plugins` block and register each plugin-provided action in the
+        // registry, so tasks can name them exactly like builtins. Every
+        // component here — parsePlugins, resolvePlugins, PluginRuntime,
+        // PluginAction — predates this function; the missing piece was
+        // only this wiring, which is why a task naming a plugin action
+        // has always failed with "unknown action".
+        llvm::Error wireManifestPlugins(const Manifest& m,
+                                        const std::string& manifestPath,
+                                        ActionRegistry& registry) {
+            auto specs = parsePlugins(m);
+            if (!specs) return specs.takeError();
+            if (specs->empty()) return llvm::Error::success();
+
+            std::string projectRoot = std::filesystem::path(manifestPath)
+                                          .parent_path()
+                                          .string();
+            if (projectRoot.empty()) projectRoot = ".";
+
+            auto repoSpecs = parseRepositories(m);
+            if (!repoSpecs) return repoSpecs.takeError();
+            std::string downloadStage =
+                (std::filesystem::path(projectRoot) / ".cajeta" / "cache" /
+                 "downloads")
+                    .string();
+            auto repos = buildRepositories(*repoSpecs, downloadStage);
+            if (!repos) return repos.takeError();
+
+            auto allowed = parsePluginsAllowedCapabilities(m);
+            if (!allowed) return allowed.takeError();
+            ArtifactCache cache(projectRoot);
+            auto resolved = resolvePlugins(*specs, *repos, *allowed, cache);
+            if (!resolved) return resolved.takeError();
+
+            for (const auto& rp : *resolved) {
+                // The spec's config block is each action's default param
+                // layer (the contract Plugin.h documents).
+                llvm::json::Object config;
+                for (const auto& sp : *specs) {
+                    if (sp.name == rp.name) {
+                        config = sp.configRaw;
+                        break;
+                    }
+                }
+                for (auto& a : makePluginActions(rp, config)) {
+                    registry.registerAction(std::move(a));
+                }
+            }
+            return llvm::Error::success();
+        }
+
+
 
         int runTaskCommand(int argc, const char* argv[]) {
             std::string manifestPath = "./cajeta.json";
@@ -1234,6 +1289,14 @@ namespace cajeta::buildtool {
             }
 
             ActionRegistry registry;
+            if (auto e = wireManifestPlugins(project->manifest, manifestPath,
+                                             registry)) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << std::move(e);
+                std::cerr << "cajeta " << taskName << ": " << msg << "\n";
+                return 1;
+            }
             auto outputs = runTask(
                 project->tasks, taskName, cliParams,
                 project->props, registry, &project->manifest);
@@ -1275,6 +1338,7 @@ namespace cajeta::buildtool {
         // but the CLI catches the most common drift before it hits
         // disk. See plans/buildtool/coverage-exclude-and-cli.md "Generic-reason
         // list" for the rationale.
+
         bool isGenericCoverageReason(std::string_view reason) {
             std::string lower;
             lower.reserve(reason.size());
@@ -1867,6 +1931,14 @@ namespace cajeta::buildtool {
                 return 1;
             }
             ActionRegistry registry;
+            if (auto e = wireManifestPlugins(project->manifest, manifestForTask,
+                                             registry)) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << std::move(e);
+                std::cerr << "cajeta workspace: " << msg << "\n";
+                return 1;
+            }
             TaskInvocationParams cliParams;
             auto outputs = runTask(
                 project->tasks, taskName, cliParams,

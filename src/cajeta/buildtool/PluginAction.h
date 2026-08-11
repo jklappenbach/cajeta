@@ -18,7 +18,12 @@ namespace cajeta::buildtool {
 
     class PluginAction : public Action {
     public:
-        PluginAction(ResolvedPlugin plugin, std::string actionName);
+        // `defaults` is the plugin's manifest `config` block — the default
+        // parameter layer Plugin.h documents ("forwards this to the
+        // plugin's actions as default param values"). Explicit task params
+        // overlay it at run().
+        PluginAction(ResolvedPlugin plugin, std::string actionName,
+                     llvm::json::Object defaults = llvm::json::Object());
 
         std::string name() const override { return actionName_; }
 
@@ -29,6 +34,7 @@ namespace cajeta::buildtool {
     private:
         ResolvedPlugin plugin_;
         std::string actionName_;
+        llvm::json::Object defaults_;
     };
 
     // Factory: returns one PluginAction per action the plugin
@@ -40,5 +46,10 @@ namespace cajeta::buildtool {
     // list.
     std::vector<std::unique_ptr<PluginAction>> makePluginActions(
         const ResolvedPlugin& plugin);
+
+    // As above, threading the consumer's per-plugin `config` block into
+    // every action as its default params.
+    std::vector<std::unique_ptr<PluginAction>> makePluginActions(
+        const ResolvedPlugin& plugin, const llvm::json::Object& config);
 
 } // namespace cajeta::buildtool
