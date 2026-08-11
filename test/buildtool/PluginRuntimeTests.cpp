@@ -249,7 +249,9 @@ TEST(PluginRuntimeTests, missingBinaryFailsBeforeFork) {
     auto r = invokePluginAction(plugin, "acme.no-binary.go", params, ctx);
     ASSERT_FALSE((bool)r);
     auto msg = errorText(r.takeError());
-    EXPECT_NE(msg.find("no binary declared"), std::string::npos);
+    // With the `main` distribution model, the pre-fork refusal names BOTH
+    // absent selectors (`details.plugin.binary` / `details.plugin.main`).
+    EXPECT_NE(msg.find("declares neither"), std::string::npos) << msg;
 }
 
 TEST(PluginRuntimeTests, requestCarriesParamsAndCapabilities) {
