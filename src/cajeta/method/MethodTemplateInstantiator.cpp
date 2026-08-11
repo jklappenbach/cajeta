@@ -253,8 +253,24 @@ namespace cajeta {
                 bool stdlibResident = inst
                     && inst->getEmitModule() == inst->getModule();
                 if (stdlibResident) {
-                    ++it;
-                    continue;
+                    // ...but only while its DEFINITION is still in the
+                    // stdlib module. restoreLlvmBaseline keeps an
+                    // instantiation a BASELINE stdlib body references
+                    // (adopted — Sort::pdqFindRun<int64>) and ERASES one
+                    // only a dead session's cells referenced (Sort::
+                    // sort<int32>). Keeping an erased entry short-circuits
+                    // the re-emit and the next resident session's link
+                    // misses the symbol (KernelCellTests.
+                    // failedCellLeavesBindingsIntact). Trust the IR.
+                    llvm::Module* sm = inst->getModule()
+                        ? inst->getModule()->getLlvmModule() : nullptr;
+                    llvm::Function* fn = sm
+                        ? sm->getFunction(inst->getLlvmSymbolName())
+                        : nullptr;
+                    if (fn && !fn->isDeclaration()) {
+                        ++it;
+                        continue;
+                    }
                 }
                 if (inst && parent) {
                     // Full unregister from EVERY per-class map (not just
