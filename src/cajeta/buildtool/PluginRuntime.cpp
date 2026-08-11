@@ -155,14 +155,21 @@ namespace cajeta::buildtool {
             fs::path bin = binDir / plugin.name;
             fs::path stamp = binDir / (plugin.name + ".sha256");
 
-            // 2. Reuse when the cached binary matches this artifact.
+            // 2. Reuse when the cached binary matches this artifact AND its
+            // dependency closure — a dep-only update (same plugin version,
+            // new library build) must invalidate the cache too, or stale
+            // library code keeps running silently.
+            std::string stampPayload = plugin.sha256;
+            for (const auto& d : plugin.depArtifacts) {
+                stampPayload += "+" + ArtifactCache::sha256OfFile(d);
+            }
             {
                 std::error_code ec;
                 if (fs::is_regular_file(bin, ec)) {
                     std::ifstream in(stamp);
                     std::string prior;
                     if (in) std::getline(in, prior);
-                    if (!prior.empty() && prior == plugin.sha256) {
+                    if (!prior.empty() && prior == stampPayload) {
                         return bin.string();
                     }
                 }
@@ -236,10 +243,10 @@ namespace cajeta::buildtool {
                            ": compiling the archive failed: " + tail);
             }
 
-            // 4. Stamp for reuse.
+            // 4. Stamp for reuse (artifact + dependency closure).
             {
                 std::ofstream out(stamp);
-                out << plugin.sha256 << "\n";
+                out << stampPayload << "\n";
             }
             return bin.string();
         }
