@@ -309,6 +309,57 @@ TEST(TableCoreTests, nonRecordSchemaIsNamedCompileError) {
     }
 }
 
+// Plan 2.7 pin — an error thrown from INSIDE the Table member synthesizer
+// (mid-class-template-instantiation, e.g. the FRAME_SCHEMA above) must not
+// poison the NEXT compile in the same process. Before the fix, the
+// deferred-instantiation queue (thread_local, outside resetGlobals AND the
+// reuse baseline restore) kept entries pointing into the failed compile's
+// object graph; the next compile drained them against its own fresh
+// registries and died parsing Table.cajeta's own fields
+// (CAJETA_ERROR_UNKNOWN_TYPE: 'Plan' on 'plan'). This was 6/8 of the
+// original suite's sweep failures. Two compiles, one process: the poison
+// shape, then a healthy Table program that must still compile and run.
+TEST(TableCoreTests, frameSchemaErrorDoesNotPoisonNextCompile) {
+    std::string bad =
+        "package test;\n"
+        "import cajeta.nucleo.frame.Table;\n"
+        "public class Box {\n"
+        "    public int32 v;\n"
+        "    public Box(int32 v) { this.v = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Table<Box> t = heap Table<Box>();\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(bad, "test.D");
+        FAIL() << "expected Table<non-record> to fail the compile";
+    } catch (cajeta::Exception& e) {
+        ASSERT_EQ(e.getErrorId(), "CAJETA_ERROR_FRAME_SCHEMA")
+            << "poison compile threw the wrong error: " << e.getMessage();
+    }
+
+    auto good = std::string(kPrelude) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        + kBuildCols +
+        "        Table<Tick> t = heap Table<Tick>(\n"
+        "            Column.of<int64>(tsv), Column.of<float64>(pv),\n"
+        "            Column.of<float64>(sv), StringColumn.of(vv));\n"
+        "        if (t.price.get(1) == 2.5) { return 42; }\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(good, "test.D");
+    ASSERT_NE(jit, nullptr)
+        << "the compile AFTER a synthesizer error must succeed";
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 42);
+}
+
 // 3.1.3 — the synthesized member accessor is a typed read; a typo names no
 // member and fails the compile, phrased against the typo. Its own test: the
 // compile FAILS (the memoization half of 3.1.3 rides the matrix above, as

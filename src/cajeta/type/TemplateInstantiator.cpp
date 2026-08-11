@@ -90,6 +90,11 @@ namespace cajeta {
         return target;
     }
 
+    void CajetaClass::resetDeferredInstantiationState() {
+        deferredInstantiations().clear();
+        instantiationReuseTarget().reset();
+    }
+
     bool CajetaClass::drainDeferredInstantiations() {
         auto& pending = deferredInstantiations();
         if (pending.empty()) return false;
@@ -97,6 +102,24 @@ namespace cajeta {
         // Index-based: completing one instantiation can defer others (a
         // template body that names another not-yet-declared template), and
         // those append while we iterate.
+        //
+        // Exception hygiene: instantiateInternal can throw a USER diagnostic
+        // (a member synthesizer rejecting the instantiation — FRAME_SCHEMA
+        // et al.). That fails the whole compile, so the queue's remaining
+        // entries — shared_ptrs into THIS compile's object graph — must not
+        // survive into the next Compiler on this thread; and the reuse
+        // target must not stay pointing at the aborted entry for the rest
+        // of this drain's callers. Restore/clear on unwind.
+        struct DrainUnwindGuard {
+            vector<DeferredInstantiation>& pending;
+            CajetaClassPtr saved;
+            bool dismissed = false;
+            ~DrainUnwindGuard() {
+                if (dismissed) return;
+                instantiationReuseTarget() = saved;
+                pending.clear();
+            }
+        } guard{pending, instantiationReuseTarget()};
         for (size_t i = 0; i < pending.size(); ++i) {
             auto& d = pending[i];
             if (!d.templateClass || !d.target) continue;
@@ -111,6 +134,7 @@ namespace cajeta {
             reuse = saved;
             if (!d.target->isPlaceholder()) progressed = true;
         }
+        guard.dismissed = true;
         // Drop the completed entries.
         pending.erase(std::remove_if(pending.begin(), pending.end(),
             [](const DeferredInstantiation& d) {
