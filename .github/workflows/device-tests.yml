@@ -42,16 +42,6 @@ on:
     # 07:00 UTC nightly. Device runs are long (a 69-test Vulkan sweep took
     # ~73 min on proton), so this is deliberately not a per-push gate.
     - cron: '0 7 * * *'
-  # TEMPORARY — REMOVE BEFORE MERGING TO main.
-  # workflow_dispatch is only offered for workflows that already exist on the
-  # default branch, so a file that has never been merged cannot be dispatched
-  # at all. This branch-scoped push trigger is the only way to exercise it
-  # before it lands. Delete this block once the workflow is on main; the
-  # nightly + dispatch triggers above are the intended surface, and leaving a
-  # push trigger on a 4-hour GPU job would be actively hostile.
-  push:
-    branches: [ci/device-tests]
-
 concurrency:
   # The runners are single-box; a queued nightly stacking behind a manual run
   # just serializes badly. Newest wins.
@@ -231,13 +221,11 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='${{ inputs.filter }}'
-          # TEMPORARY (remove with the push trigger before merging): widen the
-          # push-run default to include the Ewise-compiling host suites — no
-          # *DeviceTests* suite imports cajeta.math, so only these compile the
-          # f16/bf16 coop-matrix kernels for real NVPTX (ptxas present) — plus
-          # the coop-matrix lowering pins from PR #3
-          # (specs/nvptx-coop-bf16-fragment-abort-spec.md).
-          [ -z "$FILTER" ] && FILTER='*DeviceTests*:NumpyOpsTests.*:XpuCpuPoolTeardownTests.*:HalfPrecisionTests.*:PlacementDispatchTests.*:NvptxCoopBf16Tests.*:XpuSpirvMixedTierTests.*'
+          # Default: the device suites plus the coop-matrix lowering pins —
+          # the pins are compile-side but backend-shaped (NVPTX bf16 fragments,
+          # SPIR-V/AMD tier handling) and only mean something where the real
+          # toolchains are present. Widen per-run via the `filter` input.
+          [ -z "$FILTER" ] && FILTER='*DeviceTests*:NvptxCoopBf16Tests.*:XpuSpirvMixedTierTests.*:AmdgpuCoopBf16Tests.*'
           echo "filter: $FILTER"
           ./build/test/cajeta_test --gtest_filter="$FILTER" 2>&1 | tee device-tests.log
 
