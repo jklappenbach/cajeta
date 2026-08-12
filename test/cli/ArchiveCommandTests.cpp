@@ -292,3 +292,198 @@ TEST(ArchiveCommandTests, signAndVerifySigRoundTrip) {
                     + pub.string() + " --sig " + sig.string()), 0)
         << w.output();
 }
+
+// ─── flag arms the happy paths above don't reach ───────────────────
+
+TEST(ArchiveCommandTests, extractFlagArms) {
+    ArchiveWorld w;
+    fs::path cja = w.writeFixture();
+
+    EXPECT_EQ(w.run("extract"), 1);
+    EXPECT_NE(w.output().find("missing <archive>"), std::string::npos)
+        << w.output();
+    EXPECT_EQ(w.run("extract " + cja.string() + " -C"), 1);
+    EXPECT_NE(w.output().find("-C requires a directory"), std::string::npos)
+        << w.output();
+    EXPECT_EQ(w.run("extract " + cja.string() + " --bogus"), 1);
+    EXPECT_NE(w.output().find("unknown flag"), std::string::npos)
+        << w.output();
+    EXPECT_EQ(w.run("extract " + cja.string() + " --flatten --strip=1"), 1);
+    EXPECT_NE(w.output().find("mutually exclusive"), std::string::npos)
+        << w.output();
+
+    // --flatten drops every directory component.
+    fs::path flat = w.root / "flat";
+    EXPECT_EQ(w.run("extract " + cja.string() + " -C " + flat.string()
+                    + " --flatten"), 0) << w.output();
+    EXPECT_TRUE(fs::exists(flat / "A.cajeta")) << w.output();
+    EXPECT_TRUE(fs::exists(flat / "app.properties")) << w.output();
+
+    // --strip=N drops N leading components instead.
+    fs::path stripped = w.root / "stripped";
+    EXPECT_EQ(w.run("extract " + cja.string() + " -C " + stripped.string()
+                    + " --strip=1"), 0) << w.output();
+    EXPECT_TRUE(fs::exists(stripped / "example" / "A.cajeta")) << w.output();
+
+    // A path filter extracts only what matches; --overwrite re-runs clean.
+    fs::path only = w.root / "only";
+    EXPECT_EQ(w.run("extract " + cja.string() + " -C " + only.string()
+                    + " resources"), 0) << w.output();
+    EXPECT_TRUE(fs::exists(only / "resources" / "app.properties"));
+    EXPECT_FALSE(fs::exists(only / "com" / "example" / "A.cajeta"));
+    EXPECT_EQ(w.run("extract " + cja.string() + " -C " + only.string()
+                    + " --overwrite resources"), 0) << w.output();
+}
+
+TEST(ArchiveCommandTests, diffFlagArmsAndNameOnly) {
+    ArchiveWorld w;
+    fs::path a = w.writeFixture("a.cja", "one\n");
+    fs::path b = w.writeFixture("b.cja", "two\n");
+
+    EXPECT_EQ(w.run("diff " + a.string()), 1);
+    EXPECT_NE(w.output().find("usage: diff"), std::string::npos) << w.output();
+    EXPECT_EQ(w.run("diff --bogus " + a.string() + " " + b.string()), 1);
+    EXPECT_NE(w.output().find("unknown flag"), std::string::npos)
+        << w.output();
+
+    // --name-only compares the NAME SETS only: same names on both sides
+    // count as identical however their bytes differ, so two fixtures that
+    // differ only in a resource body report no diff.
+    EXPECT_EQ(w.run("diff --name-only " + a.string() + " " + b.string()), 0)
+        << w.output();
+
+    // It does report a name present on one side only.
+    fs::path extra = w.root / "extra.cja";
+    {
+        CajetaArchive arc("com.example.fix", "1.2.3",
+                          CajetaArchive::Kind::Cja);
+        CajetaArchiveEntry e;
+        e.name = "resources/only-here.txt";
+        e.kindTag = CajetaArchive::EntryKind::Resource;
+        e.data = bytesOf("x");
+        arc.addEntry(std::move(e));
+        arc.writeTo(extra.string());
+    }
+    EXPECT_NE(w.run("diff --name-only " + a.string() + " " + extra.string()),
+              0) << w.output();
+    EXPECT_NE(w.output().find("only-here.txt"), std::string::npos)
+        << w.output();
+
+    // --json carries a machine-readable verdict.
+    w.run("diff --json " + a.string() + " " + b.string());
+    EXPECT_NE(w.output().find("{"), std::string::npos) << w.output();
+
+    // --include-stdlib widens the comparison set (no stdlib here, so the
+    // verdict is unchanged — the flag must still parse and run).
+    w.run("diff --include-stdlib " + a.string() + " " + b.string());
+
+    // A missing side reports rather than crashing.
+    EXPECT_NE(w.run("diff " + a.string() + " "
+                    + (w.root / "absent.cja").string()), 0);
+}
+
+TEST(ArchiveCommandTests, stripIncludeAndFlagArms) {
+    ArchiveWorld w;
+    fs::path in = w.writeFixture("in.cja");
+
+    EXPECT_EQ(w.run("strip " + in.string()), 1);
+    EXPECT_NE(w.output().find("usage: strip"), std::string::npos)
+        << w.output();
+    EXPECT_EQ(w.run("strip --bogus " + in.string() + " "
+                    + (w.root / "o.cja").string()), 1);
+    EXPECT_NE(w.output().find("unknown flag"), std::string::npos)
+        << w.output();
+
+    // --include is an allowlist: everything else is dropped. `**` is the
+    // recursive glob — a single `*` does not cross '/', so `com/*` would
+    // NOT match com/example/A.cajeta.
+    fs::path kept = w.root / "kept.cja";
+    EXPECT_EQ(w.run("strip " + in.string() + " " + kept.string()
+                    + " --include=com/**"), 0) << w.output();
+    auto back = CajetaArchive::readFrom(kept.string());
+    EXPECT_NE(back.findEntry("com/example/A.cajeta"), nullptr);
+    EXPECT_EQ(back.findEntry("resources/app.properties"), nullptr);
+
+    // include + exclude compose: the exclude wins on an overlap.
+    fs::path both = w.root / "both.cja";
+    EXPECT_EQ(w.run("strip " + in.string() + " " + both.string()
+                    + " --include=com/** --exclude=com/example/A.cajeta"), 0)
+        << w.output();
+    auto b2 = CajetaArchive::readFrom(both.string());
+    EXPECT_EQ(b2.findEntry("com/example/A.cajeta"), nullptr);
+}
+
+TEST(ArchiveCommandTests, mergeFlagArms) {
+    ArchiveWorld w;
+    fs::path a = w.writeFixture("a.cja");
+    fs::path b = w.writeFixture("b.cja");   // same identity, same entries
+
+    EXPECT_EQ(w.run("merge " + a.string()), 1);
+    EXPECT_NE(w.output().find("usage: merge"), std::string::npos)
+        << w.output();
+    EXPECT_EQ(w.run("merge --bogus " + (w.root / "o.cja").string() + " "
+                    + a.string() + " " + b.string()), 1);
+    EXPECT_NE(w.output().find("unknown flag"), std::string::npos)
+        << w.output();
+    EXPECT_EQ(w.run("merge --kind=zip " + (w.root / "o.cja").string() + " "
+                    + a.string() + " " + b.string()), 1);
+    EXPECT_NE(w.output().find("--kind must be cja or uber"), std::string::npos)
+        << w.output();
+
+    // Identical entry names in both inputs collide unless allowed.
+    fs::path out = w.root / "merged.cja";
+    EXPECT_NE(w.run("merge " + out.string() + " " + a.string() + " "
+                    + b.string()), 0) << w.output();
+    EXPECT_EQ(w.run("merge --allow-collisions " + out.string() + " "
+                    + a.string() + " " + b.string()), 0) << w.output();
+    EXPECT_TRUE(fs::exists(out));
+
+    // --kind=uber + --prefix-deps is the uber-archive shape.
+    fs::path uber = w.root / "uber.cja";
+    EXPECT_EQ(w.run("merge --kind=uber --prefix-deps --allow-collisions "
+                    + uber.string() + " " + a.string() + " " + b.string()), 0)
+        << w.output();
+}
+
+TEST(ArchiveCommandTests, signAndVerifySigFlagArms) {
+    ArchiveWorld w;
+    fs::path cja = w.writeFixture();
+
+    EXPECT_EQ(w.run("sign " + cja.string()), 1);       // no --key
+    EXPECT_FALSE(w.output().empty()) << "expected a diagnostic";
+    EXPECT_EQ(w.run("sign"), 1);                        // no archive
+    EXPECT_EQ(w.run("verify-sig " + cja.string()), 1);  // no --pubkey
+    EXPECT_FALSE(w.output().empty()) << "expected a diagnostic";
+
+    // A bad key path is reported, not crashed through.
+    EXPECT_NE(w.run("sign " + cja.string() + " --key /no/such/key.pem"), 0);
+    EXPECT_NE(w.run("verify-sig " + cja.string()
+                    + " --pubkey /no/such/pub.pem"), 0);
+}
+
+// `-` reads the archive from stdin (the documented pipe convention).
+TEST(ArchiveCommandTests, stdinDashReadsTheArchive) {
+    ArchiveWorld w;
+    fs::path cja = w.writeFixture("piped.cja");
+    std::string cmd = compilerBinary() + " archive info - < " + cja.string()
+        + " > " + w.outLog().string() + " 2>&1";
+    EXPECT_EQ(exitCodeOf(std::system(cmd.c_str())), 0) << w.output();
+    EXPECT_NE(w.output().find("com.example.fix"), std::string::npos)
+        << w.output();
+
+    std::string lcmd = compilerBinary() + " archive list - < " + cja.string()
+        + " > " + w.outLog().string() + " 2>&1";
+    EXPECT_EQ(exitCodeOf(std::system(lcmd.c_str())), 0) << w.output();
+    EXPECT_NE(w.output().find("com/example/A.cajeta"), std::string::npos)
+        << w.output();
+}
+
+TEST(ArchiveCommandTests, corruptArchiveIsReportedNotCrashed) {
+    ArchiveWorld w;
+    fs::path bad = w.root / "corrupt.cja";
+    std::ofstream(bad, std::ios::binary) << "not an archive at all";
+    for (const char* sub : {"list", "info", "deps", "verify"}) {
+        EXPECT_NE(w.run(std::string(sub) + " " + bad.string()), 0)
+            << sub << ": " << w.output();
+    }
+}
