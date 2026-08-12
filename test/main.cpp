@@ -26,9 +26,16 @@ static void appendMsysCoreutilsToPath() {
 #endif
 
 #if defined(__GNUC__) && !defined(_WIN32)
-// Weak so uninstrumented builds resolve it to null — see the coverage note at
-// the _Exit below.
-extern "C" __attribute__((weak)) void __gcov_dump(void);
+// Resolved at runtime so uninstrumented builds get null — an ELF-style weak
+// declaration linked on Linux but Mach-O's ld errors on a link-time-
+// undefined weak function (v0.19.0 aarch64-apple-darwin leg). See the
+// coverage note at the _Exit below; same pattern as ForkPerTest.cpp.
+#include <dlfcn.h>
+static void (*mainGcovDumpFn())(void) {
+    static void (*fn)(void) = reinterpret_cast<void (*)(void)>(
+        dlsym(RTLD_DEFAULT, "__gcov_dump"));
+    return fn;
+}
 #endif
 
 #if !defined(_WIN32)
@@ -66,7 +73,7 @@ int main(int argc, char **argv) {
     // _Exit below skips the atexit chain (see above) — which also skips the
     // gcov counter dump in CAJETA_COVERAGE builds, silently producing zero
     // .gcda. Dump explicitly first; null in uninstrumented builds.
-    if (__gcov_dump) __gcov_dump();
+    if (mainGcovDumpFn()) mainGcovDumpFn()();
 #endif
     std::_Exit(rc);
 }

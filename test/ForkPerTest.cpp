@@ -32,9 +32,27 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
-extern "C" __attribute__((weak)) void __gcov_reset(void);
-extern "C" __attribute__((weak)) void __gcov_dump(void);
+// Coverage hooks, resolved at RUNTIME. The previous ELF-style weak
+// references (`__attribute__((weak))` declarations) linked fine on Linux
+// but Mach-O's ld errors on a link-time-undefined weak function — the
+// v0.19.0 aarch64-apple-darwin leg died on exactly that. dlsym against
+// the process (the test binary links -rdynamic for the JIT on every
+// platform) finds the symbols in instrumented builds and yields null
+// otherwise — the same call-if-present contract, portably.
+namespace {
+void (*gcovResetFn())(void) {
+    static void (*fn)(void) = reinterpret_cast<void (*)(void)>(
+        dlsym(RTLD_DEFAULT, "__gcov_reset"));
+    return fn;
+}
+void (*gcovDumpFn())(void) {
+    static void (*fn)(void) = reinterpret_cast<void (*)(void)>(
+        dlsym(RTLD_DEFAULT, "__gcov_dump"));
+    return fn;
+}
+} // namespace
 
 namespace {
 
@@ -122,7 +140,7 @@ int cajetaForkPerTestMain() {
     // 2. Attribution reset: children inherit counters by COW, so zeroing here
     // keeps the shared prime out of every child's dump. No-op when
     // uninstrumented.
-    if (__gcov_reset) __gcov_reset();
+    if (gcovResetFn()) gcovResetFn()();
 
     const char* gcovDir = std::getenv("CAJETA_FORK_GCOV_DIR");
     const std::string filter = ::testing::GTEST_FLAG(filter);
@@ -159,7 +177,7 @@ int cajetaForkPerTestMain() {
                 }
                 const int rc = RUN_ALL_TESTS();
                 std::fflush(nullptr);
-                if (__gcov_dump) __gcov_dump();
+                if (gcovDumpFn()) gcovDumpFn()();
                 _exit(rc != 0 ? 1 : 0);
             }
             ++ran;
