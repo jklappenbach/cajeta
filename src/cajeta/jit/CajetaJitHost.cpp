@@ -60,7 +60,7 @@
 #include "llvm/ExecutionEngine/ObjectCache.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
-#include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
+#include "cajeta/jit/JitCoffLinking.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/InstrTypes.h"
@@ -644,37 +644,9 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
     }
 
     llvm::orc::LLJITBuilder builder;
-    // Windows/COFF: LLJIT's auto-config deliberately avoids JITLink on COFF
-    // (LLJIT.cpp `UseJITLink = !TT.isOSBinFormatCOFF()`) and falls back to
-    // RuntimeDyld — whose COFF x86-64 handler cannot relocate
-    // IMAGE_REL_AMD64_ADDR32NB unless sections happen to land in image order,
-    // and report_fatal_error()s the WHOLE PROCESS when they don't
-    // (specs/windows-jit-coff-reloc-spec.md; the abort point wanders with the
-    // host module's section layout, so any Windows JIT workload can hit it).
-    // JITLink's COFF backend computes image-relative fixups correctly, so
-    // install it explicitly, mirroring what LLJIT's own JITLink path sets up:
-    // Small code model + PIC relocation on the target machine, and the two
-    // responsibility-flag overrides its RTDyld-COFF path applies for comdat/
-    // weak symbols. ELF/MachO keep the untouched default.
-    if (llvm::Triple(llvm::sys::getProcessTriple()).isOSBinFormatCOFF()) {
-        auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
-        if (jtmb) {
-            if (!jtmb->getCodeModel())
-                jtmb->setCodeModel(llvm::CodeModel::Small);
-            jtmb->setRelocationModel(llvm::Reloc::PIC_);
-            builder.setJITTargetMachineBuilder(std::move(*jtmb));
-        }
-        builder.setObjectLinkingLayerCreator(
-            [](llvm::orc::ExecutionSession& es,
-               llvm::jitlink::JITLinkMemoryManager& memMgr)
-                -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
-                auto layer =
-                    std::make_unique<llvm::orc::ObjectLinkingLayer>(es, memMgr);
-                layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
-                layer->setAutoClaimResponsibilityForObjectSymbols(true);
-                return layer;
-            });
-    }
+    // COFF: RuntimeDyld's default object layer aborts the process on
+    // IMAGE_REL_AMD64_ADDR32NB — see JitCoffLinking.h for the full story.
+    cajeta::jit::applyCoffJitLink(builder);
     if (objCache) {
         builder.setCompileFunctionCreator(
             [objCache](llvm::orc::JITTargetMachineBuilder jtmb)

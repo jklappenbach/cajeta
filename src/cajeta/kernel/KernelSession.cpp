@@ -1,5 +1,7 @@
 #include "cajeta/kernel/KernelSession.h"
 
+#include "cajeta/jit/JitCoffLinking.h"
+
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -133,7 +135,12 @@ std::unique_ptr<KernelSession> KernelSession::create(std::string* error) {
     std::unique_ptr<KernelSession> s(new KernelSession);
     Impl& impl = *s->impl_;
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    // COFF: RuntimeDyld's default object layer aborts the process on
+    // IMAGE_REL_AMD64_ADDR32NB (see JitCoffLinking.h) — this bare builder was
+    // the second site, found when the abort survived the CajetaJitHost fix.
+    llvm::orc::LLJITBuilder builder;
+    cajeta::jit::applyCoffJitLink(builder);
+    auto jitOrErr = builder.create();
     if (!jitOrErr) {
         return setErr("LLJIT create failed: "
                       + llvm::toString(jitOrErr.takeError()));
