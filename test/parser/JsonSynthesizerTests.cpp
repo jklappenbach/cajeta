@@ -1753,3 +1753,99 @@ TEST(JsonSynthesizerTests, jsonRequiredWithRename) {
         "}\n";
     EXPECT_EQ(runI32(src), 42);
 }
+
+// ---- Optional<T> inner types beyond int32/String (4.5) ----
+//
+// The synthesizer emits a distinct read + empty-default pair per inner
+// type; only the int32 and String arms had pins.
+
+TEST(JsonSynthesizerTests, jsonOptionalInt64PresentAndNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<int64> n;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int64 run() {\n"
+        "        String present = \"{\\\"n\\\":1234567890123}\";\n"
+        "        WithOpt a = Json.parse<WithOpt>(present);\n"
+        "        if (a.n == null) { return (int64) -1; }\n"
+        "        if (a.n.isEmpty()) { return (int64) -2; }\n"
+        "        String nulled = \"{\\\"n\\\":null}\";\n"
+        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
+        "        if (b.n == null) { return (int64) -3; }\n"
+        "        if (!b.n.isEmpty()) { return (int64) -4; }\n"
+        "        return a.n.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI64(src), 1234567890123LL);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalBooleanPresentAndNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<boolean> flag;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String present = \"{\\\"flag\\\":true}\";\n"
+        "        WithOpt a = Json.parse<WithOpt>(present);\n"
+        "        if (a.flag == null) { return -1; }\n"
+        "        if (a.flag.isEmpty()) { return -2; }\n"
+        "        if (!a.flag.get()) { return -3; }\n"
+        "        String nulled = \"{\\\"flag\\\":null}\";\n"
+        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
+        "        if (!b.flag.isEmpty()) { return -4; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
+
+TEST(JsonSynthesizerTests, jsonOptionalFloat64PresentAndNull) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "import cajeta.lang.Optional;\n"
+        "public class WithOpt {\n"
+        "    public Optional<float64> x;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static float64 run() {\n"
+        "        String nulled = \"{\\\"x\\\":null}\";\n"
+        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
+        "        if (b.x == null) { return -1.0; }\n"
+        "        if (!b.x.isEmpty()) { return -2.0; }\n"
+        "        String present = \"{\\\"x\\\":2.5}\";\n"
+        "        WithOpt a = Json.parse<WithOpt>(present);\n"
+        "        if (a.x.isEmpty()) { return -3.0; }\n"
+        "        return a.x.get();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_NEAR(runF64(src), 2.5, 1e-9);
+}
+
+// @JsonRequired composes with a naming strategy: the required-flag arm
+// must key off the EFFECTIVE wire key, not the declared field name.
+TEST(JsonSynthesizerTests, jsonRequiredUnderNamingStrategy) {
+    auto src =
+        "package test;\n"
+        "import cajeta.codec.json.Json;\n"
+        "@JsonNamingStrategy(\"SNAKE_CASE\")\n"
+        "public class Box {\n"
+        "    @JsonRequired public int32 userId;\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        String s = \"{\\\"user_id\\\":42}\";\n"
+        "        Box b = Json.parse<Box>(s);\n"
+        "        return b.userId;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 42);
+}
