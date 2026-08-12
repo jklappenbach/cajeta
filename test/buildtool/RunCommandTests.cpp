@@ -245,3 +245,102 @@ TEST(RunCommandTests, compileErrorJsonCarriesHostFile) {
         << all;
     EXPECT_NE(std::string::npos, all.find("bad.cajeta")) << all;
 }
+
+// ─── slot cache (--cache-dir) ──────────────────────────────────────
+//
+// `cajeta run --cache-dir=DIR` persists the compiled script as a cache
+// slot (program.meta + the module dylibs) and reuses it on a warm run.
+// None of that machinery — the meta writer, the strict v2 meta reader,
+// the digest check, invalidation — had a consumer.
+
+TEST(RunCommandTests, cacheDirIsPopulatedAndWarmRunReusesIt) {
+    auto dir = freshTempDir("cachewarm");
+    writeFile(dir / "s.cajeta",
+        "int32 x = 20 + 3;\n"
+        "System.stdout.println(\"value \" + x);\n"
+        "return x;\n");
+    fs::path cache = dir / "slotcache";
+
+    RunResult cold = runScript(dir, "--cache-dir=" + cache.string()
+                                    + " s.cajeta");
+    EXPECT_EQ(23, cold.exitCode) << cold.err;
+    EXPECT_NE(cold.out.find("value 23"), std::string::npos) << cold.out;
+    ASSERT_TRUE(fs::exists(cache)) << cold.err;
+    EXPECT_FALSE(fs::is_empty(cache)) << "cache dir left empty";
+
+    // Warm: same source, same slot — identical observable behaviour.
+    RunResult warm = runScript(dir, "--cache-dir=" + cache.string()
+                                    + " s.cajeta");
+    EXPECT_EQ(23, warm.exitCode) << warm.err;
+    EXPECT_NE(warm.out.find("value 23"), std::string::npos) << warm.out;
+}
+
+TEST(RunCommandTests, editingTheScriptInvalidatesTheSlot) {
+    auto dir = freshTempDir("cacheinval");
+    fs::path cache = dir / "slotcache";
+    writeFile(dir / "s.cajeta", "return 11;\n");
+    EXPECT_EQ(11, runScript(dir, "--cache-dir=" + cache.string()
+                                 + " s.cajeta").exitCode);
+
+    // A different program must not serve the old slot.
+    writeFile(dir / "s.cajeta", "return 22;\n");
+    RunResult second = runScript(dir, "--cache-dir=" + cache.string()
+                                      + " s.cajeta");
+    EXPECT_EQ(22, second.exitCode) << second.err;
+}
+
+// The meta reader is strict by design: any anomaly is a MISS, so a
+// truncated / garbled slot re-compiles instead of misbehaving.
+TEST(RunCommandTests, corruptSlotMetaFallsBackToCompiling) {
+    auto dir = freshTempDir("cachecorrupt");
+    fs::path cache = dir / "slotcache";
+    writeFile(dir / "s.cajeta", "return 7;\n");
+    ASSERT_EQ(7, runScript(dir, "--cache-dir=" + cache.string()
+                                + " s.cajeta").exitCode);
+
+    // Garble every meta file the cold run wrote.
+    int clobbered = 0;
+    for (auto& e : fs::recursive_directory_iterator(cache)) {
+        if (e.is_regular_file() && e.path().filename() == "program.meta") {
+            std::ofstream(e.path(), std::ios::trunc) << "not-jitmeta\n";
+            ++clobbered;
+        }
+    }
+    EXPECT_GT(clobbered, 0) << "no program.meta written by the cold run";
+
+    RunResult after = runScript(dir, "--cache-dir=" + cache.string()
+                                     + " s.cajeta");
+    EXPECT_EQ(7, after.exitCode) << after.err;
+}
+
+// A wrong meta VERSION line is the other strict-reject arm.
+TEST(RunCommandTests, wrongMetaVersionIsAMiss) {
+    auto dir = freshTempDir("cacheversion");
+    fs::path cache = dir / "slotcache";
+    writeFile(dir / "s.cajeta", "return 5;\n");
+    ASSERT_EQ(5, runScript(dir, "--cache-dir=" + cache.string()
+                                + " s.cajeta").exitCode);
+
+    for (auto& e : fs::recursive_directory_iterator(cache)) {
+        if (e.is_regular_file() && e.path().filename() == "program.meta") {
+            std::string body = readAll(e.path());
+            auto nl = body.find('\n');
+            if (nl != std::string::npos) {
+                std::ofstream(e.path(), std::ios::trunc)
+                    << "cajeta-jitmeta-v1" << body.substr(nl);
+            }
+        }
+    }
+    EXPECT_EQ(5, runScript(dir, "--cache-dir=" + cache.string()
+                                + " s.cajeta").exitCode);
+}
+
+TEST(RunCommandTests, cacheDirIsCreatedWhenAbsent) {
+    auto dir = freshTempDir("cachemk");
+    writeFile(dir / "s.cajeta", "return 4;\n");
+    fs::path nested = dir / "a" / "b" / "slots";
+    RunResult r = runScript(dir, "--cache-dir=" + nested.string()
+                                 + " s.cajeta");
+    EXPECT_EQ(4, r.exitCode) << r.err;
+    EXPECT_TRUE(fs::exists(nested)) << r.err;
+}
