@@ -26,6 +26,7 @@
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
+#include <cstdio>
 #include <memory>
 
 namespace cajeta {
@@ -34,6 +35,17 @@ namespace jit {
 inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
     if (!llvm::Triple(llvm::sys::getProcessTriple()).isOSBinFormatCOFF())
         return;
+    // Once-per-process breadcrumb: the ADDR32NB abort resurfaced on a binary
+    // where both builder sites carry this helper, so either a RuntimeDyld
+    // user exists outside them or the runner built stale objects. This line
+    // in a run log proves the fixed code executed; its absence proves the
+    // build. Remove when windows-jit-coff-reloc closes for good.
+    static bool noted = false;
+    if (!noted) {
+        noted = true;
+        fprintf(stderr,
+                "cajeta.jit: COFF host — JITLink object layer installed\n");
+    }
     auto jtmb = llvm::orc::JITTargetMachineBuilder::detectHost();
     if (jtmb) {
         if (!jtmb->getCodeModel())
