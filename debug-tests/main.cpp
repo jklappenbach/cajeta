@@ -18,9 +18,27 @@
 #  include <unistd.h>    // _exit
 #endif
 
+#if defined(__GNUC__) && !defined(_WIN32)
+// _exit below skips the atexit chain, and that also skips libgcov's counter
+// dump — so a CAJETA_COVERAGE build of this target produced NO .gcda for its
+// own 281 tests, and the whole dbg/ family read as uncovered while being
+// exercised every run. Dump explicitly first. Resolved at runtime so an
+// uninstrumented build gets null (an ELF-style weak declaration would not
+// link on Mach-O — see test/ForkPerTest.cpp). Mirrors test/main.cpp.
+#include <dlfcn.h>
+static void (*debugGcovDumpFn())(void) {
+    static void (*fn)(void) = reinterpret_cast<void (*)(void)>(
+        dlsym(RTLD_DEFAULT, "__gcov_dump"));
+    return fn;
+}
+#endif
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     int status = RUN_ALL_TESTS();
     fflush(nullptr);
+#if defined(__GNUC__) && !defined(_WIN32)
+    if (debugGcovDumpFn()) debugGcovDumpFn()();
+#endif
     _exit(status);   // skip static-destructor teardown (see header)
 }
