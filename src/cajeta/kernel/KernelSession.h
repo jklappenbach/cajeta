@@ -92,7 +92,10 @@ namespace cajeta::kernel {
         // Compile `source` as a script unit into this session and run its
         // entry. `cellName` is the host source name diagnostics will carry
         // (e.g. "In[3]"); the no-name overload derives "In[N]" from the
-        // execution count. A failed compile leaves the session untouched.
+        // execution count. The unit's implicit class is named after it —
+        // "In[3]" compiles to `cajeta.script.cell_3` — so that is the name
+        // that appears in mangled symbols and JIT errors.
+        // A failed compile leaves the session untouched.
         CellResult execute(const std::string& source);
         CellResult execute(const std::string& source, const std::string& cellName);
 

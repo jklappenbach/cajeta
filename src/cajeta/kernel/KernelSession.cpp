@@ -2,7 +2,9 @@
 
 #include "cajeta/jit/JitCoffLinking.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -36,10 +38,28 @@ namespace cajeta::kernel {
 
 namespace {
 
-    // Sanitize a cell name into a filename stem. The stem becomes the script
-    // unit's implicit class name (script-units 3.2), so it must be a legal
-    // identifier: "In[3]" -> "In_3_".
+    // A cell's DISPLAY name and its IDENTIFIER are two different things. The
+    // display name is "In[3]" — spec 4.4 pins it, because that is what a
+    // notebook user sees in a diagnostic. The identifier is derived here: it
+    // becomes the script unit's implicit class name (script-units 3.2), so it
+    // has to be a legal Cajeta identifier and unique within the session, and
+    // beyond that we are free to choose it. It is user-visible in its own
+    // right — it appears in mangled symbols, so it shows up in JIT errors and
+    // stack frames — so "In[3]" becomes `cell_3` rather than the `In_3_` that
+    // falls out of mechanically replacing the brackets.
     std::string stemFor(const std::string& cellName) {
+        // The "In[N]" shape (what execute()'s no-name overload produces).
+        if (cellName.size() > 3 && cellName.compare(0, 3, "In[") == 0
+                && cellName.back() == ']') {
+            std::string n = cellName.substr(3, cellName.size() - 4);
+            if (!n.empty() && std::all_of(n.begin(), n.end(), [](unsigned char c) {
+                    return std::isdigit(c) != 0;
+                })) {
+                return "cell_" + n;
+            }
+        }
+        // Anything else (a caller-supplied name) still just has to become a
+        // legal identifier.
         std::string out;
         out.reserve(cellName.size());
         for (char c : cellName) {
