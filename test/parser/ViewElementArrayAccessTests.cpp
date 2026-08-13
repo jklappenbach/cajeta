@@ -17,6 +17,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "cajeta/error/Exception.h"
 
 #include <cstdint>
 #include <string>
@@ -247,4 +248,38 @@ TEST(ViewElementArrayAccessTests, postArrayFixedFieldRead) {
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 1);
+}
+
+// --- element views may not carry their own element arrays ------------------
+//
+// Element arrays are single-level by spec (view-element-arrays-spec):
+// an element view that itself declares an element-array field is rejected
+// at declaration with a diagnostic naming the outer view, the field, and
+// the offending inner field — not at first access, and not silently.
+TEST(ViewElementArrayAccessTests, elementViewWithOwnElementArrayRejected) {
+    auto src =
+        "package test;\n"
+        "@HostEndian\n"
+        "public view Inner {\n"
+        "    int32    s;\n"
+        "    String[] tags;\n"
+        "}\n"
+        "@HostEndian\n"
+        "public view M {\n"
+        "    int32   magic;\n"
+        "    Inner[] items;\n"
+        "}\n"
+        "public final class A {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.A");
+        FAIL() << "expected CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VIEW_NESTED_ELEMENT_ARRAY");
+        EXPECT_NE(e.getMessage().find("items"), std::string::npos)
+            << e.getMessage();
+        EXPECT_NE(e.getMessage().find("tags"), std::string::npos)
+            << e.getMessage();
+    }
 }

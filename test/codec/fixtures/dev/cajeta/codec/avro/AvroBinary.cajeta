@@ -1,0 +1,50 @@
+package dev.cajeta.codec.avro;
+
+/**
+ * Avro binary primitives (Phase 5.1a). Avro is schema-driven and **untagged** —
+ * values are written back-to-back in schema order with no field markers. Ints
+ * and longs are **zigzag**-mapped (so small-magnitude negatives stay short) then
+ * little-endian base-128 varint-encoded; booleans are one byte; bytes/strings are
+ * a long length prefix followed by the raw/UTF-8 bytes.
+ */
+public final class AvroBinary {
+
+    // Byte length of the base-128 varint at `pos` (0x80 continues).
+    static int64 varintLen(int8[] b, int64 pos) {
+        int64 i = pos;
+        boolean go = true;
+        while (go) {
+            int8 c = b[i];
+            i = i + 1;
+            if ((((int32) c) & 0x80) == 0) { go = false; }
+        }
+        return i - pos;
+    }
+
+    // Decode the little-endian base-128 varint at `pos` (raw, pre-zigzag).
+    static int64 decodeVarint(int8[] b, int64 pos) {
+        int64 r = (int64) 0;
+        int32 shift = 0;
+        int64 i = pos;
+        boolean go = true;
+        while (go) {
+            int8 c = b[i];
+            int64 lo7 = (int64) (((int32) c) & 0x7F);
+            r = r | (lo7 << shift);
+            shift = shift + 7;
+            i = i + 1;
+            if ((((int32) c) & 0x80) == 0) { go = false; }
+        }
+        return r;
+    }
+
+    /** Undo zigzag: even → n/2, odd → -(n+1)/2. */
+    public static int64 zigzagDecode(int64 raw) {
+        return (raw >> 1) ^ ((int64) 0 - (raw & (int64) 1));
+    }
+
+    /** Zigzag-encode a signed value: n → (n<<1) ^ (n>>63). */
+    public static int64 zigzagEncode(int64 v) {
+        return (v << 1) ^ (v >> 63);
+    }
+}

@@ -63,9 +63,13 @@ ciphertext to the socket (`flush`), and on `WANT_IO` it reads socket ciphertext 
 
 ## Ownership & lifecycle (the boundary rules)
 
-- **Sockets are consumed (`#`).** `TlsStream.client/server(#sock, …)` and
-  `TlsListener.bind(…)` take ownership of the `TcpStream` / `TcpListener` (`#`). Do not
-  use or close the raw socket afterwards.
+- **`TlsStream` consumes its socket (`#`).** `TlsStream.client/clientSystemTrust/server`
+  declare `#TcpStream stream`, so you must write `#sock` at the call site; do not use or
+  close the raw socket afterwards.
+- **`TlsListener.bind` takes no socket at all.** Its signature is
+  `bind(addr, cert, certLen, key, keyLen)` — `addr` is **borrowed**, and the factory
+  binds and owns its own `TcpListener` internally. There is no listener-taking overload
+  and no raw listening socket for you to hand over or avoid touching.
 - **`TlsStream` owns its stream + engine.** Dropping a `TlsStream` closes the socket and
   frees the TLS handles. `close()` sends `close_notify` then closes the socket (idempotent).
 - **`TlsListener`'s cert/key are BORROWED, not `#`.** The listener stores the `int8[]`

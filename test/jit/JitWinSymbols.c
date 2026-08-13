@@ -88,6 +88,17 @@ extern void ___chkstk_ms(void);
 extern void sincos(double, double*, double*);
 extern void sincosf(float, float*, float*);
 
+// compiler-rt/libgcc bfloat16 conversion builtins the CPU-kernel lowering
+// emits for bf16 arithmetic. Statically linked from libgcc, absent from the
+// PE export table — the v0.19.0 Windows release leg failed CastTests with
+// "Symbols not found: [ __truncsfbf2 ]". Only the address is taken, so the
+// unsigned-short bf16 representation is ABI-irrelevant. Mirrors the
+// production host's table (src/cajeta/jit/CajetaJitWinSymbols.cpp), which
+// got these in the v0.16.0 fix while this test-side twin drifted.
+extern unsigned short __truncsfbf2(float);
+extern unsigned short __truncdfbf2(double);
+extern float          __extendbfsf2(unsigned short);
+
 // libm math functions the stdlib's Math intrinsics + float ops lower to. They
 // are statically linked from libm/libmingwex but absent from the host PE export
 // table, so the JIT's process-symbol generator can't see them — every
@@ -141,6 +152,9 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
+    CJ_SYM("__truncsfbf2",     &__truncsfbf2),
+    CJ_SYM("__truncdfbf2",     &__truncdfbf2),
+    CJ_SYM("__extendbfsf2",    &__extendbfsf2),
     // libm — see the extern block above for why these need binding.
     CJ_SYM("fabsf",  &fabsf),   CJ_SYM("fabs",   &fabs),
     CJ_SYM("sqrtf",  &sqrtf),   CJ_SYM("sqrt",   &sqrt),

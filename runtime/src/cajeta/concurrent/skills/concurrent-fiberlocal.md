@@ -41,10 +41,12 @@ request.
 ## FiberLocal — the methods
 
 - `public FiberLocal()` — construct a key. A fresh key is unbound on every fiber.
-- `public void where(#T value, () -> void body)` — bind `value` for the dynamic extent of
+- `public void where(T value, () -> void body)` — bind `value` for the dynamic extent of
   `body`, restoring the prior binding when `body` returns **OR throws**. Cleanup is
   structural (rides the drop chain, like `Mutex.withLock`) so a binding can never leak
-  past its scope. `value` is `#`-transferred into the binding. **`where` is `void`** in
+  past its scope. The formal is plain, so the mode is the caller's choice: `where(value, ...)`
+  lends the value for the extent of `body` (the caller keeps title and must keep it
+  alive), `where(#value, ...)` hands the binding the title. **`where` is `void`** in
   v1 — to get a result out of `body`, write it through a captured heap holder.
 - `public T get()` — the current binding. **Throws when unbound** (v1 throws `1`). Guard
   with `isBound()` or use `orElse`.
@@ -54,12 +56,14 @@ request.
 
 ## Ownership & lifecycle
 
-- `where(#T value, ...)`: the value is `#`-transferred. Internally a `FiberLocalBox<T>`
-  is allocated, owned by the `where` scope, and dropped — freeing the box **and its
-  value** — after the binding is popped. The enclosing `scope`'s join guarantees any
-  child fiber that inherited the binding has finished before the box drops, so an
-  inherited pointer never dangles. **Do not** keep a reference to a value you passed to
-  `where` past the `where` scope.
+- `where(T value, ...)`: transfer is the caller's opt-in (`where(#v, ...)`). Internally a
+  `FiberLocalBox<T>` is allocated, owned by the `where` scope, and dropped after the
+  binding is popped. When title was tendered the drop frees the box **and its value**;
+  when the value was merely lent, only the box is freed and the caller keeps the title —
+  and must keep the value alive for the whole `where` extent. The enclosing `scope`'s
+  join guarantees any child fiber that inherited the binding has finished before the box
+  drops, so an inherited pointer never dangles. **Do not** use a value you transferred
+  with `#` past the `where` scope.
 - `FiberContext.capture()` returns `#FiberContext` (owned) — you own it; transfer it with
   `#` onto the work item. It deep-copies the chain at capture time, so the producer's
   borrows may go away without affecting the consumer. The snapshot frees on drop

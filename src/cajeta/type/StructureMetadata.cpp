@@ -664,12 +664,17 @@ namespace cajeta {
         // never dereferenced to call getName()/getModifiers()/etc.
         if (structure->getClassObjectGlobal() == nullptr) {
             string classObjName = structure->toCanonical() + string("#ClassObject");
-            if (auto* existing = lmod->getGlobalVariable(classObjName)) {
+            // emitLm, like the vtable/rtti above: for a reuse-path instantiation
+            // the whole #ClassObject cluster (object, name string, reg ctor)
+            // must live in the emit module with the methods its vtable
+            // references — a stdlib-resident ClassObject referencing user-module
+            // functions is a cross-module initializer.
+            if (auto* existing = emitLm->getGlobalVariable(classObjName)) {
                 structure->setClassObjectGlobal(existing);
             } else {
                 llvm::StructType* classObjTy =
                     llvm::StructType::get(ctx, {ptrTy, ptrTy});
-                auto* g = (llvm::GlobalVariable*) lmod->
+                auto* g = (llvm::GlobalVariable*) emitLm->
                     getOrInsertGlobal(classObjName, classObjTy);
                 structure->setClassObjectGlobal(g);
                 initClassObject = true;
@@ -756,7 +761,8 @@ namespace cajeta {
                     // which v1 doesn't reflect on.
                     if (llvm::GlobalVariable* cv =
                             sit->second->getVirtualTableGlobal()) {
-                        classVtableRef = CajetaModule::ensureGlobalInModule(lmod, cv);
+                        classVtableRef = CajetaModule::ensureGlobalInModule(
+                            emitLm, cv);
                     }
                 }
             }

@@ -90,6 +90,11 @@ namespace cajeta {
         return target;
     }
 
+    void CajetaClass::resetDeferredInstantiationState() {
+        deferredInstantiations().clear();
+        instantiationReuseTarget().reset();
+    }
+
     bool CajetaClass::drainDeferredInstantiations() {
         auto& pending = deferredInstantiations();
         if (pending.empty()) return false;
@@ -97,6 +102,24 @@ namespace cajeta {
         // Index-based: completing one instantiation can defer others (a
         // template body that names another not-yet-declared template), and
         // those append while we iterate.
+        //
+        // Exception hygiene: instantiateInternal can throw a USER diagnostic
+        // (a member synthesizer rejecting the instantiation — FRAME_SCHEMA
+        // et al.). That fails the whole compile, so the queue's remaining
+        // entries — shared_ptrs into THIS compile's object graph — must not
+        // survive into the next Compiler on this thread; and the reuse
+        // target must not stay pointing at the aborted entry for the rest
+        // of this drain's callers. Restore/clear on unwind.
+        struct DrainUnwindGuard {
+            vector<DeferredInstantiation>& pending;
+            CajetaClassPtr saved;
+            bool dismissed = false;
+            ~DrainUnwindGuard() {
+                if (dismissed) return;
+                instantiationReuseTarget() = saved;
+                pending.clear();
+            }
+        } guard{pending, instantiationReuseTarget()};
         for (size_t i = 0; i < pending.size(); ++i) {
             auto& d = pending[i];
             if (!d.templateClass || !d.target) continue;
@@ -111,6 +134,7 @@ namespace cajeta {
             reuse = saved;
             if (!d.target->isPlaceholder()) progressed = true;
         }
+        guard.dismissed = true;
         // Drop the completed entries.
         pending.erase(std::remove_if(pending.begin(), pending.end(),
             [](const DeferredInstantiation& d) {
@@ -488,17 +512,24 @@ namespace cajeta {
         // the fresh fallback path; a primed (already-cached) instantiation
         // returned above and never reaches here.
         //
-        // Unlike the method-template gate (MethodTemplateInstantiator.cpp), this
-        // class-template gate has NO CAJETA_REUSE_FORCE_EMIT escape hatch: the
-        // cross-module CLASS-template emit path is NOT yet correct under reuse.
-        // The 2026-06-10 W=24 FORCE_EMIT run caught it producing an invalid GEP
-        // into test.Holder<int32>'s interface vtable slots
-        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch). This
-        // gate is what keeps that miscompile from shipping — it must stay an
-        // unconditional fresh fallback until the struct/vtable layout pointers get
-        // the same emit-module reparenting the method path received.
+        // Twin of the method-template gate (MethodTemplateInstantiator.cpp).
+        // The cross-module CLASS-template emit path was NOT correct under
+        // reuse: the 2026-06-10 W=24 FORCE_EMIT run caught it producing an
+        // invalid GEP into test.Holder<int32>'s interface vtable slots
+        // (TemplatedInterfaceV2Tests.templatedImplementerInterfaceDispatch),
+        // because vtable/layout globals were resolved against the RESOLUTION
+        // module instead of the EMIT module. The 23-site emit-module
+        // reparenting (ensureGlobalInModule → emitTargetLlvmModule) is the
+        // fix; CAJETA_REUSE_FORCE_EMIT=1 selects the reused emit path so it
+        // can be validated the same way the method path was. Default stays
+        // the conservative fresh fallback until a clean full-suite FORCE_EMIT
+        // run blesses it.
         if (Compiler::isReuseHazardArmed() && emitOwner != module) {
-            throw cajeta::ReuseHazardAbort{};
+            static const bool kForceEmit =
+                std::getenv("CAJETA_REUSE_FORCE_EMIT") != nullptr;
+            if (!kForceEmit) {
+                throw cajeta::ReuseHazardAbort{};
+            }
         }
 
         // Templated-interface instantiation. We re-parse the captured
@@ -836,6 +867,15 @@ namespace cajeta {
             d.target = ph;
             d.canonical = instCanonical;
             deferredInstantiations().push_back(d);
+            // The frame pushed for the supers resolution above must not
+            // outlive this early return: leaking it buries the CALLER's
+            // frame, so e.g. a method template's own `R` stops resolving
+            // for the rest of its declaration walk the moment a formal
+            // triggers a deferred first instantiation
+            // (TableLoaderMaterializationTests, `wrap<R>(#Column<float64>)`
+            // — return type `Table<R>` died on "unresolved template
+            // argument" with Column's {T} sitting on top of the stack).
+            module->popTypeSubstitution();
             return ph;
         }
 

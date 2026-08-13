@@ -204,6 +204,14 @@ namespace cajeta {
     }
 
     void CajetaType::resetGlobals() {
+        // First: drop any deferred class-template instantiations abandoned by
+        // a PREVIOUS compile that failed mid-instantiation (synthesizer
+        // diagnostics like FRAME_SCHEMA). The queue is thread_local on
+        // CajetaClass and holds pointers into the dead compile's object
+        // graph; draining it in this compile resolves stdlib names against
+        // half-populated registries (UNKNOWN_TYPE 'Plan' — the TableCore
+        // frameSchemaErrorDoesNotPoisonNextCompile pin).
+        CajetaClass::resetDeferredInstantiationState();
         canonicalMap.clear();
         typeMap.clear();
         llvmTypeIdMap.clear();
@@ -346,6 +354,11 @@ namespace cajeta {
 
     void CajetaType::restoreBaseline() {
         if (!g_typeBaseline.valid) return;
+        // Same hygiene as resetGlobals: a prior reusing test that failed
+        // mid-instantiation must not leave its deferred-instantiation queue
+        // for this test to drain (the baseline predates every user type the
+        // stale entries reference).
+        CajetaClass::resetDeferredInstantiationState();
         canonicalMap = g_typeBaseline.canonicalMap;
         enumConstants = g_typeBaseline.enumConstants;
         typeMap = g_typeBaseline.typeMap;

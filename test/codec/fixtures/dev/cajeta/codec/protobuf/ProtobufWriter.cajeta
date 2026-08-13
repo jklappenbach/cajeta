@@ -1,0 +1,235 @@
+package dev.cajeta.codec.protobuf;
+
+/**
+ * Low-level protobuf wire writer (Phase 2.4) — the encode counterpart of
+ * `ProtobufWire` / `ProtobufIndex`. Appends tag-length-value records into a
+ * growable buffer; `toBytes()` hands back the encoded message. The typed
+ * `ProtobufEncoder<T>` (2.3/2.4) drives this once the per-T synthesizer lands.
+ *
+ * `writeVarint` emits the minimal little-endian base-128 form (matches
+ * `ProtobufWire.decodeVarint`); `write*Field` prepend the field's tag.
+ */
+public final class ProtobufWriter {
+    int8[] buf;
+    int32 len;
+    int32 cap;
+
+    public ProtobufWriter() {
+        this.cap = 64;
+        int8[] b0 = heap int8[64];
+        this.buf = #b0;
+        this.len = 0;
+    }
+
+    void ensure(int32 extra) {
+        int32 need = this.len + extra;
+        if (need <= this.cap) { return; }
+        int32 newCap = this.cap * 2;
+        while (newCap < need) { newCap = newCap * 2; }
+        int8[] nb = heap int8[newCap];
+        int8[] ob = this.buf;
+        int32 n = this.len;
+        int32 i = 0;
+        while (i < n) { nb[i] = ob[i]; i = i + 1; }
+        // `#=` — the plain assign this used to be didn't merely leak:
+        // the fresh buffer dropped at ensure()'s exit and the field
+        // DANGLED (writes into freed heap; the AvroWriter twin of this
+        // line was the 'reflective-runner abort' root cause).
+        this.buf #= nb;
+        this.cap = newCap;
+    }
+
+    void putByte(int8 v) {
+        this.ensure(1);
+        int8[] bb = this.buf;
+        bb[this.len] = v;
+        this.len = this.len + 1;
+    }
+
+    /**
+     * Emit a base-128 varint (minimal, low 7-bit group first).
+     *
+     * The shift is `>>>`, not `>>`. Cajeta's `>>` is arithmetic on every type —
+     * the `uint64` cast does not change that, since signedness lives on the
+     * operator and not on the value (`BinaryOpExpression.cpp` emits `AShr` for
+     * `>>` unconditionally, `LShr` only for `>>>`). With `>>` this loop never
+     * terminates for a negative `v`: the sign bit refills from the left and `x`
+     * never reaches zero. Protobuf encodes a negative int32/int64 as a ten-byte
+     * varint, so that path is reachable from any signed field.
+     */
+    public void writeVarint(int64 v) {
+        uint64 x = (uint64) v;
+        boolean go = true;
+        while (go) {
+            int32 b7 = (int32) (x & (uint64) 0x7F);
+            x = x >>> 7;
+            if (x != (uint64) 0) {
+                this.putByte((int8) (b7 | 0x80));
+            } else {
+                this.putByte((int8) b7);
+                go = false;
+            }
+        }
+    }
+
+    /** Emit a field tag: (fieldNumber << 3) | wireType. */
+    public void writeTag(int32 fieldNumber, int32 wireType) {
+        this.writeVarint((int64) ((fieldNumber << 3) | wireType));
+    }
+
+    /** VARINT field. */
+    public void writeVarintField(int32 fieldNumber, int64 v) {
+        this.writeTag(fieldNumber, 0);
+        this.writeVarint(v);
+    }
+
+    /**
+     * VARINT field carrying a zigzag-mapped signed value — protobuf `sint32` /
+     * `sint64`. Same wire type as a plain VARINT field; only the value mapping
+     * differs, so a peer must agree on the field's declared type to read it back.
+     */
+    public void writeZigzagField(int32 fieldNumber, int64 v) {
+        this.writeTag(fieldNumber, 0);
+        this.writeVarint(ProtobufWire.zigzagEncode(v));
+    }
+
+    /**
+     * Length-delimited frame: varint(length) + `dataLen` payload bytes, with NO
+     * field tag. This is the de-facto protobuf "delimited" stream framing — each
+     * message prefixed by its length — that `Protobuf.parse<T[]>` reads back.
+     */
+    public void writeDelimited(int8[] data, int32 dataLen) {
+        this.writeVarint((int64) dataLen);
+        int8[] d = data;
+        int32 i = 0;
+        while (i < dataLen) {
+            int8 db = d[i];
+            this.putByte(db);
+            i = i + 1;
+        }
+    }
+
+    /** LEN field: tag + length prefix + `dataLen` payload bytes. */
+    public void writeLenField(int32 fieldNumber, int8[] data, int32 dataLen) {
+        this.writeTag(fieldNumber, 2);
+        this.writeVarint((int64) dataLen);
+        int8[] d = data;
+        int32 i = 0;
+        while (i < dataLen) {
+            // hoist the array-element load to a local before the call — passing
+            // `d[i]` straight to a method miscompiles (the FileWriter gotcha).
+            int8 db = d[i];
+            this.putByte(db);
+            i = i + 1;
+        }
+    }
+
+    /** I32 (fixed32) field, little-endian. */
+    public void writeFixed32Field(int32 fieldNumber, int32 v) {
+        this.writeTag(fieldNumber, 5);
+        this.putByte((int8) (v & 0xFF));
+        this.putByte((int8) ((v >> 8) & 0xFF));
+        this.putByte((int8) ((v >> 16) & 0xFF));
+        this.putByte((int8) ((v >> 24) & 0xFF));
+    }
+
+    /** I64 (fixed64) field, little-endian. */
+    public void writeFixed64Field(int32 fieldNumber, int64 v) {
+        this.writeTag(fieldNumber, 1);
+        int64 x = v;
+        int32 i = 0;
+        while (i < 8) {
+            this.putByte((int8) (x & (int64) 0xFF));
+            x = x >> 8;
+            i = i + 1;
+        }
+    }
+
+    // ---- packed repeated fields ----
+    //
+    // One LEN record whose payload is the values concatenated with no tags, in
+    // place of one tagged record per value. For a run of small numbers that is
+    // roughly one byte each instead of two. Only repeated numeric fields may be
+    // packed; a peer reading them must accept the unpacked form too, and vice
+    // versa.
+    //
+    // The length prefix is only known after encoding the payload, so each of
+    // these encodes into a scratch writer first and then frames the result.
+
+    /** Packed repeated VARINT field: one LEN record of concatenated varints. */
+    public void writePackedVarintField(int32 fieldNumber, int64[] values, int32 count) {
+        ProtobufWriter payload = heap ProtobufWriter();
+        int64[] v = values;
+        int32 i = 0;
+        while (i < count) {
+            int64 e = v[i];
+            payload.writeVarint(e);
+            i = i + 1;
+        }
+        int8[] bytes = payload.toBytes();
+        this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
+    }
+
+    /** Packed repeated zigzag (`sint32`/`sint64`) field. */
+    public void writePackedZigzagField(int32 fieldNumber, int64[] values, int32 count) {
+        ProtobufWriter payload = heap ProtobufWriter();
+        int64[] v = values;
+        int32 i = 0;
+        while (i < count) {
+            int64 e = v[i];
+            payload.writeVarint(ProtobufWire.zigzagEncode(e));
+            i = i + 1;
+        }
+        int8[] bytes = payload.toBytes();
+        this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
+    }
+
+    /** Packed repeated I32 field: four little-endian bytes per element. */
+    public void writePackedFixed32Field(int32 fieldNumber, int32[] values, int32 count) {
+        ProtobufWriter payload = heap ProtobufWriter();
+        int32[] v = values;
+        int32 i = 0;
+        while (i < count) {
+            int32 e = v[i];
+            payload.putByte((int8) (e & 0xFF));
+            payload.putByte((int8) ((e >> 8) & 0xFF));
+            payload.putByte((int8) ((e >> 16) & 0xFF));
+            payload.putByte((int8) ((e >> 24) & 0xFF));
+            i = i + 1;
+        }
+        int8[] bytes = payload.toBytes();
+        this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
+    }
+
+    /** Packed repeated I64 field: eight little-endian bytes per element. */
+    public void writePackedFixed64Field(int32 fieldNumber, int64[] values, int32 count) {
+        ProtobufWriter payload = heap ProtobufWriter();
+        int64[] v = values;
+        int32 i = 0;
+        while (i < count) {
+            int64 x = v[i];
+            int32 k = 0;
+            while (k < 8) {
+                payload.putByte((int8) (x & (int64) 0xFF));
+                x = x >>> 8;
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        int8[] bytes = payload.toBytes();
+        this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
+    }
+
+    /** Bytes written so far. */
+    public int32 size() { return this.len; }
+
+    /** A fresh copy of the encoded message (caller owns it). */
+    public #int8[] toBytes() {
+        int32 n = this.len;
+        int8[] out = heap int8[n];
+        int8[] bb = this.buf;
+        int32 i = 0;
+        while (i < n) { out[i] = bb[i]; i = i + 1; }
+        return #out;
+    }
+}

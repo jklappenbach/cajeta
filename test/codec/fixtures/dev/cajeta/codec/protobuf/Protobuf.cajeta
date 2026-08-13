@@ -1,0 +1,65 @@
+package dev.cajeta.codec.protobuf;
+
+/**
+ * Protocol Buffers facade — the typed entry point for the protobuf format
+ * (Phase 2). Mirrors the core `cajeta.codec.json.Json` / `cajeta.codec.csv.Csv`
+ * facades: a Tier-1 synthesizer target whose `parse<T>` / `toBytes<T>` bodies
+ * are emitted per-T at the call site (lands in 2.3). The structural machinery —
+ * `ProtobufIndex` (2.1, varint/tag SIMD scan) and `ProtobufCursor` (2.2, lazy
+ * skip/projection) — builds underneath this facade.
+ *
+ * Lives in the `dev.cajeta.*` namespace — the convention for our own non-stdlib
+ * libraries. The core stdlib owns `cajeta.codec.*` (json, csv, Base64); a
+ * standalone `.cja` cannot extend that namespace through classpath linking, so
+ * the standalone codec formats live under `dev.cajeta.codec.*` instead.
+ *
+ * `formatName()` / `wireName()` are the library identity probes; `run()` is the
+ * `.cja` build anchor (the library has no executable entry point — see
+ * cajeta.json). Real read/write methods replace this stub through Phase 2.
+ */
+public final class Protobuf {
+    public static String formatName() {
+        return "protobuf";
+    }
+
+    /** Canonical media type for the protobuf wire format. */
+    public static String wireName() {
+        return "application/protobuf";
+    }
+
+    /** Build anchor for `--emit=cja` (no runtime role). */
+    public static int32 run() {
+        return 0;
+    }
+
+    /**
+     * Tier-1 templated parse: bind protobuf `bytes` (first `length` valid) to a
+     * declared message type `T`. The resolver routes `Protobuf.parse<T>(...)`
+     * here via the explicit type argument; the cajeta-two `ProtobufSynthesizer`
+     * replaces this captured body per-T — walking T's `@ProtoField` fields and
+     * emitting a `ProtobufCursor`-driven bind (single message → `T`, or a
+     * length-delimited stream → `T[]` when T is an array).
+     *
+     * The body below is a **failsafe**: if the synthesizer does not engage,
+     * callers get a thrown `ProtobufParseException` rather than a silently
+     * default-zeroed result. Mirrors `cajeta.codec.csv.Csv.parse<T>`.
+     */
+    public static T parse<T>(int8[] bytes, int64 length) {
+        throw heap ProtobufParseException(
+            "Protobuf.parse<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Tier-1 templated encode: serialize a message `T` (or a `T[]` length-
+     * delimited stream) to protobuf wire bytes. The encode mirror of `parse<T>`
+     * — the `ProtobufSynthesizer` replaces this captured body per-T, walking T's
+     * `@ProtoField` fields and emitting a `ProtobufWriter`-driven encode.
+     *
+     * Failsafe: a thrown `ProtobufParseException` if the synthesizer does not
+     * engage, rather than a silently empty buffer.
+     */
+    public static #int8[] toBytes<T>(T value) {
+        throw heap ProtobufParseException(
+            "Protobuf.toBytes<T>: synthesizer not engaged", (int64) 0);
+    }
+}

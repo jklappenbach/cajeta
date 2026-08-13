@@ -1,0 +1,154 @@
+package dev.cajeta.codec.ion;
+
+import cajeta.lang.String;
+
+/**
+ * Ion 1.0 symbol table (Phase 3.1b). Maps symbol IDs to text: SIDs 1–9 are the
+ * predefined **system** symbols; local symbols begin at SID 10 and come from a
+ * leading **local symbol table** — an `$ion_symbol_table`-annotated struct whose
+ * `symbols` field (SID 7) is a list of strings appended in order.
+ *
+ * `parse` skips the binary version marker, consumes a leading LST if present,
+ * and records `userValueStart` — the offset where the first user value begins
+ * (after the BVM and the LST). Shared-table `imports` are not supported in v1
+ * and fail loud. Self-describing field *names* (resolved here) are what let the
+ * typed decode (`Ion.parse<T>`, 3.2) bind by name instead of by number.
+ */
+public final class IonSymbolTable {
+    String[] locals;     // index i → SID (10 + i)
+    int32 localCount;
+    int64 userStart;     // first user value, after BVM + LST
+
+    public IonSymbolTable(#String[] locals, int32 localCount, int64 userStart) {
+        this.locals = #locals;
+        this.localCount = localCount;
+        this.userStart = userStart;
+    }
+
+    /** A table with only the predefined system symbols (no locals). */
+    public static #IonSymbolTable system() {
+        String[] none = heap String[1];
+        return heap IonSymbolTable(#none, 0, (int64) 0);
+    }
+
+    /** Number of local symbols (SIDs 10 .. 10+count-1). */
+    public int32 localSymbolCount() { return this.localCount; }
+    /** Byte offset where user data begins (after the BVM and any leading LST). */
+    public int64 userValueStart() { return this.userStart; }
+
+    /** Text of an Ion 1.0 system symbol (SID 1–9), or null. */
+    static String systemSymbol(int64 sid) {
+        if (sid == (int64) 1) { return "$ion"; }
+        if (sid == (int64) 2) { return "$ion_1_0"; }
+        if (sid == (int64) 3) { return "$ion_symbol_table"; }
+        if (sid == (int64) 4) { return "name"; }
+        if (sid == (int64) 5) { return "version"; }
+        if (sid == (int64) 6) { return "imports"; }
+        if (sid == (int64) 7) { return "symbols"; }
+        if (sid == (int64) 8) { return "max_id"; }
+        if (sid == (int64) 9) { return "$ion_shared_symbol_table"; }
+        return null;
+    }
+
+    /** Resolve a symbol ID to its text, or null when out of range / SID 0. */
+    public String resolve(int64 sid) {
+        if (sid <= (int64) 0) { return null; }
+        if (sid <= (int64) 9) { return IonSymbolTable.systemSymbol(sid); }
+        int64 idx = sid - (int64) 10;
+        if (idx < (int64) this.localCount) {
+            int32 i = (int32) idx;
+            return this.locals[i];
+        }
+        return null;
+    }
+
+    /**
+     * Parse the symbol table from the first `n` bytes of `b`: skip the BVM, then
+     * consume a leading `$ion_symbol_table`-annotated struct if one is present.
+     */
+    public static #IonSymbolTable parse(int8[] b, int64 n) {
+        int64 pos = (int64) 0;
+        if (n >= IonWire.bvmLen()) {
+            if (IonWire.isBvm(b, (int64) 0)) { pos = IonWire.bvmLen(); }
+        }
+
+        String[] locals = heap String[1];
+        int32 lc = 0;
+        int64 userStart = pos;
+
+        if (pos < n) {
+            int8 td0 = b[pos];
+            int32 tc0 = IonWire.typeCode(td0);
+            if (tc0 == IonWire.tcAnnotation()) {
+                int64 annHeader = IonWire.headerLen(b, pos);
+                int64 annContent = IonWire.contentLength(b, pos);
+                int64 cStart = pos + annHeader;
+                int64 wrapEnd = cStart + annContent;
+
+                int64 annLenLen = IonWire.varUIntLen(b, cStart);
+                int64 annLen = IonWire.decodeVarUInt(b, cStart);
+                int64 annListStart = cStart + annLenLen;
+                int64 firstSid = IonWire.decodeVarUInt(b, annListStart);
+
+                if (firstSid == (int64) 3) {
+                    int64 sStart = annListStart + annLen;
+                    int64 structHeader = IonWire.headerLen(b, sStart);
+                    int64 structContent = IonWire.contentLength(b, sStart);
+                    int64 fStart = sStart + structHeader;
+                    int64 fEnd = fStart + structContent;
+
+                    int64 cap = structContent + (int64) 1;
+                    locals = heap String[cap];
+
+                    int64 p = fStart;
+                    boolean go = true;
+                    while (go) {
+                        if (p >= fEnd) { go = false; }
+                        else {
+                            int64 fnameLen = IonWire.varUIntLen(b, p);
+                            int64 fname = IonWire.decodeVarUInt(b, p);
+                            int64 vpos = p + fnameLen;
+                            int64 vHeader = IonWire.headerLen(b, vpos);
+                            int64 vContent = IonWire.contentLength(b, vpos);
+                            int64 vStart = vpos + vHeader;
+                            int64 vEnd = vStart + vContent;
+
+                            if (fname == (int64) 6) {
+                                throw heap IonParseException(
+                                    "Ion local symbol table 'imports' unsupported", vpos);
+                            }
+                            if (fname == (int64) 7) {
+                                int64 ep = vStart;
+                                boolean lgo = true;
+                                while (lgo) {
+                                    if (ep >= vEnd) { lgo = false; }
+                                    else {
+                                        int64 eHeader = IonWire.headerLen(b, ep);
+                                        int64 eContent = IonWire.contentLength(b, ep);
+                                        int64 sByteStart = ep + eHeader;
+                                        int8[] sb = heap int8[eContent];
+                                        int64 k = (int64) 0;
+                                        while (k < eContent) {
+                                            int64 src = sByteStart + k;
+                                            sb[k] = b[src];
+                                            k = k + 1;
+                                        }
+                                        String sym = heap cajeta.lang.String(
+                                            #sb, (int32) eContent);
+                                        locals[lc] = sym;
+                                        lc = lc + 1;
+                                        ep = sByteStart + eContent;
+                                    }
+                                }
+                            }
+                            p = vEnd;
+                        }
+                    }
+                    userStart = wrapEnd;
+                }
+            }
+        }
+
+        return heap IonSymbolTable(#locals, lc, userStart);
+    }
+}

@@ -647,6 +647,16 @@ statement
     // the rationale.
     | TRY block (catchClause+ finallyBlock? | finallyBlock)
     | SWITCH parExpression '{' switchBlockStatementGroup* switchLabel* '}'
+    // `return #= x` — the MODE-CARRYING return (argument-title-carry).
+    // `return x` lends, `return #x` forces ownership (and is a contract
+    // violation when the frame holds none); this third form releases
+    // WHATEVER title the frame holds, riding the runtime flag out to the
+    // caller. Needed because a collection slot may now hold either an
+    // owned value or a borrow, so remove-shaped returns (`Heap.pop`,
+    // `HashMap.remove`, `LinkedList.popHead`) cannot know statically.
+    // A separate alternative because the lexer longest-matches `#=` as
+    // SHARP_ASSIGN, so it can never reach the `REFERENCE expression` form.
+    | RETURN SHARP_ASSIGN expression ';'
     | RETURN expression? ';'
     | THROW expression ';'
     | BREAK identifier? ';'

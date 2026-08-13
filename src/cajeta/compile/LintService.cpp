@@ -90,6 +90,13 @@ namespace cajeta::lintservice {
                           e.getFile(), e.getLine(), e.getColumn());
         } catch (const std::exception& e) {
             engine.report("error", "", e.what());
+        } catch (const char* msg) {
+            // Legacy raw throws (`throw "unresolved template argument"`)
+            // still exist in the type-resolution paths. Escaping one here
+            // terminate()s the RESIDENT server mid-request — the whole
+            // session dies for a diagnosable input. Fold it in like any
+            // other error.
+            engine.report("error", "", msg ? msg : "unknown error");
         }
         DiagnosticEngine::setActive(nullptr);
         engine.emit(jsonDiag);

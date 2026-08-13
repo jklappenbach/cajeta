@@ -236,17 +236,50 @@ namespace cajeta {
             // template's own parent class (persistent stdlib class), so its method
             // map outlives the per-test modules. No-op in production (epoch never
             // bumps; the cache is empty).
-            if (parent) {
-                for (auto& entry : methodInstantiationCache) {
-                    if (entry.second) {
-                        // Full unregister from EVERY per-class map (not just
-                        // `methods`): addMethod's duplicate-static check reads
-                        // unlabeledMethodMap, so a partial erase would re-trip it.
-                        parent->removeMethod(entry.second);
+            // Evict ONLY the instantiations whose IR lives in a per-test emit
+            // module (emitModule override set) — those pointers dangle once the
+            // test's module is freed. A specialization built INTO the
+            // persistent stdlib (e.g. Sort::pdqFindRun<int64> instantiated
+            // during the stdlib prime) is module-stable: its Function outlives
+            // every test, so it must stay cached. Evicting it made the next
+            // user-module trigger REBUILD it with emitOwner = the user module,
+            // producing a second DEFINITION of the same symbol — the
+            // "multiply defined" stdlib-clone merge failure under
+            // CAJETA_REUSE_FORCE_EMIT (CollectionLiteralTests.
+            // ElementTypeFromTarget).
+            for (auto it = methodInstantiationCache.begin();
+                    it != methodInstantiationCache.end();) {
+                MethodPtr inst = it->second;
+                bool stdlibResident = inst
+                    && inst->getEmitModule() == inst->getModule();
+                if (stdlibResident) {
+                    // ...but only while its DEFINITION is still in the
+                    // stdlib module. restoreLlvmBaseline keeps an
+                    // instantiation a BASELINE stdlib body references
+                    // (adopted — Sort::pdqFindRun<int64>) and ERASES one
+                    // only a dead session's cells referenced (Sort::
+                    // sort<int32>). Keeping an erased entry short-circuits
+                    // the re-emit and the next resident session's link
+                    // misses the symbol (KernelCellTests.
+                    // failedCellLeavesBindingsIntact). Trust the IR.
+                    llvm::Module* sm = inst->getModule()
+                        ? inst->getModule()->getLlvmModule() : nullptr;
+                    llvm::Function* fn = sm
+                        ? sm->getFunction(inst->getLlvmSymbolName())
+                        : nullptr;
+                    if (fn && !fn->isDeclaration()) {
+                        ++it;
+                        continue;
                     }
                 }
+                if (inst && parent) {
+                    // Full unregister from EVERY per-class map (not just
+                    // `methods`): addMethod's duplicate-static check reads
+                    // unlabeledMethodMap, so a partial erase would re-trip it.
+                    parent->removeMethod(inst);
+                }
+                it = methodInstantiationCache.erase(it);
             }
-            methodInstantiationCache.clear();
             methodInstantiationCacheEpoch = epoch;
         }
 
@@ -358,7 +391,37 @@ namespace cajeta {
             for (auto& fp : parameterList) {
                 if (!fp) continue;
                 if (fp->getName() == "this") continue;
-                paramTypes.push_back(fp->getType());
+                CajetaTypePtr pt = fp->getType();
+                // Present type-parameter-typed formals under THIS
+                // instantiation's bindings. The captured formal resolved its
+                // bare type name at TEMPLATE-PARSE time, where a method type
+                // parameter (`T value`) isn't a resolvable class — so it
+                // lands parse-order-dependently as null or, worse, as an
+                // archive-vouched placeholder for an UNRELATED class that
+                // shares the short name (a test's own `test.T` entry class
+                // was the observed case: every codec's toBytes<T> matcher
+                // saw canonical 'test.T', declined, and the placeholder
+                // throw-body shipped — "synthesizer not engaged"). Within
+                // the template's scope the name DENOTES the type parameter,
+                // so rebind by declared simple name; body synthesizers then
+                // dispatch on the concrete canonical.
+                const std::string& declared = fp->getDeclaredTypeParamName();
+                for (size_t ti = 0; ti < methodTypeParameters.size()
+                        && ti < args.size(); ++ti) {
+                    if (methodTypeParameters[ti].isNonType) continue;
+                    const std::string& tpName = methodTypeParameters[ti].name;
+                    // Primary key: the declaration-time stamp (immutable).
+                    // Fallback: the resolved type's simple name still being
+                    // the T-var name (pre-stamp captures, e.g. a restored
+                    // reuse baseline primed by an older binary).
+                    if (tpName == declared
+                            || (declared.empty() && pt && pt->getQName()
+                                && pt->getQName()->getTypeName() == tpName)) {
+                        pt = args[ti];
+                        break;
+                    }
+                }
+                paramTypes.push_back(pt);
             }
             // Dispatch through the source-synthesis registry (spec §2). The
             // codec if-else chain that used to live here is now registered body

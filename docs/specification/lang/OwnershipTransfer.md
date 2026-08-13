@@ -37,12 +37,14 @@ when both ends want to participate — is what this document specifies.
 Two real shapes coexist in cajeta code, and a one-sided model breaks one
 of them:
 
-**Owning containers.** `Optional<T>`, `Mutex<T>`, `Throwable`,
-`SelectResult<T>`, the stream wrapper chain — these conceptually wrap a
-value and hold it for their lifetime. The signature should *require*
-transfer: `heap Optional(true, p)` without `#` should be an error, because
+**Owning containers.** `Pair<K, V>`, `JsonValue.setArray`/`setObject`,
+`ActionResult.output` — these hold the value in storage that outlives the calling
+frame, and cannot cope with the caller keeping the title. The signature
+*requires* transfer: `heap Pair(k, v)` without `#` is an error, because
 silently transferring would let a caller-side typo (using the local twice)
-slip past the type system.
+slip past the type system. Wrappers that merely hold a value for the
+caller's convenience — `Optional<T>`, `Mutex<T>` — do not need that
+rigidity, and their ctors take plain `T`.
 
 **Index / cache / view collections.** A `HashMap<EntityId, Entity>` used
 as an *index* alongside a primary `EntityWorld` owner shouldn't force
@@ -51,13 +53,21 @@ transfer at `map.put(id, entity)`. The map indexes; the world owns. Same
 decides per-call. A callee-side `#V` here collapses one of the two
 stories.
 
-> **This section is HISTORY as of uniform-transfer-semantics (0.15.0).** The
-> two-stories design was tried and withdrawn: `Pair`, `LinkedListNode`,
-> `RedBlackNode`, `HashMap.put` and every other stdlib element/key parameter
-> ARE now `#K`/`#V`, and the second story is a compile error. The rationale,
-> and what replaces the indexing use case, is in "Superseded for the stdlib
-> collections" below — read that before taking anything in this section or
-> in "Recovery of the per-call ownership story" as current.
+> **The 0.15.0 uniform-`#K`/`#V` experiment was itself reversed.** For one
+> release the stdlib declared every collection key and element parameter
+> `#K`/`#V`; that is no longer the language. Collections are not containers —
+> they can be *treated* as containers by a developer who elects to transfer in,
+> but they are not designed to own by default. `HashMap.put`, `HashSet.add`,
+> `Cache.put`, `BPlusTree.put`, `RedBlackTree.put`, `Heap.push`, the
+> `ArrayList` mutators and the `LinkedList` mutators all carry plain `K`/`V`
+> formals again, so `map.put(k, v)` lends and `map.put(#k, #v)` transfers —
+> the caller decides per call, exactly as this section describes. Genuine
+> containers, whose storage outlives the caller's frame, still declare `#`
+> formals and are correct as they stand: `Pair`, `HashMap.operator[]=`,
+> `ActionResult.output`, and `JsonValue.setArray`/`setObject` (the DOM owns
+> its children). Code that uses a collection *as* such a container — the
+> `DnsCache` entry store, `ActionResult.outputsMap` — spells the ownership
+> at the call site instead: `this.store.put(#key, #entry)`.
 
 ## The model
 
@@ -103,7 +113,7 @@ in at runtime, from a hidden per-call flag (`MemoryModel.md` § the transfer ABI
 ### Why keep `#T` at all?
 
 Discoverability, in the narrow case where it is genuinely load-bearing. A reader of
-`public Optional(boolean present, #T value)` knows on the signature line that
+`public Pair(#K first, #V second)` knows on the signature line that
 calling this surrenders. But that is a *documentation* win, not an enforcement one,
 and it is only worth the rigidity where a borrow is truly unusable — so it is opt-in
 rather than the default.
@@ -156,12 +166,14 @@ arguments      : '(' (argument (',' argument)*)? ')'
 argument       : parameterLabel? REFERENCE? expression   # REFERENCE = '#'
 ```
 
-v1 restriction: the expression after `#` must be a bare identifier
-(matches today's call-site transfer logic that only fires for
-`IdentifierExpression` args). `#someField`, `#arr[0]`, `#call().result`
-are out of scope until the borrow checker can analyze the source of
-those expressions. A clear error message points users at the named-local
-shape.
+`#` may prefix **any** argument expression — a bare identifier, a field read
+(`#this.field`), an element read (`#arr[0]`), a call result (`#make()`), or
+an unnamed temporary such as `#("k" + i)`. Nothing has to be hoisted into a
+named local first. The drop-tracking follows the identifier, field and
+temporary shapes precisely; `#arr[i]` where the element is itself a borrow
+is a known defect — `#arr[i]` moves out of a borrowed element, which
+double-frees — and
+is still under work.
 
 ## Implementation phasing
 
@@ -175,8 +187,12 @@ own (each tightens the model without breaking valid prior code):
   argument node.
 - Codegen: in `MethodCallExpression.cpp` (the `#`-transfer block, ~5881+) and the matching block
   in `CreatorRest.cpp` (the #67 ctor-call-site transfer), trigger the
-  drop-deactivation when EITHER the formal is `#T`-marked OR the
-  argument carries the caller-side `#`. Either is sufficient.
+  drop-deactivation when the argument carries the caller-side `#`. A `#T`
+  formal does not itself deactivate anything — it only rejects an argument
+  that lacks `#` (`CAJETA_ERROR_TRANSFER_REQUIRED`), after which the
+  caller's `#` performs the transfer. The rule is asymmetric: `#` at the
+  call site is always sufficient, and a `#T` formal is never sufficient
+  on its own.
 - Tests: caller-side `#x` against a plain-`T` formal deactivates the
   drop correctly (no double-free); without `#x` the source stays owned
   by the caller (the existing borrow lifetime applies).
@@ -189,10 +205,13 @@ working. New syntax is opt-in.
 - Add the `CAJETA_ERROR_TRANSFER_REQUIRED` check at both call sites:
   if formal is `#T` and the argument isn't `#`-prefixed, throw with the
   fix-it message.
-- Update every existing stdlib call site that constructs `Optional`,
-  `Mutex`, `Throwable`, `SelectResult`, stream wrappers — they all need
-  `#` added to the relevant argument. This is a sweep parallel in shape
-  to #66.
+- Update the stdlib call sites that construct a wrapper whose ctor
+  actually requires transfer. As shipped that is `Throwable(#String
+  message)` alone — `Optional(boolean present, T value)`,
+  `Mutex(T initial)` and `SelectResult(int32 index, T value)` all take
+  plain `T` and carry the caller's mode through `#=`, so they need no
+  `#` at the call site (a string literal or other fresh rvalue passes
+  plain even to a `#T` formal).
 - Tests: the matrix cases — `(T, x)` borrow; `(T, #x)` transfer;
   `(#T, x)` rejected; `(#T, #x)` transfer.
 
@@ -260,32 +279,37 @@ ctor or setter — is **not** rejected. It stays legal for user classes,
 where parking a value whose lifetime lives elsewhere is a legitimate
 design the compiler cannot second-guess.
 
-> **Superseded for the stdlib collections (uniform-transfer-semantics, 0.15.0).**
-> This section used to argue the opposite for containers: that the caller
-> decides per call site — `map.put(k, v)` borrowing, `map.put(#k, #v)`
-> transferring — because forcing `#K`/`#V` "would collapse" the indexing use
-> case. That is no longer the language. **Every stdlib collection declares its
-> key and element parameters `#K`/`#V`**, so `map.put(k, v)` is
-> `CAJETA_ERROR_TRANSFER_REQUIRED` and no container can hold a borrow.
+> **How the stdlib collections spell it.** Collection key and element
+> parameters are plain `K`/`V`: `HashMap.put`, `HashSet.add`, `Cache.put`,
+> `BPlusTree.put`, `RedBlackTree.put`, `Heap.push`, the `ArrayList` mutators
+> (`add`, `insert`, `appendAll`, `set`, `operator[]=`) and the `LinkedList`
+> mutators (`add`, `addFirst`, `addTail`, `addHead`). `map.put(k, v)` lends;
+> `map.put(#k, #v)` transfers; both are legal and the call site decides. A
+> per-entry title bit records which one an entry got. Wrapper ctors are plain
+> as well — `Optional(boolean present, T value)`, `Mutex(T initial)`.
 >
-> The dual-capable design lost on evidence rather than taste. An entry whose
-> ownership was decided at the call site had to be *recorded* — a per-entry bit
-> — and then teardown, eviction, replace, rehash, and remove all had to branch
-> on it. That bit produced a recurring double-free/leak family (`Cache` evicting
-> a borrowed value; `HashMap.remove` displaced-releasing one), and no static
-> check could tell you which mode a given entry was in. Owning removes the
-> branch: teardown drops everything, remove hands the title back, replace
-> displaces exactly one value.
+> The alternative — uniform `#K`/`#V`, shipped for one release as
+> uniform-transfer-semantics (0.15.0) — was weighed and reversed. The argument
+> for it was that an entry whose ownership is decided at the call site has to
+> be *recorded*, and then teardown, eviction, replace, rehash and remove all
+> branch on that bit; the bit produced a double-free/leak family (`Cache`
+> evicting a borrowed value; `HashMap.remove` displaced-releasing one) that no
+> static check could sort out. Owning uniformly removes the branch, but it also
+> removes the indexing story, and the language owner's ruling is that
+> collections are not containers: they can be *treated* as containers by a
+> developer who opts to transfer in, but they are not designed to own by
+> default. The per-entry bit stays, and the branches with it.
 >
-> The indexing use case survives, spelled honestly. A secondary index owns its
-> keys and looks up with fresh equal ones — `String` and primitives are
-> value-hashed, so that just works; a class-keyed index either owns its keys or
-> stores an identifier it can re-derive. What is gone is the *unstated* version,
-> where one map type silently meant two different things.
+> Genuine containers — storage that outlives the caller's frame — do still
+> require `#`, and are correct as declared: `Pair`, `HashMap.operator[]=`,
+> `ActionResult.output`, and `JsonValue.setArray`/`setObject`, where the DOM
+> owns its children. A collection standing in for one (the `DnsCache` entry
+> store) elects the same ownership at its call sites.
 >
-> The residual exposure moved rather than vanished: a demoted source read after
-> its container tears down still dangles, and nothing diagnoses it yet
-> ([`MemoryModel`](MemoryModel.md) §1.7). That is the lifetime tracker's job.
+> The residual exposure is a lifetime one: a short-lived borrow parked in a
+> longer-lived collection dangles once its owner's scope exits, and **no
+> compiler check catches it today** ([`MemoryModel`](MemoryModel.md) §1.7).
+> That is the lifetime tracker's job.
 
 The unsoundness window for plain user-class field stores — parking
 `k` in something that outlives `k`'s primary owner — is the same one
@@ -324,13 +348,6 @@ The phasing lets a project upgrade incrementally:
 
 ## Recovery of the per-call ownership story
 
-> **Withdrawn in 0.15.0.** The code below no longer compiles: `byTransform.put(e.id, e)`
-> is `CAJETA_ERROR_TRANSFER_REQUIRED`, because `HashMap.put` takes `#K, #V`.
-> A secondary index now either owns its keys and values, or stores an
-> identifier it can re-derive from the primary owner. Kept because the use
-> case is real and the argument for it is the clearest statement of what the
-> change costs — see "Superseded for the stdlib collections" above.
-
 Restating the use case the design serves:
 
 ```cajeta
@@ -351,10 +368,16 @@ Optional<Entity> held = stack Optional<Entity>(true, #claimed);
 ```
 
 `HashMap.put(K, V)` is declared with plain `K`, `V` — both index calls
-above borrow. The `Optional` ctor is declared with `#T` — the `#claimed`
-at the call site is both syntactically required (per the matrix) and
-semantically correct (the world is handing this entity off; the
-`Optional` is the new owner).
+above borrow. The `Optional` ctor is plain `T` as well, so the `#claimed`
+is the caller electing transfer rather than obeying the signature — and it
+is the semantically correct election (the world is handing this entity off;
+the `Optional` is the new owner). Against a `#T` formal such as
+`Pair(#K, #V)` the same `#` would additionally be required.
+
+The index above stores borrows, which is legal and intended — but it is
+the caller's job to keep `world` alive for as long as the indexes are read.
+A short-lived borrow parked in a longer-lived collection is an ordinary
+lifetime error, and the compiler does not yet diagnose it.
 
 Without the two-sided model, you'd either lose the index story (callee
 forces transfer) or lose the contract enforcement (callee can silently
@@ -362,13 +385,14 @@ keep a borrow). Both halves earn their place.
 
 ## Open design questions
 
-1. **`#expr` for non-identifier sources.** v1 restricts caller-side `#`
-   to bare identifiers, matching today's IdentifierExpression-only
-   transfer machinery. Should `#arr[i]`, `#this.field`, `#someCall()`
-   work? Probably yes for the field shape (it's a transfer FROM the
-   field), with a corresponding deactivation of the field's owned-ref
-   tracking; the array-element and call-result shapes need more
-   thought. Deferred to a follow-up.
+1. **`#expr` for non-identifier sources.** *Shipped.* Caller-side `#`
+   prefixes an arbitrary argument expression — the grammar is
+   `parameterEntry : parameterLabel? REFERENCE? expression`
+   (`antlr4/CajetaParser.g4`), and `#this.field`, `#someCall()` and
+   unnamed temporaries such as `#("k" + i)` all transfer correctly. The
+   residual issue is narrower: `#arr[i]` where the element is a borrow
+   rather than an owned slot is the `owned-array-element-move`
+   defect, and the title tracking for that shape is still open.
 
 2. **`#T` on the return position.** The grammar already supports `#T`
    on returns (ownership transfer from callee to caller). Symmetrically,

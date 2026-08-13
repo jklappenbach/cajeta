@@ -39,10 +39,16 @@ package cajeta.collection;
  * ## Storage
  *
  * Heap-allocates one `LinkedListNode`<T> per insert. The list owns the
- * nodes, and each node OWNS its value (uniform-transfer 2.3: the add
- * formals are `#T`). Dropping a node — via `remove(T)`, a pop, or list
- * teardown — therefore drops its value, unless a pop handed the title
- * back to the caller first.
+ * nodes; it does NOT own their values. The add formals are plain `T`
+ * and `addTail` / `addHead` hand the value on to the `heap
+ * LinkedListNode`<T> ctor PLAIN, so the node's store records a
+ * borrow whatever the caller spelled — and `add(#v)` merely moves the
+ * title onto the add's formal, which releases it when the add returns,
+ * leaving the node aliasing freed storage. Values must therefore
+ * outlive the list, and nothing diagnoses a value that does not.
+ * Dropping a node — via `remove(T)`, a pop, or list teardown — frees
+ * the node alone. The pops' remove-shaped return reads the value field
+ * as it stands, so it hands back a borrow (flag 0).
  */
 public final class LinkedList<T> {
 
@@ -87,7 +93,7 @@ public final class LinkedList<T> {
      * `addTail` — one implementation, two names (List-style `add`,
      * deque-style `addTail`).
      */
-    public void add(#T value) {
+    public void add(T value) {
         this.addTail(#value);
     }
 
@@ -95,7 +101,7 @@ public final class LinkedList<T> {
      * Prepend `value` to the head of the list. O(1). Synonym of
      * `addHead`.
      */
-    public void addFirst(#T value) {
+    public void addFirst(T value) {
         this.addHead(#value);
     }
 
@@ -107,7 +113,7 @@ public final class LinkedList<T> {
      * nums.addTail(42);   // [..., 42]
      * ```
      */
-    public void addTail(#T value) {
+    public void addTail(T value) {
         LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         // Title spelling (title-tracking §5): the FORWARD chain owns —
         // headNode / each node's `next` take titles (`#`); tailNode and
@@ -133,7 +139,7 @@ public final class LinkedList<T> {
      * nums.addHead(0);    // [0, ...]
      * ```
      */
-    public void addHead(#T value) {
+    public void addHead(T value) {
         LinkedListNode<T> node = heap LinkedListNode<T>(#value);
         if (this.headNode == null) {
             this.tailNode = node;
@@ -219,7 +225,10 @@ public final class LinkedList<T> {
         // `title` verbatim — owned hands the title out, a borrow rides
         // back flag-0 — and `return #title` carries it (flagged return).
         T title #= node.value;
-        return #title;
+        // `#= ` claim forwards the node slot's mode; `return #= ` carries it
+        // out. `return #title` FORCED ownership and panicked on a lent value —
+        // which popHead/popTail never promised: both return a plain `T`.
+        return #= title;
     }
 
     /**
@@ -254,7 +263,10 @@ public final class LinkedList<T> {
         // `title` verbatim — owned hands the title out, a borrow rides
         // back flag-0 — and `return #title` carries it (flagged return).
         T title #= node.value;
-        return #title;
+        // `#= ` claim forwards the node slot's mode; `return #= ` carries it
+        // out. `return #title` FORCED ownership and panicked on a lent value —
+        // which popHead/popTail never promised: both return a plain `T`.
+        return #= title;
     }
 
     /**

@@ -38,14 +38,6 @@
             "cajeta.testkit": "1.0.*"
         },
 
-        // First-party lint + coverage plugins. Optional — comment
-        // out when not in use; `lint` + `test` tasks fall back to
-        // native-only actions.
-        "plugins": {
-            "cajeta.lint.security": "1.0.*",
-            "cajeta.coverage":      "1.0.*"
-        },
-
         "repositories": [
             { "name": "central", "url": "https://olla.cajeta.dev",
               "priority": 0 }
@@ -55,6 +47,16 @@
             "target":       "host",
             "entry-method": "com.example.basic.Main::main"
         }
+    },
+
+    // First-party lint + coverage plugins. Optional — comment out
+    // when not in use; `lint` + `test` tasks fall back to native-only
+    // actions. A TOP-LEVEL block: the manifest loader types
+    // `root.plugins` (Manifest.pluginsRaw) — nested under `settings`
+    // it is invisible to the plugin system.
+    "plugins": {
+        "cajeta.lint.security": "1.0.*",
+        "cajeta.coverage":      "1.0.*"
     },
 
     "tasks": {

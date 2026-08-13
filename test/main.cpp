@@ -25,11 +25,37 @@ static void appendMsysCoreutilsToPath() {
 }
 #endif
 
+#if defined(__GNUC__) && !defined(_WIN32)
+// Resolved at runtime so uninstrumented builds get null — an ELF-style weak
+// declaration linked on Linux but Mach-O's ld errors on a link-time-
+// undefined weak function (v0.19.0 aarch64-apple-darwin leg). See the
+// coverage note at the _Exit below; same pattern as ForkPerTest.cpp.
+#include <dlfcn.h>
+static void (*mainGcovDumpFn())(void) {
+    static void (*fn)(void) = reinterpret_cast<void (*)(void)>(
+        dlsym(RTLD_DEFAULT, "__gcov_dump"));
+    return fn;
+}
+#endif
+
+#if !defined(_WIN32)
+// The fork-per-test prime server (ForkPerTest.cpp): prime once, fork a COW
+// child per test. Dispatched by CAJETA_FORK_PER_TEST=1.
+int cajetaForkPerTestMain();
+#endif
+
 int main(int argc, char **argv) {
 #if defined(_WIN32)
     appendMsysCoreutilsToPath();
 #endif
     ::testing::InitGoogleTest(&argc, argv);
+#if !defined(_WIN32)
+    if (std::getenv("CAJETA_FORK_PER_TEST")) {
+        const int frc = cajetaForkPerTestMain();
+        std::fflush(nullptr);
+        std::_Exit(frc);
+    }
+#endif
     const int rc = RUN_ALL_TESTS();
 
     // Bypass the C/C++ exit-handler chain (atexit/static dtors) and terminate
@@ -43,5 +69,11 @@ int main(int argc, char **argv) {
     // safe and lets ctest see the real pass/fail exit code. CPU-only runs (no 2nd
     // LLVM) were unaffected either way.
     std::fflush(nullptr);
+#if defined(__GNUC__) && !defined(_WIN32)
+    // _Exit below skips the atexit chain (see above) — which also skips the
+    // gcov counter dump in CAJETA_COVERAGE builds, silently producing zero
+    // .gcda. Dump explicitly first; null in uninstrumented builds.
+    if (mainGcovDumpFn()) mainGcovDumpFn()();
+#endif
     std::_Exit(rc);
 }

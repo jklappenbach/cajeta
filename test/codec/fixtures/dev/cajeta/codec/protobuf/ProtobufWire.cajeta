@@ -1,0 +1,141 @@
+package dev.cajeta.codec.protobuf;
+
+/**
+ * Protocol Buffers wire-format primitives — the base-128 varint and tag
+ * decoders that the structural scan (`ProtobufIndex`, 2.1) and the lazy cursor
+ * (`ProtobufCursor`, 2.2) build on.
+ *
+ * A protobuf message is a flat sequence of `(tag, value)` records. The **tag**
+ * is a varint whose low 3 bits are the **wire type** and whose remaining bits
+ * are the **field number**: `tag = (field_number << 3) | wire_type`. A
+ * **varint** is little-endian base-128: each byte contributes its low 7 bits,
+ * the high bit (0x80) is a continuation flag.
+ *
+ * Wire types: 0 VARINT · 1 I64 (fixed64) · 2 LEN (length-delimited) · 5 I32
+ * (fixed32). Types 3/4 (groups) are deprecated — the index fails loud on them.
+ *
+ * Every scan here is **bounded**. The `(b, pos)` forms stop at the array's own
+ * length; the `(b, pos, limit)` forms stop at the caller's declared message
+ * length. Both raise `ProtobufParseException` rather than running past their
+ * bound — a truncated varint used to walk off the end of the array and abort
+ * the process.
+ */
+public final class ProtobufWire {
+    /** Wire type for base-128 varint fields. */
+    public static int32 wireVarint() { return 0; }
+    /** Wire type for fixed 64-bit fields. */
+    public static int32 wireI64()    { return 1; }
+    /** Wire type for length-delimited fields. */
+    public static int32 wireLen()    { return 2; }
+    /** Wire type for fixed 32-bit fields. */
+    public static int32 wireI32()    { return 5; }
+
+    /**
+     * The most bytes a base-128 varint may occupy: ten 7-bit groups cover the
+     * 64 bits of the widest protobuf integer. An eleventh byte means the input
+     * is malformed, not that the value is large.
+     */
+    public static int64 maxVarintBytes() { return (int64) 10; }
+
+    /**
+     * Byte length of the base-128 varint starting at `pos` — the count of bytes
+     * up to and including the first whose continuation bit (0x80) is clear.
+     * Bounded by the array's own length.
+     */
+    public static int64 varintLen(int8[] b, int64 pos) {
+        return ProtobufWire.varintLen(b, pos, (int64) b.count());
+    }
+
+    /**
+     * Byte length of the varint at `pos`, scanning no further than `limit`.
+     * Raises `ProtobufParseException` at `pos` when the varint is truncated (the
+     * last byte within `limit` still carries a continuation bit) or overlong
+     * (more than ten bytes). The scan never reads at or past `limit`, so a
+     * malformed message cannot walk off the buffer.
+     */
+    public static int64 varintLen(int8[] b, int64 pos, int64 limit) {
+        int64 cap = pos + ProtobufWire.maxVarintBytes();
+        int64 i = pos;
+        while (i < limit) {
+            int8 c = b[i];
+            i = i + 1;
+            if ((((int32) c) & 0x80) == 0) { return i - pos; }
+            if (i >= cap) {
+                throw heap ProtobufParseException(
+                    "protobuf varint exceeds 10 bytes", pos);
+            }
+        }
+        throw heap ProtobufParseException("truncated protobuf varint", pos);
+    }
+
+    /**
+     * Decode the base-128 varint at `pos` into an int64 (the raw bit pattern;
+     * a uint64 wire value with the high bit set returns as a negative int64).
+     * Low-order 7-bit group first. Bounded by the array's own length.
+     */
+    public static int64 decodeVarint(int8[] b, int64 pos) {
+        return ProtobufWire.decodeVarint(b, pos, (int64) b.count());
+    }
+
+    /**
+     * Decode the varint at `pos`, reading no further than `limit`. Same
+     * truncated / overlong rejection as `varintLen` — the two agree on exactly
+     * which byte runs are legal, so an index built from one never disagrees
+     * with a value decoded by the other.
+     */
+    public static int64 decodeVarint(int8[] b, int64 pos, int64 limit) {
+        int64 result = (int64) 0;
+        int32 shift = 0;
+        int64 cap = pos + ProtobufWire.maxVarintBytes();
+        int64 i = pos;
+        while (i < limit) {
+            int8 c = b[i];
+            int64 lo7 = (int64) (((int32) c) & 0x7F);
+            result = result | (lo7 << shift);
+            shift = shift + 7;
+            i = i + 1;
+            if ((((int32) c) & 0x80) == 0) { return result; }
+            if (i >= cap) {
+                throw heap ProtobufParseException(
+                    "protobuf varint exceeds 10 bytes", pos);
+            }
+        }
+        throw heap ProtobufParseException("truncated protobuf varint", pos);
+    }
+
+    /**
+     * Zigzag-map a signed value for `sint32` / `sint64`: `(v << 1) ^ (v >> 63)`.
+     * Plain VARINT sign-extends a negative to the full ten bytes; zigzag folds
+     * the sign into bit 0 instead, so −1 encodes as 1 and costs one byte.
+     *
+     * The `>> 63` is arithmetic on purpose — it yields all-ones for a negative
+     * and zero for a non-negative, which is the mask the fold needs.
+     */
+    public static int64 zigzagEncode(int64 v) {
+        return (v << 1) ^ (v >> 63);
+    }
+
+    /**
+     * Undo the zigzag map: even → `n/2`, odd → `-(n+1)/2`.
+     *
+     * The right shift is `>>>`, the logical one. Cajeta's `>>` is arithmetic on
+     * every type — casting to `uint64` does not make it logical, because
+     * signedness lives on the operator rather than the value. An arithmetic
+     * shift here gives the wrong answer for any value whose zigzag form has bit
+     * 63 set, i.e. every `sint64` below −2^62: `int64` min encodes to
+     * `0xFFFFFFFFFFFFFFFF`, and `>>` would carry the sign straight back in.
+     */
+    public static int64 zigzagDecode(int64 raw) {
+        return (raw >>> 1) ^ ((int64) 0 - (raw & (int64) 1));
+    }
+
+    /** Field number carried by a decoded tag varint (`tag >> 3`). */
+    public static int32 tagFieldNumber(int64 tag) {
+        return (int32) (tag >> 3);
+    }
+
+    /** Wire type carried by a decoded tag varint (`tag & 7`). */
+    public static int32 tagWireType(int64 tag) {
+        return (int32) (tag & (int64) 7);
+    }
+}

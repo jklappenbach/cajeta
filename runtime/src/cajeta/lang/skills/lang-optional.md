@@ -19,13 +19,15 @@ a factory yet. It is the standard return for "maybe a value" APIs (e.g.
 There is **no `Some`/`None` factory in v1** — construct via the two-arg ctor:
 
 ```cajeta
-public Optional(boolean present, #T value)
+public Optional(boolean present, T value)
 ```
 
 - `present == true` + the held value, or `present == false` for empty.
-- The `value` slot is **still consumed even when empty** — pass a zero/default
-  (e.g. `0`), it is just ignored.
-- `value` is `#T`: ownership **transfers in** at the call site for owning `T`.
+- The `value` slot must **still be supplied even when empty** — pass a
+  zero/default (e.g. `0`), it is just ignored.
+- `value` is a plain formal stored with `#=`, so the mode is the caller's choice:
+  `stack Optional<T>(true, #v)` transfers title into the `Optional`, while
+  `stack Optional<T>(true, v)` stores a borrow that the caller must keep alive.
 
 Choose storage like any class in the unified-class model — `stack` for a
 stack-resident instance (subject to the usual lifetime rules), `heap` for a

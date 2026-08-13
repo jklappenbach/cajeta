@@ -1,0 +1,14 @@
+# Stress battery (spec test-battery-restructure §2) — load/scale tests the
+# sweep EXCLUDES by default; run with `./cajeta_tests.sh stress`.
+# Cadence: pre-release and on demand, not per development cycle.
+# One Suite.test per line. Keep a capped functional twin in the sweep when a
+# stress test was the sole holder of a functional path (§2.3).
+ConcurrentCompileTests.stressManyConcurrentCompiles
+ContainerSweepTests.hashSetOwnedAddContainsAfterChurn
+ContainerSweepTests.redBlackManyOwnedInsertsBalance
+HashMapTests.stringKeysThousandRoundTrip
+NewCollectionsTests.immutableMapSwissStress
+OwnershipLeakProbe.benchScaleStaysBounded
+OwnershipLeakProbe.ownedElementsBalanceAtScale
+PrimitiveHashMapTests.swissResizeThousandInts
+StringBuildWorkload.fiveHundredAppendsIs4000Bytes

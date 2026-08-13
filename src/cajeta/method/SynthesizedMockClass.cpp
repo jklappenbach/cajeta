@@ -88,7 +88,10 @@ namespace cajeta {
                 if (isPrimitiveCanonical(ptCanon)) {
                     string box = boxClassFor(ptCanon);
                     if (box.empty()) { skip = true; break; }
-                    arg = "cajeta.lang." + box + ".of(" + p->getName() + ")";
+                    // Short name: qualified receivers don't resolve in
+                    // expression position; the box binds via the global
+                    // short-name key (CajetaType::ofScoped tier 3).
+                    arg = box + ".of(" + p->getName() + ")";
                 } else {
                     arg = p->getName();
                 }
@@ -102,12 +105,12 @@ namespace cajeta {
             string retDecl = isVoid ? "void" : retCanon;
             string handleCall = "this.engine.handle(\"" + mname + "\", #a)";
             body += "    public " + retDecl + " " + mname + "(" + paramDecl + ") {\n";
-            body += "        Object[] a = { " + argList + " };\n";
+            body += "        Object[] a = [" + argList + "];\n";
             if (isVoid) {
                 body += "        " + handleCall + ";\n";
             } else if (!retBox.empty()) {
                 // Primitive return: unbox the answer inline.
-                body += "        return ((cajeta.lang." + retBox + ") "
+                body += "        return ((" + retBox + ") "
                       + handleCall + ").value();\n";
             } else {
                 // Reference return: downcast the answer inline.

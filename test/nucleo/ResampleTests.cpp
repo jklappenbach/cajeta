@@ -19,6 +19,17 @@
 //    build. Calendar offsets (months/years) are the one spec-sanctioned
 //    deferral.
 //
+// Fold shape (test-battery-restructure 2.3): the three original tests each
+// paid a full JIT compile of a near-identical program — per-test coverage
+// (2026-08-10) measured their compiler line footprints as near-duplicates
+// (~18.8k shared lines). They are now ONE compiled program with one static
+// entry point per scenario, each building its own table locally so no
+// scenario can perturb another, and one C++ test asserting scenario by
+// scenario with the original score expectations. NOTE none of the three is a
+// failing-compile test: the "fail LOUD" cases raise `FrameException` at plan
+// build INSIDE the running program (caught in cajeta), so the compile
+// succeeds and the scenario folds like the rest.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -29,12 +40,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -56,7 +61,8 @@ const char* kPrelude =
 //   b1 [60,120s): t=70s (px 20, vol 1)
 //   b2 [120,180s): EMPTY  -> a null row
 //   b3 [180,240s): t=200s (px 30, vol 3)
-// Input row order is t10, t0, t200, t70 (not sorted).
+// Input row order is t10, t0, t200, t70 (not sorted). Emitted into each entry
+// point that needs it, so every entry builds its own table — no shared state.
 const char* kBuild =
     "        int64[] tsv = heap int64[4];\n"
     "        tsv[0] = 10000000000; tsv[1] = 0;\n"
@@ -70,14 +76,24 @@ const char* kBuild =
 
 } // namespace
 
-// 10.1.1 / 10.1.2 / 10.1.3 — the downsample agg family over epoch-aligned
-// left-closed buckets, first/last by TIME (establishes order), an empty
-// middle bucket emitted as a NULL row, and the erased result narrowing.
-TEST(ResampleTests, downsampleFamilyEmptyBucketsAndTimeOrder) {
+// The resample use-case matrix, one compiled program (was: ResampleTests.
+// {downsampleFamilyEmptyBucketsAndTimeOrder, closedAndOffsetOverrides,
+// dynamicFormAndBadTimeColumnFailLoud} — three compiles' worth of claims,
+// every score bit preserved):
+//   the downsample agg family over epoch-aligned left-closed buckets;
+//   first/last by TIME; an empty middle bucket as a NULL row; the erased
+//   result narrowed by `.as<R>()`; the closed/offset alignment overrides;
+//   the dynamic string form; and non-integer / absent / agg-less time
+//   columns failing LOUD at plan build.
+TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
     auto src = std::string(kPrelude) +
         "public record MinuteBar { Instant ts; @Nullable float64 lastpx; }\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 10.1.1 / 10.1.2 / 10.1.3 — the downsample agg family over
+        // epoch-aligned left-closed buckets, first/last by TIME (establishes
+        // order), an empty middle bucket emitted as a NULL row, and the
+        // erased result narrowing.
+        "    public static int32 downsampleFamily() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> h = t.lazy().resample((BarCols c) -> c.ts(),\n"
@@ -134,16 +150,9 @@ TEST(ResampleTests, downsampleFamilyEmptyBucketsAndTimeOrder) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
-}
-
-// 10.1.1 — the alignment overrides: LEFT- vs RIGHT-closed on a boundary
-// value, and an `offset` that shifts the bucket grid.
-TEST(ResampleTests, closedAndOffsetOverrides) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 10.1.1 — the alignment overrides: LEFT- vs RIGHT-closed on a
+        // boundary value, and an `offset` that shifts the bucket grid.
+        "    public static int32 closedAndOffset() {\n"
         // Two rows: one exactly on the 60s boundary, one at 45s.
         "        int64[] tsv = heap int64[2];\n"
         "        tsv[0] = 60000000000; tsv[1] = 45000000000;\n"
@@ -192,16 +201,9 @@ TEST(ResampleTests, closedAndOffsetOverrides) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
-
-// 10.1.2 / 10.3.1 — the dynamic string form, and bad time columns fail
-// LOUD at plan build (never a silent mis-bucket).
-TEST(ResampleTests, dynamicFormAndBadTimeColumnFailLoud) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 10.1.2 / 10.3.1 — the dynamic string form, and bad time columns
+        // fail LOUD at plan build (never a silent mis-bucket).
+        "    public static int32 dynamicFormAndBadTimeColumn() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         // The dynamic string form: resample keyed by a named column.
@@ -243,5 +245,29 @@ TEST(ResampleTests, dynamicFormAndBadTimeColumnFailLoud) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 15);
+    auto jit = CajetaJit::compile(src, "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto downsampleFamily = jit->lookup<int32_t (*)()>("downsampleFamily");
+    auto closedAndOffset  = jit->lookup<int32_t (*)()>("closedAndOffset");
+    auto dynamicFormAndBadTimeColumn =
+        jit->lookup<int32_t (*)()>("dynamicFormAndBadTimeColumn");
+    ASSERT_NE(downsampleFamily, nullptr);
+    ASSERT_NE(closedAndOffset, nullptr);
+    ASSERT_NE(dynamicFormAndBadTimeColumn, nullptr);
+
+    // 10.1.1 / 10.1.2 / 10.1.3 — lazy build, four buckets, epoch-aligned
+    // keys, time-ordered first/last, the null row for the empty bucket, and
+    // the checked narrowing (bits 1|2|4|8|16|32|64).
+    EXPECT_EQ(downsampleFamily(), 127)
+        << "downsample family / empty bucket null row / time order / as<R>()";
+
+    // 10.1.1 — left-closed default, right-closed override, offset grid
+    // shift (bits 1|2|4).
+    EXPECT_EQ(closedAndOffset(), 7) << "closed and offset overrides";
+
+    // 10.1.2 / 10.3.1 — dynamic string form, then the three LOUD failures:
+    // non-integer time column, absent time column, agg-less resample
+    // (bits 1|2|4|8).
+    EXPECT_EQ(dynamicFormAndBadTimeColumn(), 15)
+        << "dynamic form / bad time column fails loud";
 }

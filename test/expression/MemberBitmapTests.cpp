@@ -181,7 +181,8 @@ TEST(MemberBitmapTests, hashMapOwnedValueContract) {
 }
 
 // The lend `m.put(k, v)` that both of these used to rely on is now diagnosed.
-TEST(MemberBitmapTests, hashMapLendIsRejected) {
+// A LEND into a HashMap: the map stores a borrow, `held` keeps title.
+TEST(MemberBitmapTests, hashMapLendStoresABorrow) {
     std::string src =
         "package test;\n"
         "import cajeta.collection.HashMap;\n"
@@ -197,14 +198,8 @@ TEST(MemberBitmapTests, hashMapLendIsRejected) {
         "        return m.get(2).n;\n"
         "    }\n"
         "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        ADD_FAILURE() << "expected the lend into an owning map to be rejected";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TRANSFER_REQUIRED");
-        EXPECT_NE(e.getMessage().find("#held"), std::string::npos)
-            << e.getMessage();
-    }
+    // The map stores a borrow; `held` keeps title and the value reads back.
+    EXPECT_EQ(runI32(src), 9);
 }
 
 // 4.1.2b — was `hashMapRemoveFlaggedContract`, whose subject was remove

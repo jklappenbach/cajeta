@@ -31,7 +31,6 @@
 #include "../field/BoundClosureField.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
-#include "../util/Printer.h"
 #include "../xpu/core/KernelArgTrait.h"
 #include "../xpu/core/XpuAttributes.h"
 
@@ -438,6 +437,24 @@ namespace cajeta {
         bool isValueTypeR = rt && rt->isValueType();
         return rtClass != nullptr && (isArrR || !isPrimR) && !isInterfaceR
             && !isValueTypeR && !returnsStackValue();
+    }
+
+    CajetaModulePtr Method::getEmitModule() {
+        if (emitModule) return emitModule;
+        // A method of a class-template instantiation that is emit-owned by a
+        // user module (test reuse) emits with its class: the class knows its
+        // emit target (TemplateInstantiator sets it), the individual methods
+        // were never told. Without this fallback their prototypes landed in
+        // the cached resolution (stdlib) module while the vtable/globals went
+        // to the user module — "Referencing function in another module!" on
+        // every reusing container test. Production / non-reuse: parent's
+        // emitModule is null and this falls through to the resolution module.
+        if (parent) {
+            if (CajetaModulePtr pm = parent->getEmitModule()) {
+                if (pm != module && parent->hasEmitModuleOverride()) return pm;
+            }
+        }
+        return module;
     }
 
     // title-tracking 5.2.2 — runtime-owner formals. Each droppable class-typed
@@ -1091,7 +1108,8 @@ namespace cajeta {
         // name, not module imports, so it is unaffected. No-op in production.
         CajetaModulePtr* moduleSlot = &module;
         CajetaModulePtr savedModule = module;
-        if (emitModule && emitModule != module) module = emitModule;
+        { CajetaModulePtr em = getEmitModule();
+          if (em && em != module) module = em; }
         struct RestoreModule {
             CajetaModulePtr* slot; CajetaModulePtr saved;
             ~RestoreModule() { *slot = saved; }
@@ -1920,7 +1938,8 @@ namespace cajeta {
         // worker and its caller shared the user module's cursor). No-op in
         // production: getEmitModule() == module.
         CajetaModulePtr savedModule = module;
-        if (emitModule && emitModule != module) module = emitModule;
+        { CajetaModulePtr em = getEmitModule();
+          if (em && em != module) module = em; }
         struct RestoreModule {
             Method* self; CajetaModulePtr saved;
             ~RestoreModule() { self->module = saved; }

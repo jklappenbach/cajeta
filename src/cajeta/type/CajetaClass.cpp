@@ -327,7 +327,7 @@ namespace cajeta {
         // first virtual call segfaults on the zeroed slot).
         if (llvm::GlobalVariable* vtable = getVirtualTableGlobal()) {
             llvm::Constant* vtableRef = CajetaModule::ensureGlobalInModule(
-                module->getLlvmModule(), vtable);
+                module->emitTargetLlvmModule(), vtable);
             llvm::Value* vtablePtrSlot = builder->CreateStructGEP(
                 structTy, instance, /*idx=*/0, "vtable_slot");
             builder->CreateStore(vtableRef, vtablePtrSlot);
@@ -339,7 +339,7 @@ namespace cajeta {
             llvm::GlobalVariable* secVT = getOrCreateSecondaryVTable(sub.ancestor);
             if (!secVT) continue;
             llvm::Constant* secRef = CajetaModule::ensureGlobalInModule(
-                module->getLlvmModule(), secVT);
+                module->emitTargetLlvmModule(), secVT);
             llvm::Value* secSlot = builder->CreateStructGEP(
                 structTy, instance, (unsigned) sub.slot,
                 std::string("sec_vtable_slot_")
@@ -3882,7 +3882,9 @@ namespace cajeta {
         auto& llvmReflectInvokeFunction = reflectInvokeFnRef();  // U6.3: frozen-aware
         if (llvmReflectInvokeFunction) return llvmReflectInvokeFunction;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        // Emit module: a reuse-path instantiation's adapter lives with its
+        // class's IR in the user module, not the cached resolution module.
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
@@ -3925,7 +3927,13 @@ namespace cajeta {
         if (!fn->empty()) return;                         // already has a body
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        // The module the thunk actually LIVES in — the decl may have been
+        // created in the emit (user) module while `module` is the cached
+        // resolution module (test reuse). Every callee/global this body
+        // references must be co-resident with fn, or the CreateCall binds a
+        // foreign-module Function ("Referencing function in another module!",
+        // the FORCE_EMIT container-suite failure).
+        auto* lmod = fn->getParent();
         llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
 
@@ -4046,7 +4054,8 @@ namespace cajeta {
         auto& llvmReflectNewFunction = reflectNewFnRef();  // U6.3: frozen-aware
         if (llvmReflectNewFunction) return llvmReflectNewFunction;
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        // Emit module — see getOrCreateReflectInvokeDecl.
+        auto* lmod = getEmitModule()->getLlvmModule();
         llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::FunctionType* fnTy = llvm::FunctionType::get(
@@ -4082,7 +4091,8 @@ namespace cajeta {
         if (!fn->empty()) return;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        // fn's own module — see emitReflectInvokeBody.
+        auto* lmod = fn->getParent();
         llvm::IntegerType* i32Ty = llvm::Type::getInt32Ty(ctx);
         llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
@@ -4097,7 +4107,8 @@ namespace cajeta {
 
         auto ctors = getReflectConstructorList();
         auto* st = llvm::dyn_cast_or_null<llvm::StructType>(getLlvmType());
-        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc");
+        llvm::Function* allocFn = module->getRuntimeFunction("__cajeta_alloc",
+            /*explicitTarget=*/lmod);
         uint64_t allocSize = st ? lmod->getDataLayout().getTypeAllocSize(st) : 0;
 
         llvm::SwitchInst* sw = b.CreateSwitch(idxArg, fail, (unsigned) ctors.size());
@@ -4188,7 +4199,10 @@ namespace cajeta {
         if (!init || init->getNumOperands() < 2) return;
 
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
+        // Emit module, not resolution: the reg ctor + name string must live
+        // with the #ClassObject they register (a reuse-path instantiation's
+        // cluster is in the user module; production: identical to getLlvmModule).
+        auto* lmod = getEmitModule()->getLlvmModule();
 
         if (init->getOperand(0)->isNullValue()) {
             // Deferred class (parsed before Class<?>); patch slot 0 with the

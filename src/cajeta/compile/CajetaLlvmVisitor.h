@@ -2533,6 +2533,30 @@ namespace cajeta {
                     }
                 }
             }
+            // Stamp T-var-typed formals with the DECLARED type-parameter
+            // name while the fact is still knowable: right here, the
+            // formal's type resolved through the substitution frame just
+            // pushed, so a type object equal to a T-var's binding means the
+            // source spelled that type parameter. The resolved type OBJECT
+            // is later mutable (placeholder fill/refresh can repoint it at
+            // a concrete class); this stamp is not — the method-template
+            // instantiator uses it to present formals under each
+            // instantiation's bindings (codec body-synthesizer dispatch).
+            if (isMethodTemplate) {
+                if (auto frame = pModule->getCurrentTypeSubstitution()) {
+                    for (auto& fp : formalParameters) {
+                        if (!fp || !fp->getType()) continue;
+                        for (auto& tp : methodTypeParameters) {
+                            auto b = frame->find(tp.name);
+                            if (b != frame->end()
+                                    && b->second == fp->getType()) {
+                                fp->setDeclaredTypeParamName(tp.name);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
             CajetaTypePtr returnType = CajetaType::fromContext(ctx->typeTypeOrVoid(), pModule);
             if (ctx->typeTypeOrVoid() != nullptr && !returnType) {
                 // A null return type must not reach generatePrototype —
@@ -2785,8 +2809,20 @@ namespace cajeta {
             InitializerPtr initializer = nullptr;
 
             if (ctx->variableInitializer() != nullptr) {
-                // title-stores §2.2.3 — `T x #= v` is `T x = #v`: wrap the
-                // initializer expression in a MoveExpression.
+                // title-stores §2.2.3 — `T x #= v` wraps the initializer
+                // expression in a MoveExpression. For a PLAIN-IDENTIFIER
+                // source (a local, or a formal carrying its caller's flag)
+                // that is a MODE-CARRYING claim rather than an unconditional
+                // `T x = #v`: the store takes whatever title the source
+                // actually holds, so a lend stays a lend. A SLOT source is
+                // stricter. The declaration form never takes the verbatim
+                // forwarding path (isForwardingSlotMove(), which
+                // BinaryOpExpression sets only for ELEMENT->ELEMENT stores),
+                // A SLOT source is mode-carrying too: `T x #= o.f` /
+                // `T x #= a[i]` FORWARD the slot's actual bit (a title when the
+                // caller transferred, a borrow when it lent) rather than
+                // demanding a title, which panicked TITLE_MISS on every
+                // borrowed slot once collections stopped owning by default.
                 if (ctx->SHARP_ASSIGN() != nullptr
                         && ctx->variableInitializer()->expression() != nullptr) {
                     // `T x #= #v` — the transfer spelled twice. `#=` IS the
@@ -2794,17 +2830,19 @@ namespace cajeta {
                     // reads as a claim that does not exist. Same rule as the
                     // assignment form in Expression::fromContext and the
                     // Statement.cpp declaration path this mirrors.
-                    if (cajeta::cajetaRhsCarriesRedundantSharp(
-                            ctx->variableInitializer()->expression())) {
-                        throw cajeta::Exception(
-                            std::string("`#=` already acquires ownership when the source "
-                                        "has it — drop the `#` "
-                                        "on the right-hand side and write "
-                                        "`T x #= src`"),
-                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
-                    }
+                    bool redundant = cajeta::cajetaRhsCarriesRedundantSharp(
+                        ctx->variableInitializer()->expression());
                     auto inner = any_cast<ExpressionPtr>(
                         visitExpression(ctx->variableInitializer()->expression()));
+                    // Technically valid — `#=` already carries the source's
+                    // mode, so the second `#` restates it. Warned, not
+                    // rejected; reported from MoveExpression::generateCode.
+                    if (redundant) {
+                        if (auto redMv = dynamic_pointer_cast<
+                                cajeta::MoveExpression>(inner)) {
+                            redMv->setRedundantSharp(true);
+                        }
+                    }
                     auto mv = make_shared<MoveExpression>(
                         ctx->variableInitializer()->getStart());
                     mv->addChild(inner);

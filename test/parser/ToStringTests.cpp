@@ -487,3 +487,109 @@ TEST(ToStringTests, ofUnknownFieldRejected) {
         EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TOSTRING_UNKNOWN_FIELD");
     }
 }
+
+// ─── String + class-ref field arms (4.5 worst-first) ────────────────
+
+// A String field renders its text through the STRING arm (plain format).
+TEST(ToStringTests, stringFieldRendersText) {
+    auto src =
+        "package test;\n"
+        "@ToString public class P {\n"
+        "    public String s;\n"
+        "    public int32 n;\n"
+        "    public P(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        P p = heap P(7);\n"
+        "        String tag = \"hey\";\n"
+        "        p.s = tag;\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "P(s=hey,n=7)");
+}
+
+// A null String field renders as null, not a crash.
+TEST(ToStringTests, nullStringFieldRendersNull) {
+    auto src =
+        "package test;\n"
+        "@ToString public class P {\n"
+        "    public String s;\n"
+        "    public P() {}\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        P p = heap P();\n"
+        "        return p.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "P(s=null)");
+}
+
+// A class-ref field dispatches the nested object's toString through the
+// vtable (the CLASS_REF arm's non-null path).
+TEST(ToStringTests, classRefFieldDispatchesNestedToString) {
+    auto src =
+        "package test;\n"
+        "@ToString public class Inner {\n"
+        "    public int32 x;\n"
+        "    public Inner(int32 v) { this.x = v; }\n"
+        "}\n"
+        "@ToString public class Outer {\n"
+        "    public Inner in;\n"
+        "    public Outer() {}\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        Outer o = heap Outer();\n"
+        "        Inner i = heap Inner(9);\n"
+        "        o.in = i;\n"
+        "        return o.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "Outer(in=Inner(x=9))");
+}
+
+// The CLASS_REF null arm: a never-assigned nested ref renders "null".
+TEST(ToStringTests, nullClassRefFieldRendersNull) {
+    auto src =
+        "package test;\n"
+        "@ToString public class Inner {\n"
+        "    public int32 x;\n"
+        "    public Inner() {}\n"
+        "}\n"
+        "@ToString public class Outer {\n"
+        "    public Inner in;\n"
+        "    public Outer() {}\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static String run() {\n"
+        "        Outer o = heap Outer();\n"
+        "        return o.toString();\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runToString(src), "Outer(in=null)");
+}
+
+// An array-typed field is rejected with the documented remediation (v1
+// has no element-walk rendering).
+TEST(ToStringTests, arrayFieldRejected) {
+    auto src =
+        "package test;\n"
+        "@ToString public class P {\n"
+        "    public int32[] xs;\n"
+        "    public P() {}\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected CAJETA_ERROR_TOSTRING_FIELD";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_TOSTRING_FIELD");
+        EXPECT_NE(e.getMessage().find("array-field"), std::string::npos)
+            << e.getMessage();
+    }
+}

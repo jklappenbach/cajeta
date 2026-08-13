@@ -99,14 +99,15 @@ public final class Heap<T> {
      * h.push(1);   // peek() == 1 after each insert
      * ```
      */
-    public void push(#T v) {
+    public void push(T v) {
         // Hot path stays tiny; the cold doubling lives out-of-line in
         // grow() so push inlines cleanly (same split ArrayList documents).
         if (this.sizeCount >= this.capacity) {
             this.grow();
         }
-        // uniform-transfer 2.3 — the heap OWNS its elements: one
-        // unconditional transfer, no caller-spelling to match.
+        // The heap does not own by default — the formal is plain and this
+        // `#=` stores whatever mode the argument arrived in (`push(#v)`
+        // transfers, `push(v)` lends).
         this.data[this.sizeCount] #= v;
         // Sift up from the new leaf toward the root. Ownership bits travel
         // with their elements through every swap.
@@ -180,12 +181,16 @@ public final class Heap<T> {
         }
         // Fused claim: the root's bit rides into `top` verbatim; the
         // `return #top` below carries it to the caller (flagged return).
+        // Fused claim (`#= #slot`): forwards whatever the root slot holds —
+        // a title when the caller transferred, a borrow when it lent. A plain
+        // `#= this.data[0]` DEMANDS a title and panics TITLE_MISS on a lent
+        // element, which pop() never promised: its return type is plain `T`.
         T top #= this.data[0];
         this.sizeCount = this.sizeCount - 1;
         if (this.sizeCount == 0) {
             // Last element popped: nothing to sift, and the alternative is
             // a pointless data[0] #= data[0] self-move.
-            return #top;
+            return #= top;
         }
         // Move the last element (and its bit) to the root and sift down.
         this.data[0] #= this.data[this.sizeCount];
@@ -214,7 +219,7 @@ public final class Heap<T> {
                 i = smallest;
             }
         }
-        return #top;
+        return #= top;
     }
 
     // title-stores Unit 5 — no bespoke destructor: data's tail-bit field

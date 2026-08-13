@@ -4,8 +4,10 @@
 // bit set by the store's spelling: `a[i] #= x` → owned (array teardown
 // drops the slot), plain store → borrowed (source books untouched,
 // teardown skips). `#a[i]` extracts the title and decays the slot bit;
-// extraction from a borrowed or null slot panics. The compiler owns the
-// array layout, so no operator is involved (§6.3.3).
+// a claim from a borrowed or vacant slot carries the slot's actual mode
+// (borrow / null — mode-carrying-claim §5.1); only a declared `#R`/`#T`
+// contract still panics. The compiler owns the array layout, so no
+// operator is involved (§6.3.3).
 //
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
@@ -120,37 +122,41 @@ TEST(ArraySlotBitsTests, slotExtractionMovesTitle) {
     EXPECT_EQ(runI32(src), 6);
 }
 
-// 4.1.2b — extraction from a borrowed slot panics (no forged title).
-TEST(ArraySlotBitsTests, extractionFromBorrowedSlotPanics) {
+// 4.1.2b — mode-carrying claim (mode-carrying-claim §5.1): `#=` from a
+// BORROWED slot yields a borrow — no panic, no title minted — and the true
+// owner still drops exactly once. (The panic this test used to pin was the
+// pre-reversal demand semantics; only a declared `#R`/`#T` contract panics.)
+TEST(ArraySlotBitsTests, extractionFromBorrowedSlotYieldsBorrow) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        "    public static int32 work() {\n"
         "        Cell mine = heap Cell(8);\n"
         "        Cell[] a = heap Cell[1];\n"
-        "        a[0] = mine;\n"
-        "        try {\n"
-        "            Cell taken #= a[0];\n"   // borrowed slot → panic
-        "            return -95;\n"
-        "        } catch (Exception e) {\n"
-        "            return 1;\n"
-        "        }\n"
+        "        a[0] = mine;\n"             // borrow store; bit stays clear
+        "        Cell taken #= a[0];\n"      // borrowed slot → borrow
+        "        if (a[0].n != 8) { return -95; }\n"  // slot resident
+        "        return taken.n;\n"          // borrow: no drop of its own
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = work();\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 1);
+    EXPECT_EQ(runI32(src), 8);
 }
 
-// 4.1.2c — extraction from a NULL slot panics.
-TEST(ArraySlotBitsTests, extractionFromNullSlotPanics) {
+// 4.1.2c — claim from a NEVER-STORED slot: the runtime supplies what is
+// actually there (mode-carrying-claim §2) — null, as a borrow. No panic.
+TEST(ArraySlotBitsTests, extractionFromVacantSlotYieldsNull) {
     std::string src = std::string(kCellSrc) +
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Cell[] a = heap Cell[1];\n"
-        "        try {\n"
-        "            Cell taken #= a[0];\n"   // never stored → panic
-        "            return -94;\n"
-        "        } catch (Exception e) {\n"
-        "            return 1;\n"
-        "        }\n"
+        "        Cell taken #= a[0];\n"      // vacant → null borrow
+        "        if (taken == null) { return 1; }\n"
+        "        return -94;\n"
         "    }\n"
         "}\n";
     EXPECT_EQ(runI32(src), 1);

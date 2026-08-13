@@ -120,18 +120,16 @@ TEST(PathBorrowTests, readDeeperPathAfterRootMoveIsLegal) {
     expectCompilesOk(src);
 }
 
-TEST(PathBorrowTests, doubleClassExtractionPanicsCatchably) {
+TEST(PathBorrowTests, doubleClassExtractionYieldsBorrow) {
     // First extraction takes the field's bit; a SECOND `#` extraction
-    // finds the bit clear and PANICS at runtime (extracting a title the
-    // field no longer holds) — catchable like the NonNull check.
+    // finds the bit clear and yields a BORROW of the still-resident value
+    // (mode-carrying-claim §5.1) — no panic, no forged title; `a` keeps
+    // the only title, so the drop still happens exactly once.
     auto src = sourceNamed("PLend2",
         "Inner a #= s.foo;\n"
-        "try {\n"
-        "    Inner b #= s.foo;\n"
-        "    if (b.bar.byteLength() == 0) { return -2; }\n"
-        "} catch (Exception e) {\n"
-        "    return 42;\n"
-        "}");
+        "Inner b #= s.foo;\n"
+        "if (b.bar.byteLength() != 1) { return -2; }\n"
+        "return 42;");
     auto jit = CajetaJit::compile(src, "test.PLend2");
     auto fn = jit->lookup<int32_t (*)()>("run");
     EXPECT_EQ(fn(), 42);

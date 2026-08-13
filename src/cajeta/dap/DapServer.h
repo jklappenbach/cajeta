@@ -71,7 +71,9 @@ namespace cajeta::dap {
         ~DapServer();
 
         // Process one request; emit the response and any events via `emit`.
-        // Returns false once the session should end (disconnect/terminate).
+        // Always returns true today: disconnect/terminate ends the SESSION
+        // (per-session state resets for the next initialize) but not the
+        // serve loop — the resident process ends at stdin EOF (run()).
         bool handle(const Json& request, const Emit& emit);
 
         // Production loop: read framed requests from `in`, write framed

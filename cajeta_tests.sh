@@ -62,6 +62,18 @@ cd "$SCRIPT_DIR"
 # the path (a grep, an editor, this script's own argv) is never hit — and a
 # runner only counts if it is a *shell executing this script* — never this `stop`
 # invocation, another `stop`, an editor with the file open, or this `pgrep`.
+# `stress` — run ONLY the stress battery (test/stress_filter.txt), which the
+# default sweep excludes. Reuses the CAJETA_TESTS_FILE injection seam.
+if [ "${1:-}" = "stress" ]; then
+    shift
+    _stress_src="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/test/stress_filter.txt"
+    [ -f "$_stress_src" ] || { echo "error: $_stress_src not found" >&2; exit 1; }
+    _stress_tmp="$(mktemp)"
+    grep -vE '^\s*(#|$)' "$_stress_src" > "$_stress_tmp"
+    export CAJETA_TESTS_FILE="$_stress_tmp"
+    export PARALLEL="${PARALLEL:-1}"
+fi
+
 if [ "${1:-}" = "stop" ]; then
     self=$$
     victims=()
@@ -309,7 +321,20 @@ if [ ${#patterns[@]} -gt 0 ]; then
     list_filter_args=("--gtest_filter=$lf")
 fi
 tests=()
-if [ -n "${CAJETA_TESTS_FILE:-}" ]; then
+# Routine gate (test-battery-restructure 2.5): with no explicit patterns, no
+# injected list, and no FULL=1, the everyday sweep is the coverage-derived
+# routine set (test/routine_filter.txt — regenerate with
+# tools/coverage/build_routine.py after a per-test coverage measure). The
+# full battery remains one flag away: FULL=1 ./cajeta_tests.sh
+ROUTINE_FILE="${CAJETA_ROUTINE_FILTER:-$SCRIPT_DIR/test/routine_filter.txt}"
+if [ ${#patterns[@]} -eq 0 ] && [ -z "${CAJETA_TESTS_FILE:-}" ] \
+        && [ "${FULL:-0}" != "1" ] && [ -s "$ROUTINE_FILE" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in ''|'#'*) continue;; esac
+        tests+=("$line")
+    done < "$ROUTINE_FILE"
+    echo ">> Routine gate: ${#tests[@]} tests from ${ROUTINE_FILE#$SCRIPT_DIR/} (FULL=1 runs the whole battery)"
+elif [ -n "${CAJETA_TESTS_FILE:-}" ]; then
     # Injected list (test seam): one fully-qualified Suite.test per line, in the
     # order the suites should group. No binary invoked.
     while IFS= read -r line || [ -n "$line" ]; do
@@ -329,6 +354,23 @@ else
             fi
         fi
     done <<< "$raw_list"
+fi
+
+# Default sweep: exclude the stress battery (test/stress_filter.txt). The
+# stress subcommand injects the same file via CAJETA_TESTS_FILE, which skips
+# this block (tests came from the file, not discovery).
+if [ -z "${CAJETA_TESTS_FILE:-}" ] && [ -f "$SCRIPT_DIR/test/stress_filter.txt" ]; then
+    _kept=()
+    for _t in "${tests[@]}"; do
+        if ! grep -qxF "$_t" "$SCRIPT_DIR/test/stress_filter.txt"; then
+            _kept+=("$_t")
+        fi
+    done
+    _excluded=$(( ${#tests[@]} - ${#_kept[@]} ))
+    if [ "$_excluded" -gt 0 ]; then
+        echo ">> stress battery: excluded $_excluded test(s) (run them with './cajeta_tests.sh stress')"
+    fi
+    tests=("${_kept[@]}")
 fi
 
 num_tests=${#tests[@]}

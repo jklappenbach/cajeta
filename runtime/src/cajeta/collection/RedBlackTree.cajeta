@@ -100,9 +100,15 @@ public final class RedBlackTree<K, V> {
      * replaced; otherwise a new red node is inserted and the
      * red-black invariants restored. O(log n).
      */
-    public void put(#K key, #V value) {
-        // uniform-transfer 2.3 — the container OWNS its keys and values:
-        // one unconditional transfer, no caller spelling to match.
+    public void put(K key, V value) {
+        // The formals are plain — the tree does not own by default. Only the
+        // REPLACE path below reads a formal directly, so only its `#=` stores
+        // whichever mode the caller tendered. Both insertion paths hand key
+        // and value on to `heap RedBlackNode<K, V>(#key, #value)` PLAIN, and a
+        // plain argument lends: a freshly inserted node's key/value slots
+        // record borrows however the call was spelled, and a title tendered
+        // as `put(#k, #v)` is released when this call returns. Keys and
+        // values must outlive the entry on the caller's own account.
         if (this.root == null) {
             RedBlackNode<K, V> r = heap RedBlackNode<K, V>(#key, #value);
             r.red = false;
@@ -224,9 +230,11 @@ public final class RedBlackTree<K, V> {
      * extra space, no recursion). Ownership of the list transfers to
      * the caller.
      *
-     * PRIMITIVE K ONLY today — same limitation (and reason) as
-     * `BPlusTree.keysInOrder`: a class K copy would lend a borrow
-     * into the list's owning `#T` formal.
+     * `out.add(cur.key)` LENDS the borrowed key into the list — legal for
+     * any K, since `ArrayList.add` takes a plain `T`. The caveat is
+     * lifetime: for a class K the returned list holds borrows into the
+     * tree's nodes and must not outlive the tree. No compiler check
+     * catches that today.
      */
     public #ArrayList<K> keysInOrder() {
         ArrayList<K> out = heap ArrayList<K>();

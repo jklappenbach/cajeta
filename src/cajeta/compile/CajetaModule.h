@@ -604,6 +604,9 @@ namespace cajeta {
             if (typeSubstitutionStack.empty()) return nullptr;
             return &typeSubstitutionStack.back();
         }
+        size_t typeSubstitutionDepth() const {
+            return typeSubstitutionStack.size();
+        }
 
         map<string, CajetaClassPtr>& getStructures() {
             return structures;

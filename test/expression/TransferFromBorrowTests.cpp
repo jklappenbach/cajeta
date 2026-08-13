@@ -202,14 +202,8 @@ TEST(TransferFromBorrowTests, everyTransferDiagnosticStatesTheRule) {
         "        Tag x #= alias;\n").find(kRule), std::string::npos);
 }
 
-// 1.4.1 — `#=` is CONDITIONAL acquisition, not an unconditional transfer
-// (spec 1.4): at a plain formal it forwards whatever the caller did. The
-// double-sharp diagnostic must not claim otherwise.
-TEST(TransferFromBorrowTests, doubleSharpDiagnosticDoesNotClaimUnconditionalTransfer) {
-    std::string msg = messageOf(
-        "        Tag t = heap Tag(1);\n"
-        "        Tag b #= #t;\n");
-    EXPECT_EQ(msg.find("already transfers"), std::string::npos)
-        << "`#=` is conditional acquisition, not an unconditional transfer: " << msg;
-    EXPECT_NE(msg.find("#"), std::string::npos) << msg;
-}
+// 1.4.1 retired: `#= #x` no longer errors at all — the mode-carrying claim
+// work downgraded it to CAJETA_WARN_REDUNDANT_TRANSFER (the second `#`
+// restates the store). The warning + identical-value contract is pinned in
+// UniformTransferTests.doubleSharpFromFieldWarnsAndForwards and the
+// LocalLinearityTests warn pins, so no test remains here.

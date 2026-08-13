@@ -3,167 +3,111 @@
 //
 
 #include "LiteralUtils.h"
+#include "../error/Exception.h"
+#include <cctype>
 #include <string>
 
 using namespace std;
 
 namespace cajeta {
 
-    __int128_t LiteralUtils::octalToInt128(string& value, int bits) {
-        __int128_t res = 0;
-        size_t i = 0;
+    // The converters take the grammar's RAW token text: an optional sign, an
+    // optional radix prefix (0x / 0b; octal's is its leading 0), digit-group
+    // underscores, and an optional l/L suffix (DECIMAL_LITERAL etc. in
+    // CajetaLexer.g4). Each strips that dressing itself, so callers can pass
+    // getRawValue() straight through. A character the lexer should have made
+    // impossible throws a catchable Exception, never a raw std::string.
+    namespace {
+
+    struct LiteralScan {
         bool sign = false;
+        size_t i = 0;       // first digit
+        size_t end = 0;     // one past the last digit (suffix removed)
+    };
 
-        if (value[i] == '-') {
-            ++i;
-            sign = true;
+    LiteralScan scanDressing(const string& value, const char* prefixChars) {
+        LiteralScan s;
+        s.end = value.size();
+        if (s.i < s.end && (value[s.i] == '-' || value[s.i] == '+')) {
+            s.sign = value[s.i] == '-';
+            ++s.i;
         }
-
-        if (value[i] == '+') {
-            ++i;
+        if (prefixChars && s.i + 1 < s.end && value[s.i] == '0'
+                && (value[s.i + 1] == prefixChars[0]
+                    || value[s.i + 1] == prefixChars[1])) {
+            s.i += 2;
         }
+        if (s.end > s.i && (value[s.end - 1] == 'l' || value[s.end - 1] == 'L')) {
+            --s.end;
+        }
+        return s;
+    }
 
-        while (i < value.size()) {
+    [[noreturn]] void badDigit(const char* radixName, char c) {
+        throw Exception(string("malformed integer literal: non-") + radixName
+                            + " digit '" + c + "'",
+                        "CAJETA_ERROR_MALFORMED_INT_LITERAL");
+    }
+
+    } // namespace
+
+    __int128_t LiteralUtils::octalToInt128(string& value, int bits) {
+        LiteralScan s = scanDressing(value, nullptr);
+        __int128_t res = 0;
+        for (size_t i = s.i; i < s.end; ++i) {
             const char c = value[i];
-            if (c >= '0' && c <= '7') {
-                res *= 8;
-                res += c - '0';
-                i++;
-            } else {
-                throw string("Non octal digit: ") + c;
-            }
+            if (c == '_') continue;
+            if (c < '0' || c > '7') badDigit("octal", c);
+            res = res * 8 + (c - '0');
         }
-
-        if (sign) {
-            res *= -1;
-        }
-
-        return res;
+        return s.sign ? -res : res;
     }
 
     __int128_t LiteralUtils::hexToInt128(string& value, int bits) {
+        LiteralScan s = scanDressing(value, "xX");
         __int128_t res = 0;
-        size_t i = 0;
-        bool sign = false;
-
-        if (value[i] == '-') {
-            ++i;
-            sign = true;
-        }
-
-        if (value[i] == '+') {
-            ++i;
-        }
-
-        while (i < value.size()) {
+        for (size_t i = s.i; i < s.end; ++i) {
             const char c = value[i];
-            if (std::isdigit(c) || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) {
-                res *= 16;
-                if (std::isdigit(c)) {
-                    res += c - '0';
-                } else if (c >= 'A' && c <= 'F') {
-                    res += c - 'A';
-                } else {
-                    res += c - 'a';
-                }
-                i++;
-            } else {
-                throw string("Non-hex digit: ") + c;
-            }
+            if (c == '_') continue;
+            int digit;
+            if (c >= '0' && c <= '9') digit = c - '0';
+            else if (c >= 'A' && c <= 'F') digit = c - 'A' + 10;
+            else if (c >= 'a' && c <= 'f') digit = c - 'a' + 10;
+            else badDigit("hex", c);
+            res = res * 16 + digit;
         }
-
-        if (sign) {
-            res *= -1;
-        }
-
-        return res;
+        return s.sign ? -res : res;
     }
 
     __int128_t LiteralUtils::binaryToInt128(string& value, int bits) {
+        LiteralScan s = scanDressing(value, "bB");
         __int128_t res = 0;
-        size_t i = 0;
-        bool sign = false;
-
-        if (value[i] == '-') {
-            ++i;
-            sign = true;
-        }
-
-        if (value[i] == '+') {
-            ++i;
-        }
-
-        while (i < value.size()) {
-            if (i > bits) {
-                throw string("Literal is too large for the assigned data type");
-            }
+        int digits = 0;
+        for (size_t i = s.i; i < s.end; ++i) {
             const char c = value[i];
-            if (not std::isdigit(c)) {
-                throw std::string("Non-numeric character: ") + c;
-            } else if (c != '0' && c != '1') {
-                throw string("Non-binary digit: ") + c;
+            if (c == '_') continue;
+            if (c != '0' && c != '1') badDigit("binary", c);
+            if (++digits > bits) {
+                throw Exception(
+                    "binary literal has more than " + std::to_string(bits)
+                        + " digits",
+                    "CAJETA_ERROR_MALFORMED_INT_LITERAL");
             }
-            res *= 2;
-            res += c - '0';
-            i++;
+            res = res * 2 + (c - '0');
         }
-
-        if (sign) {
-            res *= -1;
-        }
-
-        return res;
+        return s.sign ? -res : res;
     }
 
     __int128_t LiteralUtils::decimalToInt128(string& value, int bits) {
+        LiteralScan s = scanDressing(value, nullptr);
         __int128_t res = 0;
-        size_t i = 0;
-        bool sign = false;
-
-        if (value[i] == '-') {
-            ++i;
-            sign = true;
-        }
-
-        if (value[i] == '+') {
-            ++i;
-        }
-
-        while (i < value.size()) {
+        for (size_t i = s.i; i < s.end; ++i) {
             const char c = value[i];
-            if (not std::isdigit(c)) {
-                throw std::string("Non-numeric character: ") + c;
-            }
-            res *= 10;
-            res += c - '0';
-            i++;
+            if (c == '_') continue;
+            if (!std::isdigit(static_cast<unsigned char>(c))) badDigit("decimal", c);
+            res = res * 10 + (c - '0');
         }
-
-        if (sign) {
-            res *= -1;
-        }
-
-        return res;
+        return s.sign ? -res : res;
     }
-
-//    llvm::APInt int128ToType(__int128_t value, unsigned bits, bool isSigned) {
-//        uint64_t first;
-//        uint64_t second;
-//
-//        switch (bits) {
-//            case 8:
-//            case 16:
-//            case 32:
-//            case 64:
-//                return llvm::APInt(bits, (uint64_t) value, isSigned);
-//            case 128:
-//                first = value | 0xFFFFFFFFFFFFFFFF;
-//                value >> 64;
-//                second = value | 0xFFFFFFFFFFFFFFFF;
-//                return llvm::APInt(bits, { first, second }, isSigned);
-//
-//
-//        }
-//    }
 
 }

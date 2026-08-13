@@ -16,6 +16,18 @@
 //    filled record — the unfilled table provably cannot narrow there);
 //    `dropNulls()` drops rows and keeps the schema (typed result).
 //
+// Fold shape (test-battery-restructure 2.3): the five original single-claim
+// tests each paid their own JIT compile of a near-identical program — per-test
+// coverage measurement (2026-08-10) put their compiler line footprints at
+// ~18.8k shared lines. The claims now ride two programs, split along the
+// use-case families they exercise: the READ-and-COMPUTE semantics (6.1.1
+// three-valued filter + null propagation, 6.1.3 null-vs-NaN with count/len,
+// 6.3.1 the non-null fast path as a schema fact) and the EXPLICIT null ops
+// (6.1.2 fillNull / dropNulls). Every scenario is its own static entry point
+// that builds its own table locally and returns its own score, so no scenario
+// can perturb another, and each C++ EXPECT names the scenario it failed on.
+// Every original score bit is preserved verbatim.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -27,10 +39,13 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
+// Was runI32(src) — one compile per claim. Both folded programs run several
+// entry points off ONE compile, so the helper now looks up an entry by name
+// and calls it; a missing entry fails loud rather than segfaulting.
+int32_t callI32(CajetaJit& jit, const char* entry) {
+    auto fn = jit.lookup<int32_t (*)()>(entry);
+    EXPECT_NE(fn, nullptr) << "missing entry point: " << entry;
+    return fn == nullptr ? -1 : fn();
 }
 
 const char* kPrelude =
@@ -50,7 +65,9 @@ const char* kPrelude =
 
 // Five rows. lastTrade = [10, null, 30, null, 50]; the null slots carry
 // PHYSICAL bytes (99.0) that would pass a `> 5.0` filter — the three-valued
-// rule, not the raw buffer, must exclude them.
+// rule, not the raw buffer, must exclude them. Every entry point below emits
+// this block into its OWN body: each scenario builds its own table, nothing
+// is shared across entries.
 const char* kBuild =
     "        float64[] pv = heap float64[5];\n"
     "        pv[0] = 1.0; pv[1] = 2.0; pv[2] = 3.0; pv[3] = 4.0; pv[4] = 5.0;\n"
@@ -64,14 +81,9 @@ const char* kBuild =
     "            Column.of<float64>(pv), NullableColumn.of<float64>(lv, ok),\n"
     "            StringColumn.of(vv));\n";
 
-} // namespace
-
-// 6.1.1 — filter comparisons are three-valued (null predicate -> row
-// EXCLUDED even though the physical bytes would pass) and arithmetic
-// propagates null into computed columns (nullable in, nullable out — the
-// result narrows to a record whose computed field is @Nullable).
-TEST(NullSemanticsTests, threeValuedFilterAndNullPropagation) {
-    auto src = std::string(kPrelude) +
+// Program 1 — the read-and-compute null semantics (6.1.1, 6.1.3, 6.3.1).
+std::string semanticsSrc() {
+    return std::string(kPrelude) +
         "public record TickNAdj {\n"
         "    float64 price;\n"
         "    @Nullable float64 lastTrade;\n"
@@ -79,7 +91,11 @@ TEST(NullSemanticsTests, threeValuedFilterAndNullPropagation) {
         "    @Nullable float64 adj;\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 6.1.1 — filter comparisons are three-valued (null predicate -> row
+        // EXCLUDED even though the physical bytes would pass) and arithmetic
+        // propagates null into computed columns (nullable in, nullable out —
+        // the result narrows to a record whose computed field is @Nullable).
+        "    public static int32 filterAndPropagate() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<TickN> h = t.lazy().filter(\n"
@@ -102,16 +118,10 @@ TEST(NullSemanticsTests, threeValuedFilterAndNullPropagation) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
-
-// 6.1.1 + 6.1.3 — null is NOT NaN: mean skips nulls (1.5) but a present
-// NaN poisons the reduction (NaN); count() = non-null, len() = all rows.
-TEST(NullSemanticsTests, nullIsNotNaNAndCountLen) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 6.1.1 + 6.1.3 — null is NOT NaN: mean skips nulls (1.5) but a
+        // present NaN poisons the reduction (NaN); count() = non-null,
+        // len() = all rows.
+        "    public static int32 nanAndCounts() {\n"
         "        int32 score = 0;\n"
         "        float64[] xv = heap float64[3];\n"
         "        xv[0] = 1.0; xv[1] = 2.0; xv[2] = 77.0;\n"
@@ -129,23 +139,41 @@ TEST(NullSemanticsTests, nullIsNotNaNAndCountLen) {
         "        if (cc.count() == 3 && cc.len() == 3) { score = score + 8; }\n"
         "        return score;\n"
         "    }\n"
+        // 6.3.1 — the fast path is a SCHEMA fact: a computed column over
+        // non-null inputs stays `float64` (no validity reads — Exec's
+        // non-null loop never touches validAt, code-audited), while one over
+        // a nullable input is marked `float64?` at plan build.
+        "    public static int32 fastPathSchema() {\n"
+        + kBuild +
+        "        int32 score = 0;\n"
+        "        Table<?> w = t.with((TickNCols c) -> (c.price() * 2.0).alias(\"dbl\"));\n"
+        "        String ds = w.describe();\n"
+        "        if (ds.contains(\"dbl: float64\") && !ds.contains(\"dbl: float64?\")) {\n"
+        "            score = score + 1;\n"
+        "        }\n"
+        "        Table<?> w2 = t.with((TickNCols c) -> (c.lastTrade() * 2.0).alias(\"adj2\"));\n"
+        "        if (w2.describe().contains(\"adj2: float64?\")) { score = score + 2; }\n"
+        "        return score;\n"
+        "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 15);
 }
 
-// 6.1.2 — fillNull(col, v) is explicit and flips the column NON-NULL in
-// the result schema: the filled table narrows to the non-null record, the
-// UNFILLED one provably cannot; unknown / non-nullable columns fail loud
-// at plan build.
-TEST(NullSemanticsTests, fillNullNarrowsTheResultSchema) {
-    auto src = std::string(kPrelude) +
+// Program 2 — the EXPLICIT null ops (6.1.2). Separate from program 1 because
+// this family narrows through its own record (TickNF, lastTrade non-null) and
+// leans on FrameException paths at plan build.
+std::string fillDropSrc() {
+    return std::string(kPrelude) +
         "public record TickNF {\n"
         "    float64 price;\n"
         "    float64 lastTrade;\n"
         "    Utf8 venue;\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 6.1.2 — fillNull(col, v) is explicit and flips the column NON-NULL
+        // in the result schema: the filled table narrows to the non-null
+        // record, the UNFILLED one provably cannot; unknown / non-nullable
+        // columns fail loud at plan build.
+        "    public static int32 fillNullSchema() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        try {\n"
@@ -179,16 +207,10 @@ TEST(NullSemanticsTests, fillNullNarrowsTheResultSchema) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 31);
-}
-
-// 6.1.2 — dropNulls() drops the rows with a missing value and KEEPS the
-// schema (a typed, chainable lazy op; other columns gather in step).
-TEST(NullSemanticsTests, dropNullsDropsRowsKeepsSchema) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 6.1.2 — dropNulls() drops the rows with a missing value and KEEPS
+        // the schema (a typed, chainable lazy op; other columns gather in
+        // step).
+        "    public static int32 dropNullRows() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<TickN> d = t.dropNulls();\n"
@@ -210,28 +232,56 @@ TEST(NullSemanticsTests, dropNullsDropsRowsKeepsSchema) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 7);
 }
 
-// 6.3.1 — the fast path is a SCHEMA fact: a computed column over non-null
-// inputs stays `float64` (no validity reads — Exec's non-null loop never
-// touches validAt, code-audited), while one over a nullable input is
-// marked `float64?` at plan build.
-TEST(NullSemanticsTests, nonNullComputeStaysNonNullable) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        + kBuild +
-        "        int32 score = 0;\n"
-        "        Table<?> w = t.with((TickNCols c) -> (c.price() * 2.0).alias(\"dbl\"));\n"
-        "        String ds = w.describe();\n"
-        "        if (ds.contains(\"dbl: float64\") && !ds.contains(\"dbl: float64?\")) {\n"
-        "            score = score + 1;\n"
-        "        }\n"
-        "        Table<?> w2 = t.with((TickNCols c) -> (c.lastTrade() * 2.0).alias(\"adj2\"));\n"
-        "        if (w2.describe().contains(\"adj2: float64?\")) { score = score + 2; }\n"
-        "        return score;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
+} // namespace
+
+// The read-and-compute null use-cases, one compiled program (was:
+// NullSemanticsTests.{threeValuedFilterAndNullPropagation,
+// nullIsNotNaNAndCountLen, nonNullComputeStaysNonNullable} — three compiles'
+// worth of claims, every score bit preserved):
+//   6.1.1 three-valued filter + null propagation into computed columns;
+//   6.1.3 null is not NaN, count() vs len() on both column kinds;
+//   6.3.1 non-null compute stays non-nullable in the result schema.
+TEST(NullSemanticsTests, threeValuedFilterPropagationNaNAndFastPathMatrix) {
+    auto jit = CajetaJit::compile(semanticsSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+
+    // 6.1.1 — null predicate excludes the row (bit 1), gathered validity
+    // survives the filter (bit 2), computed column is nullable and carries
+    // the propagated null (bit 4).
+    EXPECT_EQ(callI32(*jit, "filterAndPropagate"), 7)
+        << "three-valued filter / null propagation";
+
+    // 6.1.1 + 6.1.3 — mean skips nulls (bit 1), count/len split on the
+    // nullable column (bit 2), a present NaN propagates (bit 4), count/len
+    // on the plain column (bit 8).
+    EXPECT_EQ(callI32(*jit, "nanAndCounts"), 15)
+        << "null is not NaN / count() vs len()";
+
+    // 6.3.1 — `dbl: float64` with no `?` (bit 1), `adj2: float64?` (bit 2).
+    EXPECT_EQ(callI32(*jit, "fastPathSchema"), 3)
+        << "non-null compute stays non-nullable";
+}
+
+// The explicit null-op use-cases, one compiled program (was:
+// NullSemanticsTests.{fillNullNarrowsTheResultSchema,
+// dropNullsDropsRowsKeepsSchema} — every score bit preserved):
+//   6.1.2 fillNull narrows the result schema (and fails loud on unknown /
+//   non-nullable columns); dropNulls drops rows and keeps the schema.
+TEST(NullSemanticsTests, fillNullNarrowsAndDropNullsKeepsSchema) {
+    auto jit = CajetaJit::compile(fillDropSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+
+    // 6.1.2 — the unfilled table cannot narrow (bit 1), filled values (bit
+    // 2), the column is non-nullable in the result schema (bit 4), unknown
+    // column names the schema (bit 8), non-nullable column says so (bit 16).
+    EXPECT_EQ(callI32(*jit, "fillNullSchema"), 31)
+        << "fillNull narrows the result schema";
+
+    // 6.1.2 — rows dropped and other columns gathered in step (bit 1),
+    // validity intact on the kept rows (bit 2), chained after a filter
+    // (bit 4).
+    EXPECT_EQ(callI32(*jit, "dropNullRows"), 7)
+        << "dropNulls drops rows, keeps schema";
 }

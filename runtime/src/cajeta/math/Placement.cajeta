@@ -134,8 +134,14 @@ public final class Placement {
         if (Placement.tiered.contains(k)) {
             return;
         }
-        // `#k` — the set owns its members (uniform-transfer 2.3; `HashSet.add`
-        // takes `#T`). `k` is dead after this, so the move costs nothing.
+        // `#k` — `HashSet.add` takes a plain `T` and forwards it to
+        // `map.put` PLAIN, so the `#` does NOT hand the set title: it moves
+        // the title onto `add`'s formal, which releases it when `add`
+        // returns. `k` is a fresh heap `String` (`toString` copies the
+        // builder's bytes out), so this leaves `tiered` — a static that
+        // outlives every call — keyed on storage nobody holds. The set is a
+        // note-suppression cache and a stale key at worst re-emits or eats a
+        // note, but it is a lifetime error and nothing diagnoses it.
         Placement.tiered.add(#k);
         StringBuilder sb = stack StringBuilder();
         sb.append("note: [op-tiering] ");

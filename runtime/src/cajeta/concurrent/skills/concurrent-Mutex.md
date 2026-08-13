@@ -8,7 +8,7 @@ description: Use withLock/withLockWhen closures to mutate a lock-owned T; the da
 # Mutex<T> — the fused lock + protected value
 
 **Access point.** Reach for `Mutex<T>` when one piece of data must only ever be
-touched under a lock. The mutex *owns* a single `T` and the only way to read or
+touched under a lock. The mutex *holds* a single `T` and the only way to read or
 write it is to hand a closure to `withLock` / `withLockWhen` — that closure *is*
 the critical section (the Java `synchronized (obj) { ... }` shape). "Touch the
 data without the lock" is structurally unrepresentable: there is no escaping
@@ -20,11 +20,15 @@ state is *not* a single value.
 ```cajeta
 import cajeta.concurrent.Mutex;
 
-Mutex<int32> counter = heap Mutex<int32>(0);   // takes ownership of the initial value
+Mutex<int32> counter = heap Mutex<int32>(0);   // primitive: copied in
+Mutex<Session> s = heap Mutex<Session>(#sess); // class T: title moves into the mutex
 ```
 
-`Mutex(#T initial)` — the `#` means the constructor **takes ownership** of
-`initial`; gate all later access through the lock. The mutex holds its own native
+`Mutex(T initial)` — the formal is plain, so the caller decides the mode. The
+constructor stores with `#=`, which carries whatever arrived: `heap Mutex<T>(#v)`
+moves the title in and the mutex owns (and drops) the value; `heap Mutex<T>(v)`
+stores a borrow, and the caller keeps title and must outlive the mutex. Either
+way, gate all later access through the lock. The mutex holds its own native
 lock + condvar handles; its destructor (`~Mutex`) frees both at scope/drop exit,
 so you never close it manually.
 

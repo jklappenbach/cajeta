@@ -1,0 +1,98 @@
+package dev.cajeta.codec.avro;
+
+import cajeta.lang.String;
+
+/**
+ * Avro binary **encoder** (Phase 5.3) — the write mirror of `AvroCursor`. Avro is
+ * untagged: a record's fields are written back-to-back in schema order with no
+ * markers. Primitives: `long`/`int` as zigzag base-128 varint, `boolean` as one
+ * byte, `string`/`bytes` as a zigzag length prefix + raw payload. The synthesized
+ * `Avro.toBytes<T>` body calls these in T's field order. float/double parked
+ * (P-AVRO-FLOAT). The buffer grows on demand; `result()` hands back a fresh copy.
+ */
+public final class AvroWriter {
+    int8[] buf;
+    int64 len;
+
+    public AvroWriter() {
+        int8[] b0 = heap int8[64];
+        this.buf = #b0;
+        this.len = (int64) 0;
+    }
+
+    void ensure(int64 need) {
+        int64 cap = (int64) this.buf.count();
+        if (need <= cap) { return; }
+        int64 newcap = cap * (int64) 2;
+        while (newcap < need) { newcap = newcap * (int64) 2; }
+        int8[] nb = heap int8[newcap];
+        int64 cur = this.len;
+        int64 i = (int64) 0;
+        while (i < cur) { nb[i] = this.buf[i]; i = i + 1; }
+        this.buf #= nb;
+    }
+
+    public void putByte(int32 b) {
+        this.ensure(this.len + (int64) 1);
+        this.buf[this.len] = (int8) (b & 0xFF);
+        this.len = this.len + 1;
+    }
+
+    /** Zigzag base-128 varint. The shift masks sign-extension for a logical >>. */
+    public void writeLong(int64 v) {
+        int64 zz = (v << 1) ^ (v >> 63);
+        int64 t = zz;
+        boolean go = true;
+        while (go) {
+            int64 lo = t & (int64) 0x7F;
+            t = (t >> 7) & (int64) 0x01FFFFFFFFFFFFFF;
+            if (t != (int64) 0) {
+                this.putByte((int32) (lo | (int64) 0x80));
+            } else {
+                this.putByte((int32) lo);
+                go = false;
+            }
+        }
+    }
+
+    public void writeBoolean(boolean v) {
+        if (v) { this.putByte(1); } else { this.putByte(0); }
+    }
+
+    /** Zigzag length prefix + `n` raw bytes. */
+    public void writeBytes(int8[] data, int32 n) {
+        this.writeLong((int64) n);
+        int32 k = 0;
+        while (k < n) {
+            int32 bv = ((int32) data[k]) & 0xFF;
+            this.putByte(bv);
+            k = k + 1;
+        }
+    }
+
+    /** UTF-8 string: same wire shape as `writeBytes` over the String's bytes. */
+    public void writeString(String s) {
+        int32 n = s.byteLength();
+        this.writeBytes(s.toBytes(), n);
+    }
+
+    /** Raw magic / sync bytes (no length prefix). */
+    public void writeRaw(int8[] data, int32 n) {
+        int32 k = 0;
+        while (k < n) {
+            int32 bv = ((int32) data[k]) & 0xFF;
+            this.putByte(bv);
+            k = k + 1;
+        }
+    }
+
+    public int64 size() { return this.len; }
+
+    /** Copy the produced bytes into a fresh, caller-owned array. */
+    public #int8[] result() {
+        int8[] r = heap int8[this.len];
+        int64 i = (int64) 0;
+        while (i < this.len) { r[i] = this.buf[i]; i = i + 1; }
+        return #r;
+    }
+}

@@ -169,11 +169,11 @@ transfers ownership.**
 public void demo() {
     MyClass a = heap MyClass();
     MyClass b = a;        // borrow — `a` still owns; `b` must not outlive a's scope
-    MyClass c #= a;       // transfer — `c` owns; reading `a` after this is a compile error
+    MyClass c #= a;       // transfer — `c` owns; `a` is demoted to a borrow (still readable, no longer transferable)
 }
 ```
 
-The borrow checker is **static**. Use-after-move, borrow-escape-on-return,
+The borrow checker is **static**. Transfer-from-a-borrow, borrow-escape-on-return,
 alias-mutation, and definite-assignment violations are caught at compile time
 (`CAJETA_ERROR_MOVE_OF_BORROW`, `CAJETA_ERROR_BORROW_ESCAPE`, …).
 

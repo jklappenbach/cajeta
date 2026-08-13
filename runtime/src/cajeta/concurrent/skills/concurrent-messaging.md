@@ -31,8 +31,8 @@ These are fiber-blocking primitives — call them from inside a fiber context (a
 
 ## Ownership & lifecycle
 
-- `Channel<T>` is `heap`-allocated; the owning scope drops it. Its destructor releases the lock/condvar intrinsics but **does NOT drain or free buffered items** — for a heap-class `T`, `receive()` in a loop until empty before drop or you leak the elements (the ring-buffer array frees, not its contents). v1 targets value/primitive `T`.
-- `send(item)` / `receive()` move the item through the buffer (`#` transfer internally); `receive()` returns a **stack** `Optional<T>` (no per-item heap allocation).
+- `Channel<T>` is `heap`-allocated; the owning scope drops it. Its destructor releases the lock/condvar intrinsics and frees the ring-buffer array, but **not the elements** — under the lending model they are not the channel's to free, so an unreceived item is not a leak. The exposure is the opposite one: a sender whose local drops while its item is still buffered leaves a dangling slot. Keep sent items alive until they are received (drain with `receive()` before the producer's scope ends). v1 targets value/primitive `T`.
+- `send(item)` **lends** the item into the buffer — the channel aliases the slot and the sender keeps ownership, so the item must stay alive until it is received (never write `send(#item)`: the title would drop inside `send` and free the buffered item). `receive()` vacates the slot and returns the item in a **stack** `Optional<T>` (no per-item heap allocation) — the receiver reads it; the sender is still the owner.
 - `selectReceive` heap-allocates each winning `SelectResult<T>` and hands ownership to the caller via the returned `Optional`; the caller's local owns it under normal scope drop.
 - `Channel<T>` is **not** auto-bound to `AsyncIterator<T>` yet (the `implements` clause is pending an M5 ripple). You drain a channel with its own `receive()` loop; bind to an `AsyncIterator<int32>` local only for types that declare the interface.
 

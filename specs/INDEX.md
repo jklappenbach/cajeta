@@ -20,6 +20,7 @@ tracked below: `cajeta-text-shaping` is a **new spec not yet written**, and
 
 | Spec | Plan | Status |
 |------|------|--------|
+| [test-battery-restructure](test-battery-restructure-spec.md) | [plan](../agents/test-battery-restructure-plan.md) | **active.** Stress split out of the sweep (data-driven filter), overlap folds (81% zero-unique tests, 92% of suite time; 879-unit covering set), coverage to 90% (denominator measurement first; 197 untouched files). From tools/coverage/ANALYSIS-2026-08-10.md |
 | [external-debug](external-debug-spec.md) | [plan](../agents/external-debug-plan.md) | active — Units 1–6 delivered and green; one item (5.1.7 cycle-render test) is untestable, awaiting a call on whether to close |
 | [ide-symbol-index](ide-symbol-index-spec.md) | [plan](../agents/ide-symbol-index-plan.md) | active — Units 1-9 implemented and green; 8.3.1 (dependency Ctrl-click) confirmed live 2026-07-18; remaining: live-IDE acceptance 8.3.2, 8.3.3, 9.3.1, 9.3.2 |
 | [ide-features](ide-features-spec.md) | [plan](../agents/ide-features-plan.md) | active — refactoring, hierarchy, call graph, gutter nav; blocked until ide-symbol-index closes |

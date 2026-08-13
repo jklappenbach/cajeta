@@ -100,10 +100,11 @@ namespace cajeta {
 // narrower "is the operand a BARE IDENTIFIER", because a FIELD or ELEMENT
 // source needed the double sharp for the "fused claim": a forward of whatever
 // mode the source slot held, owned or borrowed, VERBATIM, where a plain `#=`
-// asserts an unconditional transfer. That existed for exactly one reason — a
-// container slot MIGHT hold a borrow. Spec 2.3 removes the premise (containers
-// own their elements) and Unit 2 collapsed all 20 stdlib fused claims to single
-// moves, so the exemption now buys a second spelling and nothing else.
+// into a LOCAL demands a title. That existed for exactly one reason — a
+// container slot MIGHT hold a borrow. That premise is BACK: collections are not
+// containers and do not own by default (the stdlib collection insertion formals
+// were relaxed `#T` -> `T`), so a slot can legitimately hold a borrow. The
+// `#= #` exemption was nonetheless retired in Unit 3.
 //
 // ELEMENT→ELEMENT stores keep forwarding under the SINGLE sharp: the
 // fwdLhs/fwdSrc arm in BinaryOpExpression::generateCode never required the
@@ -183,9 +184,14 @@ bool cajetaRhsCarriesRedundantSharp(
         if (ctx->ASSIGN()) {
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
         } else if (ctx->SHARP_ASSIGN()) {
-            // title-stores §2.1 — `dst #= v` is the fused spelling of
-            // `dst = #v`: one assignment node, RHS wrapped in a
-            // MoveExpression at the attach loop below.
+            // title-stores §2.1 — `dst #= v` builds one assignment node with
+            // the RHS wrapped in a MoveExpression at the attach loop below.
+            // It is a MODE-CARRYING store, NOT an unconditional `dst = #v`:
+            // the destination slot's title bit is armed only when a title was
+            // actually tendered (e.g. a plain formal whose caller passed `#`);
+            // when no title was tendered the store records a borrow. Measured:
+            // with a plain (borrowing) formal, `m.put(#k, i)` keeps 200/200
+            // keys alive, `m.put(k, i)` keeps 2/200.
             result = make_shared<BinaryOpExpression>(BINARY_OP_ASSIGN, token);
             sharpAssign = true;
         } else if (ctx->COLONCOLON()) {
@@ -593,25 +599,15 @@ bool cajetaRhsCarriesRedundantSharp(
                     ExpressionPtr child = Expression::fromContext(childContext);
                     if (sharpAssign && childIndex == 1
                             && cajetaRhsCarriesRedundantSharp(childContext)) {
-                        // `x #= #y` — the transfer spelled twice. `#=` IS the
-                        // transfer: the STORE site carries it, which is what
-                        // makes "a store uses `#=`; everything else uses `#v`"
-                        // a rule you can apply without looking at the other
-                        // side. A second `#` on the RHS adds nothing and reads
-                        // as a deliberate extra claim that does not exist.
-                        //
-                        // It compiled silently until 2026-08-02, which is how
-                        // the stdlib's LinkedList.popHead/popTail came to carry
-                        // `T title #= #node.value`. Rejected so the intent has
-                        // exactly one spelling. (The legacy `dst = #v` is a
-                        // different, deprecated-not-rejected form and is
-                        // handled below — narrowing that one is a breaking
-                        // change and not this rule's business.)
-                        throw Exception(
-                            std::string("`#=` already acquires ownership when "
-                                        "the source has it — drop the `#` on the "
-                                        "right-hand side and write `dst #= src`"),
-                            std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                        // `x #= #y` — the transfer spelled twice. TECHNICALLY
+                        // VALID: it means exactly what `x #= y` means, since
+                        // `#=` already carries the source's mode. So it warns
+                        // rather than rejects — flagged here, reported from
+                        // MoveExpression::generateCode where the module (and
+                        // therefore the source path) is in hand.
+                        if (auto redMv = dynamic_pointer_cast<MoveExpression>(child)) {
+                            redMv->setRedundantSharp(true);
+                        }
                     }
                     if (sharpAssign && childIndex == 1) {
                         auto mv = make_shared<MoveExpression>(
@@ -2577,7 +2573,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 + "' — its reflection metadata was not emitted",
                 "CAJETA_ERROR_CLASS_LITERAL");
         }
-        return CajetaModule::ensureGlobalInModule(module->getLlvmModule(), co);
+        return CajetaModule::ensureGlobalInModule(module->emitTargetLlvmModule(), co);
     }
 
     void BooleanSwitchExpression::resolveTypes(CajetaModulePtr module) {
@@ -2679,6 +2675,16 @@ bool cajetaRhsCarriesRedundantSharp(
         // that both spellings do NOT share: `dst #= v` synthesises its own
         // wrapper and never sets the flag. Deliberately silent at call args,
         // returns, and extraction reads (spec §2.3) — nothing marks those.
+        if (redundantSharp) {
+            if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+                eng->report("warning", "CAJETA_WARN_REDUNDANT_TRANSFER",
+                    "`#= #x` spells the transfer twice — `#=` already carries "
+                    "the source's mode (a title when it has one, a borrow "
+                    "otherwise), so the second `#` adds nothing. Write "
+                    "`dst #= x`.",
+                    module->getSourcePath(), (int) getSourceLine(), -1);
+            }
+        }
         if (legacyTransferAssign) {
             if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
                 std::string rhs;
@@ -2985,6 +2991,23 @@ bool cajetaRhsCarriesRedundantSharp(
                                             taken,
                                             llvm::ConstantPointerNull::get(tptr),
                                             "slot.take.miss");
+                                        // MODE-CARRYING claim (`T x #= src[i]`):
+                                        // a miss means the slot held a BORROW,
+                                        // which is legitimate now that
+                                        // collections do not own by default —
+                                        // hand back the element unchanged and
+                                        // let the local arm from the slot's
+                                        // actual bit. A select, not a branch:
+                                        // the take is a no-op on a miss.
+                                        //
+                                        // Only the DEMANDING claim still panics,
+                                        // which is what a declared `#R` / `#T`
+                                        // contract needs (ArrayList.operator#[]).
+                                        if (isForwardingSlotMove()) {
+                                            value = b->CreateSelect(
+                                                miss, value, taken, "slot.fwd");
+                                            slotTaken = true;
+                                        } else {
                                         llvm::Function* fn =
                                             b->GetInsertBlock()->getParent();
                                         llvm::BasicBlock* panicBB =
@@ -3008,6 +3031,7 @@ bool cajetaRhsCarriesRedundantSharp(
                                         b->SetInsertPoint(okBB);
                                         value = taken;
                                         slotTaken = true;
+                                        }
                                     }
                                 } else if (llvm::Function* takeFn =
                                         module->getRuntimeFunction(
@@ -3233,6 +3257,40 @@ bool cajetaRhsCarriesRedundantSharp(
                         if (llvm::Function* mark = module->getRuntimeFunction(
                                 "__cajeta_drop_mark_inactive")) {
                             module->getBuilder()->CreateCall(mark, {entry});
+                        }
+                    } else if (auto pfMv =
+                            dynamic_pointer_cast<ParameterField>(field)) {
+                        // 6.2.1's store-form twin — an ENTRY-LESS plain formal
+                        // moved by `#=`/`= #v` (String: emitFormalDropEntries
+                        // deliberately skips it) still has runtime truth in the
+                        // enclosing function's transfer word. Capture that bit
+                        // so the consuming store carries the CALLER's mode
+                        // instead of a constant 1 — the constant is what let
+                        // `data[i] #= v` take a lent String's wrapper (and let
+                        // the 3.4.3 temp reclaim free a wrapper a slot had just
+                        // adopted). A `#`-declared formal keeps the static 1:
+                        // its ownership is the contract, not the word.
+                        auto fpMv = pfMv->getFormalParameter();
+                        auto cmMv = module->getCurrentMethod();
+                        llvm::Value* inWordMv =
+                            cmMv ? cmMv->getTransferWordArg() : nullptr;
+                        if (fpMv && !fpMv->isTransferred() && inWordMv) {
+                            int fposMv = -1, seenMv = -1;
+                            for (auto& fp : cmMv->getParameterList()) {
+                                if (!fp || fp->getName() == "this") continue;
+                                ++seenMv;
+                                if (fp->getName() == idExpr->getTextValue()) {
+                                    fposMv = seenMv;
+                                    break;
+                                }
+                            }
+                            if (fposMv >= 0 && fposMv < 64) {
+                                auto* bMv = module->getBuilder();
+                                runtimeTitleFlag = bMv->CreateAnd(
+                                    bMv->CreateLShr(inWordMv,
+                                        bMv->getInt64((uint64_t) fposMv)),
+                                    bMv->getInt64(1), "mv_word_bit");
+                            }
                         }
                     }
                 }

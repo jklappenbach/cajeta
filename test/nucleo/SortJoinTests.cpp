@@ -19,6 +19,18 @@
 //    survivors is the survivors of the sorted rows), and the optimized and
 //    unoptimized runs agree.
 //
+// Fold shape (test-battery-restructure 2.3, spec §3.2b/§3.3): the four
+// original tests compiled four separate programs off the SAME prelude, the
+// same two record families, and the same builders — per-test coverage
+// measurement (2026-08-10) put their compiler line footprints within noise of
+// each other (~18.8k shared lines), so each compile bought assertions, not
+// coverage. One program now carries all four scenarios as four independent
+// static entry points — each builds its own tables locally and returns its own
+// score, so no scenario can perturb another — and one C++ test asserts each
+// score with its bit legend. Nothing here needs a FAILING compile (every
+// negative case is a caught `FrameException` at plan-build time, inside the
+// program), so no test had to stay behind.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -29,12 +41,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -114,15 +120,30 @@ const char* kJoinBuild =
     "            Column.of<float64>(af),\n"
     "            NullableColumn.of<float64>(ar, aok));\n";
 
-} // namespace
+// The narrowing target of the join family: the checked `.as<R>()` shape for an
+// INNER join of Ord x Acct (key once, left columns then the right's non-key
+// columns).
+const char* kFilledRecord =
+    "public record Filled {\n"
+    "    int64 acct;\n"
+    "    float64 qty;\n"
+    "    float64 fee;\n"
+    "    @Nullable float64 rebate;\n"
+    "}\n";
+
+// The nullable-key pair (a null key on each side) plus the utf8-carrying right
+// table used by the outer-join utf8 limit.
+const char* kNullKeyRecords =
+    "public record NOrd { @Nullable int64 acct; float64 qty; }\n"
+    "public record NRef { @Nullable int64 acct; float64 fee; }\n"
+    "public record Named { int64 acct; Utf8 tag; }\n";
 
 // 9.1.1 — ascending/descending, STABLE, nulls last by default with the
 // override, multi-key, and utf8 keys. Sort preserves the schema, so the
 // result stays a typed `Table<Px>`.
-TEST(SortJoinTests, sortOrdersAscDescStablyWithNullsLast) {
-    auto src = std::string(kPrelude) + kPxRecord +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+std::string sortOrderEntry() {
+    return std::string(
+        "    public static int32 sortOrderScore() {\n")
         + kPxBuild +
         "        int32 score = 0;\n"
         // Ascending, with a tie: ids 2 and 4 both hold px 1.0 and must come
@@ -190,23 +211,14 @@ TEST(SortJoinTests, sortOrdersAscDescStablyWithNullsLast) {
         "            score = score + 64;\n"
         "        }\n"
         "        return score;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
+        "    }\n";
 }
 
 // 9.1.2 — all four `how` kinds over a typed key, against hand results. The
 // result is schema-erased and narrows back with the checked `.as<R>()`.
-TEST(SortJoinTests, joinFamilyMatchesHandResults) {
-    auto src = std::string(kPrelude) + kJoinRecords +
-        "public record Filled {\n"
-        "    int64 acct;\n"
-        "    float64 qty;\n"
-        "    float64 fee;\n"
-        "    @Nullable float64 rebate;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+std::string joinFamilyEntry() {
+    return std::string(
+        "    public static int32 joinFamilyScore() {\n")
         + kJoinBuild +
         "        int32 score = 0;\n"
         // INNER: left rows 0,1,2 match; left row 3 (acct 3) drops. Output
@@ -294,21 +306,15 @@ TEST(SortJoinTests, joinFamilyMatchesHandResults) {
         "            if (e.getMessage().contains(\"fee\")) { score = score + 64; }\n"
         "        }\n"
         "        return score;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
+        "    }\n";
 }
 
 // 9.1.2 / 9.1.3 — a NULL key matches nothing on either side, and bad keys
 // fail loud: the dynamic form at plan build, and the outer-join utf8
 // limitation with a message that names the fix.
-TEST(SortJoinTests, nullKeysMatchNothingAndBadKeysFailLoud) {
-    auto src = std::string(kPrelude) +
-        "public record NOrd { @Nullable int64 acct; float64 qty; }\n"
-        "public record NRef { @Nullable int64 acct; float64 fee; }\n"
-        "public record Named { int64 acct; Utf8 tag; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+std::string nullKeyEntry() {
+    return std::string(
+        "    public static int32 nullKeyScore() {\n"
         "        int64[] la = heap int64[2];\n"
         "        la[0] = 1; la[1] = 7;\n"
         "        boolean[] lok = heap boolean[2];\n"
@@ -406,19 +412,16 @@ TEST(SortJoinTests, nullKeysMatchNothingAndBadKeysFailLoud) {
         "            score = score + 32;\n"
         "        }\n"
         "        return score;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 63);
+        "    }\n");
 }
 
 // 9.2.1 — the U7 rewriter over the new nodes: a filter sinks below a sort
 // (both orders give the same rows, and the scan never materializes the
 // failing ones), while a join is a barrier the rewriter does not cross.
 // Optimized and unoptimized runs agree, which is the pushdown contract.
-TEST(SortJoinTests, filterSinksBelowSortAndJoinIsABarrier) {
-    auto src = std::string(kPrelude) + kPxRecord + kJoinRecords +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+std::string pushdownEntry() {
+    return std::string(
+        "    public static int32 pushdownScore() {\n")
         + kPxBuild + kJoinBuild +
         "        int32 score = 0;\n"
         // sort <- filter: the predicate sinks to the scan, so only the
@@ -477,7 +480,66 @@ TEST(SortJoinTests, filterSinksBelowSortAndJoinIsABarrier) {
         "            if (e.getMessage().contains(\"sort\")) { score = score + 64; }\n"
         "        }\n"
         "        return score;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 127);
+        "    }\n";
+}
+
+// One program, four independent entry points. Every record family the four
+// scenarios need is declared once; each entry builds its own tables from the
+// shared BUILDER TEXT (not from shared state), so a scenario can neither see
+// nor disturb another's tables.
+std::string sortJoinMatrixSrc() {
+    return std::string(kPrelude) + kPxRecord + kJoinRecords + kFilledRecord
+        + kNullKeyRecords
+        + "public final class D {\n"
+        + sortOrderEntry()
+        + joinFamilyEntry()
+        + nullKeyEntry()
+        + pushdownEntry()
+        + "}\n";
+}
+
+} // namespace
+
+// The U9 sort/join use-case matrix, one compiled program (was: SortJoinTests.
+// {sortOrdersAscDescStablyWithNullsLast, joinFamilyMatchesHandResults,
+// nullKeysMatchNothingAndBadKeysFailLoud, filterSinksBelowSortAndJoinIsA
+// Barrier} — four compiles' worth of claims, every assertion preserved):
+//   9.1.1 sort order (asc/desc, stable ties, nulls last + NULLS_FIRST,
+//   multi-key, utf8 keys); 9.1.2 the four join `how` kinds against hand
+//   results with the checked narrow; 9.1.2/9.1.3 null keys matching nothing
+//   and the loud key errors (dynamic form, key absent right, outer-join utf8
+//   limit); 9.2.1 the U7 rewriter (filter sinks below sort, optimized ==
+//   unoptimized, join is a barrier, computed sort key fails loud).
+TEST(SortJoinTests, sortOrderJoinFamilyKeyErrorsAndPushdownMatrix) {
+    auto jit = CajetaJit::compile(sortJoinMatrixSrc(), "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto sortOrderScore  = jit->lookup<int32_t (*)()>("sortOrderScore");
+    auto joinFamilyScore = jit->lookup<int32_t (*)()>("joinFamilyScore");
+    auto nullKeyScore    = jit->lookup<int32_t (*)()>("nullKeyScore");
+    auto pushdownScore   = jit->lookup<int32_t (*)()>("pushdownScore");
+    ASSERT_NE(sortOrderScore, nullptr);
+    ASSERT_NE(joinFamilyScore, nullptr);
+    ASSERT_NE(nullKeyScore, nullptr);
+    ASSERT_NE(pushdownScore, nullptr);
+
+    // 9.1.1 — bits: 1 lazy (no execution at plan build), 2 ascending stable,
+    // 4 descending stable, 8 nulls last ascending, 16 nulls last descending,
+    // 32 Sorts.NULLS_FIRST override, 64 multi-key sym asc + px desc.
+    EXPECT_EQ(sortOrderScore(), 127) << "sort order matrix";
+
+    // 9.1.2 — bits: 1 lazy, 2 INNER shape/values, 4 right-side null rides
+    // through, 8 LEFT null-extends, 16 RIGHT null-extends with the key from
+    // the right, 32 FULL, 64 narrowing a nullable `fee` to `Filled` fails.
+    EXPECT_EQ(joinFamilyScore(), 127) << "join family matrix";
+
+    // 9.1.2 / 9.1.3 — bits: 1 INNER null key matches nothing, 2 FULL keeps
+    // both null-key rows distinct, 4 dynamic key names the schema, 8 key
+    // absent from the RIGHT fails at plan build, 16 outer-join utf8 limit
+    // names `tag` and `utf8`, 32 the INNER join of the same pair is fine.
+    EXPECT_EQ(nullKeyScore(), 63) << "null keys and loud key errors";
+
+    // 9.2.1 — bits: 1 filter sank into scan[filter], 2 rows correct, 4 only
+    // survivors scanned, 8 unoptimized agrees (and scans all 5), 16 join is a
+    // barrier, 32 filtered join rows correct, 64 computed sort key fails loud.
+    EXPECT_EQ(pushdownScore(), 127) << "rewriter pushdown and join barrier";
 }

@@ -44,11 +44,15 @@ Push in any order; repeated `pop` drains in ascending order.
 
 ## Ownership & lifecycle
 
-- **`push(T v)` does not take ownership** of a value — there is no `#` on the
-  parameter; the element is stored into the backing array by assignment. Pass
-  primitives or the values you intend the heap to hold.
-- **`peek` / `pop` return `T` by value** — no ownership transfer, nothing for the
-  caller to free for primitive `T`.
+- **`push(T v)` does not *require* ownership** — there is no `#` on the parameter,
+  so `h.push(v)` lends and the caller keeps the title. The store is `#=`, which
+  carries whatever the caller tendered: a caller that needs the heap to outlive
+  the value may transfer at the call site with `h.push(#node)`, and the heap then
+  owns that element and drops it.
+- **`peek` returns a borrow.** **`pop` returns the element in whatever mode the
+  heap held it** (a flagged return): an element pushed with `#v` hands its title
+  back to your receiving local, one pushed plainly comes back as a borrow.
+  Primitives are by value either way — nothing for the caller to free.
 - Construct with `heap Heap<T>()`; the heap owns its backing array. There is **no
   `close()` / `dispose()`** — reclamation follows normal cajeta drop. Construction
   takes no arguments and no capacity hint (it is fixed at 16, then doubles).

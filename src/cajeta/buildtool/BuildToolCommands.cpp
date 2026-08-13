@@ -1843,11 +1843,17 @@ namespace cajeta::buildtool {
                 return argc < 3 ? 1 : 0;
             }
             std::string_view sub = argv[2];
-            if (sub == "list")   return trustListCommand(argc, argv);
-            if (sub == "add")    return trustAddCommand(argc, argv);
-            if (sub == "remove") return trustRemoveCommand(argc, argv);
-            if (sub == "show")   return trustShowCommand(argc, argv);
-            if (sub == "verify") return trustVerifyCommand(argc, argv);
+            // The handlers read their first argument at argv[2] — the
+            // convention where the subcommand word has been shifted out.
+            // Passing the unshifted vector made every arg-taking trust
+            // subcommand parse its own name as the argument ("trust add
+            // relkey k.pem" read key-id "add", pem "relkey"), so add/
+            // remove/show/verify could never have worked.
+            if (sub == "list")   return trustListCommand(argc - 1, argv + 1);
+            if (sub == "add")    return trustAddCommand(argc - 1, argv + 1);
+            if (sub == "remove") return trustRemoveCommand(argc - 1, argv + 1);
+            if (sub == "show")   return trustShowCommand(argc - 1, argv + 1);
+            if (sub == "verify") return trustVerifyCommand(argc - 1, argv + 1);
             std::cerr << "cajeta trust: unknown subcommand '"
                       << sub << "'\n";
             return 2;

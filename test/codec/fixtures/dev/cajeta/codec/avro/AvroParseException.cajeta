@@ -1,0 +1,18 @@
+package dev.cajeta.codec.avro;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * Thrown when an Avro Object Container File cannot be parsed — a bad magic
+ * marker, a malformed metadata map, or an unsupported codec/schema construct.
+ * `position` is the byte offset (0-based) where the problem was noticed.
+ */
+public class AvroParseException extends RecoverableException {
+    public int64 position;
+
+    public AvroParseException(String message, int64 position) {
+        this.message = message;
+        this.cause = 0;
+        this.position = position;
+    }
+}

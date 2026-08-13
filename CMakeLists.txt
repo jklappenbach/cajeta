@@ -119,6 +119,29 @@ enable_testing()
 # links it into cajeta_lib to expose the `cajeta doc` subcommand. Opt-out via
 # -DCAJETA_BUILD_CAJETADOC=OFF.
 option(CAJETA_BUILD_CAJETADOC "Build the cajetadoc documentation generator" ON)
+
+# --- C++ coverage instrumentation (gcov) -----------------------------------
+# OFF by default: --coverage forces -O0-ish codegen and writes a .gcda per
+# object per run, so it must never touch a normal or release build. Configure a
+# SEPARATE build dir for it (see coverage.sh), never the primary one.
+#
+# gcc is used rather than clang source-based coverage deliberately: the only
+# clang on this host is the ROCm fork, and swapping the host compiler of a
+# 456-file LLVM-linked build just to measure coverage trades a measurement for
+# a toolchain risk. `gcov --json-format` (GCC 9+) gives structured per-line
+# counts directly, which is why neither lcov nor gcovr is required.
+option(CAJETA_COVERAGE "Instrument for gcov coverage (separate build dir only)" OFF)
+if(CAJETA_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        message(FATAL_ERROR
+            "CAJETA_COVERAGE expects GCC (gcov). Found ${CMAKE_CXX_COMPILER_ID}.")
+    endif()
+    add_compile_options(--coverage -fprofile-update=atomic -O0 -g)
+    add_link_options(--coverage)
+    # -fprofile-update=atomic: the sweep runs shards concurrently and the JIT
+    # is threaded; non-atomic counters silently lose increments under both.
+    message(STATUS "CAJETA_COVERAGE=ON — gcov instrumentation enabled")
+endif()
 if(CAJETA_BUILD_CAJETADOC)
     add_subdirectory(tools/cajetadoc)
 endif()

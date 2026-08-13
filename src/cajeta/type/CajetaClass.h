@@ -503,6 +503,10 @@ namespace cajeta {
         // The module this class's own IR is CREATED in (see emitModule). Falls
         // back to the resolution module when unset — production / non-reuse.
         CajetaModulePtr getEmitModule() { return emitModule ? emitModule : module; }
+        // True only when an emit target was explicitly assigned (a reuse-path
+        // instantiation emit-owned by a user module) — lets Method's emit-module
+        // fallback distinguish a real override from the resolution default.
+        bool hasEmitModuleOverride() const { return emitModule != nullptr; }
         void setEmitModule(CajetaModulePtr m) { emitModule = m; }
 
         list<CajetaClassPtr>& getSuperClasses() {
@@ -1168,6 +1172,16 @@ namespace cajeta {
         // instantiation path fills THIS object instead of allocating a new
         // one, preserving the identity every earlier reference captured.
         static CajetaClassPtr& instantiationReuseTarget();
+        // Clears the deferred queue and the reuse target. Both are
+        // thread_local statics holding shared_ptrs into ONE compile's object
+        // graph, so entries must never outlive their Compiler: a synthesizer
+        // error thrown mid-instantiation abandons the queue, and the NEXT
+        // compile would drain those stale entries against its own fresh
+        // registries (UNKNOWN_TYPE on stdlib fields — the TableCoreTests
+        // frameSchemaErrorDoesNotPoisonNextCompile pin). Called from
+        // CajetaType::resetGlobals (fresh Compiler) and
+        // CajetaType::restoreBaseline (per-test stdlib reuse).
+        static void resetDeferredInstantiationState();
 
 
         // Diamond-operator inference (TPL-7). Given the argument types of a

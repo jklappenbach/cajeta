@@ -92,9 +92,9 @@ public final class BPlusTree<K, V> {
      * index.put(1, "uno");   // same key updates in place, count stays 1
      * ```
      */
-    public void put(#K key, #V value) {
-        // uniform-transfer 2.3 — the container OWNS its keys and values:
-        // one unconditional transfer, no caller spelling to match.
+    public void put(K key, V value) {
+        // The formals are plain — the tree does not own by default. Each
+        // `#=` store below records whichever mode the caller tendered.
         if (this.root == null) {
             BPlusTreeNode<K, V> r = heap BPlusTreeNode<K, V>(true, this.order);
             r.keys[0] #= key;
@@ -115,9 +115,10 @@ public final class BPlusTree<K, V> {
         if (pos < leaf.numKeys) {
             // keys[pos] >= key; equal iff not (key < keys[pos]).
             if ((key < leaf.keys[pos]) == false) {
-                // Replace: the slot store's displaced release drops the
-                // old value, which is now always owned. The duplicate key
-                // reclaims at exit via the formal's armed entry.
+                // Replace: the slot store's displaced release drops the old
+                // value only if the slot held title. The duplicate key
+                // reclaims at exit via the formal's armed entry, and only
+                // when the caller transferred it.
                 leaf.values[pos] #= value;
                 return;
             }
@@ -188,10 +189,11 @@ public final class BPlusTree<K, V> {
      * a fresh heap `ArrayList<K>` whose ownership transfers to the
      * caller.
      *
-     * PRIMITIVE K ONLY today: the walk copies each key into the list,
-     * and for a class K that copy would be a borrow lent into the
-     * list's owning `#T` formal — a compile error at instantiation.
-     * A class-K variant needs a clone/copy protocol (deferred with
+     * The walk LENDS each key into the list — legal for any K, since
+     * `ArrayList.add` takes a plain `T`. The caveat is lifetime: for a
+     * class K the returned list holds borrows into the tree's nodes and
+     * must not outlive them. Nothing diagnoses that today; a list that
+     * owns its keys needs a clone/copy protocol (deferred with
      * `map.update`, uniform-transfer 4.2.4).
      */
     public #ArrayList<K> keysInOrder() {

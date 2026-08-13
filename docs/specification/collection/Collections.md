@@ -11,38 +11,52 @@ All containers report their element count via `count()` (never `size`
 or `length`); `count()` returns `int64` except on `ArrayList`, where it
 is `int32`.
 
-## Containers own their elements — and it is enforced
+## Collections borrow their elements by default — transfer is the caller's choice
 
-Every container below declares its element and key parameters `#T` / `#K` /
-`#V`. This is a compile-time contract, not a convention:
+Collections are not containers. They can be treated like containers by
+transferring ownership in, but they are not designed to own by default. Element
+and key parameters on the collections below are declared plainly (`T` / `K` /
+`V`), with one exception noted at `HashMap.operator[]=`. Passing `x` lends;
+passing `#x` transfers; both spellings are legal and the choice is the
+caller's:
 
 ```cajeta
 Cell c = heap Cell(7);
-xs.add(c);       // CAJETA_ERROR_TRANSFER_REQUIRED — the message names the fix
-xs.add(#c);      // the list takes the title
+xs.add(c);       // lends — the list holds a borrow; `c` still owns the instance
+xs.add(#c);      // transfers — the list takes the title
 int32 n = c.n;   // still fine: `#` moves the title, not the binding
 ```
 
-Three things to know before writing container code:
+Genuine containers — those whose storage outlives the caller's frame, such as
+`JsonValue.setArray` / `setObject` (the DOM owns its children) or `Pair` — do
+declare `#` formals. A `#` formal obliges the caller to write `#` whenever the
+argument is a local the frame owns; a fresh value — a literal, or a
+`heap T(...)` / `stack T(...)` construction — passes plain, because an unowned
+temporary has no title to surrender.
 
-- **There is no borrowed-element mode.** A container never holds something it
-  will not reclaim, so teardown drops everything, `remove` hands the title
-  back, and a replace displaces exactly one value. No per-entry ownership bit
-  and nothing branching on one.
+Three things to know before writing collection code:
+
+- **Each entry records the mode it arrived in.** A `#`-tendered entry belongs to
+  the collection: teardown drops it, `remove` hands the title back, and a
+  replace displaces exactly one value. A lent entry is never reclaimed — its
+  real owner must outlive the collection.
 - **The source stays readable.** A transfer DEMOTES its source to a borrow of
   the same live instance (`MemoryModel.md`). What you must not do is read it
-  after the container tears down — that dangles, and nothing diagnoses it yet
+  after the collection tears down — that dangles, and nothing diagnoses it yet
   (§1.7).
-- **String is an ordinary element.** `list.add(s)` on a `String` is the same
-  error as any other class. Either surrender it (`#s`) or give the container
-  its own copy — `s.substring(0, s.count())` returns a fresh `#String`.
+- **String is an ordinary element.** `list.add(s)` lends a `String` and
+  `list.add(#s)` transfers it, exactly as for any other class. A lent `String`
+  must outlive the list; if you would rather the list hold something
+  independent of the caller's lifetime, `s.substring(0, s.count())` returns a
+  fresh `#String`.
 
-Keys are owned too, which interacts with hashing. `String` and primitives are
-VALUE-hashed, so a fresh equal key finds a surrendered entry; a user class is
-IDENTITY-hashed by default, so it does not. Replacing a value under an owned
-class key therefore has no spelling today — `map.update` is an open design
-question, and `OwnedKeyLookupTests` pins the identity MISS so the day
-structural equality lands for classes, it fails loudly.
+Keys MAY be transferred (`map.put(#k, v)`), and when they are, hashing matters.
+`String` and primitives are VALUE-hashed, so a fresh equal key finds a
+surrendered entry; a user class is IDENTITY-hashed by default, so it does not.
+Replacing a value under an owned class key therefore has no spelling today —
+`map.update` is an open design question, and `OwnedKeyLookupTests` pins the
+identity MISS so the day structural equality lands for classes, it fails
+loudly.
 
 ## Status snapshot
 
@@ -73,8 +87,8 @@ public class ArrayList<T> {
     public int32 count();                     // element count
     public boolean isEmpty();
     public T get(int32 i);
-    public void set(int32 i, #T v);
-    public void add(#T v);                    // amortized O(1), capacity doubles
+    public void set(int32 i, T v);
+    public void add(T v);                     // amortized O(1), capacity doubles
     public void appendAll(ArrayList<T> other);// append other's elements (non-consuming)
     public #ArrayStream<T> stream();          // owned Stream<T> over live elements
 }
@@ -120,14 +134,14 @@ Open-addressing hash map with linear probing + tombstones. Source at
 ```cajeta
 public class HashMap<K, V> {
     public HashMap(int64 initialCapacity);     // power-of-2 capacity
-    public void put(#K key, #V value);
+    public void put(K key, V value);
     public V get(K key);                        // returns 0/null on miss
     public boolean containsKey(K key);
     public boolean remove(K key);              // leaves a reusable tombstone
     public int64 count();
 
     public V operator[](K key);                // sugar for get
-    public void operator[]=(#K key, #V value); // sugar for put
+    public void operator[]=(#K key, #V value); // put, forwarding the caller's mode
 
     // Splittable stream views (snapshots; slot-walk order):
     public #Stream<K> keys();                  // HashMapKeyStream<K, V>
@@ -135,6 +149,14 @@ public class HashMap<K, V> {
     public #Stream<Pair<K, V>> entries();      // HashMapEntryStream<K, V>
 }
 ```
+
+The `#K` / `#V` on `operator[]=` are forwards, not an unconditional take: they
+thread the caller's transfer word through to `put`, since a plain forward would
+read all-borrow and record every indexed store as borrowed no matter how the
+caller spelled it. So `m[k] = v` stays mode-carrying, exactly like `put`. A
+fresh value passes plain — `counts["grapes"] = 7` and
+`m["k"] = heap Box(5)` both compile — while a named local the frame owns must
+be surrendered explicitly, `m[#k] = v`, the same `#` `put(#k, v)` would ask for.
 
 `K` may be a **class type or a primitive** — no boxing either way. The
 bucket index uses `key.hash()` and bucket equality uses `==`; primitive
@@ -157,9 +179,14 @@ counts.put("oranges", 5);
 int32 apples = counts.get("apples");          // 3
 boolean has = counts.containsKey("kiwis");    // false
 
-// Operator overloads
+// Operator overloads — a fresh key/value needs no `#`
 counts["grapes"] = 7;
 int32 grapes = counts["grapes"];
+
+// ...but a key the frame owns is surrendered explicitly
+String kiwis = "ki" + "wis";
+counts[#kiwis] = 2;
+int32 kiwiCount = counts[kiwis];              // `kiwis` is demoted, still looks up
 
 // Iterate via a stream view (keys / values / entries):
 int64 distinct = counts.keys().count();
@@ -184,7 +211,7 @@ Thin wrapper over a backing `HashMap<T, _>`. Same key constraint as
 ```cajeta
 public class HashSet<T> {
     public HashSet(int64 initialCapacity);     // power-of-2 capacity
-    public void add(#T v);
+    public void add(T v);
     public boolean contains(T v);
     public boolean remove(T v);                // true if present and removed
     public int64 count();
@@ -203,10 +230,10 @@ public class LinkedList<T> {
     public int64 count();
     public T head();                           // O(1)
     public T tail();                           // O(1)
-    public void add(#T v);                     // alias of addTail
+    public void add(T v);                      // alias of addTail
     public void addFirst(T v);                 // alias of addHead
-    public void addTail(#T v);                 // append at tail
-    public void addHead(#T v);                 // prepend at head
+    public void addTail(T v);                  // append at tail
+    public void addHead(T v);                  // prepend at head
     public T popHead();                        // remove + return front
     public T popTail();                        // remove + return back
     public T get(int64 idx);                   // walk to index
@@ -237,7 +264,7 @@ public class Deque<T> {
 }
 
 public class Stack<T> {
-    public void push(#T v);
+    public void push(T v);
     public T    pop();
     public T    peek();
     public int64 count();
@@ -255,7 +282,7 @@ first). No comparator parameter today.
 ```cajeta
 public class Heap<T> {
     public Heap();
-    public void push(#T v);
+    public void push(T v);
     public T pop();                            // minimum
     public T peek();                           // minimum, no removal
     public boolean isEmpty();
@@ -275,7 +302,7 @@ deferred**.
 ```cajeta
 public class RedBlackTree<K, V> {       // BPlusTree<K, V> mirrors this
     public boolean isEmpty();
-    public void put(#K key, #V value);
+    public void put(K key, V value);
     public V get(K key);                       // 0/null on miss
     public boolean containsKey(K key);
     public K min();

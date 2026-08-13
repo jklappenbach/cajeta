@@ -113,17 +113,16 @@ transfers) and from plain `T` (which is a use-only borrow).
 ```cajeta
 public class Cache {
     public void put(String k, @stores Foo v) {   // borrow + stored
-        this.entries.put(k, v);                  // see the note below
+        this.entries.put(k, v);                  // parks the borrow
     }
 }
 ```
 
-> **Sketch only — the body no longer compiles (0.15.0).** Stdlib collections
-> own their keys and elements, so `this.entries.put(k, v)` is
-> `CAJETA_ERROR_TRANSFER_REQUIRED` (see `OwnershipTransfer.md`). That does not
-> retire the S2 idea: `@stores` is about parking a borrow in a USER class's
-> field, which is still legal and still unlinted. It does mean a worked example
-> has to park into a plain field rather than a stdlib container.
+`HashMap.put` takes plain `K`, `V`, so this body compiles today and parks a
+borrow in the map — which is exactly the hazard `@stores` targets: if the
+caller's `v` dies before the `Cache` does, the entry dangles, and no compiler
+check diagnoses it. `@stores` is what would let the lint see the contract at
+the boundary, for a stdlib container and a plain user field alike.
 
 At the call site, the lint applies the same scope-ordering check as S1
 but **per formal**, driven by the annotation. The annotation also

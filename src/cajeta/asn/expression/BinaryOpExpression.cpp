@@ -140,7 +140,7 @@ namespace cajeta {
             llvm::Constant* vtableRef = nullptr;
             if (auto gv = rhsClass->getInterfaceVTable(ifaceCanonical)) {
                 vtableRef = CajetaModule::ensureGlobalInModule(
-                    module->getLlvmModule(), gv);
+                    module->emitTargetLlvmModule(), gv);
             }
             if (!vtableRef) {
                 // The implementer hasn't synthesized this per-(class,
@@ -1117,7 +1117,9 @@ namespace cajeta {
                                           "construction. See "
                                           "docs/specification/lang/"
                                           "OwnershipTransfer.md.",
-                                        "CAJETA_ERROR_TRANSFER_REQUIRED");
+                                        "CAJETA_ERROR_TRANSFER_REQUIRED",
+                                        module->getSourcePath(),
+                                        (int) getSourceLine(), -1);
                                 }
                             }
                             // title-tracking 6.2.1 — the transfer word for the
@@ -1310,8 +1312,12 @@ namespace cajeta {
             // through a double Move, which only `#= #` produced, and that
             // spelling is now rejected outright. The capability retires with
             // its one caller: the rehash forwarded a member's bit verbatim
-            // because a slot might hold a borrow, and spec 2.3 removed that
-            // possibility. `grep '#= #' runtime/src` is 0.
+            // because a slot might hold a borrow — which is STILL true
+            // (collections do not own by default). What retired the capability
+            // is the rejection of the `#= #` spelling in Unit 3, not the
+            // disappearance of borrowed slots; the SINGLE-sharp fwdLhs/fwdSrc
+            // arm above is now the only forwarding primitive.
+            // `grep '#= #' runtime/src` is 0.
         }
         // array-literals §3.2 — for `lhs = [...]`, target-type the RHS literal
         // from the LHS array element type BEFORE the operands generate below
@@ -2319,7 +2325,22 @@ namespace cajeta {
                             }
                         }
                         if (rhsIsString) {
-                            llvm::Function* resolveFn = rhsIsLvalue
+                            // Mode-carrying `#=` of a PLAIN formal: the
+                            // MoveExpression captured the caller's word bit
+                            // (Expression.cpp, entry-less formal capture). A
+                            // bit of 0 means the caller kept/reclaims the
+                            // wrapper — the field must RESOLVE its own, or it
+                            // adopts a temp the 3.4.3 reclaim then frees (the
+                            // HashMap<String,·>.put post-resize corruption:
+                            // `slots[i].key #= key` adopted the caller's
+                            // concat temp, the reclaim freed it, and the
+                            // rehash surfaced the recycled bytes).
+                            llvm::Value* mvBit = nullptr;
+                            if (auto fldMv = dynamic_pointer_cast<
+                                    MoveExpression>(rhsAst)) {
+                                mvBit = fldMv->getRuntimeTitleFlag();
+                            }
+                            llvm::Function* resolveFn = (rhsIsLvalue || mvBit)
                                 ? module->getRuntimeFunction("__cajeta_string_resolve")
                                 : nullptr;
                             // 7.2.2 — the mask is the enclosing
@@ -2335,20 +2356,22 @@ namespace cajeta {
                             // field takes a FRESH resolved one (copy ≤
                             // threshold / stake on a large heap root / static
                             // alias). Rvalue RHS (literal, call result,
-                            // concat, `#`-move): the wrapper transfers as-is.
-                            // Plain-formal lvalue: runtime moveMask branch —
-                            // move when the caller transferred, resolve
-                            // otherwise.
+                            // concat, static `#`-move): the wrapper transfers
+                            // as-is. Plain-formal lvalue OR flag-carrying
+                            // `#`-move: runtime branch — move when the caller
+                            // transferred, resolve otherwise.
                             llvm::Value* fresh = nullptr;
-                            if (maskWord) {
+                            if (maskWord || (mvBit && resolveFn)) {
                                 auto& lctx = *module->getLlvmContext();
-                                llvm::Value* bit = builder->CreateAnd(
-                                    builder->CreateLShr(maskWord, maskBit),
-                                    llvm::ConstantInt::get(
-                                        llvm::Type::getInt64Ty(lctx), 1));
+                                llvm::Value* bit = maskWord
+                                    ? builder->CreateAnd(
+                                          builder->CreateLShr(maskWord, maskBit),
+                                          llvm::ConstantInt::get(
+                                              llvm::Type::getInt64Ty(lctx), 1))
+                                    : mvBit;
                                 llvm::Value* isMove = builder->CreateICmpNE(
                                     bit, llvm::ConstantInt::get(
-                                        llvm::Type::getInt64Ty(lctx), 0),
+                                        bit->getType(), 0),
                                     "fld_is_move");
                                 llvm::Function* fnOwner =
                                     builder->GetInsertBlock()->getParent();
@@ -2929,6 +2952,17 @@ namespace cajeta {
                             bool takesOwnership =
                                 dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            // Mode-carrying `#=`: a move of a plain formal
+                            // captured the CALLER's word bit — decide owned
+                            // (take the wrapper) vs alias (resolve a copy) at
+                            // runtime, exactly as the field-store path does.
+                            // A null flag keeps the static classification
+                            // (declared-`#` formals, fresh temps, elem takes).
+                            llvm::Value* takesRt = nullptr;
+                            if (auto rtMv = dynamic_pointer_cast<MoveExpression>(
+                                    rhsAst)) {
+                                takesRt = rtMv->getRuntimeTitleFlag();
+                            }
                             if (!takesOwnership) {
                                 if (auto rid = dynamic_pointer_cast<
                                         IdentifierExpression>(rhsAst)) {
@@ -2940,11 +2974,36 @@ namespace cajeta {
                                     }
                                 }
                             }
-                            llvm::Function* setFn = module->getRuntimeFunction(
-                                takesOwnership
-                                    ? "__cajeta_string_array_elem_set_owned"
-                                    : "__cajeta_string_array_elem_set_alias");
-                            if (setFn) {
+                            llvm::Function* ownFn = module->getRuntimeFunction(
+                                "__cajeta_string_array_elem_set_owned");
+                            llvm::Function* aliasFn = module->getRuntimeFunction(
+                                "__cajeta_string_array_elem_set_alias");
+                            if (takesRt && ownFn && aliasFn) {
+                                auto& scCtx = *module->getLlvmContext();
+                                llvm::Value* isOwn = builder->CreateICmpNE(
+                                    takesRt,
+                                    llvm::ConstantInt::get(
+                                        takesRt->getType(), 0),
+                                    "selem_is_own");
+                                llvm::Function* scFn =
+                                    builder->GetInsertBlock()->getParent();
+                                auto* bbOwn = llvm::BasicBlock::Create(
+                                    scCtx, "selem_own", scFn);
+                                auto* bbAlias = llvm::BasicBlock::Create(
+                                    scCtx, "selem_alias", scFn);
+                                auto* bbJoin = llvm::BasicBlock::Create(
+                                    scCtx, "selem_join", scFn);
+                                builder->CreateCondBr(isOwn, bbOwn, bbAlias);
+                                builder->SetInsertPoint(bbOwn);
+                                builder->CreateCall(ownFn, {sidecar, lhs, rhsVal});
+                                builder->CreateBr(bbJoin);
+                                builder->SetInsertPoint(bbAlias);
+                                builder->CreateCall(aliasFn, {sidecar, lhs, rhsVal});
+                                builder->CreateBr(bbJoin);
+                                builder->SetInsertPoint(bbJoin);
+                                storedViaElemOwn = true;
+                            } else if (llvm::Function* setFn =
+                                    takesOwnership ? ownFn : aliasFn) {
                                 builder->CreateCall(setFn, {sidecar, lhs, rhsVal});
                                 storedViaElemOwn = true;
                             }
@@ -2967,6 +3026,15 @@ namespace cajeta {
                             bool seTakes =
                                 dynamic_pointer_cast<MoveExpression>(rhsAst)
                                 || MethodCallExpression::freshOwnedStringTemp(rhsAst);
+                            // Mode-carrying `#=` (see the sidecar branch): a
+                            // plain formal's captured word bit IS `takes` —
+                            // the native already branches move-vs-resolve on
+                            // it. Null flag → static classification.
+                            llvm::Value* seTakesRt = nullptr;
+                            if (auto seMv = dynamic_pointer_cast<MoveExpression>(
+                                    rhsAst)) {
+                                seTakesRt = seMv->getRuntimeTitleFlag();
+                            }
                             if (!seTakes) {
                                 if (auto rid = dynamic_pointer_cast<
                                         IdentifierExpression>(rhsAst)) {
@@ -2980,12 +3048,17 @@ namespace cajeta {
                             }
                             if (llvm::Function* seFn = module->getRuntimeFunction(
                                     "__cajeta_string_elem_store")) {
+                                llvm::Type* seI64 = llvm::Type::getInt64Ty(
+                                    *module->getLlvmContext());
+                                llvm::Value* takesArg = seTakesRt
+                                    ? (seTakesRt->getType() == seI64
+                                          ? seTakesRt
+                                          : builder->CreateZExt(
+                                                seTakesRt, seI64))
+                                    : (llvm::Value*) llvm::ConstantInt::get(
+                                          seI64, seTakes ? 1 : 0);
                                 builder->CreateCall(seFn,
-                                    {lhs, rhsVal,
-                                     llvm::ConstantInt::get(
-                                         llvm::Type::getInt64Ty(
-                                             *module->getLlvmContext()),
-                                         seTakes ? 1 : 0)});
+                                    {lhs, rhsVal, takesArg});
                                 storedViaElemOwn = true;
                             }
                         }
@@ -3548,7 +3621,7 @@ namespace cajeta {
                         llvm::cast<llvm::PointerType>(ptrTy));
                     if (auto* vt = stringKlass->getVirtualTableGlobal()) {
                         vtableRef = CajetaModule::ensureGlobalInModule(
-                            module->getLlvmModule(), vt);
+                            module->emitTargetLlvmModule(), vt);
                     }
                     builder->CreateStore(vtableRef,
                         builder->CreateStructGEP(stringStructTy, sPtr, 0,

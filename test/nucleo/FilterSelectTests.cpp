@@ -22,6 +22,16 @@
 // reusing a chained-away handle is a named FrameException (the data itself
 // is immutable — materialized sources are never consumed).
 //
+// Fold shape (test-battery-restructure 2.3): the four passing single-claim
+// tests each paid their own JIT compile of the same prelude + the same
+// five-row table build, and per-test coverage measurement (2026-08-10)
+// showed their compiler line footprints near-identical. They are now four
+// static entry points of ONE program — each builds its OWN table from
+// kBuild and returns its OWN score, so no scenario can disturb another —
+// behind one C++ test that asserts each score separately, with the original
+// score-bit expectations unchanged. The two tests whose compile must FAIL
+// keep their own TESTs: a failing compile cannot share a program.
+//
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "cajeta/error/Exception.h"
@@ -32,12 +42,6 @@
 using cajeta_test::CajetaJit;
 
 namespace {
-
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
-}
 
 const char* kPrelude =
     "package test;\n"
@@ -72,16 +76,47 @@ const char* kBuild =
     "            Column.of<int64>(tsv), Column.of<float64>(pv),\n"
     "            Column.of<float64>(sv), StringColumn.of(vv));\n";
 
-} // namespace
-
-// 5.1.1 — filter excludes rows; `&`/`|`/`.not()` compose; numeric, int64
-// (Instant epoch-nanos, exact — no float64 round-trip), and utf8 predicates
-// all match hand results; the source table is unchanged; ops chain directly
-// off a materialized table too.
-TEST(FilterSelectTests, filterExcludesRowsAndComposes) {
-    auto src = std::string(kPrelude) +
+// The U5 use-case matrix as one compilation unit. The result records the
+// four scenarios narrow into are declared once here (PN was written twice,
+// identically, by the select and dynamic-col tests); every entry method is
+// the original test's `run()` body verbatim, renamed to say what it carries
+// and rebuilding its own table so the entries stay independent.
+std::string buildMatrixSrc() {
+    return std::string(kPrelude) +
+        "public record PN {\n"
+        "    float64 price;\n"
+        "    float64 notional;\n"
+        "}\n"
+        "public record TickPlus {\n"
+        "    Instant ts;\n"
+        "    float64 price;\n"
+        "    float64 size;\n"
+        "    Utf8 venue;\n"
+        "    float64 notional;\n"
+        "}\n"
+        "public record VOnly {\n"
+        "    Utf8 venue;\n"
+        "}\n"
+        "public record Missing {\n"
+        "    float64 price;\n"
+        "    float64 vwap;\n"
+        "}\n"
+        "public record WrongType {\n"
+        "    float64 price;\n"
+        "    float64 venue;\n"
+        "}\n"
+        "public record TooWide {\n"
+        "    float64 price;\n"
+        "    Utf8 venue;\n"
+        "    float64 extra;\n"
+        "}\n"
         "public final class D {\n"
-        "    public static int32 run() {\n"
+
+        // 5.1.1 — filter excludes rows; `&`/`|`/`.not()` compose; numeric,
+        // int64 (Instant epoch-nanos, exact — no float64 round-trip), and
+        // utf8 predicates all match hand results; the source table is
+        // unchanged; ops chain directly off a materialized table too.
+        "    public static int32 filterCompose() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<Tick> h1 = t.lazy().filter((TickCols c) -> {\n"
@@ -123,32 +158,13 @@ TEST(FilterSelectTests, filterExcludesRowsAndComposes) {
         "        if (t.rowCount() == 5 && t.price.get(0) == 1.5) { score = score + 128; }\n"  // source intact
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 255);
-}
 
-// 5.1.2 — select (projection) and with (computed column, `.alias` named)
-// produce correct columns; the schema-changing result is a visible
-// `Table<?>` narrowed back by the checked `.as<R>()`; passthrough
-// projections stay zero-copy (address identity through the narrow).
-TEST(FilterSelectTests, selectWithComputeAndCheckedNarrow) {
-    auto src = std::string(kPrelude) +
-        "public record PN {\n"
-        "    float64 price;\n"
-        "    float64 notional;\n"
-        "}\n"
-        "public record TickPlus {\n"
-        "    Instant ts;\n"
-        "    float64 price;\n"
-        "    float64 size;\n"
-        "    Utf8 venue;\n"
-        "    float64 notional;\n"
-        "}\n"
-        "public record VOnly {\n"
-        "    Utf8 venue;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 5.1.2 — select (projection) and with (computed column, `.alias`
+        // named) produce correct columns; the schema-changing result is a
+        // visible `Table<?>` narrowed back by the checked `.as<R>()`;
+        // passthrough projections stay zero-copy (address identity through
+        // the narrow).
+        "    public static int32 selectWithNarrow() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
@@ -181,32 +197,13 @@ TEST(FilterSelectTests, selectWithComputeAndCheckedNarrow) {
         "        }\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 31);
-}
 
-// 5.1.2 (checked narrow) — `.as<R>()` mismatches are named FrameExceptions:
-// an absent column names itself and the expected field type; a type
-// mismatch names the column, the ACTUAL type, and the expected one; a width
-// mismatch names both column counts. A failed narrow neither forces nor
-// consumes the handle.
-TEST(FilterSelectTests, narrowMismatchErrorsNameEverything) {
-    auto src = std::string(kPrelude) +
-        "public record Missing {\n"
-        "    float64 price;\n"
-        "    float64 vwap;\n"
-        "}\n"
-        "public record WrongType {\n"
-        "    float64 price;\n"
-        "    float64 venue;\n"
-        "}\n"
-        "public record TooWide {\n"
-        "    float64 price;\n"
-        "    Utf8 venue;\n"
-        "    float64 extra;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 5.1.2 (checked narrow) — `.as<R>()` mismatches are named
+        // FrameExceptions: an absent column names itself and the expected
+        // field type; a type mismatch names the column, the ACTUAL type, and
+        // the expected one; a width mismatch names both column counts. A
+        // failed narrow neither forces nor consumes the handle.
+        "    public static int32 narrowErrors() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
@@ -239,23 +236,13 @@ TEST(FilterSelectTests, narrowMismatchErrorsNameEverything) {
         "        score = score + 16;\n"
         "        return score;\n"
         "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 31);
-}
 
-// 5.1.3 — the dynamic accessor on `Table<?>`: `col("...")` with a valid
-// name builds a plan node (a filter over the erased schema); an invalid
-// name fails at PLAN BUILD naming the schema; a utf8 column guides to
-// `colStr`; string predicates work through `colStr`; and a chained-away
-// handle fails loud on reuse.
-TEST(FilterSelectTests, dynamicColPlansAndFailsLoud) {
-    auto src = std::string(kPrelude) +
-        "public record PN {\n"
-        "    float64 price;\n"
-        "    float64 notional;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
+        // 5.1.3 — the dynamic accessor on `Table<?>`: `col("...")` with a
+        // valid name builds a plan node (a filter over the erased schema);
+        // an invalid name fails at PLAN BUILD naming the schema; a utf8
+        // column guides to `colStr`; string predicates work through
+        // `colStr`; and a chained-away handle fails loud on reuse.
+        "    public static int32 dynamicCol() {\n"
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
@@ -300,12 +287,59 @@ TEST(FilterSelectTests, dynamicColPlansAndFailsLoud) {
         "        return score;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(runI32(src), 31);
+}
+
+} // namespace
+
+// The U5 relational use-case matrix, one compiled program (was:
+// FilterSelectTests.{filterExcludesRowsAndComposes,
+// selectWithComputeAndCheckedNarrow, narrowMismatchErrorsNameEverything,
+// dynamicColPlansAndFailsLoud} — four compiles' worth of claims, every
+// score bit preserved):
+//   5.1.1 filter excludes and composes (and/or/negate, int64, utf8, off a
+//   materialized table, source intact); 5.1.2 select/with compute the right
+//   columns and the checked `.as<R>()` narrows zero-copy; 5.1.2 narrow
+//   mismatches are named FrameExceptions that neither force nor consume;
+//   5.1.3 `col("...")` plans on a valid name and fails loud otherwise
+//   (unknown name, utf8 guided to `colStr`, chained-away handle).
+TEST(FilterSelectTests, filterSelectNarrowAndDynamicColMatrix) {
+    auto src = buildMatrixSrc();
+    auto jit = CajetaJit::compile(src, "test.D");
+    ASSERT_NE(jit, nullptr);
+    auto filterCompose    = jit->lookup<int32_t (*)()>("filterCompose");
+    auto selectWithNarrow = jit->lookup<int32_t (*)()>("selectWithNarrow");
+    auto narrowErrors     = jit->lookup<int32_t (*)()>("narrowErrors");
+    auto dynamicCol       = jit->lookup<int32_t (*)()>("dynamicCol");
+    ASSERT_NE(filterCompose, nullptr);
+    ASSERT_NE(selectWithNarrow, nullptr);
+    ASSERT_NE(narrowErrors, nullptr);
+    ASSERT_NE(dynamicCol, nullptr);
+
+    // 5.1.1 — score bits: 1 built-not-run, 2 and-composition rows, 4 or,
+    // 8 negate, 16 int64/Instant, 32 utf8, 64 off a materialized table,
+    // 128 source unchanged.
+    EXPECT_EQ(filterCompose(), 255) << "5.1.1 filter/compose";
+
+    // 5.1.2 — score bits: 1 select builds but never runs, 2 projected
+    // values, 4 passthrough zero-copy, 8 `with` computed column, 16 utf8
+    // passthrough.
+    EXPECT_EQ(selectWithNarrow(), 31) << "5.1.2 select/with + checked narrow";
+
+    // 5.1.2 (checked narrow) — score bits: 1 absent column, 2 type
+    // mismatch, 4 width mismatch, 8 no secret force, 16 handle survives a
+    // failed narrow.
+    EXPECT_EQ(narrowErrors(), 31) << "5.1.2 narrow mismatch messages";
+
+    // 5.1.3 — score bits: 1 valid name plans and computes, 2 unknown name
+    // names the schema, 4 utf8 guided to `colStr`, 8 `colStr` predicate,
+    // 16 chained-away handle fails loud.
+    EXPECT_EQ(dynamicCol(), 31) << "5.1.3 dynamic col plans and fails loud";
 }
 
 // 5.1.3 — typed member access on `Table<?>` is unavailable, and the compile
 // error says exactly how to proceed: narrow with `.as<R>()` or use
-// `col("...")` (spec §4.3.2's wording contract).
+// `col("...")` (spec §4.3.2's wording contract). Its own test because the
+// compile FAILS.
 TEST(FilterSelectTests, typedMemberOnErasedIsGuidedCompileError) {
     auto src = std::string(kPrelude) +
         "public final class D {\n"
@@ -334,7 +368,7 @@ TEST(FilterSelectTests, typedMemberOnErasedIsGuidedCompileError) {
 // 5.1.4 — a type mismatch in the DSL inside a real relational op
 // (`c.venue() > 0.0` — utf8 vs float) fails at COMPILE time under the U1
 // operator mechanism: there is no such operator, and the error is located,
-// never a runtime surprise.
+// never a runtime surprise. Its own test because the compile FAILS.
 TEST(FilterSelectTests, dslTypeMismatchIsCompileError) {
     auto src = std::string(kPrelude) +
         "public final class D {\n"

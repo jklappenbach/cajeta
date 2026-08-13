@@ -2,14 +2,15 @@
 id: collection-immutable-component
 applies-to: [cajeta/collection/ImmutableList, cajeta/collection/ImmutableMap, cajeta/collection/ImmutableSet]
 title: Immutable (frozen-snapshot) collections — List, Map, Set
-description: Building and querying cajeta's read-only frozen-snapshot collections (ImmutableList, ImmutableMap, ImmutableSet) and how they copy from a mutable source.
+description: Building and querying cajeta's read-only frozen-snapshot collections (ImmutableList, ImmutableMap, ImmutableSet) and how they consume a mutable source.
 ---
 
 # Immutable collections: frozen snapshots
 
 Three read-only collections, each a **frozen snapshot** built once from a
-mutable source by copying its backing array into a right-sized owned array. The
-source is left untouched and stays owned by the caller, and the snapshot is
+mutable source by moving its elements into a right-sized owned array. The
+source is **consumed** at construction: you hand it over with `#` and it is dead
+afterwards. The snapshot is
 never mutated — so it is safe to share without defensive copies. Modeled on
 Guava's `RegularImmutable*`. There are **no mutators**: to "change" one you build
 a new snapshot from a fresh mutable source.
@@ -35,13 +36,14 @@ a new snapshot from a fresh mutable source.
 Each is independent — they do not share a base type or cooperate at runtime;
 they cooperate only with their mutable *source* type at construction.
 
-## Construction — copy from a mutable source
+## Construction — consume a mutable source
 
-The constructor is the whole story: it iterates the source in order, copies into
-fresh `heap` arrays, and installs them. The source list is **read, never
-retained** — the constructor takes no ownership of `src` (no `#` on the
-parameter), and the caller keeps owning and may keep mutating it afterward
-without affecting the snapshot.
+The constructor is the whole story: it iterates the source in order, moves each
+element into fresh `heap` arrays, and installs them. The source list is
+**consumed** — the parameter is `#ArrayList<T>`, so you must write
+`heap ImmutableList<T>(#src)` at the call site (a plain `src` is
+`CAJETA_ERROR_TRANSFER_REQUIRED`), and `src` is dead once the constructor
+returns: its elements have moved into the snapshot.
 
 ```cajeta
 import cajeta.collection.ArrayList;
@@ -53,8 +55,8 @@ src.add(10);
 src.add(20);
 src.add(30);
 
-ImmutableList<int32> frozen = heap ImmutableList<int32>(src);
-// `src` may keep mutating — `frozen` never changes.
+ImmutableList<int32> frozen = heap ImmutableList<int32>(#src);
+// `src` is dead here — its elements moved into `frozen`, which never changes.
 
 frozen.count();      // 3   (int64)
 frozen.get(1);       // 20
@@ -62,7 +64,7 @@ frozen.get(99);      // 0   — zero value, no throw (see below)
 frozen.indexOf(30);  // 2
 frozen.contains(40); // false
 
-#ArrayStream<int32> s = frozen.stream();  // owned, see "Ownership"
+ArrayStream<int32> s = frozen.stream();  // owned, see "Ownership"
 ```
 
 `ImmutableSet<T>` takes the same `ArrayList<T>`, dropping `==`-equal duplicates
@@ -76,7 +78,7 @@ import cajeta.lang.Pair;
 
 ArrayList<Pair<string, int32>> entries = heap ArrayList<Pair<string, int32>>();
 // ... populate with Pair entries ...
-ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(entries);
+ImmutableMap<string, int32> m = heap ImmutableMap<string, int32>(#entries);
 
 int32 one = m["one"];               // operator[] -> get("one")
 boolean has = m.containsKey("two");
@@ -108,8 +110,9 @@ exception: it returns `-1` (not a zero value) for "not found".
 
 ## Ownership & lifecycle across the boundary
 
-- **Constructor `src` is borrowed**, not consumed — caller retains it. The
-  snapshot deep-copies the elements into its own arrays.
+- **Constructor `src` is consumed** — the formal is `#ArrayList<T>`, so call it as
+  `(#src)`. The elements *move* into the snapshot's arrays; the source is dead at
+  the call, not merely read.
 - **`stream()` returns `#ArrayStream<T>` — ownership transfers to you** (List
   and Set only). The `#` marks the move; you own and dispose the returned
   stream. It is a view over the snapshot's frozen backing array, so keep the

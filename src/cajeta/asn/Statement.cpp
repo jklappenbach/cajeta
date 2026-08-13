@@ -116,13 +116,22 @@ namespace cajeta {
                     // syntactically on the initializer's expression context.
                     if (auto* viCtx = vdCtx->variableInitializer()) {
                         if (auto* eCtx = viCtx->expression()) {
+                            // `T x #= #v` — the transfer spelled twice.
+                            // Technically valid (`#=` already carries the
+                            // source's mode), so it warns rather than rejects.
+                            // Flagged here; reported from
+                            // MoveExpression::generateCode.
                             if (cajeta::cajetaRhsCarriesRedundantSharp(eCtx)) {
-                                throw Exception(
-                                    std::string("`#=` already acquires ownership "
-                                                "when the source has it — drop the "
-                                                "`#` on the right-hand side and "
-                                                "write `T x #= src`"),
-                                    std::string("CAJETA_ERROR_DOUBLE_TRANSFER"));
+                                if (auto vi0 = dynamic_pointer_cast<
+                                        VariableInitializer>(initializer)) {
+                                    if (!vi0->getChildren().empty()) {
+                                        if (auto redMv = dynamic_pointer_cast<
+                                                MoveExpression>(
+                                                    vi0->getChildren()[0])) {
+                                            redMv->setRedundantSharp(true);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -365,7 +374,10 @@ namespace cajeta {
             ExpressionPtr returnExpr = ctx->expression()
                 ? Expression::fromContext(ctx->expression())
                 : nullptr;
-            result = make_shared<ReturnStatement>(token, returnExpr);
+            // `return #= x` — the mode-carrying form. SHARP_ASSIGN is its own
+            // token, so this never reaches the `REFERENCE expression` path.
+            result = make_shared<ReturnStatement>(
+                token, returnExpr, ctx->SHARP_ASSIGN() != nullptr);
         } else if (ctx->THROW()) {
             ExpressionPtr throwExpr = ctx->expression()
                 ? Expression::fromContext(ctx->expression())
@@ -1289,7 +1301,7 @@ namespace cajeta {
                 if (catchClass && !universalCatch) {
                     if (auto* vt = catchClass->getVirtualTableGlobal()) {
                         catchVt = CajetaModule::ensureGlobalInModule(
-                            module->getLlvmModule(), vt);
+                            module->emitTargetLlvmModule(), vt);
                     }
                 }
                 if (catchVt && excMatches) {
@@ -1603,6 +1615,41 @@ namespace cajeta {
         // 5.2.2 — runtime title flag riding out with this return (formal
         // pass-through or `#x`); null -> emitReturnFlag uses the static mode.
         llvm::Value* returnTitleFlag = nullptr;
+        // argument-title-carry — `return #= x`: release WHATEVER title this
+        // frame holds. `__cajeta_drop_take_active` reads the local's drop
+        // entry and disarms it in one step, so the prior value becomes the
+        // flagged return's runtime bit: 1 when we owned it (the caller now
+        // does), 0 when we only ever held a borrow (so does the caller).
+        //
+        // Distinct from `return #x`, which forces ownership and is a contract
+        // violation with none, and from `return x`, which lends and leaves our
+        // title armed. Needed because a collection slot may now hold either an
+        // owned value or a borrow (collections no longer own by default), so a
+        // remove-shaped return cannot decide statically.
+        if (modeCarrying && expression) {
+            if (auto mcId = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                if (auto scope = module->getScopeStack().peek()) {
+                    if (FieldPtr mcFld = scope->getField(mcId->getTextValue())) {
+                        if (llvm::Value* mcEntry = mcFld->getDropEntry()) {
+                            if (llvm::Function* takeFn = module->getRuntimeFunction(
+                                    "__cajeta_drop_take_active")) {
+                                llvm::Value* was = builder->CreateCall(
+                                    takeFn, {mcEntry}, "title.release");
+                                returnTitleFlag = builder->CreateZExt(
+                                    was, llvm::Type::getInt64Ty(
+                                        *module->getLlvmContext()),
+                                    "title.release.i64");
+                            }
+                        }
+                    }
+                }
+            }
+            // No drop entry (arena local, borrowed formal, non-droppable) means
+            // this frame holds no title to release: flag 0, a lend.
+            if (!returnTitleFlag) {
+                returnTitleFlag = builder->getInt64(0);
+            }
+        }
         if (!expression) {
             // A4: fire @After advice before scope-exit + drops, on
             // the same ordering rule the fall-through return uses in
@@ -1899,8 +1946,15 @@ namespace cajeta {
             // freshly-constructed Matrix trips the fresh-return check spuriously.
             bool returnsByValuePrimitive =
                 rtype && (rtype->getTypeFlags() & PRIMITIVE_FLAG) != 0;
+            // argument-title-carry — `return #= x` is exempt from BOTH shapes
+            // below. The guard exists because a non-`#` signature makes the
+            // caller register no drop entry, so a released title would leak.
+            // The mode-carrying return closes exactly that hole: it ships the
+            // title's runtime bit in the return flag, and the caller's `#=`
+            // receipt registers a drop entry when the bit is 1. Without this
+            // exemption the guard rejects the very form built to satisfy it.
             if (!isLambda && !m->isReturnsOwnership() && !returnsValueType
-                    && !returnsByValuePrimitive) {
+                    && !returnsByValuePrimitive && !modeCarrying) {
                 auto newExpr = dynamic_pointer_cast<NewExpression>(expression);
                 auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(expression);
                 if (newExpr || aggExpr) {
@@ -2563,7 +2617,7 @@ namespace cajeta {
                     llvm::Constant* vtableRef = nullptr;
                     if (auto gv = srcCls->getInterfaceVTable(ifaceCanonical)) {
                         vtableRef = CajetaModule::ensureGlobalInModule(
-                            module->getLlvmModule(), gv);
+                            module->emitTargetLlvmModule(), gv);
                     }
                     if (!vtableRef) {
                         vtableRef = llvm::ConstantPointerNull::get(
@@ -2643,6 +2697,47 @@ namespace cajeta {
             returnTitleFlag = mvRet->getRuntimeTitleFlag()
                 ? mvRet->getRuntimeTitleFlag()
                 : (llvm::Value*) builder->getInt64(1);
+            // mode-carrying-claim §5.4 — a `#R`-declared return is a CONTRACT:
+            // the caller is promised a title. A runtime flag of 0 here means
+            // the frame only ever held a borrow (the mode-carrying claim
+            // forwarded a borrowed slot's bit, or a plain formal's word bit
+            // was 0), and silently returning it would hand out a forged
+            // title — the caller's static-owner claim frees the real owner's
+            // value. Panic TITLE_MISS instead (`operator#[]` on a borrowed /
+            // already-extracted slot). `return #= x` (modeCarrying) is the
+            // sanctioned escape: it declares the return carries the mode.
+            if (auto mM = module->getCurrentMethod()) {
+                if (mM->isReturnsOwnership() && !modeCarrying
+                        && returnTitleFlag
+                        && !llvm::isa<llvm::ConstantInt>(returnTitleFlag)) {
+                    auto& rctx = *module->getLlvmContext();
+                    llvm::Value* hasTitle = builder->CreateICmpNE(
+                        returnTitleFlag,
+                        llvm::ConstantInt::get(returnTitleFlag->getType(), 0),
+                        "ret_contract_ok");
+                    llvm::Function* rfn =
+                        builder->GetInsertBlock()->getParent();
+                    auto* panicBB = llvm::BasicBlock::Create(
+                        rctx, "ret_title_panic", rfn);
+                    auto* okBB = llvm::BasicBlock::Create(
+                        rctx, "ret_title_ok", rfn);
+                    builder->CreateCondBr(hasTitle, okBB, panicBB);
+                    builder->SetInsertPoint(panicBB);
+                    // CAJETA_PANIC_TITLE_MISS = 3, integer-throw shape
+                    // (< 4096 ⇒ first catch clause binds it) — same code the
+                    // claim's own take sites use.
+                    if (llvm::Function* throwFn =
+                            module->getRuntimeFunction("__cajeta_throw")) {
+                        llvm::Value* code = builder->CreateIntToPtr(
+                            llvm::ConstantInt::get(
+                                llvm::Type::getInt64Ty(rctx), 3),
+                            llvm::PointerType::get(rctx, 0));
+                        builder->CreateCall(throwFn, {code});
+                    }
+                    builder->CreateUnreachable();
+                    builder->SetInsertPoint(okBB);
+                }
+            }
         }
         // 6.2.2 — `return Cajeta.flagged(v, owned)`: the container's own
         // bookkeeping decides the flag.

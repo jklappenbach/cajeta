@@ -599,6 +599,12 @@ namespace cajeta {
         // enclosing `dst[i] #= #src[j]` store BEFORE codegen: the slot
         // extraction forwards the source bit verbatim (borrow stays
         // borrow, NO panic) instead of claiming ownership.
+        // `#= #x` — the transfer spelled twice. Technically valid (it means
+        // exactly what `#= x` means), so it warns rather than rejects; the
+        // parse sites set this and MoveExpression::generateCode reports it.
+        void setRedundantSharp(bool v) { redundantSharp = v; }
+        bool isRedundantSharp() const { return redundantSharp; }
+
         void setForwardingSlotMove(bool v) { forwardingSlotMove = v; }
         bool isForwardingSlotMove() const { return forwardingSlotMove; }
         // title-stores §2.3 Phase 2 (plan 7.2.2) — set by the enclosing site
@@ -610,6 +616,7 @@ namespace cajeta {
         bool isLegacyTransferAssign() const { return legacyTransferAssign; }
     private:
         bool forwardingSlotMove = false;
+        bool redundantSharp = false;
         bool legacyTransferAssign = false;
     };
 

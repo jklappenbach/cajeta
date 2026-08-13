@@ -49,10 +49,14 @@ public class Collectors {
      *     .collect(Collectors.toList<int64>());
      * ```
      *
-     * PRIMITIVE T ONLY today: the accumulator lends its element into
-     * the list's owning `#T` formal, which is a compile error for a
-     * class T instantiation (same limitation, and reason, as the
-     * trees' `keysInOrder`).
+     * The accumulator's `acc.add(x)` LENDS the element into the partial
+     * list, which is legal for any T (`ArrayList.add` takes a plain `T`).
+     * The accumulator is fixed here, so no call-site spelling changes it:
+     * for a class T the returned `#ArrayList<T>` holds BORROWS of whatever
+     * the stream yielded, and the source must outlive the collected list.
+     * Nothing diagnoses a source that does not; the collected list is safe
+     * to hand around only within the source's lifetime. A primitive T has
+     * nothing to alias and is unaffected.
      *
      * @EntryPoint
      */

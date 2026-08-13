@@ -57,6 +57,9 @@ public class ActionResult {
 
     /** Add an output. Replaces any prior value for the same key. */
     public void output(#String key, #String value) {
+        // `key`/`value` are owned by THIS frame and die at return, while
+        // outputsMap outlives the call — the map must take title. Lending
+        // here would leave the map pointing at freed strings.
         this.outputsMap.put(#key, #value);
     }
 

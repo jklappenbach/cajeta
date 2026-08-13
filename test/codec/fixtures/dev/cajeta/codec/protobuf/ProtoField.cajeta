@@ -1,0 +1,86 @@
+package dev.cajeta.codec.protobuf;
+
+/**
+ * Binds a class field to a protobuf wire **field number** for typed decode/encode
+ * (`Protobuf.parse<T>` / the `ProtobufEncoder<T>` path). Protobuf field numbers
+ * are part of the wire contract — sparse, non-sequential, and stable across schema
+ * versions — so they are declared explicitly here rather than inferred from field
+ * order.
+ *
+ * The number is the single unnamed argument:
+ *
+ * ```cajeta
+ * public class Trade {
+ *     @ProtoField(1) public int64  id;
+ *     @ProtoField(2) public String symbol;
+ *     @ProtoField(3) public boolean active;
+ * }
+ * ```
+ *
+ * The **wire type** is inferred from the field's Cajeta type by the synthesizer:
+ * `int*`/`uint*`/`bool`/enum → VARINT; `String`/`int8[]`/nested message → LEN
+ * (length-delimited); `float32` → I32, `float64` → I64.
+ * A field without `@ProtoField` is not bound.
+ *
+ * ## The `encoding` option
+ *
+ * Integer fields default to plain VARINT. `encoding` selects one of protobuf's
+ * alternatives:
+ *
+ * - `"zigzag"` — `sint32` / `sint64`. Folds the sign into bit 0, so small
+ *   negatives stay short: −1 costs one payload byte instead of ten. Still wire
+ *   type VARINT; only the value mapping changes.
+ * - `"fixed"` — `fixed32` / `sfixed32` (wire type I32) for a 32-bit field,
+ *   `fixed64` / `sfixed64` (wire type I64) for a 64-bit one. Constant size
+ *   rather than value-dependent.
+ *
+ * ```cajeta
+ * public class Reading {
+ *     @ProtoField(1)                              public int64 id;
+ *     @ProtoField(value = 2, encoding = "zigzag") public int64 delta;
+ *     @ProtoField(value = 3, encoding = "fixed")  public int32 epochSecs;
+ * }
+ * ```
+ *
+ * **Declare the option in the all-named form.** Cajeta's annotation grammar
+ * (`CajetaParser.g4:481`) accepts either a single unnamed value or a list of
+ * `key = value` pairs, never a mix — `@ProtoField(2, encoding = "zigzag")` does
+ * not parse. `@ProtoField(1)` stays shorthand for `@ProtoField(value = 1)`, so
+ * a field that declares no option is unaffected.
+ *
+ * An option the field's type cannot carry — zigzag on a `String`, say — fails
+ * compilation naming the class, field, and conflict, rather than being ignored.
+ *
+ * ## Repeated fields and the `packed` option
+ *
+ * An array field is a repeated field. `int8[]` is the one exception: it means
+ * protobuf `bytes`, a single LEN record, not a repeated `int8`.
+ *
+ * ```cajeta
+ * @ProtoField(2)                             public int64[] scores;  // packed
+ * @ProtoField(value = 3, packed = false)     public int32[] counts;  // expanded
+ * @ProtoField(6)                             public String[] tags;
+ * @ProtoField(7)                             public Reading[] items;
+ * ```
+ *
+ * A repeated **numeric** field is **packed by default**: one LEN record holding
+ * the values concatenated with no tags, instead of one tagged record per value
+ * — roughly a byte per element instead of two, for a run of small numbers. That
+ * matches proto3 and edition 2023 (`repeated_field_encoding = PACKED`); only
+ * proto2 defaulted to expanded. `packed = false` opts back out.
+ *
+ * Packing composes with `encoding`, so packed zigzag and packed fixed-width
+ * both work. It never applies to String, bytes, or message elements — they
+ * carry their own length and have no packed form — so those stay expanded and
+ * asking for `packed` on them, or on a non-repeated field, fails compilation.
+ *
+ * **Reading accepts either form**, whatever the field declares, because a
+ * conforming peer may send either and may even mix them within one message.
+ * That requirement is what makes the default safe: changing which form we write
+ * cannot break a reader. The option only chooses what *this* side writes.
+ *
+ * A repeated field is never null after a parse: absent on the wire means an
+ * empty array, which is protobuf's contract — there is no way to distinguish
+ * "absent" from "empty" for a repeated field.
+ */
+public annotation ProtoField { }

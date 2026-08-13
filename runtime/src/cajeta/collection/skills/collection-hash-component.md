@@ -34,13 +34,33 @@ v1 does **not** validate power-of-2 — a non-power-of-2 breaks the
 import cajeta.collection.HashMap;
 import cajeta.collection.HashSet;
 
-#HashMap<int32, int32> counts = heap HashMap<int32, int32>(16);
+HashMap<int32, int32> counts = heap HashMap<int32, int32>(16);
 HashSet<int32> seen = heap HashSet<int32>(16);
 ```
 
-`put`/`add` do **not** take ownership of keys or values via `#` — they are stored
-by the same value/reference convention as any field assignment; class-typed keys
-held in the table are the caller's same instances.
+`HashMap.put(K key, V value)` declares plain formals and stores them with `#=` **in its
+own frame**, so no `#` is **required** at the call site: `m.put(k, v)` lends and the
+class-typed keys held in the table are the caller's same instances. A caller whose map
+outlives the value **may** opt into transfer by writing `#` at the call site —
+`m.put(#key, #value)`, including on an unnamed temporary such as `m.put(#("k" + i), i)`
+— and the table then owns and frees that entry (measured clean: no early drop, the
+value reads back intact). Nothing diagnoses a borrow stored in a longer-lived table, so
+transfer deliberately when the key/value local dies before the map does.
+
+**`HashSet.add` does not share that property — only lend to a set.** `add(T value)`
+forwards its plain formal on to `this.map.put(value, 1)`, and a title handed to a plain
+formal is dropped when *that* frame returns instead of travelling on to the map. So
+`s.add(#v)` frees `v` at `add`'s return and leaves the set holding a freed pointer
+(measured: the member's destructor runs immediately, `count()` still reports 1). Write
+`s.add(v)` and keep the member alive for as long as it is a member.
+
+**Avoid the subscript write for class-typed keys or values.** `HashMap.operator[]=`
+declares `#K`/`#V`, so the compiler compels the mark — a plain `m[k] = v` is
+`CAJETA_ERROR_TRANSFER_REQUIRED` — but `operator[]=` then forwards to `put` *plainly*,
+so the title dies in the subscript frame and the stored entry dangles (measured:
+`m[1] = #b` runs the destructor immediately and `m.get(1)` reads garbage, while
+`m.put(1, #b)` is clean). Use `put` for class-typed stores. The subscript write is fine
+for primitive keys and values, which carry no title.
 
 ## Key/value contract (the #1 correctness trap)
 A `K` (and a `HashSet` `T`) must answer two things:
@@ -89,7 +109,7 @@ import cajeta.collection.HashMap;
 import cajeta.lang.Pair;
 import cajeta.lang.stream.Stream;
 
-#HashMap<int32, int32> m = heap HashMap<int32, int32>(16);
+HashMap<int32, int32> m = heap HashMap<int32, int32>(16);
 m.put(1, 100);
 m.put(2, 200);
 
@@ -98,7 +118,7 @@ int32 n = m.keys().count();                 // 2
 m.values().forEach((int32 v) -> total = total + v);
 
 // Manual pull: next() returns Optional<Pair<K,V>>, present until exhausted.
-#Stream<Pair<int32, int32>> es = m.entries();
+Stream<Pair<int32, int32>> es = m.entries();
 Optional<Pair<int32, int32>> e = es.next();
 while (e.isPresent()) {
     Pair<int32, int32> p = e.get();

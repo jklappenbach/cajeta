@@ -436,6 +436,34 @@ TEST(HashMapTests, classTypedValueWorks) {
 // String keys, 1000 distinct entries: exercises XXH3 string hashing and
 // the SwissTable group probe / resize / wraparound under many collisions.
 // Build with a small initial capacity (16) so the table resizes repeatedly.
+// Capped functional twin of stringKeysThousandRoundTrip (stress battery,
+// spec test-battery-restructure §2.3): the USE-CASE is that String keys
+// survive rehash across resize — 40 keys at capacity 16 forces two resizes,
+// which is all the functionality needs. The thousand-key form is load.
+TEST(HashMapTests, stringKeyResizeRehashRoundTrip) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
+        "        int32 i = 0;\n"
+        "        while (i < 40) { m.put(\"k\" + i, i); i = i + 1; }\n"
+        "        int32 hits = 0;\n"
+        "        int32 j = 0;\n"
+        "        while (j < 40) {\n"
+        "            if (m.get(\"k\" + j) == j) { hits = hits + 1; }\n"
+        "            j = j + 1;\n"
+        "        }\n"
+        "        if (m.count() != 40) { return -1; }\n"
+        "        return hits;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 40);
+}
+
 TEST(HashMapTests, stringKeysThousandRoundTrip) {
     auto src =
         "package test;\n"

@@ -12,10 +12,29 @@ package cajeta.lang;
  * ## Storage
  *
  * Same semantics as any other class in the unified-class model
- * (docs/specification/lang/UnifiedClasses.md). Use `stack Pair(k, v)` for a stack instance
- * (lifetime tied to the enclosing scope; no heap traffic) or
- * `heap Pair(k, v)` when the pair needs to escape. Aggregate-init
- * also works: `stack Pair { first: k, second: v }`.
+ * (docs/specification/lang/UnifiedClasses.md). Use
+ * `stack Pair<K, V>(...)` for a stack instance (lifetime tied to the
+ * enclosing scope; no heap traffic) or `heap Pair<K, V>(...)` when the
+ * pair needs to escape.
+ *
+ * ## A pair OWNS its components
+ *
+ * The constructor's formals are `#K` / `#V`, so construction is a
+ * must-own edge (docs/specification/lang/OwnershipTransfer.md). An
+ * already-owned local has to be surrendered with `#` at the call site;
+ * passing it plain is `CAJETA_ERROR_TRANSFER_REQUIRED`. A fresh rvalue
+ * — a literal, or a `heap T(...)` / `stack T(...)` written inline — is
+ * an unowned temporary and passes plain.
+ *
+ * ```cajeta
+ * Pair<String, int32> lit = heap Pair<String, int32>("k", 1);
+ * Pair<Box, Box> fresh = heap Pair<Box, Box>(heap Box(3), heap Box(4));
+ *
+ * Box a = heap Box(3);
+ * Box b = heap Box(4);
+ * Pair<Box, Box> bad  = heap Pair<Box, Box>(a, b);    // TRANSFER_REQUIRED
+ * Pair<Box, Box> good = heap Pair<Box, Box>(#a, #b);  // transfers
+ * ```
  *
  * ## Fields are immutable from the API perspective
  *
@@ -31,9 +50,11 @@ public final class Pair<K, V> {
      * Builds a pair from its two components.
      *
      * ```cajeta
-     * stack Pair<String, int> p(name, age);
+     * String name = "ada";
+     * int32  age  = 36;
+     * Pair<String, int32> p = stack Pair<String, int32>(#name, age);
      * String who = p.first();
-     * int    yrs = p.second();
+     * int32  yrs = p.second();
      * ```
      *
      * @EntryPoint

@@ -169,10 +169,11 @@ public final class HashMap<K, V> {
     /**
      * Insert or replace the value at `key`.
      */
-    public void put(#K key, #V value) {
-        // uniform-transfer 2.3 — the map OWNS its keys and values, so there
-        // is no caller spelling left to match and the dual-role reads are
-        // gone. Every store below is an unconditional transfer.
+    public void put(K key, V value) {
+        // The map does not own by default: the formals are plain, and each
+        // `#=` store below records whatever mode the argument arrived in —
+        // a `#`-spelled argument arms the slot's title, a plain one stores
+        // a borrow.
         int64 h = key.hash();
         int64 mask = this.cap - 1;
         int8 h2 = (int8) ((h >> 57) & 0x7F);
@@ -190,9 +191,10 @@ public final class HashMap<K, V> {
                     // (title-stores §3.3.2) drops an owned old value.
                     this.slots[i].val #= value;
                     // The incoming key duplicates the one already stored, so
-                    // it is NOT stored. We do not drop it by hand: the `#K`
-                    // formal owns it and its own armed entry reclaims it at
-                    // return. An explicit dropValue here double-frees a class
+                    // it is NOT stored. We do not drop it by hand: the key
+                    // formal's own drop entry reclaims it at return WHEN the
+                    // caller transferred title; a lent key is left to its
+                    // owner. An explicit dropValue here double-frees a class
                     // key and drops a non-pointer for a primitive one (this
                     // was a SIGSEGV in HashMapTests.bracketReplaceUpdatesValue).
                     // Same rule as BPlusTree.put's replace path.
@@ -262,8 +264,9 @@ public final class HashMap<K, V> {
                     int32 emptyM = g.eqMask((int8) 0x80) & 65535;
                     if (emptyM != 0) {
                         int64 i = (pos + Cajeta.ctz64((int64) emptyM)) & newMask;
-                        // Every slot owns, so a single move takes the title
-                        // and clears the source — no mode left to forward.
+                        // Each `#=` forwards the slot's mode verbatim — an
+                        // owning slot hands its title to the new table, a
+                        // borrowing slot stays a borrow — and clears the source.
                         newSlots[i].key #= this.slots[s].key;
                         newSlots[i].val #= this.slots[s].val;
                         newCtrl[i] = h2;
@@ -381,7 +384,7 @@ public final class HashMap<K, V> {
             V out #= this.slots[i].val;
             this.setCtrl(i, (int8) 0xFE);
             this.sizeCount = this.sizeCount - 1;
-            return #out;
+            return #= out;
         }
         V[] missDefault = stack V[1];
         return Cajeta.flagged(missDefault[0], false);

@@ -1,0 +1,49 @@
+package dev.cajeta.codec.avro;
+
+/**
+ * Apache Avro facade — the typed entry point for the Avro format (Phase 5).
+ * Avro is **schema-driven and untagged**: a record's fields are written back-to-
+ * back in schema order with no markers, so the typed bind is **positional**. The
+ * cajeta-two `AvroSynthesizer` walks T's fields in declaration order and emits an
+ * `AvroCursor`-driven decode by Avro type — no annotations needed.
+ *
+ * `parse<T>(bytes, n)` decodes a single datum; `parse<T[]>` reads an Object
+ * Container File (header + blocks) into an array. Lives in `dev.cajeta.codec.*`.
+ */
+public final class Avro {
+    /** Library identity probe. */
+    public static String formatName() {
+        return "avro";
+    }
+
+    /** Build anchor for `--emit=cja` (no runtime role). */
+    public static int32 run() {
+        return 0;
+    }
+
+    /**
+     * Tier-1 templated parse: bind Avro `bytes` to a declared type `T` (a single
+     * record datum) or `T[]` (an Object Container File). The `AvroSynthesizer`
+     * replaces this captured body per-T — positional reads in field order.
+     *
+     * Failsafe: a thrown `AvroParseException` if the synthesizer does not engage.
+     */
+    public static T parse<T>(int8[] bytes, int64 length) {
+        throw heap AvroParseException(
+            "Avro.parse<T>: synthesizer not engaged", (int64) 0);
+    }
+
+    /**
+     * Tier-1 templated encode: serialize a value `T` to a single Avro **datum**
+     * (positional, untagged, field-order), or a `T[]` to a complete **Object
+     * Container File** (null codec). The `AvroSynthesizer` replaces this captured
+     * body per-T — positional writes via `AvroWriter`, OCF framing (with an
+     * emitted JSON schema) via `AvroContainerWriter`. Round-trips with `parse<T>`.
+     *
+     * Failsafe: a thrown `AvroParseException` if the synthesizer does not engage.
+     */
+    public static #int8[] toBytes<T>(T value) {
+        throw heap AvroParseException(
+            "Avro.toBytes<T>: synthesizer not engaged", (int64) 0);
+    }
+}

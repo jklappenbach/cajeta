@@ -151,6 +151,30 @@ TEST(PrimitiveHashMapTests, int64KeyedPutThenGet) {
 
 // Insert 1000 distinct int keys into a small (16) table: forces ~6 resizes.
 // Every key must round-trip and count() must be exact.
+// Capped functional twin of swissResizeThousandInts (stress battery, spec
+// test-battery-restructure §2.3): int keys survive rehash across resize —
+// 60 keys at capacity 16 forces two resizes; the thousand-int form is load.
+TEST(PrimitiveHashMapTests, intKeyResizeRehashRoundTrip) {
+    auto src =
+        "package test;\n"
+        "import cajeta.collection.HashMap;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        HashMap<int32, int32> m = heap HashMap<int32, int32>(16);\n"
+        "        int32 i = 0;\n"
+        "        while (i < 60) { m.put(i, i * 3); i = i + 1; }\n"
+        "        int32 hits = 0;\n"
+        "        int32 j = 0;\n"
+        "        while (j < 60) { if (m.get(j) == j * 3) { hits = hits + 1; } j = j + 1; }\n"
+        "        if (m.count() != 60) { return -1; }\n"
+        "        return hits;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 60);
+}
+
 TEST(PrimitiveHashMapTests, swissResizeThousandInts) {
     auto src =
         "package test;\n"
