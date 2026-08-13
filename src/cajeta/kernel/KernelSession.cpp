@@ -243,6 +243,12 @@ CellResult KernelSession::execute(const std::string& source,
         cellModule = impl.compiler->createModule(
             cellPath.string(), (impl.scratchRoot / "src").string(),
             (impl.scratchRoot / "archive").string());
+        // Name THIS cell as the session emit target: a stdlib template
+        // specialized over a user type must emit HERE, not into the cell that
+        // declared the type — that one is already sealed in the JIT
+        // (jupyter-kernel 2.1.6). Only consulted for user-typed
+        // specializations, and only when no codegen frame is open.
+        CajetaModule::setActiveUnitModule(cellModule);
         impl.compiler->compile(cellModule);
         // Codegen finalize, mirroring the JIT host's cold path. `compile()`
         // builds the front-end world; bodies, statics, and the reflective
@@ -588,6 +594,9 @@ void KernelSession::shutdown() {
         }
     }
     Compiler::setSharedContext(nullptr);
+    // Thread-global: leaving it set would point the next compiler in this
+    // process (another test, a lint pass) at a module that is about to die.
+    CajetaModule::setActiveUnitModule(nullptr);
     std::error_code ec;
     std::filesystem::remove_all(impl.scratchRoot, ec);
 }

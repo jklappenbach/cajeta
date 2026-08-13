@@ -39,6 +39,7 @@ namespace cajeta {
     // U5 concurrency-first: each thread primes its OWN stdlib (memory-heavy,
     // temporary — the frozen-shared optimization replaces this).
     thread_local CajetaModulePtr CajetaModule::reuseEmitModule;
+    thread_local CajetaModulePtr CajetaModule::activeUnitModule;
     thread_local llvm::Module* CajetaModule::currentEmitLlvmModule = nullptr;
     thread_local uint64_t CajetaModule::reuseEpoch = 0;
     thread_local CajetaModulePtr CajetaModule::stdlibModule;

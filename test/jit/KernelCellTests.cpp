@@ -123,7 +123,7 @@ TEST(KernelCellTests, rebindInLaterCellRestoresReadability) {
 // above) and fails honestly; it is disabled only so `main` stays green for
 // everyone else's sweeps, not because the behaviour is acceptable. Run it
 // with --gtest_also_run_disabled_tests when working 2.1.6.
-TEST(KernelCellTests, DISABLED_userTypeInstantiationSurvivesAcrossCells) {
+TEST(KernelCellTests, userTypeInstantiationSurvivesAcrossCells) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 

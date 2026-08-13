@@ -459,6 +459,20 @@ namespace cajeta {
                     break;
                 }
             }
+            // SESSION policy (jupyter-kernel 2.1.6).
+            // Only reachable when the scan above already decided this is a
+            // USER-typed specialization: those, and only those, move from the
+            // unit that DECLARED the type to the unit being COMPILED. In a
+            // notebook the declaring unit is already sealed in the JIT and can
+            // never take delivery of new IR, so emitting there strands it.
+            // Pure-stdlib specializations (`Stream<String>`) are untouched —
+            // redirecting those into a cell is what corrupted the next session,
+            // since restoreBaseline cannot unwind a stdlib body whose callee
+            // went into a module that died with the previous session.
+            if (emitOwner != module && CajetaModule::getActiveUnitModule()) {
+                auto active = CajetaModule::sessionEmitTarget();
+                if (active && active != module) emitOwner = active;
+            }
             if (emitOwner == module
                     && CajetaModule::getCurrentCodegenModule()
                     && CajetaModule::getCurrentCodegenModule() != module) {

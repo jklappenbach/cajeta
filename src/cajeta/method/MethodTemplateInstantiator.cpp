@@ -313,6 +313,12 @@ namespace cajeta {
                     && parent->getEmitModule() != module) {
                 emitOwner = parent->getEmitModule();
             }
+            // SESSION policy — twin of the class-template gate; see there for
+            // why this fires ONLY for a user-typed specialization.
+            if (emitOwner != module && CajetaModule::getActiveUnitModule()) {
+                auto active = CajetaModule::sessionEmitTarget();
+                if (active && active != module) emitOwner = active;
+            }
             if (emitOwner == module
                     && CajetaModule::getCurrentCodegenModule()
                     && CajetaModule::getCurrentCodegenModule() != module) {

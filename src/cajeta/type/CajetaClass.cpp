@@ -5491,7 +5491,17 @@ namespace cajeta {
         // The codegen caller (invokeMethod) threads the active module in; fall
         // back to hostMod for resolveTypes-phase callers (no active codegen), so
         // the stdlib path is unchanged (activeModule==hostMod there anyway).
-        CajetaModulePtr ipMod = activeModule ? activeModule : hostMod;
+        // Only ONE of the 25 resolveMethod call sites threads activeModule in
+        // (MethodCallExpression's invokeMethod). Every other codegen-phase
+        // caller — LocalVariableDeclaration among them — leaves it null, and
+        // for those `getCurrentCodegenModule()` IS the answer the parameter
+        // was meant to supply: by definition it is the module whose body is
+        // being lowered right now, so its builder owns the insert point we
+        // must not clobber. Null during resolveTypes, which correctly falls
+        // through to hostMod.
+        CajetaModulePtr ipMod = activeModule;
+        if (!ipMod) ipMod = CajetaModule::getCurrentCodegenModule();
+        if (!ipMod) ipMod = hostMod;
         llvm::IRBuilder<>* ipBuilder = ipMod ? ipMod->getBuilder() : nullptr;
         llvm::BasicBlock* ipInsertBB = ipBuilder
             ? ipBuilder->GetInsertBlock() : nullptr;

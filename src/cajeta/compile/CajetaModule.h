@@ -236,6 +236,17 @@ namespace cajeta {
         // frame (e.g. during type resolution) still emits into a disposable user
         // module rather than the cached stdlib. Null outside the reuse path.
         static thread_local CajetaModulePtr reuseEmitModule;
+
+        // The unit currently being compiled, for the SESSION emit policy
+        // (jupyter-kernel 2.1.6). Deliberately NOT reuseEmitModule: that one
+        // is the test harness's catch-all sink and is consulted for ANY
+        // instantiation lacking a better target, whereas this is consulted
+        // ONLY for a specialization already known to be user-typed. Routing
+        // pure-stdlib specializations (`Stream<String>`) into a cell module
+        // corrupts the NEXT session — restoreBaseline cannot unwind a
+        // surviving stdlib body whose callee left with a dead session — so
+        // the two must not share a channel. Null outside a kernel session.
+        static thread_local CajetaModulePtr activeUnitModule;
         // The llvm::Module of the function currently being emitted. Set (RAII)
         // by Method::generateCode / clinit body lowering; read by
         // emitTargetLlvmModule() so IR-creation helpers land new IR in the emit
@@ -389,7 +400,12 @@ namespace cajeta {
         list<CajetaClassPtr> structureStack;
         list<MethodPtr> toGenerate;
         llvm::Module* llvmModule;
-        llvm::IRBuilder<>* builder;
+        // Null until this module's codegen begins (setBuilder). Neither
+        // constructor assigns it, so leaving it uninitialized handed callers
+        // a garbage non-null pointer they could not distinguish from a real
+        // builder — `getBuilder()->GetInsertBlock()` then segfaulted on a
+        // module that had simply never been generated.
+        llvm::IRBuilder<>* builder = nullptr;
         llvm::LLVMContext* llvmContext;
         llvm::TargetMachine* targetMachine;
         CajetaTypePtr initializerType;
@@ -796,6 +812,16 @@ namespace cajeta {
 
         static CajetaModulePtr getReuseEmitModule() { return reuseEmitModule; }
         static void setReuseEmitModule(CajetaModulePtr m) { reuseEmitModule = m; }
+
+        static CajetaModulePtr getActiveUnitModule() { return activeUnitModule; }
+        static void setActiveUnitModule(CajetaModulePtr m) { activeUnitModule = m; }
+        // Where a USER-TYPED specialization should emit: the innermost codegen
+        // frame if one is open, else the unit being compiled. Null when no
+        // session policy is in force, which leaves the default rule intact.
+        static CajetaModulePtr sessionEmitTarget() {
+            if (currentCodegenModule) return currentCodegenModule;
+            return activeUnitModule;
+        }
 
         // Per-test generation counter for the reuse path. Bumped by the harness
         // (StdlibReuseCache::restoreBaseline) before each test. Caches keyed on
