@@ -9,6 +9,7 @@
 #include "SessionState.h"
 #include "../error/Exception.h"
 #include "../field/HeapField.h"
+#include "../field/StackField.h"
 #include "../method/Method.h"
 #include "../type/CajetaType.h"
 #include "../type/Scope.h"
@@ -230,8 +231,19 @@ namespace cajeta {
             // miss seeds name-only — the ownership checks don't need the
             // type, and a live read rejects before touching it.
             CajetaTypePtr type = CajetaType::find(fact.typeCanonical);
-            auto field =
-                std::make_shared<HeapField>(module, fact.name, type);
+            // Match the field KIND to what the name holds. A HeapField's slot
+            // is pointer-shaped whatever it contains, which is right for an
+            // owner (the slot holds the instance pointer) and wrong for a
+            // primitive: consumers would load a pointer's worth of bytes out
+            // of a 4-byte value. A primitive is an inline value, so it seeds
+            // as a StackField — and the box `__cajeta_session_get` returns is
+            // then exactly the l-value shape the read path hands back.
+            FieldPtr field;
+            if (type && (type->getTypeFlags() & PRIMITIVE_FLAG)) {
+                field = std::make_shared<StackField>(module, fact.name, type);
+            } else {
+                field = std::make_shared<HeapField>(module, fact.name, type);
+            }
             field->setSessionSeeded(true);
             scope->putField(field);
             if (fact.moved) scope->demoteToBorrow(fact.name, fact.transferSite);

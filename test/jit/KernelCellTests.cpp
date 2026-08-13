@@ -55,21 +55,49 @@ TEST(KernelCellTests, bindingSpansCells) {
     EXPECT_EQ(2, c2.value) << "cell 2 did not mutate cell 1's live object";
 }
 
-// KNOWN GAP, pinned so it fails loudly rather than silently. Only OWNERS
-// reach the session registry — U3's promotion rides the drop-entry choke
-// point, and a primitive has no drop entry, so nothing ever binds it. Reading
-// one from a later cell must REFUSE, not load through a null occupant and
-// return garbage (which is what it did before this was pinned: 40 + 2 came
-// back as -1254244080). When primitives gain session registration this test
-// flips to asserting 42.
-TEST(KernelCellTests, primitiveBindingAcrossCellsRefusesLoudly) {
+// 2.1.1 for PRIMITIVES — `x = 5` then `x + 2` is the most basic thing anyone
+// types in a notebook. Primitives have no drop entry, so the owner-promotion
+// path never saw them and this used to refuse (and before the refusal, return
+// garbage: 40 + 2 came back as -1254244080). They are now boxed into the
+// session registry by __cajeta_session_bind_value.
+TEST(KernelCellTests, primitiveBindingSpansCells) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
     ASSERT_TRUE(s->execute("int32 seed = 40;\n").ok);
     CellResult c2 = s->execute("return seed + 2;\n");
-    EXPECT_FALSE(c2.ok) << "returned " << c2.value << " instead of refusing";
-    EXPECT_EQ("CAJETA_ERROR_NOT_IMPLEMENTED", c2.errorId);
+    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
+    EXPECT_EQ(42, c2.value);
+}
+
+// Rebinding a primitive in a later cell replaces the box; the old one is
+// freed by the registry's rebind path, and reads after it see the new value.
+TEST(KernelCellTests, primitiveRebindInLaterCellWins) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute("int32 n = 1;\n").ok);
+    ASSERT_TRUE(s->execute("int32 n = 9;\n").ok);
+    CellResult c3 = s->execute("return n + 1;\n");
+    ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
+    EXPECT_EQ(10, c3.value);
+}
+
+// A wider primitive than the pointer-sized default, to pin that the box is
+// sized from the slot rather than assumed: int64 and float64 both survive.
+TEST(KernelCellTests, widePrimitivesSpanCells) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute("int64 big = 5000000000;\n").ok);
+    CellResult c2 = s->execute("return (int32) (big / 1000000000);\n");
+    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
+    EXPECT_EQ(5, c2.value);
+
+    ASSERT_TRUE(s->execute("float64 half = 0.5;\n").ok);
+    CellResult c4 = s->execute("return (int32) (half * 8.0);\n");
+    ASSERT_TRUE(c4.ok) << c4.errorId << ": " << c4.message;
+    EXPECT_EQ(4, c4.value);
 }
 
 // script-units 4.2 across the kernel seam — a binding MOVED OUT in one cell is

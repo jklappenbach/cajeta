@@ -63,6 +63,29 @@ void __cajeta_session_bind(const char* name, void* obj,
     s->drop_fn = drop_fn;
 }
 
+// Drop for a BOXED primitive (see __cajeta_session_bind_value): the box is a
+// plain malloc'd buffer, so releasing it is just free.
+static void cajeta_session_free_box(void* p) {
+    free(p);
+}
+
+// Bind a PRIMITIVE by value. A primitive top-level binding has no drop entry
+// — nothing owns it, so the owner-promotion path never sees it — and its
+// storage is a slot in the unit entry's frame, which is gone by the time a
+// later unit reads the name. Copy the bytes into a session-owned box instead,
+// and register that with the ordinary bind path so rebinding, reverse-order
+// drop_all, and first-binding position all behave exactly as they do for an
+// owner. `__cajeta_session_get` then returns the box, which IS the address of
+// the value — the reader loads through it directly.
+void __cajeta_session_bind_value(const char* name, const void* src,
+                                 int64_t size) {
+    if (!src || size <= 0) return;
+    void* box = malloc((size_t) size);
+    if (!box) return;  // OOM: leave the previous binding intact
+    memcpy(box, src, (size_t) size);
+    __cajeta_session_bind(name, box, cajeta_session_free_box);
+}
+
 // Ownership left the session (a `#` transfer moved the binding's title to a
 // new owner): quiet the slot WITHOUT dropping — the new owner drops. The
 // name keeps its position; a later rebind reoccupies the same slot.

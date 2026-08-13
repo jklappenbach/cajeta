@@ -94,6 +94,41 @@ namespace cajeta {
         return true;
     }
 
+    // Script units (script-units spec §4) — the PRIMITIVE half of session
+    // binding. maybeEmitSessionBind above rides the drop-entry choke point,
+    // which only owners reach; a primitive has no drop entry, so before this
+    // nothing ever registered `int32 seed = 40` and a later unit's read found
+    // an empty slot. Copy the value into a session-owned box instead. Called
+    // once per top-level declaration, after the initializer has stored.
+    static void maybeEmitSessionBindValue(CajetaModulePtr module,
+                                          FieldPtr field, CajetaTypePtr type) {
+        if (!module->isScriptUnit() || !field || !type) return;
+        if (!(type->getTypeFlags() & PRIMITIVE_FLAG)) return;
+        if (!module->isScriptBindingName(field->getName())) return;
+        auto* builder = module->getBuilder();
+        if (!builder || !builder->GetInsertBlock()) return;
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        if (parentFn == nullptr
+            || parentFn->getName().find(scriptEntryName())
+                   == llvm::StringRef::npos) {
+            return;
+        }
+        llvm::Function* bindFn =
+            module->getRuntimeFunction("__cajeta_session_bind_value");
+        if (!bindFn) return;
+        llvm::AllocaInst* slot = field->getOrCreateAllocation();
+        if (!slot) return;
+        // Size from the SLOT's allocated type: that is the storage the box
+        // must mirror byte for byte.
+        auto& dl = module->getLlvmModule()->getDataLayout();
+        uint64_t size = dl.getTypeStoreSize(slot->getAllocatedType());
+        if (size == 0) return;
+        auto& ctx = *module->getLlvmContext();
+        llvm::Value* nameStr = builder->CreateGlobalString(field->getName());
+        builder->CreateCall(bindFn, {nameStr, slot,
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), size)});
+    }
+
     // Emit drop-chain wiring for an owner local. Allocates a DropEntry blob on
     // the stack at function entry, pushes it onto the runtime's chain right
     // after the owner is materialized, and records the entry on both the field
@@ -1945,6 +1980,10 @@ namespace cajeta {
                                   dbg::classifyField(facetIn),
                                   field->getDropEntry());
             }
+
+            // Session binding for a primitive — last, so the box copies the
+            // fully-initialized slot.
+            maybeEmitSessionBindValue(module, field, type);
         }
 
         return nullptr;
