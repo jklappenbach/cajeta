@@ -320,6 +320,6 @@ public final class NpzWriter {
         Npz.putU16(b, eo + 20, 0);                     // comment length
         this.len = eo + 22;
         int64 outLen = this.len;
-        File.writeAllBytes(path, b, (int32) outLen);
+        File.writeAllBytes(path, b, outLen);
     }
 }
