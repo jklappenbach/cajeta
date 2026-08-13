@@ -67,6 +67,7 @@
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
+#include <llvm/Support/Program.h>
 #include <llvm/Support/raw_ostream.h>
 
 #include <cerrno>
@@ -78,6 +79,7 @@
 #include <cstring>
 #include <iostream>
 #include <cstdio>
+#include <cstdlib>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -120,6 +122,44 @@ namespace cajeta::buildtool {
             }
 #endif
             return "cajeta";
+        }
+
+        // Resolve an LLVM tool (`llc`, `llvm-dis`) to a path that exists
+        // on THIS machine. The build-time LLVM dir is baked into the
+        // binary, but it only exists where the binary was built — for a
+        // released toolchain that is the CI runner. Order:
+        //
+        //   1. $CAJETA_LLVM_BIN/<tool>       (explicit user override)
+        //   2. <baked LLVM tools dir>/<tool> (from-source builds)
+        //   3. <dir of this binary>/<tool>   (bundled distributions)
+        //   4. PATH
+        //
+        // Falls back to the bare name so the eventual spawn failure names
+        // the missing tool instead of a phantom absolute path.
+        std::string resolveLlvmTool(const char* tool) {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (const char* env = ::getenv("CAJETA_LLVM_BIN")) {
+                fs::path p = fs::path(env) / tool;
+                if (fs::is_regular_file(p, ec)) return p.string();
+            }
+#ifdef CAJETA_LLVM_TOOLS_BIN
+            {
+                fs::path p = fs::path(CAJETA_LLVM_TOOLS_BIN) / tool;
+                if (fs::is_regular_file(p, ec)) return p.string();
+            }
+#endif
+            {
+                fs::path self = runningExecutable();
+                if (self.is_absolute()) {
+                    fs::path p = self.parent_path() / tool;
+                    if (fs::is_regular_file(p, ec)) return p.string();
+                }
+            }
+            if (auto onPath = llvm::sys::findProgramByName(tool)) {
+                return *onPath;
+            }
+            return tool;
         }
 
         llvm::Expected<std::string> ensurePluginBinary(
@@ -295,18 +335,13 @@ namespace cajeta::buildtool {
 
             // Toolchain paths, so a plugin can orchestrate compilation
             // without machine-specific configuration: `cajeta` is this
-            // process; `llc` is the toolchain LLVM this binary was built
-            // against; `cc` resolves from PATH.
+            // process; `llc`/`llvm-dis` are resolved against this machine
+            // (the baked build-time dir is a candidate, not the answer —
+            // see resolveLlvmTool); `cc` resolves from PATH.
             llvm::json::Object toolchain;
             toolchain["cajeta"] = runningExecutable();
-#ifdef CAJETA_LLVM_TOOLS_BIN
-            toolchain["llc"] = std::string(CAJETA_LLVM_TOOLS_BIN) + "/llc";
-            toolchain["llvm-dis"] =
-                std::string(CAJETA_LLVM_TOOLS_BIN) + "/llvm-dis";
-#else
-            toolchain["llc"] = std::string("llc");
-            toolchain["llvm-dis"] = std::string("llvm-dis");
-#endif
+            toolchain["llc"] = resolveLlvmTool("llc");
+            toolchain["llvm-dis"] = resolveLlvmTool("llvm-dis");
             toolchain["cc"] = std::string("cc");
             context["toolchain"] = std::move(toolchain);
 

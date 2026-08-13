@@ -19,6 +19,7 @@
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
 
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -243,7 +244,7 @@ TEST(PluginRuntimeTests, missingBinaryFailsBeforeFork) {
     ResolvedPlugin plugin;
     plugin.name = "acme.no-binary";
     plugin.actionNames = {"acme.no-binary.go"};
-    // No binaryPath set.
+    // Neither binaryPath nor mainEntry set — nothing to dispatch to.
 
     llvm::json::Object params;
     auto r = invokePluginAction(plugin, "acme.no-binary.go", params, ctx);
@@ -287,6 +288,56 @@ TEST(PluginRuntimeTests, requestCarriesParamsAndCapabilities) {
     EXPECT_NE(body.find("\"project-version\":\"1.2.3\""), std::string::npos);
     EXPECT_NE(body.find("\"entry\":\"acme.echo.Entry::run\""),
               std::string::npos);
+}
+
+// A released binary bakes ITS BUILD MACHINE's LLVM dir (for CI releases,
+// /home/runner/cajeta-llvm/bin), so the context's llc/llvm-dis must be
+// resolved against the machine actually running — never handed out
+// unchecked. $CAJETA_LLVM_BIN is the explicit override and wins.
+TEST(PluginRuntimeTests, toolchainPathsResolveOnThisMachine) {
+    auto dir = tempDir("llvmbin");
+    auto echoFile = dir / "request.json";
+    auto bin = stageScript(dir, "p.sh",
+        std::string("cat > '") + echoFile.generic_string() + "'\n"
+        "printf '{\"kind\":\"result\",\"status\":\"ok\"}\\n'\n");
+
+    // A directory holding a real (if inert) `llc` — the override target.
+    auto llvmDir = dir / "llvm";
+    std::filesystem::create_directories(llvmDir);
+    auto fakeLlc = stageScript(llvmDir, "llc", "exit 0\n");
+
+    auto m = makeManifest();
+    auto props = makeProps(m);
+    TaskContext ctx(props, &m);
+    auto plugin = makePlugin("acme.tc", "acme.tc.go", bin);
+
+    ::setenv("CAJETA_LLVM_BIN", llvmDir.generic_string().c_str(), 1);
+    llvm::json::Object params;
+    auto r = invokePluginAction(plugin, "acme.tc.go", params, ctx);
+    ::unsetenv("CAJETA_LLVM_BIN");
+    ASSERT_TRUE((bool)r) << errorText(r.takeError());
+
+    std::ifstream in(echoFile);
+    std::stringstream ss; ss << in.rdbuf();
+    std::string body = ss.str();
+
+    // The override was honored...
+    EXPECT_NE(body.find(fakeLlc.generic_string()), std::string::npos);
+    // ...and every advertised tool path is one that exists here: an
+    // absolute path is only emitted after an is_regular_file check, so
+    // any absolute path in the request must resolve.
+    for (const char* key : {"\"llc\":\"", "\"llvm-dis\":\""}) {
+        auto at = body.find(key);
+        ASSERT_NE(at, std::string::npos) << key;
+        at += std::strlen(key);
+        auto end = body.find('"', at);
+        ASSERT_NE(end, std::string::npos);
+        std::string path = body.substr(at, end - at);
+        if (!path.empty() && path[0] == '/') {
+            EXPECT_TRUE(std::filesystem::is_regular_file(path))
+                << key << " advertised a nonexistent path: " << path;
+        }
+    }
 }
 
 TEST(PluginRuntimeTests, unknownRecordKindIsIgnoredForwardCompat) {
