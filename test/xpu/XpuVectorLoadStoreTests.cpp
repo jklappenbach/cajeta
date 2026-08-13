@@ -22,6 +22,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -103,7 +104,7 @@ TEST(XpuVectorLoadStoreTests, vloadVstoreRoundTripsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::makeCoffSafeJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr))
         << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
@@ -202,7 +203,7 @@ TEST(XpuVectorLoadStoreTests, vloadVstoreFloat32Width4) {
     EXPECT_NE(ir.find("store <4 x float>"), std::string::npos)
         << "expected a packed <4 x float> store";
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::makeCoffSafeJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr));
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(
@@ -273,7 +274,7 @@ Fn lowerAndJit(Compiler& compiler, const char* src, const char* entry,
     os.flush();
     EXPECT_NE(ir.find(irNeedle), std::string::npos)
         << "expected '" << irNeedle << "' in IR";
-    keep = std::move(*llvm::orc::LLJITBuilder().create());
+    keep = std::move(*cajeta::test::makeCoffSafeJit());
     auto err = keep->addIRModule(
         llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
     EXPECT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
