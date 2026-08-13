@@ -326,8 +326,12 @@ public class Headers {
         String[] dstV = heap String[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
-            dstK[i] = this.keys[i];
-            dstV[i] = this.values[i];
+            // title-stores §2.1 — forwarding moves: a plain `=` left the old
+            // arrays owning their Strings, and the `#=` displacement below
+            // freed them through the element-drop walk (use-after-free for a
+            // request past 8 headers; json-grow-element-uaf).
+            dstK[i] #= this.keys[i];
+            dstV[i] #= this.values[i];
             i = i + 1;
         }
         this.keys #= dstK;

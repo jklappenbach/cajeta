@@ -826,6 +826,20 @@ int32_t __cajeta_file_map_byte(void* self, int64_t base, int64_t off) {
     return (int32_t) *((const unsigned char*)(intptr_t) base + off);
 }
 
+// Bulk copy out of the mapping to a RAW destination address — the typed-
+// storage seam (MappedFile.copyTo): the caller resolved its destination via
+// Storage.hostAddress()/the Arrow address tier and owns the bounds guarantee
+// on that side. The source window is bounds-checked cajeta-side against the
+// mapping length. Returns the count copied, -1 on a bad argument.
+int64_t __cajeta_file_map_copy(void* self, int64_t base, int64_t off,
+                               int64_t dstAddr, int64_t n) {
+    (void) self;
+    if (!base || !dstAddr || off < 0 || n < 0) return -1;
+    memcpy((void*)(intptr_t) dstAddr,
+           (const char*)(intptr_t) base + off, (size_t) n);
+    return n;
+}
+
 // Bulk copy out of the mapping into a cajeta int8[]. `dstArr` is the array
 // HEADER pointer ({ i64 count, data... }); the element region starts at +8.
 // Bounds against the mapping length are the cajeta side's job (it holds

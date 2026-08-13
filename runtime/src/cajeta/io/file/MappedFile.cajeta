@@ -94,6 +94,25 @@ public class MappedFile {
     }
 
     /**
+     * Copy `n` bytes from mapping offset `off` to the raw destination
+     * address `dstAddr` — the bulk seam for consumers whose destination is
+     * typed storage rather than an `int8[]` (a `Tensor`'s buffer via
+     * `Storage.hostAddress()`, the same address tier as the Arrow interop).
+     * One memcpy replaces an element-at-a-time decode loop (cajeta-llama
+     * 5.2.2). The destination must have `n` writable bytes — address-tier
+     * callers own that guarantee, exactly as Arrow consumers do. Returns
+     * the count copied, or -1 on a dead mapping / out-of-range source
+     * window / null destination.
+     */
+    public int64 copyTo(int64 off, int64 dstAddr, int64 n) {
+        if (this.base == 0 || off < 0 || n < 0 || off + n > this.length
+                || dstAddr == 0) {
+            return -1;
+        }
+        return this.mapCopy(this.base, off, dstAddr, n);
+    }
+
+    /**
      * Unmap now. Idempotent; the destructor calls this, so letting the
      * handle drop is equivalent.
      */
@@ -122,4 +141,7 @@ public class MappedFile {
 
     @Native("__cajeta_file_map_read")
     private int64 mapRead(int64 base, int64 off, int8[] dst, int64 dstOff, int64 n);
+
+    @Native("__cajeta_file_map_copy")
+    private int64 mapCopy(int64 base, int64 off, int64 dstAddr, int64 n);
 }
