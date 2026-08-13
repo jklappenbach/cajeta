@@ -422,6 +422,30 @@ namespace cajeta {
         return v;
     }
 
+    // Lower an evaluated ARRAY argument to the runtime ABI: the array's
+    // header pointer, whatever expression shape produced it. The old
+    // AllocaInst-only unwrap handled a local variable and nothing else — a
+    // struct field (DotExpression GEP) or an array element (ArrayIndex GEP)
+    // passed its SLOT ADDRESS through, so `File.writeAllBytes(path, h.data,
+    // n)` wrote adjacent struct memory instead of the array (cajeta-llama
+    // spec 3.7, defect writeallbytes-field-arg). Same fix as loadStringArg's
+    // at :386: loadIfLValue loads reference elements through l-values using
+    // the AST's resolved type and leaves r-values untouched.
+    static llvm::Value* loadArrayArg(CajetaModulePtr module, const AbstractSyntaxNodePtr& argNode) {
+        auto* builder = module->getBuilder();
+        llvm::Value* v = argNode->generateCode(module);
+        auto argExpr = std::dynamic_pointer_cast<Expression>(argNode);
+        if (argExpr && !argExpr->getResolvedType()) {
+            argExpr->resolveTypes(module);
+        }
+        if (argExpr) {
+            v = loadIfLValue(module, v, argExpr);
+        } else if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(v)) {
+            v = builder->CreateLoad(a->getAllocatedType(), a);
+        }
+        return v;
+    }
+
     // element-ownership 3.4.3 — classify an argument/receiver expression as
     // a FRESH OWNED String temporary: an anonymous rvalue nobody registers a
     // drop entry for (the arena pre-pass routes only name-bound concats).
@@ -3399,13 +3423,13 @@ namespace cajeta {
                         return loadStringArg(module, parameters[idx].expression);
                     };
 
-                    // Common helper: load an int8[] arg, GEP past its 8-byte
-                    // count header to the raw data pointer.
+                    // Common helper: load an int8[] arg — through l-values
+                    // (locals, fields, array elements; loadArrayArg carries
+                    // the writeallbytes-field-arg fix) — then GEP past its
+                    // 8-byte count header to the raw data pointer.
                     auto loadArrayDataPtr = [&](size_t idx) -> llvm::Value* {
-                        llvm::Value* arr = parameters[idx].expression->generateCode(module);
-                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
-                            arr = builder->CreateLoad(a->getAllocatedType(), a);
-                        }
+                        llvm::Value* arr = loadArrayArg(
+                            module, parameters[idx].expression);
                         return builder->CreateInBoundsGEP(i8Ty, arr,
                             llvm::ConstantInt::get(i64Ty, 8),
                             "file.data");
@@ -3439,9 +3463,11 @@ namespace cajeta {
                             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(len)) {
                                 len = builder->CreateLoad(a->getAllocatedType(), a);
                             }
-                            if (len && len->getType() != i32Ty
+                            // int64 end to end (cajeta-llama 4.2.1) — the
+                            // old i32 cast truncated multi-GiB payloads.
+                            if (len && len->getType() != i64Ty
                                     && len->getType()->isIntegerTy()) {
-                                len = builder->CreateIntCast(len, i32Ty, true);
+                                len = builder->CreateIntCast(len, i64Ty, true);
                             }
                             return builder->CreateCall(fn, {path, data, len});
                         }
@@ -8154,10 +8180,8 @@ namespace cajeta {
                         "__cajeta_file_read");
                     if (fn) {
                         llvm::Value* fd = loadFd();
-                        llvm::Value* arr = parameters[0].expression->generateCode(module);
-                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
-                            arr = builder->CreateLoad(a->getAllocatedType(), a);
-                        }
+                        llvm::Value* arr = loadArrayArg(
+                            module, parameters[0].expression);
                         llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                             i8Ty, arr,
                             llvm::ConstantInt::get(i64Ty, 8),
@@ -8166,24 +8190,27 @@ namespace cajeta {
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(maxV)) {
                             maxV = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        if (maxV && maxV->getType() != i32Ty
+                        // The native helper is int64 end to end (4.2.1).
+                        if (maxV && maxV->getType() != i64Ty
                                 && maxV->getType()->isIntegerTy()) {
-                            maxV = builder->CreateIntCast(maxV, i32Ty, true);
+                            maxV = builder->CreateIntCast(maxV, i64Ty, true);
                         }
                         llvm::Value* nRead = builder->CreateCall(fn,
                             {fd, dataPtr, maxV}, "fr.n");
-                        // Update this.pos += (int64) nRead.
+                        // Update this.pos += nRead.
                         llvm::Value* posSlot = builder->CreateStructGEP(
                             structTy, thisValue, 2, "fr.pos_slot");
                         llvm::Value* curPos = builder->CreateLoad(
                             i64Ty, posSlot, "fr.pos_cur");
-                        llvm::Value* nRead64 = builder->CreateIntCast(
-                            nRead, i64Ty, /*isSigned=*/true);
                         llvm::Value* newPos = builder->CreateAdd(
-                            curPos, nRead64, "fr.pos_new");
+                            curPos, nRead, "fr.pos_new");
                         builder->CreateStore(newPos, posSlot);
+                        // FileReader.read's cajeta surface stays int32 —
+                        // its `max` bounds the count.
+                        llvm::Value* nRead32 = builder->CreateIntCast(
+                            nRead, i32Ty, /*isSigned=*/true);
                         resolvedType = CajetaType::of("int32");
-                        return nRead;
+                        return nRead32;
                     }
                 }
                 // FileReader.readString(maxBytes) → String. Allocates
@@ -8200,12 +8227,12 @@ namespace cajeta {
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(maxV)) {
                             maxV = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        if (maxV && maxV->getType() != i32Ty
+                        // Native read helper takes int64 now (4.2.1).
+                        if (maxV && maxV->getType() != i64Ty
                                 && maxV->getType()->isIntegerTy()) {
-                            maxV = builder->CreateIntCast(maxV, i32Ty, true);
+                            maxV = builder->CreateIntCast(maxV, i64Ty, true);
                         }
-                        llvm::Value* maxI64 = builder->CreateIntCast(
-                            maxV, i64Ty, true);
+                        llvm::Value* maxI64 = maxV;
                         // Allocate int8[maxBytes] via runtime helper.
                         llvm::Function* allocFn = module->getRuntimeFunction(
                             "__cajeta_new_array_header");
@@ -8315,10 +8342,8 @@ namespace cajeta {
                         "__cajeta_file_write");
                     if (fn) {
                         llvm::Value* fd = loadFd();
-                        llvm::Value* arr = parameters[0].expression->generateCode(module);
-                        if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
-                            arr = builder->CreateLoad(a->getAllocatedType(), a);
-                        }
+                        llvm::Value* arr = loadArrayArg(
+                            module, parameters[0].expression);
                         llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                             i8Ty, arr,
                             llvm::ConstantInt::get(i64Ty, 8),
@@ -8327,20 +8352,19 @@ namespace cajeta {
                         if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(lenV)) {
                             lenV = builder->CreateLoad(a->getAllocatedType(), a);
                         }
-                        if (lenV && lenV->getType() != i32Ty
+                        // Native write helper takes int64 now (4.2.1).
+                        if (lenV && lenV->getType() != i64Ty
                                 && lenV->getType()->isIntegerTy()) {
-                            lenV = builder->CreateIntCast(lenV, i32Ty, true);
+                            lenV = builder->CreateIntCast(lenV, i64Ty, true);
                         }
                         builder->CreateCall(fn, {fd, dataPtr, lenV});
-                        // Update this.pos += (int64) len.
+                        // Update this.pos += len.
                         llvm::Value* posSlot = builder->CreateStructGEP(
                             structTy, thisValue, 2, "fw.pos_slot");
                         llvm::Value* curPos = builder->CreateLoad(
                             i64Ty, posSlot, "fw.pos_cur");
-                        llvm::Value* len64 = builder->CreateIntCast(
-                            lenV, i64Ty, /*isSigned=*/true);
                         llvm::Value* newPos = builder->CreateAdd(
-                            curPos, len64, "fw.pos_new");
+                            curPos, lenV, "fw.pos_new");
                         builder->CreateStore(newPos, posSlot);
                         resolvedType = CajetaType::of("void");
                         return nullptr;
@@ -8400,10 +8424,8 @@ namespace cajeta {
                         llvm::Function* fn = module->getRuntimeFunction(rtSym);
                         if (fn) {
                             llvm::Value* fd = loadFd();
-                            llvm::Value* arr = parameters[0].expression->generateCode(module);
-                            if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(arr)) {
-                                arr = builder->CreateLoad(a->getAllocatedType(), a);
-                            }
+                            llvm::Value* arr = loadArrayArg(
+                                module, parameters[0].expression);
                             llvm::Value* offV = parameters[1].expression->generateCode(module);
                             if (auto* a = llvm::dyn_cast_or_null<llvm::AllocaInst>(offV)) {
                                 offV = builder->CreateLoad(a->getAllocatedType(), a);
@@ -8427,15 +8449,20 @@ namespace cajeta {
                                 "file.data_start");
                             llvm::Value* dataPtr = builder->CreateInBoundsGEP(
                                 i8Ty, dataStart, offV, "file.data_off");
-                            // Runtime helpers take int32 length — cast.
-                            llvm::Value* len32 = builder->CreateIntCast(
-                                lenV, i32Ty, true, "file.len32");
+                            // int64 end to end (cajeta-llama 4.2.1): the old
+                            // `file.len32` cast here turned a bit-31 length
+                            // negative, which the native helper's `max <= 0`
+                            // guard reported as 0 — indistinguishable from
+                            // EOF (spec 3.2).
                             llvm::Value* result = builder->CreateCall(fn,
-                                {fd, dataPtr, len32}, "file.rw");
+                                {fd, dataPtr, lenV}, "file.rw");
                             // Update this.pos += (read ? returned : len).
+                            // (The write helper returns len on success per
+                            // File.write's documented contract, 4.2.5, but a
+                            // failed write returns -1 — pos must not move
+                            // backward, so writes still advance by lenV.)
                             llvm::Value* delta = methodCallName == "read"
-                                ? builder->CreateIntCast(result, i64Ty, true)
-                                : lenV;
+                                ? result : lenV;
                             llvm::Value* posSlot = builder->CreateStructGEP(
                                 structTy, thisValue, 2, "file.pos_slot");
                             llvm::Value* curPos = builder->CreateLoad(
@@ -8443,11 +8470,10 @@ namespace cajeta {
                             llvm::Value* newPos = builder->CreateAdd(
                                 curPos, delta, "file.pos_new");
                             builder->CreateStore(newPos, posSlot);
-                            // Method return is int64.
-                            llvm::Value* result64 = builder->CreateIntCast(
-                                result, i64Ty, true);
+                            // Method return is int64 — the helper's return
+                            // already is.
                             resolvedType = CajetaType::of("int64");
-                            return result64;
+                            return result;
                         }
                     }
                     if (methodCallName == "position" && parameters.empty()) {

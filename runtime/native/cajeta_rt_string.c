@@ -281,7 +281,7 @@ void* __cajeta_string_to_bytes(void* s_v) {
 
 // FileWriter.writeString support: write the window to fd, return the byte
 // count for the writer's pos bookkeeping.
-int32_t __cajeta_file_write(int32_t fd, const void* data, int32_t len);
+int64_t __cajeta_file_write(int32_t fd, const void* data, int64_t len);
 int32_t __cajeta_file_write_string(int32_t fd, void* s_v) {
     cajeta_string_layout* s = (cajeta_string_layout*) s_v;
     int32_t n = caj_str_len(s);
