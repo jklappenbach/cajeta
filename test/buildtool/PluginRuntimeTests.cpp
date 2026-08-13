@@ -14,6 +14,10 @@
 #include "cajeta/buildtool/Plugin.h"
 #include "cajeta/buildtool/PluginRuntime.h"
 #include "cajeta/buildtool/Properties.h"
+// POSIX setenv/unsetenv do not exist in the Windows CRT (which spells both
+// _putenv_s), so calling them directly fails to COMPILE on the mingw release
+// leg. cajeta::util wraps the split — see util/Environment.h.
+#include "cajeta/util/Environment.h"
 
 #include <gtest/gtest.h>
 #include <llvm/Support/Error.h>
@@ -311,10 +315,10 @@ TEST(PluginRuntimeTests, toolchainPathsResolveOnThisMachine) {
     TaskContext ctx(props, &m);
     auto plugin = makePlugin("acme.tc", "acme.tc.go", bin);
 
-    ::setenv("CAJETA_LLVM_BIN", llvmDir.generic_string().c_str(), 1);
+    cajeta::util::setEnvVar("CAJETA_LLVM_BIN", llvmDir.generic_string());
     llvm::json::Object params;
     auto r = invokePluginAction(plugin, "acme.tc.go", params, ctx);
-    ::unsetenv("CAJETA_LLVM_BIN");
+    cajeta::util::unsetEnvVar("CAJETA_LLVM_BIN");
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
 
     std::ifstream in(echoFile);
