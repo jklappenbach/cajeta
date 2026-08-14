@@ -81,7 +81,9 @@ public class File {
     /**
      * Write `data[0..len)` to `path` with atomic-rename
      * semantics. Intrinsic-lowered to
-     * `__cajeta_file_write_all(path, data, len)`.
+     * `__cajeta_file_write_all(path, data, len)`. `len` is
+     * int64 end to end — multi-GiB payloads do not truncate
+     * (cajeta-llama 4.2.1, spec 3.2).
      *
      * ```cajeta
      * int8[] data = heap int8[3];
@@ -90,7 +92,7 @@ public class File {
      *
      * @EntryPoint
      */
-    public static void writeAllBytes(String path, int8[] data, int32 len) {
+    public static void writeAllBytes(String path, int8[] data, int64 len) {
         return;
     }
 

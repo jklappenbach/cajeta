@@ -9,7 +9,9 @@ import cajeta.lang.String;
  * (`JsonValue.OBJECT`). Keys are kept as raw `int8[]` byte buffers in a
  * `keys` array alongside a parallel `keyLens` array (since `int8[].count()`
  * isn't exposed as a property yet) and a parallel `JsonValue` array. `get`
- * is a linear scan — v1 does no hashing.
+ * scans linearly below 16 entries and probes a lazily-built hash index at or
+ * above it (cajeta-llama 5.2.4 — safetensors headers and tokenizer vocabs
+ * put thousands of keys through this path).
  *
  * ## Two access tiers
  * - The hot-path tokenizer uses the byte-buffer `get(bytes, len)` / `keyAt`
@@ -35,6 +37,20 @@ public final class JsonObject {
     int32 cap;
     int32 sizeCount;
 
+    // Lazily-built open-addressed index over the entries (cajeta-llama
+    // 5.2.4): entry indices keyed by FNV-1a of the key bytes, -1 = empty,
+    // linear probing, load factor <= 1/2. Built by `get` once the object
+    // crosses HASH_MIN entries — a safetensors header has thousands of
+    // tensors and a tokenizer vocab has ~100k, where the v1 linear scan
+    // made every lookup O(n) and header parsing O(n^2). Small objects
+    // (configs) keep the scan: cheaper than hashing at that size.
+    // `put` does not maintain the table; `slotCount` records the size at
+    // build time and a mismatch triggers a rebuild on the next get, so
+    // the parse-then-read pattern builds exactly once.
+    int32[] slots;
+    int32 slotMask;
+    int32 slotCount;
+
     /**
      * Create an empty object with a starting capacity of 8 entries; the
      * backing arrays grow automatically as keys are added with `put`.
@@ -50,6 +66,9 @@ public final class JsonObject {
         this.keyLens = heap int32[8];
         this.values = heap JsonValue[8];
         this.sizeCount = 0;
+        this.slots = null;
+        this.slotMask = 0;
+        this.slotCount = 0;
     }
 
     @Inline
@@ -93,32 +112,111 @@ public final class JsonObject {
     }
 
     /**
-     * Linear-scan lookup by raw key bytes; returns `null` if absent. v1 keeps
-     * it un-hashed because the convenience tier doesn't run in the hot path —
-     * Tier 1 codegen handles the perf-sensitive paths field-by-field.
+     * Lookup by raw key bytes; returns `null` if absent. Small objects use a
+     * linear scan (cheaper than hashing at config size); at `HASH_MIN`
+     * entries and beyond, `get` builds the open-addressed index lazily and
+     * probes it — O(1) per lookup where a safetensors header or a tokenizer
+     * vocab made the scan O(n) per key and a parse-all-keys pass O(n²)
+     * (cajeta-llama 5.2.4). First-match semantics for duplicate keys are
+     * preserved: the index insert keeps the earliest entry for a key.
      */
     public JsonValue get(int8[] key, int32 keyLen) {
+        if (this.sizeCount >= 16) {
+            if (this.slots == null || this.slotCount != this.sizeCount) {
+                this.buildIndex();
+            }
+            int32 mask = this.slotMask;
+            int32 slot = JsonObject.hashKey(key, keyLen) & mask;
+            int32 e = this.slots[slot];
+            while (e >= 0) {
+                if (this.keyEquals(e, key, keyLen)) {
+                    return this.values[e];
+                }
+                slot = (slot + 1) & mask;
+                e = this.slots[slot];
+            }
+            return null;
+        }
         int32 i = 0;
         while (i < this.sizeCount) {
-            if (this.keyLens[i] == keyLen) {
-                int8[] k = this.keys[i];
-                boolean eq = true;
-                int32 j = 0;
-                while (j < keyLen) {
-                    if (k[j] != key[j]) {
-                        eq = false;
-                        j = keyLen;       // break
-                    } else {
-                        j = j + 1;
-                    }
-                }
-                if (eq) {
-                    return this.values[i];
-                }
+            if (this.keyEquals(i, key, keyLen)) {
+                return this.values[i];
             }
             i = i + 1;
         }
         return null;
+    }
+
+    /** Entry `e`'s key equals `key[0..keyLen)`. */
+    boolean keyEquals(int32 e, int8[] key, int32 keyLen) {
+        if (this.keyLens[e] != keyLen) {
+            return false;
+        }
+        int8[] k = this.keys[e];
+        int32 j = 0;
+        while (j < keyLen) {
+            if (k[j] != key[j]) {
+                return false;
+            }
+            j = j + 1;
+        }
+        return true;
+    }
+
+    /** FNV-1a over the key bytes. */
+    static int32 hashKey(int8[] key, int32 keyLen) {
+        int32 h = -2128831035;              // 0x811C9DC5, the FNV offset basis
+        int32 i = 0;
+        while (i < keyLen) {
+            int32 b = (int32) key[i] & 255;
+            h = h ^ b;
+            h = h * 16777619;               // FNV prime
+            i = i + 1;
+        }
+        return h;
+    }
+
+    /**
+     * (Re)build the probe table over the current entries. Capacity is the
+     * next power of two at or above 2× the entry count, so the load factor
+     * never exceeds 1/2 and every probe chain ends at an empty slot. On a
+     * duplicate key the FIRST entry stays in the table — `get`'s documented
+     * contract for re-put keys.
+     */
+    void buildIndex() {
+        int32 capS = 16;
+        while (capS < this.sizeCount * 2) {
+            capS = capS * 2;
+        }
+        int32[] t = heap int32[capS];
+        int32 i = 0;
+        while (i < capS) {
+            t[i] = -1;
+            i = i + 1;
+        }
+        int32 mask = capS - 1;
+        int32 e = 0;
+        while (e < this.sizeCount) {
+            int32 slot = JsonObject.hashKey(this.keys[e], this.keyLens[e]) & mask;
+            boolean placed = false;
+            while (!placed) {
+                int32 cur = t[slot];
+                if (cur < 0) {
+                    t[slot] = e;
+                    placed = true;
+                } else {
+                    if (this.keyEquals(cur, this.keys[e], this.keyLens[e])) {
+                        placed = true;      // duplicate key: first entry wins
+                    } else {
+                        slot = (slot + 1) & mask;
+                    }
+                }
+            }
+            e = e + 1;
+        }
+        this.slots #= t;
+        this.slotMask = mask;
+        this.slotCount = this.sizeCount;
     }
 
     /**
@@ -149,9 +247,17 @@ public final class JsonObject {
         JsonValue[] dstV = heap JsonValue[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
-            dstK[i] = this.keys[i];
+            // title-stores §2.1 — FORWARDING MOVES, not plain copies: the
+            // owned key buffers and JsonValues must move so the source tail
+            // bits clear. A plain `=` here left the old arrays "owning"
+            // every element, and the `#=` displacement below then walked
+            // and FREED them — a use-after-free through the new arrays for
+            // any object past its 8-entry starting capacity (found by the
+            // 5.2.4 hash tests; same audit-miss as json-grow-element-uaf's
+            // other three sites).
+            dstK[i] #= this.keys[i];
             dstL[i] = this.keyLens[i];
-            dstV[i] = this.values[i];
+            dstV[i] #= this.values[i];
             i = i + 1;
         }
         this.keys #= dstK;
