@@ -1427,6 +1427,48 @@ namespace cajeta {
         }
     }
 
+    namespace {
+
+        // jupyter-kernel 2.1.4 (script-units 5.4) — the structural
+        // fingerprint of ONE class declaration: fields in declaration order
+        // with their type canonicals, then the method signature set, sorted
+        // so declaration order cannot make two identical classes differ.
+        //
+        // Computed at the same point for every declaration — inside
+        // generatePrototype, BEFORE the generation suffix is chosen — which
+        // is what makes two of them comparable. A method's map key embeds the
+        // parent's `symbolBase()`, and that carries the suffix, so the prefix
+        // through the first "::" is stripped: otherwise a generation-2 class
+        // could never match a generation-1 one no matter how identical.
+        std::string sessionDeclarationShape(CajetaClass* klass) {
+            std::string out = "f:";
+            for (auto& prop : klass->getPropertyList()) {
+                if (!prop) continue;
+                out += prop->getName();
+                out += ':';
+                CajetaTypePtr pt = prop->getType();
+                out += (pt && pt->getQName()) ? pt->getQName()->toCanonical()
+                                              : std::string("<?>");
+                out += ';';
+            }
+            std::vector<std::string> signatures;
+            for (auto& entry : klass->getMethods()) {
+                const std::string& key = entry.first;
+                size_t sep = key.find("::");
+                signatures.push_back(
+                    sep == std::string::npos ? key : key.substr(sep + 2));
+            }
+            std::sort(signatures.begin(), signatures.end());
+            out += "m:";
+            for (auto& s : signatures) {
+                out += s;
+                out += ';';
+            }
+            return out;
+        }
+
+    }  // namespace
+
     void CajetaClass::generatePrototype() {
         // Idempotent — the deferred-prototype machinery
         // (CajetaModule::buildPendingPrototypes) may attempt this multiple
@@ -1525,7 +1567,75 @@ namespace cajeta {
         // like a redefinition of the previous session's.
         string structName = canonical;
         if (SessionState* session = module ? module->getSessionState() : nullptr) {
-            if (session->hasDeclaredClass(canonical)) {
+            const string shape = sessionDeclarationShape(this);
+            const DeclaredClass* prior = session->declaredClass(canonical);
+            // script-units 5.4 — BODY-ONLY: identical fields and identical
+            // signatures, only the bodies differ. That is not a new type, so
+            // it keeps the previous declaration's identity: same struct name,
+            // same generation suffix, same symbols. Existing values stay
+            // valid, which is the whole point — a notebook author editing a
+            // method body expects the object in front of them to pick it up,
+            // not to become a relic of a superseded type.
+            // ...but only for a class whose bodies live in exactly ONE vtable.
+            // The swap repoints the class's own table; a class that
+            // implements an interface also has per-(class, interface) tables
+            // (synthesizeInterfaceVTables), and a class someone EXTENDS has
+            // its methods inlined into the subclass's table as inherited
+            // slots. Repointing one and not the others would leave the same
+            // object answering differently depending on how it was called,
+            // which is worse than not swapping at all. Those take the
+            // generational path instead — old values keep old bodies, which
+            // is at least coherent and is what 5.3 already specifies.
+            // `qExtended` / `qImplemented`, not the resolved lists: resolution
+            // has not run yet at this point in the prototype. Extending
+            // `Object` does not count — every class does, and Object is not
+            // the thing being redefined; what matters is a parent or an
+            // interface whose OWN table would also carry these bodies.
+            bool singleVTable = qImplemented.empty();
+            for (auto& sup : qExtended) {
+                if (sup && sup->getTypeName() != "Object") {
+                    singleVTable = false;
+                    break;
+                }
+            }
+            // Only this SESSION's own classes can extend a cell-declared one,
+            // so that is the set to scan — not the whole type registry, which
+            // is most of the stdlib and where a short-name comparison finds
+            // unrelated matches.
+            if (singleVTable) {
+                const string shortName = qName->getTypeName();
+                for (auto& declared : session->declaredClassNames()) {
+                    if (declared == canonical) continue;
+                    auto other = std::dynamic_pointer_cast<CajetaClass>(
+                        CajetaType::find(declared));
+                    if (!other || other.get() == this) continue;
+                    for (auto& sup : other->getQExtended()) {
+                        // Short name too: `extends Counter` resolves by short
+                        // name (see resolveSuperClasses), so a canonical-only
+                        // comparison would miss the common spelling.
+                        if (!sup) continue;
+                        if (sup->toCanonical() == canonical
+                                || sup->getTypeName() == shortName) {
+                            singleVTable = false;
+                            break;
+                        }
+                    }
+                    if (!singleVTable) break;
+                }
+            }
+            if (prior && prior->shape == shape && singleVTable) {
+                structName = canonical + prior->suffix;
+                setGenerationSuffix(prior->suffix);
+                // Keeping the identity is only half of 5.4. The bodies this
+                // declaration emits carry the same symbols as the previous
+                // one's, so the session-statics dedup turns this cell's
+                // vtable into a REFERENCE to the one already live — whose
+                // slots hold the OLD function addresses, baked when it was
+                // materialized. Existing values would keep the old bodies
+                // and so would new ones. The host repoints those slots once
+                // the new code has addresses; this is how it learns to.
+                session->noteBodyOnlyRedefinition(canonical);
+            } else if (prior) {
                 auto* ctx = module->getLlvmContext();
                 for (int generation = 2; ; ++generation) {
                     string candidate =
@@ -1539,7 +1649,7 @@ namespace cajeta {
                     }
                 }
             }
-            session->noteDeclaredClass(canonical);
+            session->noteDeclaredClass(canonical, shape, getGenerationSuffix());
         }
         setLlvmType(CajetaType::getOrCreateLlvmType(module->getLlvmContext(), structName));
         typeMap[TypeKey(rawLlvmType())] = shared_from_this();

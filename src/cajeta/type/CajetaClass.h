@@ -438,8 +438,12 @@ namespace cajeta {
             captureDeclaringFile();
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
-        const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        // The DECLARED parent names, before resolveSuperClasses() turns them
+        // into class pointers — the only view available early in
+        // generatePrototype, where jupyter-kernel 2.1.4 asks whether anyone
+        // extends a class about to be redefined.
         const list<QualifiedNamePtr>& getQExtended() const { return qExtended; }
+        const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
         const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
             return qImplementedTypeArgs;

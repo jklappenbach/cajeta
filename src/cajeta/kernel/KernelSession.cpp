@@ -764,6 +764,62 @@ CellResult KernelSession::execute(const std::string& source,
     ++impl.stats.cellsCompiled;
     ++impl.stats.cellDylibsCreated;
 
+    // jupyter-kernel 2.1.4 (script-units 5.4) — a BODY-ONLY redefinition
+    // swaps the bodies of a class that already has live instances. The
+    // front-end kept the class's identity (same struct, same symbols) so
+    // those instances stay valid; what is left is that every one of them
+    // holds a vtable pointer baked at construction, and that vtable's slots
+    // still name the previous cell's functions. Repoint them, in place, now
+    // that the new code has been materialized and has addresses.
+    //
+    // ONE table serves everybody: this cell's own vtable global was turned
+    // into a declaration by the session-statics dedup above, so it resolves
+    // to the SAME memory the existing objects point at. Patching it reaches
+    // values made before the edit and values made after it alike.
+    //
+    // Offsets come from the vtable StructType through the JIT's DataLayout,
+    // never from assuming the header shape — that prefix (version, count,
+    // parent_vtable, drop_fn, classObject) is StructureMetadata's business
+    // and has grown before.
+    for (const std::string& canonical :
+             impl.sessionState.takeBodyOnlyRedefinitions()) {
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(
+            CajetaType::find(canonical));
+        if (!klass) continue;
+        auto* vtTy = llvm::dyn_cast_or_null<llvm::StructType>(
+            klass->getVirtualTableType());
+        if (!vtTy || vtTy->getNumElements() <= 5) continue;
+        void* vtable = lookupSymbol(klass->symbolBase() + "#VTable");
+        if (!vtable) continue;
+
+        const llvm::DataLayout& dl = impl.jit->getDataLayout();
+        const llvm::StructLayout* vtLayout = dl.getStructLayout(vtTy);
+        auto* entriesTy =
+            llvm::dyn_cast<llvm::ArrayType>(vtTy->getTypeAtIndex(5u));
+        if (!entriesTy) continue;
+        auto* entryTy =
+            llvm::dyn_cast<llvm::StructType>(entriesTy->getElementType());
+        if (!entryTy) continue;
+        const uint64_t entriesOffset = vtLayout->getElementOffset(5);
+        const uint64_t stride = dl.getTypeAllocSize(entryTy);
+        const uint64_t fnOffset = dl.getStructLayout(entryTy)->getElementOffset(1);
+
+        size_t slot = 0;
+        for (auto& method : klass->getVirtualMethodList()) {
+            const size_t index = slot++;
+            if (index >= entriesTy->getNumElements()) break;
+            // The symbol as EMITTED, not as reconstructed: a rebuilt mangling
+            // does not always match what ORC resolves (see lookupShort).
+            if (!method || !method->getLlvmFunction()) continue;
+            void* fn = lookupSymbol(method->getLlvmFunction()->getName().str());
+            if (!fn) continue;
+            std::memcpy(static_cast<char*>(vtable) + entriesOffset
+                            + index * stride + fnOffset,
+                        &fn, sizeof(void*));
+            ++impl.stats.vtableSlotsRepointed;
+        }
+    }
+
     // Register this cell's implicit class in the session's cumulative
     // namespace so LATER cells' bare calls can reach its top-level methods
     // (jupyter-kernel 1.2.4). Recorded only on success, so a failed cell

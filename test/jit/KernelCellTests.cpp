@@ -269,7 +269,7 @@ TEST(KernelCellTests, typeRedefinitionIsGenerational) {
 // pointer was baked at construction, not because it holds an older class.
 // Worth re-checking what 2.1.3's boundType is really buying before building
 // on it. See plan 2.1.4.
-TEST(KernelCellTests, DISABLED_bodyOnlyRedefinitionSwapsInPlace) {
+TEST(KernelCellTests, bodyOnlyRedefinitionSwapsInPlace) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
@@ -294,6 +294,115 @@ TEST(KernelCellTests, DISABLED_bodyOnlyRedefinitionSwapsInPlace) {
     CellResult c3 = s->execute("return c.value();\n");
     ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
     EXPECT_EQ(10, c3.value) << "the existing value did not adopt the new body";
+
+    // ...and it adopted it by the route we think. Without this the test
+    // passes just as well if the call were statically bound to the newest
+    // symbol, which would leave every value reached through a vtable — the
+    // actual case — still running the old body.
+    EXPECT_GT(s->stats().vtableSlotsRepointed, 0)
+        << "no vtable slot was repointed, so the swap came from somewhere else";
+
+    // A value made AFTER the edit runs the new body too. It shares the one
+    // table with the older value (this cell's vtable global was deduped into
+    // a reference to it), so this pins that the patch serves both.
+    CellResult c4 = s->execute(
+        "Counter fresh = heap Counter(7);\n"
+        "return fresh.value();\n");
+    ASSERT_TRUE(c4.ok) << c4.errorId << ": " << c4.message;
+    EXPECT_EQ(14, c4.value) << "a newly constructed value ran the old body";
+}
+
+// 2.1.3b — MEASURED, and there is no hole here. Filed as a suspected third
+// position (after 2.1.3a's argument and assignment), on the reasoning that a
+// field read takes its offset from the current layout. It does not: a seeded
+// binding carries its OWN generation's type, so both the member lookup and
+// the offset come from the generation the value actually belongs to. A field
+// the newer generation added is simply not a member of the older one.
+//
+// That is also why 2.1.3a was needed and this is not: an argument is checked
+// against the PARAMETER's type, so the callee would use the new layout. A
+// field read never leaves the value's own type. Kept as the regression pin
+// for that difference.
+TEST(KernelCellTests, staleGenerationFieldReadUsesTheValuesOwnGeneration) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute(
+        "public class Point { public int32 x;\n"
+        "  public Point(int32 x) { this.x = x; }\n"
+        "  public int32 get() { return this.x; } }\n"
+        "Point p = heap Point(7);\n").ok);
+
+    // A DIFFERENT shape, so this is generational (5.3), not a body-only swap.
+    ASSERT_TRUE(s->execute(
+        "public class Point { public int32 x; public int32 y;\n"
+        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+        "  public int32 get() { return this.x + this.y; } }\n").ok);
+
+    // `y` belongs to the new generation only, and `p` is not of it. The read
+    // is refused as an unknown member — the honest answer, and the one that
+    // makes an out-of-bounds read impossible rather than merely diagnosed.
+    CellResult read = s->execute("p.y;\n");
+    EXPECT_FALSE(read.ok)
+        << "a field of the NEW generation was read off an OLD value; got: "
+        << read.result;
+    EXPECT_NE(std::string::npos, read.message.find("no member 'y'"))
+        << "refused, but not as an unknown member: " << read.message;
+
+    // A field the old generation DOES have reads correctly, at its own
+    // generation's offset.
+    CellResult own = s->execute("p.x;\n");
+    ASSERT_TRUE(own.ok) << own.errorId << ": " << own.message;
+    EXPECT_EQ("7", own.result);
+
+    // The session survives, and the old value still answers through its own
+    // vtable — 2.1.3's contract is unchanged by this.
+    CellResult call = s->execute("p.get();\n");
+    ASSERT_TRUE(call.ok) << call.errorId << ": " << call.message;
+    EXPECT_EQ("7", call.result);
+}
+
+// 2.1.4 — the LIMIT of the in-place swap, pinned so it cannot regress into a
+// silent half-swap. A class that implements an interface also has a
+// per-(class, interface) vtable, and a class someone extends has its methods
+// inlined into the subclass's table; the swap repoints neither. Such a
+// redefinition therefore takes the GENERATIONAL path instead (5.3) — the old
+// value keeps the old body, which is coherent — rather than swapping one
+// table and leaving the object to answer differently depending on how it was
+// called.
+TEST(KernelCellTests, bodyOnlySwapDeclinesWhenBodiesLiveInSeveralTables) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute(
+        "public interface Speaks { public int32 say(); }\n"
+        "public class Talker implements Speaks { public int32 n;\n"
+        "  public Talker(int32 n) { this.n = n; }\n"
+        "  public int32 say() { return this.n; } }\n"
+        "Talker t = heap Talker(5);\n").ok);
+
+    CellResult before = s->execute("return t.say();\n");
+    ASSERT_TRUE(before.ok) << before.errorId << ": " << before.message;
+    ASSERT_EQ(5, before.value);
+
+    const int repointedBefore = s->stats().vtableSlotsRepointed;
+
+    // Same shape, new body — but this class's bodies live in more than one
+    // table, so the swap must decline.
+    CellResult redef = s->execute(
+        "public interface Speaks { public int32 say(); }\n"
+        "public class Talker implements Speaks { public int32 n;\n"
+        "  public Talker(int32 n) { this.n = n; }\n"
+        "  public int32 say() { return this.n * 2; } }\n");
+    ASSERT_TRUE(redef.ok) << redef.errorId << ": " << redef.message;
+    EXPECT_EQ(repointedBefore, s->stats().vtableSlotsRepointed)
+        << "a multi-table class was swapped in place";
+
+    // The old value keeps the old body: the generational contract.
+    CellResult after = s->execute("return t.say();\n");
+    ASSERT_TRUE(after.ok) << after.errorId << ": " << after.message;
+    EXPECT_EQ(5, after.value)
+        << "an interface-implementing class was half-swapped";
 }
 
 // 2.2.5 — ASSIGNMENT to a session-seeded binding rebinds it, so the NEXT

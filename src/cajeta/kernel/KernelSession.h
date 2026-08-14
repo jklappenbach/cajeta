@@ -123,6 +123,11 @@ namespace cajeta::kernel {
         // specialization used by several cells has one winning definition
         // instead of a hard ORC duplicate-definition failure.
         int weakDemotedInstantiations = 0;
+        // Vtable slots repointed by a BODY-ONLY class redefinition
+        // (script-units 5.4). Observable because "the edit took effect" and
+        // "the edit was a no-op" are otherwise indistinguishable from the
+        // outside until a value happens to be called.
+        int vtableSlotsRepointed = 0;
         // `__cajeta_task_shutdown` invocations — exactly one per session,
         // at the end. Calling it per cell would tear the shared carrier pool
         // out from under later cells.
