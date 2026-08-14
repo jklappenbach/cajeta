@@ -68,6 +68,16 @@ int32_t __cajeta_ucd_default_ignorable(int32_t cp) {
     return (int32_t) CAJ_UCD_LOOKUP(ign, (uint32_t) cp);
 }
 
+int32_t __cajeta_ucd_general_category(int32_t cp) {
+    if (cp < 0 || cp > CAJ_UCD_MAXCP) return 0; /* Cn */
+    return (int32_t) CAJ_UCD_LOOKUP(gc, (uint32_t) cp);
+}
+
+int32_t __cajeta_ucd_white_space(int32_t cp) {
+    if (cp < 0 || cp > CAJ_UCD_MAXCP) return 0;
+    return (int32_t) CAJ_UCD_LOOKUP(ws, (uint32_t) cp);
+}
+
 int32_t __cajeta_ucd_script_count(void) { return CAJ_UCD_SCRIPT_COUNT; }
 
 const char* __cajeta_ucd_script_name(int32_t id) {

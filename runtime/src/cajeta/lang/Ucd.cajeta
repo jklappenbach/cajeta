@@ -48,4 +48,67 @@ public final class Ucd {
     /** 1 when `cp` is a Default_Ignorable_Code_Point, else 0. */
     @Native("__cajeta_ucd_default_ignorable")
     public static int32 isDefaultIgnorable(int32 cp);
+
+    // General-category ordinals, fixed canonical order (Cn first so an
+    // unassigned codepoint reads as the trie default 0).
+    public static final int32 GC_CN = 0;
+    public static final int32 GC_LU = 1;
+    public static final int32 GC_LL = 2;
+    public static final int32 GC_LT = 3;
+    public static final int32 GC_LM = 4;
+    public static final int32 GC_LO = 5;
+    public static final int32 GC_MN = 6;
+    public static final int32 GC_MC = 7;
+    public static final int32 GC_ME = 8;
+    public static final int32 GC_ND = 9;
+    public static final int32 GC_NL = 10;
+    public static final int32 GC_NO = 11;
+    public static final int32 GC_PC = 12;
+    public static final int32 GC_PD = 13;
+    public static final int32 GC_PS = 14;
+    public static final int32 GC_PE = 15;
+    public static final int32 GC_PI = 16;
+    public static final int32 GC_PF = 17;
+    public static final int32 GC_PO = 18;
+    public static final int32 GC_SM = 19;
+    public static final int32 GC_SC = 20;
+    public static final int32 GC_SK = 21;
+    public static final int32 GC_SO = 22;
+    public static final int32 GC_ZS = 23;
+    public static final int32 GC_ZL = 24;
+    public static final int32 GC_ZP = 25;
+    public static final int32 GC_CC = 26;
+    public static final int32 GC_CF = 27;
+    public static final int32 GC_CS = 28;
+    public static final int32 GC_CO = 29;
+
+    /** General category of `cp` — one of the `GC_*` ordinals. */
+    @Native("__cajeta_ucd_general_category")
+    public static int32 generalCategory(int32 cp);
+
+    /**
+     * 1 when `cp` has the White_Space property (PropList), else 0.
+     * Distinct from the `Z*` categories: tab/LF/CR are Cc yet
+     * whitespace; ZERO WIDTH SPACE is Cf and is NOT.
+     */
+    @Native("__cajeta_ucd_white_space")
+    public static int32 isWhiteSpace(int32 cp);
+
+    /** 1 when `cp` is a letter (`L*` — regex `\p{L}`), else 0. */
+    public static int32 isLetter(int32 cp) {
+        int32 g = Ucd.generalCategory(cp);
+        if (g >= Ucd.GC_LU && g <= Ucd.GC_LO) {
+            return 1;
+        }
+        return 0;
+    }
+
+    /** 1 when `cp` is a number (`N*` — regex `\p{N}`), else 0. */
+    public static int32 isNumber(int32 cp) {
+        int32 g = Ucd.generalCategory(cp);
+        if (g >= Ucd.GC_ND && g <= Ucd.GC_NO) {
+            return 1;
+        }
+        return 0;
+    }
 }

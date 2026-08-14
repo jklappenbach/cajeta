@@ -189,3 +189,40 @@ TEST(UcdStringTests, ucdPropertySurface) {
         "}\n";
     EXPECT_EQ(runI32(src), 1);
 }
+
+// General category + White_Space (cajeta-llama U12: \p{L} / \p{N} / \s
+// classification for tokenizer pre-splits). Category ordinals are the
+// fixed canonical order (GC_CN=0, GC_LU=1, ... GC_CO=29); White_Space is
+// the PropList property, not derivable from the category.
+TEST(UcdStringTests, generalCategoryAndWhiteSpace) {
+    std::string src = std::string(PRE) +
+        "import cajeta.lang.Ucd;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        if (Ucd.generalCategory(65) != Ucd.GC_LU) { return -1; }\n"    // 'A'
+        "        if (Ucd.generalCategory(97) != Ucd.GC_LL) { return -2; }\n"    // 'a'
+        "        if (Ucd.generalCategory(49) != Ucd.GC_ND) { return -3; }\n"    // '1'
+        "        if (Ucd.generalCategory(20013) != Ucd.GC_LO) { return -4; }\n" // 中
+        "        if (Ucd.generalCategory(32) != Ucd.GC_ZS) { return -5; }\n"    // space
+        "        if (Ucd.generalCategory(769) != Ucd.GC_MN) { return -6; }\n"   // U+0301
+        "        if (Ucd.generalCategory(128512) != Ucd.GC_SO) { return -7; }\n" // 😀
+        "        if (Ucd.generalCategory(44032) != Ucd.GC_LO) { return -8; }\n" // 가 (Hangul syl., UnicodeData range)
+        "        if (Ucd.generalCategory(1114110) != Ucd.GC_CN) { return -9; }\n" // U+10FFFE noncharacter
+        "        if (Ucd.isLetter(65) != 1) { return -10; }\n"
+        "        if (Ucd.isLetter(20013) != 1) { return -11; }\n"
+        "        if (Ucd.isLetter(49) != 0) { return -12; }\n"
+        "        if (Ucd.isNumber(49) != 1) { return -13; }\n"
+        "        if (Ucd.isNumber(8560) != 1) { return -14; }\n"  // ⅰ Nl
+        "        if (Ucd.isNumber(97) != 0) { return -15; }\n"
+        "        if (Ucd.isWhiteSpace(32) != 1) { return -16; }\n"
+        "        if (Ucd.isWhiteSpace(9) != 1) { return -17; }\n"   // tab
+        "        if (Ucd.isWhiteSpace(10) != 1) { return -18; }\n"  // LF
+        "        if (Ucd.isWhiteSpace(160) != 1) { return -19; }\n" // NBSP
+        "        if (Ucd.isWhiteSpace(8232) != 1) { return -20; }\n" // LSEP
+        "        if (Ucd.isWhiteSpace(97) != 0) { return -21; }\n"
+        "        if (Ucd.isWhiteSpace(8203) != 0) { return -22; }\n" // ZWSP is NOT ws
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 1);
+}
