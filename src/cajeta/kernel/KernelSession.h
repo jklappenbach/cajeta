@@ -39,8 +39,26 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace cajeta::kernel {
+
+    // One compiler diagnostic for a cell, in the compiler's own shape
+    // (compiler-jsonl 3.1.1). These arrive parsed from the compiler's NDJSON
+    // stream rather than scraped from its text, so a frontend dispatches on
+    // fields instead of sniffing prose — and a WARNING reaches the notebook
+    // too, which the pass/fail of `execute` alone can never carry.
+    struct CellDiagnostic {
+        std::string severity;   // "error" | "warning" | "note"
+        std::string code;       // CAJETA_ERROR_*; empty when the record had none
+        std::string message;
+        // The CELL's name (In[N]) and the USER's line: script-units U5 maps
+        // wrapper coordinates back before the diagnostic is ever emitted, so
+        // nothing here re-translates.
+        std::string file;
+        int line = 0;
+        int column = 0;
+    };
 
     // The outcome of one `execute`. A compile failure is DATA, not an
     // exception: the kernel turns it into an `error` reply and carries on,
@@ -69,6 +87,11 @@ namespace cajeta::kernel {
         // 1-based, advancing on every execute INCLUDING a failed one (spec
         // 2.2) so `Out[N]` never reuses a number.
         int executionCount = 0;
+        // Everything the compiler said about this cell, structured (spec 4.4).
+        // A failing cell's error appears here as well as in the errorId /
+        // message fields above; warnings appear ONLY here, and a cell can
+        // succeed with a non-empty list.
+        std::vector<CellDiagnostic> diagnostics;
     };
 
     // Observability for the tests and, later, the kernel's own diagnostics.

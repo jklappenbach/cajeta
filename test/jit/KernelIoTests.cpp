@@ -229,6 +229,67 @@ TEST(KernelIoTests, cellsWithoutTrailingExpressionHaveNoResult) {
     EXPECT_EQ(5, ret.value);
 }
 
+// 3.1.3 / spec 4 — "rendering failures degrade to a type-name placeholder;
+// display must never fail a successfully executed cell". A class with no
+// toString anywhere in its chain has nothing to render; the cell still runs
+// and still produces a payload.
+TEST(KernelIoTests, renderFailureDegradesToTypeName) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute(
+        "public class Opaque { public int32 n;\n"
+        "  public Opaque(int32 n) { this.n = n; } }\n"
+        "Opaque o = heap Opaque(7);\n"
+        "o;\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+    EXPECT_TRUE(c1.hasResult) << "an unrenderable value produced no payload";
+    EXPECT_NE(std::string::npos, c1.result.find("Opaque"))
+        << "placeholder was not the type name: " << c1.result;
+}
+
+// 3.1.4 / spec 4.4 — a cell's diagnostics arrive STRUCTURED: severity, code,
+// the cell's name and the user's line, parsed from the compiler's own NDJSON
+// rather than scraped out of its prose.
+TEST(KernelIoTests, compilerJsonlBridged) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult ok = s->execute("int32 a = 1;\n");
+    ASSERT_TRUE(ok.ok) << ok.errorId << ": " << ok.message;
+
+    // Line 2 of the CELL, not of the wrapper the synthesizer built.
+    CellResult bad = s->execute("int32 b = 2;\nint32 c = notAThing();\n");
+    ASSERT_FALSE(bad.ok) << "expected the cell to fail";
+    ASSERT_FALSE(bad.diagnostics.empty()) << "no structured diagnostic";
+
+    const cajeta::kernel::CellDiagnostic* err = nullptr;
+    for (auto& d : bad.diagnostics) {
+        if (d.severity == "error") { err = &d; break; }
+    }
+    ASSERT_NE(nullptr, err) << "no error-severity diagnostic";
+    EXPECT_FALSE(err->message.empty());
+    EXPECT_EQ("In[2]", err->file) << "diagnostic did not name the cell";
+    EXPECT_EQ(2, err->line) << "line is not the user's";
+    // The fatal error is in both places: the flat fields a simple host reads,
+    // and the structured list a frontend renders.
+    EXPECT_EQ(bad.errorId, err->code);
+    EXPECT_EQ(bad.message, err->message);
+}
+
+// A clean cell reports no diagnostics — so a non-empty list always means the
+// compiler had something to say, and a frontend can show it unconditionally.
+TEST(KernelIoTests, cleanCellHasNoDiagnostics) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute("int32 q = 1;\nq + 1;\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+    EXPECT_TRUE(c1.diagnostics.empty())
+        << "clean cell reported " << c1.diagnostics.size() << " diagnostics, "
+        << "first: " << c1.diagnostics[0].message;
+}
+
 // The counter advances on every execute, including a failed cell (spec 2.2),
 // so Out[N] never reuses a number.
 TEST(KernelIoTests, executionCountAdvancesAcrossFailures) {

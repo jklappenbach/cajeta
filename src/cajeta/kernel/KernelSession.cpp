@@ -30,6 +30,9 @@
 #include "cajeta/type/CajetaType.h"
 #include "cajeta/compile/SessionState.h"
 #include "cajeta/compile/StdlibReuseCore.h"
+#include "cajeta/dap/Json.h"
+#include "cajeta/error/DiagnosticEngine.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/jit/JitModulePrep.h"
@@ -38,6 +41,85 @@
 namespace cajeta::kernel {
 
 namespace {
+
+    // --- the compiler-jsonl bridge (spec 4.4; compiler-jsonl §2-§3) -------
+    //
+    // A cell's diagnostics reach the notebook as STRUCTURED payloads, not as
+    // scraped text. The compiler already has one machine-readable format for
+    // exactly this, so the bridge reads it rather than inventing a second: the
+    // cell compile runs with `--diag-format=json` in force, its stderr is
+    // captured, and each NDJSON record is parsed.
+    //
+    // Going through the stream rather than reading the DiagnosticEngine
+    // directly is deliberate. Plenty of diagnostics never pass through the
+    // engine — the located syntax listener emits straight to the channel —
+    // and the stream is the one place they all converge.
+
+    // The envelope major this kernel understands. An unknown major is refused
+    // whole rather than half-read (compiler-jsonl 2.1.4).
+    constexpr int kSupportedJsonlMajor = 1;
+
+    // Process-wide switch, per-cell decision: scope it (compiler-jsonl 5.1.2,
+    // the same reason runLintDriver does this).
+    struct JsonGateScope {
+        bool prev;
+        explicit JsonGateScope(bool on) : prev(cajeta::jsonProgressEnabled()) {
+            cajeta::setJsonProgressEnabled(on);
+        }
+        ~JsonGateScope() { cajeta::setJsonProgressEnabled(prev); }
+    };
+
+    // Parse one cell's captured stderr into diagnostics. Lines that are not
+    // JSON at all are compiler chatter that never got a structured form; they
+    // are handed back so the caller can put them where they were going
+    // anyway, because swallowing compiler output is worse than not
+    // structuring it.
+    void parseJsonlDiagnostics(const std::string& buffer,
+                               std::vector<CellDiagnostic>* out,
+                               std::string* passthrough) {
+        size_t pos = 0;
+        bool refused = false;
+        while (pos <= buffer.size()) {
+            size_t nl = buffer.find('\n', pos);
+            std::string line = buffer.substr(
+                pos, nl == std::string::npos ? std::string::npos : nl - pos);
+            pos = (nl == std::string::npos) ? buffer.size() + 1 : nl + 1;
+            if (line.empty()) continue;
+            bool ok = false;
+            cajeta::dap::Json rec = cajeta::dap::Json::parse(line, &ok);
+            if (!ok || !rec.isObject() || !rec.has("kind")) {
+                if (passthrough) { *passthrough += line; *passthrough += '\n'; }
+                continue;
+            }
+            if (refused) continue;
+            const std::string& kind = rec.at("kind").asString();
+            if (kind == "stream") {
+                if (rec.at("major").asInt(kSupportedJsonlMajor)
+                        != kSupportedJsonlMajor) {
+                    // Refuse the rest of the stream and say so once.
+                    refused = true;
+                    if (passthrough) {
+                        *passthrough += "cajeta kernel: unsupported diagnostic "
+                                        "stream major; diagnostics for this "
+                                        "cell were not read\n";
+                    }
+                }
+                continue;
+            }
+            // Unknown kinds are SKIPPED, not fatal — that is what makes a new
+            // record kind a minor bump (compiler-jsonl 2.1.5).
+            if (kind != "diagnostic") continue;
+            CellDiagnostic d;
+            d.severity = rec.at("severity").asString();
+            d.code = rec.at("code").asString();
+            d.message = rec.at("message").asString();
+            d.file = rec.at("file").asString();
+            d.line = rec.at("line").asInt(0);
+            d.column = rec.at("column").asInt(0);
+            if (d.severity.empty()) d.severity = "error";
+            out->push_back(std::move(d));
+        }
+    }
 
     // A cell's DISPLAY name and its IDENTIFIER are two different things. The
     // display name is "In[3]" — spec 4.4 pins it, because that is what a
@@ -243,6 +325,62 @@ CellResult KernelSession::execute(const std::string& source,
     // U5 maps wrapper lines back); the ownership table carries across cells.
     impl.compiler->setSessionState(&impl.sessionState, cellName);
 
+    // The diagnostics bridge is live for the whole compile (spec 4.4; plan
+    // 3.2.3). Its destructor closes it on EVERY exit path, including the
+    // early returns in the catch blocks below — a cell that failed is exactly
+    // the cell whose diagnostics matter most.
+    struct DiagBridge {
+        CellResult& result;
+        Compiler& compiler;
+        DiagFormat priorFormat;
+        std::string buffer;
+        JsonGateScope gate;
+        DiagnosticEngine engine;
+        std::unique_ptr<cajeta::util::FdCapture> capture;
+        bool finished = false;
+
+        DiagBridge(CellResult& r, Compiler& c)
+            : result(r), compiler(c),
+              priorFormat(c.getFlags().diagFormat), gate(true) {
+            CompilerFlags f = compiler.getFlags();
+            f.diagFormat = DiagFormat::Json;
+            compiler.setFlags(f);
+            // Warnings COLLECT, errors keep THROWING. The kernel's failure
+            // path depends on the throw: a collected error would let codegen
+            // run on into null types (the same reason the JIT harness sets
+            // this), and a cell must fail before it can reach a dylib.
+            engine.setCollectErrors(false);
+            DiagnosticEngine::setActive(&engine);
+            capture = std::make_unique<cajeta::util::FdCapture>(
+                2, [this](const std::string& chunk) { buffer += chunk; });
+            // Each cell is its own stream, so a consumer can tell a clean
+            // cell from a cell whose compile died before saying anything
+            // (compiler-jsonl 2.1.3). Unlatched — this is the Nth cell in a
+            // long-lived process, and it must look like a first.
+            cajeta::emitStreamRecord();
+        }
+        ~DiagBridge() { finish(); }
+
+        void finish() {
+            if (finished) return;
+            finished = true;
+            DiagnosticEngine::setActive(nullptr);
+            engine.emit(/*json=*/true);   // into the capture, still live
+            capture.reset();              // restores fd 2, drains the tail
+            std::string passthrough;
+            parseJsonlDiagnostics(buffer, &result.diagnostics, &passthrough);
+            // Compiler chatter with no structured form is still compiler
+            // output; put it back where it was going rather than swallow it.
+            if (!passthrough.empty()) {
+                std::fwrite(passthrough.data(), 1, passthrough.size(), stderr);
+                std::fflush(stderr);
+            }
+            CompilerFlags f = compiler.getFlags();
+            f.diagFormat = priorFormat;
+            compiler.setFlags(f);
+        }
+    } bridge(result, *impl.compiler);
+
     CajetaModulePtr cellModule;
     try {
         cellModule = impl.compiler->createModule(
@@ -321,6 +459,11 @@ CellResult KernelSession::execute(const std::string& source,
         result.message = e.getMessage();
         result.file = e.getFile().empty() ? cellName : e.getFile();
         result.line = e.getLine();
+        // The throw carried the error out of the stream, so it never became a
+        // record. Fold it in, so `diagnostics` is the complete account of the
+        // cell and a frontend needs to read one place, not two.
+        bridge.engine.report("error", result.errorId, result.message,
+                             result.file, result.line, e.getColumn());
         if (cellModule && cellModule->getLlvmModule()) {
             impl.poisoned.insert(cellModule->getLlvmModule());
         }
@@ -328,8 +471,13 @@ CellResult KernelSession::execute(const std::string& source,
     } catch (std::exception& e) {
         result.errorId = "CAJETA_ERROR_INTERNAL";
         result.message = e.what();
+        bridge.engine.report("error", result.errorId, result.message,
+                             cellName);
         return result;
     }
+    // Compilation is done; everything after this is delivery and execution,
+    // and the cell's own stdout must not land in the diagnostic buffer.
+    bridge.finish();
 
     // Everything this cell's codegen produced that has not been delivered
     // yet: the cell's own module, plus any module its instantiations landed

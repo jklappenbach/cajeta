@@ -345,8 +345,15 @@ namespace cajeta {
         // The no-arg `toString` on `klass` or any ancestor. Mirrors
         // SynthesizedToStringMethod's lookup, including the post-prototype
         // shape where `this` sits at parameter 0.
+        // `cajeta.lang.Object` DECLARES toString and returns null from it — a
+        // documented placeholder until the String surface stabilizes. Finding
+        // that one means the class has no rendering of its own, which is the
+        // degrade-to-type-name case, not a dispatch case.
         MethodPtr findScriptToString(const CajetaClassPtr& klass) {
             if (!klass) return nullptr;
+            if (auto qn = klass->getQName()) {
+                if (qn->toCanonical() == "cajeta.lang.Object") return nullptr;
+            }
             for (auto& m : klass->getMethodList()) {
                 if (!m || m->isConstructor()) continue;
                 if (m->getName() != "toString") continue;
@@ -411,6 +418,16 @@ namespace cajeta {
         // The value as an r-value: an identifier read hands back its slot.
         llvm::Value* rv = loadIfLValue(module, value, expr);
         if (!rv) return;
+
+        // Park the type-name placeholder FIRST (spec 4, "rendering failures
+        // degrade to a type-name placeholder"). Every branch below overwrites
+        // it on success; what this buys is the failure path — a `toString`
+        // that throws unwinds out of the entry without ever reaching its
+        // store, and the payload the host collects is the placeholder rather
+        // than the previous cell's result or nothing at all.
+        std::string placeholder = canonical.empty() ? "<value>" : canonical;
+        builder->CreateCall(store,
+                            {scriptLiteralPtr(builder, lmod, placeholder)});
 
         llvm::Value* text = nullptr;
         if (!isString && !isArray && (type->getTypeFlags() & PRIMITIVE_FLAG)) {
@@ -506,13 +523,10 @@ namespace cajeta {
             }
         }
 
-        // Nothing rendered it: show the type's name rather than nothing at
-        // all. Arrays, interfaces, and a class without a toString land here.
-        if (!text) {
-            text = scriptLiteralPtr(builder, lmod,
-                                    canonical.empty() ? "<value>" : canonical);
-        }
-        builder->CreateCall(store, {text});
+        // Nothing rendered it — an array, an interface, a class with no
+        // toString. The placeholder above already stands, so there is
+        // nothing left to do; display never fails a cell that ran.
+        if (text) builder->CreateCall(store, {text});
     }
 
     void remapScriptException(CajetaModulePtr module, Exception& e) {

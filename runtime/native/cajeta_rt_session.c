@@ -144,11 +144,16 @@ void __cajeta_script_result_clear(void) {
 
 // Codegen hands over a C string it does not transfer ownership of (it may be
 // a borrowed window into a String); we copy.
+//
+// A NULL is "nothing rendered" and leaves whatever is already parked — codegen
+// stores a type-name placeholder before attempting a render, so a `toString`
+// returning null degrades to that instead of blanking the result. An empty
+// but non-null string is a real empty result and does replace it.
 void __cajeta_script_result(const char* text) {
+    if (!text) return;
     free(__cajeta_script_result_text);
     __cajeta_script_result_text = 0;
     __cajeta_script_result_present = 1;
-    if (!text) return;
     size_t n = strlen(text) + 1;
     __cajeta_script_result_text = (char*) malloc(n);
     if (__cajeta_script_result_text) {
