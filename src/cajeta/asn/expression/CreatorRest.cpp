@@ -68,6 +68,12 @@ namespace cajeta {
                     "CAJETA_ERROR_UNRESOLVED_PLACEHOLDER");
             }
         }
+        // U2 (plan 2.2.3) — `heap T(#x)` is the shape the cajeta-llama bug
+        // actually took (`heap String(#kb, kl)`). Constructor arguments carry
+        // the same `callerTransferred` flag as call arguments and likewise
+        // build no MoveExpression, so they need the same rejection.
+        rejectTransferOfBorrowArgs(module, parameters);
+
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();
         llvm::Type* structTy = targetType->getLlvmType();

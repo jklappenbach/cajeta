@@ -26,6 +26,23 @@ namespace cajeta {
         bool callerTransferred = false;
     };
 
+    // stdlib-ownership-convention U2 (spec 3.1, 4.1; plan 2.2.3) — apply the
+    // transfer-of-a-borrow rejection to every `#`-marked ARGUMENT.
+    //
+    // `#x` takes two different routes through the compiler. An assignment or
+    // a return builds a MoveExpression node; an ARGUMENT instead sets the
+    // `callerTransferred` flag above and leaves a BARE IDENTIFIER as the
+    // child, so no MoveExpression is ever constructed. Every borrow check
+    // lived in MoveExpression::generateCode, which made argument position a
+    // blind spot shared by the PRE-EXISTING checks — and argument position is
+    // exactly where the cajeta-llama corruption lived (`heap String(#kb, kl)`,
+    // a borrowed key surrendered to a String that then freed it twice).
+    //
+    // Called from both argument-bearing paths: MethodCallExpression (calls)
+    // and ClassCreatorRest (`heap T(...)` / `stack T(...)`).
+    void rejectTransferOfBorrowArgs(CajetaModulePtr module,
+                                    const vector<MethodCallParameter>& args);
+
     // Emit an indirect call through a closure value of function type `fnType`.
     // `closurePtr` is a `ptr` to the closure record `{ ptr fn, ptr captures,
     // ptr drop }` (the L3-3 ABI). `args` are the source-level argument

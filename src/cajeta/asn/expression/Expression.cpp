@@ -3186,89 +3186,12 @@ bool cajetaRhsCarriesRedundantSharp(
                 // capable values (String/Slice) transfer by share-bump, not
                 // title move (§5.1.6).
                 const string& mvName = idExpr->getTextValue();
-                if (FieldPtr mvField = scope->getField(mvName)) {
-                    bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(mvField);
-                    auto mvKlass = dynamic_pointer_cast<CajetaClass>(mvField->getType());
-                    bool titleBearing = mvKlass && !mvKlass->isValueType()
-                            && !mvKlass->isSharedCapableValue();
-                    // A borrow cannot surrender a title it does not hold. Two
-                    // ways to be a borrow, one error — a transfer DEMOTES its
-                    // source (transfer-demotes-to-borrow §1.3), so transferring
-                    // twice IS transferring from a borrow.
-                    if (titleBearing && scope->isBorrow(mvName)) {
-                        // (a) demoted by an earlier transfer. Applies to formals
-                        // too: `isBorrow` is only true once something in THIS
-                        // method actually transferred it, so a plain formal that
-                        // was merely lent is untouched (§1.4 — a formal's
-                        // ownership is fixed by the call site, and `#=` there is
-                        // conditional acquisition, not a static borrow).
-                        string note = scope->transferSiteOf(mvName);
-                        throw Exception(
-                            "cannot transfer ownership of `" + mvName
-                                + "`: it is a borrow"
-                                + (note.empty() ? "" : " — already transferred ("
-                                    + note + ")")
-                                + ". You cannot transfer ownership more than "
-                                  "once, or from a borrow. Fix: transfer from "
-                                  "the owner, or construct a fresh value.",
-                            "CAJETA_ERROR_MOVE_OF_BORROW");
-                    }
-                    if (!isFormal && titleBearing && !mvField->getDropEntry()) {
-                        // (b) never owned. Only borrows with a RECORDED source
-                        // (alias / field-read shapes, Gap-4 liveBorrows) reject
-                        // — a call-result local (`conn = next.get()`) stays
-                        // unchecked until the `#?` runtime-owner ABI
-                        // (spec §3.1.6, plan Unit 5) can carry its role.
-                        string owner = scope->borrowSourceOf(mvName);
-                        if (!owner.empty()) {
-                            throw Exception(
-                                "cannot transfer ownership of `" + mvName
-                                    + "`: it is a borrow; ownership belongs to `"
-                                    + owner + "`. You cannot transfer ownership "
-                                      "more than once, or from a borrow. Fix: "
-                                      "transfer from the owner, or store an owned "
-                                      "value (fresh construction / clone()) first.",
-                                "CAJETA_ERROR_MOVE_OF_BORROW");
-                        }
-                    }
-                    // stdlib-ownership-convention U2 (spec 3.1, 4.1) — the
-                    // call-result case the comment above records as
-                    // deliberately unchecked. It needs no runtime-owner ABI
-                    // after all: a callee's DECLARED return spelling is
-                    // static, intra-procedural truth, and a plain (non-`#`)
-                    // return hands back a BORROW. Surrendering it mints a
-                    // second owner for memory the callee's object still
-                    // frees — the JsonObject.keyAt shape that produced
-                    // garbage keys in cajeta-llama U13, silently, several
-                    // frames from the mistake.
-                    //
-                    // Sited OUTSIDE the `!getDropEntry()` gate above on
-                    // purpose: that gate admits only locals LVD already
-                    // classified as borrows, and the locals this check exists
-                    // for are exactly the ones it did NOT classify (they
-                    // carry a drop entry). Recorded provenance is
-                    // authoritative on its own.
-                    if (!isFormal && titleBearing) {
-                        string callOrigin = mvField->getCallBorrowOrigin();
-                        if (callOrigin.empty()) {
-                            callOrigin = scope->callBorrowOriginOf(mvName);
-                        }
-                        if (!callOrigin.empty()) {
-                            throw Exception(
-                                "cannot transfer ownership of `" + mvName
-                                    + "`: it holds a BORROW returned by `"
-                                    + callOrigin + "`, whose return type is "
-                                      "not spelled `#`. The owner is whatever "
-                                      "object that call read the value out of, "
-                                      "and it still frees it; `#" + mvName
-                                    + "` would mint a second owner and free it "
-                                      "twice. Fix: copy the value and transfer "
-                                      "the copy, or call an owned-returning "
-                                      "(`#`) variant if the API has one.",
-                                "CAJETA_ERROR_MOVE_OF_BORROW");
-                        }
-                    }
-                }
+                // U2 (plan 2.2.3) — all three rejections now live in
+                // Scope::rejectTransferOfBorrow so this spelling and the
+                // CALL-ARGUMENT spelling (a `callerTransferred` flag, which
+                // never builds this node) cannot drift apart again. The
+                // per-case reasoning moved with the code.
+                scope->rejectTransferOfBorrow(mvName);
                 scope->demoteToBorrow(mvName,
                     "moved by `#" + mvName + "` at line "
                         + std::to_string(getSourceLine()));

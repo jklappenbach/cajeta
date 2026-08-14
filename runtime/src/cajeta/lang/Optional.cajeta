@@ -100,6 +100,11 @@ public final class Optional<T> {
      * Extract the value. Throws `NoOptionalValueException` on empty
      * (optional-absence spec §2) — catchable by type or via
      * `catch (Throwable t)`; guard with isPresent() or use orElse().
+     *
+     * Returns a **borrow**: ownership stays with this Optional, which frees
+     * the value if it holds title. Read it, copy it, or lend it onward — do
+     * not write `#` on the result. When the caller genuinely needs the title
+     * (the value must outlive this Optional), use [`take`](#take).
      */
     @Inline
     public T get() {
@@ -107,6 +112,33 @@ public final class Optional<T> {
             throw heap NoOptionalValueException("Optional.get: unwrap of an empty Optional (guard with isPresent() or use orElse())");
         }
         return this.value;
+    }
+
+    /**
+     * Extract the value **with its title**, leaving this Optional empty.
+     *
+     * The owned counterpart to [`get`](#get). `get()` hands back a borrow,
+     * so `#opt.get()` is a lie — it mints a second owner for a value this
+     * Optional still frees. That is a real double-free, and both stdlib
+     * occurrences were latent until the transfer-of-a-borrow check learned
+     * to see call arguments (stdlib-ownership-convention U2).
+     *
+     * Where the value arrived by transfer — `Channel.receive` returns
+     * `stack Optional<T>(true, #item)` — this is how the title continues on
+     * to its next owner. `present` is cleared so the now-borrowed slot is
+     * not read again, and the extraction itself decays the slot's ownership
+     * bit, so this Optional's drop no longer frees what the caller took.
+     *
+     * Throws `NoOptionalValueException` on empty, like `get()`. Panics if
+     * the slot holds no title — i.e. the value was LENT in (constructed
+     * without `#`), so there is no title to take; use `get()` for that.
+     */
+    public #T take() {
+        if (!this.present) {
+            throw heap NoOptionalValueException("Optional.take: unwrap of an empty Optional (guard with isPresent() or use orElse())");
+        }
+        this.present = false;
+        return #this.value;
     }
 
     /** Returns the held value when present, otherwise `fallback`. Never throws. */

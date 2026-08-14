@@ -204,6 +204,23 @@ namespace cajeta {
         // The borrow-returning call `name` came from, or "".
         string callBorrowOriginOf(const string& name);
 
+        // U2 (plan 2.2.3) — the transfer-of-a-borrow rejection, shared by
+        // EVERY site that can spell `#x` on a named local. Throws
+        // CAJETA_ERROR_MOVE_OF_BORROW when `name` holds a borrow; returns
+        // quietly otherwise.
+        //
+        // Factored out because the two spellings of `#x` take different
+        // routes through the compiler and had silently diverged: an
+        // assignment/return builds a MoveExpression node (whose
+        // generateCode held all three checks), while a CALL ARGUMENT is a
+        // parse-level `callerTransferred` flag on MethodCallParameter with
+        // a BARE IDENTIFIER child — no MoveExpression is ever constructed,
+        // so arguments reached none of the checks. Argument position is
+        // where the cajeta-llama corruption actually lived
+        // (`heap String(#kb, kl)`), i.e. the blind spot covered the
+        // motivating case. One body, three call sites, no drift.
+        void rejectTransferOfBorrow(const string& name);
+
         // 5.2.7 — record `holder` now holds a lend of the local owner `src`.
         void recordLend(const string& holder, const string& src);
         // The local owners `holder` holds lends of (empty when none).

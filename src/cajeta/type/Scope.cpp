@@ -1,6 +1,9 @@
 #include "Scope.h"
 #include "../field/Field.h"
+#include "../field/ParameterField.h"
 #include "../compile/CajetaModule.h"
+#include "../error/Exception.h"
+#include "CajetaClass.h"
 
 namespace cajeta {
     Scope::Scope(string name, CajetaModulePtr module, ScopePtr parent) {
@@ -93,6 +96,79 @@ namespace cajeta {
             target = target->parent ? target->parent.get() : nullptr;
         }
         return "";
+    }
+
+    void Scope::rejectTransferOfBorrow(const string& name) {
+        FieldPtr field = getField(name);
+        if (!field) return;
+        bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(field);
+        auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
+        // Value types copy, and shared-capable values (String/Slice) transfer
+        // by share-bump rather than title move (§5.1.6) — neither can
+        // double-free, so neither is this check's business.
+        bool titleBearing = klass && !klass->isValueType()
+                && !klass->isSharedCapableValue();
+        if (!titleBearing) return;
+
+        // (a) Demoted by an EARLIER transfer — a transfer demotes its source,
+        // so transferring twice IS transferring from a borrow. Applies to
+        // formals too: `isBorrow` only becomes true once something in THIS
+        // method actually transferred the name, so a plain formal that was
+        // merely lent stays untouched (§1.4).
+        if (isBorrow(name)) {
+            string note = transferSiteOf(name);
+            throw Exception(
+                "cannot transfer ownership of `" + name + "`: it is a borrow"
+                    + (note.empty() ? "" : " — already transferred ("
+                        + note + ")")
+                    + ". You cannot transfer ownership more than once, or "
+                      "from a borrow. Fix: transfer from the owner, or "
+                      "construct a fresh value.",
+                "CAJETA_ERROR_MOVE_OF_BORROW");
+        }
+
+        // Formals are excluded from the two STATIC checks below, and must stay
+        // excluded: a formal's ownership is fixed at the call site and carried
+        // at run time by the transfer word, so `#p` forwards whichever mode
+        // arrived (conditional acquisition). Rejecting it statically would
+        // outlaw every mode-forwarding wrapper.
+        if (isFormal) return;
+
+        // (b) Never owned — an alias / field-read borrow with a recorded
+        // source.
+        if (!field->getDropEntry()) {
+            string owner = borrowSourceOf(name);
+            if (!owner.empty()) {
+                throw Exception(
+                    "cannot transfer ownership of `" + name
+                        + "`: it is a borrow; ownership belongs to `" + owner
+                        + "`. You cannot transfer ownership more than once, "
+                          "or from a borrow. Fix: transfer from the owner, or "
+                          "store an owned value (fresh construction / "
+                          "clone()) first.",
+                    "CAJETA_ERROR_MOVE_OF_BORROW");
+            }
+        }
+
+        // (c) A BORROW returned by a plain (non-`#`) call. Deliberately
+        // outside the drop-entry gate above: that gate admits only locals
+        // already classified as borrows, and the locals this check exists for
+        // are exactly the ones that were NOT so classified (they carry a drop
+        // entry). Recorded provenance is authoritative on its own.
+        string callOrigin = field->getCallBorrowOrigin();
+        if (callOrigin.empty()) callOrigin = callBorrowOriginOf(name);
+        if (!callOrigin.empty()) {
+            throw Exception(
+                "cannot transfer ownership of `" + name
+                    + "`: it holds a BORROW returned by `" + callOrigin
+                    + "`, whose return type is not spelled `#`. The owner is "
+                      "whatever object that call read the value out of, and it "
+                      "still frees it; `#" + name + "` would mint a second "
+                      "owner and free it twice. Fix: copy the value and "
+                      "transfer the copy, or call an owned-returning (`#`) "
+                      "variant if the API has one.",
+                "CAJETA_ERROR_MOVE_OF_BORROW");
+        }
     }
 
     set<string> Scope::lendsOf(const string& holder) {

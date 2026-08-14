@@ -1933,6 +1933,27 @@ namespace cajeta {
                         pModule, methodName, returnType, formals,
                         /*block=*/nullptr, interface);
                     method->setAbstract(true);
+                    // `#T foo();` — an INTERFACE method's return transfers
+                    // ownership, exactly as in a class body. This path builds
+                    // its Method by hand (it does NOT go through
+                    // visitMethodDeclaration, which is where the class-body
+                    // form reads this) and took only the return TYPE out of
+                    // typeTypeOrVoid, dropping the `#` beside it. Every
+                    // interface method declared `#T` therefore carried
+                    // returnsOwnership == false, and its callers were told
+                    // the result was a borrow.
+                    //
+                    // Found by the U2 transfer-of-a-borrow check firing on
+                    // DnsCache's `this.resolver.resolve(...)`, where
+                    // `Resolver.resolve` IS declared `#SocketAddress[]`: the
+                    // call site was right and the compiler had lost the `#`.
+                    // Same defect class as the four `@Native` String methods
+                    // this unit already corrected — a signature saying `#`
+                    // that the compiler did not believe.
+                    if (common->typeTypeOrVoid()
+                            && common->typeTypeOrVoid()->REFERENCE() != nullptr) {
+                        method->setReturnsOwnership(true);
+                    }
                     // xref (ide-symbol-index §2): interface methods are the TARGET
                     // of every override edge, so they must be locatable.
                     if (common->getStart()) {

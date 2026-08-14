@@ -1564,6 +1564,22 @@ namespace cajeta {
         return match;
     }
 
+    void rejectTransferOfBorrowArgs(CajetaModulePtr module,
+                                    const vector<MethodCallParameter>& args) {
+        auto scope = module->getScopeStack().peek();
+        if (!scope) return;
+        for (auto& p : args) {
+            if (!p.callerTransferred) continue;
+            // Only a bare `#name` is decidable here. `#a.b` and `#f()` need
+            // path-based provenance and are left alone rather than guessed at
+            // — the check must never block valid code (spec 7.2).
+            auto id = std::dynamic_pointer_cast<IdentifierExpression>(
+                p.expression);
+            if (!id) continue;
+            scope->rejectTransferOfBorrow(id->getTextValue());
+        }
+    }
+
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
         // xref (ide-symbol-index §2): open this call site for the duration of its
         // codegen. CajetaClass::resolveMethod — the choke point every callee
@@ -1584,6 +1600,13 @@ namespace cajeta {
         std::vector<llvm::Value*> argTitleFlags(parameters.size(), nullptr);
         // Stale-value guard (mirrors MoveExpression::runtimeTitleFlag).
         flaggedTitleValue = nullptr;
+
+        // U2 (plan 2.2.3) — reject `#borrow` at an argument BEFORE any IR is
+        // emitted. Sited at the top of generateCode rather than beside the
+        // title-flag loop further down, because that loop sits past several
+        // specialized early-return paths (intrinsics, closure calls) that a
+        // `#`-argument can still reach.
+        rejectTransferOfBorrowArgs(module, parameters);
 
         // ----- tryAs<T>() intrinsic (reified capture -> Optional<T>) -----
         // `recv.tryAs<Foo<int32>>()` checks recv's runtime reified instantiation

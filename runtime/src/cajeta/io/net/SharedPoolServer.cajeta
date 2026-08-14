@@ -314,7 +314,15 @@ public class SharedPoolServer extends Server {
             if (!next.isPresent()) {
                 return 0;   // queue closed and drained — this worker is done
             }
-            TcpStream conn = next.get();
+            // `take()`, not `get()`: the title must continue on to the
+            // handler, which owns the stream and closes it (runTurn's formal
+            // is `#TcpStream`). `Channel.receive` transferred the item INTO
+            // this Optional (`stack Optional<T>(true, #item)`), so the
+            // Optional holds title and would free it at iteration end —
+            // `#next.get()` claimed a second one. Latent double-free, unseen
+            // until the transfer-of-a-borrow check learned to read call
+            // arguments (stdlib-ownership-convention U2).
+            TcpStream conn = next.take();
             queued.fetchAdd(-1);   // dequeued: now in-handler, no longer staged
             SharedPoolServer.runTurn(handler, inflight, #conn);
         }

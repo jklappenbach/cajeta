@@ -40,13 +40,21 @@ public final class FilterStream<T> extends Stream<T> {
      * Pulls from the source until `pred` accepts an element, returning it
      * wrapped in a present `Optional`, or an empty `Optional` once the
      * source is exhausted.
+     *
+     * Ownership stays with the SOURCE. `Optional.get()` returns a borrow of
+     * the held element, so the pre-fix body — `T v = o.get();` then
+     * `stack Optional<T>(true, #v)` — surrendered a title it never held,
+     * giving the returned Optional a second claim on an element the source
+     * still frees. The Optional constructor stores with `#=`, which records
+     * the mode PER SLOT, so simply lending (no `#`) makes the returned
+     * Optional a viewer and leaves exactly one owner. Same shape and same
+     * fix as `Stream.findFirst`, which hit this first.
      */
     public Optional<T> next() {
         Optional<T> o = this.source.next();
         while (o.isPresent()) {
-            T v = o.get();
-            if (this.pred(v)) {
-                return stack Optional<T>(true, #v);
+            if (this.pred(o.get())) {
+                return stack Optional<T>(true, o.get());
             }
             o = this.source.next();
         }

@@ -271,3 +271,59 @@ TEST(TransferOfBorrowTests, copyThenTransferIsTheFix) {
     compileExpectOk(src);
     EXPECT_EQ(runI32(src), 7);
 }
+
+// ---------------------------------------------------------------------
+// 2.2.3 — the CALL-ARGUMENT blind spot.
+//
+// `#x` reaches codegen two different ways. An assignment or a return
+// builds a MoveExpression node; a call ARGUMENT instead sets
+// MethodCallParameter::callerTransferred and leaves a BARE IDENTIFIER as
+// the child, so no MoveExpression is ever constructed. Every borrow check
+// lived in MoveExpression::generateCode, so argument position saw none of
+// them — a blind spot the PRE-EXISTING checks shared, not one this unit
+// introduced. It mattered because argument position is where the
+// cajeta-llama corruption actually lived (`heap String(#kb, kl)`).
+//
+// The two rejection tests above are themselves argument-position cases
+// and were red for exactly this reason. These pin the remaining argument
+// shapes so a later refactor cannot quietly reopen the gap.
+// ---------------------------------------------------------------------
+
+// A borrow surrendered at a plain METHOD-CALL argument (the tests above
+// cover the constructor form) is rejected, naming both ends.
+TEST(TransferOfBorrowTests, transferAtMethodCallArgumentRejected) {
+    std::string src = std::string(kBoxSrc) +
+        "public final class D {\n"
+        "    static int32 consume(#int8[] p) {\n"
+        "        Sink s = heap Sink(#p);\n"
+        "        return s.first();\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box();\n"
+        "        int8[] v = b.borrowData();\n"
+        "        return D.consume(#v);\n"       // borrow surrendered
+        "    }\n"
+        "}\n";
+    std::string msg = compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
+    EXPECT_NE(msg.find("`v`"), std::string::npos)
+        << "message should name the local: " << msg;
+    EXPECT_NE(msg.find("borrowData"), std::string::npos)
+        << "message should name the borrow origin: " << msg;
+}
+
+// The control the closure must not break: LENDING the same borrow at the
+// same argument position is correct and still compiles. Closing the blind
+// spot must reject the `#`, not the argument.
+TEST(TransferOfBorrowTests, lendAtCallArgumentStillCompiles) {
+    std::string src = std::string(kBoxSrc) +
+        "public final class D {\n"
+        "    static int32 peek(int8[] p) { return (int32) p[0]; }\n"
+        "    public static int32 run() {\n"
+        "        Box b = heap Box();\n"
+        "        int8[] v = b.borrowData();\n"
+        "        return D.peek(v);\n"           // lent, not surrendered
+        "    }\n"
+        "}\n";
+    compileExpectOk(src);
+    EXPECT_EQ(runI32(src), 7);
+}
