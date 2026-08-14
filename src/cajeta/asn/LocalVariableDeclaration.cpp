@@ -1250,6 +1250,19 @@ namespace cajeta {
                                         // Non-# return — the local is a borrow
                                         // of whatever the callee returned.
                                         initIsBorrow = true;
+                                        // stdlib-ownership-convention U2 —
+                                        // remember WHICH call lent it, so a
+                                        // later `#local` is rejected with both
+                                        // ends named (spec 4.3). The
+                                        // borrow-ness was already decided
+                                        // here; only the provenance was being
+                                        // discarded.
+                                        if (auto sc =
+                                                module->getScopeStack().peek()) {
+                                            sc->recordCallBorrow(
+                                                declarator->getIdentifier(),
+                                                mcName + "()");
+                                        }
                                     }
                                 }
                                 // M5(b) — fn-typed MCE through a function-

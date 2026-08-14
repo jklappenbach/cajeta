@@ -380,7 +380,7 @@ public final class String {
     // Native replace core: NULL result = "no change" (no match, empty or
     // null pattern) so this side can hand back the receiver unchanged.
     @Native("__cajeta_string_replace")
-    private String replaceNative(String from, String repl);
+    private #String replaceNative(String from, String repl);
 
     /**
      * Returns a new String with every non-overlapping occurrence of
@@ -419,16 +419,16 @@ public final class String {
     // NULL result = already normalized, so this side hands back `this` —
     // §7.4's no-copy fast path (same convention as replaceNative).
     @Native("__cajeta_ucd_normalize")
-    private String normalizeNative(int32 form);
+    private #String normalizeNative(int32 form);
 
     @Native("__cajeta_ucd_is_normalized")
     private int32 isNormalizedNative(int32 form);
 
     @Native("__cajeta_ucd_casefold")
-    private String caseFoldNative();
+    private #String caseFoldNative();
 
     @Native("__cajeta_ucd_strip_ignorable")
-    private String stripDefaultIgnorablesNative();
+    private #String stripDefaultIgnorablesNative();
 
     private #String normalizeForm(int32 form) {
         if (this.ucdValid() == 0) {

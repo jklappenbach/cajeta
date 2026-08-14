@@ -121,10 +121,29 @@ Convention without enforcement decays; these are the two checks that
 would have caught three of this unit's four bugs at the line rather
 than as corruption.
 
-- **4.1** `CAJETA_ERROR_TRANSFER_OF_BORROW` — reject `#x` where `x`'s
-  title is not held by the current scope: a value obtained from a
-  borrow-returning call, a plain parameter, or an already-moved local.
-  Local, decidable, no inference required.
+- **4.1** Reject `#x` where `x` holds a borrow returned by a plain
+  (non-`#`) call. Local, decidable, no inference required: the callee's
+  declared return spelling is static truth.
+
+  *Amended 2026-08-14 during Unit 2, from contact with the compiler.*
+  Three corrections to this item as first drafted:
+
+  - The diagnostic is the EXISTING `CAJETA_ERROR_MOVE_OF_BORROW`, not a
+    new code. The compiler already rejects transfer-of-a-borrow; its own
+    comment names the call-result case as a deliberate, documented gap
+    ("stays unchecked until the `#?` runtime-owner ABI can carry its
+    role"). Closing that gap needs no runtime ABI, and a second code for
+    one defect would fragment the diagnostics.
+  - **Plain parameters are NOT covered, and must not be.** A formal's
+    ownership is fixed at the call site and carried at run time by the
+    transfer word: `f(x)` lends, `f(#x)` transfers, and `#p` inside the
+    callee forwards whichever mode arrived (conditional acquisition),
+    with `#=` recording the forwarded mode per slot. Rejecting `#p`
+    statically would break that design and outlaw every mode-forwarding
+    wrapper. The existing check excludes formals deliberately.
+  - Already-moved locals are already diagnosed by the existing
+    `demoteToBorrow` tracking; no new work (verified by test 2.1.5,
+    which passed against the unmodified compiler).
 - **4.2** `CAJETA_ERROR_CAPTURED_BORROW_PARAM` — reject storing a plain
   parameter into a field, array element, or container beyond the call,
   naming `#T` as the fix. Sinks (§2.3) opt out by spelling the store

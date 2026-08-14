@@ -72,6 +72,29 @@ namespace cajeta {
         target->lendEdges[holder].insert(src);
     }
 
+    // U2 — same declaring-scope placement as recordLend/demoteToBorrow, so a
+    // `#local` inside a nested block still sees the provenance recorded at
+    // the declaration.
+    void Scope::recordCallBorrow(const string& name, const string& origin) {
+        Scope* target = this;
+        while (target) {
+            if (target->fields.find(name) != target->fields.end()) break;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        if (!target) target = this;
+        target->callBorrowOrigins[name] = origin;
+    }
+
+    string Scope::callBorrowOriginOf(const string& name) {
+        Scope* target = this;
+        while (target) {
+            auto it = target->callBorrowOrigins.find(name);
+            if (it != target->callBorrowOrigins.end()) return it->second;
+            target = target->parent ? target->parent.get() : nullptr;
+        }
+        return "";
+    }
+
     set<string> Scope::lendsOf(const string& holder) {
         Scope* target = this;
         while (target) {

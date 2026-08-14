@@ -104,6 +104,19 @@ namespace cajeta {
         // spelling at the lend is the suppression.
         map<string, set<string>> lendEdges;
 
+        // stdlib-ownership-convention U2 — call-result provenance. Maps a
+        // local to the BORROW-returning call it was initialised from
+        // ("o.keyAt(j)"), i.e. a callee whose return type is NOT `#`-owned.
+        // Such a local holds no title, so `#local` would surrender one it
+        // does not have and mint a second owner — the JsonObject.keyAt bug
+        // that produced garbage keys in cajeta-llama U13.
+        //
+        // This closes the gap the MOVE_OF_BORROW check documents as
+        // deliberately open ("a call-result local stays unchecked"): the
+        // callee's DECLARED return spelling is static, intra-procedural
+        // truth, so no runtime-owner ABI is needed to read it.
+        map<string, string> callBorrowOrigins;
+
         void putField(FieldPtr field, string propertyPath);
 
     public:
@@ -184,6 +197,12 @@ namespace cajeta {
         struct MoveMark { Scope* target; string name; string note; };
         vector<MoveMark> snapshotMovesSince(size_t mark) const;
         void reapplyMoves(const vector<MoveMark>& moves);
+
+        // U2 — record that `name` was initialised from the borrow-returning
+        // call `origin` (a callee declared without `#` on its return type).
+        void recordCallBorrow(const string& name, const string& origin);
+        // The borrow-returning call `name` came from, or "".
+        string callBorrowOriginOf(const string& name);
 
         // 5.2.7 — record `holder` now holds a lend of the local owner `src`.
         void recordLend(const string& holder, const string& src);

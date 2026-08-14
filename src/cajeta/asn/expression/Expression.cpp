@@ -3230,6 +3230,31 @@ bool cajetaRhsCarriesRedundantSharp(
                                       "value (fresh construction / clone()) first.",
                                 "CAJETA_ERROR_MOVE_OF_BORROW");
                         }
+                        // stdlib-ownership-convention U2 (spec 3.1, 4.1) —
+                        // the call-result case the comment above records as
+                        // deliberately unchecked. It needs no runtime-owner
+                        // ABI after all: a callee's DECLARED return spelling
+                        // is static, intra-procedural truth, and a plain
+                        // (non-`#`) return hands back a BORROW. Surrendering
+                        // it mints a second owner for memory the callee's
+                        // object still frees — the JsonObject.keyAt shape
+                        // that produced garbage keys in cajeta-llama U13,
+                        // silently, several frames from the mistake.
+                        string callOrigin = scope->callBorrowOriginOf(mvName);
+                        if (!callOrigin.empty()) {
+                            throw Exception(
+                                "cannot transfer ownership of `" + mvName
+                                    + "`: it holds a BORROW returned by `"
+                                    + callOrigin + "`, whose return type is "
+                                      "not spelled `#`. The owner is whatever "
+                                      "object that call read the value out of, "
+                                      "and it still frees it; `#" + mvName
+                                    + "` would mint a second owner and free it "
+                                      "twice. Fix: copy the value and transfer "
+                                      "the copy, or call an owned-returning "
+                                      "(`#`) variant if the API has one.",
+                                "CAJETA_ERROR_MOVE_OF_BORROW");
+                        }
                     }
                 }
                 scope->demoteToBorrow(mvName,
