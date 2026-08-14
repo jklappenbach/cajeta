@@ -180,6 +180,102 @@ const char* __cajeta_script_result_get(void) {
 
 // Run `entry` with a session-level catch installed. Returns NULL when the
 // call completed (its value in *out_value), or the thrown Throwable.
+// jupyter-kernel U6 (spec 5.1) — interrupting a running cell.
+//
+// The thrown "value" for an interrupt is a SENTINEL ADDRESS, not a Throwable.
+// Nothing dereferences it: the guard below recognizes it by identity before
+// it reaches `__cajeta_is_unrecoverable`, and the kernel renders it from the
+// pointer alone. Constructing a real exception object would mean calling into
+// compiled Cajeta code from a safepoint that may be inside anything.
+// External for the same reason the interrupt flag is (see cajeta_rt_core.c):
+// the marker accessor and the guard's identity test must agree on ONE
+// address, and an internal global can be duplicated across JIT partitions —
+// which here would mean an interrupt the guard fails to recognize and then
+// dereferences as a Throwable.
+char __cajeta_session_interrupt_sentinel = 0;
+
+// The frame an interrupt unwinds TO: the one `__cajeta_session_guard_call`
+// pushed for the cell currently running, or NULL when no cell is. Set and
+// restored by the guard, so it is always a frame whose stack is still live —
+// the property "the outermost link of the chain" does not have.
+//
+// A plain pointer rather than TLS: a session has exactly one execution
+// thread by contract (KernelSession.h), so there is exactly one guarded cell
+// at a time, and a `__thread` here would risk the internal-global
+// duplication the interrupt flag already had to be made external to avoid.
+struct cajeta_exception_frame* __cajeta_session_guard_frame = NULL;
+
+void* __cajeta_session_interrupt_marker(void) {
+    return &__cajeta_session_interrupt_sentinel;
+}
+
+// Unwind to the OUTERMOST exception frame on this thread's chain — the
+// session guard's — not the innermost, which is what `__cajeta_throw` would
+// do. Two reasons, and both matter:
+//
+//   * A cell's own `try { } catch (Exception e)` must not swallow an
+//     interrupt. It would bind the sentinel as an object and dereference it,
+//     and "Ctrl-C got eaten by a catch-all in cell 3" is not a thing a
+//     notebook user can debug.
+//   * The guard is where the cell's error is turned into a reply. Landing
+//     anywhere else means the interrupt is reported by code that does not
+//     know it happened.
+//
+// Returns normally when there is no frame to land in — a cell running outside
+// a guard is not interruptible, which is the honest answer rather than a
+// longjmp into nothing.
+void __cajeta_session_interrupt_unwind(void) {
+    // The guard's OWN frame, recorded by the guard. Emphatically not "walk
+    // the chain to its outermost link", which was the first attempt: the
+    // outermost link is not necessarily live. A frame left by an earlier,
+    // completed call has a `jmp_buf` describing a stack that no longer
+    // exists, and longjmping into it faults immediately — which is exactly
+    // what happened, and it happened with all chain repair disabled, which is
+    // how the longjmp itself was identified as the culprit rather than the
+    // bookkeeping around it.
+    struct cajeta_exception_frame* outer = __cajeta_session_guard_frame;
+    if (!outer) return;
+    struct cajeta_exception_frame** excTop = __cajeta_exc_top_ptr();
+    if (!*excTop) return;
+
+    // Run the drops the skipped frames own, exactly as __cajeta_throw does on
+    // its way to a catch: an interrupt must not leak what the cell allocated.
+    struct cajeta_drop_entry** dropTop = __cajeta_drop_top_ptr();
+    struct cajeta_drop_entry* watermark = outer->drop_watermark;
+    while (*dropTop != watermark) {
+        struct cajeta_drop_entry* e = *dropTop;
+        if (!e) break;
+        if (e->active && e->drop_fn) e->drop_fn(e->obj);
+        *dropTop = e->prev;
+    }
+    // The unwound frames ran no __cajeta_line_leave / __cajeta_dbg_frame_leave,
+    // so restore both chains to the guard's watermarks — the same repair
+    // __cajeta_throw performs, and for the same reason: a leaked frame makes
+    // every later stack trace and step depth wrong.
+    __cajeta_shadow_set_top(outer->shadow_watermark);
+    {
+        struct cajeta_dbg_frame** dbgTop = __cajeta_dbg_top_ptr();
+        struct cajeta_dbg_frame* mark = outer->dbg_watermark;
+        int g = 0;
+        while (*dbgTop && *dbgTop != mark && g++ < 65536) {
+            struct cajeta_dbg_frame* f = *dbgTop;
+            *dbgTop = f->prev;
+            if (f->owner == dbgTop) free(f);
+        }
+    }
+    *excTop = outer;
+    // Through the ACCESSOR, never `&sentinel` directly — and the guard reads
+    // it the same way. A global's address is only a reliable identity if
+    // every party sees the same copy, and this runtime is materialized by the
+    // JIT in partitions where an internal global can be duplicated. Going via
+    // the one function symbol makes both sides agree by construction. Getting
+    // this wrong does not misreport the interrupt, it CRASHES: the guard
+    // fails the identity test, decides the sentinel is a Throwable, and
+    // dereferences it.
+    outer->thrown_value = __cajeta_session_interrupt_marker();
+    longjmp(outer->buf, 1);
+}
+
 void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
     // Anything read after the longjmp has to survive it: a non-volatile local
     // modified between setjmp and longjmp is indeterminate, and a parameter
@@ -190,23 +286,36 @@ void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
 
     struct cajeta_exception_frame frame;
     __cajeta_exc_push(&frame);
+    // Publish this frame as the interrupt target while the cell runs, and put
+    // back whatever was there on the way out (nesting stays honest even
+    // though the kernel never nests). U6.
+    struct cajeta_exception_frame* volatile priorGuard =
+        __cajeta_session_guard_frame;
+    __cajeta_session_guard_frame = &frame;
     if (setjmp(frame.buf) == 0) {
         int32_t v = fn();
+        __cajeta_session_guard_frame = priorGuard;
         __cajeta_exc_pop();
         if (outp) *outp = v;
         return NULL;
     }
+    __cajeta_session_guard_frame = priorGuard;
     // Landed from __cajeta_throw's longjmp. It has already unwound the drop
     // chain to this frame's watermark and restored the line/debug chains; the
     // value is parked in the frame.
     void* thrown = frame.thrown_value;
     __cajeta_exc_pop();
+    // An INTERRUPT is a sentinel address, not a Throwable — recognized here,
+    // before anything can dereference it. It still needs the drain below (the
+    // cell may have stranded spawned work), so it falls through rather than
+    // returning early.
+    int interrupted = (thrown == __cajeta_session_interrupt_marker());
     // A PANIC is not a cell error. The guard is a catch-all, so without this
     // an UnrecoverableException — reserved for invariant violations — would
     // be swallowed into a red cell and the session would carry on over a
     // world it has already been told is broken. Same emit-and-abort the
     // no-frame path takes (jupyter-kernel 4.3.1).
-    if (__cajeta_is_unrecoverable(thrown)) {
+    if (!interrupted && __cajeta_is_unrecoverable(thrown)) {
         __cajeta_emit_uncaught(thrown, /*is_unrec=*/1);
         abort();
     }

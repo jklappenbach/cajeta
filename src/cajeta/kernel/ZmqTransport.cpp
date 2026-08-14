@@ -218,6 +218,35 @@ namespace cajeta::kernel {
         std::atomic<bool> running{true};
 
         std::thread hbThread;
+        // Published by the execution thread once its protocol exists, so the
+        // IO thread can answer an interrupt without going through the queue.
+        std::atomic<KernelProtocol*> protocol{nullptr};
+
+        // U6 / spec 5.1 + 6.3.1 — `interrupt_request` is answered HERE, on
+        // the IO thread, and never queued. Queueing it would put it behind
+        // the very cell it is meant to stop: the execution thread cannot
+        // drain its queue while it is inside a runaway loop, so the request
+        // would arrive only once the loop finished, which is exactly never.
+        // This is what "the kernel stays responsive during the stuck window"
+        // means in practice.
+        bool answerOnIoThread(const Envelope& in) {
+            if (in.channel != Channel::Control) return false;
+            JupyterMessage msg;
+            if (!decodeMessage(in.frames, signer, &msg, nullptr)) return false;
+            if (msg.type() != "interrupt_request") return false;
+            if (KernelProtocol* p = protocol.load(std::memory_order_acquire)) {
+                p->interrupt();
+            }
+            Envelope out;
+            out.channel = Channel::Control;
+            out.frames = encodeMessage(
+                makeReply("interrupt_reply", msg, sessionId,
+                          dap::Json::object()), signer);
+            outbound.push(std::move(out));
+            return true;
+        }
+
+        std::string sessionId = newUuid();
 
         void* openSocket(int type, int port, int* boundOut, std::string* error) {
             void* sock = zmq_socket(context, type);
@@ -270,7 +299,8 @@ namespace cajeta::kernel {
                 out.frames = encodeMessage(msg, signer);
                 outbound.push(std::move(out));
             });
-            protocol.setSessionId(newUuid());
+            protocol.setSessionId(sessionId);
+            this->protocol.store(&protocol, std::memory_order_release);
 
             Envelope envelope;
             while (inbound.pop(&envelope)) {
@@ -375,6 +405,9 @@ namespace cajeta::kernel {
                     Envelope in;
                     in.channel = sources[i].channel;
                     if (recvMultipart(sources[i].sock, &in.frames)) {
+                        // An interrupt is answered here rather than queued —
+                        // see answerOnIoThread.
+                        if (impl.answerOnIoThread(in)) continue;
                         impl.inbound.push(std::move(in));
                     }
                 }

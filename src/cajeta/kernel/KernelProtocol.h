@@ -66,6 +66,14 @@ namespace cajeta::kernel {
         // 1-based count of executes SEEN, failures included (spec 2.2).
         int executionCount() const;
 
+        // Stop the running cell at its next safepoint (spec 5.1), if one is
+        // running. SAFE FROM ANOTHER THREAD, and it has to be: the transport
+        // answers `interrupt_request` on its IO thread precisely because the
+        // execution thread is busy inside the cell being interrupted. Only
+        // touches the session through KernelSession::requestInterrupt, which
+        // is itself documented as cross-thread safe.
+        void interrupt();
+
         // Tear the session down and build a new one. `shutdown_request` with
         // restart=true does this itself; the transport calls it when the
         // frontend restarts out-of-band.

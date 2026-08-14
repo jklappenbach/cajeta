@@ -183,6 +183,18 @@ struct KernelSession::Impl {
 
     std::filesystem::path scratchRoot;
     KernelSession::StreamHandler streamHandler;
+    // U6 (spec 5.1) — the interrupt seam, resolved once on the EXECUTION
+    // thread at the first cell (see execute()). `requestInterrupt` is
+    // documented as callable from another thread, and it can only honour that
+    // if it never touches the JIT: a symbol lookup while the execution thread
+    // is materializing a cell is exactly the race the rest of this class
+    // exists to avoid. These are plain function pointers into the JIT's
+    // runtime copy, written once and read-only thereafter. Resolving through
+    // the JIT (not the process copy) matters for the same reason the guard
+    // does: the flag the safepoint reads must be the flag the setter sets.
+    void (*requestInterruptFn)() = nullptr;
+    void (*clearInterruptFn)() = nullptr;
+    void* (*interruptMarker)() = nullptr;
     SessionStats stats;
     int execCount = 0;
     bool shutdownDone = false;
@@ -309,6 +321,7 @@ CellResult KernelSession::execute(const std::string& source,
     // too (spec 2.2), so `In[N]`/`Out[N]` never reuse a number.
     result.executionCount = impl.execCount;
 
+
     // The cell's source has to reach the compiler as a FILE: the script-unit
     // stem (and so the implicit class name) is path-derived, and the whole
     // parse path is file-oriented. One file per cell under the session's
@@ -386,6 +399,31 @@ CellResult KernelSession::execute(const std::string& source,
         cellModule = impl.compiler->createModule(
             cellPath.string(), (impl.scratchRoot / "src").string(),
             (impl.scratchRoot / "archive").string());
+        // U6 (spec 5.1) — SAFEPOINTS, on THIS MODULE only.
+        //
+        // `Block` gates the per-statement `__cajeta_dbg_safepoint` call on the
+        // module's own `debugInfo`, and a safepoint is the only place an
+        // interrupt can be taken: without one, a `while (true)` cell emits
+        // nothing that can ever notice the request. So the flag goes on the
+        // cell, where the user's statements are.
+        //
+        // `safepoints`, NOT `debugInfo`. Setting debugInfo was the first
+        // attempt and it broke the first cell outright: debugInfo also calls
+        // `noteForceAll("--debug-info=full")`, which retains the entire class
+        // registry, which dragged every stdlib class into the cell's compile
+        // — and the cell died on `unknown field type 'bfloat16'` from a
+        // stdlib class that does not compile from source in that world. The
+        // kernel wants somewhere to stop, not a debugger's worth of metadata.
+        //
+        // Scoped to the CELL's module, so the stdlib pays nothing. The cost
+        // of that scoping is the documented limit (6.3.1): a cell parked
+        // inside a long stdlib or native call reaches no safepoint and does
+        // not stop until it returns to the cell's own code.
+        {
+            CompilerFlags cellFlags = cellModule->getFlags();
+            cellFlags.safepoints = true;
+            cellModule->setFlags(cellFlags);
+        }
         // Name THIS cell as the session emit target: a stdlib template
         // specialized over a user type must emit HERE, not into the cell that
         // declared the type — that one is already sealed in the JIT
@@ -689,6 +727,29 @@ CellResult KernelSession::execute(const std::string& source,
     // own, and a throw would sail straight past it.
     auto* guardCall = reinterpret_cast<void* (*)(int32_t (*)(), int32_t*)>(
         lookupSymbol("__cajeta_session_guard_call"));
+
+    // U6 — the interrupt seam, resolved HERE and once. Not in create(): the
+    // runtime's symbols are not resolvable that early, the lookups came back
+    // null, and `requestInterrupt` became a silent no-op that looked exactly
+    // like an interrupt arriving too late. This is the point where the guard
+    // symbol is known to resolve, so it is the point where these do too.
+    // Resolving on the EXECUTION thread is also what lets `requestInterrupt`
+    // be called from another one: by the time a cell is running the pointers
+    // are set and it never has to touch the JIT.
+    if (!impl.requestInterruptFn) {
+        impl.requestInterruptFn = reinterpret_cast<void (*)()>(
+            lookupSymbol("__cajeta_session_request_interrupt"));
+        impl.clearInterruptFn = reinterpret_cast<void (*)()>(
+            lookupSymbol("__cajeta_session_clear_interrupt"));
+        impl.interruptMarker = reinterpret_cast<void* (*)()>(
+            lookupSymbol("__cajeta_session_interrupt_marker"));
+    }
+    // spec 5.2 — a request that arrived while nothing was running, or while
+    // THIS cell was still compiling, is a no-op: the flag never survives into
+    // the run. Without this the user's next cell dies for a Ctrl-C they aimed
+    // at an already-finished one.
+    if (impl.clearInterruptFn) impl.clearInterruptFn();
+
     void* thrown = nullptr;
     {
         std::unique_ptr<cajeta::util::FdCapture> capture;
@@ -706,6 +767,21 @@ CellResult KernelSession::execute(const std::string& source,
         }
     }
     if (thrown) {
+        // U6 (spec 5.1): an interrupt arrives as a sentinel ADDRESS, not a
+        // Throwable — identity is the whole test, and nothing may dereference
+        // it. Rendered here rather than in describeThrow so that function
+        // keeps its single job: decoding real thrown objects.
+        if (impl.interruptMarker && thrown == impl.interruptMarker()) {
+            result.threw = true;
+            result.exceptionType = "KeyboardInterrupt";
+            result.message = "interrupted";
+            result.file = cellName;
+            CellFrame frame;
+            frame.file = cellName;
+            frame.text = cellName;
+            result.traceback.push_back(frame);
+            return result;
+        }
         describeThrow(thrown, cellName, &result);
         return result;
     }
@@ -721,6 +797,14 @@ CellResult KernelSession::execute(const std::string& source,
 
 void KernelSession::setStreamHandler(StreamHandler handler) {
     impl_->streamHandler = std::move(handler);
+}
+
+void KernelSession::requestInterrupt() {
+    // Deliberately does nothing but set a flag through a pointer resolved at
+    // session creation — no JIT lookup, no lock, no session state. That is
+    // what makes it safe to call from the control thread while the execution
+    // thread is inside a cell, which is the only time it is any use.
+    if (impl_->requestInterruptFn) impl_->requestInterruptFn();
 }
 
 void* KernelSession::lookupSymbol(const std::string& exactName) {

@@ -131,7 +131,11 @@ namespace cajeta {
                 arenaMark = builder->CreateCall(markFn, {}, "arena.mark");
             }
         }
-        bool debugInfo = module->getFlags().debugInfo;
+        // `safepoints`, not `debugInfo`: the two travel together under
+        // `--debug-info=full`, but the Jupyter kernel asks for statement
+        // boundaries WITHOUT the keep-all class-registry retention debugInfo
+        // also implies (CompilerFlags::safepoints explains why).
+        bool safepoints = module->getFlags().safepoints;
         bool lineInfo = module->getFlags().lineInfo;
         // title-tracking §3.1.5 — checkpoint the move log: a block whose
         // codegen ends in a return/throw never reaches the join, so the
@@ -233,7 +237,7 @@ namespace cajeta {
             }
             if (lineInfo) dbg::emitLineMark(module, markLine);
             // CP2: statement-boundary safepoint before each statement.
-            if (debugInfo) emitDebugSafepoint(module, child);
+            if (safepoints) emitDebugSafepoint(module, child);
             if (resultCandidate && child.get() == resultCandidate) {
                 module->setScriptResultPending(true);
             }

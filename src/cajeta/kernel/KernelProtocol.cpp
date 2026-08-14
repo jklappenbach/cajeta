@@ -3,6 +3,7 @@
 #include "cajeta/kernel/CellCompleteness.h"
 #include "cajeta/kernel/KernelSession.h"
 
+#include <atomic>
 #include <cctype>
 #include <mutex>
 #include <string>
@@ -84,6 +85,12 @@ namespace cajeta::kernel {
             publishIoPub("stream", parent, std::move(content));
         }
 
+        // The running session, published for the IO thread. `session` itself
+        // is owned by the execution thread and must not be read from another
+        // one — this is the single pointer an interrupt is allowed to follow,
+        // and it is only non-null while a session is live.
+        std::atomic<KernelSession*> live{nullptr};
+
         KernelSession* ensureSession(std::string* error) {
             if (session) return session.get();
             if (factory) {
@@ -91,12 +98,19 @@ namespace cajeta::kernel {
             } else {
                 session = KernelSession::create(error);
             }
+            live.store(session.get(), std::memory_order_release);
             if (session) {
                 session->setStreamHandler([this](const std::string& chunk) {
                     stream("stdout", chunk);
                 });
             }
             return session.get();
+        }
+
+        void interruptSelf() {
+            if (KernelSession* s = live.load(std::memory_order_acquire)) {
+                s->requestInterrupt();
+            }
         }
 
         void handleExecute(Channel channel, const JupyterMessage& request);
@@ -122,7 +136,16 @@ namespace cajeta::kernel {
     bool KernelProtocol::restartRequested() const { return impl_->restart; }
     int KernelProtocol::executionCount() const { return impl_->executionCount; }
 
+    void KernelProtocol::interrupt() {
+        if (KernelSession* s = impl_->live.load(std::memory_order_acquire)) {
+            s->requestInterrupt();
+        }
+    }
+
     void KernelProtocol::restartSession() {
+        // Cleared BEFORE the session is torn down: an interrupt racing a
+        // restart must not follow a pointer into a session being destroyed.
+        impl_->live.store(nullptr, std::memory_order_release);
         // Explicit shutdown before release: the session drops its bindings
         // and joins its carriers in that order, and doing it here rather than
         // in a destructor keeps the ordering visible (spec 3.3).
@@ -330,8 +353,12 @@ namespace cajeta::kernel {
             impl.shutdown = true;
             impl.restart = restart;
         } else if (type == "interrupt_request") {
-            // Unit 6 arms the safepoint one-shot here. Until then the reply
-            // is honest by being empty: nothing was interrupted.
+            // Reached only when NO cell is running — a busy execution thread
+            // cannot drain its queue. The transport answers this on its IO
+            // thread instead (that is the case that matters, and the case
+            // spec 5.1 is about); this arm covers the idle one, where per
+            // spec 5.2 the request is a no-op that still gets acknowledged.
+            impl.interruptSelf();
             impl.publish(channel, makeReply("interrupt_reply", request,
                                             impl.sessionId, dap::Json::object()));
         } else if (type == "comm_info_request") {

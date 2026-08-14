@@ -170,6 +170,23 @@ namespace cajeta::kernel {
         using StreamHandler = std::function<void(const std::string&)>;
         void setStreamHandler(StreamHandler handler);
 
+        // Stop the running cell at its next safepoint (spec 5.1). The cell
+        // ends as a `KeyboardInterrupt` cell error with the session and every
+        // binding intact; the next cell runs normally.
+        //
+        // THE ONE METHOD ON THIS CLASS SAFE TO CALL FROM ANOTHER THREAD, and
+        // it has to be: the kernel answers `interrupt_request` on its control
+        // channel while the execution thread is inside the cell being
+        // interrupted. It sets an atomic through a pointer resolved at
+        // construction and touches nothing else.
+        //
+        // Best-effort at safepoint granularity (spec 5.1): a cell blocked in
+        // a native call reaches no safepoint and does not stop until it
+        // returns to one. Requesting an interrupt with nothing running is a
+        // no-op — the request is cleared at the start of every cell, so it
+        // can never land on a cell the user did not aim at.
+        void requestInterrupt();
+
         // Resolve a symbol across the session's dylibs, newest cell first, so
         // a redefined name yields the newest definition. `lookup` takes a
         // short cajeta name (e.g. "bar"); `lookupSymbol` takes an exact IR

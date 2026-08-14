@@ -747,8 +747,86 @@ void __cajeta_dbg_set_safepoint_handler(cajeta_dbg_handler_fn fn) {
     __cajeta_dbg_handler = fn;
 }
 
+// jupyter-kernel U6 (spec 5.1) — the notebook interrupt.
+//
+// A safepoint is the one place a running cell is known to be between
+// statements, which is exactly where it is safe to stop it. The flag lives
+// HERE, beside its only reader, so the off-path cost of interruptibility is a
+// single relaxed load per safepoint rather than a call into another
+// translation unit.
+//
+// Set from ANOTHER thread — the kernel's control channel answers while a cell
+// is running, which is the whole point — so it is atomic. The unwind itself
+// happens on the running thread, at the safepoint, never on the setter's.
+//
+// NOT static, and that is load-bearing rather than sloppy. Under the JIT's
+// partitioned/lazy materialization an `internal` global referenced from
+// functions that land in different partitions can be DUPLICATED: the setter
+// writes one copy and the safepoint reads another, forever. This TU already
+// carries that scar — see `__cajeta_dbg_exception_handler` below, which was
+// made external for exactly this reason after the exception handler "never
+// fired" under `cajeta dap`. As a static, this flag reproduced it precisely:
+// safepoints ran, the request was set, and the loop ran to completion.
+// External linkage gives one unified definition.
+volatile int __cajeta_session_interrupt_flag = 0;
+
+// Defined in cajeta_rt_session.c (later in this TU): unwinds to the session
+// guard. Does not return when there is a guard frame to land in.
+void __cajeta_session_interrupt_unwind(void);
+
+void __cajeta_session_request_interrupt(void) {
+    __atomic_store_n(&__cajeta_session_interrupt_flag, 1, __ATOMIC_RELAXED);
+}
+
+// Cleared before every cell. A flag left set by an interrupt that arrived
+// with nothing running would otherwise kill the NEXT cell — the frontend
+// would see a cell the user never interrupted die (spec 5.2).
+void __cajeta_session_clear_interrupt(void) {
+    __atomic_store_n(&__cajeta_session_interrupt_flag, 0, __ATOMIC_RELAXED);
+}
+
+int __cajeta_session_interrupt_pending(void) {
+    return __atomic_load_n(&__cajeta_session_interrupt_flag, __ATOMIC_RELAXED);
+}
+
+// TEST SEAM (jupyter-kernel 6.1). Trip the interrupt at the Nth safepoint
+// from now, deterministically, on the running thread.
+//
+// The threaded form of this test — run a cell, interrupt from another thread —
+// can only aim at a cell that runs long enough to be aimed at, which means a
+// loop, which means the repro carries a loop's worth of state into every
+// question you ask of it. This lets a THREE-STATEMENT cell take an interrupt
+// at a known safepoint, which is what separates "the unwind is wrong" from
+// "the unwind is wrong in loops". Negative disarms; 0 is off.
+int __cajeta_session_interrupt_countdown = -1;
+
+void __cajeta_session_interrupt_arm_after(int32_t n) {
+    __atomic_store_n(&__cajeta_session_interrupt_countdown, n, __ATOMIC_RELAXED);
+}
+
 void __cajeta_dbg_safepoint(int32_t loc_id) {
     __cajeta_dbg_safepoint_total++;
+    // U6 — take the request rather than test it: whoever unwinds owns it, so
+    // a second safepoint cannot be interrupted by the same request, and the
+    // flag is already clear when the cell's error is reported.
+    {
+        int take = __atomic_exchange_n(&__cajeta_session_interrupt_flag, 0,
+                                       __ATOMIC_RELAXED);
+        // The test seam's countdown, checked only while armed.
+        int n = __atomic_load_n(&__cajeta_session_interrupt_countdown,
+                                __ATOMIC_RELAXED);
+        if (n > 0) {
+            n -= 1;
+            __atomic_store_n(&__cajeta_session_interrupt_countdown, n,
+                             __ATOMIC_RELAXED);
+            if (n == 0) take = 1;
+        }
+        if (take) {
+            __atomic_store_n(&__cajeta_session_interrupt_countdown, -1,
+                             __ATOMIC_RELAXED);
+            __cajeta_session_interrupt_unwind();
+        }
+    }
     // Record the line we're at in the innermost frame so a multi-frame
     // stackTrace shows each frame at its current/call statement.
     struct cajeta_dbg_frame* top = *__cajeta_dbg_top_ptr();
