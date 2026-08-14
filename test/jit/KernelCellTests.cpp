@@ -296,29 +296,16 @@ TEST(KernelCellTests, DISABLED_bodyOnlyRedefinitionSwapsInPlace) {
     EXPECT_EQ(10, c3.value) << "the existing value did not adopt the new body";
 }
 
-// plan 2.2.5 — ASSIGNMENT to a session-seeded binding. DISABLED: it SIGSEGVs.
-//
-// Redeclaration (`String tag = "second";`) works and is what every other test
-// here uses; a bare assignment does not. Two things are wrong and the second
-// is the one that faults:
-//
-//   1. The registry never learns. A seeded read materializes the registry's
-//      occupant into a local staging slot on every access (Identifier.cpp);
-//      an assignment writes that staging slot, so the next cell still reads
-//      the OLD value. A lost write, not a crash.
-//   2. It faults inside the cell, in libc, reached from JIT'd code — the
-//      shape of a read running off a mapping (the fault address is
-//      page-aligned). The suspicion is the old value: the String-assign path
-//      consults the previous occupant of the slot, and on the assignment's
-//      own path that slot may never have been materialized.
-//
-// The `int32` case is separate and is NOT known to fault — a primitive seed
-// stages through a box (see primitiveBindingSpansCells). Left in one test so
-// whoever picks this up sees both halves.
-TEST(KernelCellTests, DISABLED_assignToSeededBindingRebinds) {
+// 2.2.5 — ASSIGNMENT to a session-seeded binding rebinds it, so the NEXT
+// cell sees the new value. `isScriptBindingName` is the set a unit DECLARES,
+// so `tag = "second";` in a later cell fell straight through the rebind and
+// the write landed only in the staging slot the seeded read materializes.
+// Redeclaration always worked, which is why nothing caught this.
+TEST(KernelCellTests, assignToSeededBindingRebinds) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
+    // A primitive rebinds through the box, like its declaration does.
     ASSERT_TRUE(s->execute("int32 n = 1;\n").ok);
     CellResult ni = s->execute("n = 2;\n");
     ASSERT_TRUE(ni.ok) << ni.errorId << ": " << ni.message;
@@ -326,10 +313,67 @@ TEST(KernelCellTests, DISABLED_assignToSeededBindingRebinds) {
     ASSERT_TRUE(nr.ok) << nr.errorId << ": " << nr.message;
     EXPECT_EQ("2", nr.result) << "assignment did not reach the registry";
 
+    // A reference rebinds through the pointer.
     ASSERT_TRUE(s->execute("String tag = \"first\";\n").ok);
-    CellResult a = s->execute("tag = \"second\";\n");   // SIGSEGVs today
+    CellResult a = s->execute("tag = \"second\";\n");
     ASSERT_TRUE(a.ok) << a.errorId << ": " << a.message;
     CellResult r = s->execute("tag;\n");
     ASSERT_TRUE(r.ok) << r.errorId << ": " << r.message;
     EXPECT_EQ("second", r.result);
+}
+
+// 2.1.3a — MIXING generations.
+//
+// DISABLED, and the finding is WORSE than the item was filed as. It was
+// filed as a missing diagnostic ("the message does not mention generations").
+// It is not: passing an old-generation value where the NEW generation is
+// declared is accepted silently and then SIGSEGVs on a null deref — an old
+// object reached through a new layout and a new vtable. A memory-safety hole,
+// not a wording problem.
+//
+// Everything up to the mixing line PASSES and is worth keeping: the old value
+// keeps its own body (`p.get()` still returns 7), which is 2.1.3's contract.
+//
+// `Point q = p;` is NOT the shape to probe with — a top-level binding may not
+// hold a borrow, so it is rejected for an unrelated and correct reason. The
+// argument shape below is the one that gets through.
+//
+// THE FIX needs the type checker to distinguish generations, which it cannot
+// today: two generations share a canonical name and differ only in
+// `CajetaClass::generationSuffix` (symbols carry it, the canonical does not),
+// so any check comparing canonicals sees a match. The contained place to put
+// it is argument binding plus assignment: when both sides are CajetaClass
+// with the same canonical and different suffixes, error naming both.
+TEST(KernelCellTests, DISABLED_mixingGenerationsIsRejected) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute(
+        "public class Point { public int32 x;\n"
+        "  public Point(int32 x) { this.x = x; }\n"
+        "  public int32 get() { return this.x; } }\n"
+        "Point p = heap Point(7);\n").ok);
+
+    // Generation 2: a different shape AND a different body.
+    ASSERT_TRUE(s->execute(
+        "public class Point { public int32 x; public int32 y;\n"
+        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+        "  public int32 get() { return this.x + this.y; } }\n").ok);
+
+    // The old value keeps the old behaviour — 2.1.3's contract.
+    CellResult old = s->execute("p.get();\n");
+    ASSERT_TRUE(old.ok) << old.errorId << ": " << old.message;
+    EXPECT_EQ("7", old.result) << "the old value did not keep its own body";
+
+    // Mixing must be refused, and the message must say WHY. `Point q = p;`
+    // is NOT the shape to probe with — a top-level binding may not hold a
+    // borrow, so it is rejected for an unrelated (and correct) reason. Pass
+    // the old value where the NEW generation is declared instead.
+    CellResult mix = s->execute(
+        "int32 use(Point pt) { return pt.get(); }\n"
+        "use(p);\n");
+    EXPECT_FALSE(mix.ok) << "an old-generation value was accepted as the new "
+                            "generation; result was: " << mix.result;
+    EXPECT_NE(std::string::npos, mix.message.find("generation"))
+        << "message did not mention generations: " << mix.message;
 }

@@ -8,6 +8,7 @@
 #include "CajetaModule.h"
 #include "SessionState.h"
 #include "../asn/expression/Expression.h"
+#include "../asn/expression/BinaryOpExpression.h"
 #include "../error/Exception.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -386,6 +387,17 @@ namespace cajeta {
         // which is only populated once codegen has run the declarations. Ask
         // again here, where it can succeed; the same retry MethodCallExpression
         // does for a receiver.
+        // An ASSIGNMENT is a statement, not a result. `x = 1` displays
+        // nothing in any notebook, and it is not a near-miss here: the assign
+        // arms hand back several different things (the assigned r-value, a
+        // staked copy, the destination slot), so treating one as a renderable
+        // value read a String's vtable word as its object pointer and
+        // SIGSEGV'd inside the cell. Compound assigns (`+=`) are assignments
+        // too — `isAssignment` covers all of them.
+        if (auto binOp = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
+            if (binOp->isAssignment()) return;
+        }
+
         CajetaTypePtr type = expr->getResolvedType();
         if (!type) {
             expr->resolveTypes(module);
@@ -415,8 +427,24 @@ namespace cajeta {
         auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
         bool isArray = std::dynamic_pointer_cast<CajetaArray>(type) != nullptr;
 
-        // The value as an r-value: an identifier read hands back its slot.
-        llvm::Value* rv = loadIfLValue(module, value, expr);
+        // The value as an r-value. NOT via loadIfLValue: it decides from the
+        // expression's TYPE, so for any class-typed pointer it loads — and a
+        // trailing expression that is already an r-value (`tag = "x";` hands
+        // back the assigned value, `heap Point(1,2);` the instance) then gets
+        // its first word read as if it were a slot. That is the String's
+        // vtable pointer, and rendering through it walked off a mapping:
+        // a page-aligned SIGSEGV inside the cell.
+        //
+        // Decide from the VALUE's shape instead, which is unambiguous: an
+        // alloca, a global, or a GEP is storage to load through (a local, a
+        // static field, a struct field); anything else is already the value.
+        llvm::Value* rv = value;
+        if (value->getType()->isPointerTy()
+                && (llvm::isa<llvm::AllocaInst>(value)
+                    || llvm::isa<llvm::GlobalVariable>(value)
+                    || llvm::isa<llvm::GetElementPtrInst>(value))) {
+            rv = loadIfLValue(module, value, expr);
+        }
         if (!rv) return;
 
         // Park the type-name placeholder FIRST (spec 4, "rendering failures

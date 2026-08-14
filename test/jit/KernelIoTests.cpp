@@ -309,3 +309,26 @@ TEST(KernelIoTests, executionCountAdvancesAcrossFailures) {
     EXPECT_EQ(3, c3.executionCount);
     EXPECT_EQ("4", c3.result);
 }
+
+// An ASSIGNMENT is a statement, not a result — `x = 1` displays nothing in
+// any notebook. Not a near-miss: the assign arms hand back several different
+// things (the assigned r-value, a staked copy, the destination slot), and
+// rendering one of them read a String's vtable word as its object pointer and
+// SIGSEGV'd inside the cell. Display must never fail a cell that ran.
+TEST(KernelIoTests, trailingAssignmentIsNotAResult) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute("String tag = \"first\";\ntag = \"second\";\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+    EXPECT_FALSE(c1.hasResult) << "an assignment rendered as a result";
+
+    CellResult c2 = s->execute("int32 k = 1;\nk += 2;\n");
+    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
+    EXPECT_FALSE(c2.hasResult) << "a compound assignment rendered as a result";
+
+    // The value still landed.
+    CellResult c3 = s->execute("k;\n");
+    ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
+    EXPECT_EQ("3", c3.result);
+}
