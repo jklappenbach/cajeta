@@ -39,9 +39,21 @@ on:
         required: false
         default: '*DeviceTests*'
   schedule:
-    # 07:00 UTC nightly. Device runs are long (a 69-test Vulkan sweep took
-    # ~73 min on proton), so this is deliberately not a per-push gate.
-    - cron: '0 7 * * *'
+    # 01:00 UTC nightly = 21:00 America/New_York, which is where PHOENIX is.
+    # Device runs are long (a 69-test Vulkan sweep took ~73 min on proton), so
+    # this is deliberately not a per-push gate.
+    #
+    # The hour is not arbitrary. The first nightly (2026-08-13, then 07:00 UTC)
+    # died on the WSL leg 70 s into the first test with "the self-hosted runner
+    # lost communication": Windows Update's TrustedInstaller restarted PHOENIX
+    # at 04:53 local, taking the WSL VM — and the runner — with it. PHOENIX's
+    # Active Hours are 08:00–02:00 local, so 02:00–08:00 is exactly the window
+    # in which Windows is allowed to reboot unattended, and GitHub's scheduler
+    # routinely runs crons up to ~90 min late (that run fired at 08:25 UTC for
+    # an 07:00 cron). 21:00 local start + slack + a ~2 h run still lands well
+    # inside Active Hours. Keep this cron inside 08:00–02:00 local, or widen
+    # Active Hours on the box to match.
+    - cron: '0 1 * * *'
 concurrency:
   # The runners are single-box; a queued nightly stacking behind a manual run
   # just serializes badly. Newest wins.
