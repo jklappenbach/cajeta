@@ -56,9 +56,19 @@ namespace cajeta::kernel {
         std::string file;
         int line = 0;
         // The cell entry's return value (script-units: `return <int32>`),
-        // 0 when the cell had no explicit return. The trailing-expression
-        // unit RESULT (`Out[N]`) is U3's concern, not this.
+        // 0 when the cell had no explicit return. Distinct from the unit
+        // RESULT below: `return 5;` sets this and displays nothing.
         int32_t value = 0;
+        // The unit result — `Out[N]` (spec 4.2). Set when the cell's last
+        // statement was an expression that produced a value; `result` is that
+        // value rendered as text. A cell ending in a declaration, a loop, a
+        // `return`, or a void call has none, which is why presence is its own
+        // flag: a result CAN legitimately render as the empty string.
+        bool hasResult = false;
+        std::string result;
+        // 1-based, advancing on every execute INCLUDING a failed one (spec
+        // 2.2) so `Out[N]` never reuses a number.
+        int executionCount = 0;
     };
 
     // Observability for the tests and, later, the kernel's own diagnostics.

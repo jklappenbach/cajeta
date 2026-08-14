@@ -118,3 +118,47 @@ void __cajeta_session_drop_all(void) {
     }
     __cajeta_session_len = 0;
 }
+
+// --- the unit RESULT: Out[N] (jupyter-kernel spec 4.2) --------------------
+//
+// A cell ending in an expression displays that expression's value. The value
+// is rendered to text by CODEGEN, where the expression's type is known, and
+// parked here for the host to collect once the entry returns.
+//
+// It rides a side channel rather than the entry's return value on purpose:
+// whether a trailing expression HAS a value is only decidable after type
+// resolution, long after the entry's signature is fixed. A return-typed
+// result would force that decision on the synthesizer, which sees only token
+// text and cannot tell `x + y;` from `xs.add(1);`.
+//
+// "No result" and "a result that rendered as the empty string" are different
+// answers, so presence is tracked separately from the text.
+static char* __cajeta_script_result_text = 0;
+static int __cajeta_script_result_present = 0;
+
+void __cajeta_script_result_clear(void) {
+    free(__cajeta_script_result_text);
+    __cajeta_script_result_text = 0;
+    __cajeta_script_result_present = 0;
+}
+
+// Codegen hands over a C string it does not transfer ownership of (it may be
+// a borrowed window into a String); we copy.
+void __cajeta_script_result(const char* text) {
+    free(__cajeta_script_result_text);
+    __cajeta_script_result_text = 0;
+    __cajeta_script_result_present = 1;
+    if (!text) return;
+    size_t n = strlen(text) + 1;
+    __cajeta_script_result_text = (char*) malloc(n);
+    if (__cajeta_script_result_text) {
+        memcpy(__cajeta_script_result_text, text, n);
+    }
+}
+
+// Borrowed, valid until the next store or clear. Null means the cell had no
+// trailing expression value at all.
+const char* __cajeta_script_result_get(void) {
+    if (!__cajeta_script_result_present) return 0;
+    return __cajeta_script_result_text ? __cajeta_script_result_text : "";
+}

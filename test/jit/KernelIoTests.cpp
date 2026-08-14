@@ -144,81 +144,46 @@ TEST(KernelIoTests, outputIsPerCell) {
 
 // --- Out[N] / unit result -------------------------------------------------
 //
-// ALL DISABLED — the mechanism is not in. Attempted 2026-08-13 and reverted;
-// what follows is what the attempt established, because the tests themselves
-// are right and should flip on unchanged once the gap below is closed.
+// The decision these rest on is made in CODEGEN, not in synthesis. A cell's
+// trailing expression displays its value only if it HAS one, and `void` is a
+// type answer: the synthesizer splices token text before any type exists and
+// cannot tell `x + y;` from `xs.add(1);`. So Block MARKS the statement (it
+// knows which) and ExpressionStatement decides (it knows the type). An
+// earlier attempt that rewrote the trailing statement into the entry's
+// `return "" + (EXPR)` foundered on exactly that, turning void calls into
+// results and breaking four KernelCellTests.
 //
-// SHAPE THAT WORKED: the synthesizer turns a trailing expression statement
-// into the entry's RETURN and widens the entry to String —
-// `foo();` becomes `return "" + (foo());`. The mangled entry symbol carries no
-// return type, so the host's lookup is unaffected; the kernel calls the entry
-// as returning a pointer and decodes it with the runtime's own
-// __cajeta_string_cstr. Primitives, String, execution counting and the
-// has-result/no-result distinction ALL PASSED this way.
-//
-// WHY IT WAS REVERTED: the synthesizer works on TOKEN TEXT, before any type is
-// known, so it cannot tell a value-producing trailing expression from a VOID
-// one. `xs.add(1);` as a cell's last statement became `return "" + (xs.add(1))`
-// and broke four passing KernelCellTests. Deciding this needs the expression's
-// TYPE, which only the semantic layer has.
-//
-// TWO GAPS, and (a) is a prerequisite for the object case regardless:
-//   (a) `String + <class>` does not route through toString() — concatenation
-//       covers primitives and String only, and yields "" for an object. The
-//       idiom elsewhere is an explicit `p.toString()` (ToStringTests). Making
-//       `+` call toString is the Java semantics and would fix this everywhere.
-//   (b) The void/non-void decision must move to codegen: have the synthesizer
-//       MARK the trailing expression, and let the semantic layer emit a
-//       returned String for a value-producing expression and a plain statement
-//       for a void one.
-//
-// See plan 3.1.2 / 3.2.2.
+// The result rides a side channel in the session runtime rather than the
+// entry's return value, for the same reason: the signature is fixed long
+// before the type is known.
 
 // 3.1.2 / spec 4.2 — a cell ending in an expression has that value as its
 // result, rendered as text for Out[N].
-TEST(KernelIoTests, DISABLED_unitResultRendersPrimitive) {
+TEST(KernelIoTests, unitResultRendersPrimitive) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
     CellResult c1 = s->execute("int32 x = 3;\nint32 y = 4;\nx + y;\n");
     ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-    EXPECT_TRUE(false /*hasResult*/) << "no Out[N] for a trailing expression";
-    EXPECT_EQ("7", std::string() /*result*/);
-    EXPECT_EQ(1, 0 /*executionCount*/);
+    EXPECT_TRUE(c1.hasResult) << "no Out[N] for a trailing expression";
+    EXPECT_EQ("7", c1.result);
+    EXPECT_EQ(1, c1.executionCount);
 }
 
 // A String result renders as its text, not as a quoted or decorated form.
-TEST(KernelIoTests, DISABLED_unitResultRendersString) {
+TEST(KernelIoTests, unitResultRendersString) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
     CellResult c1 = s->execute("\"hello\";\n");
     ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-    EXPECT_TRUE(false /*hasResult*/);
-    EXPECT_EQ("hello", std::string() /*result*/);
+    EXPECT_TRUE(c1.hasResult);
+    EXPECT_EQ("hello", c1.result);
 }
 
-// 4.3 — an object's result goes through toString().
-//
-// DISABLED — a real gap. The synthesizer converts a trailing expression with
-// `"" + (EXPR)`, which is the only conversion available to it: it works on
-// TOKEN TEXT, before any type is known, so it cannot choose between
-// concatenation and `.toString()`. Concatenation covers primitives and String
-// but yields "" for a class operand — the idiom elsewhere in the codebase is
-// an explicit `p.toString()` (ToStringTests), i.e. `+` does not route objects
-// through toString the way Java's does.
-//
-// Two ways forward, both bigger than a synthesis tweak:
-//   (a) make `String + <class>` call toString() in the compiler. That is the
-//       Java semantics and would fix this everywhere, not just here — but it
-//       is a language change with a wide blast radius.
-//   (b) do the conversion SEMANTICALLY: have the synthesizer mark the entry's
-//       return expression, and let codegen pick toString() for a class operand
-//       and concatenation otherwise, where the type IS known.
-// (a) is the better language answer; (b) is contained to script units. Until
-// one lands, a cell wanting an object rendered writes `p.toString();`, which
-// works today and is covered by unitResultRendersString.
-TEST(KernelIoTests, DISABLED_unitResultRendersObjectViaToString) {
+// 4.3 — an object's result goes through toString(), by the same virtual
+// lookup @ToString emits, so an override on the runtime class wins.
+TEST(KernelIoTests, unitResultRendersObjectViaToString) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
@@ -230,43 +195,56 @@ TEST(KernelIoTests, DISABLED_unitResultRendersObjectViaToString) {
         "Point p = heap Point(1, 2);\n"
         "p;\n");
     ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-    EXPECT_TRUE(false /*hasResult*/);
-    EXPECT_EQ("Point(1,2)", std::string() /*result*/);
+    EXPECT_TRUE(c1.hasResult);
+    EXPECT_EQ("Point(1,2)", c1.result);
+}
+
+// The case that reverted the first attempt: a trailing VOID call is a
+// statement, not a result. Nothing to display, and the cell still runs.
+TEST(KernelIoTests, trailingVoidCallIsNotAResult) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute(
+        "ArrayList<int32> xs = heap ArrayList<int32>();\n"
+        "xs.add(1);\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+    EXPECT_FALSE(c1.hasResult) << "a void call rendered as a result";
 }
 
 // Not every cell has a result: one ending in a declaration, a return or a
 // loop has no Out[N], and the frontend must be able to tell that apart from
 // a result that rendered as the empty string.
-TEST(KernelIoTests, DISABLED_cellsWithoutTrailingExpressionHaveNoResult) {
+TEST(KernelIoTests, cellsWithoutTrailingExpressionHaveNoResult) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
     CellResult decl = s->execute("int32 z = 9;\n");
     ASSERT_TRUE(decl.ok) << decl.errorId << ": " << decl.message;
-    EXPECT_FALSE(false /*hasResult*/);
+    EXPECT_FALSE(decl.hasResult);
 
     CellResult ret = s->execute("return 5;\n");
     ASSERT_TRUE(ret.ok) << ret.errorId << ": " << ret.message;
-    EXPECT_FALSE(false /*hasResult*/);
+    EXPECT_FALSE(ret.hasResult);
     EXPECT_EQ(5, ret.value);
 }
 
 // The counter advances on every execute, including a failed cell (spec 2.2),
 // so Out[N] never reuses a number.
-TEST(KernelIoTests, DISABLED_executionCountAdvancesAcrossFailures) {
+TEST(KernelIoTests, executionCountAdvancesAcrossFailures) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
     CellResult c1 = s->execute("1 + 1;\n");
     ASSERT_TRUE(c1.ok);
-    EXPECT_EQ(1, 0 /*executionCount*/);
+    EXPECT_EQ(1, c1.executionCount);
 
     CellResult bad = s->execute("return notAThing();\n");
     ASSERT_FALSE(bad.ok);
-    EXPECT_EQ(2, 0 /*executionCount*/);
+    EXPECT_EQ(2, bad.executionCount);
 
     CellResult c3 = s->execute("2 + 2;\n");
     ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
-    EXPECT_EQ(3, 0 /*executionCount*/);
-    EXPECT_EQ("4", std::string() /*result*/);
+    EXPECT_EQ(3, c3.executionCount);
+    EXPECT_EQ("4", c3.result);
 }

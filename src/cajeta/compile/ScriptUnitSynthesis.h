@@ -22,6 +22,7 @@
 #include "CajetaParser.h"
 
 namespace antlr4 { class CommonTokenStream; }
+namespace llvm { class Value; }
 
 #include "ScriptLineMap.h"
 
@@ -75,13 +76,38 @@ namespace cajeta {
     // receives the names declared at scriptMember level — the unit's
     // session bindings (spec §4); block-nested locals are not collected.
     // `outLineMap` (U5) receives the wrapper→host line spans for diagnostic
-    // translation; pass null to skip.
+    // translation; pass null to skip. `outSyntheticTail` receives whether the
+    // entry's trailing `return 0;` was APPENDED (true) rather than the unit
+    // ending in its own return — the mark jupyter-kernel U3 needs to find the
+    // cell's last statement. This function deliberately does NOT decide
+    // whether that statement produces a value: it works on token text, before
+    // any type is known, and `x + y;` and `xs.add(1);` are indistinguishable
+    // here.
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
                                      std::string* outCanonical,
                                      std::vector<std::string>* outBindings,
-                                     ScriptLineMap* outLineMap = nullptr);
+                                     ScriptLineMap* outLineMap = nullptr,
+                                     bool* outSyntheticTail = nullptr);
+
+    // jupyter-kernel U3 (spec 4.2) — the unit RESULT, i.e. `Out[N]`.
+    //
+    // Called from `ExpressionStatement::generateCode` for the one statement
+    // `Block` marked as the script entry's trailing expression. This is the
+    // half of the decision that synthesis cannot make: a trailing expression
+    // displays its value only if it HAS one, and `void` is a type answer.
+    // Renders `value` — of `expr`'s resolved type — to text and parks it in
+    // the session runtime for the host to collect.
+    //
+    // Self-gating: no-op outside a session compile, for a void/unresolved
+    // type, or at a terminated insert point. A type with no rendering (an
+    // array, a class with no `toString`) degrades to its name rather than
+    // failing the cell — display must never break a successful run.
+    class Expression;
+    typedef std::shared_ptr<Expression> ExpressionPtr;
+    void emitScriptUnitResult(CajetaModulePtr module, const ExpressionPtr& expr,
+                              llvm::Value* value);
 
     // U5 (spec §6.1) — rewrite a semantic exception into the host's
     // coordinates: host source name as the file, wrapper lines translated

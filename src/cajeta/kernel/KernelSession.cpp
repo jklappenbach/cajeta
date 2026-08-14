@@ -223,6 +223,9 @@ CellResult KernelSession::execute(const std::string& source,
     result.file = cellName;
     Impl& impl = *impl_;
     ++impl.execCount;
+    // Stamped before anything can fail: the counter advances on a failed cell
+    // too (spec 2.2), so `In[N]`/`Out[N]` never reuse a number.
+    result.executionCount = impl.execCount;
 
     // The cell's source has to reach the compiler as a FILE: the script-unit
     // stem (and so the implicit class name) is path-derived, and the whole
@@ -517,6 +520,19 @@ CellResult KernelSession::execute(const std::string& source,
     // handler sees chunks as they are written, from the capture's pump thread;
     // the destructor restores the descriptor and delivers the tail, including
     // on the throw path.
+    //
+    // The unit result rides a side channel in the session runtime, not the
+    // entry's return value (spec 4.2): whether a trailing expression HAS a
+    // value is only known after type resolution, long after the entry's
+    // signature is fixed. Reached through the JIT's OWN copy of the runtime —
+    // `lookupSymbol` walks the same dylibs in the same order the cell's calls
+    // resolve through — because the process also links a copy, and reading
+    // the wrong one would always report "no result".
+    auto* resultClear = reinterpret_cast<void (*)()>(
+        lookupSymbol("__cajeta_script_result_clear"));
+    auto* resultGet = reinterpret_cast<const char* (*)()>(
+        lookupSymbol("__cajeta_script_result_get"));
+    if (resultClear) resultClear();
     {
         std::unique_ptr<cajeta::util::FdCapture> capture;
         if (impl.streamHandler) {
@@ -526,6 +542,12 @@ CellResult KernelSession::execute(const std::string& source,
                 });
         }
         result.value = reinterpret_cast<int32_t (*)()>(entry)();
+    }
+    if (resultGet) {
+        if (const char* text = resultGet()) {
+            result.hasResult = true;
+            result.result = text;
+        }
     }
     result.ok = true;
     return result;

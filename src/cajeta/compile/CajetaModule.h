@@ -280,6 +280,14 @@ namespace cajeta {
         // codegen) used to locate exceptions thrown without a location.
         ScriptLineMap scriptLineMap;
         int scriptCurrentHostLine = 0;
+        // jupyter-kernel U3 — the unit RESULT (Out[N]). The synthesizer
+        // appends `return 0;` only when the cell's own last statement was not
+        // a return; when it did, the statement just before that tail is the
+        // cell's trailing one, and if it is an expression statement it is the
+        // result candidate. Whether it actually PRODUCES a value is a type
+        // question, so the mark is set here and resolved in codegen.
+        bool scriptSyntheticTail = false;
+        bool scriptResultPending = false;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -559,6 +567,22 @@ namespace cajeta {
         }
         void setScriptCurrentHostLine(int line) { scriptCurrentHostLine = line; }
         int getScriptCurrentHostLine() const { return scriptCurrentHostLine; }
+
+        // jupyter-kernel U3 — unit result. `scriptSyntheticTail` records that
+        // synthesis appended the entry's trailing `return 0;`, which is what
+        // makes the statement before it the cell's own last one.
+        void setScriptSyntheticTail(bool v) { scriptSyntheticTail = v; }
+        bool hasScriptSyntheticTail() const { return scriptSyntheticTail; }
+        // The mark travels from Block (which knows WHICH statement) to
+        // ExpressionStatement (which knows its TYPE). Taken, not read: a
+        // marked statement's own codegen may run nested expression statements
+        // — a block-form lambda body — and the mark belongs to one statement.
+        void setScriptResultPending(bool v) { scriptResultPending = v; }
+        bool takeScriptResultPending() {
+            bool v = scriptResultPending;
+            scriptResultPending = false;
+            return v;
+        }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is

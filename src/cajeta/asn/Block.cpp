@@ -4,6 +4,7 @@
 
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
+#include "Statement.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/ScriptUnitSynthesis.h"
@@ -180,6 +181,27 @@ namespace cajeta {
                 }
             }
         }
+        // jupyter-kernel U3 (spec 4.2) — mark the cell's trailing expression,
+        // the candidate for `Out[N]`. Done HERE, at the AST, because the
+        // synthesizer splices token text before any type exists and so cannot
+        // tell `x + y;` (a value to display) from `xs.add(1);` (a statement).
+        // This side only says WHICH statement; ExpressionStatement, which has
+        // the resolved type, decides whether it produces a value at all.
+        //
+        // The candidate is the statement just before the entry's synthesized
+        // trailing `return 0;` — and only when synthesis actually appended
+        // one, since a cell ending in its own `return` has no trailing
+        // expression by definition.
+        const AbstractSyntaxNode* resultCandidate = nullptr;
+        if (module->isScriptUnit() && module->hasScriptSyntheticTail()
+                && m && m->getName() == scriptEntryName()
+                && m->getBlock().get() == this && children.size() >= 2) {
+            auto& last = children[children.size() - 2];
+            if (dynamic_pointer_cast<ExpressionStatement>(last)) {
+                resultCandidate = last.get();
+            }
+        }
+
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
             // anything after a return / throw / break / continue is
@@ -212,6 +234,9 @@ namespace cajeta {
             if (lineInfo) dbg::emitLineMark(module, markLine);
             // CP2: statement-boundary safepoint before each statement.
             if (debugInfo) emitDebugSafepoint(module, child);
+            if (resultCandidate && child.get() == resultCandidate) {
+                module->setScriptResultPending(true);
+            }
             child->generateCode(module);
         }
 

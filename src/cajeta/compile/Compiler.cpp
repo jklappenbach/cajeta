@@ -692,12 +692,14 @@ namespace cajeta {
                 std::string canonical;
                 std::vector<std::string> bindings;
                 ScriptLineMap lineMap;
+                bool syntheticTail = false;
                 std::string wrapper =
                     synthesizeScriptUnit(tokens, unitCtx, stem, &canonical,
-                                         &bindings, &lineMap);
+                                         &bindings, &lineMap, &syntheticTail);
                 module->setScriptUnit(true);
                 module->setScriptBindingNames(std::move(bindings));
                 module->setScriptLineMap(std::move(lineMap));
+                module->setScriptSyntheticTail(syntheticTail);
                 antlr4::ANTLRInputStream wrapperInput(wrapper);
                 parseSource(module, wrapperInput, label, quiet);
                 auto& structures = module->getStructures();

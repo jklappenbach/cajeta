@@ -7,13 +7,17 @@
 
 #include "CajetaModule.h"
 #include "SessionState.h"
+#include "../asn/expression/Expression.h"
 #include "../error/Exception.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../method/Method.h"
+#include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
 #include "../type/CajetaType.h"
 #include "../type/Scope.h"
+
+#include <llvm/IR/IRBuilder.h>
 
 namespace cajeta {
 
@@ -108,7 +112,8 @@ namespace cajeta {
                                      const std::string& stem,
                                      std::string* outCanonical,
                                      std::vector<std::string>* outBindings,
-                                     ScriptLineMap* outLineMap) {
+                                     ScriptLineMap* outLineMap,
+                                     bool* outSyntheticTail) {
         std::string pkgName = scriptDefaultPackage();
         auto hostLineOf = [](antlr4::ParserRuleContext* c) {
             return (c && c->getStart())
@@ -191,6 +196,7 @@ namespace cajeta {
         append({"}\n", 0});
 
         if (outCanonical) *outCanonical = pkgName + "." + stem;
+        if (outSyntheticTail) *outSyntheticTail = !endsWithReturn;
         return out;
     }
 
@@ -303,6 +309,210 @@ namespace cajeta {
                                              module->getScriptHostName());
             session->put(std::move(fact));
         }
+    }
+
+    // --- U3: the unit result (Out[N]) -----------------------------------
+
+    namespace {
+
+        // FNV-1a 64-bit — the vtable lookup key. Same constants as the
+        // runtime's `__cajeta_vtable_lookup` and SynthesizedToStringMethod,
+        // which is the whole point: the keys must agree byte-for-byte.
+        int64_t scriptSignatureHash(const std::string& s) {
+            uint64_t h = 0xcbf29ce484222325ULL;
+            for (unsigned char c : s) {
+                h ^= c;
+                h *= 0x100000001b3ULL;
+            }
+            return (int64_t) h;
+        }
+
+        // A private constant C string in the emit module, as an i8*.
+        llvm::Value* scriptLiteralPtr(llvm::IRBuilder<>* b, llvm::Module* lmod,
+                                      const std::string& s) {
+            auto& ctx = lmod->getContext();
+            llvm::Constant* data =
+                llvm::ConstantDataArray::getString(ctx, s, true);
+            auto* g = new llvm::GlobalVariable(
+                *lmod, data->getType(), /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage, data, ".script.res.lit");
+            g->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+            llvm::Value* zero =
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+            return b->CreateInBoundsGEP(data->getType(), g, {zero, zero});
+        }
+
+        // The no-arg `toString` on `klass` or any ancestor. Mirrors
+        // SynthesizedToStringMethod's lookup, including the post-prototype
+        // shape where `this` sits at parameter 0.
+        MethodPtr findScriptToString(const CajetaClassPtr& klass) {
+            if (!klass) return nullptr;
+            for (auto& m : klass->getMethodList()) {
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != "toString") continue;
+                auto params = m->getParameterList();
+                if (params.empty()) return m;
+                if (params.size() == 1 && params.front()
+                        && params.front()->getName() == "this") {
+                    return m;
+                }
+            }
+            for (auto& sup : klass->getSuperClasses()) {
+                if (auto found = findScriptToString(sup)) return found;
+            }
+            return nullptr;
+        }
+
+    }  // namespace
+
+    void emitScriptUnitResult(CajetaModulePtr module, const ExpressionPtr& expr,
+                              llvm::Value* value) {
+        if (!module || !expr || !value) return;
+        if (!sessionOfEntry(module)) return;
+        auto* builder = module->getBuilder();
+        if (!builder) return;
+        llvm::BasicBlock* insertBB = builder->GetInsertBlock();
+        if (!insertBB || insertBB->hasTerminator()) return;
+
+        // Not every expression records its type during the pre-pass — a bare
+        // identifier or a binary op over locals resolves against the scope,
+        // which is only populated once codegen has run the declarations. Ask
+        // again here, where it can succeed; the same retry MethodCallExpression
+        // does for a receiver.
+        CajetaTypePtr type = expr->getResolvedType();
+        if (!type) {
+            expr->resolveTypes(module);
+            type = expr->getResolvedType();
+        }
+        if (!type) return;
+        // `void` carries PRIMITIVE_FLAG too (VOID_TYPE_ID), so it has to be
+        // excluded before the primitive branch — this is the case the whole
+        // codegen-side decision exists for: `xs.add(1);` as a cell's last
+        // statement is a statement, not a result.
+        if ((type->getTypeFlags() & TYPE_ID_MASK) == VOID_ID) return;
+
+        llvm::Function* store = module->getRuntimeFunction(
+            "__cajeta_script_result");
+        if (!store) return;
+
+        llvm::Module* lmod = module->emitTargetLlvmModule();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* f64Ty = llvm::Type::getDoubleTy(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        std::string canonical = type->getQName()
+            ? type->getQName()->toCanonical() : std::string();
+        bool isString = canonical == "cajeta.lang.String" || canonical == "String";
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+        bool isArray = std::dynamic_pointer_cast<CajetaArray>(type) != nullptr;
+
+        // The value as an r-value: an identifier read hands back its slot.
+        llvm::Value* rv = loadIfLValue(module, value, expr);
+        if (!rv) return;
+
+        llvm::Value* text = nullptr;
+        if (!isString && !isArray && (type->getTypeFlags() & PRIMITIVE_FLAG)) {
+            llvm::Function* i64ToStr =
+                module->getRuntimeFunction("__cajeta_i64_to_str");
+            llvm::Function* f64ToStr =
+                module->getRuntimeFunction("__cajeta_f64_to_str");
+            llvm::Function* boolToStr =
+                module->getRuntimeFunction("__cajeta_bool_to_str");
+            switch (type->getTypeFlags() & TYPE_ID_MASK) {
+                case BOOLEAN_ID:
+                    if (boolToStr) {
+                        text = builder->CreateCall(
+                            boolToStr, {builder->CreateZExt(rv, i32Ty)});
+                    }
+                    break;
+                case INT8_ID: case INT16_ID: case INT32_ID:
+                    if (i64ToStr) {
+                        text = builder->CreateCall(
+                            i64ToStr, {builder->CreateSExt(rv, i64Ty)});
+                    }
+                    break;
+                case UINT8_ID: case UINT16_ID: case UINT32_ID: case UINT64_ID:
+                    if (i64ToStr) {
+                        text = builder->CreateCall(
+                            i64ToStr, {builder->CreateZExt(rv, i64Ty)});
+                    }
+                    break;
+                case INT64_ID:
+                    if (i64ToStr) text = builder->CreateCall(i64ToStr, {rv});
+                    break;
+                case FLOAT32_ID:
+                    if (f64ToStr) {
+                        text = builder->CreateCall(
+                            f64ToStr, {builder->CreateFPExt(rv, f64Ty)});
+                    }
+                    break;
+                case FLOAT64_ID:
+                    if (f64ToStr) text = builder->CreateCall(f64ToStr, {rv});
+                    break;
+                default:
+                    break;  // 128-bit, extended float, bare pointer: degrade
+            }
+        } else if (isString) {
+            // A String is an object; its bytes are behind the mode-aware
+            // accessor, never at the pointer itself.
+            if (llvm::Function* cstr =
+                    module->getRuntimeFunction("__cajeta_string_cstr")) {
+                text = builder->CreateCall(cstr, {rv});
+            }
+        } else if (klass && !klass->isInterface()) {
+            MethodPtr ts = findScriptToString(klass);
+            llvm::Function* vtLookup =
+                module->getRuntimeFunction("__cajeta_vtable_lookup");
+            llvm::Function* cstr =
+                module->getRuntimeFunction("__cajeta_string_cstr");
+            if (ts && vtLookup && cstr) {
+                // Virtual dispatch, so an override on the runtime class wins
+                // over the static type — the same lookup @ToString emits.
+                // Null renders as "null"; a null receiver must not fault a
+                // cell that otherwise succeeded.
+                llvm::Function* curFn = insertBB->getParent();
+                auto* nullBB = llvm::BasicBlock::Create(ctx, "res.null", curFn);
+                auto* callBB = llvm::BasicBlock::Create(ctx, "res.call", curFn);
+                auto* mergeBB = llvm::BasicBlock::Create(ctx, "res.mrg", curFn);
+                llvm::Value* isNull = builder->CreateICmpEQ(
+                    rv, llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy)));
+                builder->CreateCondBr(isNull, nullBB, callBB);
+
+                builder->SetInsertPoint(nullBB);
+                llvm::Value* nullLit = scriptLiteralPtr(builder, lmod, "null");
+                builder->CreateBr(mergeBB);
+
+                builder->SetInsertPoint(callBB);
+                auto* callTy = llvm::FunctionType::get(ptrTy, {ptrTy}, false);
+                llvm::Value* vtPtr = builder->CreateLoad(ptrTy, rv);
+                llvm::Value* fnPtr = builder->CreateCall(
+                    vtLookup, {vtPtr,
+                               llvm::ConstantInt::get(
+                                   i64Ty, llvm::APInt(64,
+                                       (uint64_t) scriptSignatureHash(
+                                           ts->toCanonical(false)), false))});
+                llvm::Value* str = builder->CreateCall(callTy, fnPtr, {rv});
+                llvm::Value* strC = builder->CreateCall(cstr, {str});
+                builder->CreateBr(mergeBB);
+
+                builder->SetInsertPoint(mergeBB);
+                llvm::PHINode* phi = builder->CreatePHI(ptrTy, 2);
+                phi->addIncoming(nullLit, nullBB);
+                phi->addIncoming(strC, callBB);
+                text = phi;
+            }
+        }
+
+        // Nothing rendered it: show the type's name rather than nothing at
+        // all. Arrays, interfaces, and a class without a toString land here.
+        if (!text) {
+            text = scriptLiteralPtr(builder, lmod,
+                                    canonical.empty() ? "<value>" : canonical);
+        }
+        builder->CreateCall(store, {text});
     }
 
     void remapScriptException(CajetaModulePtr module, Exception& e) {
