@@ -36,6 +36,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -98,6 +99,15 @@ namespace cajeta::kernel {
         // A failed compile leaves the session untouched.
         CellResult execute(const std::string& source);
         CellResult execute(const std::string& source, const std::string& cellName);
+
+        // Cell output (spec 4.1). Installed once and used for every later
+        // cell; chunks arrive on a PUMP thread while the cell is still
+        // running, in write order, so a loop printing progress shows each
+        // line as it is written rather than a burst at the end. Passing an
+        // empty handler turns capture off, which is the default: without one,
+        // a cell's output goes wherever the process's stdout already goes.
+        using StreamHandler = std::function<void(const std::string&)>;
+        void setStreamHandler(StreamHandler handler);
 
         // Resolve a symbol across the session's dylibs, newest cell first, so
         // a redefined name yields the newest definition. `lookup` takes a

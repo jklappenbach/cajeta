@@ -33,6 +33,7 @@
 #include "cajeta/error/Exception.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/jit/JitModulePrep.h"
+#include "cajeta/util/FdCapture.h"
 
 namespace cajeta::kernel {
 
@@ -99,6 +100,7 @@ struct KernelSession::Impl {
     SessionState sessionState;
 
     std::filesystem::path scratchRoot;
+    KernelSession::StreamHandler streamHandler;
     SessionStats stats;
     int execCount = 0;
     bool shutdownDone = false;
@@ -511,9 +513,26 @@ CellResult KernelSession::execute(const std::string& source,
         result.ok = true;
         return result;
     }
-    result.value = reinterpret_cast<int32_t (*)()>(entry)();
+    // Capture the cell's output for the duration of the run (spec 4.1). The
+    // handler sees chunks as they are written, from the capture's pump thread;
+    // the destructor restores the descriptor and delivers the tail, including
+    // on the throw path.
+    {
+        std::unique_ptr<cajeta::util::FdCapture> capture;
+        if (impl.streamHandler) {
+            capture = std::make_unique<cajeta::util::FdCapture>(
+                1, [&impl](const std::string& chunk) {
+                    impl.streamHandler(chunk);
+                });
+        }
+        result.value = reinterpret_cast<int32_t (*)()>(entry)();
+    }
     result.ok = true;
     return result;
+}
+
+void KernelSession::setStreamHandler(StreamHandler handler) {
+    impl_->streamHandler = std::move(handler);
 }
 
 void* KernelSession::lookupSymbol(const std::string& exactName) {
