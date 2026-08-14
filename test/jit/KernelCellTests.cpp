@@ -198,3 +198,37 @@ TEST(KernelCellTests, failedCellLeavesBindingsIntact) {
     ASSERT_TRUE(after.ok) << after.errorId << ": " << after.message;
     EXPECT_EQ(1, after.value) << "the binding did not survive the failed cell";
 }
+
+// 2.1.3 / script-units 5.3 — redefining a class in a later cell is
+// GENERATIONAL: a value bound from the old definition stays alive and its
+// methods still run, while later cells mean the new definition.
+TEST(KernelCellTests, typeRedefinitionIsGenerational) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute(
+        "public class Point { public int32 x;\n"
+        "  public Point(int32 x) { this.x = x; }\n"
+        "  public int32 sum() { return this.x; } }\n"
+        "Point p = heap Point(3);\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+
+    // Redefined with a DIFFERENT layout — a second field and a wider ctor.
+    CellResult c2 = s->execute(
+        "public class Point { public int32 x; public int32 y;\n"
+        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+        "  public int32 sum() { return this.x + this.y; } }\n");
+    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
+
+    // The OLD instance keeps the old layout and the old body.
+    CellResult c3 = s->execute("return p.sum();\n");
+    ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
+    EXPECT_EQ(3, c3.value) << "cell 1's Point did not survive the redefinition";
+
+    // A later cell means the NEW generation.
+    CellResult c4 = s->execute(
+        "Point q = heap Point(10, 5);\n"
+        "return q.sum();\n");
+    ASSERT_TRUE(c4.ok) << c4.errorId << ": " << c4.message;
+    EXPECT_EQ(15, c4.value) << "cell 4 did not get the new generation";
+}

@@ -209,7 +209,7 @@ EntryArgsABI deriveEntryArgsABI(llvm::orc::LLJIT* jit) {
     abi.offAux    = (int64_t) sl->getElementOffset(2);
     abi.offBase   = (int64_t) sl->getElementOffset(3);
     abi.offCpLen  = (int64_t) sl->getElementOffset(4);
-    abi.vtableSymbol = klass->getQName()->toCanonical() + "#VTable";
+    abi.vtableSymbol = klass->symbolBase() + "#VTable";
     abi.valid = true;
     return abi;
 }

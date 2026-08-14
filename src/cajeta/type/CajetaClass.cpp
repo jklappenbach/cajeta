@@ -26,6 +26,7 @@
 #include "../method/SynthesizedMockClass.h"
 #include "CajetaArray.h"
 #include "../compile/CompilationContext.h"
+#include "../compile/SessionState.h"
 #include "../field/HeapField.h"
 #include "../error/Exception.h"
 #include "../asn/expression/LiteralExpression.h"
@@ -1509,7 +1510,38 @@ namespace cajeta {
             return;
         }
 
-        setLlvmType(CajetaType::getOrCreateLlvmType(module->getLlvmContext(), canonical));
+        // Generational redefinition (script-units 5.3). LLVM struct types are
+        // NAME-keyed within a context, so a cell redefining `Point` looked up
+        // the name and got the PREVIOUS generation's struct, body and all; the
+        // opacity guard then declined to re-set the body and the new class ran
+        // with the old layout ("Invalid indices for GEP pointer type"). A
+        // redefinition is a different type, so it gets its own struct name and
+        // its own symbols.
+        //
+        // Keyed on what THIS SESSION has declared — NOT on whether a struct of
+        // that name exists in the context. A session shares its context with
+        // every earlier session in the process, and those leave their structs
+        // behind: keying on the context made each new session's `cell_2` look
+        // like a redefinition of the previous session's.
+        string structName = canonical;
+        if (SessionState* session = module ? module->getSessionState() : nullptr) {
+            if (session->hasDeclaredClass(canonical)) {
+                auto* ctx = module->getLlvmContext();
+                for (int generation = 2; ; ++generation) {
+                    string candidate =
+                        canonical + "$g" + std::to_string(generation);
+                    llvm::StructType* st =
+                        llvm::StructType::getTypeByName(*ctx, candidate);
+                    if (!st || st->isOpaque()) {
+                        structName = candidate;
+                        setGenerationSuffix("$g" + std::to_string(generation));
+                        break;
+                    }
+                }
+            }
+            session->noteDeclaredClass(canonical);
+        }
+        setLlvmType(CajetaType::getOrCreateLlvmType(module->getLlvmContext(), structName));
         typeMap[TypeKey(rawLlvmType())] = shared_from_this();
         // Overwrite the plain-CajetaType placeholder `getOrCreateLlvmType` put
         // in the canonical map so name lookups (e.g. `dynamic_pointer_cast<

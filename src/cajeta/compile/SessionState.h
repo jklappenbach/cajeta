@@ -14,10 +14,14 @@
 //
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace cajeta {
+
+    class CajetaType;
+    typedef std::shared_ptr<CajetaType> CajetaTypePtr;
 
     struct SessionBindingFact {
         std::string name;
@@ -25,6 +29,15 @@ namespace cajeta {
         // CURRENT unit's type world when seeding; a canonical that no longer
         // resolves seeds name-only (ownership checks still apply).
         std::string typeCanonical;
+        // The exact type the name was bound to, when it is still live. A
+        // session's type world PERSISTS across units, so this is the honest
+        // answer and the canonical is the fallback for hosts that discard the
+        // world between units. It matters for generational redefinition
+        // (script-units 5.3): after a later cell redefines `Point`, the
+        // canonical resolves to the NEW generation, but a value bound from
+        // the old one is still the old type — re-resolving by name would
+        // reinterpret it under the new layout and dispatch into new bodies.
+        CajetaTypePtr boundType;
         // True when the title was transferred away and the name not yet
         // rebound — reads in later units are rejected (spec §4.2).
         bool moved = false;
@@ -36,6 +49,12 @@ namespace cajeta {
     class SessionState {
         // First-binding order, mirroring the runtime registry's slot order.
         std::vector<SessionBindingFact> facts;
+        // Canonical names of the classes this session's cells have DECLARED.
+        // A redefinition is a name declared twice IN THIS SESSION — not merely
+        // a name whose LLVM struct already exists in the context, because a
+        // session shares its context with every earlier session in the process
+        // and those leave their structs behind (script-units 5.3).
+        std::vector<std::string> declaredClasses;
         // Implicit class of each unit compiled into this session, OLDEST
         // first. A later unit's bare call to an earlier unit's top-level
         // method resolves by walking this newest-first (jupyter-kernel
@@ -52,6 +71,18 @@ namespace cajeta {
         }
         const std::vector<std::string>& getUnitClasses() const {
             return unitClasses;
+        }
+
+        // True when this session has already declared `canonical` — i.e. a
+        // second declaration of it is a generational redefinition.
+        bool hasDeclaredClass(const std::string& canonical) const {
+            for (auto& c : declaredClasses) {
+                if (c == canonical) return true;
+            }
+            return false;
+        }
+        void noteDeclaredClass(const std::string& canonical) {
+            if (!hasDeclaredClass(canonical)) declaredClasses.push_back(canonical);
         }
 
         SessionBindingFact* find(const std::string& name) {

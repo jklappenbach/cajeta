@@ -11,6 +11,7 @@
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../method/Method.h"
+#include "../type/CajetaClass.h"
 #include "../type/CajetaType.h"
 #include "../type/Scope.h"
 
@@ -230,7 +231,22 @@ namespace cajeta {
             // Resolve the recorded canonical in THIS unit's type world; a
             // miss seeds name-only — the ownership checks don't need the
             // type, and a live read rejects before touching it.
+            // Resolve by canonical, as every host does — EXCEPT for a class,
+            // where the recorded type wins. Generations exist only for
+            // classes (script-units 5.3), and after a later cell redefines
+            // `Point` the canonical names the NEWEST generation, which is not
+            // what an older value is: re-resolving by name would reinterpret
+            // it under the new layout and dispatch into the new bodies.
             CajetaTypePtr type = CajetaType::find(fact.typeCanonical);
+            // Primitives are CajetaClass too, and their recorded type can be
+            // an adorned variant of the canonical one — which would defeat the
+            // primitive/StackField decision below. Generations only ever apply
+            // to declared classes, so exclude them explicitly.
+            if (fact.boundType
+                    && !(fact.boundType->getTypeFlags() & PRIMITIVE_FLAG)
+                    && std::dynamic_pointer_cast<CajetaClass>(fact.boundType)) {
+                type = fact.boundType;
+            }
             // Match the field KIND to what the name holds. A HeapField's slot
             // is pointer-shaped whatever it contains, which is right for an
             // owner (the slot holds the instance pointer) and wrong for a
@@ -281,6 +297,7 @@ namespace cajeta {
                 fact.typeCanonical =
                     field->getType()->getQName()->toCanonical();
             }
+            fact.boundType = field->getType();
             fact.moved = scope->isBorrow(name);
             fact.transferSite = decorateSite(scope->transferSiteOf(name),
                                              module->getScriptHostName());
