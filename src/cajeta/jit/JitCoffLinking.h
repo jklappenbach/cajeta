@@ -21,6 +21,7 @@
 // untouched (the function is a no-op off COFF).
 //
 
+#include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/Orc/DebugUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
@@ -36,9 +37,47 @@
 namespace cajeta {
 namespace jit {
 
+// Diagnostic plugin: force every symbol live before pruning. The layer's own
+// mark-live pass (LinkGraphLinkingLayer's markResponsibilitySymbolsLive) marks
+// only the symbols the MaterializationResponsibility promised, and everything
+// else is dead-stripped. Enabled by CAJETA_COFF_KEEPALIVE=1 to test whether
+// dead-stripping is what leaves promised symbols unmaterialized on COFF.
+class KeepAllSymbolsLivePlugin : public llvm::orc::ObjectLinkingLayer::Plugin {
+public:
+    void modifyPassConfig(llvm::orc::MaterializationResponsibility&,
+                          llvm::jitlink::LinkGraph&,
+                          llvm::jitlink::PassConfiguration& config) override {
+        config.PrePrunePasses.push_back(llvm::jitlink::markAllSymbolsLive);
+    }
+    llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override {
+        return llvm::Error::success();
+    }
+    llvm::Error notifyRemovingResources(llvm::orc::JITDylib&,
+                                        llvm::orc::ResourceKey) override {
+        return llvm::Error::success();
+    }
+    void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey,
+                                     llvm::orc::ResourceKey) override {}
+};
+
+inline bool envOn(const char* name) {
+    const char* v = std::getenv(name);
+    return v && *v && std::string(v) != "0";
+}
+
 inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
     if (!llvm::Triple(llvm::sys::getProcessTriple()).isOSBinFormatCOFF())
         return;
+    // Escape hatch for bisecting the COFF JIT path: CAJETA_COFF_JIT=off falls
+    // back to LLVM's default (RuntimeDyld), which is what shipped before the
+    // JITLink switch. Diagnostic only — RuntimeDyld aborts the process on
+    // IMAGE_REL_AMD64_ADDR32NB, which is why this helper exists at all.
+    if (const char* mode = std::getenv("CAJETA_COFF_JIT");
+        mode && std::string(mode) == "off") {
+        fprintf(stderr, "cajeta.jit: COFF host — JITLink DISABLED "
+                        "(CAJETA_COFF_JIT=off), using RuntimeDyld\n");
+        return;
+    }
     // Once-per-process breadcrumb: the ADDR32NB abort resurfaced on a binary
     // where both builder sites carry this helper, so either a RuntimeDyld
     // user exists outside them or the runner built stale objects. This line
@@ -63,8 +102,23 @@ inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
             -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
             auto layer =
                 std::make_unique<llvm::orc::ObjectLinkingLayer>(es, memMgr);
-            layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
-            layer->setAutoClaimResponsibilityForObjectSymbols(true);
+            // CAJETA_COFF_CLAIM=off drops the two responsibility overrides.
+            // They mirror what LLJIT's RTDyld-COFF path applies for
+            // comdat/weak symbols, but they are also the only COFF-specific
+            // config we set — so they are the first suspect when promised
+            // symbols come back unmaterialized.
+            if (!envOn("CAJETA_COFF_NOCLAIM")) {
+                layer->setOverrideObjectFlagsWithResponsibilityFlags(true);
+                layer->setAutoClaimResponsibilityForObjectSymbols(true);
+            } else {
+                fprintf(stderr, "cajeta.jit: COFF host — responsibility "
+                                "overrides DISABLED (CAJETA_COFF_NOCLAIM)\n");
+            }
+            if (envOn("CAJETA_COFF_KEEPALIVE")) {
+                fprintf(stderr, "cajeta.jit: COFF host — markAllSymbolsLive "
+                                "plugin installed (CAJETA_COFF_KEEPALIVE)\n");
+                layer->addPlugin(std::make_shared<KeepAllSymbolsLivePlugin>());
+            }
             return layer;
         });
 }
