@@ -21,13 +21,17 @@
 // untouched (the function is a no-op off COFF).
 //
 
+#include "llvm/ExecutionEngine/Orc/DebugUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/ObjectTransformLayer.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
+#include <string>
 
 namespace cajeta {
 namespace jit {
@@ -63,6 +67,25 @@ inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
             layer->setAutoClaimResponsibilityForObjectSymbols(true);
             return layer;
         });
+}
+
+// Write every object the JIT is about to link to disk, when CAJETA_DUMP_OBJ is
+// set (to a directory, or to "1" for the working directory). Call right after
+// LLJITBuilder::create() on any JIT whose input you need to inspect.
+//
+// Why this exists: JITLink's COFF reader rejects an object we emit with
+// "Could not find symbol at given index, did you add it to JITSymbolTable?"
+// (COFF_x86_64.cpp addSingleRelocation — a relocation naming a symbol the
+// LinkGraph builder never created). Deciding whether that is an LLVM gap or
+// a malformed object of ours needs the object itself: dump it, read it with
+// llvm-readobj, and hand the same bytes to a real linker. Every platform, not
+// just COFF — an ELF dump of the same module is the control.
+inline void installObjectDump(llvm::orc::LLJIT& jit) {
+    const char* dir = std::getenv("CAJETA_DUMP_OBJ");
+    if (!dir || !*dir) return;
+    std::string dumpDir = (std::string(dir) == "1") ? std::string() : dir;
+    jit.getObjTransformLayer().setTransform(
+        llvm::orc::DumpObjects(std::move(dumpDir)));
 }
 
 } // namespace jit

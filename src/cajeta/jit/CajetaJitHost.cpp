@@ -669,6 +669,7 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
         return false;
     }
     out.jit = std::move(*jitOrErr);
+    cajeta::jit::installObjectDump(*out.jit);
 
     if (opts.debugInfo || std::getenv("CAJETA_JIT_GDB")) {
         if (auto err = llvm::orc::enableDebuggerSupport(*out.jit)) {

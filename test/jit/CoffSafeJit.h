@@ -35,8 +35,13 @@ inline llvm::orc::LLJITBuilder coffSafeJitBuilder() {
 }
 
 // Drop-in for `llvm::orc::LLJITBuilder().create()` that is safe on COFF hosts.
+// Honors CAJETA_DUMP_OBJ (see JitCoffLinking.h) so a failing link can be
+// inspected as bytes rather than guessed at.
 inline llvm::Expected<std::unique_ptr<llvm::orc::LLJIT>> makeCoffSafeJit() {
-    return coffSafeJitBuilder().create();
+    auto jit = coffSafeJitBuilder().create();
+    if (jit)
+        ::cajeta::jit::installObjectDump(**jit);
+    return jit;
 }
 
 } // namespace test
