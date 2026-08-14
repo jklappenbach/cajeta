@@ -681,6 +681,15 @@ CellResult KernelSession::execute(const std::string& source,
     auto* resultGet = reinterpret_cast<const char* (*)()>(
         lookupSymbol("__cajeta_script_result_get"));
     if (resultClear) resultClear();
+    // U4 (spec 4.4) — the cell runs behind a session-level catch. Without one
+    // `__cajeta_throw` finds no exception frame and calls exit(1): the whole
+    // kernel, every binding and every earlier cell, gone for one bad line.
+    // Resolved through the JIT's own runtime copy, so the frame it pushes is
+    // on the same TLS chain the cell's throw walks — the process copy has its
+    // own, and a throw would sail straight past it.
+    auto* guardCall = reinterpret_cast<void* (*)(int32_t (*)(), int32_t*)>(
+        lookupSymbol("__cajeta_session_guard_call"));
+    void* thrown = nullptr;
     {
         std::unique_ptr<cajeta::util::FdCapture> capture;
         if (impl.streamHandler) {
@@ -689,7 +698,16 @@ CellResult KernelSession::execute(const std::string& source,
                     impl.streamHandler(chunk);
                 });
         }
-        result.value = reinterpret_cast<int32_t (*)()>(entry)();
+        if (guardCall) {
+            thrown = guardCall(reinterpret_cast<int32_t (*)()>(entry),
+                               &result.value);
+        } else {
+            result.value = reinterpret_cast<int32_t (*)()>(entry)();
+        }
+    }
+    if (thrown) {
+        describeThrow(thrown, cellName, &result);
+        return result;
     }
     if (resultGet) {
         if (const char* text = resultGet()) {
@@ -768,15 +786,108 @@ void* KernelSession::lookupShort(const std::string& shortName) {
     return nullptr;
 }
 
+void KernelSession::describeThrow(void* thrown, const std::string& cellName,
+                                  CellResult* result) {
+    result->ok = false;
+    result->threw = true;
+    result->errorId = "CAJETA_ERROR_UNCAUGHT_THROW";
+    result->file = cellName;
+
+    auto* typeOf = reinterpret_cast<const char* (*)(void*)>(
+        lookupSymbol("__cajeta_throwable_type"));
+    auto* messageInto = reinterpret_cast<int32_t (*)(void*, char*, int32_t)>(
+        lookupSymbol("__cajeta_throwable_message_into"));
+    auto* frameCount = reinterpret_cast<int32_t (*)(void*)>(
+        lookupSymbol("__cajeta_throwable_frame_count"));
+    auto* frameAt = reinterpret_cast<int32_t (*)(
+        void*, int32_t, const char**, const char**, const char**, int32_t*)>(
+        lookupSymbol("__cajeta_throwable_frame"));
+
+    if (typeOf) {
+        if (const char* t = typeOf(thrown)) result->exceptionType = t;
+    }
+    if (messageInto) {
+        char buf[4096];
+        if (messageInto(thrown, buf, static_cast<int32_t>(sizeof(buf))) > 0) {
+            result->message = buf;
+        }
+    }
+    if (result->message.empty()) {
+        result->message = result->exceptionType.empty()
+            ? "uncaught throw" : ("uncaught " + result->exceptionType);
+    }
+
+    if (frameCount && frameAt) {
+        int32_t n = frameCount(thrown);
+        for (int32_t i = 0; i < n; ++i) {
+            const char* type = "";
+            const char* method = "";
+            const char* file = "";
+            int32_t line = 0;
+            if (!frameAt(thrown, i, &type, &method, &file, &line)) continue;
+            CellFrame f;
+            f.type = type ? type : "";
+            f.method = method ? method : "";
+            f.file = file ? file : "";
+            f.line = line;
+            // Spec 4.4: a frame inside a cell's own entry is the CELL, and
+            // renders as such. Everything the user did not write — the
+            // implicit class, the synthesized entry's name — is scaffolding,
+            // and naming it in a traceback only invites the question "what is
+            // cajeta.script.cell_3?".
+            // `<script>` is what the frame descriptor carries for a script
+            // unit's entry (script-units U5 names it that rather than leaking
+            // the implicit class); the other two forms are what an
+            // unremapped descriptor would carry.
+            bool cellFrame = f.type == "<script>"
+                || f.method == scriptEntryName()
+                || f.type.rfind("cajeta.script.", 0) == 0;
+            if (cellFrame) {
+                std::string where = f.file.empty() ? cellName : f.file;
+                f.text = where + ", line " + std::to_string(f.line);
+            } else {
+                f.text = f.type + "." + f.method + " (" + f.file + ":"
+                       + std::to_string(f.line) + ")";
+            }
+            result->traceback.push_back(std::move(f));
+        }
+    }
+    // A trace is best-effort — capture can be off, and a throw from inside a
+    // fiber records none. The payload must still name the cell, or the
+    // notebook shows an error from nowhere.
+    if (result->traceback.empty()) {
+        CellFrame f;
+        f.file = cellName;
+        f.text = cellName;
+        result->traceback.push_back(std::move(f));
+    }
+}
+
 void KernelSession::shutdown() {
     Impl& impl = *impl_;
     if (impl.shutdownDone) return;
     impl.shutdownDone = true;
-    // Join carriers while the code they may re-enter is still live — the
-    // ordering constraint CajetaJit's destructor documents. Exactly once for
+    // Teardown ORDER is load-bearing (plan 4.2.2). Session bindings drop
+    // FIRST, while the carrier pool and the JIT'd code their drop functions
+    // reach into are both still live; carriers are joined second — the
+    // ordering constraint CajetaJit's destructor documents. Reversing the two
+    // would run user drop code, which can await or call back into a cell's
+    // own methods, against a runtime already torn down. Each exactly once for
     // the session: a per-cell shutdown would tear the shared pool out from
     // under later cells.
     if (impl.jit) {
+        if (void* fn = lookupSymbol("__cajeta_session_count")) {
+            impl.stats.sessionBindingsAtShutdown =
+                static_cast<int>(reinterpret_cast<int64_t (*)()>(fn)());
+        }
+        if (void* fn = lookupSymbol("__cajeta_session_drop_all")) {
+            reinterpret_cast<void (*)()>(fn)();
+            ++impl.stats.sessionDropAllCalls;
+        }
+        if (void* fn = lookupSymbol("__cajeta_session_count")) {
+            impl.stats.liveSessionBindings =
+                static_cast<int>(reinterpret_cast<int64_t (*)()>(fn)());
+        }
         if (void* fn = lookupSymbol("__cajeta_task_shutdown")) {
             reinterpret_cast<void (*)()>(fn)();
             ++impl.stats.taskShutdownCalls;

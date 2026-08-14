@@ -167,3 +167,137 @@ const char* __cajeta_script_result_get(void) {
     if (!__cajeta_script_result_present) return 0;
     return __cajeta_script_result_text ? __cajeta_script_result_text : "";
 }
+
+// --- session-scoped fault containment (jupyter-kernel spec 4.4) ----------
+//
+// `__cajeta_throw` with no exception frame installed calls exit(1) — right
+// for a program, fatal for a kernel: an uncaught throw in one cell would take
+// the whole session, every binding, and every earlier cell with it. The
+// remedy is to give the cell boundary a frame of its own, so a throw that
+// escapes the cell unwinds HERE instead of out of the process.
+//
+// This is the resident-debug-server deferral, paid.
+
+// Run `entry` with a session-level catch installed. Returns NULL when the
+// call completed (its value in *out_value), or the thrown Throwable.
+void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
+    // Anything read after the longjmp has to survive it: a non-volatile local
+    // modified between setjmp and longjmp is indeterminate, and a parameter
+    // may live in a caller-saved register.
+    int32_t (* volatile fn)(void) = entry;
+    int32_t* volatile outp = out_value;
+    void* volatile scopeMark = __cajeta_scope_save_top();
+
+    struct cajeta_exception_frame frame;
+    __cajeta_exc_push(&frame);
+    if (setjmp(frame.buf) == 0) {
+        int32_t v = fn();
+        __cajeta_exc_pop();
+        if (outp) *outp = v;
+        return NULL;
+    }
+    // Landed from __cajeta_throw's longjmp. It has already unwound the drop
+    // chain to this frame's watermark and restored the line/debug chains; the
+    // value is parked in the frame.
+    void* thrown = frame.thrown_value;
+    __cajeta_exc_pop();
+    // A PANIC is not a cell error. The guard is a catch-all, so without this
+    // an UnrecoverableException — reserved for invariant violations — would
+    // be swallowed into a red cell and the session would carry on over a
+    // world it has already been told is broken. Same emit-and-abort the
+    // no-frame path takes (jupyter-kernel 4.3.1).
+    if (__cajeta_is_unrecoverable(thrown)) {
+        __cajeta_emit_uncaught(thrown, /*is_unrec=*/1);
+        abort();
+    }
+    // Join and cancel whatever the throw stranded — the work a CATCHING
+    // Cajeta function does on its way out via __cajeta_scope_exit_to. Under
+    // its own guard, because draining can re-raise a child's trigger, and
+    // that must not reach the process-level uncaught path either.
+    {
+        struct cajeta_exception_frame drain;
+        __cajeta_exc_push(&drain);
+        if (setjmp(drain.buf) == 0) {
+            __cajeta_scope_exit_to((void*) scopeMark);
+        }
+        __cajeta_exc_pop();
+    }
+    return thrown;
+}
+
+// The thrown value's canonical class name, via
+// obj -> vtable -> classObject -> rtti. "" when the value is not a real
+// object (a legacy int throw arrives here as a small integer cast to a
+// pointer, and must not be dereferenced).
+const char* __cajeta_throwable_type(void* v) {
+    if (!v || (uintptr_t) v < 4096) return "";
+    void* vtable = *(void**) v;
+    if (!vtable || (uintptr_t) vtable < 4096) return "";
+    void* classObject =
+        *(void**) ((char*) vtable + CAJETA_VTABLE_CLASSOBJECT_OFFSET);
+    if (!classObject || (uintptr_t) classObject < 4096) return "";
+    void* rtti = *(void**) ((char*) classObject + 8);
+    return __cajeta_rtti_type_name(rtti);
+}
+
+// Throwable.message into a caller buffer, NUL-terminated. Returns the number
+// of bytes written (0 when there is no message). Same layout walk as the
+// uncaught-throw emitter — Throwable{vtable@0, String message@8} — and the
+// same guards, so a non-Throwable value yields 0 rather than a fault.
+int32_t __cajeta_throwable_message_into(void* v, char* out, int32_t cap) {
+    if (!out || cap <= 0) return 0;
+    out[0] = 0;
+    if (!v || (uintptr_t) v < 4096) return 0;
+    void* strObj = ((void**) v)[1];
+    if (!strObj || (uintptr_t) strObj < 4096) return 0;
+    int32_t lt = *(int32_t*) ((char*) strObj + 8);
+    int32_t blen = lt & 0x1FFFFFFF;
+    if (blen <= 0) return 0;
+    const char* bytes;
+    if (blen <= 12) {
+        bytes = (const char*) strObj + 12;
+    } else {
+        int32_t soff = *(int32_t*) ((char*) strObj + 12);
+        char* sbase = *(char**) ((char*) strObj + 16);
+        if (!sbase || (uintptr_t) sbase < 4096) return 0;
+        bytes = sbase + 8 + soff;
+    }
+    if (blen > cap - 1) blen = cap - 1;
+    memcpy(out, bytes, (size_t) blen);
+    out[blen] = 0;
+    return blen;
+}
+
+// How many SEMANTIC frames the throw captured (innermost first). Zero when
+// line-info capture was off — the throwable still carries its type and
+// message, so an error payload is never empty for want of a trace.
+int32_t __cajeta_throwable_frame_count(void* v) {
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != v) e = e->next;
+    int32_t n = (e && e->shadow) ? (int32_t) e->shadow_count : 0;
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    return n;
+}
+
+// One frame, as borrowed pointers into the module-lived frame descriptors —
+// valid for the process's life, so the caller may read them after unlocking.
+// Returns 1 on success, 0 when `idx` is out of range.
+int32_t __cajeta_throwable_frame(void* v, int32_t idx, const char** type,
+                                 const char** method, const char** file,
+                                 int32_t* line) {
+    pthread_mutex_lock(&__cajeta_trace_mutex);
+    struct cajeta_trace_entry* e = __cajeta_trace_table;
+    while (e && e->throwable != v) e = e->next;
+    if (!e || !e->shadow || idx < 0 || idx >= e->shadow_count) {
+        pthread_mutex_unlock(&__cajeta_trace_mutex);
+        return 0;
+    }
+    const CajetaFrameDesc* d = e->shadow[idx].desc;
+    if (type)   *type   = (d && d->typeName)   ? d->typeName   : "";
+    if (method) *method = (d && d->methodName) ? d->methodName : "";
+    if (file)   *file   = (d && d->fileName)   ? d->fileName   : "";
+    if (line)   *line   = e->shadow[idx].line;
+    pthread_mutex_unlock(&__cajeta_trace_mutex);
+    return 1;
+}

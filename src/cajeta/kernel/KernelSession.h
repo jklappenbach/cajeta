@@ -60,6 +60,18 @@ namespace cajeta::kernel {
         int column = 0;
     };
 
+    // One frame of a cell's traceback (spec 4.4). `text` is the rendered
+    // form: a frame in the cell's own entry renders as `In[3], line 2` —
+    // never as the synthesized class the cell compiles into, which is an
+    // implementation detail the notebook user never asked about.
+    struct CellFrame {
+        std::string type;     // declaring type, canonical
+        std::string method;
+        std::string file;     // `In[N]` for a cell's own frame
+        int line = 0;
+        std::string text;
+    };
+
     // The outcome of one `execute`. A compile failure is DATA, not an
     // exception: the kernel turns it into an `error` reply and carries on,
     // and the session is unchanged (script-units 5.5).
@@ -92,6 +104,12 @@ namespace cajeta::kernel {
         // message fields above; warnings appear ONLY here, and a cell can
         // succeed with a non-empty list.
         std::vector<CellDiagnostic> diagnostics;
+        // The cell RAN and threw (spec 4.4) — as opposed to failing to
+        // compile, which is what an empty `exceptionType` with `!ok` means.
+        // The session survives either way.
+        bool threw = false;
+        std::string exceptionType;   // canonical class of the thrown value
+        std::vector<CellFrame> traceback;   // innermost first
     };
 
     // Observability for the tests and, later, the kernel's own diagnostics.
@@ -109,6 +127,16 @@ namespace cajeta::kernel {
         // at the end. Calling it per cell would tear the shared carrier pool
         // out from under later cells.
         int taskShutdownCalls = 0;
+        // `__cajeta_session_drop_all` invocations — also exactly one, and
+        // BEFORE the task shutdown: a drop that runs after the carrier pool
+        // is gone runs user code on a torn-down runtime.
+        int sessionDropAllCalls = 0;
+        // Session bindings registered when shutdown began, and the count
+        // after the drop pass — which must be 0. The before-count is the one
+        // that answers "was this name ever bound at all?", the question a
+        // silently-empty cross-cell read turns on.
+        int sessionBindingsAtShutdown = -1;
+        int liveSessionBindings = -1;
     };
 
     class KernelSession {
@@ -164,6 +192,10 @@ namespace cajeta::kernel {
     private:
         KernelSession();
         void* lookupShort(const std::string& shortName);
+        // Turn a thrown Throwable into the cell's structured error (spec
+        // 4.4): type, message, and a traceback whose frames name cells.
+        void describeThrow(void* thrown, const std::string& cellName,
+                           CellResult* result);
 
         struct Impl;
         std::unique_ptr<Impl> impl_;

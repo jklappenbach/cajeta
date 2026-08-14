@@ -91,7 +91,53 @@ namespace cajeta {
         llvm::Value* ownerPtr =
             builder->CreateLoad(ptrTy, field->getOrCreateAllocation());
         builder->CreateCall(bindFn, {nameStr, ownerPtr, dropFn});
+        field->setSessionBound(true);
         return true;
+    }
+
+    // Script units (script-units spec §4) — the BORROW half of session
+    // binding, and the third case after owners and primitives.
+    //
+    // maybeEmitSessionBind rides the drop-entry choke point, which only
+    // OWNERS reach. A reference initialized from something the unit does not
+    // own — `String tag = "x";` (a literal is a mode-1 view over static
+    // bytes), `String b = a;`, a borrow-returning call — deliberately gets no
+    // drop entry, and so was never registered at all: `__cajeta_session_get`
+    // returned null in the next cell and the binding silently VANISHED. A
+    // String was the common case, and nothing covered it.
+    //
+    // Registered with a NULL drop_fn: the session can see the value but does
+    // not own it, so drop_all must not free it. The registry already guards
+    // on drop_fn before calling it.
+    static void maybeEmitSessionBindBorrow(CajetaModulePtr module,
+                                           FieldPtr field, CajetaTypePtr type) {
+        if (!module->isScriptUnit() || !field || !type) return;
+        if (field->isSessionBound()) return;          // owner path took it
+        if (type->getTypeFlags() & PRIMITIVE_FLAG) return;  // boxed instead
+        if (!module->isScriptBindingName(field->getName())) return;
+        // Only pointer-shaped storage: a slot holding an inline aggregate is
+        // not a reference to register, and reading it as one would hand the
+        // registry the address of a dead frame.
+        llvm::AllocaInst* slot = field->getOrCreateAllocation();
+        if (!slot || !slot->getAllocatedType()->isPointerTy()) return;
+        auto* builder = module->getBuilder();
+        if (!builder || !builder->GetInsertBlock()) return;
+        llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
+        if (parentFn == nullptr
+            || parentFn->getName().find(scriptEntryName())
+                   == llvm::StringRef::npos) {
+            return;
+        }
+        llvm::Function* bindFn =
+            module->getRuntimeFunction("__cajeta_session_bind");
+        if (!bindFn) return;
+        auto& ctx = *module->getLlvmContext();
+        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
+        llvm::Value* nameStr = builder->CreateGlobalString(field->getName());
+        llvm::Value* ref = builder->CreateLoad(ptrTy, slot);
+        builder->CreateCall(bindFn, {nameStr, ref,
+                                     llvm::ConstantPointerNull::get(ptrTy)});
+        field->setSessionBound(true);
     }
 
     // Script units (script-units spec §4) — the PRIMITIVE half of session
@@ -1981,9 +2027,10 @@ namespace cajeta {
                                   field->getDropEntry());
             }
 
-            // Session binding for a primitive — last, so the box copies the
-            // fully-initialized slot.
+            // Session binding for the two cases the owner path can't reach —
+            // last, so both read a fully-initialized slot.
             maybeEmitSessionBindValue(module, field, type);
+            maybeEmitSessionBindBorrow(module, field, type);
         }
 
         return nullptr;
