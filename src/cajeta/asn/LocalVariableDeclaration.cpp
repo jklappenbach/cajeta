@@ -1140,6 +1140,52 @@ namespace cajeta {
                         }
                     }
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {
+                        // stdlib-ownership-convention U2 — record which call
+                        // lent this local, so a later `#local` can be
+                        // rejected naming both ends (spec 3.1, 4.3).
+                        //
+                        // Sited here, on the call expression's OWN resolved
+                        // method, rather than in the targetCls block below:
+                        // that block re-resolves the callee from the
+                        // receiver's type, which comes back null for a
+                        // user-class receiver (`Cell c = b.borrowCell()`
+                        // reaches this point but never enters it), so the
+                        // provenance was being lost for exactly the code
+                        // this check exists to protect.
+                        if (!mc->getResolvedType()) {
+                            mc->resolveTypes(module);
+                        }
+                        if (MethodPtr rm = mc->getResolvedMethod()) {
+                            if (!rm->isReturnsOwnership()
+                                    && !rm->returnsStackValue()) {
+                                auto rt = dynamic_pointer_cast<CajetaClass>(
+                                    rm->getReturnType());
+                                // Only title-bearing results can be wrongly
+                                // surrendered; primitives never are.
+                                if (rt && !rt->isValueType()
+                                        && !rt->isSharedCapableValue()) {
+                                    const string origin =
+                                        mc->getMethodCallName() + "()";
+                                    const string& declName =
+                                        declarator->getIdentifier();
+                                    // Record on BOTH identities: the field
+                                    // object built here, and the scope (which
+                                    // walks to the declaring frame). The `#x`
+                                    // reader resolves its own field through
+                                    // the scope, and the two are not always
+                                    // the same object.
+                                    field->setCallBorrowOrigin(origin);
+                                    if (auto sc =
+                                            module->getScopeStack().peek()) {
+                                        sc->recordCallBorrow(declName, origin);
+                                        if (FieldPtr sf =
+                                                sc->getField(declName)) {
+                                            sf->setCallBorrowOrigin(origin);
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if (mc->getMethodCallName() == "__cajeta_inject") {
                             initIsBorrow = true;
                         } else {
@@ -1250,19 +1296,6 @@ namespace cajeta {
                                         // Non-# return — the local is a borrow
                                         // of whatever the callee returned.
                                         initIsBorrow = true;
-                                        // stdlib-ownership-convention U2 —
-                                        // remember WHICH call lent it, so a
-                                        // later `#local` is rejected with both
-                                        // ends named (spec 4.3). The
-                                        // borrow-ness was already decided
-                                        // here; only the provenance was being
-                                        // discarded.
-                                        if (auto sc =
-                                                module->getScopeStack().peek()) {
-                                            sc->recordCallBorrow(
-                                                declarator->getIdentifier(),
-                                                mcName + "()");
-                                        }
                                     }
                                 }
                                 // M5(b) — fn-typed MCE through a function-

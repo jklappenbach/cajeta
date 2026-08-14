@@ -3230,17 +3230,29 @@ bool cajetaRhsCarriesRedundantSharp(
                                       "value (fresh construction / clone()) first.",
                                 "CAJETA_ERROR_MOVE_OF_BORROW");
                         }
-                        // stdlib-ownership-convention U2 (spec 3.1, 4.1) —
-                        // the call-result case the comment above records as
-                        // deliberately unchecked. It needs no runtime-owner
-                        // ABI after all: a callee's DECLARED return spelling
-                        // is static, intra-procedural truth, and a plain
-                        // (non-`#`) return hands back a BORROW. Surrendering
-                        // it mints a second owner for memory the callee's
-                        // object still frees — the JsonObject.keyAt shape
-                        // that produced garbage keys in cajeta-llama U13,
-                        // silently, several frames from the mistake.
-                        string callOrigin = scope->callBorrowOriginOf(mvName);
+                    }
+                    // stdlib-ownership-convention U2 (spec 3.1, 4.1) — the
+                    // call-result case the comment above records as
+                    // deliberately unchecked. It needs no runtime-owner ABI
+                    // after all: a callee's DECLARED return spelling is
+                    // static, intra-procedural truth, and a plain (non-`#`)
+                    // return hands back a BORROW. Surrendering it mints a
+                    // second owner for memory the callee's object still
+                    // frees — the JsonObject.keyAt shape that produced
+                    // garbage keys in cajeta-llama U13, silently, several
+                    // frames from the mistake.
+                    //
+                    // Sited OUTSIDE the `!getDropEntry()` gate above on
+                    // purpose: that gate admits only locals LVD already
+                    // classified as borrows, and the locals this check exists
+                    // for are exactly the ones it did NOT classify (they
+                    // carry a drop entry). Recorded provenance is
+                    // authoritative on its own.
+                    if (!isFormal && titleBearing) {
+                        string callOrigin = mvField->getCallBorrowOrigin();
+                        if (callOrigin.empty()) {
+                            callOrigin = scope->callBorrowOriginOf(mvName);
+                        }
                         if (!callOrigin.empty()) {
                             throw Exception(
                                 "cannot transfer ownership of `" + mvName

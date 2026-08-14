@@ -59,6 +59,15 @@ namespace cajeta {
         llvm::Value* dropEntry = nullptr;
         bool runtimeConditionalOwner = false;
         bool stackInstance = false;
+        // stdlib-ownership-convention U2 — when this local was initialised
+        // from a BORROW-returning call (a callee whose return type is not
+        // spelled `#`), the call that lent it. `#local` is then a lie: the
+        // owner is whatever object that call read the value out of, and it
+        // still frees it. Carried on the FIELD rather than the Scope because
+        // the recording site (declaration analysis) and the reading site
+        // (`#x` codegen) do not reliably share a Scope object; the field is
+        // the one identity both sides already resolve.
+        string callBorrowOrigin;
         // script-units U4 — seeded into a script entry's root scope from the
         // SessionState table (a binding created by an earlier unit of the
         // same session). Carries a type but no alloca in this unit; moved
@@ -163,6 +172,14 @@ namespace cajeta {
 
         const string& getName() const {
             return name;
+        }
+
+        const string& getCallBorrowOrigin() const {
+            return callBorrowOrigin;
+        }
+
+        void setCallBorrowOrigin(const string& origin) {
+            callBorrowOrigin = origin;
         }
 
         const string& getHierarchicalName() {
