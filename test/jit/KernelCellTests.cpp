@@ -238,25 +238,37 @@ TEST(KernelCellTests, typeRedefinitionIsGenerational) {
 // already exist adopt the new bodies. Contrast typeRedefinitionIsGenerational,
 // where the layout changed and the old value kept the old behaviour.
 //
-// DISABLED — pins a REAL gap, and the honest state is that 5.4 is not
-// implemented. Today a body-only change takes the generational path (5.3), so
-// this returns 5: the old value keeps the old body. That is coherent, just not
-// what 5.4 asks for.
+// DISABLED — a real gap. Today a body-only change takes the generational
+// path, so this returns 5: the existing value keeps its old body.
 //
-// Detection (same field list + same signatures => body-only) is the easy half
-// and is NOT enough on its own. Suppressing the generation makes cell 2 emit
-// the SAME symbols as cell 1, and the session-statics dedup then rewrites cell
-// 2's `Counter#VTable` into a reference to cell 1's — whose slots were baked
-// with cell 1's function addresses when it materialized. So neither existing
-// values NOR new ones would pick up the new bodies: strictly worse than the
-// generational behaviour it replaced.
+// ATTEMPTED 2026-08-13 AND REVERTED. The plan called for detect-then-patch:
+// compare the redeclaration's fields and signatures against the previous
+// declaration, suppress the generation, then overwrite the materialized
+// vtable's slots with the new bodies' addresses. The patch itself was written
+// and is sound in shape — take the entry-array offset and the entry stride
+// from the vtable StructType via DataLayout, never assume the
+// {version,count,parent,drop_fn,classObject} prefix — but the DETECTION has no
+// footing:
 //
-// Doing this properly means PATCHING the live vtable after the cell is
-// delivered: walk the class's virtualMethodList (CajetaClass::buildVirtualTable
-// already orders it), look up each method's new address in the session, and
-// store it into the corresponding slot of the materialized vtable global.
-// Needs the slot-prefix layout from StructureMetadata::createVirtualTableType,
-// and needs deciding for secondary and interface vtables too. See plan 2.1.4.
+//   THERE IS NO PREVIOUS CLASS OBJECT TO COMPARE AGAINST. A redeclaration
+//   REUSES the same CajetaClass instance (canonicalMap[canonical].get() ==
+//   this inside generatePrototype), refilled from the new declaration. By the
+//   time the struct name is chosen, the old field list and signature set are
+//   already gone.
+//
+// So 5.4 needs the comparison to happen where the OLD shape is still readable
+// — at declaration/parse time, before the class is refilled — with the result
+// carried forward to generatePrototype. Snapshotting the shape (field names +
+// type canonicals + signature set) into SessionState when a cell declares a
+// class is the obvious way: it is small, it is exactly what the comparison
+// needs, and the session already owns per-class bookkeeping via
+// noteDeclaredClass.
+//
+// NOTE this also means the generational path is NOT distinguishing old from
+// new via the class object — an older value survives because its vtable
+// pointer was baked at construction, not because it holds an older class.
+// Worth re-checking what 2.1.3's boundType is really buying before building
+// on it. See plan 2.1.4.
 TEST(KernelCellTests, DISABLED_bodyOnlyRedefinitionSwapsInPlace) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
