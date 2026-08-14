@@ -314,14 +314,24 @@ public class SharedPoolServer extends Server {
             if (!next.isPresent()) {
                 return 0;   // queue closed and drained — this worker is done
             }
-            // `take()`, not `get()`: the title must continue on to the
-            // handler, which owns the stream and closes it (runTurn's formal
-            // is `#TcpStream`). `Channel.receive` transferred the item INTO
-            // this Optional (`stack Optional<T>(true, #item)`), so the
-            // Optional holds title and would free it at iteration end —
-            // `#next.get()` claimed a second one. Latent double-free, unseen
-            // until the transfer-of-a-borrow check learned to read call
-            // arguments (stdlib-ownership-convention U2).
+            // `take()`, not `get()`: make the declared transfer REAL.
+            //
+            // `runTurn` declares `#TcpStream` — an obligation that the handler
+            // receives the title. `get()` lends, and `#` on a lent value
+            // FORWARDS the mode it was handed rather than forcing a title
+            // (5.2.4), so the old `#next.get()` satisfied that obligation in
+            // spelling only: a `#` that quietly did nothing. `take()` extracts
+            // the title `Channel.receive` transferred in
+            // (`stack Optional<T>(true, #item)`), so exactly one owner reaches
+            // the handler.
+            //
+            // NOT a double-free fix. An earlier revision of this comment
+            // claimed one; measurement says otherwise — for a vtable-bearing
+            // class the receiving local's drop entry is armed from the actual
+            // return flag (LocalVariableDeclaration.cpp:251), so the lend
+            // stayed a lend and nothing was freed twice. See
+            // OwnershipRuntimeProbeTests.classBorrowSurrenderedAtArgument,
+            // which measures it as balanced.
             TcpStream conn = next.take();
             queued.fetchAdd(-1);   // dequeued: now in-handler, no longer staged
             SharedPoolServer.runTurn(handler, inflight, #conn);

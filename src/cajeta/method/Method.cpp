@@ -25,6 +25,7 @@
 #include "../asn/expression/BinaryOpExpression.h"
 #include "../asn/expression/Identifier.h"
 #include "../asn/expression/DotExpression.h"
+#include "../asn/expression/LiteralExpression.h"
 #include "../asn/LocalVariableDeclaration.h"
 #include "../type/FormalParameter.h"
 #include "../field/ParameterField.h"
@@ -216,6 +217,102 @@ namespace cajeta {
             return ai->getStackAlloc();
         }
         return false;
+    }
+
+    // --- Provable interior VIEW return (stdlib-ownership-convention U2) ----
+    //
+    // A plain (non-`#`) return in cajeta does NOT statically mean "borrow".
+    // The return flag is RUNTIME state, mirroring how a plain formal carries
+    // its caller's title through the transfer word: a plain-return wrapper
+    // that tail-calls a `#`-returning method rides the inner flag through
+    // (SignatureAbiTests.tailCallThroughPlainReturnKeepsTitle), and
+    // `Stream.fold<R>` does the same via its callback's `#R`. That symmetry
+    // is why the transfer-of-a-borrow check excludes formals, and it applies
+    // just as much to results.
+    //
+    // So the call-result case is only decidable when the callee's body PROVES
+    // the result is a window into the receiver's interior — every return is a
+    // direct `this.field` read (or an index into one). That is the shape the
+    // check exists for: JsonObject.keyAt, Optional.get, and the `borrowData`
+    // fixture. Anything else — a tail call, a fresh construction, a local —
+    // may be carrying a runtime title, so it is ALLOWED rather than guessed
+    // at (spec §7.2: the check must never block valid code).
+    bool Method::exprIsInteriorRead(const ExpressionPtr& e) {
+        if (!e) return false;
+        // `this.f[i]` — an index into interior storage is still interior.
+        if (auto ix = dynamic_pointer_cast<ArrayIndexExpression>(e)) {
+            auto& ch = ix->getChildren();
+            return !ch.empty()
+                && exprIsInteriorRead(dynamic_pointer_cast<Expression>(ch[0]));
+        }
+        // `this.f` — and only `this`. A read off any OTHER receiver is that
+        // object's business, not provably this one's interior.
+        //
+        // The receiver is a ThisExpression, NOT an IdentifierExpression whose
+        // text is "this" — `this` has its own primary-expression node. Testing
+        // for the identifier form alone made this function return false for
+        // every method in the language, which silently disabled the check
+        // rather than loosening it.
+        if (auto dot = dynamic_pointer_cast<DotExpression>(e)) {
+            auto& ch = dot->getChildren();
+            if (ch.empty()) return false;
+            if (dynamic_pointer_cast<ThisExpression>(ch[0])) return true;
+            auto recv = dynamic_pointer_cast<IdentifierExpression>(ch[0]);
+            return recv && recv->getTextValue() == "this";
+        }
+        return false;
+    }
+
+    bool Method::returnsInteriorView() const {
+        if (returnsOwnership || !block) return false;
+        bool sawView = false;
+        if (!nodeReturnsOnlyInteriorViews(block, sawView)) return false;
+        return sawView;
+    }
+
+    // True while every return seen so far is either an interior read or a
+    // bare `null` (which carries no title and so cannot be double-freed).
+    // Mirrors nodeHasStackReturn's descent through the branch/loop bodies
+    // that are not in `children`.
+    bool Method::nodeReturnsOnlyInteriorViews(const AbstractSyntaxNodePtr& node,
+                                              bool& sawView) {
+        if (!node) return true;
+        if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+            ExpressionPtr e = ret->getExpression();
+            if (!e) return true;                       // bare `return;`
+            if (auto tl = dynamic_pointer_cast<TextLiteralExpression>(e)) {
+                if (tl->getLiteralType() == LITERAL_TYPE_NULL) return true;
+            }
+            if (!exprIsInteriorRead(e)) return false;
+            sawView = true;
+            return true;
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(lbl->getBlock(), sawView);
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(sc->getBlock(), sawView);
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(iff->getThenBranch(), sawView)
+                && nodeReturnsOnlyInteriorViews(iff->getElseBranch(), sawView);
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(wh->getBody(), sawView);
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(fr->getBody(), sawView);
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(efr->getBody(), sawView);
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            return nodeReturnsOnlyInteriorViews(dod->getBody(), sawView);
+        }
+        for (auto& c : node->getChildren()) {
+            if (!nodeReturnsOnlyInteriorViews(c, sawView)) return false;
+        }
+        return true;
     }
 
     bool Method::blockHasStackReturn(const BlockPtr& block) {

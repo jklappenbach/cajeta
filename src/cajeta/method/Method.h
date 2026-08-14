@@ -618,6 +618,19 @@ namespace cajeta {
         static bool nodeHasStackReturn(const AbstractSyntaxNodePtr& node);
         static bool blockHasStackReturn(const BlockPtr& block);
 
+        // stdlib-ownership-convention U2 — true iff this method's body PROVES
+        // its plain (non-`#`) result is a window into the receiver's interior:
+        // every return is a `this.field` read (or an index into one), and
+        // there is at least one. A plain return is NOT statically a borrow in
+        // cajeta — the return flag is runtime state, so a plain-return wrapper
+        // can ride an inner `#` call's title through — which is why the
+        // transfer-of-a-borrow check may only fire on a PROVEN view. See the
+        // commentary in Method.cpp.
+        bool returnsInteriorView() const;
+        static bool exprIsInteriorRead(const ExpressionPtr& e);
+        static bool nodeReturnsOnlyInteriorViews(
+            const AbstractSyntaxNodePtr& node, bool& sawView);
+
         // [heap-optional-return] lint: warn when a method declared
         // `#Optional<T>` returns only `heap Optional<...>(...)` values
         // — the heap allocation is scope-bounded (becomes the return,

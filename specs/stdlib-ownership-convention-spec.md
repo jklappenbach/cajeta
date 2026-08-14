@@ -100,6 +100,22 @@ lending a view, and each has one correct default.
 - **3.1** When a caller writes `#x` where `x` is a borrow, the compiler
   rejects it — surrendering title one does not hold is the mirror of
   `DANGLING_LEND`, and it is what turned `keyAt` into corruption.
+
+  *Measured 2026-08-14 (`OwnershipArrayCanaryTests`).* `#x` on a borrow
+  does not transfer the title; it forwards the mode it was handed. The
+  lender keeps ownership and frees on drop, so when the receiver
+  OUTLIVES the lender the receiver reads reused memory — an array
+  payload came back as `-83968` instead of `8247`, and a class payload
+  came back holding the churn allocation's `98,98`. Both kinds, not
+  only arrays.
+
+  This makes the check load-bearing rather than stylistic, and it
+  corrects a weaker reading reached earlier from a `liveCount` probe
+  that measured the same shape as "balanced". That probe kept everything
+  in ONE scope, so nothing outlived its lender and nothing could dangle.
+  A balanced count is consistent with correct ownership AND with a
+  transfer that never happened; only data survival separates them.
+  Counting answers the double-free question, not the ownership one.
 - **3.2** When a library stores a plain (borrowed) parameter into a
   field, an element, or a container, the compiler rejects it and names
   the `#T` spelling as the fix.
@@ -121,29 +137,56 @@ Convention without enforcement decays; these are the two checks that
 would have caught three of this unit's four bugs at the line rather
 than as corruption.
 
-- **4.1** Reject `#x` where `x` holds a borrow returned by a plain
-  (non-`#`) call. Local, decidable, no inference required: the callee's
-  declared return spelling is static truth.
+- **4.1** Reject `#x` where `x` holds a borrow returned by a call the
+  callee's body PROVES is an interior view.
 
-  *Amended 2026-08-14 during Unit 2, from contact with the compiler.*
-  Three corrections to this item as first drafted:
+  *Corrected 2026-08-14 by the routine gate, which rejected the first
+  version of this item.* As first written — and as first implemented —
+  this said the callee's declared return spelling is static truth and a
+  plain (non-`#`) return hands back a borrow. **That is false, and the
+  correction matters more than the original claim.**
+
+  A plain return in cajeta carries a RUNTIME title flag, exactly as a
+  plain formal carries its caller's title through the transfer word. A
+  plain-return wrapper that tail-calls a `#`-returning method rides the
+  inner flag through — `SignatureAbiTests.tailCallThroughPlainReturn-
+  KeepsTitle` pins it (`static Cell viaPlain() { return D.fresh(); }`),
+  and `Stream.fold<R>` does the same through its callback's `#R`. So
+  ownership is conditional on BOTH sides of a call, and the symmetry is
+  the design, not an accident:
+
+  | Position | Spelled | Carries | `#` means |
+  |---|---|---|---|
+  | formal | `T p` | runtime, via the transfer word | forward the arrived mode |
+  | result | `T f()` | runtime, via the return flag | forward the arrived mode |
+
+  The compiler comment this unit set out to close — "a call-result local
+  stays unchecked until the `#?` runtime-owner ABI can carry its role" —
+  was therefore not a TODO. It was recording that the case is not
+  statically decidable. Reading it as an unclosed gap is what produced
+  the unsound first implementation.
+
+  What IS decidable is the narrower question the check actually needs:
+  does the callee's body prove the result is a window into the
+  receiver's interior — every return a `this.field` read (or an index
+  into one), and at least one? That shape covers every real instance
+  (`JsonObject.keyAt`, `Optional.get`) and excludes every ride-through.
+  Anything unproven is ALLOWED, per §7.2 — the check must never block
+  valid code.
+
+  Two further corrections from the same implementation:
 
   - The diagnostic is the EXISTING `CAJETA_ERROR_MOVE_OF_BORROW`, not a
-    new code. The compiler already rejects transfer-of-a-borrow; its own
-    comment names the call-result case as a deliberate, documented gap
-    ("stays unchecked until the `#?` runtime-owner ABI can carry its
-    role"). Closing that gap needs no runtime ABI, and a second code for
-    one defect would fragment the diagnostics.
-  - **Plain parameters are NOT covered, and must not be.** A formal's
-    ownership is fixed at the call site and carried at run time by the
-    transfer word: `f(x)` lends, `f(#x)` transfers, and `#p` inside the
-    callee forwards whichever mode arrived (conditional acquisition),
-    with `#=` recording the forwarded mode per slot. Rejecting `#p`
-    statically would break that design and outlaw every mode-forwarding
-    wrapper. The existing check excludes formals deliberately.
+    new code; a second code for one defect would fragment the
+    diagnostics.
+  - **Plain parameters are NOT covered, and must not be** — the formal
+    half of the table above. Rejecting `#p` statically would outlaw
+    every mode-forwarding wrapper. The existing check excludes formals
+    deliberately.
   - Already-moved locals are already diagnosed by the existing
     `demoteToBorrow` tracking; no new work (verified by test 2.1.5,
     which passed against the unmodified compiler).
+
 - **4.2** `CAJETA_ERROR_CAPTURED_BORROW_PARAM` — reject storing a plain
   parameter into a field, array element, or container beyond the call,
   naming `#T` as the fix. Sinks (§2.3) opt out by spelling the store

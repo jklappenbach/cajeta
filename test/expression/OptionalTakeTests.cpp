@@ -1,11 +1,19 @@
 // stdlib-ownership-convention U2 (spec 2.2, 2.5; plan 2.2.3) —
 // `Optional.take()`, the owned counterpart to `get()`.
 //
-// `get()` returns a BORROW: ownership stays with the Optional, which frees
-// the value if it holds title. Writing `#opt.get()` therefore mints a
-// second owner for memory the Optional still frees. Two stdlib sites did
-// exactly that and were invisible until the transfer-of-a-borrow check
-// learned to read call ARGUMENTS:
+// `get()` returns a BORROW: ownership stays with the Optional. `#` on a
+// borrow FORWARDS the mode it was handed rather than forcing a title
+// (5.2.4), so `#opt.get()` is a transfer that quietly does nothing — the
+// caller who needed the value to outlive the Optional does not get it.
+//
+// It is NOT a double free. An earlier revision of this file claimed one;
+// OwnershipRuntimeProbeTests.classBorrowSurrenderedAtArgument measures the
+// class shape as balanced, because a call-result local's drop entry is
+// armed from the actual return flag. The defect is a silently-ineffective
+// `#`, which is worth catching on its own terms.
+//
+// Two stdlib sites did exactly that and were invisible until the
+// transfer-of-a-borrow check learned to read call ARGUMENTS:
 //
 //   * SharedPoolServer.worker — `TcpStream conn = next.get();` then
 //     `runTurn(handler, inflight, #conn)`, where `Channel.receive` had

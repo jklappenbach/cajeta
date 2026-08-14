@@ -1156,8 +1156,19 @@ namespace cajeta {
                             mc->resolveTypes(module);
                         }
                         if (MethodPtr rm = mc->getResolvedMethod()) {
+                            // A plain return is NOT statically a borrow: the
+                            // return flag is RUNTIME state, so a plain-return
+                            // wrapper rides an inner `#` call's title through
+                            // (SignatureAbiTests.tailCallThroughPlainReturn-
+                            // KeepsTitle; `Stream.fold<R>` via its callback's
+                            // `#R`). Exactly the symmetry that makes `#p` on a
+                            // plain FORMAL legal. So record provenance only
+                            // when the callee's body PROVES an interior view —
+                            // every return a `this.field` read. Anything else
+                            // is allowed rather than guessed at (spec §7.2).
                             if (!rm->isReturnsOwnership()
-                                    && !rm->returnsStackValue()) {
+                                    && !rm->returnsStackValue()
+                                    && rm->returnsInteriorView()) {
                                 auto rt = dynamic_pointer_cast<CajetaClass>(
                                     rm->getReturnType());
                                 // Only title-bearing results can be wrongly

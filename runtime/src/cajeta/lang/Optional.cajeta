@@ -118,10 +118,10 @@ public final class Optional<T> {
      * Extract the value **with its title**, leaving this Optional empty.
      *
      * The owned counterpart to [`get`](#get). `get()` hands back a borrow,
-     * so `#opt.get()` is a lie — it mints a second owner for a value this
-     * Optional still frees. That is a real double-free, and both stdlib
-     * occurrences were latent until the transfer-of-a-borrow check learned
-     * to see call arguments (stdlib-ownership-convention U2).
+     * and `#` on a borrow FORWARDS the mode it was handed rather than
+     * forcing a title — so `#opt.get()` is a transfer that quietly does
+     * nothing, and a caller who needs the value to outlive this Optional
+     * does not get what the `#` appears to promise.
      *
      * Where the value arrived by transfer — `Channel.receive` returns
      * `stack Optional<T>(true, #item)` — this is how the title continues on
@@ -133,6 +133,7 @@ public final class Optional<T> {
      * the slot holds no title — i.e. the value was LENT in (constructed
      * without `#`), so there is no title to take; use `get()` for that.
      */
+    @Inline
     public #T take() {
         if (!this.present) {
             throw heap NoOptionalValueException("Optional.take: unwrap of an empty Optional (guard with isPresent() or use orElse())");
