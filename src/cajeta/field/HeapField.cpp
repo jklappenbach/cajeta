@@ -10,6 +10,16 @@
 namespace cajeta {
 
     llvm::AllocaInst* HeapField::getOrCreateAllocation() {
+        // A field with no TYPE has no slot to make. That is not a defensive
+        // nicety: `seedSessionScope` deliberately seeds a session binding
+        // NAME-ONLY when its recorded canonical does not resolve in this
+        // unit's type world (script-units §4 — the ownership checks need the
+        // name, and a live read rejects before the type is ever touched).
+        // Every seeded field lands here through `Scope::putField`, so without
+        // this the documented name-only path dereferenced a null type and
+        // took the process down. Found 2026-08-14 by
+        // SessionOwnershipTests.moveStateSpansUnits.
+        if (!type) return nullptr;
         if (!alloca) {
             // Entry-block slot alloca (see CajetaModule::createEntryAlloca):
             // a `heap` local in a loop body must not re-allocate stack per pass.
