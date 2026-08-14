@@ -28,6 +28,10 @@
 #include <fstream>
 #endif
 
+#ifdef _WIN32
+#include <io.h>
+#endif
+
 #ifndef O_BINARY
 #define O_BINARY 0
 #endif
@@ -80,9 +84,18 @@ void makeSparseWithTailMark(const std::string& path, int64_t size,
                             const char* mark, size_t markLen) {
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_BINARY, 0644);
     ASSERT_GE(fd, 0) << "open(" << path << ")";
+#ifdef _WIN32
+    // MinGW has no pwrite, and its off_t is 32-bit — both silently break the
+    // past-bit-31 sizes this helper exists for. Use the 64-bit CRT seams.
+    ASSERT_EQ(_chsize_s(fd, size), 0);
+    ASSERT_EQ(_lseeki64(fd, size - (int64_t) markLen, SEEK_SET),
+              size - (int64_t) markLen);
+    ASSERT_EQ(::write(fd, mark, (unsigned) markLen), (int) markLen);
+#else
     ASSERT_EQ(::ftruncate(fd, (off_t) size), 0);
     ASSERT_EQ(::pwrite(fd, mark, markLen, (off_t) (size - (int64_t) markLen)),
               (ssize_t) markLen);
+#endif
     ::close(fd);
 }
 
