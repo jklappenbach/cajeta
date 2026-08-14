@@ -132,6 +132,8 @@ Core semantics: types, ownership, memory, dispatch.
 - [olla-ci-publish](buildtool/olla-ci-publish.md) — publishing to Olla from CI;
   [windows-release-ci-spec](buildtool/windows-release-ci-spec.md) — the Windows release leg.
 - [Debugging](debugging/Debugging.md) — the DAP server and debug story.
+- [Kernel](tooling/Kernel.md) — `cajeta kernel`, the Jupyter kernel:
+  install, cell semantics, `Out[N]` rendering, errors, interrupt.
 - [Embedded](embedded/Embedded.md) — the embedded roadmap.
 
 ## Agents — `mcp/`
