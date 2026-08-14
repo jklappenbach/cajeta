@@ -232,3 +232,54 @@ TEST(KernelCellTests, typeRedefinitionIsGenerational) {
     ASSERT_TRUE(c4.ok) << c4.errorId << ": " << c4.message;
     EXPECT_EQ(15, c4.value) << "cell 4 did not get the new generation";
 }
+
+// 2.1.4 / script-units 5.4 — a BODY-ONLY redefinition (same layout, same
+// signatures, changed bodies) introduces NO new generation: values that
+// already exist adopt the new bodies. Contrast typeRedefinitionIsGenerational,
+// where the layout changed and the old value kept the old behaviour.
+//
+// DISABLED — pins a REAL gap, and the honest state is that 5.4 is not
+// implemented. Today a body-only change takes the generational path (5.3), so
+// this returns 5: the old value keeps the old body. That is coherent, just not
+// what 5.4 asks for.
+//
+// Detection (same field list + same signatures => body-only) is the easy half
+// and is NOT enough on its own. Suppressing the generation makes cell 2 emit
+// the SAME symbols as cell 1, and the session-statics dedup then rewrites cell
+// 2's `Counter#VTable` into a reference to cell 1's — whose slots were baked
+// with cell 1's function addresses when it materialized. So neither existing
+// values NOR new ones would pick up the new bodies: strictly worse than the
+// generational behaviour it replaced.
+//
+// Doing this properly means PATCHING the live vtable after the cell is
+// delivered: walk the class's virtualMethodList (CajetaClass::buildVirtualTable
+// already orders it), look up each method's new address in the session, and
+// store it into the corresponding slot of the materialized vtable global.
+// Needs the slot-prefix layout from StructureMetadata::createVirtualTableType,
+// and needs deciding for secondary and interface vtables too. See plan 2.1.4.
+TEST(KernelCellTests, DISABLED_bodyOnlyRedefinitionSwapsInPlace) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute(
+        "public class Counter { public int32 n;\n"
+        "  public Counter(int32 n) { this.n = n; }\n"
+        "  public int32 value() { return this.n; } }\n"
+        "Counter c = heap Counter(5);\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+
+    CellResult c0 = s->execute("return c.value();\n");
+    ASSERT_TRUE(c0.ok) << c0.errorId << ": " << c0.message;
+    ASSERT_EQ(5, c0.value);
+
+    // Identical layout and signature; only the body differs.
+    CellResult c2 = s->execute(
+        "public class Counter { public int32 n;\n"
+        "  public Counter(int32 n) { this.n = n; }\n"
+        "  public int32 value() { return this.n * 2; } }\n");
+    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
+
+    CellResult c3 = s->execute("return c.value();\n");
+    ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
+    EXPECT_EQ(10, c3.value) << "the existing value did not adopt the new body";
+}
