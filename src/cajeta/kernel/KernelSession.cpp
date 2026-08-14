@@ -427,6 +427,16 @@ CellResult KernelSession::execute(const std::string& source,
 
     // Diagnostics speak the CELL's name and the user's lines (script-units
     // U5 maps wrapper lines back); the ownership table carries across cells.
+    //
+    // The kernel is the one host with a SHARED TYPE WORLD: this session owns
+    // its LLVMContext and type registry for its whole life, so a type object
+    // recorded by cell 1 is still live and still means what it meant when
+    // cell 5 compiles. Seeding relies on that to hand an older value its own
+    // generation's type (script-units 5.3). Hosts that build a fresh world
+    // per unit — `cajeta run`, the test harness — must NOT set this: there
+    // the recorded type outlives its context and reading it is a use-after-
+    // free (jupyter-kernel 2.2.7).
+    impl.sessionState.setSharedTypeWorld(true);
     impl.compiler->setSessionState(&impl.sessionState, cellName);
 
     // The diagnostics bridge is live for the whole compile (spec 4.4; plan

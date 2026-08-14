@@ -30,6 +30,8 @@ namespace cajeta {
 
     class CajetaModule;
     typedef std::shared_ptr<CajetaModule> CajetaModulePtr;
+    class Expression;
+    typedef std::shared_ptr<Expression> ExpressionPtr;
 
     // The synthesized entry-method name, shared with hosts (`cajeta run`,
     // the Jupyter kernel) and tests.
@@ -70,6 +72,27 @@ namespace cajeta {
     void maybeEmitSessionDisarm(CajetaModulePtr module,
                                 const std::string& name);
 
+    // jupyter-kernel 2.1.3a — refuse a use of a session binding whose class
+    // has been REDEFINED since the value was made (script-units 5.3).
+    //
+    // The two generations share a canonical name and differ only by
+    // `CajetaClass::generationSuffix`, so every type comparison in the
+    // compiler sees a match: passing an old value where the new generation is
+    // declared type-checked cleanly and then read the old object through the
+    // new layout and vtable — a SIGSEGV, not a wrong answer. Call at the
+    // positions that would reinterpret the value: call arguments, and the
+    // right-hand side of an assignment. `position` names the site for the
+    // diagnostic ("parameter `pt`", "the assigned variable").
+    //
+    // Self-gating and cheap: returns immediately unless `expr` is a bare
+    // identifier naming a field marked stale by seedSessionScope. A method
+    // call ON the binding is deliberately NOT a checked position — dispatch
+    // goes through the vtable baked at construction, which is exactly how the
+    // old value keeps its own body.
+    void rejectStaleGenerationUse(CajetaModulePtr module,
+                                  const ExpressionPtr& expr,
+                                  const std::string& position);
+
     // Build the wrapper compilation-unit source. `outCanonical` receives the
     // implicit class's canonical name (package + '.' + stem) so the caller
     // can mark it script-synthesized after registration. `outBindings`
@@ -104,8 +127,6 @@ namespace cajeta {
     // type, or at a terminated insert point. A type with no rendering (an
     // array, a class with no `toString`) degrades to its name rather than
     // failing the cell — display must never break a successful run.
-    class Expression;
-    typedef std::shared_ptr<Expression> ExpressionPtr;
     void emitScriptUnitResult(CajetaModulePtr module, const ExpressionPtr& expr,
                               llvm::Value* value);
 

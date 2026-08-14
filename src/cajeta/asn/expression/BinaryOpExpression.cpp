@@ -948,6 +948,19 @@ namespace cajeta {
                          << " children.size=" << children.size() << "\n";
         }
 
+        // jupyter-kernel 2.1.3a — an assignment cannot take its value from a
+        // session binding whose class a later cell redefined: the old object
+        // would be stored where the new generation's layout is assumed. Every
+        // assignment form funnels through here, ahead of all of them, so the
+        // check cannot be routed around by an operator overload arm. A REBIND
+        // of the stale name itself (`p = heap Point(...)`) is untouched — the
+        // check reads the RHS, and rebinding is exactly the documented fix.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
+            rejectStaleGenerationUse(
+                module, dynamic_pointer_cast<Expression>(children[1]),
+                "the assigned variable");
+        }
+
         // Short-circuit ops need to evaluate rhs only conditionally — handle before the
         // upfront-evaluate path the other ops use.
         if (binaryOp == BINARY_OP_LOGAND || binaryOp == BINARY_OP_LOGOR) {

@@ -9,6 +9,7 @@
 #include "SessionState.h"
 #include "../asn/expression/Expression.h"
 #include "../asn/expression/BinaryOpExpression.h"
+#include "../asn/expression/Identifier.h"
 #include "../error/Exception.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
@@ -227,7 +228,53 @@ namespace cajeta {
             return note + " in unit " + hostName;
         }
 
+        // 2.1.3a — the generation suffix a type carries, or "" for a type
+        // that is not a redefinable class. `$g2`, `$g3`, ... for later
+        // generations; the FIRST declaration carries no suffix.
+        std::string generationOf(const CajetaTypePtr& type) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+            return klass ? klass->getGenerationSuffix() : std::string();
+        }
+
+        // Render a suffix as the ordinal a user reads: "" -> 1, "$g2" -> 2.
+        std::string generationLabel(const std::string& suffix) {
+            if (suffix.empty()) return "1";
+            return suffix.substr(2);  // past "$g"
+        }
+
     }  // namespace
+
+    void rejectStaleGenerationUse(CajetaModulePtr module,
+                                  const ExpressionPtr& expr,
+                                  const std::string& position) {
+        if (!module || !expr) return;
+        // Cheapest gate first, and it settles the cost question: only a script
+        // unit compiling into a session can HAVE a stale binding, so ordinary
+        // compiles pay two null checks per argument and per assignment rather
+        // than a scope walk. (The stdlib compiled inside a kernel session is
+        // not a script unit, so it takes the same early exit.)
+        if (!module->isScriptUnit() || !module->getSessionState()) return;
+        auto id = std::dynamic_pointer_cast<IdentifierExpression>(expr);
+        if (!id) return;
+        ScopePtr scope = module->getScopeStack().peek();
+        if (!scope) return;
+        FieldPtr field = scope->getField(id->getTextValue());
+        if (!field || !field->isStaleGeneration()) return;
+        const std::string was = generationLabel(field->getStaleGeneration());
+        const std::string now = generationLabel(field->getCurrentGeneration());
+        std::string canonical = field->getType() && field->getType()->getQName()
+            ? field->getType()->getQName()->toCanonical()
+            : std::string("<?>");
+        throw Exception(
+            "`" + id->getTextValue() + "` holds a generation-" + was + " `"
+                + canonical + "`, but " + position + " expects generation-"
+                + now + " — the class was redefined by a later cell. The two "
+                "generations are different types with different layouts and "
+                "different method bodies; using one as the other reads the "
+                "old object through the new layout. Fix: rebuild the value "
+                "under the current definition.",
+            "CAJETA_ERROR_STALE_GENERATION");
+    }
 
     void seedSessionScope(CajetaModulePtr module) {
         SessionState* session = sessionOfEntry(module);
@@ -238,18 +285,31 @@ namespace cajeta {
             // Resolve the recorded canonical in THIS unit's type world; a
             // miss seeds name-only — the ownership checks don't need the
             // type, and a live read rejects before touching it.
-            // Resolve by canonical, as every host does — EXCEPT for a class,
-            // where the recorded type wins. Generations exist only for
-            // classes (script-units 5.3), and after a later cell redefines
-            // `Point` the canonical names the NEWEST generation, which is not
-            // what an older value is: re-resolving by name would reinterpret
-            // it under the new layout and dispatch into the new bodies.
+            // Resolve by canonical, as every host does — EXCEPT for a class
+            // in a SHARED-TYPE-WORLD session, where the recorded type wins.
+            // After a later cell redefines `Point` the canonical names the
+            // NEWEST generation, which is not what an older value is:
+            // re-resolving by name would reinterpret it under the new layout
+            // and dispatch into the new bodies. (Verified by removing the
+            // preference: `typeRedefinitionIsGenerational` SIGSEGVs without
+            // it, so a redefinition does mint a new class object here — the
+            // "a redeclaration reuses the same instance" reading recorded in
+            // 2.1.4 does not hold for this path.)
+            //
+            // The `sharedTypeWorld` gate is the load-bearing part, and it has
+            // to be a fact the HOST states rather than one this code derives:
+            // across worlds the recorded object outlives its context (it is a
+            // shared_ptr) while the `llvm::Type*` inside it dangles, so
+            // `getLlvmType()` returns a dangling pointer instead of null and
+            // even the is-this-usable question reads freed memory. That was
+            // SessionOwnershipTests.moveStateSpansUnits's SIGSEGV.
             CajetaTypePtr type = CajetaType::find(fact.typeCanonical);
             // Primitives are CajetaClass too, and their recorded type can be
             // an adorned variant of the canonical one — which would defeat the
             // primitive/StackField decision below. Generations only ever apply
             // to declared classes, so exclude them explicitly.
-            if (fact.boundType
+            if (session->hasSharedTypeWorld()
+                    && fact.boundType
                     && !(fact.boundType->getTypeFlags() & PRIMITIVE_FLAG)
                     && std::dynamic_pointer_cast<CajetaClass>(fact.boundType)) {
                 type = fact.boundType;
@@ -268,6 +328,32 @@ namespace cajeta {
                 field = std::make_shared<HeapField>(module, fact.name, type);
             }
             field->setSessionSeeded(true);
+            // 2.1.3a — did the class this name was bound under get REDEFINED
+            // since? The comparison is recorded-suffix against the suffix the
+            // canonical carries NOW, because that is what a use of this name
+            // would be checked against. `type` above is the value's own type,
+            // so the field still LOADS and DISPATCHES as its own generation
+            // (2.1.3's contract, and `p.get()` keeps returning the old body's
+            // answer); the mark only rejects positions that would reinterpret
+            // it as the newer one.
+            //
+            // Shared-world sessions only, for the same reason the type
+            // preference above is: with a fresh world per unit the two
+            // suffixes come from different registries and are not comparable.
+            // A unit that re-declares a class the session has seen counts as
+            // a redefinition there — which is true of the SESSION but says
+            // nothing about the value, since seeding just typed it from this
+            // unit's own world. Comparing anyway made every such binding look
+            // stale (`SessionOwnershipTests.moveStateSpansUnits` reported a
+            // generation clash where its subject is a moved binding).
+            if (session->hasSharedTypeWorld()
+                    && std::dynamic_pointer_cast<CajetaClass>(type)) {
+                const std::string current =
+                    generationOf(CajetaType::find(fact.typeCanonical));
+                if (current != fact.generation) {
+                    field->setStaleGeneration(fact.generation, current);
+                }
+            }
             scope->putField(field);
             if (fact.moved) scope->demoteToBorrow(fact.name, fact.transferSite);
         }
@@ -305,6 +391,10 @@ namespace cajeta {
                     field->getType()->getQName()->toCanonical();
             }
             fact.boundType = field->getType();
+            // 2.1.3a — the generation as of THIS unit. Read now, while the
+            // class still carries it: a later cell's redefinition overwrites
+            // the suffix on the same CajetaClass instance.
+            fact.generation = generationOf(field->getType());
             fact.moved = scope->isBorrow(name);
             fact.transferSite = decorateSite(scope->transferSiteOf(name),
                                              module->getScriptHostName());

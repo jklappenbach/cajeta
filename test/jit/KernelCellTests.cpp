@@ -344,7 +344,7 @@ TEST(KernelCellTests, assignToSeededBindingRebinds) {
 // so any check comparing canonicals sees a match. The contained place to put
 // it is argument binding plus assignment: when both sides are CajetaClass
 // with the same canonical and different suffixes, error naming both.
-TEST(KernelCellTests, DISABLED_mixingGenerationsIsRejected) {
+TEST(KernelCellTests, mixingGenerationsIsRejected) {
     auto s = freshSession();
     ASSERT_NE(nullptr, s.get());
 
