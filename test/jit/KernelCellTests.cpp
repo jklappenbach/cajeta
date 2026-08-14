@@ -295,3 +295,41 @@ TEST(KernelCellTests, DISABLED_bodyOnlyRedefinitionSwapsInPlace) {
     ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
     EXPECT_EQ(10, c3.value) << "the existing value did not adopt the new body";
 }
+
+// plan 2.2.5 — ASSIGNMENT to a session-seeded binding. DISABLED: it SIGSEGVs.
+//
+// Redeclaration (`String tag = "second";`) works and is what every other test
+// here uses; a bare assignment does not. Two things are wrong and the second
+// is the one that faults:
+//
+//   1. The registry never learns. A seeded read materializes the registry's
+//      occupant into a local staging slot on every access (Identifier.cpp);
+//      an assignment writes that staging slot, so the next cell still reads
+//      the OLD value. A lost write, not a crash.
+//   2. It faults inside the cell, in libc, reached from JIT'd code — the
+//      shape of a read running off a mapping (the fault address is
+//      page-aligned). The suspicion is the old value: the String-assign path
+//      consults the previous occupant of the slot, and on the assignment's
+//      own path that slot may never have been materialized.
+//
+// The `int32` case is separate and is NOT known to fault — a primitive seed
+// stages through a box (see primitiveBindingSpansCells). Left in one test so
+// whoever picks this up sees both halves.
+TEST(KernelCellTests, DISABLED_assignToSeededBindingRebinds) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    ASSERT_TRUE(s->execute("int32 n = 1;\n").ok);
+    CellResult ni = s->execute("n = 2;\n");
+    ASSERT_TRUE(ni.ok) << ni.errorId << ": " << ni.message;
+    CellResult nr = s->execute("n;\n");
+    ASSERT_TRUE(nr.ok) << nr.errorId << ": " << nr.message;
+    EXPECT_EQ("2", nr.result) << "assignment did not reach the registry";
+
+    ASSERT_TRUE(s->execute("String tag = \"first\";\n").ok);
+    CellResult a = s->execute("tag = \"second\";\n");   // SIGSEGVs today
+    ASSERT_TRUE(a.ok) << a.errorId << ": " << a.message;
+    CellResult r = s->execute("tag;\n");
+    ASSERT_TRUE(r.ok) << r.errorId << ": " << r.message;
+    EXPECT_EQ("second", r.result);
+}

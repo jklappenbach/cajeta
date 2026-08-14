@@ -154,22 +154,14 @@ TEST(KernelFaultTests, shutdownDropsBindingsAndJoins) {
 //
 // A death test, because "the process ends" IS the contract.
 //
-// DISABLED — the BEHAVIOUR is implemented and verified; the TEST is
-// order-dependent. Run alone, or after any one other test in this file, it
-// passes. Run after all five it fails with an EMPTY captured stderr and a
-// rejected status, which is the signature of the child's fd 2 not being the
-// real stderr rather than of the panic being swallowed. Direct run of the
-// same cell prints, verbatim:
-//
-//     cajeta: unrecoverable exception: invariant
-//       at <script>.<script>(In[1]:1)
-//     cajeta: SIGABRT caught — likely heap corruption or assertion.
-//
-// so the guard's `__cajeta_is_unrecoverable` -> emit -> abort branch does
-// fire. What is unproven is only this harness. See plan 4.3.1; the suspect is
-// a descriptor left redirected by an earlier test's capture, which would make
-// this a diagnostic-bridge bug rather than a fault-containment one.
-TEST(KernelFaultTests, DISABLED_unrecoverableThrowKillsTheKernelLoudly) {
+// It failed for a while after the abort branch landed, and the cause was NOT
+// what the failure looked like: the on-disk object cache was serving objects
+// built BEFORE the branch existed, so the child ran the old guard and
+// swallowed the panic. The tell was the child's wall time — 5s (cache-served,
+// failed) versus ~49s (cold, passed) — not anything about descriptors. Stable
+// over four consecutive runs across both harness shapes once the cache turned
+// over.
+TEST(KernelFaultTests, unrecoverableThrowKillsTheKernelLoudly) {
     // The predicate accepts any death EXCEPT the swallow marker below, and
     // the regex is the "loudly" half — the runtime must have said what broke
     // before it went. Asserting SIGABRT specifically would be asserting the
@@ -186,7 +178,8 @@ TEST(KernelFaultTests, DISABLED_unrecoverableThrowKillsTheKernelLoudly) {
     ASSERT_EXIT({
         auto s = freshSession();
         if (!s) _exit(98);
-        s->execute("throw heap UnrecoverableException(\"invariant\");\n");
-        _exit(99);   // reached only if the panic was swallowed into a cell error
+        CellResult r = s->execute(
+            "throw heap UnrecoverableException(\"invariant\");\n");
+        _exit(r.ok ? 92 : (r.threw ? 90 : 91));
     }, notSwallowed, "unrecoverable exception: invariant");
 }
