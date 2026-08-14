@@ -21,6 +21,7 @@
 // untouched (the function is a no-op off COFF).
 //
 
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/Orc/DebugUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
@@ -64,6 +65,55 @@ inline bool envOn(const char* name) {
     const char* v = std::getenv(name);
     return v && *v && std::string(v) != "0";
 }
+
+// Drop the SEH unwind tables from JIT'd COFF objects.
+//
+// `.pdata` holds RUNTIME_FUNCTION entries whose fields are 32-bit RVAs —
+// IMAGE_REL_AMD64_ADDR32NB, lowered to x86_64::Pointer32 as
+// (target - __ImageBase). __ImageBase resolves to the HOST executable's image
+// base, and the JIT slab is nowhere near it: on Windows the slab lands low
+// (0x27d...) while the process image sits near 0x7ff6..., so the difference
+// does not fit in 32 bits and every link fails with
+//
+//   section .pdata: relocation target ... is out of range of Pointer32 fixup
+//
+// Unlike an out-of-range call there is no stub to route through — an RVA is a
+// 32-bit absolute inside data. The only real remedies are allocating the slab
+// within 4GB of the image base, or not emitting the tables.
+//
+// We drop them, because nothing consumes them: cajeta's JIT never calls
+// RtlAddFunctionTable, so the OS has never known about these tables and SEH
+// has never been able to unwind through a JIT'd frame on Windows. Dropping
+// them forfeits nothing that works today. It DOES foreclose adding unwind
+// support later without revisiting this — when that day comes, the fix is
+// slab placement plus registration, and this pass comes back out.
+class DropSehFramesPlugin : public llvm::orc::ObjectLinkingLayer::Plugin {
+public:
+    void modifyPassConfig(llvm::orc::MaterializationResponsibility&,
+                          llvm::jitlink::LinkGraph&,
+                          llvm::jitlink::PassConfiguration& config) override {
+        config.PrePrunePasses.push_back([](llvm::jitlink::LinkGraph& g) {
+            // Includes the per-function COMDATs (.pdata$<fn>). .xdata is left
+            // to dead-stripping: .pdata is its only referrer.
+            llvm::SmallVector<llvm::jitlink::Section*, 4> doomed;
+            for (auto& sec : g.sections())
+                if (sec.getName().starts_with(".pdata"))
+                    doomed.push_back(&sec);
+            for (auto* sec : doomed)
+                g.removeSection(*sec);
+            return llvm::Error::success();
+        });
+    }
+    llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override {
+        return llvm::Error::success();
+    }
+    llvm::Error notifyRemovingResources(llvm::orc::JITDylib&,
+                                        llvm::orc::ResourceKey) override {
+        return llvm::Error::success();
+    }
+    void notifyTransferringResources(llvm::orc::JITDylib&, llvm::orc::ResourceKey,
+                                     llvm::orc::ResourceKey) override {}
+};
 
 inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
     if (!llvm::Triple(llvm::sys::getProcessTriple()).isOSBinFormatCOFF())
@@ -114,6 +164,11 @@ inline void applyCoffJitLink(llvm::orc::LLJITBuilder& builder) {
                 fprintf(stderr, "cajeta.jit: COFF host — responsibility "
                                 "overrides DISABLED (CAJETA_COFF_NOCLAIM)\n");
             }
+            // On by default: without it no COFF link succeeds at all. Set
+            // CAJETA_COFF_KEEP_SEH=1 to keep the tables (only useful once
+            // something registers them).
+            if (!envOn("CAJETA_COFF_KEEP_SEH"))
+                layer->addPlugin(std::make_shared<DropSehFramesPlugin>());
             if (envOn("CAJETA_COFF_KEEPALIVE")) {
                 fprintf(stderr, "cajeta.jit: COFF host — markAllSymbolsLive "
                                 "plugin installed (CAJETA_COFF_KEEPALIVE)\n");
