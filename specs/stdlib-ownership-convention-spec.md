@@ -186,3 +186,43 @@ than as corruption.
   local before being stored? Recommendation: track through
   straight-line locals; conservatively allow what it cannot prove, so
   the check never blocks valid code.
+
+- **7.3 Should the caller's-choice parameter get its own spelling?**
+  *Raised 2026-08-14.* Parameter position has two spellings and three
+  meanings, and two of the three are spelled identically:
+
+  | Spelling | Meaning | Visible at the call site? |
+  |---|---|---|
+  | `#T p` | must transfer | yes |
+  | `T p`  | borrow; callee must not keep | — |
+  | `T p`  | MAY keep; caller chooses (`ArrayList.add`) | **no** |
+
+  A caller reading `add(T v)` cannot tell whether the value is kept.
+  That ambiguity is what let `setString(String)` be a capture wearing
+  the signature of a read. The audit counts 25 caller's-choice (`#=`)
+  sites and 69 plain stores, so it is not a corner case.
+
+  **Recommendation: do NOT add a producer/view/sink annotation**, at
+  class or method level. The audit settles the class-level form —
+  `JsonValue` alone is producer (`asString`), view (`asArray`,
+  `asObject`), sink (`setStringOwned`) and capture (`setString`), and
+  `JsonObject` and `String` mix roles the same way; a class-level mark
+  would be wrong more often than right. For RETURN position the
+  language already carries the mark (`#T` vs `T`) — a second channel
+  would only create something that can disagree with the signature, and
+  it demonstrably would: four `@Native` `String` methods were already
+  declaring plain returns while transferring ownership.
+
+  Sequence instead: land §4.2 first, which makes a plain parameter MEAN
+  "not kept" by enforcement rather than by convention, then re-run the
+  audit and decide the third spelling against the migrated numbers. If
+  the caller's-choice sites remain few and are all genuine containers,
+  a new spelling may not pay for its migration cost (§Unit 7); if they
+  are scattered across non-containers, it does.
+
+- **7.4** Any signal added must be IN THE SIGNATURE, not in prose. The
+  evidence from this spec's own origin: the author read `keyAt`'s
+  signature and still got it wrong, and the documentation that would
+  have prevented it sat in another file. A compiler check stops the
+  mistake at the line; a doc page does not, and an unenforced signal
+  rots — which is exactly what those four `@Native` declarations did.
