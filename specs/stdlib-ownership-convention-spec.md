@@ -187,9 +187,17 @@ than as corruption.
   straight-line locals; conservatively allow what it cannot prove, so
   the check never blocks valid code.
 
-- **7.3 Should the caller's-choice parameter get its own spelling?**
-  *Raised 2026-08-14.* Parameter position has two spellings and three
-  meanings, and two of the three are spelled identically:
+- **7.3 CLOSED 2026-08-14 — no producer/consumer/sink annotation, in
+  docs or in code.** Decided by the developer; the reasoning below is
+  kept because it also sizes what remains.
+
+  A separate question stays open and is NOT closed by this: whether the
+  caller's-choice PARAMETER should get its own spelling (a language
+  change, not an annotation). It is deferred behind §4.2 by the
+  sequencing argument at the end of this item.
+
+  Parameter position has two spellings and three meanings, and two of
+  the three are spelled identically:
 
   | Spelling | Meaning | Visible at the call site? |
   |---|---|---|
@@ -202,8 +210,8 @@ than as corruption.
   the signature of a read. The audit counts 25 caller's-choice (`#=`)
   sites and 69 plain stores, so it is not a corner case.
 
-  **Recommendation: do NOT add a producer/view/sink annotation**, at
-  class or method level. The audit settles the class-level form —
+  **No producer/view/sink annotation ships**, at class or method level.
+  The audit settles the class-level form —
   `JsonValue` alone is producer (`asString`), view (`asArray`,
   `asObject`), sink (`setStringOwned`) and capture (`setString`), and
   `JsonObject` and `String` mix roles the same way; a class-level mark
