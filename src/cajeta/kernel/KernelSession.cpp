@@ -35,6 +35,8 @@
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
+#include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Resolver.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/util/FdCapture.h"
 
@@ -130,6 +132,51 @@ namespace {
     // right — it appears in mangled symbols, so it shows up in JIT errors and
     // stack frames — so "In[3]" becomes `cell_3` rather than the `In_3_` that
     // falls out of mechanically replacing the brackets.
+    // Spec 6 / script-units §7.3 — the nearest ancestor `cajeta.json` of
+    // `dir` supplies the classpath: its resolved manifest dependencies,
+    // exactly the set `cajeta build` would pass. No manifest anywhere up the
+    // tree is not an error — that is a notebook outside a project, which is
+    // a stdlib-only session and perfectly ordinary.
+    bool resolveProjectClasspath(const std::string& dir,
+                                 std::vector<std::string>* out,
+                                 std::string* error) {
+        std::error_code ec;
+        std::filesystem::path start = std::filesystem::absolute(dir, ec);
+        if (ec) {
+            if (error) *error = "bad project directory: " + dir;
+            return false;
+        }
+        std::filesystem::path projectRoot;
+        for (std::filesystem::path d = start;;  d = d.parent_path()) {
+            if (std::filesystem::exists(d / "cajeta.json")) { projectRoot = d; break; }
+            if (d == d.root_path() || d.empty()) break;
+        }
+        if (projectRoot.empty()) return true;
+
+        auto manifest = cajeta::buildtool::loadManifestFile(
+            (projectRoot / "cajeta.json").string());
+        if (!manifest) {
+            if (error) {
+                *error = "bad manifest at " + projectRoot.string() + ": "
+                       + llvm::toString(manifest.takeError());
+            }
+            return false;
+        }
+        auto resolved = cajeta::buildtool::resolveProjectDependencies(
+            *manifest, projectRoot.string());
+        if (!resolved) {
+            if (error) {
+                *error = "dependency resolution failed: "
+                       + llvm::toString(resolved.takeError());
+            }
+            return false;
+        }
+        for (const auto& dep : *resolved) {
+            if (!dep.artifactPath.empty()) out->push_back(dep.artifactPath);
+        }
+        return true;
+    }
+
     std::string stemFor(const std::string& cellName) {
         // The "In[N]" shape (what execute()'s no-name overload produces).
         if (cellName.size() > 3 && cellName.compare(0, 3, "In[") == 0
@@ -242,6 +289,11 @@ KernelSession::~KernelSession() {
 }
 
 std::unique_ptr<KernelSession> KernelSession::create(std::string* error) {
+    return create(SessionOptions{}, error);
+}
+
+std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& options,
+                                                     std::string* error) {
     ensureTargetsInitialized();
     auto setErr = [&](const std::string& m) {
         if (error) *error = m;
@@ -297,6 +349,45 @@ std::unique_ptr<KernelSession> KernelSession::create(std::string* error) {
         Compiler::setSharedContext(nullptr);
         return setErr(std::string("stdlib prime failed: ") + e.getErrorId()
                       + ": " + e.getMessage());
+    }
+
+    // Spec 6 — the project classpath. Resolved and ingested ONCE, here,
+    // BEFORE any cell is parsed: dependency classes have to be visible while
+    // a cell's own imports are resolving, which is the ordering every AOT
+    // entry point uses and the one `cajeta run` copies (CajetaJitHost.cpp
+    // ~1094). Doing it per cell would re-ingest the world every time and
+    // still be too late for cell 1.
+    {
+        std::vector<std::string> archives;
+        if (!options.projectDir.empty()) {
+            std::string resolveError;
+            if (!resolveProjectClasspath(options.projectDir, &archives,
+                                         &resolveError)) {
+                Compiler::setSharedContext(nullptr);
+                return setErr(resolveError);
+            }
+        }
+        archives.insert(archives.end(), options.classpath.begin(),
+                        options.classpath.end());
+        if (!archives.empty()) {
+            for (const auto& cp : archives) impl.compiler->addClasspath(cp);
+            try {
+                impl.compiler->ingestClasspath();
+                // Definitions, not just declarations — the JIT links what it
+                // RUNS. `ingestClasspath` alone leaves every dep symbol
+                // unresolved at materialization ("Symbols not found:
+                // dev.cajeta...."); see Compiler.h's note on why the splice
+                // is opt-in rather than folded into the ingest.
+                impl.compiler->linkClasspathModules();
+            } catch (cajeta::Exception& e) {
+                Compiler::setSharedContext(nullptr);
+                return setErr(std::string("classpath ingest failed: ")
+                              + e.getErrorId() + ": " + e.getMessage());
+            } catch (std::exception& e) {
+                Compiler::setSharedContext(nullptr);
+                return setErr(std::string("classpath ingest failed: ") + e.what());
+            }
+        }
     }
 
     static std::mt19937_64 rng(std::random_device{}());

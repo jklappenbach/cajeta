@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -300,6 +301,13 @@ namespace cajeta::kernel {
                 outbound.push(std::move(out));
             });
             protocol.setSessionId(sessionId);
+            // Spec 6 wants the notebook's own directory to be the project,
+            // and `setProjectDir(cwd)` is the one line that does it — but it
+            // is NOT set yet, deliberately. A session with a classpath
+            // currently fails codegen outright (plan 7.2.5), so defaulting
+            // this to the cwd would break `cajeta kernel` for every user who
+            // launched Jupyter inside a project with dependencies, which is
+            // most of them. Turn it on when 7.2.5 lands, not before.
             this->protocol.store(&protocol, std::memory_order_release);
 
             Envelope envelope;

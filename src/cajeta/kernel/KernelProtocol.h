@@ -47,6 +47,13 @@ namespace cajeta::kernel {
         KernelProtocol& operator=(const KernelProtocol&) = delete;
 
         void setSessionFactory(SessionFactory factory);
+
+        // The project whose `cajeta.json` classpath cells compile against
+        // (spec 6). `cajeta kernel` sets this to its working directory —
+        // Jupyter launches a kernel in the notebook's own directory, so that
+        // is the project the user means. Applies to the next session built,
+        // so a restart picks up a manifest edited in the meantime.
+        void setProjectDir(std::string dir);
         // The kernel's own session id, stamped into every header we
         // originate. Distinct from the CLIENT's session, which rides in the
         // parent header.

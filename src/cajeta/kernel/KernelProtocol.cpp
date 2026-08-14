@@ -42,6 +42,7 @@ namespace cajeta::kernel {
         Sink sink;
         SessionFactory factory;
         std::string sessionId = "cajeta-kernel";
+        std::string projectDir;
         std::unique_ptr<KernelSession> session;
         int executionCount = 0;
         bool shutdown = false;
@@ -96,7 +97,9 @@ namespace cajeta::kernel {
             if (factory) {
                 session = factory(error);
             } else {
-                session = KernelSession::create(error);
+                SessionOptions options;
+                options.projectDir = projectDir;
+                session = KernelSession::create(options, error);
             }
             live.store(session.get(), std::memory_order_release);
             if (session) {
@@ -130,6 +133,10 @@ namespace cajeta::kernel {
 
     void KernelProtocol::setSessionId(std::string id) {
         impl_->sessionId = std::move(id);
+    }
+
+    void KernelProtocol::setProjectDir(std::string dir) {
+        impl_->projectDir = std::move(dir);
     }
 
     bool KernelProtocol::shutdownRequested() const { return impl_->shutdown; }

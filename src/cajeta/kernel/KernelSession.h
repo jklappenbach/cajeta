@@ -139,6 +139,26 @@ namespace cajeta::kernel {
         int liveSessionBindings = -1;
     };
 
+    // How a session is built (spec 6). Everything here is optional; the
+    // no-argument `create` is a stdlib-only session, which is what every
+    // test that does not care about dependencies wants.
+    struct SessionOptions {
+        // A directory whose nearest ancestor `cajeta.json` governs the
+        // classpath — the project the notebook belongs to. Its resolved
+        // manifest dependencies are exactly the set `cajeta build` would
+        // pass. Empty means no project resolution at all.
+        //
+        // `cajeta kernel` defaults this to the process's working directory,
+        // because Jupyter launches a kernel in the notebook's own directory
+        // and that is the project the user means. It is NOT defaulted here:
+        // a test that happens to run inside a project would otherwise start
+        // resolving that project's dependencies without asking.
+        std::string projectDir;
+        // Archive paths added directly, after anything `projectDir`
+        // resolved. For a caller that knows exactly which `.cja` it wants.
+        std::vector<std::string> classpath;
+    };
+
     class KernelSession {
     public:
         // Build a session: LLJIT + bootstrap dylib with the runtime and the
@@ -146,6 +166,13 @@ namespace cajeta::kernel {
         // reason in `error` when non-null. Must be called on the thread that
         // will own the session.
         static std::unique_ptr<KernelSession> create(std::string* error = nullptr);
+
+        // As above, with a classpath (spec 6.1): cells can then import and
+        // drive project dependencies exactly as a compiled program would.
+        // Resolution happens ONCE, here — dependency definitions have to be
+        // in the module list before the first cell is delivered to the JIT.
+        static std::unique_ptr<KernelSession> create(const SessionOptions& options,
+                                                     std::string* error = nullptr);
 
         ~KernelSession();
         KernelSession(const KernelSession&) = delete;
