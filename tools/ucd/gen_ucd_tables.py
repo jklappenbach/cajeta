@@ -9,7 +9,8 @@
 #   mkdir ucd && cd ucd
 #   for f in UnicodeData.txt CompositionExclusions.txt CaseFolding.txt \
 #            DerivedNormalizationProps.txt DerivedCoreProperties.txt \
-#            Scripts.txt ArabicShaping.txt extracted/DerivedBidiClass.txt; do
+#            Scripts.txt ArabicShaping.txt PropList.txt \
+#            extracted/DerivedBidiClass.txt; do
 #     curl --create-dirs -o $f https://www.unicode.org/Public/16.0.0/ucd/$f
 #   done
 #   python3 tools/ucd/gen_ucd_tables.py <ucd-dir> runtime/native/cajeta_rt_ucd_tables.h
@@ -236,6 +237,18 @@ def main():
             stage1.append(blocks[block])
         return stage1, stage2, fmt
 
+    # ---- general category (fixed canonical ordinals) + White_Space --------
+    GC_ORDER = ["Cn", "Lu", "Ll", "Lt", "Lm", "Lo", "Mn", "Mc", "Me",
+                "Nd", "Nl", "No", "Pc", "Pd", "Ps", "Pe", "Pi", "Pf",
+                "Po", "Sm", "Sc", "Sk", "So", "Zs", "Zl", "Zp", "Cc",
+                "Cf", "Cs", "Co"]
+    gc_ord = {n: i for i, n in enumerate(GC_ORDER)}
+    gcmap = {c: gc_ord[g] for c, g in gc.items() if g in gc_ord}
+    ws = set()
+    for lo, hi, val in parse_ranges(f"{ucd}/PropList.txt"):
+        if val == "White_Space":
+            ws.update(range(lo, hi + 1))
+
     tries = {
         "ccc": build_trie(ccc.get, 0, "uint8_t"),
         "qc": build_trie(qc.get, 0, "uint8_t"),
@@ -246,6 +259,8 @@ def main():
         "script": build_trie(script.get, 0, "uint16_t"),
         "join": build_trie(joining.get, 0, "uint8_t"),
         "bidi": build_trie(bidi.get, BIDI.get("L", 0), "uint8_t"),
+        "gc": build_trie(gcmap.get, 0, "uint8_t"),
+        "ws": build_trie(lambda c, d: 1 if c in ws else 0, 0, "uint8_t"),
     }
 
     pair_rows = sorted(((a << 21) | b, c) for (a, b), c in pairs.items())
