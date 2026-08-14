@@ -4,8 +4,10 @@
 entries live in leaves, internal nodes hold only separator keys, and leaves are
 singly linked in ascending order for cheap range scans. Keys are ordered by `<`
 / `>` on `K` (primitive `K` works today; class `K` needs `operator<` /
-`operator>`). Misses return the type's zero value; deletion is deferred, so
-this is an insert/lookup ordered map.
+`operator>`). Misses return the type's zero value; deletion is deferred for
+this in-memory tree, so it is an insert/lookup ordered map — the disk-backed
+[LtmBPlusTree](ltm/LtmBPlusTree.md) has tombstone-based `remove`, ordered
+`scan`/`scanFrom` cursors, and `compact()`.
 
 ```cajeta
 BPlusTree<int32, String> index = heap BPlusTree<int32, String>();

@@ -1,0 +1,75 @@
+package cajeta.collection.ltm;
+
+/**
+ * Ordered, pager-aware cursor over an `LtmBPlusTree`'s LIVE entries
+ * (cajeta-llama plan 10.2.3; spec 13.17): walks the leaf chain in
+ * ascending key order, skipping tombstones, refetching each leaf by
+ * page id — so the leaf may be evicted and paged back between calls,
+ * which is what lets a scan far exceed the resident pool (10.1.6).
+ *
+ * Obtained from `LtmBPlusTree.scan()` / `scanFrom(key)`. Valid only
+ * while the tree is open and not structurally modified; `key()` /
+ * `value()` return what `get` would.
+ *
+ * ```cajeta
+ * LtmCursor<int32, int32> c = tree.scan();
+ * while (c.valid()) {
+ *     use(c.key(), c.value());
+ *     c.next();
+ * }
+ * ```
+ */
+public final class LtmCursor<K, V> {
+    /** Borrow of the tree's pager; the tree must outlive the cursor. */
+    private LtmPager<K, V> pager;
+    private int64 leafId;
+    private int32 idx;
+
+    LtmCursor(LtmPager<K, V> pager, int64 leafId, int32 idx) {
+        this.pager = pager;
+        this.leafId = leafId;
+        this.idx = idx;
+    }
+
+    /** True while positioned on a live entry. */
+    public boolean valid() {
+        return this.leafId != -1;
+    }
+
+    public K key() {
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(this.leafId);
+        K k = node.keys[this.idx];
+        return k;
+    }
+
+    public V value() {
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(this.leafId);
+        V v = node.values[this.idx];
+        return v;
+    }
+
+    /** Advance to the next live entry (possibly across leaves). */
+    public void next() {
+        if (this.leafId == -1) {
+            return;
+        }
+        this.idx = this.idx + 1;
+        this.settle();
+    }
+
+    /** Move forward to the first live entry at or after the current
+     *  position, following the leaf chain; invalidates at the end. */
+    void settle() {
+        while (this.leafId != -1) {
+            LtmBPlusTreeNode<K, V> node = this.pager.fetch(this.leafId);
+            while (this.idx < node.numKeys && node.dead[this.idx]) {
+                this.idx = this.idx + 1;
+            }
+            if (this.idx < node.numKeys) {
+                return;
+            }
+            this.leafId = node.nextLeafId;
+            this.idx = 0;
+        }
+    }
+}
