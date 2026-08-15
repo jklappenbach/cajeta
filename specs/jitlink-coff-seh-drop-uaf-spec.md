@@ -95,8 +95,12 @@ directly.
   also red before the fix (2 edges instead of 1).
 - **2.4** A graph with no unwind tables is untouched. **MET** —
   `DropSehFramesTests.noOpWhenNoPdataPresent`.
-- **2.5** The 13 crashing tests pass on PHOENIX under JITLink. **PENDING** —
-  the measurement that closes this.
+- **2.5** The 13 crashing tests pass on PHOENIX under JITLink. **MET** —
+  13/13, one gtest process each, on the merged tree (`711bad53`, r9 toolchain).
+  The `HashMapStreamParallelTests` also got **2.5x faster** — 64-68s each,
+  against 130-176s with the corruption present. That is corroboration, not a
+  bonus: a freed symbol pushed onto `prune()`'s worklist makes it walk graph it
+  should never have visited.
 - **2.6** The release subset is green on PHOENIX. **PENDING**.
 
 The tests build a `LinkGraph` by hand rather than driving the JIT, so this
