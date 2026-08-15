@@ -626,7 +626,7 @@ namespace cajeta {
 
         // --- 1. forward-declare vtable global ---------------------------------
         if (structure->getVirtualTableGlobal() == nullptr) {
-            string vtableName = structure->toCanonical() + string("#VTable");
+            string vtableName = structure->symbolBase() + string("#VTable");
             if (auto* existing = emitLm->getGlobalVariable(vtableName)) {
                 structure->setVirtualTableGlobal(existing);
             } else {
@@ -644,7 +644,7 @@ namespace cajeta {
 
         // --- 2. forward-declare RTTI global -----------------------------------
         if (structure->getRttiGlobal() == nullptr) {
-            string rttiName = structure->toCanonical() + string("#RttiGlobal");
+            string rttiName = structure->symbolBase() + string("#RttiGlobal");
             if (auto* existing = emitLm->getGlobalVariable(rttiName)) {
                 structure->setRttiGlobal(existing);
             } else {
@@ -663,7 +663,7 @@ namespace cajeta {
         // non-virtual (statically dispatched), so the instance's slot 0 is
         // never dereferenced to call getName()/getModifiers()/etc.
         if (structure->getClassObjectGlobal() == nullptr) {
-            string classObjName = structure->toCanonical() + string("#ClassObject");
+            string classObjName = structure->symbolBase() + string("#ClassObject");
             // emitLm, like the vtable/rtti above: for a reuse-path instantiation
             // the whole #ClassObject cluster (object, name string, reg ctor)
             // must live in the emit module with the methods its vtable
@@ -851,7 +851,7 @@ namespace cajeta {
         };
         llvm::StructType* result = llvm::StructType::create(ctx,
             llvm::ArrayRef<llvm::Type*>(members),
-            structure->toCanonical() + string("#VTable"));
+            structure->symbolBase() + string("#VTable"));
         structure->setVirtualTableType(result);
         return result;
     }

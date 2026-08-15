@@ -36,10 +36,41 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace cajeta::kernel {
+
+    // One compiler diagnostic for a cell, in the compiler's own shape
+    // (compiler-jsonl 3.1.1). These arrive parsed from the compiler's NDJSON
+    // stream rather than scraped from its text, so a frontend dispatches on
+    // fields instead of sniffing prose — and a WARNING reaches the notebook
+    // too, which the pass/fail of `execute` alone can never carry.
+    struct CellDiagnostic {
+        std::string severity;   // "error" | "warning" | "note"
+        std::string code;       // CAJETA_ERROR_*; empty when the record had none
+        std::string message;
+        // The CELL's name (In[N]) and the USER's line: script-units U5 maps
+        // wrapper coordinates back before the diagnostic is ever emitted, so
+        // nothing here re-translates.
+        std::string file;
+        int line = 0;
+        int column = 0;
+    };
+
+    // One frame of a cell's traceback (spec 4.4). `text` is the rendered
+    // form: a frame in the cell's own entry renders as `In[3], line 2` —
+    // never as the synthesized class the cell compiles into, which is an
+    // implementation detail the notebook user never asked about.
+    struct CellFrame {
+        std::string type;     // declaring type, canonical
+        std::string method;
+        std::string file;     // `In[N]` for a cell's own frame
+        int line = 0;
+        std::string text;
+    };
 
     // The outcome of one `execute`. A compile failure is DATA, not an
     // exception: the kernel turns it into an `error` reply and carries on,
@@ -55,9 +86,30 @@ namespace cajeta::kernel {
         std::string file;
         int line = 0;
         // The cell entry's return value (script-units: `return <int32>`),
-        // 0 when the cell had no explicit return. The trailing-expression
-        // unit RESULT (`Out[N]`) is U3's concern, not this.
+        // 0 when the cell had no explicit return. Distinct from the unit
+        // RESULT below: `return 5;` sets this and displays nothing.
         int32_t value = 0;
+        // The unit result — `Out[N]` (spec 4.2). Set when the cell's last
+        // statement was an expression that produced a value; `result` is that
+        // value rendered as text. A cell ending in a declaration, a loop, a
+        // `return`, or a void call has none, which is why presence is its own
+        // flag: a result CAN legitimately render as the empty string.
+        bool hasResult = false;
+        std::string result;
+        // 1-based, advancing on every execute INCLUDING a failed one (spec
+        // 2.2) so `Out[N]` never reuses a number.
+        int executionCount = 0;
+        // Everything the compiler said about this cell, structured (spec 4.4).
+        // A failing cell's error appears here as well as in the errorId /
+        // message fields above; warnings appear ONLY here, and a cell can
+        // succeed with a non-empty list.
+        std::vector<CellDiagnostic> diagnostics;
+        // The cell RAN and threw (spec 4.4) — as opposed to failing to
+        // compile, which is what an empty `exceptionType` with `!ok` means.
+        // The session survives either way.
+        bool threw = false;
+        std::string exceptionType;   // canonical class of the thrown value
+        std::vector<CellFrame> traceback;   // innermost first
     };
 
     // Observability for the tests and, later, the kernel's own diagnostics.
@@ -71,10 +123,45 @@ namespace cajeta::kernel {
         // specialization used by several cells has one winning definition
         // instead of a hard ORC duplicate-definition failure.
         int weakDemotedInstantiations = 0;
+        // Vtable slots repointed by a BODY-ONLY class redefinition
+        // (script-units 5.4). Observable because "the edit took effect" and
+        // "the edit was a no-op" are otherwise indistinguishable from the
+        // outside until a value happens to be called.
+        int vtableSlotsRepointed = 0;
         // `__cajeta_task_shutdown` invocations — exactly one per session,
         // at the end. Calling it per cell would tear the shared carrier pool
         // out from under later cells.
         int taskShutdownCalls = 0;
+        // `__cajeta_session_drop_all` invocations — also exactly one, and
+        // BEFORE the task shutdown: a drop that runs after the carrier pool
+        // is gone runs user code on a torn-down runtime.
+        int sessionDropAllCalls = 0;
+        // Session bindings registered when shutdown began, and the count
+        // after the drop pass — which must be 0. The before-count is the one
+        // that answers "was this name ever bound at all?", the question a
+        // silently-empty cross-cell read turns on.
+        int sessionBindingsAtShutdown = -1;
+        int liveSessionBindings = -1;
+    };
+
+    // How a session is built (spec 6). Everything here is optional; the
+    // no-argument `create` is a stdlib-only session, which is what every
+    // test that does not care about dependencies wants.
+    struct SessionOptions {
+        // A directory whose nearest ancestor `cajeta.json` governs the
+        // classpath — the project the notebook belongs to. Its resolved
+        // manifest dependencies are exactly the set `cajeta build` would
+        // pass. Empty means no project resolution at all.
+        //
+        // `cajeta kernel` defaults this to the process's working directory,
+        // because Jupyter launches a kernel in the notebook's own directory
+        // and that is the project the user means. It is NOT defaulted here:
+        // a test that happens to run inside a project would otherwise start
+        // resolving that project's dependencies without asking.
+        std::string projectDir;
+        // Archive paths added directly, after anything `projectDir`
+        // resolved. For a caller that knows exactly which `.cja` it wants.
+        std::vector<std::string> classpath;
     };
 
     class KernelSession {
@@ -85,6 +172,13 @@ namespace cajeta::kernel {
         // will own the session.
         static std::unique_ptr<KernelSession> create(std::string* error = nullptr);
 
+        // As above, with a classpath (spec 6.1): cells can then import and
+        // drive project dependencies exactly as a compiled program would.
+        // Resolution happens ONCE, here — dependency definitions have to be
+        // in the module list before the first cell is delivered to the JIT.
+        static std::unique_ptr<KernelSession> create(const SessionOptions& options,
+                                                     std::string* error = nullptr);
+
         ~KernelSession();
         KernelSession(const KernelSession&) = delete;
         KernelSession& operator=(const KernelSession&) = delete;
@@ -92,9 +186,38 @@ namespace cajeta::kernel {
         // Compile `source` as a script unit into this session and run its
         // entry. `cellName` is the host source name diagnostics will carry
         // (e.g. "In[3]"); the no-name overload derives "In[N]" from the
-        // execution count. A failed compile leaves the session untouched.
+        // execution count. The unit's implicit class is named after it —
+        // "In[3]" compiles to `cajeta.script.cell_3` — so that is the name
+        // that appears in mangled symbols and JIT errors.
+        // A failed compile leaves the session untouched.
         CellResult execute(const std::string& source);
         CellResult execute(const std::string& source, const std::string& cellName);
+
+        // Cell output (spec 4.1). Installed once and used for every later
+        // cell; chunks arrive on a PUMP thread while the cell is still
+        // running, in write order, so a loop printing progress shows each
+        // line as it is written rather than a burst at the end. Passing an
+        // empty handler turns capture off, which is the default: without one,
+        // a cell's output goes wherever the process's stdout already goes.
+        using StreamHandler = std::function<void(const std::string&)>;
+        void setStreamHandler(StreamHandler handler);
+
+        // Stop the running cell at its next safepoint (spec 5.1). The cell
+        // ends as a `KeyboardInterrupt` cell error with the session and every
+        // binding intact; the next cell runs normally.
+        //
+        // THE ONE METHOD ON THIS CLASS SAFE TO CALL FROM ANOTHER THREAD, and
+        // it has to be: the kernel answers `interrupt_request` on its control
+        // channel while the execution thread is inside the cell being
+        // interrupted. It sets an atomic through a pointer resolved at
+        // construction and touches nothing else.
+        //
+        // Best-effort at safepoint granularity (spec 5.1): a cell blocked in
+        // a native call reaches no safepoint and does not stop until it
+        // returns to one. Requesting an interrupt with nothing running is a
+        // no-op — the request is cleared at the start of every cell, so it
+        // can never land on a cell the user did not aim at.
+        void requestInterrupt();
 
         // Resolve a symbol across the session's dylibs, newest cell first, so
         // a redefined name yields the newest definition. `lookup` takes a
@@ -118,6 +241,10 @@ namespace cajeta::kernel {
     private:
         KernelSession();
         void* lookupShort(const std::string& shortName);
+        // Turn a thrown Throwable into the cell's structured error (spec
+        // 4.4): type, message, and a traceback whose frames name cells.
+        void describeThrow(void* thrown, const std::string& cellName,
+                           CellResult* result);
 
         struct Impl;
         std::unique_ptr<Impl> impl_;

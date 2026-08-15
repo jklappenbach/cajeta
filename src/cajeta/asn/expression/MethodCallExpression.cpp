@@ -7422,6 +7422,14 @@ namespace cajeta {
             if (!param.expression->getResolvedType()) {
                 param.expression->resolveTypes(module);
             }
+            // jupyter-kernel 2.1.3a — a session binding whose class a later
+            // cell redefined cannot be passed as the current generation. It
+            // type-checks (both generations share a canonical) and then reads
+            // the old object through the new layout. Checked BEFORE the arg
+            // lowers, so nothing is emitted for a call that cannot stand.
+            rejectStaleGenerationUse(module, param.expression,
+                "argument " + std::to_string(argIndex + 1) + " of `"
+                    + methodCallName + "`");
             llvm::Value* value = param.expression->generateCode(module);
             // Fail loud: an argument that didn't lower (e.g. a property that
             // no longer exists — `s.bytes` against the post-slice String)

@@ -172,6 +172,9 @@ namespace cajeta {
         // the user module, so this instantiation's globals land there and the
         // cached stdlib stays pristine. Methods inherit it at construction.
         CajetaModulePtr emitModule;
+        // "" for every class outside a session redefinition; "$g2", "$g3", …
+        // for later generations. See symbolBase().
+        string generationSuffix;
         ScopePtr scope;
 
         // Templates. `typeParameters` non-empty AND `typeArguments` empty =
@@ -435,8 +438,12 @@ namespace cajeta {
             captureDeclaringFile();
         }
         list<CajetaClassPtr>& getImplementedInterfaces() { return implementedInterfaces; }
-        const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
+        // The DECLARED parent names, before resolveSuperClasses() turns them
+        // into class pointers — the only view available early in
+        // generatePrototype, where jupyter-kernel 2.1.4 asks whether anyone
+        // extends a class about to be redefined.
         const list<QualifiedNamePtr>& getQExtended() const { return qExtended; }
+        const list<QualifiedNamePtr>& getQImplemented() const { return qImplemented; }
         void setQImplemented(list<QualifiedNamePtr> q) { qImplemented = std::move(q); }
         const list<vector<QualifiedNamePtr>>& getQImplementedTypeArgs() const {
             return qImplementedTypeArgs;
@@ -508,6 +515,28 @@ namespace cajeta {
         // fallback distinguish a real override from the resolution default.
         bool hasEmitModuleOverride() const { return emitModule != nullptr; }
         void setEmitModule(CajetaModulePtr m) { emitModule = m; }
+
+        // Generational redefinition (script-units 5.3). When a session cell
+        // redefines a class, the new class is a DIFFERENT type that happens to
+        // share a source name. `qName` stays the source name — that is what
+        // later cells write and what canonicalMap resolves — while every
+        // emitted SYMBOL derived from the class (vtable, RTTI, class object,
+        // and each method's mangled name) is built from symbolBase(), which
+        // carries the generation. Without that the second generation's globals
+        // collide with the first's, the session-statics dedup turns them into
+        // references to the ORIGINAL, and a value built from the new
+        // definition dispatches into the old bodies.
+        // Empty — and so bit-for-bit unchanged — outside a session.
+        const string& getGenerationSuffix() const { return generationSuffix; }
+        void setGenerationSuffix(const string& s) { generationSuffix = s; }
+        // Deliberately uncached: a class's qName is not final at construction
+        // (placeholders and template instantiations fill it in later), so a
+        // cache seeded by an early call would pin the wrong base forever.
+        string symbolBase() {
+            return generationSuffix.empty()
+                ? qName->toCanonical()
+                : qName->toCanonical() + generationSuffix;
+        }
 
         list<CajetaClassPtr>& getSuperClasses() {
             // Lazy re-resolve: a NAMED parent (qExtended) may not have resolved

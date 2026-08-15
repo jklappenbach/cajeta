@@ -28,6 +28,9 @@
 #include "cajeta/dap/Json.h"
 #include "cajeta/cli/SignatureVerify.h"
 #include "cajeta/cli/TrustStore.h"
+#include "cajeta/kernel/KernelMain.h"
+
+#include "llvm/Support/FileSystem.h"
 
 #include <filesystem>
 #include <fstream>
@@ -387,6 +390,34 @@ namespace cajeta::buildtool {
             std::string destDir = ".";
             bool force = false;
             bool listOnly = false;
+
+            // `cajeta init --kernel` installs the Jupyter kernelspec rather
+            // than scaffolding a project (jupyter-kernel spec §3). It shares
+            // the verb because it is the same act — putting something on disk
+            // so a tool can find it — and it is checked first because it
+            // takes no archetype and no destination.
+            for (int i = 2; i < argc; ++i) {
+                if (std::string_view(argv[i]) != "--kernel") continue;
+                bool replace = false;
+                for (int j = 2; j < argc; ++j) {
+                    std::string_view a = argv[j];
+                    if (a == "--force" || a == "-f") replace = true;
+                }
+                std::string exe = llvm::sys::fs::getMainExecutable(
+                    argv[0], reinterpret_cast<void*>(&initCommand));
+                if (exe.empty()) exe = "cajeta";
+                std::string error;
+                std::string written =
+                    cajeta::kernel::installKernelSpec(exe, replace, &error);
+                if (written.empty()) {
+                    std::cerr << "cajeta init --kernel: " << error << "\n";
+                    return 1;
+                }
+                std::cout << "Installed the cajeta kernelspec:\n  " << written
+                          << "\nStart a notebook with `jupyter lab` and pick "
+                             "the Cajeta kernel.\n";
+                return 0;
+            }
 
             // Positional parsing: first non-flag is the template
             // name, second is the destination directory. Both
@@ -2816,6 +2847,7 @@ namespace cajeta::buildtool {
                 cmd == "sandbox-info" ||
                 cmd == "install" ||
                 cmd == "toolchain" ||
+                cmd == "kernel" ||  // jupyter-kernel §3 — first-class verb
                 cmd == "run") {   // script-units §7 — first-class verb
                 return false;
             }

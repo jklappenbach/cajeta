@@ -31,6 +31,11 @@ namespace cajeta {
      * @return
      */
     llvm::AllocaInst* StackField::getOrCreateAllocation() {
+        // No type, no slot — see the note in HeapField::getOrCreateAllocation.
+        // Session seeding picks StackField for primitives, whose types always
+        // resolve, so this arm is not currently reachable; it is here so the
+        // two field kinds cannot disagree about what a typeless field means.
+        if (!type) return nullptr;
         if (!alloca) {
             // Storage axis (plans/value-type-overloading-plan.md): scalar
             // primitives AND @ValueType PODs live INLINE in the slot (the

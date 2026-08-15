@@ -7,11 +7,19 @@
 
 #include "CajetaModule.h"
 #include "SessionState.h"
+#include "../asn/expression/Expression.h"
+#include "../asn/expression/BinaryOpExpression.h"
+#include "../asn/expression/Identifier.h"
 #include "../error/Exception.h"
 #include "../field/HeapField.h"
+#include "../field/StackField.h"
 #include "../method/Method.h"
+#include "../type/CajetaArray.h"
+#include "../type/CajetaClass.h"
 #include "../type/CajetaType.h"
 #include "../type/Scope.h"
+
+#include <llvm/IR/IRBuilder.h>
 
 namespace cajeta {
 
@@ -106,7 +114,8 @@ namespace cajeta {
                                      const std::string& stem,
                                      std::string* outCanonical,
                                      std::vector<std::string>* outBindings,
-                                     ScriptLineMap* outLineMap) {
+                                     ScriptLineMap* outLineMap,
+                                     bool* outSyntheticTail) {
         std::string pkgName = scriptDefaultPackage();
         auto hostLineOf = [](antlr4::ParserRuleContext* c) {
             return (c && c->getStart())
@@ -189,6 +198,7 @@ namespace cajeta {
         append({"}\n", 0});
 
         if (outCanonical) *outCanonical = pkgName + "." + stem;
+        if (outSyntheticTail) *outSyntheticTail = !endsWithReturn;
         return out;
     }
 
@@ -218,7 +228,53 @@ namespace cajeta {
             return note + " in unit " + hostName;
         }
 
+        // 2.1.3a — the generation suffix a type carries, or "" for a type
+        // that is not a redefinable class. `$g2`, `$g3`, ... for later
+        // generations; the FIRST declaration carries no suffix.
+        std::string generationOf(const CajetaTypePtr& type) {
+            auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+            return klass ? klass->getGenerationSuffix() : std::string();
+        }
+
+        // Render a suffix as the ordinal a user reads: "" -> 1, "$g2" -> 2.
+        std::string generationLabel(const std::string& suffix) {
+            if (suffix.empty()) return "1";
+            return suffix.substr(2);  // past "$g"
+        }
+
     }  // namespace
+
+    void rejectStaleGenerationUse(CajetaModulePtr module,
+                                  const ExpressionPtr& expr,
+                                  const std::string& position) {
+        if (!module || !expr) return;
+        // Cheapest gate first, and it settles the cost question: only a script
+        // unit compiling into a session can HAVE a stale binding, so ordinary
+        // compiles pay two null checks per argument and per assignment rather
+        // than a scope walk. (The stdlib compiled inside a kernel session is
+        // not a script unit, so it takes the same early exit.)
+        if (!module->isScriptUnit() || !module->getSessionState()) return;
+        auto id = std::dynamic_pointer_cast<IdentifierExpression>(expr);
+        if (!id) return;
+        ScopePtr scope = module->getScopeStack().peek();
+        if (!scope) return;
+        FieldPtr field = scope->getField(id->getTextValue());
+        if (!field || !field->isStaleGeneration()) return;
+        const std::string was = generationLabel(field->getStaleGeneration());
+        const std::string now = generationLabel(field->getCurrentGeneration());
+        std::string canonical = field->getType() && field->getType()->getQName()
+            ? field->getType()->getQName()->toCanonical()
+            : std::string("<?>");
+        throw Exception(
+            "`" + id->getTextValue() + "` holds a generation-" + was + " `"
+                + canonical + "`, but " + position + " expects generation-"
+                + now + " — the class was redefined by a later cell. The two "
+                "generations are different types with different layouts and "
+                "different method bodies; using one as the other reads the "
+                "old object through the new layout. Fix: rebuild the value "
+                "under the current definition.",
+            "CAJETA_ERROR_STALE_GENERATION");
+    }
 
     void seedSessionScope(CajetaModulePtr module) {
         SessionState* session = sessionOfEntry(module);
@@ -229,10 +285,75 @@ namespace cajeta {
             // Resolve the recorded canonical in THIS unit's type world; a
             // miss seeds name-only — the ownership checks don't need the
             // type, and a live read rejects before touching it.
+            // Resolve by canonical, as every host does — EXCEPT for a class
+            // in a SHARED-TYPE-WORLD session, where the recorded type wins.
+            // After a later cell redefines `Point` the canonical names the
+            // NEWEST generation, which is not what an older value is:
+            // re-resolving by name would reinterpret it under the new layout
+            // and dispatch into the new bodies. (Verified by removing the
+            // preference: `typeRedefinitionIsGenerational` SIGSEGVs without
+            // it, so a redefinition does mint a new class object here — the
+            // "a redeclaration reuses the same instance" reading recorded in
+            // 2.1.4 does not hold for this path.)
+            //
+            // The `sharedTypeWorld` gate is the load-bearing part, and it has
+            // to be a fact the HOST states rather than one this code derives:
+            // across worlds the recorded object outlives its context (it is a
+            // shared_ptr) while the `llvm::Type*` inside it dangles, so
+            // `getLlvmType()` returns a dangling pointer instead of null and
+            // even the is-this-usable question reads freed memory. That was
+            // SessionOwnershipTests.moveStateSpansUnits's SIGSEGV.
             CajetaTypePtr type = CajetaType::find(fact.typeCanonical);
-            auto field =
-                std::make_shared<HeapField>(module, fact.name, type);
+            // Primitives are CajetaClass too, and their recorded type can be
+            // an adorned variant of the canonical one — which would defeat the
+            // primitive/StackField decision below. Generations only ever apply
+            // to declared classes, so exclude them explicitly.
+            if (session->hasSharedTypeWorld()
+                    && fact.boundType
+                    && !(fact.boundType->getTypeFlags() & PRIMITIVE_FLAG)
+                    && std::dynamic_pointer_cast<CajetaClass>(fact.boundType)) {
+                type = fact.boundType;
+            }
+            // Match the field KIND to what the name holds. A HeapField's slot
+            // is pointer-shaped whatever it contains, which is right for an
+            // owner (the slot holds the instance pointer) and wrong for a
+            // primitive: consumers would load a pointer's worth of bytes out
+            // of a 4-byte value. A primitive is an inline value, so it seeds
+            // as a StackField — and the box `__cajeta_session_get` returns is
+            // then exactly the l-value shape the read path hands back.
+            FieldPtr field;
+            if (type && (type->getTypeFlags() & PRIMITIVE_FLAG)) {
+                field = std::make_shared<StackField>(module, fact.name, type);
+            } else {
+                field = std::make_shared<HeapField>(module, fact.name, type);
+            }
             field->setSessionSeeded(true);
+            // 2.1.3a — did the class this name was bound under get REDEFINED
+            // since? The comparison is recorded-suffix against the suffix the
+            // canonical carries NOW, because that is what a use of this name
+            // would be checked against. `type` above is the value's own type,
+            // so the field still LOADS and DISPATCHES as its own generation
+            // (2.1.3's contract, and `p.get()` keeps returning the old body's
+            // answer); the mark only rejects positions that would reinterpret
+            // it as the newer one.
+            //
+            // Shared-world sessions only, for the same reason the type
+            // preference above is: with a fresh world per unit the two
+            // suffixes come from different registries and are not comparable.
+            // A unit that re-declares a class the session has seen counts as
+            // a redefinition there — which is true of the SESSION but says
+            // nothing about the value, since seeding just typed it from this
+            // unit's own world. Comparing anyway made every such binding look
+            // stale (`SessionOwnershipTests.moveStateSpansUnits` reported a
+            // generation clash where its subject is a moved binding).
+            if (session->hasSharedTypeWorld()
+                    && std::dynamic_pointer_cast<CajetaClass>(type)) {
+                const std::string current =
+                    generationOf(CajetaType::find(fact.typeCanonical));
+                if (current != fact.generation) {
+                    field->setStaleGeneration(fact.generation, current);
+                }
+            }
             scope->putField(field);
             if (fact.moved) scope->demoteToBorrow(fact.name, fact.transferSite);
         }
@@ -269,11 +390,261 @@ namespace cajeta {
                 fact.typeCanonical =
                     field->getType()->getQName()->toCanonical();
             }
+            fact.boundType = field->getType();
+            // 2.1.3a — the generation as of THIS unit. Read now, while the
+            // class still carries it: a later cell's redefinition overwrites
+            // the suffix on the same CajetaClass instance.
+            fact.generation = generationOf(field->getType());
             fact.moved = scope->isBorrow(name);
             fact.transferSite = decorateSite(scope->transferSiteOf(name),
                                              module->getScriptHostName());
             session->put(std::move(fact));
         }
+    }
+
+    // --- U3: the unit result (Out[N]) -----------------------------------
+
+    namespace {
+
+        // FNV-1a 64-bit — the vtable lookup key. Same constants as the
+        // runtime's `__cajeta_vtable_lookup` and SynthesizedToStringMethod,
+        // which is the whole point: the keys must agree byte-for-byte.
+        int64_t scriptSignatureHash(const std::string& s) {
+            uint64_t h = 0xcbf29ce484222325ULL;
+            for (unsigned char c : s) {
+                h ^= c;
+                h *= 0x100000001b3ULL;
+            }
+            return (int64_t) h;
+        }
+
+        // A private constant C string in the emit module, as an i8*.
+        llvm::Value* scriptLiteralPtr(llvm::IRBuilder<>* b, llvm::Module* lmod,
+                                      const std::string& s) {
+            auto& ctx = lmod->getContext();
+            llvm::Constant* data =
+                llvm::ConstantDataArray::getString(ctx, s, true);
+            auto* g = new llvm::GlobalVariable(
+                *lmod, data->getType(), /*isConstant=*/true,
+                llvm::GlobalValue::PrivateLinkage, data, ".script.res.lit");
+            g->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+            llvm::Value* zero =
+                llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), 0);
+            return b->CreateInBoundsGEP(data->getType(), g, {zero, zero});
+        }
+
+        // The no-arg `toString` on `klass` or any ancestor. Mirrors
+        // SynthesizedToStringMethod's lookup, including the post-prototype
+        // shape where `this` sits at parameter 0.
+        // `cajeta.lang.Object` DECLARES toString and returns null from it — a
+        // documented placeholder until the String surface stabilizes. Finding
+        // that one means the class has no rendering of its own, which is the
+        // degrade-to-type-name case, not a dispatch case.
+        MethodPtr findScriptToString(const CajetaClassPtr& klass) {
+            if (!klass) return nullptr;
+            if (auto qn = klass->getQName()) {
+                if (qn->toCanonical() == "cajeta.lang.Object") return nullptr;
+            }
+            for (auto& m : klass->getMethodList()) {
+                if (!m || m->isConstructor()) continue;
+                if (m->getName() != "toString") continue;
+                auto params = m->getParameterList();
+                if (params.empty()) return m;
+                if (params.size() == 1 && params.front()
+                        && params.front()->getName() == "this") {
+                    return m;
+                }
+            }
+            for (auto& sup : klass->getSuperClasses()) {
+                if (auto found = findScriptToString(sup)) return found;
+            }
+            return nullptr;
+        }
+
+    }  // namespace
+
+    void emitScriptUnitResult(CajetaModulePtr module, const ExpressionPtr& expr,
+                              llvm::Value* value) {
+        if (!module || !expr || !value) return;
+        if (!sessionOfEntry(module)) return;
+        auto* builder = module->getBuilder();
+        if (!builder) return;
+        llvm::BasicBlock* insertBB = builder->GetInsertBlock();
+        if (!insertBB || insertBB->hasTerminator()) return;
+
+        // Not every expression records its type during the pre-pass — a bare
+        // identifier or a binary op over locals resolves against the scope,
+        // which is only populated once codegen has run the declarations. Ask
+        // again here, where it can succeed; the same retry MethodCallExpression
+        // does for a receiver.
+        // An ASSIGNMENT is a statement, not a result. `x = 1` displays
+        // nothing in any notebook, and it is not a near-miss here: the assign
+        // arms hand back several different things (the assigned r-value, a
+        // staked copy, the destination slot), so treating one as a renderable
+        // value read a String's vtable word as its object pointer and
+        // SIGSEGV'd inside the cell. Compound assigns (`+=`) are assignments
+        // too — `isAssignment` covers all of them.
+        if (auto binOp = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
+            if (binOp->isAssignment()) return;
+        }
+
+        CajetaTypePtr type = expr->getResolvedType();
+        if (!type) {
+            expr->resolveTypes(module);
+            type = expr->getResolvedType();
+        }
+        if (!type) return;
+        // `void` carries PRIMITIVE_FLAG too (VOID_TYPE_ID), so it has to be
+        // excluded before the primitive branch — this is the case the whole
+        // codegen-side decision exists for: `xs.add(1);` as a cell's last
+        // statement is a statement, not a result.
+        if ((type->getTypeFlags() & TYPE_ID_MASK) == VOID_ID) return;
+
+        llvm::Function* store = module->getRuntimeFunction(
+            "__cajeta_script_result");
+        if (!store) return;
+
+        llvm::Module* lmod = module->emitTargetLlvmModule();
+        auto& ctx = *module->getLlvmContext();
+        llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+        llvm::Type* f64Ty = llvm::Type::getDoubleTy(ctx);
+        llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
+
+        std::string canonical = type->getQName()
+            ? type->getQName()->toCanonical() : std::string();
+        bool isString = canonical == "cajeta.lang.String" || canonical == "String";
+        auto klass = std::dynamic_pointer_cast<CajetaClass>(type);
+        bool isArray = std::dynamic_pointer_cast<CajetaArray>(type) != nullptr;
+
+        // The value as an r-value. NOT via loadIfLValue: it decides from the
+        // expression's TYPE, so for any class-typed pointer it loads — and a
+        // trailing expression that is already an r-value (`tag = "x";` hands
+        // back the assigned value, `heap Point(1,2);` the instance) then gets
+        // its first word read as if it were a slot. That is the String's
+        // vtable pointer, and rendering through it walked off a mapping:
+        // a page-aligned SIGSEGV inside the cell.
+        //
+        // Decide from the VALUE's shape instead, which is unambiguous: an
+        // alloca, a global, or a GEP is storage to load through (a local, a
+        // static field, a struct field); anything else is already the value.
+        llvm::Value* rv = value;
+        if (value->getType()->isPointerTy()
+                && (llvm::isa<llvm::AllocaInst>(value)
+                    || llvm::isa<llvm::GlobalVariable>(value)
+                    || llvm::isa<llvm::GetElementPtrInst>(value))) {
+            rv = loadIfLValue(module, value, expr);
+        }
+        if (!rv) return;
+
+        // Park the type-name placeholder FIRST (spec 4, "rendering failures
+        // degrade to a type-name placeholder"). Every branch below overwrites
+        // it on success; what this buys is the failure path — a `toString`
+        // that throws unwinds out of the entry without ever reaching its
+        // store, and the payload the host collects is the placeholder rather
+        // than the previous cell's result or nothing at all.
+        std::string placeholder = canonical.empty() ? "<value>" : canonical;
+        builder->CreateCall(store,
+                            {scriptLiteralPtr(builder, lmod, placeholder)});
+
+        llvm::Value* text = nullptr;
+        if (!isString && !isArray && (type->getTypeFlags() & PRIMITIVE_FLAG)) {
+            llvm::Function* i64ToStr =
+                module->getRuntimeFunction("__cajeta_i64_to_str");
+            llvm::Function* f64ToStr =
+                module->getRuntimeFunction("__cajeta_f64_to_str");
+            llvm::Function* boolToStr =
+                module->getRuntimeFunction("__cajeta_bool_to_str");
+            switch (type->getTypeFlags() & TYPE_ID_MASK) {
+                case BOOLEAN_ID:
+                    if (boolToStr) {
+                        text = builder->CreateCall(
+                            boolToStr, {builder->CreateZExt(rv, i32Ty)});
+                    }
+                    break;
+                case INT8_ID: case INT16_ID: case INT32_ID:
+                    if (i64ToStr) {
+                        text = builder->CreateCall(
+                            i64ToStr, {builder->CreateSExt(rv, i64Ty)});
+                    }
+                    break;
+                case UINT8_ID: case UINT16_ID: case UINT32_ID: case UINT64_ID:
+                    if (i64ToStr) {
+                        text = builder->CreateCall(
+                            i64ToStr, {builder->CreateZExt(rv, i64Ty)});
+                    }
+                    break;
+                case INT64_ID:
+                    if (i64ToStr) text = builder->CreateCall(i64ToStr, {rv});
+                    break;
+                case FLOAT32_ID:
+                    if (f64ToStr) {
+                        text = builder->CreateCall(
+                            f64ToStr, {builder->CreateFPExt(rv, f64Ty)});
+                    }
+                    break;
+                case FLOAT64_ID:
+                    if (f64ToStr) text = builder->CreateCall(f64ToStr, {rv});
+                    break;
+                default:
+                    break;  // 128-bit, extended float, bare pointer: degrade
+            }
+        } else if (isString) {
+            // A String is an object; its bytes are behind the mode-aware
+            // accessor, never at the pointer itself.
+            if (llvm::Function* cstr =
+                    module->getRuntimeFunction("__cajeta_string_cstr")) {
+                text = builder->CreateCall(cstr, {rv});
+            }
+        } else if (klass && !klass->isInterface()) {
+            MethodPtr ts = findScriptToString(klass);
+            llvm::Function* vtLookup =
+                module->getRuntimeFunction("__cajeta_vtable_lookup");
+            llvm::Function* cstr =
+                module->getRuntimeFunction("__cajeta_string_cstr");
+            if (ts && vtLookup && cstr) {
+                // Virtual dispatch, so an override on the runtime class wins
+                // over the static type — the same lookup @ToString emits.
+                // Null renders as "null"; a null receiver must not fault a
+                // cell that otherwise succeeded.
+                llvm::Function* curFn = insertBB->getParent();
+                auto* nullBB = llvm::BasicBlock::Create(ctx, "res.null", curFn);
+                auto* callBB = llvm::BasicBlock::Create(ctx, "res.call", curFn);
+                auto* mergeBB = llvm::BasicBlock::Create(ctx, "res.mrg", curFn);
+                llvm::Value* isNull = builder->CreateICmpEQ(
+                    rv, llvm::ConstantPointerNull::get(
+                            llvm::cast<llvm::PointerType>(ptrTy)));
+                builder->CreateCondBr(isNull, nullBB, callBB);
+
+                builder->SetInsertPoint(nullBB);
+                llvm::Value* nullLit = scriptLiteralPtr(builder, lmod, "null");
+                builder->CreateBr(mergeBB);
+
+                builder->SetInsertPoint(callBB);
+                auto* callTy = llvm::FunctionType::get(ptrTy, {ptrTy}, false);
+                llvm::Value* vtPtr = builder->CreateLoad(ptrTy, rv);
+                llvm::Value* fnPtr = builder->CreateCall(
+                    vtLookup, {vtPtr,
+                               llvm::ConstantInt::get(
+                                   i64Ty, llvm::APInt(64,
+                                       (uint64_t) scriptSignatureHash(
+                                           ts->toCanonical(false)), false))});
+                llvm::Value* str = builder->CreateCall(callTy, fnPtr, {rv});
+                llvm::Value* strC = builder->CreateCall(cstr, {str});
+                builder->CreateBr(mergeBB);
+
+                builder->SetInsertPoint(mergeBB);
+                llvm::PHINode* phi = builder->CreatePHI(ptrTy, 2);
+                phi->addIncoming(nullLit, nullBB);
+                phi->addIncoming(strC, callBB);
+                text = phi;
+            }
+        }
+
+        // Nothing rendered it — an array, an interface, a class with no
+        // toString. The placeholder above already stands, so there is
+        // nothing left to do; display never fails a cell that ran.
+        if (text) builder->CreateCall(store, {text});
     }
 
     void remapScriptException(CajetaModulePtr module, Exception& e) {

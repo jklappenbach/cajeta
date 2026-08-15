@@ -662,7 +662,17 @@ namespace cajeta {
             parser.removeErrorListeners();
         } else if (label && std::string(label) == "user" &&
             module->getFlags().diagFormat == DiagFormat::Json) {
-            jsonSyntax = std::make_unique<JsonSyntaxErrorListener>(module->getSourcePath());
+            // The HOST's name when there is one (jupyter-kernel 2.3.1): a
+            // session cell is compiled from a scratch file the host wrote,
+            // and naming that path tells a notebook author about a temp
+            // directory instead of about their cell. Every other diagnostic
+            // path already speaks the host name; this listener sits outside
+            // the DiagnosticEngine — it emits straight to the stream — so it
+            // never picked the mapping up. Ordinary compiles have no host
+            // name and keep the source path.
+            const std::string& host = module->getScriptHostName();
+            jsonSyntax = std::make_unique<JsonSyntaxErrorListener>(
+                host.empty() ? module->getSourcePath() : host);
             lexer.removeErrorListeners();
             parser.removeErrorListeners();
             lexer.addErrorListener(jsonSyntax.get());
@@ -692,12 +702,14 @@ namespace cajeta {
                 std::string canonical;
                 std::vector<std::string> bindings;
                 ScriptLineMap lineMap;
+                bool syntheticTail = false;
                 std::string wrapper =
                     synthesizeScriptUnit(tokens, unitCtx, stem, &canonical,
-                                         &bindings, &lineMap);
+                                         &bindings, &lineMap, &syntheticTail);
                 module->setScriptUnit(true);
                 module->setScriptBindingNames(std::move(bindings));
                 module->setScriptLineMap(std::move(lineMap));
+                module->setScriptSyntheticTail(syntheticTail);
                 antlr4::ANTLRInputStream wrapperInput(wrapper);
                 parseSource(module, wrapperInput, label, quiet);
                 auto& structures = module->getStructures();

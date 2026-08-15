@@ -3387,7 +3387,10 @@ namespace cajeta {
 
     string Method::buildCanonical(CajetaClassPtr parent, const string& name, vector<FormalParameterPtr> parameters, bool labeled) {
         string canonical;
-        canonical.append(parent->toCanonical());
+        // symbolBase(), not toCanonical(): a redefined session class carries
+        // a generation suffix so its methods do not collide with the previous
+        // generation's (script-units 5.3). Identical outside a session.
+        canonical.append(parent->symbolBase());
         canonical.append("::");
         canonical.append(name);
         canonical.append("(");
@@ -3478,7 +3481,10 @@ namespace cajeta {
 
     string Method::buildCanonical(CajetaClassPtr parent, const string& name, vector<ParameterEntry> parameters, bool labeled) {
         string canonical;
-        canonical.append(parent->toCanonical());
+        // symbolBase(), not toCanonical(): a redefined session class carries
+        // a generation suffix so its methods do not collide with the previous
+        // generation's (script-units 5.3). Identical outside a session.
+        canonical.append(parent->symbolBase());
         canonical.append("::");
         canonical.append(name);
         canonical.append("(");
@@ -3510,7 +3516,10 @@ namespace cajeta {
 
     string Method::buildGeneric(CajetaClassPtr parent, const string& name, vector<FormalParameterPtr> parameters, bool labeled) {
         string canonical;
-        canonical.append(parent->toCanonical());
+        // symbolBase(), not toCanonical(): a redefined session class carries
+        // a generation suffix so its methods do not collide with the previous
+        // generation's (script-units 5.3). Identical outside a session.
+        canonical.append(parent->symbolBase());
         canonical.append("::");
         canonical.append(name);
         canonical.append("(");
@@ -3542,7 +3551,10 @@ namespace cajeta {
 
     string Method::buildGeneric(CajetaClassPtr parent, const string& name, vector<ParameterEntry> parameters, bool labeled) {
         string canonical;
-        canonical.append(parent->toCanonical());
+        // symbolBase(), not toCanonical(): a redefined session class carries
+        // a generation suffix so its methods do not collide with the previous
+        // generation's (script-units 5.3). Identical outside a session.
+        canonical.append(parent->symbolBase());
         canonical.append("::");
         canonical.append(name);
         canonical.append("(");

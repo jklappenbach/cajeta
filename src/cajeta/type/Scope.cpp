@@ -26,7 +26,12 @@ namespace cajeta {
     void Scope::putField(FieldPtr field) {
         fields[field->getName()] = field;
         fieldList.push_back(field);
-        allocaToField[field->getOrCreateAllocation()] = field;
+        // A slotless field (a name-only session seed, whose recorded type did
+        // not resolve in this unit) has no alloca to reverse-map. Keying the
+        // map on null would also make every such field alias every other one.
+        if (llvm::AllocaInst* slot = field->getOrCreateAllocation()) {
+            allocaToField[slot] = field;
+        }
     }
 
     FieldPtr Scope::getField(string fieldName) {

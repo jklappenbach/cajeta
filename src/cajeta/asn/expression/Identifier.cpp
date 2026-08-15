@@ -106,29 +106,25 @@ namespace cajeta {
                     (void) lctx;
                     (void) slotTy;
                     // Discriminate on the FIELD'S CAJETA TYPE, not on the
-                    // alloca's LLVM type: HeapField allocates a POINTER slot
-                    // whatever it holds, so a primitive's slot is pointer-
-                    // typed too and an LLVM-level check silently passes it
-                    // through (it returned 983626000 for `40 + 2`).
+                    // alloca's LLVM type. seedSessionScope picks the field
+                    // KIND from the same flag, so the two agree by
+                    // construction; an LLVM-level check here would not.
                     CajetaTypePtr ft = field->getType();
                     bool primitive = ft && (ft->getTypeFlags() & PRIMITIVE_FLAG);
                     if (primitive) {
-                        // Only OWNERS reach the session registry: U3's
-                        // promotion rides the drop-entry choke point, and a
-                        // primitive has no drop entry, so nothing ever called
-                        // __cajeta_session_bind for it. Reading it here would
-                        // load through a null occupant and hand back garbage
-                        // — a notebook silently computing wrong numbers is
-                        // strictly worse than a refusal, so refuse.
-                        throw Exception(
-                            "session binding `" + identifier + "` holds a "
-                            "primitive value, which is not yet carried across "
-                            "units: only owning (heap) bindings register with "
-                            "the session. Fix: bind a heap value, or restate "
-                            "the literal in this unit",
-                            "CAJETA_ERROR_NOT_IMPLEMENTED",
-                            module->getScriptHostName(), getSourceLine(),
-                            getSourceColumn());
+                        // A primitive is BOXED by __cajeta_session_bind_value,
+                        // so the registry hands back the address of the value
+                        // rather than the value itself. Load through the box
+                        // and stage the result in this unit's slot, which for
+                        // a primitive seed is a StackField — an inline slot of
+                        // the value's own type. Returning the box pointer
+                        // directly does NOT work: consumers reach the storage
+                        // through the field, not through the Value this
+                        // returns, so an unwritten slot reads as garbage.
+                        llvm::Value* loaded =
+                            builder->CreateLoad(slot->getAllocatedType(), live);
+                        builder->CreateStore(loaded, slot);
+                        return static_cast<llvm::Value*>(slot);
                     }
                     builder->CreateStore(live, slot);
                 }

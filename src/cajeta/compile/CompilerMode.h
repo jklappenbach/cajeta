@@ -177,6 +177,35 @@ namespace cajeta {
         // ordinary builds and the existing test suite are unaffected.
         bool            debugInfo           = false;
 
+        // The SAFEPOINT half of the above, on its own. `--debug-info=full`
+        // turns both on (applyDebugInfo keeps them in step), but a consumer
+        // that wants only statement boundaries can ask for just this.
+        //
+        // Split out for jupyter-kernel U6: the notebook interrupt is taken at
+        // a safepoint, so kernel cells need these — but `debugInfo` also
+        // calls `noteForceAll("--debug-info=full")`, which retains the entire
+        // class registry, and that dragged every stdlib class into a cell's
+        // compile. The first cell then died on `unknown field type
+        // 'bfloat16'` from a stdlib class that does not compile from source
+        // in that world. The kernel wants a place to stop, not a debugger's
+        // worth of metadata, and now it can say so.
+        bool            safepoints          = false;
+
+        // A would-be-UB trap (divide by zero, shift past the width, signed
+        // overflow) UNWINDS to the session guard instead of executing
+        // `llvm.trap`. Off everywhere but a Jupyter cell, and never implied
+        // by a mode: a program that divides by zero should stop at the trap,
+        // which is the whole point of `ubTraps`.
+        //
+        // A notebook is the case where that is the wrong answer. `4 / 0` is
+        // among the most ordinary things a person types by accident, and a
+        // `ud2` takes the kernel, every binding and every earlier cell with
+        // it — the same hole Unit 4 closed for throws, reached by a route
+        // that goes around the exception machinery entirely. The trap site
+        // calls the runtime first and traps only if that RETURNS, so nothing
+        // changes for a module compiled outside a session.
+        bool            trapsUnwind         = false;
+
         // Emit the line-info shadow-stack calls (__cajeta_line_enter/mark/leave)
         // + a per-method #FrameDesc so a captured stack trace resolves to
         // Package.Class.method(File.cajeta:NN) with NO debug info (diagnostic-
@@ -282,6 +311,10 @@ namespace cajeta {
         }
         f.debugInfoLevel = level;
         f.debugInfo      = (level == DebugInfo::Full);
+        // Full debug info implies safepoints — that is what a debugger stops
+        // at. Kept in step here so `--debug-info=full` behaves exactly as it
+        // did before the two were separable.
+        f.safepoints     = f.debugInfo;
         f.lineInfo       = (level != DebugInfo::Off);
         return true;
     }

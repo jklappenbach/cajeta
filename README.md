@@ -353,6 +353,15 @@ ultimately to the CPU path, so kernel code always runs. Vendor-exclusive
 features (tensor-core peak paths and the like) live in explicit vendor
 libraries rather than the portable core.
 
+**Notebooks.** `cajeta kernel` is a Jupyter kernel over the same JIT. One
+kernel process hosts one persistent session; each cell compiles into it and
+sees everything the cells before it declared, so bindings, types, and methods
+persist across cells. Output streams while a cell runs, a trailing expression
+renders as `Out[N]`, tracebacks name cells (`In[3], line 2`) rather than the
+classes cells compile into, and a cell that throws or runs away does not take
+the session with it. `cajeta init --kernel` registers it with Jupyter; see
+[the kernel doc](docs/specification/tooling/Kernel.md).
+
 Throughout, linking is **lazy**: the runtime and standard library are linked
 as bitcode, and only what your program actually references is materialized
 into the output — which keeps both JIT working sets and native binaries
