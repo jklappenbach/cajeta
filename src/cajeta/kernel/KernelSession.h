@@ -128,10 +128,6 @@ namespace cajeta::kernel {
         // "the edit was a no-op" are otherwise indistinguishable from the
         // outside until a value happens to be called.
         int vtableSlotsRepointed = 0;
-        // Archive definitions demoted to weak_odr because the session's
-        // stdlib defines the same symbol (7.2.5). A `.cja` is self-contained,
-        // so overlap with the stdlib is normal, not a defect.
-        int archiveSymbolsDemoted = 0;
         // `__cajeta_task_shutdown` invocations — exactly one per session,
         // at the end. Calling it per cell would tear the shared carrier pool
         // out from under later cells.

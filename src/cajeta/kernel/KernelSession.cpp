@@ -264,12 +264,6 @@ struct KernelSession::Impl {
     // ingest, so a cell's verify pass can tell "our IR is malformed" from
     // "a dependency we did not compile is malformed".
     std::set<llvm::Module*> prebuilt;
-    // Every non-local symbol DELIVERED so far, functions included. 7.2.5: an
-    // archive's copy can collide with the stdlib that went into the bootstrap
-    // dylib at session create, which is long out of the `fresh` set by the
-    // time cell 1 delivers — so a collision check that looks only at `fresh`
-    // sees nothing and ORC fails at addIRModule.
-    std::set<std::string> definedSymbols;
     // Globals DEFINED by an already-delivered cell. Statics are session-
     // lived: the declaring cell owns the storage and later cells must
     // REFERENCE it, never emit a fresh zero-initialized copy that their own
@@ -719,17 +713,33 @@ CellResult KernelSession::execute(const std::string& source,
     {
         auto all = impl.compiler->getModules();   // by value — see the
         std::vector<CajetaModulePtr> candidates(all.begin(), all.end());
-        // The stdlib module is NOT in getModules() — it is a separate
-        // process-wide module that ACCUMULATES template instantiations as
-        // cells use them. It must be delivered too, or every cell fails to
-        // materialize on cajeta.lang.Object's vtable and drop thunks.
+        // The stdlib module is a separate process-wide module that ACCUMULATES
+        // template instantiations as cells use them. It must be delivered too,
+        // or every cell fails to materialize on cajeta.lang.Object's vtable and
+        // drop thunks — and whether `getModules()` already contains it depends
+        // on which session built it: `ensureStdlibModule` pushes it into the
+        // building compiler's list and early-returns for every later one. A
+        // RESIDENT session inherits a stdlib built by an earlier compiler and
+        // so does not have it in the list; a CLASSPATH session builds its own
+        // and does. Push unconditionally and let the dedup below decide.
         if (auto stdlib = CajetaModule::getStdlibModule()) {
             candidates.push_back(stdlib);
         }
+        // BY IR-MODULE IDENTITY, and a set rather than a bare append: the same
+        // llvm::Module reaching `fresh` twice means addIRModule is called twice
+        // with the same bitcode, and ORC rejects the second copy with
+        // `duplicate definition of symbol X` — where X is whichever name its
+        // hash-ordered table hits first, so the message names an arbitrary
+        // stdlib symbol and reads exactly like an archive/stdlib collision.
+        // That misreading cost 7.2.5 two wrong diagnoses (see the note on the
+        // classpath test): every "different symbol family" a fix appeared to
+        // advance to was the same duplicate module, renamed by chance.
+        std::set<llvm::Module*> queued;
         for (auto& m : candidates) {
             if (m && m->getLlvmModule()
                 && !impl.delivered.count(m->getLlvmModule())
-                && !impl.poisoned.count(m->getLlvmModule())) {
+                && !impl.poisoned.count(m->getLlvmModule())
+                && queued.insert(m->getLlvmModule()).second) {
                 fresh.push_back(m);
             }
         }
@@ -753,65 +763,22 @@ CellResult KernelSession::execute(const std::string& source,
             cajeta::jit::demoteInstantiationsToWeakODR(m->getLlvmModule());
     }
 
-    // 7.2.5 — an ARCHIVE brings its own copies of stdlib code (a `.cja` is
-    // self-contained), and the session's stdlib defines those symbols too:
-    // `duplicate definition of 'cajeta.math.Color::linearToSrgbChannel'`.
-    // Same question `demoteInstantiationsToWeakODR` answers for a
-    // specialization two cells both emit, one scope wider — so the same
-    // answer. Demote the ARCHIVE's copy only; the session's stays strong and
-    // therefore wins, which is the right winner: it is the world the cell was
-    // actually compiled against.
-    {
-        std::set<std::string> sessionDefs = impl.definedSymbols;
-        for (auto& m : fresh) {
-            llvm::Module* lm = m->getLlvmModule();
-            if (!lm || impl.prebuilt.count(lm)) continue;
-            for (auto& F : *lm) {
-                if (!F.isDeclaration() && !F.hasLocalLinkage()) {
-                    sessionDefs.insert(F.getName().str());
-                }
-            }
-            for (auto& g : lm->globals()) {
-                if (g.hasInitializer() && !g.hasLocalLinkage()) {
-                    sessionDefs.insert(g.getName().str());
-                }
-            }
-        }
-        for (auto& m : fresh) {
-            llvm::Module* lm = m->getLlvmModule();
-            if (!lm || !impl.prebuilt.count(lm)) continue;
-            for (auto& F : *lm) {
-                if (F.isDeclaration()
-                        || F.getLinkage() != llvm::GlobalValue::ExternalLinkage
-                        || !sessionDefs.count(F.getName().str())) {
-                    continue;
-                }
-                // A DECLARATION, not a weak definition. weak_odr still
-                // leaves two definitions in the JIT's symbol table and ORC
-                // refuses the second whichever way round they arrive; and
-                // "either copy may win" is the wrong answer anyway when the
-                // archive was built against an older stdlib. Dropping the
-                // body makes the archive REFERENCE the session's copy, which
-                // is the same move the session-statics pass below makes for a
-                // global an earlier cell already defined.
-                F.deleteBody();
-                F.setComdat(nullptr);
-                F.setLinkage(llvm::GlobalValue::ExternalLinkage);
-                ++impl.stats.archiveSymbolsDemoted;
-            }
-            for (auto& g : lm->globals()) {
-                if (!g.hasInitializer()
-                        || g.getLinkage() != llvm::GlobalValue::ExternalLinkage
-                        || !sessionDefs.count(g.getName().str())) {
-                    continue;
-                }
-                g.setInitializer(nullptr);
-                g.setComdat(nullptr);
-                g.setLinkage(llvm::GlobalValue::ExternalLinkage);
-                ++impl.stats.archiveSymbolsDemoted;
-            }
-        }
-    }
+    // NO ARCHIVE/STDLIB SYMBOL RECONCILIATION HAPPENS HERE, and a pass that
+    // does one was removed on 2026-08-15 rather than fixed. It was written
+    // for `duplicate definition of 'cajeta.math.Color::linearToSrgbChannel'`
+    // on a classpath session, read as "a `.cja` is self-contained, so it
+    // brings its own copies of stdlib code". It does not: `ingestClasspath`
+    // reads an archive's ClassSource entries, and those are only the
+    // archive's OWN classes (144 `dev.cajeta.ml.*` modules and not one
+    // `cajeta.*` one, measured). The duplicate was the SESSION's stdlib
+    // module reaching `fresh` twice; the pass never demoted a single symbol.
+    //
+    // Left as a warning, because the failure mode is convincing: ORC names
+    // whichever colliding symbol its hash-ordered table reaches first, so
+    // each attempt appeared to advance to a new stdlib family (Color, then
+    // nucleo.frame.Exec, then reflect.Constructor, then a reflect_invoke
+    // thunk) and looked exactly like chasing a large shared set. It was one
+    // module, renamed by chance, every time.
 
     // Session-lived statics. A later cell that merely REFERENCES a class
     // static re-emits the global with an initializer; because a cell's own
@@ -946,14 +913,6 @@ CellResult KernelSession::execute(const std::string& source,
         impl.delivered.insert(lm);
         for (auto& g : lm->globals()) {
             if (sharedGlobal(g)) impl.definedGlobals.insert(g.getName().str());
-            if (g.hasInitializer() && !g.hasLocalLinkage()) {
-                impl.definedSymbols.insert(g.getName().str());
-            }
-        }
-        for (auto& F : *lm) {
-            if (!F.isDeclaration() && !F.hasLocalLinkage()) {
-                impl.definedSymbols.insert(F.getName().str());
-            }
         }
     }
 

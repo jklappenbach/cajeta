@@ -52,61 +52,53 @@ std::string findMlArchive() {
 
 }  // namespace
 
-// DISABLED — its FAILURE is still the finding, but the finding CHANGED on
-// 2026-08-15 and the old one recorded here was wrong.
+// 7.2.5 — a classpath session compiles and runs plain cells.
 //
-// Filed as: the kernel restores StdlibReuseCore's resident baseline, captured
-// before the archive was ingested, so archive code is generated against a
-// stdlib world it was not compiled against. Three experiments "bounded" it
-// there.
+// This was DISABLED for a long time behind a failure that got diagnosed wrong
+// twice. Both wrong answers are recorded here because the failure mode is a
+// convincing liar and the next person to meet it deserves the warning.
 //
-// Measured: building the stdlib FRESH for a classpath session (the kernel now
-// does exactly what `cajeta jit-run` does — the reuse core is taken only when
-// there is no classpath) does NOT fix it. The baseline was not the cause.
+// What it actually was: `fresh` — the set of modules a cell delivers to ORC —
+// could contain the SESSION'S OWN STDLIB MODULE TWICE. `ensureStdlibModule`
+// pushes the stdlib into the building compiler's module list and early-returns
+// for every later compiler, so a RESIDENT session (which inherits a stdlib
+// somebody else built) does not see it in `getModules()` while a CLASSPATH
+// session (which builds its own, the reuse core being unavailable to it) does
+// — and the delivery path pushed it again unconditionally on top. `addIRModule`
+// was called twice with the same bitcode.
 //
-// What the failures actually say, in the order they appear as each is
-// addressed:
-//   1. `module verify failed [dev.cajeta.ml.grad.GradTape]: Invalid bitcast
-//      double -> ptr`. The failing module is an ARCHIVE module the cell never
-//      touches. `cajeta jit-run` with the SAME archive and the same trivial
-//      source returns 42 — because ORC materializes lazily and never compiles
-//      GradTape, while the kernel VERIFIES every module eagerly before
-//      delivering it.
-//   2. With unverifiable archive modules downgraded to a warning: `bitcode
-//      reparse failed: Invalid cast`. Malformed IR cannot survive the
-//      bitcode round-trip the delivery path uses, so "deliver it anyway" is
-//      not available.
-//   3. With those modules skipped: `addIRModule failed: In
-//      cajeta.runtime.__stdlib__, duplicate definition of symbol
-//      'cajeta.math.Color::linearToSrgbChannel(c:float32)'` — the archive
-//      carries its own copies of stdlib symbols, and the session's stdlib
-//      defines them too.
+// The two wrong answers, in order:
 //
-// (3) WAS PULLED ON 2026-08-15 and it is duplication, as suspected — but the
-// per-symbol reconciliation it suggests does not converge. Colliding
-// definitions in an archive module are now turned into DECLARATIONS so they
-// resolve to the session's copy (weak_odr is not enough: ORC refuses the
-// second definition whichever way round they arrive, and "either copy may
-// win" is wrong when the archive was built against an older stdlib). Each run
-// then fails on a symbol from a DIFFERENT family — cajeta.math.Color, then
-// cajeta.nucleo.frame.Exec, then cajeta.reflect.Constructor, then a
-// synthesized `__cajeta_..._reflect_invoke` thunk.
+//   1. "The resident baseline was captured before the archive existed, so
+//      archive code is generated against a stdlib world it was not compiled
+//      against." Plausible, and it explained the `Invalid bitcast double ->
+//      ptr` neatly. Building the stdlib FRESH for classpath sessions did not
+//      fix anything. (The change was right for other reasons and stayed.)
 //
-// That march is the finding. A `.cja` bundles a large fraction of the stdlib,
-// so reconciling symbol-by-symbol at delivery is chasing a set that is nearly
-// the whole library. The shape that would converge is wholesale: either do not
-// deliver an archive's stdlib-owned modules at all (the session already has
-// them), or link the archive against the session's stdlib at INGEST rather
-// than patching linkage at delivery. That is the next decision, and it is a
-// design one.
+//   2. "A `.cja` is self-contained, so it brings its own copies of stdlib code
+//      and they collide with the session's." The error certainly reads that
+//      way: `duplicate definition of 'cajeta.math.Color::linearToSrgbChannel'`.
+//      Demoting the archive's copy to a declaration appeared to advance the
+//      failure to a new stdlib family each run — Color, then
+//      cajeta.nucleo.frame.Exec, then cajeta.reflect.Constructor, then a
+//      synthesized `reflect_invoke` thunk — which read as chasing a set nearly
+//      the size of the library, and the conclusion drawn was that no
+//      incremental fix converges. Wrong, twice over: the archive holds 144
+//      `dev.cajeta.ml.*` modules and not one `cajeta.*` module, and the
+//      "different family" each run was ORC naming whichever symbol its
+//      hash-ordered table reached first in the SAME duplicated module. The
+//      demotion pass never demoted a single symbol.
 //
-// Fixed along the way and kept: the stdlib module was itself being marked
-// "prebuilt" (it exists before the ingest), which excluded it from both sides
-// of the collision check.
+// The lesson worth keeping: a duplicate-definition error names an arbitrary
+// symbol, so the symbol it names is evidence about nothing. Ask which MODULE
+// is being added twice before reading anything into which name it mentions.
 //
-// The archive's own IR defect in (1) is a second, independent bug that belongs
-// to whoever builds `dev.cajeta.ml`.
-TEST(KernelDataScienceTests, DISABLED_classpathSessionRunsPlainCells) {
+// One more defect fell out downstream, in the compiler rather than the kernel:
+// `dev.cajeta.ml.grad.GradTape`'s WILDCARD instantiation carried an invalid
+// `bitcast` between `ptr` and `double` (a `T`-typed value cast to `float64`),
+// so it failed to verify and took the ~40 modules referencing it down with it.
+// See WildcardScalarCastTests.
+TEST(KernelDataScienceTests, classpathSessionRunsPlainCells) {
     const std::string archive = findMlArchive();
     if (archive.empty()) {
         GTEST_SKIP() << "dev.cajeta.ml archive not built in the cajeta-ml "
@@ -132,14 +124,11 @@ TEST(KernelDataScienceTests, DISABLED_classpathSessionRunsPlainCells) {
     EXPECT_EQ("false", imported.result);
 }
 
-// 7.1.1 / spec 6.1 — the three-cell LinearRegression flow.
-//
-// DISABLED behind the same blocker as the test above (plan 7.2.5): the
-// session never gets far enough for this flow to say anything about the ml
-// library. It is written and ready for the day a classpath session compiles
-// — the three cells and their assertions are the spec 6.1 acceptance, and
-// re-enabling it is the check that 7.2.5 actually landed.
-TEST(KernelDataScienceTests, DISABLED_mlNotebookFlow) {
+// 7.1.1 / spec 6.1 — the three-cell LinearRegression flow: load, fit,
+// summarize, each cell seeing the last one's bindings. This is the spec 6.1
+// acceptance and the reason the classpath feature exists — a notebook that can
+// use the stdlib and nothing else is not what anyone opens a notebook for.
+TEST(KernelDataScienceTests, mlNotebookFlow) {
     const std::string archive = findMlArchive();
     if (archive.empty()) {
         GTEST_SKIP() << "dev.cajeta.ml archive not built in the cajeta-ml "
