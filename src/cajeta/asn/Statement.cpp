@@ -25,6 +25,7 @@
 #include "LocalVariableDeclaration.h"
 #include "../error/Exception.h"
 #include "../error/Diagnostics.h"
+#include "cajeta/ownership/ReturnTitleAudit.h"
 
 /**
  * statement
@@ -1621,6 +1622,106 @@ namespace cajeta {
         module->getBuilder()->CreateCall(fn, {flag});
     }
 
+    // stdlib-ownership-convention 8.1.1 — enumerate the ride-through sites.
+    //
+    // Unit 8 asks whether the return still carries the ownership decision, and
+    // the answer turns on how many plain-return methods hand out a title
+    // anyway. This reads the flag the compiler ITSELF is about to store, at the
+    // one point where it is final — so the enumeration is a measurement, not a
+    // second classifier that could be wrong in its own way (3.3.3). Off unless
+    // CAJETA_AUDIT_RETURN_TITLES is set; see ReturnTitleAudit.h.
+    static void auditReturnTitle(CajetaModulePtr& module, llvm::Value* flag,
+                                 const ExpressionPtr& expression,
+                                 int sourceLine) {
+        namespace own = cajeta::ownership;
+        auto m = module->getCurrentMethod();
+        // Only a PLAIN class-pointer return can misreport: a `#` return
+        // declares the transfer, and a primitive carries no title at all.
+        if (!m || !m->returnsClassPointer() || m->isReturnsOwnership()) return;
+        const std::string cls =
+            m->getParent() ? m->getParent()->toCanonical() : "";
+        const std::string ret =
+            m->getReturnType() ? m->getReturnType()->toCanonical() : "";
+        // The denominator: this site is a plain return the audit examined.
+        own::ReturnTitleAudit::consider(cls, m->getName(), ret);
+        // No override means the static borrow default stands — the conforming
+        // view return, and the overwhelming majority. A constant 0 is the same
+        // answer reached explicitly (`return #= x` from a frame holding none).
+        if (!flag) return;
+        if (auto* konst = llvm::dyn_cast<llvm::ConstantInt>(flag)) {
+            if (konst->isZero()) return;
+        }
+
+        own::ReturnTitleRecord rec;
+        rec.className = cls;
+        rec.methodName = m->getName();
+        rec.returnType = ret;
+        rec.line = sourceLine;
+        rec.carry = llvm::isa<llvm::ConstantInt>(flag)
+            ? own::TitleCarry::StaticTitle : own::TitleCarry::RuntimeFlag;
+
+        // Which mechanism produced the flag. The runtime helper's name is the
+        // ground truth — each corresponds to exactly one assignment site above.
+        llvm::Value* src = flag;
+        if (auto* zext = llvm::dyn_cast<llvm::ZExtInst>(src)) {
+            src = zext->getOperand(0);
+        }
+        std::string helper;
+        if (auto* call = llvm::dyn_cast<llvm::CallInst>(src)) {
+            if (llvm::Function* callee = call->getCalledFunction()) {
+                helper = callee->getName().str();
+            }
+        }
+        // The SPELLING is checked before the helper, because `return #x` of a
+        // local forwards that local's own `__cajeta_drop_entry_flag` — the
+        // same helper a returned formal uses. Measured, not assumed
+        // (ReturnTitleAuditTests.moveReturnUnderPlainTypeIsEnumerated): `#`
+        // does not assert a title in the return position any more than it does
+        // in the argument position, it forwards the mode the frame holds
+        // (CLAUDE.md §2.2). Classifying by helper alone would file every
+        // `return #x` as a pass-through and lose the shape the audit is for.
+        if (dynamic_pointer_cast<MoveExpression>(expression)) {
+            rec.via = own::TitleVia::Move;
+        } else if (helper == "__cajeta_return_flag_get") {
+            rec.via = own::TitleVia::CallRide;
+            // WHAT is tail-called decides how much the ride means: a callee
+            // that declares `#` hands a title out through a plain signature
+            // (the shape 8.1.1 counts), while a plain callee only defers the
+            // decision one frame — a fluent builder chain, not a finding.
+            if (auto mce =
+                    dynamic_pointer_cast<MethodCallExpression>(expression)) {
+                if (MethodPtr callee = mce->getResolvedMethod()) {
+                    rec.calleeKey =
+                        (callee->getParent()
+                            ? callee->getParent()->toCanonical() + "."
+                            : std::string())
+                        + callee->getName();
+                    rec.calleeOwned = callee->isReturnsOwnership();
+                }
+            } else if (auto ce =
+                    dynamic_pointer_cast<CallExpression>(expression)) {
+                // A closure call — the `Stream.fold<R>` shape. Nothing static
+                // decides: the callback is a parameter, so its declared
+                // function type is all there is to read.
+                if (ExpressionPtr target = ce->getCallee()) {
+                    if (auto fnType = dynamic_pointer_cast<CajetaFunctionType>(
+                            target->getResolvedType())) {
+                        rec.calleeOwned = fnType->isReturnsOwnership();
+                    }
+                }
+            }
+        } else if (helper == "__cajeta_drop_entry_flag") {
+            rec.via = own::TitleVia::FormalPassThrough;
+        } else if (helper == "__cajeta_drop_take_active") {
+            rec.via = own::TitleVia::ModeCarry;
+        } else {
+            auto mce = dynamic_pointer_cast<MethodCallExpression>(expression);
+            rec.via = (mce && mce->getFlaggedTitleValue() == flag)
+                ? own::TitleVia::Flagged : own::TitleVia::Other;
+        }
+        own::ReturnTitleAudit::record(std::move(rec));
+    }
+
     llvm::Value* ReturnStatement::generateCode(CajetaModulePtr module) {
         auto* builder = module->getBuilder();
         // 5.2.2 — runtime title flag riding out with this return (formal
@@ -2769,6 +2870,10 @@ namespace cajeta {
                     || dynamic_pointer_cast<CallExpression>(expression)) {
                 return builder->CreateRet(val);
             }
+        }
+        if (cajeta::ownership::ReturnTitleAudit::enabled()) {
+            auditReturnTitle(module, returnTitleFlag, expression,
+                             getSourceLine());
         }
         emitReturnFlag(module, returnTitleFlag);
         return builder->CreateRet(val);
