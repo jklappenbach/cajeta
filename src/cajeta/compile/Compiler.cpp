@@ -527,6 +527,80 @@ namespace cajeta {
     // the default ConsoleErrorListener is removed so the prescan pass doesn't
     // leak "line L:col msg" text into the machine-readable stream — the
     // authoritative parseSource pass re-reports the same syntax errors as NDJSON.
+    // ---- Two-stage parsing (SLL, then full LL on failure) ---------------
+    //
+    // ANTLR's recommended strategy, and measured here as the single largest
+    // cold-start win in the compiler: the stdlib prime is 99% adaptive
+    // prediction (lex 85 ms / parse 14329 ms / visit 43 ms over 350 files),
+    // and SLL takes the prime from 36.4 s to 4.9 s.
+    //
+    // Stage 1 runs SLL with BailErrorStrategy and NO listeners. SLL is much
+    // faster but strictly weaker — it can fail on input that full LL accepts —
+    // so its failure has to be silent and recoverable, which is what the bail
+    // strategy plus suppressed listeners buys. Stage 2 rewinds and re-parses
+    // under full LL with the caller's real listeners and error strategy: byte
+    // for byte what this compiler did before two-stage existed. A fallback
+    // therefore costs one wasted SLL attempt and changes NOTHING about the
+    // result or the diagnostics.
+    //
+    // Because BailErrorStrategy throws on the first error, a successful SLL
+    // parse implies a clean parse — so any input with a syntax error always
+    // reaches stage 2 and gets the proper diagnostics from it.
+    //
+    // The fallback is COUNTED because the economics turn on it: if it fired
+    // often the SLL attempt would be pure overhead. Reported under
+    // CAJETA_PRIME_TIMING=1.
+    struct TwoStageStats {
+        long long sll = 0;
+        long long fallback = 0;
+        ~TwoStageStats() {
+            if (!std::getenv("CAJETA_PRIME_TIMING") || (sll + fallback) == 0) {
+                return;
+            }
+            std::fprintf(stderr,
+                "[two-stage] %lld parses: %lld SLL, %lld fell back to LL\n",
+                sll + fallback, sll, fallback);
+        }
+    };
+    static TwoStageStats g_twoStage;
+
+    // Off by default while it is being validated; `CAJETA_TWO_STAGE_PARSE=1`
+    // turns it on. Flipping the default is a separate change, gated on a
+    // clean battery run under it.
+    static bool twoStageParseEnabled() {
+        static const bool on = std::getenv("CAJETA_TWO_STAGE_PARSE") != nullptr;
+        return on;
+    }
+
+    static antlr4::tree::ParseTree* parseCompilationUnitTwoStage(
+            CajetaParser& parser, antlr4::CommonTokenStream& tokens,
+            const std::function<void()>& installListeners) {
+        if (!twoStageParseEnabled()) {
+            installListeners();
+            return parser.compilationUnit();
+        }
+        parser.removeErrorListeners();
+        parser.setErrorHandler(std::make_shared<antlr4::BailErrorStrategy>());
+        parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
+            ->setPredictionMode(antlr4::atn::PredictionMode::SLL);
+        try {
+            antlr4::tree::ParseTree* tree = parser.compilationUnit();
+            ++g_twoStage.sll;
+            return tree;
+        } catch (const antlr4::ParseCancellationException&) {
+            // expected: SLL could not decide, or the input is malformed
+        } catch (const antlr4::RecognitionException&) {
+        }
+        ++g_twoStage.fallback;
+        tokens.seek(0);
+        parser.reset();
+        parser.setErrorHandler(std::make_shared<antlr4::DefaultErrorStrategy>());
+        parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
+            ->setPredictionMode(antlr4::atn::PredictionMode::LL);
+        installListeners();
+        return parser.compilationUnit();
+    }
+
     // CAJETA_PRIME_TIMING=1 aggregates these across every prescan in the
     // process. Which of the three dominates decides the lever: lexing is a
     // lexer problem, `compilationUnit()` is ANTLR's adaptive prediction (a
@@ -557,16 +631,16 @@ namespace cajeta {
             lexer.removeErrorListeners();
             parser.removeErrorListeners();
         }
-        // SPIKE (CAJETA_PRESCAN_SLL=1): measure the prediction-mode ceiling.
-        // NOT correct as written — SLL can mis-parse an ambiguity instead of
-        // erroring, which is why the real form is two-stage (SLL with
-        // BailErrorStrategy, re-parse under LL on failure). This is here to
-        // find out whether the two-stage is worth building.
-        if (std::getenv("CAJETA_PRESCAN_SLL")) {
-            parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
-                ->setPredictionMode(antlr4::atn::PredictionMode::SLL);
-        }
-        antlr4::tree::ParseTree* tree = parser.compilationUnit();
+        antlr4::tree::ParseTree* tree = parseCompilationUnitTwoStage(
+            parser, tokens, [&] {
+                if (suppressConsole) {
+                    parser.removeErrorListeners();
+                } else {
+                    parser.removeErrorListeners();
+                    parser.addErrorListener(
+                        &antlr4::ConsoleErrorListener::INSTANCE);
+                }
+            });
         auto t2 = PClock::now();
         ArchivePrescanVisitor v;
         v.sourcePath = sourcePath;
@@ -695,6 +769,18 @@ namespace cajeta {
         // Else, --diag-format=json (user source only): swap ANTLR's default
         // console listener for one that emits structured NDJSON diagnostics.
         std::unique_ptr<JsonSyntaxErrorListener> jsonSyntax;
+        // Hoisted into a lambda so the two-stage parse can install it on the
+        // LL retry ONLY: stage 1 runs silent, because an SLL failure is not a
+        // diagnostic — it is a signal to re-parse. Emitting from stage 1 would
+        // report syntax errors the compiler does not actually have.
+        std::function<void()> installListeners = [&] {
+            parser.removeErrorListeners();
+            if (!quiet && !jsonSyntax) {
+                parser.addErrorListener(&antlr4::ConsoleErrorListener::INSTANCE);
+            } else if (jsonSyntax) {
+                parser.addErrorListener(jsonSyntax.get());
+            }
+        };
         if (quiet) {
             lexer.removeErrorListeners();
             parser.removeErrorListeners();
@@ -716,13 +802,8 @@ namespace cajeta {
             lexer.addErrorListener(jsonSyntax.get());
             parser.addErrorListener(jsonSyntax.get());
         }
-        // SPIKE (CAJETA_PARSE_SLL=1) — see the prescan note: measuring the
-        // prediction-mode ceiling, not a correct implementation.
-        if (std::getenv("CAJETA_PARSE_SLL")) {
-            parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
-                ->setPredictionMode(antlr4::atn::PredictionMode::SLL);
-        }
-        antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
+        antlr4::tree::ParseTree* parseTree = parseCompilationUnitTwoStage(
+            parser, tokens, installListeners);
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
         // it to the semantic visitor segfaults on some inputs. Abort before
         // visiting whenever the parse had syntax errors (diagnostics already
