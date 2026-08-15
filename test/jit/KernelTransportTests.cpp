@@ -19,6 +19,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <unistd.h>
 #include <string>
 #include <thread>
 #include <vector>
@@ -246,3 +248,89 @@ TEST(KernelTransportTests, connectionFileRoundTrips) {
 }
 
 #endif  // CAJETA_HAVE_ZMQ
+
+// 7.2.6 / spec §6 — A KERNEL LAUNCHED INSIDE A PROJECT ADOPTS THAT PROJECT.
+//
+// Jupyter starts a kernel in the notebook's own directory, so that directory's
+// governing `cajeta.json` is the classpath the user means. Nothing in the
+// protocol carries it: the kernel has to take it from where it was launched,
+// or a notebook next to a project full of dependencies silently gets a
+// stdlib-only session. The plumbing for this landed with 7.2.4 and was then
+// left unwired for weeks — the whole defect is that nobody called the setter,
+// so the test has to observe the LAUNCH PATH and not the plumbing.
+//
+// THE MANIFEST HERE IS DELIBERATELY BROKEN, and that is the probe rather than
+// the subject. A well-formed manifest with no dependencies resolves to an
+// empty classpath, which is indistinguishable from never having looked — so
+// there would be nothing to assert. A manifest that cannot be parsed makes
+// session creation fail with an error that NAMES THE DIRECTORY it read, which
+// is precisely the fact under test: which project did this kernel adopt. It
+// also keeps the test fast, since resolution runs before the stdlib is primed.
+TEST(KernelTransportTests, aKernelAdoptsTheProjectItWasLaunchedIn) {
+    namespace fs = std::filesystem;
+    fs::path projectDir = fs::temp_directory_path()
+                        / ("cajeta_kernel_cwd_" + std::to_string(::getpid()));
+    fs::create_directories(projectDir);
+    { std::ofstream(projectDir / "cajeta.json") << "{ this is not json"; }
+
+    // chdir is process-global; restore it whatever the test does. gtest runs
+    // tests sequentially within a process, so the window is this test alone.
+    struct CwdGuard {
+        fs::path saved;
+        explicit CwdGuard(const fs::path& to) : saved(fs::current_path()) {
+            fs::current_path(to);
+        }
+        ~CwdGuard() {
+            std::error_code ec;
+            fs::current_path(saved, ec);
+        }
+    } cwd(projectDir);
+
+    ConnectionInfo info;
+    info.key = "cwd-project-test-key";
+    KernelTransport transport;
+    std::string error;
+    ASSERT_TRUE(transport.bind(&info, &error)) << error;
+
+    std::thread loop([&transport] { transport.run(); });
+    MessageSigner signer(info.key, info.signatureScheme);
+    {
+        Client client(info);
+
+        Json content = Json::object();
+        content["code"] = "1;";
+        JupyterMessage exec = request("execute_request", content);
+        ASSERT_TRUE(sendFrames(client.shell, encodeMessage(exec, signer)));
+
+        std::vector<std::string> frames;
+        JupyterMessage reply;
+        // Generous: a kernel that did NOT adopt the project builds a
+        // stdlib-only session instead, and priming that costs ~45s before it
+        // can answer. The timeout must outlast the failure it is diagnosing.
+        ASSERT_TRUE(recvFrames(client.shell, &frames, 120000)) << "no reply";
+        ASSERT_TRUE(decodeMessage(frames, signer, &reply, &error)) << error;
+        EXPECT_EQ("execute_reply", reply.type());
+
+        // The kernel read THIS directory's manifest — the assertion is the
+        // path in the message, not the failure itself.
+        EXPECT_EQ("error", reply.content.at("status").asString())
+            << "the kernel ignored the project it was launched in and built a "
+               "stdlib-only session";
+        const std::string evalue = reply.content.at("evalue").asString();
+        EXPECT_NE(std::string::npos, evalue.find("bad manifest"))
+            << "unexpected failure, not the manifest: " << evalue;
+        EXPECT_NE(std::string::npos, evalue.find(projectDir.string()))
+            << "adopted some other project: " << evalue;
+
+        Json shutdown = Json::object();
+        shutdown["restart"] = false;
+        ASSERT_TRUE(sendFrames(client.control,
+                               encodeMessage(request("shutdown_request", shutdown),
+                                             signer)));
+        recvFrames(client.control, &frames);
+    }
+    loop.join();
+
+    std::error_code ec;
+    fs::remove_all(projectDir, ec);
+}
