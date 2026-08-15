@@ -21,6 +21,7 @@
 // untouched (the function is a no-op off COFF).
 //
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/Orc/DebugUtils.h"
@@ -87,22 +88,64 @@ inline bool envOn(const char* name) {
 // them forfeits nothing that works today. It DOES foreclose adding unwind
 // support later without revisiting this — when that day comes, the fix is
 // slab placement plus registration, and this pass comes back out.
+//
+// Removing a section is not, on its own, a safe operation. ~Section() destroys
+// the Symbols and Blocks it owns outright, and LinkGraph::removeSection() is
+// just `Sections.erase(name)` — nothing scrubs edges that point INTO the
+// section. Any such edge is left dangling, and jitlink::prune() runs
+// immediately after the PrePrune passes and does, for every edge of every live
+// block:
+//
+//     if (E.getTarget().isDefined() && !E.getTarget().isLive())
+//       Worklist.push_back(&E.getTarget());
+//     E.getTarget().setLive(true);
+//
+// — a read AND a write through the dangling Symbol*, and then a walk of a
+// freed Block's edge list. That is exactly the situation here, because COFF
+// models an associative COMDAT as an edge in the inbound direction: .pdata$fn
+// is associative to .text$fn, and COFFLinkGraphBuilder
+// (IMAGE_COMDAT_SELECT_ASSOCIATIVE) records it as an Edge::KeepAlive FROM the
+// .text block INTO the .pdata symbol. Every COMDAT function in the graph has
+// one, so a naive removeSection() leaves hundreds of dangling references.
+//
+// It is a quiet corruption: the freed memory is usually still intact and the
+// link succeeds, which is why 421 of 434 release-subset tests passed with the
+// unscrubbed version and 13 died with a bare SIGSEGV and no diagnostic. So we
+// drop the inbound edges first, then the sections.
+inline llvm::Error dropSehFrames(llvm::jitlink::LinkGraph& g) {
+    // Includes the per-function COMDATs (.pdata$<fn>). .xdata is left to
+    // dead-stripping: .pdata is its only referrer.
+    llvm::SmallPtrSet<llvm::jitlink::Section*, 4> doomed;
+    for (auto& sec : g.sections())
+        if (sec.getName().starts_with(".pdata"))
+            doomed.insert(&sec);
+    if (doomed.empty())
+        return llvm::Error::success();
+
+    for (auto* b : g.blocks()) {
+        if (doomed.contains(&b->getSection()))
+            continue; // dies with its section; its own edges go with it
+        for (auto it = b->edges().begin(); it != b->edges().end();) {
+            auto& target = it->getTarget();
+            if (target.isDefined() &&
+                doomed.contains(&target.getBlock().getSection()))
+                it = b->removeEdge(it);
+            else
+                ++it;
+        }
+    }
+
+    for (auto* sec : doomed)
+        g.removeSection(*sec);
+    return llvm::Error::success();
+}
+
 class DropSehFramesPlugin : public llvm::orc::ObjectLinkingLayer::Plugin {
 public:
     void modifyPassConfig(llvm::orc::MaterializationResponsibility&,
                           llvm::jitlink::LinkGraph&,
                           llvm::jitlink::PassConfiguration& config) override {
-        config.PrePrunePasses.push_back([](llvm::jitlink::LinkGraph& g) {
-            // Includes the per-function COMDATs (.pdata$<fn>). .xdata is left
-            // to dead-stripping: .pdata is its only referrer.
-            llvm::SmallVector<llvm::jitlink::Section*, 4> doomed;
-            for (auto& sec : g.sections())
-                if (sec.getName().starts_with(".pdata"))
-                    doomed.push_back(&sec);
-            for (auto* sec : doomed)
-                g.removeSection(*sec);
-            return llvm::Error::success();
-        });
+        config.PrePrunePasses.push_back(dropSehFrames);
     }
     llvm::Error notifyFailed(llvm::orc::MaterializationResponsibility&) override {
         return llvm::Error::success();
