@@ -82,12 +82,30 @@ std::string findMlArchive() {
 //      carries its own copies of stdlib symbols, and the session's stdlib
 //      defines them too.
 //
-// (3) is where it stands. It is a different problem from the one filed: not a
-// stdlib WORLD mismatch but stdlib DUPLICATION between an archive and the
-// session, which is the same class of question `demoteInstantiationsToWeakODR`
-// answers for cell-to-cell specializations. The archive's own IR defect in (1)
-// is a second, independent bug that belongs to whoever builds
-// `dev.cajeta.ml`.
+// (3) WAS PULLED ON 2026-08-15 and it is duplication, as suspected — but the
+// per-symbol reconciliation it suggests does not converge. Colliding
+// definitions in an archive module are now turned into DECLARATIONS so they
+// resolve to the session's copy (weak_odr is not enough: ORC refuses the
+// second definition whichever way round they arrive, and "either copy may
+// win" is wrong when the archive was built against an older stdlib). Each run
+// then fails on a symbol from a DIFFERENT family — cajeta.math.Color, then
+// cajeta.nucleo.frame.Exec, then cajeta.reflect.Constructor, then a
+// synthesized `__cajeta_..._reflect_invoke` thunk.
+//
+// That march is the finding. A `.cja` bundles a large fraction of the stdlib,
+// so reconciling symbol-by-symbol at delivery is chasing a set that is nearly
+// the whole library. The shape that would converge is wholesale: either do not
+// deliver an archive's stdlib-owned modules at all (the session already has
+// them), or link the archive against the session's stdlib at INGEST rather
+// than patching linkage at delivery. That is the next decision, and it is a
+// design one.
+//
+// Fixed along the way and kept: the stdlib module was itself being marked
+// "prebuilt" (it exists before the ingest), which excluded it from both sides
+// of the collision check.
+//
+// The archive's own IR defect in (1) is a second, independent bug that belongs
+// to whoever builds `dev.cajeta.ml`.
 TEST(KernelDataScienceTests, DISABLED_classpathSessionRunsPlainCells) {
     const std::string archive = findMlArchive();
     if (archive.empty()) {
