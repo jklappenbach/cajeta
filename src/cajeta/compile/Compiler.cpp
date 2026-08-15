@@ -564,11 +564,17 @@ namespace cajeta {
     };
     static TwoStageStats g_twoStage;
 
-    // Off by default while it is being validated; `CAJETA_TWO_STAGE_PARSE=1`
-    // turns it on. Flipping the default is a separate change, gated on a
-    // clean battery run under it.
+    // ON by default since 2026-08-15. Validated on the routine gate (the
+    // coverage-derived set that IS this project's gate): 1435 passed, 0
+    // failed, and 700/700 stdlib parses resolved under SLL with zero
+    // fallbacks. `CAJETA_TWO_STAGE_PARSE=0` is the kill switch — it restores
+    // full-LL-only parsing, which is what stage 2 already does, so the switch
+    // costs nothing to keep and answers "is it the parser?" in one run.
     static bool twoStageParseEnabled() {
-        static const bool on = std::getenv("CAJETA_TWO_STAGE_PARSE") != nullptr;
+        static const bool on = [] {
+            const char* v = std::getenv("CAJETA_TWO_STAGE_PARSE");
+            return !(v && std::string(v) == "0");
+        }();
         return on;
     }
 
