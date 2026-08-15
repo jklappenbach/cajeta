@@ -1321,6 +1321,27 @@ namespace cajeta {
     //     dep's own bitcode.
     void Compiler::ingestClasspath() {
         if (classpath.empty()) return;
+        // CAJETA_PRIME_TIMING=1 — the dependency half of a cold start. The
+        // question this answers is which of the two costs a `.cja` makes the
+        // consumer pay: re-deriving the dep's DECLARATIONS (prescan + parse,
+        // for which the archive ships no substitute) or re-deriving its
+        // DEFINITIONS (codegen, which the archive already ships as
+        // class_bitcode). Only the second is recoverable by reading the .bc.
+        const bool cpTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        auto cpStart = std::chrono::steady_clock::now();
+        auto cpMark = cpStart;
+        auto cpPhase = [&](const char* name) {
+            if (!cpTiming) return;
+            auto now = std::chrono::steady_clock::now();
+            auto ms = [](auto d) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(d)
+                    .count();
+            };
+            std::fprintf(stderr, "[ingest] %-26s %7lld ms   (cumulative %lld ms)\n",
+                         name, (long long) ms(now - cpMark),
+                         (long long) ms(now - cpStart));
+            cpMark = now;
+        };
 
         // Phase 1 — prescan. Pre-register every classpath class's
         // canonical name in the archive registry so forward refs from
@@ -1396,7 +1417,9 @@ namespace cajeta {
         // `ArrayList<Tensor<E>>` (cajeta-ml's GradTape) instantiates
         // cajeta.math.Tensor while that signature is read, and nothing in the
         // consuming project need ever import cajeta.math itself.
+        cpPhase("prescan dep sources");
         drainPrescannedLazyStdlib();
+        cpPhase("drain lazy stdlib");
 
         // Phase 2 — full parse. Each ClassSource entry becomes a
         // standalone CajetaModule. The module's qName is derived from
@@ -1472,7 +1495,9 @@ namespace cajeta {
         // null llvm::Value at codegen time and the return gets
         // silently lowered to null. Mirrors the stdlib's own
         // ensureStdlibModule → buildPendingPrototypes flow.
+        cpPhase("parse dep sources");
         CajetaModule::buildPendingPrototypes();
+        cpPhase("buildPendingPrototypes");
     }
 
     CajetaModulePtr Compiler::ensureStdlibModule() {
