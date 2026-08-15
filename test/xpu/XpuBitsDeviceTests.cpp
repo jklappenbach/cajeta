@@ -34,6 +34,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -154,7 +155,7 @@ TEST(XpuBitsDeviceTests, bitInstructionsRunOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::makeCoffSafeJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr))
         << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);

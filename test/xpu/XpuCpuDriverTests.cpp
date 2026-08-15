@@ -26,6 +26,7 @@
 #include "llvm/ExecutionEngine/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/Mangling.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
@@ -104,7 +105,7 @@ std::unique_ptr<llvm::orc::LLJIT> registerKernel(Compiler& compiler,
         return nullptr;
     }
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::makeCoffSafeJit();
     if (!jitOrErr) { failure = llvm::toString(jitOrErr.takeError()); return nullptr; }
     auto jit = std::move(*jitOrErr);
     auto& JD = jit->getMainJITDylib();

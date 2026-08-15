@@ -247,8 +247,6 @@ TEST(KernelTransportTests, connectionFileRoundTrips) {
     std::filesystem::remove(path);
 }
 
-#endif  // CAJETA_HAVE_ZMQ
-
 // 7.2.6 / spec §6 — A KERNEL LAUNCHED INSIDE A PROJECT ADOPTS THAT PROJECT.
 //
 // Jupyter starts a kernel in the notebook's own directory, so that directory's
@@ -334,3 +332,5 @@ TEST(KernelTransportTests, aKernelAdoptsTheProjectItWasLaunchedIn) {
     std::error_code ec;
     fs::remove_all(projectDir, ec);
 }
+
+#endif  // CAJETA_HAVE_ZMQ

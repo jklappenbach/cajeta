@@ -12,7 +12,6 @@
 #include "cajeta/kernel/KernelSession.h"
 
 #include <csignal>
-#include <sys/wait.h>
 #include <memory>
 #include <string>
 
@@ -172,8 +171,13 @@ TEST(KernelFaultTests, unrecoverableThrowKillsTheKernelLoudly) {
     // — it died before reaching the throw, with nothing on stderr. Threadsafe
     // re-execs, paying a cold prime for a truthful run.
     GTEST_FLAG_SET(death_test_style, "threadsafe");
+    // testing::ExitedWithCode, not WIFEXITED/WEXITSTATUS — those live in
+    // <sys/wait.h>, which mingw does not ship, and the raw macros also encode
+    // the POSIX wait-status layout, which is not what gtest hands the
+    // predicate on Windows. ExitedWithCode is gtest's portable spelling of the
+    // same test and is what makes this file compile on the Windows runners.
     auto notSwallowed = [](int status) {
-        return !(WIFEXITED(status) && WEXITSTATUS(status) == 99);
+        return !::testing::ExitedWithCode(99)(status);
     };
     ASSERT_EXIT({
         auto s = freshSession();

@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
@@ -121,7 +122,7 @@ TEST_F(SharedStdlibDylibSpike, sharedStdlibResolvesAcrossUserDylibsCtorRunsOnce)
     ExitOnError exitOnErr;
     g_spikeCtorRuns.store(0);
 
-    auto jit = exitOnErr(LLJITBuilder().create());
+    auto jit = exitOnErr(cajeta::test::makeCoffSafeJit());
     auto& ES = jit->getExecutionSession();
 
     // --- shared stdlib dylib, materialized + initialized ONCE ---

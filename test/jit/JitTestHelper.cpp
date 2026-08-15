@@ -3,6 +3,7 @@
 //
 
 #include "JitTestHelper.h"
+#include "jit/CoffSafeJit.h"
 
 #include <algorithm>
 #include <atomic>
@@ -481,7 +482,7 @@ struct StdlibReuseCache {
     void ensureSharedStdlibDylib() {
         if (sharedJitReady) return;
         ensurePrimed();
-        auto jitOrErr = llvm::orc::LLJITBuilder().create();
+        auto jitOrErr = cajeta::test::makeCoffSafeJit();
         if (!jitOrErr) throw std::runtime_error("shared LLJIT create failed");
         sharedJit = std::move(*jitOrErr);
         auto& mainJD = sharedJit->getMainJITDylib();
@@ -1155,7 +1156,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         mark("shared-dylib user JD + addIRModule");
     } else {
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::makeCoffSafeJit();
     if (!jitOrErr) {
         throw std::runtime_error("LLJIT create failed");
     }
