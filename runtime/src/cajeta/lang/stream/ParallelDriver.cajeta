@@ -462,6 +462,30 @@ public class ParallelDriver {
      * ```cajeta
      * int32 total = ParallelDriver.reduceParallelChain<int32>(stream, 0, (a, b) -> a + b);
      * ```
+     *
+     * **Ownership (stdlib-ownership-convention 8.4.2).** The `#T` return is
+     * honoured by MODE-CARRYING returns (`return #= acc`), not by the static
+     * `#` mode. As first written neither return established a title: both were
+     * plain returns, which
+     * take the static `#` mode unchallenged, while the accumulator on an
+     * empty stream is still the caller's `seed`. The caller was handed a
+     * title over a value it only lent — its receiving local freed the
+     * lender's object, measured as a live-count delta of -1 by
+     * `ParallelDriverTitleTests.emptyParallelReduceDoesNotForgeATitle`
+     * (the sequential path, which routes through the mode-carrying
+     * `fold`, was the control at 0).
+     *
+     * The fix is the sanctioned escape: `#=` from the seed records whatever
+     * mode the caller tendered, and `return #= acc` ships that same bit, so
+     * the caller's receipt registers a drop only when the bit is 1. An empty
+     * stream hands back the seed's borrow; a non-empty one hands back the
+     * title `fn` produced.
+     *
+     * The declaration STAYS `#T`: a static multi-parameter function may not
+     * return a borrow (`Method.cpp` ~1423, CAJETA_ERROR_BORROW_RETURN_MULTI_-
+     * PARAM — with several parameters no single one's lifetime is implied).
+     * `return #acc` is not an option either: under a `#` declaration a runtime
+     * bit of 0 panics TITLE_MISS by design.
      */
     public static #T reduceParallelChain<T>(Stream<T> head, T seed, (T, T) -> #T fn) {
         int32 depth = 0;
@@ -483,13 +507,13 @@ public class ParallelDriver {
         int64 sz = cur.splittableSize();
         int32 nSplits = pickSplitCount(sz);
         if (sz < 0L || nSplits < 2) {
-            T accY = seed;
+            T accY #= seed;
             Optional<T> oY = head.next();
             while (oY.isPresent()) {
                 accY = fn(accY, oY.get());
                 oY = head.next();
             }
-            return accY;
+            return #= accY;
         }
         // Pull splits, then rebuild head's wrapper chain over each
         // via cloneChainOver. For depth==0 the base Stream<T>
@@ -531,13 +555,13 @@ public class ParallelDriver {
             ot = head.next();
         }
         partials[shareCount] = tail;
-        T acc = seed;
+        T acc #= seed;
         int32 ci = 0;
         while (ci < shareCount + 1) {
             acc = fn(acc, partials[ci]);
             ci = ci + 1;
         }
-        return acc;
+        return #= acc;
     }
 
     /**
@@ -566,6 +590,30 @@ public class ParallelDriver {
      * int64 total = ParallelDriver.foldParallelChain<int32, int64>(
      *     stream, 0L, (acc, x) -> acc + (int64) x, (a, b) -> a + b);
      * ```
+     *
+     * **Ownership (stdlib-ownership-convention 8.4.2).** The `#R` return is
+     * honoured by MODE-CARRYING returns (`return #= acc`), not by the static
+     * `#` mode. As first written neither return established a title: both were
+     * plain returns, which
+     * take the static `#` mode unchallenged, while the accumulator on an
+     * empty stream is still the caller's `seed`. The caller was handed a
+     * title over a value it only lent — its receiving local freed the
+     * lender's object, measured as a live-count delta of -1 by
+     * `ParallelDriverTitleTests.emptyParallelReduceDoesNotForgeATitle`
+     * (the sequential path, which routes through the mode-carrying
+     * `fold`, was the control at 0).
+     *
+     * The fix is the sanctioned escape: `#=` from the seed records whatever
+     * mode the caller tendered, and `return #= acc` ships that same bit, so
+     * the caller's receipt registers a drop only when the bit is 1. An empty
+     * stream hands back the seed's borrow; a non-empty one hands back the
+     * title `fn` produced.
+     *
+     * The declaration STAYS `#R`: a static multi-parameter function may not
+     * return a borrow (`Method.cpp` ~1423, CAJETA_ERROR_BORROW_RETURN_MULTI_-
+     * PARAM — with several parameters no single one's lifetime is implied).
+     * `return #acc` is not an option either: under a `#` declaration a runtime
+     * bit of 0 panics TITLE_MISS by design.
      */
     public static #R foldParallelChain<T, R>(Stream<T> head, R seed, (R, T) -> #R fn, (R, R) -> #R combiner) {
         int32 depth = 0;
@@ -584,13 +632,13 @@ public class ParallelDriver {
         int64 sz = cur.splittableSize();
         int32 nSplits = pickSplitCount(sz);
         if (sz < 0L || nSplits < 2) {
-            R accY = seed;
+            R accY #= seed;
             Optional<T> oY = head.next();
             while (oY.isPresent()) {
                 accY = fn(accY, oY.get());
                 oY = head.next();
             }
-            return accY;
+            return #= accY;
         }
         Stream<T>[] shares = heap Stream<T>[nSplits - 1];
         int32 shareCount = 0;
@@ -626,13 +674,13 @@ public class ParallelDriver {
             ot = head.next();
         }
         partials[shareCount] = tail;
-        R acc = seed;
+        R acc #= seed;
         int32 ci = 0;
         while (ci < shareCount + 1) {
             acc = combiner(acc, partials[ci]);
             ci = ci + 1;
         }
-        return acc;
+        return #= acc;
     }
 
     /**
