@@ -213,6 +213,49 @@ lending a view, and each has one correct default.
   states the lifetime bound in one line, and its name does not suggest
   materialization (`viewOf`, `bytesAt`, `...At` read as views; `to...`,
   `as...`, `read...` read as producers).
+- **2.8 The three return stances.** *(Decided 2026-08-15. The count it
+  was decided against: **12 of 164** plain-return, class-returning
+  methods compiled across five library builds can carry a title —
+  7.3%, of which only two escape a title through a signature that
+  implies otherwise. Measured by the compiler's own `returnTitleFlag`,
+  not classified from source; inventory in
+  `docs/stdlib/return-title-audit.md`.)*
+
+  | spelling | meaning | flag | enforced |
+  |---|---|---|---|
+  | `T f()` | **transparent carry** — hands out whatever ownership state the FRAME holds | runtime | nothing to enforce: it claims nothing, so nothing it says can be false |
+  | `#T f()` | **forced transfer** | const 1 | callee must establish a title at every return; the receiving lvalue must be `#=` or it is an error |
+  | `^T f()` | **forced borrow** | const 0 | body restricted to borrow sources: `this`, interior reads, other `^T` results |
+
+  Plain `T` is the default *because it is the common case, and the
+  common case should carry no syntax*. It also needs no migration: a
+  view's frame holds no title, so `T` carries a borrow and the caller
+  receives a borrow — the 152 borrow-returning methods in the
+  measurement stay exactly as written. `^T` is opt-in, for APIs that
+  want the guarantee checked rather than described.
+
+  **"Carries" means the mode the FRAME holds, not the mode a source
+  slot recorded.** This is what keeps `peek`-shaped accessors safe with
+  no annotation: `Heap.peek`'s `return this.data[i]` is an interior
+  read the frame does not own, so it carries a borrow, while
+  `Heap.pop` reaches the slot's recorded mode deliberately through the
+  body (`T out #= this.data[i]; ... return #= out;`, the shape
+  `HashMap.cajeta:384-387` already uses). Same signature, different
+  bodies, each transparent about what it actually holds. Today those
+  two are both spelled `T` with opposite contracts and the difference
+  lives only in `collection/skills/collection-Heap.md` — §7.4's failure
+  mode, which is what 2.8 exists to end.
+
+  **A plain parameter is never a legal `^T` return source.** It can
+  still arrive owned (`f(#x)`), so returning it as a forced borrow
+  leaves the frame dropping it at return and the caller holding a
+  dangle. `Optional.orElse` is therefore `T`, not `^T`: interior state
+  on one path, the caller's own fallback on the other.
+
+  `^` was chosen by elimination, measured against the grammar: `&` is
+  the intersection-type separator (`CajetaParser.g4:143`) and `~` is
+  the destructor sigil (`public ~Channel()`), so both read wrong in
+  type position. `^` is infix xor only and free as a prefix.
 
 ## 3. Use cases
 
@@ -341,6 +384,37 @@ than as corruption.
   alongside the offending use, so the diagnostic names both ends.
 - **4.4** Neither check fires on conforming existing code; the stdlib
   builds clean after §5's migration.
+- **4.5** *(from §2.8)* **A `#T` return is checked at the CALLEE.** Every
+  return in a `#`-declared method must establish a title; a plain return
+  of a value the frame does not own is an error. Today the static mode
+  asserts a title unchallenged, and `ParallelDriver.reduceParallelChain`
+  is the live instance: declared `#T`, both returns plain
+  (`return accY;` `:492`, `return acc;` `:541`), so an empty stream
+  hands the caller a forged title over the seed it lent. The existing
+  TITLE_MISS guard does not reach this — it only covers `return #x`
+  with a runtime flag.
+- **4.6** *(from §2.8)* **A `#T` result must be received with `#=`.**
+  Binding it with plain `=` is an error naming the transfer. This is
+  what makes an acquisition visible at the call site, which is the whole
+  point of the return-side redesign: the reader sees where title moves
+  without opening the callee.
+- **4.7** *(from §2.8)* **A `^T` body is restricted at compile time** to
+  `this`, interior reads, and other `^T` results — never an owned local,
+  a fresh allocation, a `#T` result, or a parameter. In exchange the
+  method emits no return-flag write at all (the flag is statically 0),
+  and §4.1 becomes decidable from the signature rather than from
+  per-local provenance: `#` applied to a `^T` result is an error on the
+  spot. That is the `keyAt` bug this spec opened with, caught at the
+  line that makes the mistake.
+- **4.8** *(prerequisite for §2.8's `T`)* **Transparent carry must
+  actually be transparent.** A returned local's title flag is currently
+  forwarded only for `ParameterField` (`Statement.cpp` ~2239); every
+  other returned local has its drop entry deactivated while the caller
+  is told "borrow", so `T f() { T x = heap ...; return x; }` LEAKS
+  today. Forwarding must extend to any returned field carrying a drop
+  entry. Until it does, `return #x` is load-bearing and cannot be
+  removed — which is why the return-statement transfer word is retired
+  AFTER this lands, not before.
 
 ## 5. Migration
 
