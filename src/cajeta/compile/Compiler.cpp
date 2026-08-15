@@ -574,7 +574,8 @@ namespace cajeta {
 
     static antlr4::tree::ParseTree* parseCompilationUnitTwoStage(
             CajetaParser& parser, antlr4::CommonTokenStream& tokens,
-            const std::function<void()>& installListeners) {
+            const std::function<void()>& installListeners,
+            const std::string& what = std::string()) {
         if (!twoStageParseEnabled()) {
             installListeners();
             return parser.compilationUnit();
@@ -592,6 +593,20 @@ namespace cajeta {
         } catch (const antlr4::RecognitionException&) {
         }
         ++g_twoStage.fallback;
+        // Reported HERE rather than only in the aggregate, because the
+        // aggregate is a static destructor and the test binary exits without
+        // running those — so a battery run would show nothing at all. A
+        // fallback names its input, which is what makes the line useful:
+        // "which source is not SLL-clean" is the question.
+        //
+        // NOTE for reading a battery log: an expected-syntax-error test falls
+        // back BY DESIGN. Bail throws on the first error, so malformed input
+        // always reaches stage 2 — that is how it gets its diagnostics. A
+        // fallback on VALID input is the interesting signal.
+        if (std::getenv("CAJETA_PRIME_TIMING")) {
+            std::fprintf(stderr, "[two-stage] fell back to LL: %s\n",
+                         what.empty() ? "<unnamed>" : what.c_str());
+        }
         tokens.seek(0);
         parser.reset();
         parser.setErrorHandler(std::make_shared<antlr4::DefaultErrorStrategy>());
@@ -640,7 +655,7 @@ namespace cajeta {
                     parser.addErrorListener(
                         &antlr4::ConsoleErrorListener::INSTANCE);
                 }
-            });
+            }, sourcePath);
         auto t2 = PClock::now();
         ArchivePrescanVisitor v;
         v.sourcePath = sourcePath;
@@ -803,7 +818,7 @@ namespace cajeta {
             parser.addErrorListener(jsonSyntax.get());
         }
         antlr4::tree::ParseTree* parseTree = parseCompilationUnitTwoStage(
-            parser, tokens, installListeners);
+            parser, tokens, installListeners, module->currentSourceFile());
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
         // it to the semantic visitor segfaults on some inputs. Abort before
         // visiting whenever the parse had syntax errors (diagnostics already
