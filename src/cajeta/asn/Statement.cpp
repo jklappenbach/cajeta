@@ -1986,6 +1986,75 @@ namespace cajeta {
                         "specs/owned-return-of-borrowed-this-spec.md.",
                         "CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS");
                 }
+                // 8.2.6 / spec §4.5 — the same doctrine one step out from
+                // `this`: a `#` return is a CONTRACT THE CALLEE MUST KEEP, and
+                // a plain return under a `#` declaration takes the static mode
+                // (flag 1) unchallenged. The existing TITLE_MISS guard only
+                // covers `return #x` with a RUNTIME flag, so a frame that
+                // never held a title could assert one and nothing said a word
+                // — which is exactly how `reduceParallelChain` handed callers
+                // a forged title over their own lent seed (8.4.2), found by a
+                // canary test rather than by the compiler.
+                //
+                // The split with Unit 2 is by FORM, not by provenance, and it
+                // took two baselines to get right: `return #x` is Unit 2's
+                // (`CAJETA_ERROR_MOVE_OF_BORROW` — the literal `#`-on-a-borrow
+                // it was built for, plus the runtime TITLE_MISS behind it),
+                // while a PLAIN return under a `#` declaration is diagnosed by
+                // nothing at all, whichever provenance the local carries. That
+                // silent case is this check's, and it covers both origins.
+                //
+                // Fires only where provenance PROVES the frame holds a borrow,
+                // never on "cannot prove" — spec §7.2's discipline, and the
+                // reason it should not repeat 3.3.3's gate breakage.
+                //
+                // `return #= x` is exempt by design: it declares the return
+                // carries the MODE rather than claiming a title, so there is
+                // no promise to break. It is also the fix this diagnostic
+                // prescribes, and what 8.4.2 landed.
+                if (!modeCarrying
+                        && !dynamic_pointer_cast<MoveExpression>(expression)) {
+                    if (auto borrowId =
+                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
+                        FieldPtr rf;
+                        if (auto scope = module->getScopeStack().peek()) {
+                            rf = scope->getField(borrowId->getTextValue());
+                        }
+                        if (rf) {
+                            std::string origin = rf->getCallBorrowOrigin();
+                            std::string lender = "the borrow-returning call `"
+                                + origin + "`, whose receiver still owns and "
+                                "frees the value";
+                            if (origin.empty()) {
+                                origin = rf->getParamBorrowOrigin();
+                                lender = "the plain parameter `" + origin
+                                    + "`, whose title stays with the caller";
+                            }
+                            if (!origin.empty()) {
+                                throw Exception(
+                                    "method `" + m->toCanonical(false)
+                                    + "` promises ownership with a `#` return "
+                                    "type, but `"
+                                    + borrowId->getTextValue()
+                                    + "` holds a BORROW — it came from "
+                                    + lender + ". The `#` return asserts a "
+                                    "title this frame never held, so the "
+                                    "caller arms a drop on a value someone "
+                                    "else still owns and frees: a double free "
+                                    "on the caller's scope exit. Fix: return "
+                                    "`#= " + borrowId->getTextValue()
+                                    + "` to carry whatever mode the frame "
+                                    "actually holds (the caller then registers "
+                                    "a drop only when it really received a "
+                                    "title), or produce an owned value, or "
+                                    "drop the `#` from the return type. See "
+                                    "specs/stdlib-ownership-convention-spec.md "
+                                    "§4.5.",
+                                    "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+                            }
+                        }
+                    }
+                }
                 bool stackReturn = Method::exprIsStackConstruction(inner);
                 std::string what = "a `stack` construction";
                 if (!stackReturn) {
