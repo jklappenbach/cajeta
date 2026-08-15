@@ -3,6 +3,9 @@
 //
 
 #include "Compiler.h"
+
+#include <chrono>
+#include <cstdio>
 #include "CajetaArchive.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
@@ -1080,13 +1083,47 @@ namespace cajeta {
             return pkg;
         };
 
+        // CAJETA_PRIME_TIMING=1 — per-file, per-loop. The stdlib is walked
+        // TWICE by ANTLR (prescan, then parse), so "which loop" is the first
+        // question and "uniform or concentrated" is the second: a flat
+        // distribution means the parser's own cost and needs caching, while a
+        // few dominating files would mean a pathology worth fixing outright.
+        const bool primeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        using PrimeClock = std::chrono::steady_clock;
+        std::vector<std::pair<long long, std::string>> prescanMs, parseMs;
+        auto stamp = [&](PrimeClock::time_point t0,
+                         std::vector<std::pair<long long, std::string>>& into,
+                         const char* path) {
+            if (!primeTiming) return;
+            into.emplace_back(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    PrimeClock::now() - t0).count(), path);
+        };
+        auto report = [&](const char* label,
+                          std::vector<std::pair<long long, std::string>>& v) {
+            if (!primeTiming) return;
+            long long total = 0;
+            for (auto& e : v) total += e.first;
+            std::sort(v.begin(), v.end(),
+                      [](auto& a, auto& b) { return a.first > b.first; });
+            std::fprintf(stderr, "[prime] %s: %lld ms over %zu files\n",
+                         label, total, v.size());
+            for (size_t i = 0; i < v.size() && i < 10; ++i) {
+                std::fprintf(stderr, "[prime]     %6lld ms  %s\n",
+                             v[i].first, v[i].second.c_str());
+            }
+        };
+
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
             if (isLazyStdlibPackage(packageOf(i))) continue;  // on-demand only
             const auto& f = cajeta::stdlib::g_files[i];
+            auto t0 = PrimeClock::now();
             antlr4::ANTLRInputStream prescanIn(
                 std::string(f.content, f.contentBytes));
             prescanSource(prescanIn);
+            stamp(t0, prescanMs, f.relativePath);
         }
+        report("prescan loop", prescanMs);
 
         QualifiedNamePtr originalQName = module->getQName();
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
@@ -1108,11 +1145,14 @@ namespace cajeta {
             // module — so without this every stdlib frame renders as `(:268)`.
             // relativePath is already build-root independent.
             module->setCurrentSourceFile(relPath);
+            auto t0 = PrimeClock::now();
             antlr4::ANTLRInputStream stdlibInput(
                 std::string(f.content, f.contentBytes));
             parseSource(module, stdlibInput, /*label=*/"");
+            stamp(t0, parseMs, f.relativePath);
             g_stdlibParsedPackages.insert(pkg);
         }
+        report("parse loop", parseMs);
         module->setCurrentSourceFile("");
         module->setQName(originalQName);
 
@@ -1457,6 +1497,32 @@ namespace cajeta {
         auto existing = CajetaModule::getStdlibModule();
         if (existing) return existing;
 
+        // compile-cache 1.2.1, SECOND VANTAGE — `CAJETA_PRIME_TIMING=1`.
+        //
+        // The original phase instrumentation went into test/jit/JitTestHelper,
+        // which is why the number the SHIPPED compiler pays was never known:
+        // the harness primes once per process and amortizes it over thousands
+        // of tests, so nothing there resembles a user's `cajeta build`. The
+        // probes belong where the prime is, not where the tests are.
+        //
+        // Off unless the variable is set, and one steady_clock read per phase
+        // when it is.
+        const bool primeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        auto primeClock = std::chrono::steady_clock::now();
+        auto primeStart = primeClock;
+        auto primePhase = [&](const char* name) {
+            if (!primeTiming) return;
+            auto now = std::chrono::steady_clock::now();
+            auto ms = [](auto d) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(d)
+                    .count();
+            };
+            std::fprintf(stderr, "[prime] %-28s %7lld ms   (cumulative %lld ms)\n",
+                         name, (long long) ms(now - primeClock),
+                         (long long) ms(now - primeStart));
+            primeClock = now;
+        };
+
         auto stdlibQName = QualifiedName::getOrInsert(
             "__stdlib__", "cajeta.runtime");
         auto stdlib = make_shared<CajetaModule>(
@@ -1467,13 +1533,16 @@ namespace cajeta {
 
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(stdlib);
+        primePhase("setup");
         parseStdlibInto(stdlib);
+        primePhase("parse (444 sources)");
         CajetaModule::setActiveModule(prevActive);
 
         // Lay out every parsed stdlib class so its vtable / RTTI
         // globals live in this module — user modules will reach
         // them via extern decls and never need to re-prototype.
         CajetaModule::buildPendingPrototypes();
+        primePhase("buildPendingPrototypes");
 
         // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
         // canonical Class<?> instantiation HERE, as part of the stdlib build and
@@ -1488,6 +1557,7 @@ namespace cajeta {
         CajetaModule::setActiveModule(stdlib);
         CajetaClass::ensureClassWildcardInstantiated();
         CajetaModule::buildPendingPrototypes();
+        primePhase("Class<?> instantiation");
         CajetaModule::setActiveModule(prevActive);
 
         // An EAGER stdlib class (e.g. cajeta.xpu.Qem / CooperativeMatrix) can
@@ -1502,8 +1572,10 @@ namespace cajeta {
         // so the non-reuse path is unaffected. (compile-cache 0.1, ported
         // from feature/compile-cache 03764c17.)
         drainLazyStdlib();
+        primePhase("drainLazyStdlib");
 
         emitUnrecoverableMarker(stdlib);
+        primePhase("emitUnrecoverableMarker");
         return stdlib;
     }
 
