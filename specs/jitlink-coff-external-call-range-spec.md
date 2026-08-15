@@ -65,8 +65,11 @@ it must.
   definitions must not collide) and ELF's equivalent tests already account for
   a PLT section — but it *is* an upstream test edited to accommodate this
   change, and the fork commit says so.
-- **2.4** `BinaryOpTests` passes on Windows under r9. **PENDING** — the
-  measurement that decides whether the chain ends here.
+- **2.4** `BinaryOpTests` passes on Windows under r9. **MET** — 2026-08-15 on
+  PHOENIX, as part of a 446/446 release subset (`BinaryOpTests.*` is line 36 of
+  `test/release_filter.txt`). Was 24 of 24 failing on `strcmp`/`__divti3`/`fmod`
+  under r8. The chain did not end here, though: one more layer followed, and it
+  was ours — see [jitlink-coff-seh-drop-uaf](jitlink-coff-seh-drop-uaf-spec.md).
 
 ## 3. Upstreaming
 

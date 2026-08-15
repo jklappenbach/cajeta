@@ -101,7 +101,11 @@ directly.
   against 130-176s with the corruption present. That is corroboration, not a
   bonus: a freed symbol pushed onto `prune()`'s worklist makes it walk graph it
   should never have visited.
-- **2.6** The release subset is green on PHOENIX. **PENDING**.
+- **2.6** The release subset is green on PHOENIX. **MET** — 2026-08-15 on the
+  merged tree: `Passed: 446  Failed: 0  Timed out: 0  Crashed: 0` of 446, 1134s
+  on 32 workers. Was `421 / 0 / 11 / 14`. The **11 timeouts went with the 14
+  crashes** — same corruption, so the timeout thresholds needed no tuning after
+  all.
 
 The tests build a `LinkGraph` by hand rather than driving the JIT, so this
 COFF-only pass is covered on Linux and in CI, not only on the Windows runners
