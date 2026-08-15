@@ -183,3 +183,59 @@ TEST(KernelFaultTests, unrecoverableThrowKillsTheKernelLoudly) {
         _exit(r.ok ? 92 : (r.threw ? 90 : 91));
     }, notSwallowed, "unrecoverable exception: invariant");
 }
+
+// 2.3.2 — a would-be-UB TRAP must stop the CELL, not the kernel.
+//
+// Divide-by-zero is undefined behaviour in Cajeta and `--ub-traps` (on by
+// default in Debug) lowers it to `llvm.trap`. That is right for a program:
+// the trap fires before the optimizer wrong-codes around the UB. It is fatal
+// for a notebook, where `4 / 0` is one of the most ordinary things a person
+// types by accident and a `ud2` takes the kernel, every binding and every
+// earlier cell with it — with nothing printed, because a trap says nothing.
+//
+// Found by 2.3.1, which originally used this as its throw shape and killed
+// the test process (SIGILL, exit 132).
+TEST(KernelFaultTests, divideByZeroFailsTheCellNotTheKernel) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult c1 = s->execute("int32 keep = 41;\n");
+    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
+
+    // Through a BINDING, not a literal `4 / 0`: a constant divisor is folded
+    // at compile time and never reaches the trap site at all.
+    CellResult bad = s->execute("int32 z = 0;\nint32 boom = 4 / z;\n");
+    EXPECT_FALSE(bad.ok) << "the cell reported success";
+    EXPECT_TRUE(bad.threw) << "not reported as a runtime fault";
+    EXPECT_EQ("ArithmeticError", bad.exceptionType);
+    EXPECT_NE(std::string::npos, bad.message.find("divide by zero"))
+        << "message did not say what happened: " << bad.message;
+
+    // The session survived, with the earlier binding intact.
+    CellResult after = s->execute("return keep + 1;\n");
+    ASSERT_TRUE(after.ok) << after.errorId << ": " << after.message;
+    EXPECT_EQ(42, after.value);
+}
+
+// The same containment for the rest of the family — one trap site serves
+// divide, remainder, the three shifts and signed overflow, so a fix that
+// only covered division would be a coincidence rather than a mechanism.
+TEST(KernelFaultTests, oversizedShiftAndRemainderAlsoFailTheCellOnly) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult rem = s->execute("int32 zero = 0;\nint32 r = 7 % zero;\n");
+    EXPECT_FALSE(rem.ok) << "remainder by zero reported success";
+    EXPECT_EQ("ArithmeticError", rem.exceptionType);
+    EXPECT_NE(std::string::npos, rem.message.find("remainder by zero"))
+        << rem.message;
+
+    CellResult shift = s->execute("int32 wide = 64;\nint32 v = 1 << wide;\n");
+    EXPECT_FALSE(shift.ok) << "an oversized shift reported success";
+    EXPECT_EQ("ArithmeticError", shift.exceptionType);
+    EXPECT_NE(std::string::npos, shift.message.find("bit width")) << shift.message;
+
+    CellResult after = s->execute("return 5;\n");
+    ASSERT_TRUE(after.ok) << after.errorId << ": " << after.message;
+    EXPECT_EQ(5, after.value);
+}

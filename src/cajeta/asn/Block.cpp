@@ -131,11 +131,22 @@ namespace cajeta {
                 arenaMark = builder->CreateCall(markFn, {}, "arena.mark");
             }
         }
-        // `safepoints`, not `debugInfo`: the two travel together under
-        // `--debug-info=full`, but the Jupyter kernel asks for statement
-        // boundaries WITHOUT the keep-all class-registry retention debugInfo
-        // also implies (CompilerFlags::safepoints explains why).
-        bool safepoints = module->getFlags().safepoints;
+        // EITHER flag. `safepoints` exists so the Jupyter kernel can ask for
+        // statement boundaries WITHOUT the keep-all class-registry retention
+        // that `debugInfo` also implies (CompilerFlags::safepoints explains
+        // why). But debug info without safepoints is not a thing anyone
+        // wants — a debugger stops AT them — so `debugInfo` implies them
+        // here rather than only in `applyDebugInfo`.
+        //
+        // Gating on `safepoints` ALONE was a silent regression for the whole
+        // debugger: `CajetaJitHost` assigns `flags.debugInfo` directly rather
+        // than going through applyDebugInfo, so every JIT debug session
+        // emitted zero safepoints. Nothing caught it because
+        // `SafepointCodegenTests` lives in `cajeta_debug_test`, a second
+        // binary neither ctest nor cajeta_tests.sh runs. Deriving it at the
+        // USE site is what makes the two flags impossible to desync.
+        bool safepoints = module->getFlags().safepoints
+                       || module->getFlags().debugInfo;
         bool lineInfo = module->getFlags().lineInfo;
         // title-tracking §3.1.5 — checkpoint the move log: a block whose
         // codegen ends in a return/throw never reaches the join, so the

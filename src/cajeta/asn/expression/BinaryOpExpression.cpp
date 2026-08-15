@@ -60,6 +60,28 @@ namespace cajeta {
         auto* okBB = llvm::BasicBlock::Create(ctx, label + ".ok", curFn);
         b.CreateCondBr(condTrap, trapBB, okBB);
         b.SetInsertPoint(trapBB);
+        // jupyter-kernel 2.3.2 — in a SESSION, hand the stop to the runtime
+        // first: it unwinds the cell to the session guard, which turns it
+        // into a failed cell rather than a dead kernel. It RETURNS when no
+        // cell is guarded, and then we trap exactly as before — so this is
+        // additive, and a module compiled outside a session emits the same
+        // two instructions it always did.
+        if (module->getFlags().trapsUnwind) {
+            llvm::FunctionCallee unwind = lmod->getOrInsertFunction(
+                "__cajeta_session_trap_unwind",
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                        {llvm::PointerType::get(ctx, 0)},
+                                        false));
+            // The label names a BASIC BLOCK; the host shows this to a person,
+            // so it is spelled out rather than reused.
+            const std::string what =
+                label == "div"  ? "divide by zero"
+              : label == "mod"  ? "remainder by zero"
+              : (label == "shl" || label == "shr" || label == "ushr")
+                                ? "shift amount is at least the bit width"
+                                : "arithmetic overflow in " + label;
+            b.CreateCall(unwind, {b.CreateGlobalString(what, ".trapwhat")});
+        }
         llvm::Function* trapFn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, llvm::Intrinsic::trap);
         b.CreateCall(trapFn);

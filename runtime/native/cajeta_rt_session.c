@@ -209,6 +209,26 @@ void* __cajeta_session_interrupt_marker(void) {
     return &__cajeta_session_interrupt_sentinel;
 }
 
+// The second thing a cell can be stopped BY, and the second sentinel: a
+// would-be-UB trap (divide by zero, shift past the width, signed overflow).
+// The compiler normally lowers those to `llvm.trap` — correct for a program,
+// fatal for a kernel, where `4 / 0` in one cell would take every binding and
+// every earlier cell with it. Under a session the trap site calls
+// `__cajeta_session_trap_unwind` instead, and this is what the guard sees.
+char __cajeta_session_trap_sentinel = 0;
+static const char* g_trap_what = "arithmetic fault";
+
+void* __cajeta_session_trap_marker(void) {
+    return &__cajeta_session_trap_sentinel;
+}
+
+// What the trap was, for the host to render. A string LITERAL from the
+// emitting module, so it lives as long as the code that raised it; never
+// freed here.
+const char* __cajeta_session_trap_description(void) {
+    return g_trap_what;
+}
+
 // Unwind to the OUTERMOST exception frame on this thread's chain — the
 // session guard's — not the innermost, which is what `__cajeta_throw` would
 // do. Two reasons, and both matter:
@@ -224,7 +244,11 @@ void* __cajeta_session_interrupt_marker(void) {
 // Returns normally when there is no frame to land in — a cell running outside
 // a guard is not interruptible, which is the honest answer rather than a
 // longjmp into nothing.
-void __cajeta_session_interrupt_unwind(void) {
+// Shared by both stops. `marker` is the sentinel the guard will compare
+// against; everything else — running the skipped frames' drops, repairing the
+// shadow and debug chains to the guard's watermarks — is identical, because
+// what makes an unwind safe has nothing to do with why it happened.
+static void session_unwind_to_guard(void* marker) {
     // The guard's OWN frame, recorded by the guard. Emphatically not "walk
     // the chain to its outermost link", which was the first attempt: the
     // outermost link is not necessarily live. A frame left by an earlier,
@@ -272,8 +296,21 @@ void __cajeta_session_interrupt_unwind(void) {
     // this wrong does not misreport the interrupt, it CRASHES: the guard
     // fails the identity test, decides the sentinel is a Throwable, and
     // dereferences it.
-    outer->thrown_value = __cajeta_session_interrupt_marker();
+    outer->thrown_value = marker;
     longjmp(outer->buf, 1);
+}
+
+void __cajeta_session_interrupt_unwind(void) {
+    session_unwind_to_guard(__cajeta_session_interrupt_marker());
+}
+
+// Called from a would-be-UB trap site instead of `llvm.trap`, when the module
+// was compiled for a session. RETURNS NORMALLY when no cell is guarded — the
+// caller then falls through to the ordinary trap, so a program compiled
+// without a session behaves exactly as it did.
+void __cajeta_session_trap_unwind(const char* what) {
+    if (what) g_trap_what = what;
+    session_unwind_to_guard(__cajeta_session_trap_marker());
 }
 
 void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {

@@ -242,6 +242,9 @@ struct KernelSession::Impl {
     void (*requestInterruptFn)() = nullptr;
     void (*clearInterruptFn)() = nullptr;
     void* (*interruptMarker)() = nullptr;
+    // 2.3.2 — the would-be-UB trap's sentinel and its description.
+    void* (*trapMarker)() = nullptr;
+    const char* (*trapDescription)() = nullptr;
     SessionStats stats;
     int execCount = 0;
     bool shutdownDone = false;
@@ -523,6 +526,10 @@ CellResult KernelSession::execute(const std::string& source,
         {
             CompilerFlags cellFlags = cellModule->getFlags();
             cellFlags.safepoints = true;
+    // 2.3.2 — and a would-be-UB trap in the cell unwinds instead of killing
+    // the process. Scoped to the CELL's module for the same reason
+    // safepoints are: the stdlib is not what a notebook author is editing.
+    cellFlags.trapsUnwind = true;
             cellModule->setFlags(cellFlags);
         }
         // Name THIS cell as the session emit target: a stdlib template
@@ -933,6 +940,10 @@ CellResult KernelSession::execute(const std::string& source,
             lookupSymbol("__cajeta_session_clear_interrupt"));
         impl.interruptMarker = reinterpret_cast<void* (*)()>(
             lookupSymbol("__cajeta_session_interrupt_marker"));
+        impl.trapMarker = reinterpret_cast<void* (*)()>(
+            lookupSymbol("__cajeta_session_trap_marker"));
+        impl.trapDescription = reinterpret_cast<const char* (*)()>(
+            lookupSymbol("__cajeta_session_trap_description"));
     }
     // spec 5.2 — a request that arrived while nothing was running, or while
     // THIS cell was still compiling, is a no-op: the flag never survives into
@@ -965,6 +976,22 @@ CellResult KernelSession::execute(const std::string& source,
             result.threw = true;
             result.exceptionType = "KeyboardInterrupt";
             result.message = "interrupted";
+            result.file = cellName;
+            CellFrame frame;
+            frame.file = cellName;
+            frame.text = cellName;
+            result.traceback.push_back(frame);
+            return result;
+        }
+        // 2.3.2 — a would-be-UB trap, same shape as the interrupt: a
+        // sentinel address, never dereferenced. Without this the cell's
+        // `4 / 0` executes `llvm.trap` and the whole kernel dies with SIGILL
+        // and nothing said, taking every binding with it.
+        if (impl.trapMarker && thrown == impl.trapMarker()) {
+            result.threw = true;
+            result.exceptionType = "ArithmeticError";
+            result.message = impl.trapDescription ? impl.trapDescription()
+                                                  : "arithmetic fault";
             result.file = cellName;
             CellFrame frame;
             frame.file = cellName;
