@@ -27,7 +27,10 @@
 #include "gtest/gtest.h"
 #include "cajeta/kernel/KernelSession.h"
 
+#include <chrono>
 #include <cstdint>
+#include <iostream>
+#include <vector>
 #include <memory>
 #include <string>
 
@@ -248,4 +251,111 @@ TEST(KernelSessionTests, failedCellLeavesSessionUnchanged) {
     auto stillWorks = s->lookup<int32_t (*)()>("stillWorks");
     ASSERT_NE(nullptr, stillWorks);
     EXPECT_EQ(7, stillWorks());
+}
+
+// 1.3.1 — the SCALE acceptance: a twenty-cell session of the shape a
+// notebook actually accumulates (definitions, uses of earlier cells' values,
+// spawned work), then a clean teardown.
+//
+// It ASSERTS structure and MEASURES time. Per-cell timings are printed for
+// the record and reviewed rather than thresholded — a wall-clock bound
+// compiled into a test fails on a loaded machine and says nothing about the
+// code (see the project's perf-acceptance rule). What IS asserted is the
+// thing a threshold was standing in for: one dylib per cell and no merging,
+// so the world cannot be growing quadratically behind a fast wall clock.
+//
+// Run under MALLOC_PERTURB_ for the leak half; the numbers from that run go
+// in the commit message.
+TEST(KernelSessionTests, twentyCellSessionStaysBoundedAndTearsDownClean) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    constexpr int kCells = 20;
+    std::vector<double> millis;
+    millis.reserve(kCells);
+
+    for (int i = 1; i <= kCells; ++i) {
+        const std::string n = std::to_string(i);
+        std::string source;
+        switch (i % 4) {
+            case 1:   // define a type and bind one
+                source = "public class N" + n + " { public int32 v;\n"
+                         "  public N" + n + "(int32 v) { this.v = v; }\n"
+                         "  public int32 get() { return this.v; } }\n"
+                         "N" + n + " obj" + n + " = heap N" + n + "(" + n + ");\n";
+                break;
+            case 2:   // use an EARLIER cell's binding and add one of your own
+                source = "int32 acc" + n + " = obj" + std::to_string(i - 1)
+                       + ".get() + " + n + ";\n";
+                break;
+            case 3:   // a stdlib generic over a cell-defined type
+                source = "import cajeta.collection.ArrayList;\n"
+                         "ArrayList<N" + std::to_string(i - 2) + "> list" + n
+                       + " = heap ArrayList<N" + std::to_string(i - 2) + ">();\n"
+                         "list" + n + ".add(heap N" + std::to_string(i - 2)
+                       + "(" + n + "));\n";
+                break;
+            default:  // spawned work, joined in the same cell
+                source = "int32 spawned" + n + " = 0;\n"
+                         "scope {\n"
+                         "  spawned" + n + " = " + n + ";\n"
+                         "}\n";
+                break;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        CellResult r = s->execute(source);
+        const auto end = std::chrono::steady_clock::now();
+        millis.push_back(
+            std::chrono::duration<double, std::milli>(end - start).count());
+        ASSERT_TRUE(r.ok) << "cell " << i << ": " << r.errorId << ": "
+                          << r.message << "\n--- source ---\n" << source;
+        EXPECT_EQ(i, r.executionCount);
+    }
+
+    // One dylib per cell, and no cell was ever merged into another. This is
+    // the structural form of "compile time does not grow with N": the JIT
+    // world grows by exactly one unit per cell.
+    EXPECT_EQ(kCells, s->stats().cellsCompiled);
+    EXPECT_EQ(kCells, s->stats().cellDylibsCreated);
+    EXPECT_EQ(0, s->stats().crossCellModuleMerges);
+
+    // For the record, not for a threshold — and compared LIKE FOR LIKE. The
+    // four cell kinds cost wildly different amounts (a stdlib generic over a
+    // cell-defined type is ~50x a plain read), and cell 1 also pays for the
+    // session's first compile, so a first-half/second-half mean says nothing
+    // about growth. What answers "does cell N cost more than cell N-4" is the
+    // first and last occurrence of each KIND.
+    static const char* kindName[4] = {"spawn", "define", "use", "generic"};
+    std::cerr << "[1.3.1] per-cell ms:";
+    for (double m : millis) std::cerr << " " << (long) m;
+    std::cerr << "\n";
+    for (int kind = 0; kind < 4; ++kind) {
+        double first = -1, last = -1;
+        int firstAt = 0, lastAt = 0;
+        for (int i = 1; i <= kCells; ++i) {
+            if (i % 4 != kind) continue;
+            if (first < 0) { first = millis[i - 1]; firstAt = i; }
+            last = millis[i - 1];
+            lastAt = i;
+        }
+        if (first < 0 || firstAt == lastAt) continue;
+        std::cerr << "[1.3.1] " << kindName[kind] << ": cell " << firstAt
+                  << " = " << (long) first << " ms, cell " << lastAt << " = "
+                  << (long) last << " ms\n";
+    }
+
+    // Teardown: bindings dropped while the runtime that their drop code
+    // reaches into is still up, then the task shutdown — each exactly once.
+    s->shutdown();
+    EXPECT_EQ(1, s->stats().sessionDropAllCalls);
+    EXPECT_EQ(1, s->stats().taskShutdownCalls);
+    EXPECT_EQ(0, s->stats().liveSessionBindings)
+        << "bindings survived shutdown";
+    EXPECT_GT(s->stats().sessionBindingsAtShutdown, 0)
+        << "twenty cells bound nothing at all — the session never saw them";
+
+    // Idempotent: a second shutdown is a no-op, not a double drop.
+    s->shutdown();
+    EXPECT_EQ(1, s->stats().sessionDropAllCalls);
+    EXPECT_EQ(1, s->stats().taskShutdownCalls);
 }
