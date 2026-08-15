@@ -68,7 +68,15 @@ public class DynFrame {
 
     /** Declare column `name` indexed (the `Table.indexColumn` knob, U14).
      *  Owned array, borrow-copied names — the meltNode convention; the source
-     *  name strings outlive the query. Idempotent per name. */
+     *  name strings outlive the query. Idempotent per name.
+     *
+     *  The element store is `#=`, not `=` (3.3.3). The intent was already
+     *  "borrowed names" and `#=` is how that intent is WRITTEN rather than
+     *  asserted in prose: it records the source's mode in the slot, so a lent
+     *  name stays lent (unchanged behaviour) and a caller that spells
+     *  `addIndexed(#n)` gets the name freed with the frame. A plain store
+     *  offered neither guarantee — it kept the borrow with nothing recording
+     *  it, which is what the check now rejects. */
     public void addIndexed(String name) {
         if (this.indexed == null) {
             this.indexed #= heap String[this.w];
@@ -80,7 +88,7 @@ public class DynFrame {
             i = i + 1;
         }
         if (this.nIndexed < this.w) {
-            this.indexed[this.nIndexed] = name;
+            this.indexed[this.nIndexed] #= name;
             this.nIndexed = this.nIndexed + 1;
         }
     }

@@ -1074,7 +1074,8 @@ namespace cajeta {
                         if (auto sc = module->getScopeStack().peek()) {
                             sc->rejectCapturedBorrowParam(
                                 eSrc->getTextValue(),
-                                "element of `" + eRecv->getIdentifier() + "`");
+                                "element of `" + eRecv->getIdentifier() + "`",
+                                (int) getSourceLine());
                         }
                     }
                 }
@@ -3345,7 +3346,8 @@ namespace cajeta {
                                         sc->rejectCapturedBorrowParam(
                                             capSrc->getTextValue(),
                                             "field `" + capDot->getIdentifier()
-                                                + "`");
+                                                + "`",
+                                            (int) getSourceLine());
                                     }
                                 }
                             }

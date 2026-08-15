@@ -456,6 +456,28 @@ than as corruption.
   one-line lifetime documentation.
 - **5.4** `cajeta-llama`'s `TplEval` drops its local workarounds once
   §5.1 lands.
+- **5.5** **An ownership check whose blast radius is unknown lands as a
+  WARNING first, is migrated against in one pass, and is then flipped to
+  an error.** §3.4 says this for an API change; it holds at least as
+  strongly for a check, and for a reason the API case does not have: a
+  thrown diagnostic stops the build at the FIRST offending site, so the
+  only way to see the second is to fix the first and rebuild. The
+  enumeration costs one full compile per site and never shows a total.
+
+  This is recorded from measurement, not preference.
+  `CAJETA_ERROR_CAPTURED_BORROW_PARAM` landed error-first against a
+  static audit's estimate of 10 non-exempt sites; the routine gate then
+  found 76 failures (1354/76/7 against a 1426/0/11 baseline), including
+  captures through straight-line locals that no source-shape pass
+  recognises — the compiler sees every one, an audit sees the shapes it
+  was taught. Unit 3's acceptance has been open ever since.
+
+  The demotion is a MIGRATION INSTRUMENT with a defined end, not a
+  permanent severity option: off by default, switched by environment
+  (`CAJETA_CAPTURED_BORROW=warn`) rather than by source annotation so no
+  code can opt itself out permanently, and the plan item that opens it is
+  closed only by flipping back. Tests pin both positions, so "the check
+  is an error again" is verified rather than asserted.
 
 ## 6. Acceptance
 

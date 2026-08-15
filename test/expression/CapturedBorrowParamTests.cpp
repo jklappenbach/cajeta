@@ -32,6 +32,7 @@
 #include <string>
 
 #include "cajeta/error/Exception.h"
+#include "cajeta/type/Scope.h"
 
 using cajeta_test::CajetaJit;
 
@@ -225,4 +226,88 @@ TEST(CapturedBorrowParamTests, plainParamReadOnlyStillCompiles) {
         "}\n";
     compileExpectOk(src);
     EXPECT_EQ(runI32(src), 7);
+}
+
+// ---------------------------------------------------------------------------
+// 3.3.3 — the warning-first migration switch (spec §3.4).
+//
+// Unit 3 landed this check error-first and it cost the gate: 1354/76/7 against
+// a 1426/0/11 baseline, where the static audit had classified 10 sites. A
+// throw stops the build at the FIRST capture, so enumerating the rest is one
+// ~90s compile per site with the total never visible. Warn mode reports and
+// keeps going, so ONE build per library enumerates every site — which is what
+// makes the migration a single pass instead of an unbounded serial hunt.
+//
+// The switch is a migration instrument, not a permanent escape hatch: 3.3.3
+// closes by flipping back to error with the sites fixed, and these tests pin
+// both positions so the flip is verifiable rather than asserted.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Restores the process-wide switch no matter how the test leaves. Without
+// this, a warn-mode test leaking into the suite would silently disarm every
+// rejection test above — the failure mode would be tests that pass while
+// checking nothing.
+struct WarnMode {
+    WarnMode() { cajeta::Scope::setCapturedBorrowWarns(true); }
+    ~WarnMode() { cajeta::Scope::clearCapturedBorrowWarnsOverride(); }
+};
+
+}  // namespace
+
+// The 3.1.1 shape, unchanged, under warn mode: it must COMPILE AND RUN. The
+// capture is still real — this is the demotion admitting a known-broken
+// program through so the rest of the library can be enumerated behind it.
+TEST(CapturedBorrowParamTests, warnModeAdmitsTheCaptureAndKeepsCompiling) {
+    WarnMode warn;
+    std::string src = std::string(kSrc) +
+        "public final class Keeper {\n"
+        "    Cell held;\n"
+        "    public Keeper() { this.held = null; }\n"
+        "    public void keep(Cell c) { this.held = c; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Keeper k = heap Keeper();\n"
+        "        Cell c = heap Cell(7);\n"
+        "        k.keep(c);\n"
+        "        return c.n;\n"
+        "    }\n"
+        "}\n";
+    compileExpectOk(src);
+    EXPECT_EQ(runI32(src), 7);
+}
+
+// Warn mode must not make the check FORGET anything: the element-store site
+// (3.1.2) goes through the same demotion, so both call sites are pinned.
+TEST(CapturedBorrowParamTests, warnModeCoversTheElementStoreSiteToo) {
+    WarnMode warn;
+    std::string src = std::string(kSrc) +
+        "public final class Keeper {\n"
+        "    Cell[] slots;\n"
+        "    public Keeper() { this.slots = heap Cell[4]; }\n"
+        "    public void put(int32 i, Cell c) { this.slots[i] = c; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 7; }\n"
+        "}\n";
+    compileExpectOk(src);
+}
+
+// ERROR IS THE DEFAULT, and stays so after a warn-mode test has run. This is
+// the other half of the flip: 3.3.3 is only closed when the check throws
+// again, and a suite that could not tell the two apart could not certify it.
+TEST(CapturedBorrowParamTests, defaultModeStillThrows) {
+    EXPECT_FALSE(cajeta::Scope::capturedBorrowWarns());
+    std::string src = std::string(kSrc) +
+        "public final class Keeper {\n"
+        "    Cell held;\n"
+        "    public Keeper() { this.held = null; }\n"
+        "    public void keep(Cell c) { this.held = c; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 7; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
 }

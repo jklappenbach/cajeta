@@ -2,8 +2,13 @@
 #include "../field/Field.h"
 #include "../field/ParameterField.h"
 #include "../compile/CajetaModule.h"
+#include "../error/DiagnosticEngine.h"
 #include "../error/Exception.h"
 #include "CajetaClass.h"
+
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstdlib>
 
 namespace cajeta {
     Scope::Scope(string name, CajetaModulePtr module, ScopePtr parent) {
@@ -185,8 +190,30 @@ namespace cajeta {
         }
     }
 
+    namespace {
+        // -1 = ask the environment, 0 = error, 1 = warn.
+        int g_capturedBorrowWarnOverride = -1;
+    }
+
+    bool Scope::capturedBorrowWarns() {
+        if (g_capturedBorrowWarnOverride >= 0) {
+            return g_capturedBorrowWarnOverride == 1;
+        }
+        const char* mode = std::getenv("CAJETA_CAPTURED_BORROW");
+        return mode && string(mode) == "warn";
+    }
+
+    void Scope::setCapturedBorrowWarns(bool on) {
+        g_capturedBorrowWarnOverride = on ? 1 : 0;
+    }
+
+    void Scope::clearCapturedBorrowWarnsOverride() {
+        g_capturedBorrowWarnOverride = -1;
+    }
+
     void Scope::rejectCapturedBorrowParam(const string& srcName,
-                                          const string& intoDesc) {
+                                          const string& intoDesc,
+                                          int sourceLine) {
         FieldPtr field = getField(srcName);
         if (!field) return;
 
@@ -221,7 +248,7 @@ namespace cajeta {
         string what = (origin == srcName)
             ? ("parameter `" + origin + "`")
             : ("parameter `" + origin + "` (via `" + srcName + "`)");
-        throw Exception(
+        string message =
             "cannot keep " + what + " in " + intoDesc
                 + ": a plain parameter is a BORROW — the caller keeps the "
                   "title and frees it, so this object would be left pointing "
@@ -229,8 +256,44 @@ namespace cajeta {
                   "parameter `#" + klass->toCanonical() + "` so the call site "
                   "must surrender ownership, or store with `#=` if this type "
                   "is a container whose caller chooses (the ArrayList model), "
-                  "or copy the value.",
-            "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
+                  "or copy the value.";
+
+        if (!capturedBorrowWarns()) {
+            throw Exception(message, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
+        }
+
+        // Warn mode (3.3.3). Two channels, deliberately:
+        //
+        //   - the DiagnosticEngine, so the demotion is a real warning in the
+        //     compiler's own stream (`CAJETA_WARN_PLAIN_RETAIN_STORE` is the
+        //     precedent — same "warn at introduction, promote later" shape);
+        //   - a grep-able stderr note, because the engine dedups and CAPS at
+        //     100 and a migration needs the WHOLE list, not the first hundred.
+        //     The 8.1.1 harvest proved this channel survives every entry point,
+        //     including the build tool's.
+        string className;
+        string methodName;
+        if (module) {
+            if (!module->getStructureStack().empty()
+                    && module->getStructureStack().back()) {
+                className = module->getStructureStack().back()
+                    ->getQName()->toCanonical();
+            }
+            if (MethodPtr m = module->getCurrentMethod()) {
+                methodName = m->getName();
+            }
+        }
+        llvm::errs() << "cajeta: note: [captured-borrow] " << className << "."
+                     << methodName << ":" << sourceLine
+                     << " param=" << origin
+                     << " src=" << srcName
+                     << " into=" << intoDesc
+                     << " type=" << klass->toCanonical() << "\n";
+        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
+            eng->report("warning", "CAJETA_WARN_CAPTURED_BORROW_PARAM", message,
+                        module ? module->getSourcePath() : string(),
+                        sourceLine, -1);
+        }
     }
 
     set<string> Scope::lendsOf(const string& holder) {

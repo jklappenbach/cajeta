@@ -230,8 +230,30 @@ namespace cajeta {
         // Callers gate on the STORE FORM: only a plain `=` store reaches
         // here. A `#=` store is the sink contract (§2.3, ArrayList) and is
         // always legal, which is why the opt-out needs no annotation.
+        //
+        // `sourceLine` locates the store for the warn-mode record below; it is
+        // not used by the error path, which carries its location the way every
+        // other thrown diagnostic does.
         void rejectCapturedBorrowParam(const string& srcName,
-                                       const string& intoDesc);
+                                       const string& intoDesc,
+                                       int sourceLine = -1);
+
+        // 3.3.3 — the warning-first migration switch, prescribed by spec §3.4.
+        //
+        // Error-first cost Unit 3 its gate: the check landed as a throw, the
+        // audit's static pass had classified 10 sites, and the gate then found
+        // 76 failures the audit never saw. A throw stops the build at the
+        // FIRST site, so enumerating the rest costs one ~90s compile each with
+        // no way to see the total. In warn mode the check reports and lets
+        // codegen continue, so one build per library enumerates every site.
+        //
+        // Default is ERROR. The env var `CAJETA_CAPTURED_BORROW=warn` demotes
+        // it; `setCapturedBorrowWarns` overrides the env for tests. Read per
+        // call rather than cached, so a test that flips it mid-process is not
+        // at the mercy of which test ran first.
+        static bool capturedBorrowWarns();
+        static void setCapturedBorrowWarns(bool on);
+        static void clearCapturedBorrowWarnsOverride();
 
         // 5.2.7 — record `holder` now holds a lend of the local owner `src`.
         void recordLend(const string& holder, const string& src);

@@ -49,8 +49,14 @@ public class AggResult {
         this.valid[i] = true;
     }
 
+    // `#=` per slot, not `=` (3.3.3): the ARRAY is owned (`sv #= heap …`
+    // above), its ELEMENTS are whatever the caller hands over. A plain store
+    // kept the caller's borrow past the call with nothing recording that it
+    // was one; `#=` records the source's mode in the slot, so a lent string
+    // stays lent — behaviour identical to the old store — and a surrendered
+    // one is freed with the result.
     void setStr(int64 i, String v) {
-        this.sv[i] = v;
+        this.sv[i] #= v;
         this.valid[i] = true;
     }
 

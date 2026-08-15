@@ -48,7 +48,15 @@ public class TensorProtocol {
     public TensorProtocol(Object base, int64 offset, int64[] shape,
                           int64[] strides, DType dtype, int32 device,
                           boolean readOnlyFlag) {
-        this.baseStore = base;
+        // `#=`, not `=` (3.3.3). The intent is unchanged — this IS a borrow of
+        // the producer's storage — but `#=` records that in the field's mode
+        // bit instead of only in the doc above: handed a lent `base` it stays
+        // lent and nothing here frees it, identical to the old plain store;
+        // handed a surrendered `#base` the storage is freed with the protocol.
+        // A plain store made the two indistinguishable, which is the capture
+        // the check rejects. This is the site the gate named — it alone broke
+        // the whole `MatrixTests` suite.
+        this.baseStore #= base;
         this.offsetVal = offset;
         int32 nd = (int32) shape.count();
         this.shapeDims = heap int64[nd];
