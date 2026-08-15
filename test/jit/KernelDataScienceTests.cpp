@@ -52,28 +52,42 @@ std::string findMlArchive() {
 
 }  // namespace
 
-// DISABLED — and its FAILURE is the finding (plan 7.2.5).
+// DISABLED — its FAILURE is still the finding, but the finding CHANGED on
+// 2026-08-15 and the old one recorded here was wrong.
 //
-// This asked whether a classpath session works at all or only fails where
-// the archive and the stdlib share a generic instantiation. The answer is
-// the harsher one: even `int32 a = 20; a + 22;` fails in a session with an
-// archive on its classpath, with `module verify failed: Invalid bitcast
-// ... double to ptr`. A classpath session is broken outright.
+// Filed as: the kernel restores StdlibReuseCore's resident baseline, captured
+// before the archive was ingested, so archive code is generated against a
+// stdlib world it was not compiled against. Three experiments "bounded" it
+// there.
 //
-// Three experiments bound the cause to the kernel's RESIDENT STDLIB REUSE
-// rather than to the classpath machinery:
-//   * kernel + classpath + any cell                        -> invalid bitcast
-//   * kernel + NO classpath + the same cell                 -> ok
-//   * `cajeta run` + the SAME archive on --classpath        -> ok
-// `cajeta run` builds its stdlib fresh. The kernel restores
-// StdlibReuseCore's resident baseline, captured before the archive was
-// ingested, and `linkClasspathModules` then splices the archive's modules
-// into the list the codegen fixpoint walks — so the archive's code is
-// generated against a stdlib world it was not compiled against. Two
-// definitions of one specialization with different llvm::Type identity is
-// exactly the shape that produces a double/ptr bitcast.
+// Measured: building the stdlib FRESH for a classpath session (the kernel now
+// does exactly what `cajeta jit-run` does — the reuse core is taken only when
+// there is no classpath) does NOT fix it. The baseline was not the cause.
 //
-// This is the risk called out before 7.2.4 was built, now confirmed.
+// What the failures actually say, in the order they appear as each is
+// addressed:
+//   1. `module verify failed [dev.cajeta.ml.grad.GradTape]: Invalid bitcast
+//      double -> ptr`. The failing module is an ARCHIVE module the cell never
+//      touches. `cajeta jit-run` with the SAME archive and the same trivial
+//      source returns 42 — because ORC materializes lazily and never compiles
+//      GradTape, while the kernel VERIFIES every module eagerly before
+//      delivering it.
+//   2. With unverifiable archive modules downgraded to a warning: `bitcode
+//      reparse failed: Invalid cast`. Malformed IR cannot survive the
+//      bitcode round-trip the delivery path uses, so "deliver it anyway" is
+//      not available.
+//   3. With those modules skipped: `addIRModule failed: In
+//      cajeta.runtime.__stdlib__, duplicate definition of symbol
+//      'cajeta.math.Color::linearToSrgbChannel(c:float32)'` — the archive
+//      carries its own copies of stdlib symbols, and the session's stdlib
+//      defines them too.
+//
+// (3) is where it stands. It is a different problem from the one filed: not a
+// stdlib WORLD mismatch but stdlib DUPLICATION between an archive and the
+// session, which is the same class of question `demoteInstantiationsToWeakODR`
+// answers for cell-to-cell specializations. The archive's own IR defect in (1)
+// is a second, independent bug that belongs to whoever builds
+// `dev.cajeta.ml`.
 TEST(KernelDataScienceTests, DISABLED_classpathSessionRunsPlainCells) {
     const std::string archive = findMlArchive();
     if (archive.empty()) {

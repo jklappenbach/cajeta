@@ -259,6 +259,11 @@ struct KernelSession::Impl {
     // dead cell's error — poisoning every subsequent cell. Skipped forever
     // (script-units 5.5: a failed cell leaves the session unchanged).
     std::set<llvm::Module*> poisoned;
+    // 7.2.5 — llvm::Modules that came from a CLASSPATH ARCHIVE rather than
+    // from this session's codegen. Recorded once at create, right after the
+    // ingest, so a cell's verify pass can tell "our IR is malformed" from
+    // "a dependency we did not compile is malformed".
+    std::set<llvm::Module*> prebuilt;
     // Globals DEFINED by an already-delivered cell. Statics are session-
     // lived: the declaring cell owns the storage and later cells must
     // REFERENCE it, never emit a fresh zero-initialized copy that their own
@@ -337,14 +342,54 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     impl.bootstrapJD = &*bootstrapOrErr;
     impl.bootstrapJD->addToLinkOrder(mainJD);
 
-    // Session-lived Compiler over the primed stdlib. The reuse core is
-    // single-threaded and its baselines are thread_local, so this must be the
-    // thread that owns the session (header contract).
-    auto& core = StdlibReuseCore::instance();
+    // Spec 6 — the project classpath, resolved FIRST because it decides how
+    // the stdlib is built. Pure manifest/file work; no compiler needed yet.
+    std::vector<std::string> archives;
+    if (!options.projectDir.empty()) {
+        std::string resolveError;
+        if (!resolveProjectClasspath(options.projectDir, &archives,
+                                     &resolveError)) {
+            return setErr(resolveError);
+        }
+    }
+    archives.insert(archives.end(), options.classpath.begin(),
+                    options.classpath.end());
+
+    // 7.2.5 — RESIDENT STDLIB ONLY WHEN THERE IS NO CLASSPATH.
+    //
+    // The reuse core's baseline is captured once per thread, before any
+    // archive exists. Restoring it and THEN splicing an archive's modules
+    // into the list the codegen fixpoint walks means the archive's code is
+    // generated against a stdlib world it was not compiled against — two
+    // definitions of one specialization with different `llvm::Type`
+    // identity — and the cell dies at `module verify failed: Invalid
+    // bitcast ... double to ptr`. Not just where archive and stdlib share a
+    // generic: `int32 a = 20; a + 22;` died the same way.
+    //
+    // A per-classpath baseline is not the answer either — the core is
+    // thread-global and two notebooks want two different classpaths. So a
+    // classpath session builds its stdlib FRESH, which is exactly what
+    // `cajeta run` does (CajetaJitHost takes the reuse core only under
+    // `opts.resident`), and why the same archive on `--classpath` works
+    // there. The cost is the first cell: ~15s of priming instead of the
+    // restore, paid once per session and only when there IS a classpath.
+    const bool useResidentStdlib = archives.empty();
+
+    // Session-lived Compiler. The reuse core is single-threaded and its
+    // baselines are thread_local, so this must be the thread that owns the
+    // session (header contract).
     try {
-        core.ensurePrimed();
-        core.restoreBaseline();
-        Compiler::setSharedContext(core.context());
+        if (useResidentStdlib) {
+            auto& core = StdlibReuseCore::instance();
+            core.ensurePrimed();
+            core.restoreBaseline();
+            Compiler::setSharedContext(core.context());
+        } else {
+            // Own context, own stdlib. Explicit rather than assumed: the
+            // shared context is a static, so a previous session on this
+            // thread could have left it set.
+            Compiler::setSharedContext(nullptr);
+        }
         impl.compiler = std::make_unique<Compiler>();
         impl.compiler->setMode(CompilerMode::Debug);
         impl.compiler->ensureStdlibModule();
@@ -354,24 +399,12 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
                       + ": " + e.getMessage());
     }
 
-    // Spec 6 — the project classpath. Resolved and ingested ONCE, here,
-    // BEFORE any cell is parsed: dependency classes have to be visible while
-    // a cell's own imports are resolving, which is the ordering every AOT
-    // entry point uses and the one `cajeta run` copies (CajetaJitHost.cpp
+    // Ingested ONCE, BEFORE any cell is parsed: dependency classes have to be
+    // visible while a cell's own imports resolve, which is the ordering every
+    // AOT entry point uses and the one `cajeta run` copies (CajetaJitHost.cpp
     // ~1094). Doing it per cell would re-ingest the world every time and
     // still be too late for cell 1.
     {
-        std::vector<std::string> archives;
-        if (!options.projectDir.empty()) {
-            std::string resolveError;
-            if (!resolveProjectClasspath(options.projectDir, &archives,
-                                         &resolveError)) {
-                Compiler::setSharedContext(nullptr);
-                return setErr(resolveError);
-            }
-        }
-        archives.insert(archives.end(), options.classpath.begin(),
-                        options.classpath.end());
         if (!archives.empty()) {
             for (const auto& cp : archives) impl.compiler->addClasspath(cp);
             try {
@@ -382,6 +415,13 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
                 // dev.cajeta...."); see Compiler.h's note on why the splice
                 // is opt-in rather than folded into the ingest.
                 impl.compiler->linkClasspathModules();
+                // Everything present NOW came out of the archives — this
+                // session has not compiled a cell yet.
+                for (auto& m : impl.compiler->getModules()) {
+                    if (m && m->getLlvmModule()) {
+                        impl.prebuilt.insert(m->getLlvmModule());
+                    }
+                }
             } catch (cajeta::Exception& e) {
                 Compiler::setSharedContext(nullptr);
                 return setErr(std::string("classpath ingest failed: ")
@@ -737,13 +777,54 @@ CellResult KernelSession::execute(const std::string& source,
     llvm::orc::JITDylib& cellJD = *jdOrErr;
     impl.applyLinkOrder(cellJD);
 
+    std::set<llvm::Module*> skipDelivery;
     for (auto& m : fresh) {
         llvm::Module* lm = m->getLlvmModule();
         std::string verifyErr;
         llvm::raw_string_ostream vs(verifyErr);
         if (llvm::verifyModule(*lm, &vs)) {
+            // 7.2.5 — a module out of a CLASSPATH ARCHIVE is not this
+            // session's work, and failing the cell over it is the wrong
+            // trade. `20 + 22` must not be refused because an unused class in
+            // a dependency carries malformed IR; ORC materializes lazily, so
+            // that code is never compiled unless something calls it — which
+            // is exactly why `cajeta jit-run` runs the same archive happily
+            // while the kernel's EAGER verify tripped over it. Report it and
+            // carry on; if the cell does reach that code, it fails there,
+            // which is the same risk every other host already takes.
+            if (impl.prebuilt.count(lm)) {
+                // Straight onto the result: the diagnostics bridge has
+                // already closed by this point (delivery happens after the
+                // compile, so a cell's own stdout cannot land in the
+                // diagnostic buffer), and reporting into a closed engine
+                // would silently go nowhere.
+                CellDiagnostic d;
+                d.severity = "warning";
+                d.code = "CAJETA_WARN_CLASSPATH_IR";
+                d.message = "classpath module `" + lm->getModuleIdentifier()
+                          + "` does not verify; it is delivered as-is and "
+                            "will fail only if a cell calls into it: "
+                          + verifyErr;
+                d.file = cellName;
+                result.diagnostics.push_back(std::move(d));
+                // And do not DELIVER it. Malformed IR cannot survive the
+                // bitcode round-trip the delivery path uses ("bitcode reparse
+                // failed: Invalid cast"), so "deliver it anyway and let ORC
+                // decide" is not actually on the menu. Its symbols go
+                // missing; a cell that calls into it fails with a
+                // symbol-not-found naming the class, which is a diagnosable
+                // answer, and a cell that does not is unaffected.
+                skipDelivery.insert(lm);
+                continue;
+            }
             result.errorId = "CAJETA_ERROR_INTERNAL";
-            result.message = "module verify failed: " + verifyErr;
+            // Name the MODULE. Without it the message is the same whether the
+            // cell's own code is malformed, the stdlib accumulated a bad
+            // specialization, or a classpath archive was spliced in — three
+            // very different problems (7.2.5 was diagnosed wrong once for
+            // exactly this reason).
+            result.message = "module verify failed [" + lm->getModuleIdentifier()
+                           + "]: " + verifyErr;
             return result;
         }
     }
@@ -756,6 +837,7 @@ CellResult KernelSession::execute(const std::string& source,
     // disturbed by a later one.
     for (auto& m : fresh) {
         llvm::Module* lm = m->getLlvmModule();
+        if (skipDelivery.count(lm)) continue;
         llvm::SmallVector<char, 0> buf;
         {
             llvm::raw_svector_ostream os(buf);
