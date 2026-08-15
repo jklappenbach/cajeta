@@ -4,6 +4,17 @@ Authored 2026-08-14, from evidence gathered implementing `cajeta-llama`
 Units 11–13. Four ownership bugs in one unit, one root cause, and only
 one of the four caught at compile time.
 
+**Revised 2026-08-14, after implementation contradicted it three times.**
+The original drew its requirements from one unit's experience and stated
+a simplified language model as settled fact; every subsequent error
+descended from that. This revision (a) replaces the model statement with
+the measured one (§1.2), (b) grounds the requirements in an external
+codebase that hit the same categories independently (§1.4), (c) adds the
+two requirements the original lacked — operation-bound view lifetimes
+and compiler fidelity to `#` (§3.6, §3.7) — and (d) removes an
+acceptance criterion that asserted a count nobody had verified (§6.2).
+Claims below are marked *measured* where a test establishes them.
+
 ## 1. Definition
 
 ### 1.1 Purpose
@@ -15,11 +26,43 @@ enforceable rather than aspirational.
 
 ### 1.2 The problem, from evidence
 
-Cajeta's plain `=` **lends**; `#` transfers title. The compiler proves
-this within a function body — `CAJETA_ERROR_DANGLING_LEND` is precise
-and helpful. It cannot see an ownership contract that lives in another
-library's *documentation*, and today stdlib APIs disagree about that
-contract with no signal at the call site.
+**The language model, stated correctly.** This spec's first draft opened
+"plain `=` lends; `#` transfers title", called that model settled in
+§1.4, and reasoned from it. Three conclusions in this document were
+wrong as a direct result, each caught by a gate or a measurement rather
+than by review. The simplification is the single largest source of error
+in the work so far, so it is replaced here rather than patched
+downstream.
+
+Ownership in cajeta is **runtime-conditional on both sides of a call**.
+What differs by position is *who decides*:
+
+| Position | Decided by | Carried in | Spelling |
+|---|---|---|---|
+| name → name | the **spelling** | statically | `=` lends, `#=` transfers |
+| argument | the **caller** | the transfer word | `f(x)` lends, `f(#x)` transfers |
+| result | the **callee** | the return-flag TLS | plain `T` may still carry a title |
+| slot store | the **source's mode** | per-slot bit, via `#=` | a lend stays a lend |
+
+Two consequences that the simplification hides, both measured:
+
+- **A plain (non-`#`) return is not statically a borrow.** A plain-return
+  wrapper that tail-calls a `#` method rides the inner flag through
+  (`SignatureAbiTests.tailCallThroughPlainReturnKeepsTitle`), and
+  `Stream.fold<R>` does it through its callback's `#R` — genuinely
+  runtime-variable, since the callback is a parameter. `=` from such a
+  call is therefore not a lend: the local's drop entry is armed from the
+  arriving flag (`LocalVariableDeclaration.cpp:251`).
+- **`#x` on a borrow does not transfer.** It forwards the mode it was
+  handed. The lender keeps title and frees on drop, so a receiver that
+  outlives the lender reads reused memory (§3.1, measured).
+
+Only the **name → name** row matches the original one-line summary. The
+compiler proves that row within a function body —
+`CAJETA_ERROR_DANGLING_LEND` is precise and helpful. What it cannot see
+is an ownership contract that lives in another library's
+*documentation*, and today stdlib APIs disagree about that contract with
+no signal at the call site.
 
 Observed while writing ~2,600 lines against the stdlib in one unit:
 
@@ -53,10 +96,60 @@ cost being paid.
 - Two compiler checks (§4).
 - A documented migration for APIs that violate the convention today.
 
-### 1.4 Non-goals
+### 1.4 External evidence
 
-- Changing the language's ownership model. `=` lends, `#` transfers,
-  `#=` stores title. That model is sound and is not in question.
+The §1.2 table is one unit's experience with one library, which is thin
+ground for a convention. `llama.cpp` — a mature, widely-deployed C/C++
+inference engine, and `cajeta-llama`'s reference implementation —
+independently hit every category this spec names, and its workarounds
+are the strongest available evidence that these are real requirements
+rather than local taste.
+
+- **1.4.1 A sink marked only by prose.**
+  `llama_sampler_chain_add(chain, smpl)` carries the comment
+  *"important: takes ownership of the sampler object and will free it
+  when llama_sampler_free is called"* (`include/llama.h:1290`). Two
+  identically-typed pointer parameters, one captured and one not,
+  disambiguated by a comment that had to shout **important:** because
+  the signature could not carry the fact. This is §2.4 and §7.4, found
+  in production C rather than argued from first principles.
+
+- **1.4.2 The same type with opposite ownership, decided by
+  provenance.** `llama_batch_init(...)` allocates buffers the caller
+  must release with `llama_batch_free`, while
+  `llama_batch_get_one(tokens, n)` wraps a **caller-owned** array and
+  must not be freed (`include/llama.h:911-928`). One struct type, two
+  constructors, opposite obligations, distinguishable only by which
+  function produced the value. This is §2.6's failure mode — ownership
+  contingent on something the type does not express — in a widely-copied
+  API.
+
+- **1.4.3 Views whose lifetime is bound to an OPERATION, not a scope.**
+  `llama_get_logits_ith(ctx, i)` returns a raw `float *` into context
+  memory that the next decode overwrites, and
+  `llama_adapter_lora_init` documents *"The adapter is valid as long as
+  the associated model is not freed"* (`include/llama.h:643`). Neither
+  bound is a lexical scope. Cajeta's model cannot currently express
+  either — see §3.6, a requirement this spec previously lacked.
+
+- **1.4.4 Data ownership split from metadata ownership.** `ggml`'s
+  `no_alloc` context flag (`ggml/include/ggml.h:662`) builds tensors
+  that describe memory they do not own — the mmap'd weight file being
+  the motivating case. A descriptor pointing at foreign memory that must
+  never be freed is the borrow-return case at its most consequential,
+  and it is why §2.2 is a default rather than a preference.
+
+Read together these say the convention is not cajeta-specific
+bookkeeping: it is the set of distinctions any system passing buffers
+across an API boundary is forced to make, and that C makes only in
+comments.
+
+### 1.5 Non-goals
+
+- Changing the language's ownership model. The runtime-conditional model
+  described in §1.2 is the language as it stands, and this spec does not
+  propose altering it — only describing it accurately and making its
+  contracts legible at the call site.
 - Lifetime *inference* or a borrow checker in the Rust sense.
 - Reworking collections. `ArrayList`'s model is the target, not the
   problem.
@@ -72,8 +165,17 @@ lending a view, and each has one correct default.
   returns **owned** (`#T`). A conversion-shaped call never hands back a
   window into another object's interior.
 - **2.2** When an API exposes interior state for reading (`keyAt`,
-  `asBytes`, `get(i)`) it returns a **borrow** (plain `T`), never takes
-  title, and the caller copies if the value must outlive the container.
+  `asBytes`, `get(i)`) it returns a **view**: spelled plain `T`, and its
+  body returns *only* interior reads, so the return flag is always
+  borrow. It never takes title, and the caller copies if the value must
+  outlive the container.
+
+  The second clause is not pedantry. Plain `T` alone does not mean
+  borrow (§1.2) — it means the callee decides at run time. A view is the
+  case where the callee always decides "borrow", and that is a property
+  of the BODY, not of the signature. It is also exactly what a compiler
+  can check (§4.1), which is why the convention is stated this way
+  rather than as "plain `T` means borrow".
 - **2.3** When an API is a **sink** — a collection or other container
   whose stated job is to hold values — it takes a plain `T` parameter
   and stores with `#=`, so `add(v)` lends and `add(#v)` transfers, with
@@ -87,9 +189,26 @@ lending a view, and each has one correct default.
   the unmarked one; the sharp spelling is explicit. `setString` /
   `setStringOwned` is exactly backwards today and inverts.
 - **2.6** When ownership would depend on a runtime property of the
-  argument — its representation, length, or provenance — the API is
-  **non-conforming**. Ownership is a static contract or it is not a
-  contract.
+  argument that **neither side can see or state** — its representation,
+  its length, its provenance — the API is **non-conforming**.
+
+  This is narrower than the "ownership is a static contract or it is not
+  a contract" first drafted here, which the language itself falsifies:
+  the transfer word and the return flag make ownership runtime-carried
+  by design (§1.2), and `ArrayList.add` is conforming precisely because
+  the caller chooses at run time. The distinction that matters is
+  whether the decision is **carried and attributable**:
+
+  | | Decided at | Visible to the caller | Verdict |
+  |---|---|---|---|
+  | `f(#x)` / `f(x)` | run time | yes — the caller wrote it | conforming |
+  | `#=` slot store | run time | yes — mode came from the source | conforming |
+  | `setString(s)` | run time | **no** — SSO vs slice, internal | non-conforming |
+  | `llama_batch` (§1.4.2) | construction | **no** — depends which ctor ran | non-conforming |
+
+  Runtime-conditional ownership is fine. Ownership conditioned on a
+  property the caller cannot observe, and that no party recorded, is
+  not.
 - **2.7** When a borrow-returning accessor exists, its documentation
   states the lifetime bound in one line, and its name does not suggest
   materialization (`viewOf`, `bytesAt`, `...At` read as views; `to...`,
@@ -130,6 +249,33 @@ lending a view, and each has one correct default.
   measurement justifies it — the tokenizer's `currentBytes()` zero-copy
   key matching (`cajeta-llama` spec 13.7) is the model: deliberate,
   named, and opt-in.
+- **3.6** When a view's validity is bound to an **operation** rather
+  than a scope — invalidated by the next mutating call, or living only
+  as long as some other object — the API states that bound, and the
+  convention does not pretend a scope-based rule covers it.
+
+  *Requirement added from §1.4.3, and previously missing.* Every §2.2
+  view in this spec is implicitly scope-bounded: copy it if it must
+  outlive the container. `llama.cpp` shows two bounds that are not
+  scopes at all — logits invalidated by the next decode, and an adapter
+  valid only while its model lives. Cajeta cannot express either today,
+  and this spec should not imply otherwise. What it requires now is
+  honesty at the boundary: such an API documents the invalidating
+  operation by name. Whether the language should carry it is deferred
+  (§7.5) rather than quietly assumed away.
+- **3.7** When a signature spells `#`, the compiler honours it —
+  everywhere the spelling is legal.
+
+  *Requirement added from a defect, not from theory.* Interface methods
+  declared `#T` carried `returnsOwnership == false`: the interface
+  member path builds its `Method` by hand and read only the return TYPE
+  out of `typeTypeOrVoid`, dropping the `#` beside it, so callers of
+  every `#`-returning interface method were told the result was a
+  borrow. Four `@Native` `String` methods had the mirror defect from the
+  other direction, declaring plain returns while transferring.
+  A convention resting on signatures is worth exactly as much as the
+  compiler's fidelity to them, so that fidelity is a requirement in its
+  own right and not an implementation detail. See §7.4.
 
 ## 4. Compiler enforcement
 
@@ -213,8 +359,18 @@ than as corruption.
 
 - **6.1** The two checks are implemented, with a test per rejection
   and per non-rejection (conforming code still compiles).
-- **6.2** The four `cajeta-llama` Unit 13 bugs are reproduced as
-  compiler tests, and three of the four now fail to compile.
+- **6.2** The `cajeta-llama` Unit 13 bugs are reproduced as compiler
+  tests, and each is recorded as caught, uncaught-with-reason, or
+  not-reproducible.
+
+  *Re-grounded.* This previously asserted "three of the four now fail to
+  compile" — a number written before the check existed and never
+  verified against it. What is measured today: the `keyAt` shape is
+  rejected (`TransferOfBorrowTests.llamaKeyAtShapeRejected`), and the
+  same shape behind an unprovable accessor is NOT rejected and still
+  corrupts (`OwnershipArrayCanaryTests`, DISABLED, §7.2). An acceptance
+  criterion that states a count in advance invites the count to be
+  defended; stating the disposition per bug does not.
 - **6.3** The stdlib builds clean and the routine gate is green.
 - **6.4** The convention is documented where developers meet it — the
   language-ownership skill and the stdlib overview — not only here.
@@ -229,6 +385,24 @@ than as corruption.
   local before being stored? Recommendation: track through
   straight-line locals; conservatively allow what it cannot prove, so
   the check never blocks valid code.
+
+  *No longer hypothetical.* The same gap exists on the §4.1 side and is
+  measured: an accessor written `T v = this.data; return v;` is not a
+  provable view, so the check stays silent while the code corrupts
+  identically to the shape it does catch (`OwnershipArrayCanaryTests`,
+  shipped DISABLED for exactly this reason). Straight-line tracking
+  closes both sides at once, and those two tests are its acceptance —
+  they should pass with no edit.
+
+- **7.5** Should the language express a view's validity bound (§3.6) —
+  invalidated-by-operation, or valid-while-another-object-lives — or
+  does documenting it suffice? No recommendation yet: `llama.cpp` proves
+  the need exists in real systems (§1.4.3), but nothing in `cajeta.*`
+  currently has this shape, and inventing lifetime syntax against zero
+  in-tree instances is how a language grows features nobody uses. Revisit
+  when the first in-tree case appears — the KV-cache and mmap'd-weight
+  paths in `cajeta-llama` are the likeliest source, since they are where
+  `llama.cpp` hit it.
 
 - **7.3 CLOSED 2026-08-14 — no producer/consumer/sink annotation, in
   docs or in code.** Decided by the developer; the reasoning below is

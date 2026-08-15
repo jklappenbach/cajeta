@@ -155,8 +155,17 @@ namespace cajeta {
         // already classified as borrows, and the locals this check exists for
         // are exactly the ones that were NOT so classified (they carry a drop
         // entry). Recorded provenance is authoritative on its own.
+        // Provenance is read from the FIELD only, never from the by-name
+        // Scope map. That map was a fallback for the recording and reading
+        // sites not reliably sharing a Scope, but it keys on the local's NAME
+        // and walks ancestors — so a name declared in one method matched a
+        // same-named local in another. `Exec.cajeta` has `ColF64 r =
+        // s.exprOf();` in one method and `AggResult r = Exec.evalAgg(...)` in
+        // another; `#r` at the second site was rejected and blamed on
+        // `exprOf()`, a call it never made. Six Table/FilterSelect gate
+        // failures, all one bug. Field identity is per-declaration and cannot
+        // collide.
         string callOrigin = field->getCallBorrowOrigin();
-        if (callOrigin.empty()) callOrigin = callBorrowOriginOf(name);
         if (!callOrigin.empty()) {
             throw Exception(
                 "cannot transfer ownership of `" + name
