@@ -1,6 +1,8 @@
 package cajeta.collection.ltm;
 
+import cajeta.error.RecoverableException;
 import cajeta.lang.String;
+import cajeta.wire.BufferEncoder;
 import cajeta.wire.Encoder;
 import cajeta.io.file.File;
 import cajeta.io.file.OpenMode;
@@ -64,6 +66,10 @@ public class LtmPager<K, V> {
     private File file;
     private Encoder<K> keyEnc;
     private Encoder<V> valEnc;
+    /** Optional allocation-free encoders (plan 10.2.4); null → the
+     *  allocating `Encoder` path. Set via {@link #setBufferEncoders}. */
+    private BufferEncoder<K> keyFast;
+    private BufferEncoder<V> valFast;
 
     private int32 order;
     private int32 pageSize;
@@ -104,6 +110,8 @@ public class LtmPager<K, V> {
                     int32 order, int32 pageSize, int32 capacity) {
         this.keyEnc = keyEnc;
         this.valEnc = valEnc;
+        this.keyFast = null;
+        this.valFast = null;
         this.pageSize = pageSize;
         this.capacity = capacity;
         this.clock = 0;
@@ -166,6 +174,23 @@ public class LtmPager<K, V> {
     /** Bump the live entry count by one (call after inserting a new key). */
     public void incEntryCount() {
         this.entryCount = this.entryCount + 1;
+    }
+
+    /** Drop the live entry count by one (call after tombstoning a key). */
+    public void decEntryCount() {
+        this.entryCount = this.entryCount - 1;
+    }
+
+    /**
+     * Install allocation-free encoders (plan 10.2.4): `serializeNode`
+     * writes each entry with `encodeInto` — zero per-entry allocations —
+     * instead of `Encoder.encode`'s fresh buffer per entry. The
+     * allocating path stays for pagers without them (10.1.8).
+     */
+    public void setBufferEncoders(BufferEncoder<K> keyFast,
+            BufferEncoder<V> valFast) {
+        this.keyFast = keyFast;
+        this.valFast = valFast;
     }
 
     /**
@@ -324,6 +349,14 @@ public class LtmPager<K, V> {
             }
             i = i + 1;
         }
+        if (victim == -1) {
+            // Every frame is pinned: the pool is smaller than one
+            // operation's working set (a put pins its whole root-to-leaf
+            // path, so capacity must exceed the tree's depth). Fail
+            // loudly — the -1 would otherwise corrupt the frame tables.
+            throw heap RecoverableException("ltm pager: all " + this.capacity
+                + " frames are pinned; capacity must exceed the tree depth");
+        }
         if (this.frameDirty[victim]) {
             this.writeFrame(victim);
         }
@@ -384,9 +417,12 @@ public class LtmPager<K, V> {
     private #int8[] serializeNode(LtmBPlusTreeNode<K, V> node) {
         int32 psz = this.pageSize;
         int8[] buf = heap int8[psz];
+        // Leaf pages write format 2: tombstone bytes follow the values
+        // (plan 10.2.1). Format-1 leaves (pre-tombstone files) are still
+        // READ (all entries alive); everything writes the new format.
         int32 leafByte = 0;
         if (node.leaf) {
-            leafByte = 1;
+            leafByte = 2;
         }
         buf[0] = (int8) leafByte;
         this.putI32(buf, 1, node.numKeys);
@@ -394,33 +430,52 @@ public class LtmPager<K, V> {
         int32 p = 13;
         int32 i = 0;
         while (i < node.numKeys) {
-            K k = node.keys[i];
-            int8[] kb = this.keyEnc.encode(k);
-            int32 klen = (int32) kb.count();
-            this.putI32(buf, p, klen);
-            p = p + 4;
-            int32 j = 0;
-            while (j < klen) {
-                buf[p + j] = kb[j];
-                j = j + 1;
+            int32 klen = 0;
+            if (this.keyFast != null) {
+                // Allocation-free per-entry path (plan 10.2.4).
+                klen = this.keyFast.encodeInto(node.keys[i], buf, p + 4);
+            } else {
+                K k = node.keys[i];
+                int8[] kb = this.keyEnc.encode(k);
+                klen = (int32) kb.count();
+                int32 j = 0;
+                while (j < klen) {
+                    buf[p + 4 + j] = kb[j];
+                    j = j + 1;
+                }
             }
-            p = p + klen;
+            this.putI32(buf, p, klen);
+            p = p + 4 + klen;
             i = i + 1;
         }
         if (node.leaf) {
             i = 0;
             while (i < node.numKeys) {
-                V v = node.values[i];
-                int8[] vb = this.valEnc.encode(v);
-                int32 vlen = (int32) vb.count();
-                this.putI32(buf, p, vlen);
-                p = p + 4;
-                int32 j = 0;
-                while (j < vlen) {
-                    buf[p + j] = vb[j];
-                    j = j + 1;
+                int32 vlen = 0;
+                if (this.valFast != null) {
+                    vlen = this.valFast.encodeInto(node.values[i], buf, p + 4);
+                } else {
+                    V v = node.values[i];
+                    int8[] vb = this.valEnc.encode(v);
+                    vlen = (int32) vb.count();
+                    int32 j = 0;
+                    while (j < vlen) {
+                        buf[p + 4 + j] = vb[j];
+                        j = j + 1;
+                    }
                 }
-                p = p + vlen;
+                this.putI32(buf, p, vlen);
+                p = p + 4 + vlen;
+                i = i + 1;
+            }
+            i = 0;
+            while (i < node.numKeys) {
+                int32 db = 0;
+                if (node.dead[i]) {
+                    db = 1;
+                }
+                buf[p] = (int8) db;
+                p = p + 1;
                 i = i + 1;
             }
         } else {
@@ -440,7 +495,7 @@ public class LtmPager<K, V> {
     private #LtmBPlusTreeNode<K, V> deserializeNode(int64 pageId, int8[] buf) {
         int32 leafByte = (int32) buf[0];
         boolean leaf = false;
-        if (leafByte == 1) {
+        if (leafByte == 1 || leafByte == 2) {
             leaf = true;
         }
         int32 numKeys = this.getI32(buf, 1);
@@ -479,6 +534,14 @@ public class LtmPager<K, V> {
                 V v = this.valEnc.decode(vslice);
                 node.values[i] = v;
                 i = i + 1;
+            }
+            if (leafByte == 2) {
+                i = 0;
+                while (i < numKeys) {
+                    node.dead[i] = ((int32) buf[p]) == 1;
+                    p = p + 1;
+                    i = i + 1;
+                }
             }
         } else {
             int32 nc = numKeys + 1;

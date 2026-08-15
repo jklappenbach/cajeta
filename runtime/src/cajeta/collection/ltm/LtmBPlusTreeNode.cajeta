@@ -26,6 +26,10 @@ public final class LtmBPlusTreeNode<K, V> {
     public K[] keys;
     /** Leaf only: values parallel to `keys`. Null on internal nodes. */
     public V[] values;
+    /** Leaf only: tombstones parallel to `keys` — a dead entry is
+     *  skipped on read and dropped by compaction (plan 10.2.1; spec
+     *  13.17: mark-and-skip, not page merge). Null on internal nodes. */
+    public boolean[] dead;
     /** Internal only: `numKeys + 1` child page ids. Null on leaves. */
     public int64[] childIds;
     /** Leaf only: page id of the next leaf in order, or -1. */
@@ -52,9 +56,11 @@ public final class LtmBPlusTreeNode<K, V> {
         this.keys = heap K[order + 1];
         if (leaf) {
             this.values = heap V[order + 1];
+            this.dead = heap boolean[order + 1];
             this.childIds = null;
         } else {
             this.values = null;
+            this.dead = null;
             this.childIds = heap int64[order + 2];
         }
         this.nextLeafId = -1;

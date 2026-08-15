@@ -82,7 +82,11 @@ public final class JsonArray {
         JsonValue[] dst = heap JsonValue[newCap];
         int32 i = 0;
         while (i < this.sizeCount) {
-            dst[i] = this.data[i];
+            // title-stores §2.1 — forwarding move: a plain `=` left the old
+            // array owning its JsonValues, and the `#=` displacement below
+            // freed them through the element-drop walk (use-after-free for
+            // any array past 8 elements; json-grow-element-uaf).
+            dst[i] #= this.data[i];
             i = i + 1;
         }
         this.data #= dst;

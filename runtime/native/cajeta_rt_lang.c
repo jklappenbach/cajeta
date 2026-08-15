@@ -548,8 +548,10 @@ void* __cajeta_file_read_all(const char* path) {
 // fsync, then rename over `path`. On any failure the tmp file is
 // removed; the destination is either pre-write or fully post-write.
 //
-// Returns 0 on success, -1 on failure.
-int32_t __cajeta_file_write_all(const char* path, const void* data, int32_t len) {
+// Returns 0 on success, -1 on failure. `len` is int64 end to end — a
+// multi-GiB npy/safetensors payload must not truncate through this seam
+// (cajeta-llama 4.2.1, spec 3.2).
+int32_t __cajeta_file_write_all(const char* path, const void* data, int64_t len) {
     if (!path || len < 0) return -1;
     if (!data && len > 0) return -1;
 
@@ -562,9 +564,10 @@ int32_t __cajeta_file_write_all(const char* path, const void* data, int32_t len)
 
     int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0) return -1;
-    int32_t remaining = len;
+    int64_t remaining = len;
     const char* p = (const char*) data;
     while (remaining > 0) {
+        // write(2) caps a single call (Linux: 2^31-4096); loop past partials.
         ssize_t n = write(fd, p, (size_t) remaining);
         if (n < 0) {
             if (errno == EINTR) continue;
@@ -573,7 +576,7 @@ int32_t __cajeta_file_write_all(const char* path, const void* data, int32_t len)
             return -1;
         }
         p += n;
-        remaining -= (int32_t) n;
+        remaining -= (int64_t) n;
     }
     // Best-effort fsync; some filesystems treat it as a no-op.
     fsync(fd);
@@ -604,7 +607,13 @@ int32_t __cajeta_file_open(const char* path, int32_t mode) {
 //
 // `buf` is the cajeta-side int8[]'s data region — caller passes
 // `&data[0]`, which is `arrayPtr + 8` past the count word.
-int32_t __cajeta_file_read(int32_t fd, void* buf, int32_t max) {
+//
+// `max` and the return are int64 (cajeta-llama 4.2.1, spec 3.2): the old
+// int32 form turned a bit-31 length negative, and the `max <= 0` guard
+// returned 0 — indistinguishable from EOF. A single read(2) still caps at
+// ~2 GiB per call (Linux: 2^31-4096); the fill-to-max loop below carries a
+// ≥2 GiB request across as many calls as the kernel needs.
+int64_t __cajeta_file_read(int32_t fd, void* buf, int64_t max) {
     if (fd < 0 || !buf || max <= 0) return 0;
     // Streams (pipes, sockets, FIFOs, ttys) must return as soon as ANY
     // bytes are available: looping to fill `max` would block an interactive
@@ -621,9 +630,9 @@ int32_t __cajeta_file_read(int32_t fd, void* buf, int32_t max) {
             n = read(fd, buf, (size_t) max);
         } while (n < 0 && errno == EINTR);
         if (n < 0) return -1;
-        return (int32_t) n;  // 0 == EOF; otherwise bytes available now.
+        return (int64_t) n;  // 0 == EOF; otherwise bytes available now.
     }
-    int32_t got = 0;
+    int64_t got = 0;
     while (got < max) {
         ssize_t n = read(fd, ((char*) buf) + got, (size_t) (max - got));
         if (n < 0) {
@@ -631,18 +640,20 @@ int32_t __cajeta_file_read(int32_t fd, void* buf, int32_t max) {
             return -1;
         }
         if (n == 0) break;  // EOF.
-        got += (int32_t) n;
+        got += (int64_t) n;
     }
     return got;
 }
 
-// Streaming write. Loops past partial writes; returns 0 on success,
-// -1 on hard error.
-int32_t __cajeta_file_write(int32_t fd, const void* data, int32_t len) {
+// Streaming write. Loops past partial writes; returns the count written —
+// `len` on success (the documented `File.write` contract, cajeta-llama
+// 4.2.5; this returned a bare 0 before), -1 on hard error. int64 end to
+// end, like the read side.
+int64_t __cajeta_file_write(int32_t fd, const void* data, int64_t len) {
     if (fd < 0 || len < 0) return -1;
     if (!data && len > 0) return -1;
     const char* p = (const char*) data;
-    int32_t remaining = len;
+    int64_t remaining = len;
     while (remaining > 0) {
         ssize_t n = write(fd, p, (size_t) remaining);
         if (n < 0) {
@@ -650,9 +661,9 @@ int32_t __cajeta_file_write(int32_t fd, const void* data, int32_t len) {
             return -1;
         }
         p += n;
-        remaining -= (int32_t) n;
+        remaining -= (int64_t) n;
     }
-    return 0;
+    return len;
 }
 
 // Phase E — random-access File helpers.
@@ -756,6 +767,94 @@ int32_t __cajeta_file_flush(int32_t fd) {
 void __cajeta_file_close(int32_t fd) {
     if (fd < 0) return;
     close(fd);
+}
+
+// ---------------------------------------------------------------------------
+// Memory-mapped files — cajeta.io.file.MappedFile's instance @Native seam
+// (cajeta-llama 4.2.4; spec §3.1, decision 13.4). MappedFile owns the
+// mapping: map-by-fd at construction, unmap at drop (KernelBuffer's RAII
+// precedent). Read-only, whole-file, offset 0 — the checkpoint-loading
+// shape. Instance @Native, so every function takes the forwarded `this`
+// first (the __cajeta_arrow_addr convention) and ignores it.
+//
+// Returns the base address of the mapping, or 0 on failure. The fd may be
+// closed after this returns: POSIX keeps a mapping alive across close(2),
+// and on Windows the section handle is closed here — the mapped view holds
+// its own reference.
+#if defined(_WIN32)
+int64_t __cajeta_file_map(void* self, int32_t fd, int64_t length) {
+    (void) self;
+    if (fd < 0 || length <= 0) return 0;
+    HANDLE h = (HANDLE) _get_osfhandle(fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    HANDLE sec = CreateFileMappingA(h, NULL, PAGE_READONLY, 0, 0, NULL);
+    if (!sec) return 0;
+    void* base = MapViewOfFile(sec, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(sec);   // the view keeps the section alive
+    return (int64_t)(intptr_t) base;
+}
+
+void __cajeta_file_unmap(void* self, int64_t base, int64_t length) {
+    (void) self;
+    (void) length;      // UnmapViewOfFile releases the whole view
+    if (base) UnmapViewOfFile((void*)(intptr_t) base);
+}
+#else
+#include <sys/mman.h>
+int64_t __cajeta_file_map(void* self, int32_t fd, int64_t length) {
+    (void) self;
+    if (fd < 0 || length <= 0) return 0;
+    // MAP_PRIVATE read-only: pages fault in from the page cache on demand,
+    // so a mapping larger than RAM stays as resident as its touched pages
+    // (spec 3.1 — the whole reason this exists). No MAP_POPULATE, ever.
+    void* base = mmap(NULL, (size_t) length, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (base == MAP_FAILED) return 0;
+    return (int64_t)(intptr_t) base;
+}
+
+void __cajeta_file_unmap(void* self, int64_t base, int64_t length) {
+    (void) self;
+    if (base && length > 0) munmap((void*)(intptr_t) base, (size_t) length);
+}
+#endif
+
+// Single byte at `off`, zero-extended (0..255); -1 on a dead mapping. The
+// cajeta side casts to int8 — MappedFile.get's per-byte probe.
+int32_t __cajeta_file_map_byte(void* self, int64_t base, int64_t off) {
+    (void) self;
+    if (!base || off < 0) return -1;
+    return (int32_t) *((const unsigned char*)(intptr_t) base + off);
+}
+
+// Bulk copy out of the mapping to a RAW destination address — the typed-
+// storage seam (MappedFile.copyTo): the caller resolved its destination via
+// Storage.hostAddress()/the Arrow address tier and owns the bounds guarantee
+// on that side. The source window is bounds-checked cajeta-side against the
+// mapping length. Returns the count copied, -1 on a bad argument.
+int64_t __cajeta_file_map_copy(void* self, int64_t base, int64_t off,
+                               int64_t dstAddr, int64_t n) {
+    (void) self;
+    if (!base || !dstAddr || off < 0 || n < 0) return -1;
+    memcpy((void*)(intptr_t) dstAddr,
+           (const char*)(intptr_t) base + off, (size_t) n);
+    return n;
+}
+
+// Bulk copy out of the mapping into a cajeta int8[]. `dstArr` is the array
+// HEADER pointer ({ i64 count, data... }); the element region starts at +8.
+// Bounds against the mapping length are the cajeta side's job (it holds
+// `length`); bounds against the destination array ride the count word here
+// as a cheap backstop. Returns the count copied, -1 on a bad argument.
+int64_t __cajeta_file_map_read(void* self, int64_t base, int64_t off,
+                               void* dstArr, int64_t dstOff, int64_t n) {
+    (void) self;
+    if (!base || !dstArr || off < 0 || dstOff < 0 || n < 0) return -1;
+    int64_t dstCount = *((const int64_t*) dstArr);
+    if (dstCount < 0) dstCount = dstCount & 0x7FFFFFFFFFFFFFFFLL; // shared-tag bit
+    if (dstOff + n > dstCount) return -1;
+    memcpy((char*) dstArr + 8 + dstOff,
+           (const char*)(intptr_t) base + off, (size_t) n);
+    return n;
 }
 
 // ===========================================================================

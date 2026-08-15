@@ -1,6 +1,9 @@
 package cajeta.collection.ltm;
 
+import cajeta.io.file.File;
+import cajeta.io.file.OpenMode;
 import cajeta.lang.String;
+import cajeta.wire.BufferEncoder;
 import cajeta.wire.Encoder;
 
 /**
@@ -24,12 +27,20 @@ import cajeta.wire.Encoder;
  * and `cajeta.lang.Math`. Primitive K works today; class K needs
  * `operator<` / `operator>` (the v1 limitation).
  *
- * ## v1 surface
+ * ## Surface
  *
- * `put` / `get` / `containsKey` / `min` / `count` / `isEmpty` /
- * `flush` / `close`. Misses return the type's zero value.
- * **Deletion is deferred**, same as the in-memory tree — this is an
- * insert/lookup index.
+ * `put` / `get` / `containsKey` / `remove` / `min` / `count` /
+ * `isEmpty` / `scan` / `scanFrom` / `compact` / `flush` / `close`.
+ * Misses return the type's zero value.
+ *
+ * **Deletion** is tombstone-based (cajeta-llama plan 10.2.1; spec
+ * 13.17): `remove` marks the entry dead in place — no page merging or
+ * underflow rebalancing — and every read path skips dead entries.
+ * Space comes back through {@link #compact}, which rewrites the index
+ * without its tombstones. **Ordered iteration** walks the leaf chain
+ * through the pager (`scan` / `scanFrom` return an {@link LtmCursor}),
+ * so a scan far larger than the resident pool pages in and out as it
+ * goes.
  *
  * ## Memory discipline
  *
@@ -45,6 +56,15 @@ import cajeta.wire.Encoder;
 public final class LtmBPlusTree<K, V> {
 
     private LtmPager<K, V> pager;
+    // Retained for compact(): the encoders are borrows (caller keeps
+    // ownership for the tree's lifetime); the path is an owned copy.
+    private Encoder<K> keyEncB;
+    private Encoder<V> valEncB;
+    private BufferEncoder<K> keyFastB;
+    private BufferEncoder<V> valFastB;
+    private String pathStr;
+    private int32 orderN;
+    private int32 capacityN;
 
     /**
      * Open (or create) the disk index at `path`. A new file is laid out
@@ -66,6 +86,33 @@ public final class LtmBPlusTree<K, V> {
     public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                         int32 order, int32 capacity) {
         this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
+        this.keyEncB = keyEnc;
+        this.valEncB = valEnc;
+        this.keyFastB = null;
+        this.valFastB = null;
+        this.pathStr = "" + path;
+        this.orderN = order;
+        this.capacityN = capacity;
+    }
+
+    /**
+     * The buffer-encoder form (plan 10.2.4): `keyFast` / `valFast` must
+     * produce byte-identical encodings to `keyEnc` / `valEnc`; page
+     * serialization then allocates nothing per entry. The allocating
+     * constructor above is unchanged (10.1.8).
+     */
+    public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
+                        BufferEncoder<K> keyFast, BufferEncoder<V> valFast,
+                        int32 order, int32 capacity) {
+        this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
+        this.pager.setBufferEncoders(keyFast, valFast);
+        this.keyEncB = keyEnc;
+        this.valEncB = valEnc;
+        this.keyFastB = keyFast;
+        this.valFastB = valFast;
+        this.pathStr = "" + path;
+        this.orderN = order;
+        this.capacityN = capacity;
     }
 
     @Inline
@@ -138,6 +185,11 @@ public final class LtmBPlusTree<K, V> {
         if (pos < leaf.numKeys) {
             // keys[pos] >= key; equal iff not (key < keys[pos]).
             if ((key < leaf.keys[pos]) == false) {
+                if (leaf.dead[pos]) {
+                    // Revive a tombstoned key (plan 10.2.1).
+                    leaf.dead[pos] = false;
+                    this.pager.incEntryCount();
+                }
                 leaf.values[pos] = value;
                 this.pager.markDirty(leafId);
                 updated = true;
@@ -148,10 +200,12 @@ public final class LtmBPlusTree<K, V> {
             while (j > pos) {
                 leaf.keys[j] = leaf.keys[j - 1];
                 leaf.values[j] = leaf.values[j - 1];
+                leaf.dead[j] = leaf.dead[j - 1];
                 j = j - 1;
             }
             leaf.keys[pos] #= key;
             leaf.values[pos] #= value;
+            leaf.dead[pos] = false;
             leaf.numKeys = leaf.numKeys + 1;
             this.pager.markDirty(leafId);
             this.pager.incEntryCount();
@@ -194,6 +248,10 @@ public final class LtmBPlusTree<K, V> {
         int32 i = 0;
         while (i < node.numKeys) {
             if ((key < node.keys[i]) == false && (node.keys[i] < key) == false) {
+                if (node.dead[i]) {
+                    V[] gone = heap V[1];
+                    return gone[0];
+                }
                 V v = node.values[i];
                 return v;
             }
@@ -224,6 +282,43 @@ public final class LtmBPlusTree<K, V> {
         int32 i = 0;
         while (i < node.numKeys) {
             if ((key < node.keys[i]) == false && (node.keys[i] < key) == false) {
+                return node.dead[i] == false;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /**
+     * Tombstone the entry for `key` (plan 10.2.1; spec 13.17): the key
+     * becomes absent to `get`/`containsKey`/scans and `count` drops, but
+     * no page merging happens — {@link #compact} reclaims the space.
+     * Returns whether a live entry was removed. O(log n).
+     */
+    public boolean remove(K key) {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            return false;
+        }
+        int64 cur = rootId;
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        while (node.leaf == false) {
+            int32 i = 0;
+            while (i < node.numKeys && (key < node.keys[i]) == false) {
+                i = i + 1;
+            }
+            cur = node.childIds[i];
+            node = this.pager.fetch(cur);
+        }
+        int32 i = 0;
+        while (i < node.numKeys) {
+            if ((key < node.keys[i]) == false && (node.keys[i] < key) == false) {
+                if (node.dead[i]) {
+                    return false;
+                }
+                node.dead[i] = true;
+                this.pager.markDirty(cur);
+                this.pager.decEntryCount();
                 return true;
             }
             i = i + 1;
@@ -246,8 +341,117 @@ public final class LtmBPlusTree<K, V> {
             cur = node.childIds[0];
             node = this.pager.fetch(cur);
         }
-        K kmin = node.keys[0];
-        return kmin;
+        // Skip tombstones, following the leaf chain if a whole leaf died.
+        while (true) {
+            int32 i = 0;
+            while (i < node.numKeys) {
+                if (node.dead[i] == false) {
+                    K kmin = node.keys[i];
+                    return kmin;
+                }
+                i = i + 1;
+            }
+            if (node.nextLeafId == -1) {
+                K[] miss = heap K[1];
+                return miss[0];
+            }
+            node = this.pager.fetch(node.nextLeafId);
+        }
+    }
+
+    /**
+     * Ordered cursor over every LIVE entry, ascending (plan 10.2.3).
+     * The cursor reads through the pager — a scan larger than the
+     * resident pool pages in and out mid-walk — and is valid only while
+     * this tree is open and unmodified.
+     */
+    public #LtmCursor<K, V> scan() {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            return heap LtmCursor<K, V>(this.pager, -1, 0);
+        }
+        int64 cur = rootId;
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        while (node.leaf == false) {
+            cur = node.childIds[0];
+            node = this.pager.fetch(cur);
+        }
+        LtmCursor<K, V> c = heap LtmCursor<K, V>(this.pager, cur, 0);
+        c.settle();
+        return #c;
+    }
+
+    /**
+     * Ordered cursor positioned at the first live entry with key AT OR
+     * AFTER `key` (plan 10.2.3; 10.1.5).
+     */
+    public #LtmCursor<K, V> scanFrom(K key) {
+        int64 rootId = this.pager.getRoot();
+        if (rootId == -1) {
+            return heap LtmCursor<K, V>(this.pager, -1, 0);
+        }
+        int64 cur = rootId;
+        LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        while (node.leaf == false) {
+            int32 i = 0;
+            while (i < node.numKeys && (key < node.keys[i]) == false) {
+                i = i + 1;
+            }
+            cur = node.childIds[i];
+            node = this.pager.fetch(cur);
+        }
+        int32 pos = 0;
+        while (pos < node.numKeys && node.keys[pos] < key) {
+            pos = pos + 1;
+        }
+        LtmCursor<K, V> c = heap LtmCursor<K, V>(this.pager, cur, pos);
+        c.settle();
+        return #c;
+    }
+
+    /**
+     * Rewrite the index without its tombstones (plan 10.2.2): stream the
+     * live entries in order into a scratch file (`path + ".compact"`),
+     * byte-copy the result back over this file, and reopen. Bounded
+     * memory — both trees run through capped pagers. The scratch file is
+     * left truncated to zero bytes (no delete syscall in the File
+     * surface).
+     */
+    public void compact() {
+        String scratch = this.pathStr + ".compact";
+        // Truncate any stale scratch, then build the compacted tree.
+        File t0 = File.open(scratch, OpenMode.WRITE);
+        t0.close();
+        LtmBPlusTree<K, V> fresh = heap LtmBPlusTree<K, V>(scratch,
+            this.keyEncB, this.valEncB, this.orderN, this.capacityN);
+        if (this.keyFastB != null) {
+            fresh.pager.setBufferEncoders(this.keyFastB, this.valFastB);
+        }
+        LtmCursor<K, V> cur = this.scan();
+        while (cur.valid()) {
+            fresh.put(cur.key(), cur.value());
+            cur.next();
+        }
+        fresh.close();
+        this.pager.close();
+        // Byte-copy scratch → path (truncating), then empty the scratch.
+        File src = File.open(scratch, OpenMode.READ);
+        File dst = File.open(this.pathStr, OpenMode.WRITE);
+        int8[] buf = heap int8[65536];
+        int64 n = src.read(buf, 0, 65536);
+        while (n > 0) {
+            dst.write(buf, 0, n);
+            n = src.read(buf, 0, 65536);
+        }
+        src.close();
+        dst.close();
+        File t1 = File.open(scratch, OpenMode.WRITE);
+        t1.close();
+        this.pager #= heap LtmPager<K, V>(this.pathStr, this.keyEncB,
+            this.valEncB, this.orderN, 4096, this.capacityN);
+        if (this.keyFastB != null) {
+            this.pager.setBufferEncoders(this.keyFastB, this.valFastB);
+        }
     }
 
     // ----- internals ---------------------------------------------------
@@ -265,6 +469,7 @@ public final class LtmBPlusTree<K, V> {
         while (k < right.numKeys) {
             right.keys[k] = leaf.keys[mid + k];
             right.values[k] = leaf.values[mid + k];
+            right.dead[k] = leaf.dead[mid + k];
             k = k + 1;
         }
         leaf.numKeys = mid;

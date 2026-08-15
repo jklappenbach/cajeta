@@ -1,0 +1,147 @@
+package cajeta.io.file;
+
+import cajeta.lang.String;
+
+/**
+ * An owning, read-only memory mapping of a file (cajeta-llama spec §3.1,
+ * decision 13.4). The file's bytes are paged in on demand by the OS — a
+ * checkpoint larger than available RAM maps in full and stays only as
+ * resident as its touched pages — and the mapping is released at a defined
+ * point: this handle's drop, per `KernelBuffer`'s RAII precedent
+ * (constructor maps, scope exit unmaps).
+ *
+ * The type is deliberately an owner rather than a bare `File.map()` view:
+ * the language has no `unsafe` and no foreign-buffer adoption, so the
+ * mapping needs a holder whose destructor can unmap it exactly once.
+ * Consumers that need zero-copy access to the mapped bytes (the
+ * safetensors loader) read through {@link #address} and treat the result
+ * as borrowed: valid only while this `MappedFile` is live.
+ *
+ * ```cajeta
+ * MappedFile m = heap MappedFile("/models/model.safetensors");
+ * int64 n = m.size();
+ * int8[] header = heap int8[8];
+ * m.read(0, header, 0, 8);
+ * m.close();                    // or let the destructor unmap at scope exit
+ * ```
+ */
+public class MappedFile {
+    /** Base address of the mapping, or 0 when unmapped/failed. */
+    int64 base;
+
+    /** Length of the mapping in bytes (the file's size at open), -1 on failure. */
+    int64 length;
+
+    /**
+     * Map the whole file at `path`, read-only. On failure (missing file,
+     * empty file, exhausted address space) the handle is inert: `size()`
+     * returns -1 and reads return error values — the eventual
+     * IoException-throwing wrapper lands with the exception hierarchy,
+     * matching the `File` helpers' contract.
+     */
+    public MappedFile(String path) {
+        File f = File.open(path, OpenMode.READ);
+        this.length = f.size();
+        if (this.length > 0) {
+            this.base = this.mapFd(f.fd, this.length);
+        } else {
+            this.base = 0;
+        }
+        // POSIX keeps a mapping alive across close(2); the Windows shim
+        // closes its section handle itself. The fd is not needed again.
+        f.close();
+        if (this.base == 0) {
+            this.length = -1;
+        }
+    }
+
+    /** The mapped length in bytes, or -1 if the mapping failed. */
+    public int64 size() {
+        return this.length;
+    }
+
+    /**
+     * The base address of the mapped bytes — the zero-copy seam for bulk
+     * consumers. BORROWED: valid only while this handle is live and only
+     * until {@link #close}. 0 when unmapped.
+     */
+    public int64 address() {
+        return this.base;
+    }
+
+    /**
+     * The byte at `offset`, zero-extended into 0..255 then narrowed to
+     * `int8`. Returns -1 (as int8) on a dead mapping. Per-byte probe;
+     * bulk consumers use {@link #read} or {@link #address}.
+     */
+    public int8 get(int64 offset) {
+        if (this.base == 0 || offset < 0 || offset >= this.length) {
+            return (int8) -1;
+        }
+        return (int8) this.mapByte(this.base, offset);
+    }
+
+    /**
+     * Copy `n` bytes starting at mapping offset `off` into
+     * `dst[dstOff .. dstOff+n)`. Returns the count copied, or -1 on a dead
+     * mapping, an out-of-range source window, or a destination overrun.
+     */
+    public int64 read(int64 off, int8[] dst, int64 dstOff, int64 n) {
+        if (this.base == 0 || off < 0 || n < 0 || off + n > this.length) {
+            return -1;
+        }
+        return this.mapRead(this.base, off, dst, dstOff, n);
+    }
+
+    /**
+     * Copy `n` bytes from mapping offset `off` to the raw destination
+     * address `dstAddr` — the bulk seam for consumers whose destination is
+     * typed storage rather than an `int8[]` (a `Tensor`'s buffer via
+     * `Storage.hostAddress()`, the same address tier as the Arrow interop).
+     * One memcpy replaces an element-at-a-time decode loop (cajeta-llama
+     * 5.2.2). The destination must have `n` writable bytes — address-tier
+     * callers own that guarantee, exactly as Arrow consumers do. Returns
+     * the count copied, or -1 on a dead mapping / out-of-range source
+     * window / null destination.
+     */
+    public int64 copyTo(int64 off, int64 dstAddr, int64 n) {
+        if (this.base == 0 || off < 0 || n < 0 || off + n > this.length
+                || dstAddr == 0) {
+            return -1;
+        }
+        return this.mapCopy(this.base, off, dstAddr, n);
+    }
+
+    /**
+     * Unmap now. Idempotent; the destructor calls this, so letting the
+     * handle drop is equivalent.
+     */
+    public void close() {
+        if (this.base != 0) {
+            this.unmapFd(this.base, this.length);
+            this.base = 0;
+        }
+    }
+
+    ~MappedFile() {
+        this.close();
+    }
+
+    // Native seam (instance @Native per the KernelBuffer precedent; the C
+    // side receives the forwarded `this` first and ignores it).
+
+    @Native("__cajeta_file_map")
+    private int64 mapFd(int32 fd, int64 length);
+
+    @Native("__cajeta_file_unmap")
+    private void unmapFd(int64 base, int64 length);
+
+    @Native("__cajeta_file_map_byte")
+    private int32 mapByte(int64 base, int64 off);
+
+    @Native("__cajeta_file_map_read")
+    private int64 mapRead(int64 base, int64 off, int8[] dst, int64 dstOff, int64 n);
+
+    @Native("__cajeta_file_map_copy")
+    private int64 mapCopy(int64 base, int64 off, int64 dstAddr, int64 n);
+}

@@ -205,7 +205,7 @@ public final class Npy {
     public static void saveF32(String path, Tensor<float32> t) {
         int8[] buf = Npy.encodeF32(t);
         int64 len = buf.count();
-        File.writeAllBytes(path, buf, (int32) len);
+        File.writeAllBytes(path, buf, len);
     }
 
     /** Load a `float32` `.npy` from `path`. *
@@ -260,7 +260,7 @@ public final class Npy {
     public static void saveF64(String path, Tensor<float64> t) {
         int8[] buf = Npy.encodeF64(t);
         int64 len = buf.count();
-        File.writeAllBytes(path, buf, (int32) len);
+        File.writeAllBytes(path, buf, len);
     }
 
     /** Load a `float64` `.npy` from `path`. */
@@ -324,7 +324,7 @@ public final class Npy {
     public static void saveI32(String path, Tensor<int32> t) {
         int8[] buf = Npy.encodeI32(t);
         int64 len = buf.count();
-        File.writeAllBytes(path, buf, (int32) len);
+        File.writeAllBytes(path, buf, len);
     }
 
     /** Load an `int32` `.npy` from `path`. */
@@ -377,7 +377,7 @@ public final class Npy {
     public static void saveI64(String path, Tensor<int64> t) {
         int8[] buf = Npy.encodeI64(t);
         int64 len = buf.count();
-        File.writeAllBytes(path, buf, (int32) len);
+        File.writeAllBytes(path, buf, len);
     }
 
     /** Load an `int64` `.npy` from `path`. */
