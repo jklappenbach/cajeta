@@ -180,6 +180,54 @@ namespace cajeta {
         }
     }
 
+    void Scope::rejectCapturedBorrowParam(const string& srcName,
+                                          const string& intoDesc) {
+        FieldPtr field = getField(srcName);
+        if (!field) return;
+
+        // The source must be a FORMAL. A local is the caller's own business
+        // and is already policed by DANGLING_LEND.
+        auto pf = dynamic_pointer_cast<ParameterField>(field);
+        string origin = srcName;
+        if (!pf) {
+            // Straight-line case (spec §7.2): the parameter reached here
+            // through an intermediate local. Provenance is recorded on the
+            // FIELD at the declaration — by identity, never by name, since
+            // a by-name map matched same-named locals across methods and
+            // produced six false positives in U2.
+            const string& via = field->getParamBorrowOrigin();
+            if (via.empty()) return;
+            origin = via;
+            FieldPtr pfield = getField(via);
+            pf = pfield ? dynamic_pointer_cast<ParameterField>(pfield)
+                        : nullptr;
+            if (!pf) return;
+        }
+
+        // A `#T` formal already told the caller it would be kept.
+        auto fp = pf->getFormalParameter();
+        if (fp && fp->isTransferred()) return;
+
+        auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
+        bool titleBearing = klass && !klass->isValueType()
+                && !klass->isSharedCapableValue();
+        if (!titleBearing) return;
+
+        string what = (origin == srcName)
+            ? ("parameter `" + origin + "`")
+            : ("parameter `" + origin + "` (via `" + srcName + "`)");
+        throw Exception(
+            "cannot keep " + what + " in " + intoDesc
+                + ": a plain parameter is a BORROW — the caller keeps the "
+                  "title and frees it, so this object would be left pointing "
+                  "at freed memory once the call returns. Fix: spell the "
+                  "parameter `#" + klass->toCanonical() + "` so the call site "
+                  "must surrender ownership, or store with `#=` if this type "
+                  "is a container whose caller chooses (the ArrayList model), "
+                  "or copy the value.",
+            "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
+    }
+
     set<string> Scope::lendsOf(const string& holder) {
         Scope* target = this;
         while (target) {

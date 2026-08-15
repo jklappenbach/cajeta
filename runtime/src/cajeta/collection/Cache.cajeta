@@ -291,15 +291,22 @@ public final class Cache<K, V> {
     void linkAtHead(CacheNode<K, V> node) {
         // borrow-alias: the entries map owns every node; head/tail/prev are
         // link aliases into it — one borrowed local feeds all three stores.
+        //
+        // The link stores spell `#=`, not `=`, per the ownership convention
+        // (§2.3). `#=` records the SOURCE'S MODE per slot: `node` arrives
+        // lent, so every link slot records a BORROW and no link ever frees a
+        // node the map owns. A plain `=` instead asserts a capture the
+        // signature does not declare, which CAPTURED_BORROW_PARAM rejects —
+        // this method was the first site it caught.
         CacheNode<K, V> n = node;
         n.prev = null;
         n.next = this.mruHead;
         if (this.mruHead != null) {
-            this.mruHead.prev = n;
+            this.mruHead.prev #= n;
         }
-        this.mruHead = n;
+        this.mruHead #= n;
         if (this.lruTail == null) {
-            this.lruTail = n;
+            this.lruTail #= n;
         }
     }
 

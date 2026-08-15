@@ -116,7 +116,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
         // the value load. (Compiler-gap workaround, same class as the
         // documented `heap T[this.field]` mistype.)
         int32 c = AsyncReader.DEFAULT_BUFFER;
-        this.stream = stream;
+        this.stream #= stream;
         this.cap = c;
         this.buf = heap RingBuffer(c, 0, c);
         this.fill = heap int8[c];
@@ -135,7 +135,7 @@ public class AsyncReader implements AsyncIterator<int8[]> {
         if (c < 1) {
             c = 1;
         }
-        this.stream = stream;
+        this.stream #= stream;
         this.cap = c;
         this.buf = heap RingBuffer(c, 0, c);
         this.fill = heap int8[c];

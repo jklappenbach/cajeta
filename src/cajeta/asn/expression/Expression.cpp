@@ -613,6 +613,17 @@ bool cajetaRhsCarriesRedundantSharp(
                         auto mv = make_shared<MoveExpression>(
                             childContext->getStart());
                         mv->addChild(child);
+                        // U3 — mark this wrapper MODE-CARRYING. `#=` is not a
+                        // claim of title (see the SHARP_ASSIGN comment above:
+                        // "when no title was tendered the store records a
+                        // borrow"), so the U2 transfer-of-a-borrow rejection
+                        // must not fire on it. Without this the two checks
+                        // collide head-on: U3 prescribes `#=` as the fix for a
+                        // borrow-alias capture, and U2 then rejects that very
+                        // `#=` because the source is a borrow. `#x` at a call
+                        // argument or a return still carries its own claim and
+                        // stays checked.
+                        mv->setModeCarrying(true);
                         child = mv;
                     }
                     // title-stores §2.3 Phase 2 (plan 7.2.2) — the legacy
@@ -3191,7 +3202,17 @@ bool cajetaRhsCarriesRedundantSharp(
                 // CALL-ARGUMENT spelling (a `callerTransferred` flag, which
                 // never builds this node) cannot drift apart again. The
                 // per-case reasoning moved with the code.
-                scope->rejectTransferOfBorrow(mvName);
+                //
+                // A MODE-CARRYING `#=` store is exempt: it records whatever
+                // mode the source holds rather than claiming a title, so a
+                // lent source records a borrow and nothing is double-freed.
+                // The rejection is for a claim that is false; `#=` makes no
+                // claim. (U3: this is also what lets `#=` be the prescribed
+                // fix for a borrow-alias capture without the two checks
+                // contradicting each other.)
+                if (!isModeCarrying()) {
+                    scope->rejectTransferOfBorrow(mvName);
+                }
                 scope->demoteToBorrow(mvName,
                     "moved by `#" + mvName + "` at line "
                         + std::to_string(getSourceLine()));

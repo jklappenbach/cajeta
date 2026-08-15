@@ -221,6 +221,18 @@ namespace cajeta {
         // motivating case. One body, three call sites, no drift.
         void rejectTransferOfBorrow(const string& name);
 
+        // U3 (spec 2.4, 3.2, 4.2) — the CALLEE-side mirror of the above.
+        // Throws CAJETA_ERROR_CAPTURED_BORROW_PARAM when `srcName` is a
+        // plain (non-`#`) parameter being stored beyond the call, naming
+        // `#T` as the fix. `intoDesc` describes the destination for the
+        // diagnostic ("field `held`", "an array element").
+        //
+        // Callers gate on the STORE FORM: only a plain `=` store reaches
+        // here. A `#=` store is the sink contract (§2.3, ArrayList) and is
+        // always legal, which is why the opt-out needs no annotation.
+        void rejectCapturedBorrowParam(const string& srcName,
+                                       const string& intoDesc);
+
         // 5.2.7 — record `holder` now holds a lend of the local owner `src`.
         void recordLend(const string& holder, const string& src);
         // The local owners `holder` holds lends of (empty when none).

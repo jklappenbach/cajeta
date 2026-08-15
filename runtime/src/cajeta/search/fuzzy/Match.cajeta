@@ -17,7 +17,7 @@ public class Match<T> {
 
     /** Build a match. `key` ownership transfers in (pass a `#`-moved copy). */
     public Match(T value, String key, int32 distance) {
-        this.value = value;
+        this.value #= value;
         this.key = key;
         this.distance = distance;
     }

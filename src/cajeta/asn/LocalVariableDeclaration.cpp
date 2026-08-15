@@ -8,6 +8,7 @@
 #include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
+#include "../field/ParameterField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaClass.h"
@@ -1137,6 +1138,31 @@ namespace cajeta {
                                 && !ceCls->isValueType()) {
                             initIsBorrow = true;       // static owner path off
                             initIsFlaggedCall = true;  // the flag decides
+                        }
+                    }
+                    // U3 (spec §7.2) — straight-line capture. `T v = p;`
+                    // where `p` is a plain FORMAL makes `v` a borrow of the
+                    // caller's value, so a later `this.f = v` is the same
+                    // capture as `this.f = p`, one hop later. Record the
+                    // origin on the FIELD (identity, not name — a by-name
+                    // map matched same-named locals across methods in U2).
+                    if (auto srcId = dynamic_pointer_cast<IdentifierExpression>(
+                            children[0])) {
+                        if (auto sc = module->getScopeStack().peek()) {
+                            const string& srcName = srcId->getTextValue();
+                            FieldPtr srcF = sc->getField(srcName);
+                            if (dynamic_pointer_cast<ParameterField>(srcF)) {
+                                field->setParamBorrowOrigin(srcName);
+                                if (FieldPtr own = sc->getField(
+                                        declarator->getIdentifier())) {
+                                    own->setParamBorrowOrigin(srcName);
+                                }
+                            } else if (srcF
+                                    && !srcF->getParamBorrowOrigin().empty()) {
+                                // Chained: `T a = p; T b = a;` — carry it.
+                                field->setParamBorrowOrigin(
+                                    srcF->getParamBorrowOrigin());
+                            }
                         }
                     }
                     if (auto mc = dynamic_pointer_cast<MethodCallExpression>(children[0])) {

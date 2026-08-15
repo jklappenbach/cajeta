@@ -98,7 +98,7 @@ public class AsyncWriter {
         // value load. (Compiler-gap workaround; same class as the documented
         // `heap T[this.field]` mistype.)
         int32 c = AsyncWriter.DEFAULT_BUFFER;
-        this.stream = stream;
+        this.stream #= stream;
         this.cap = c;
         this.buf = heap int8[c];
         this.size = 0;
@@ -114,7 +114,7 @@ public class AsyncWriter {
         if (c < 1) {
             c = 1;
         }
-        this.stream = stream;
+        this.stream #= stream;
         this.cap = c;
         this.buf = heap int8[c];
         this.size = 0;

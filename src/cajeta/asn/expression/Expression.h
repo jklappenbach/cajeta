@@ -614,10 +614,21 @@ namespace cajeta {
         // only visible while the parse context is in hand.
         void setLegacyTransferAssign(bool v) { legacyTransferAssign = v; }
         bool isLegacyTransferAssign() const { return legacyTransferAssign; }
+
+        // U3 — set on the wrapper the `dst #= v` desugar synthesises. `#=` is
+        // MODE-CARRYING: it records whatever mode the source actually holds,
+        // so a lent source records a BORROW rather than claiming a title. It
+        // is therefore exempt from the U2 transfer-of-a-borrow rejection,
+        // which exists to catch a claim that is FALSE. Without the exemption
+        // the two checks collide: U3 prescribes `#=` as the fix for a
+        // borrow-alias capture and U2 rejects that very `#=`.
+        void setModeCarrying(bool v) { modeCarrying = v; }
+        bool isModeCarrying() const { return modeCarrying; }
     private:
         bool forwardingSlotMove = false;
         bool redundantSharp = false;
         bool legacyTransferAssign = false;
+        bool modeCarrying = false;
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a

@@ -753,7 +753,7 @@ public class Tensor<T> {
 
     void markView(Tensor<T> base) {
         this.viewFlag = true;
-        this.baseTensor = base;
+        this.baseTensor #= base;
     }
 
     /**

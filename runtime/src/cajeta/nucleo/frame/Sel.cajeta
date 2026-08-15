@@ -25,9 +25,12 @@ public class Sel {
         return heap Sel(outName);
     }
 
-    void bindExpr(ColF64 e) { this.expr = e; }
-    void bindI(ColI64 e) { this.iRef = e; }
-    void bindStr(ColStr e) { this.strRef = e; }
+    // Borrow-alias binds (ownership convention §2.3): the frame owns the
+    // columns; a Sel only points at one. `#=` records the source's mode per
+    // slot, so a lent column stays a borrow and the Sel never frees it.
+    void bindExpr(ColF64 e) { this.expr #= e; }
+    void bindI(ColI64 e) { this.iRef #= e; }
+    void bindStr(ColStr e) { this.strRef #= e; }
 
     /** Append `s` after this node (the Sels collector calls this). */
     void chain(#Sel s) {

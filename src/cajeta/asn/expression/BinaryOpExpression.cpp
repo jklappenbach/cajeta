@@ -1010,6 +1010,41 @@ namespace cajeta {
         // `operator[]` (the read form) for its side effects, only to
         // discard the result. Match the BinaryOpExpression operator-
         // dispatch shape used for `+` / `==` / etc.
+        // U3 (spec 3.2, 4.2) — CAPTURED_BORROW_PARAM at an ELEMENT store,
+        // `this.slots[i] = p`. Sited before the operator-dispatch branch
+        // below because that one handles only CLASS receivers; a plain array
+        // receiver takes a different path entirely, and the capture is the
+        // same defect either way.
+        //
+        // RHS must be a BARE identifier, which is what makes this safe: the
+        // `#=` desugar wraps its RHS in a MoveExpression, so a mode-carrying
+        // element store is skipped here without needing to inspect the
+        // spelling — the sink contract opts out exactly as it does for
+        // fields.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
+            if (auto eIdx = dynamic_pointer_cast<ArrayIndexExpression>(
+                    children[0])) {
+                auto& ech = eIdx->getChildren();
+                auto eRecv = ech.empty() ? nullptr
+                    : dynamic_pointer_cast<DotExpression>(ech[0]);
+                bool onThis = false;
+                if (eRecv) {
+                    auto& rch = eRecv->getChildren();
+                    onThis = !rch.empty()
+                        && dynamic_pointer_cast<ThisExpression>(rch[0]);
+                }
+                if (onThis) {
+                    if (auto eSrc = dynamic_pointer_cast<IdentifierExpression>(
+                            children[1])) {
+                        if (auto sc = module->getScopeStack().peek()) {
+                            sc->rejectCapturedBorrowParam(
+                                eSrc->getTextValue(),
+                                "element of `" + eRecv->getIdentifier() + "`");
+                        }
+                    }
+                }
+            }
+        }
         if (binaryOp == BINARY_OP_ASSIGN
                 && !children.empty()
                 && dynamic_pointer_cast<ArrayIndexExpression>(children[0])) {
@@ -3248,6 +3283,38 @@ namespace cajeta {
                     // pointer. Record the edge (receiver -> lent local); the
                     // escape sites check it. `#x` spellings own -> no edge.
                     if (!fobOwnedSpelling) {
+                        // U3 (spec 2.4, 3.2, 4.2) — CAPTURED_BORROW_PARAM.
+                        // A plain `=` store of a plain FORMAL keeps the
+                        // caller's borrow beyond the call. Gated on
+                        // `!fobOwnedSpelling`, so the `#=` sink contract
+                        // (§2.3, the ArrayList model) opts out for free and
+                        // needs no annotation — which is what §7.3 closed.
+                        if (auto capDot = dynamic_pointer_cast<DotExpression>(
+                                lhsAst)) {
+                            // Only a DIRECT `this.field = p` store. A nested
+                            // path (`this.head.prev = p`) writes into ANOTHER
+                            // object's field, where the capture is not this
+                            // frame's to judge — and §7.2 says allow what the
+                            // analysis cannot prove. It also keeps the check
+                            // off a path where `#=` is not recognised as an
+                            // owned spelling, which would otherwise reject the
+                            // very `#=` the convention prescribes as the fix.
+                            auto& cch = capDot->getChildren();
+                            bool onThis = !cch.empty()
+                                && dynamic_pointer_cast<ThisExpression>(cch[0]);
+                            if (onThis) {
+                                if (auto capSrc = dynamic_pointer_cast<
+                                        IdentifierExpression>(rhsAst)) {
+                                    if (auto sc =
+                                            module->getScopeStack().peek()) {
+                                        sc->rejectCapturedBorrowParam(
+                                            capSrc->getTextValue(),
+                                            "field `" + capDot->getIdentifier()
+                                                + "`");
+                                    }
+                                }
+                            }
+                        }
                         if (auto lendDot = dynamic_pointer_cast<DotExpression>(
                                 lhsAst)) {
                             auto& lch = lendDot->getChildren();

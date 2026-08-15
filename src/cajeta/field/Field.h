@@ -68,6 +68,9 @@ namespace cajeta {
         // (`#x` codegen) do not reliably share a Scope object; the field is
         // the one identity both sides already resolve.
         string callBorrowOrigin;
+        // U3 — the plain parameter a local was initialised from (§7.2's
+        // straight-line capture). Same identity-not-name rationale.
+        string paramBorrowOrigin;
         // script-units U4 — seeded into a script entry's root scope from the
         // SessionState table (a binding created by an earlier unit of the
         // same session). Carries a type but no alloca in this unit; moved
@@ -180,6 +183,18 @@ namespace cajeta {
 
         void setCallBorrowOrigin(const string& origin) {
             callBorrowOrigin = origin;
+        }
+
+        // U3 — the plain PARAMETER this local was initialised from, or "".
+        // Lets the capture check follow spec §7.2's straight-line case
+        // (`T v = p; this.f = v;`). Carried on the field for the same
+        // reason as callBorrowOrigin above: identity, not name.
+        const string& getParamBorrowOrigin() const {
+            return paramBorrowOrigin;
+        }
+
+        void setParamBorrowOrigin(const string& origin) {
+            paramBorrowOrigin = origin;
         }
 
         const string& getHierarchicalName() {

@@ -98,8 +98,17 @@ public class Channel<T> {
         // out and re-lends it; senders keep ownership). An owning channel —
         // `#=` here + a fused claim in receive() — is a deliberate future
         // conversion, not a respell.
+        //
+        // The store below spells `#=`, which is a RESPELL, not the owning
+        // conversion this note warns against: `#=` is MODE-CARRYING, so a
+        // lent `item` records a BORROW in the slot and the behaviour is
+        // byte-identical to the plain `=` it replaces. The owning channel
+        // would additionally need senders to pass `#` and receive() to hand
+        // the title on — neither changes here. The plain form is rejected by
+        // CAPTURED_BORROW_PARAM because it asserts a capture the signature
+        // does not declare.
         T lent = item;
-        this.buf[this.tail] = lent;
+        this.buf[this.tail] #= lent;
         this.tail = (this.tail + 1) % this.capacity;
         this.size = this.size + 1;
         Cajeta.condvarNotifyAll(this.cond);
