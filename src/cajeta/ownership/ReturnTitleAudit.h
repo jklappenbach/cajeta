@@ -93,6 +93,16 @@ namespace cajeta::ownership {
                              const std::string& returnType);
         static const std::set<std::string>& consideredMethods();
 
+        // 8.2.7 sizing — a `#`-returning call result bound with PLAIN `=`.
+        // Spec §4.6 would require `#=` at these sites so an acquisition is
+        // visible where the value is received; this counts them BEFORE the
+        // rule is written, because 3.3.3's lesson is that an ownership check
+        // whose blast radius is discovered by the gate costs a unit.
+        // Deduped by receiving method + line.
+        static void ownedBind(const std::string& calleeKey,
+                              const std::string& inMethod, int line);
+        static const std::set<std::string>& ownedBinds();
+
         static void clear();
     };
 

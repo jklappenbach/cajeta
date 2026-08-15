@@ -38,6 +38,10 @@ namespace cajeta::ownership {
             static std::set<std::string> methods;
             return methods;
         }
+        std::set<std::string>& binds() {
+            static std::set<std::string> sites;
+            return sites;
+        }
     }  // namespace
 
     bool ReturnTitleAudit::enabled() {
@@ -84,9 +88,23 @@ namespace cajeta::ownership {
         return seen();
     }
 
+    void ReturnTitleAudit::ownedBind(const std::string& calleeKey,
+                                     const std::string& inMethod, int line) {
+        std::string key = inMethod + ":" + std::to_string(line) + " <- "
+            + calleeKey;
+        if (!binds().insert(key).second) return;
+        std::cerr << "cajeta: note: [owned-bind] " << inMethod << ":" << line
+                  << " callee=" << calleeKey << "\n";
+    }
+
+    const std::set<std::string>& ReturnTitleAudit::ownedBinds() {
+        return binds();
+    }
+
     void ReturnTitleAudit::clear() {
         sink().clear();
         seen().clear();
+        binds().clear();
     }
 
 }  // namespace cajeta::ownership

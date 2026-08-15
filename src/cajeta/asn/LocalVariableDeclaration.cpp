@@ -6,6 +6,7 @@
 #include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/ScriptUnitSynthesis.h"
+#include "cajeta/ownership/ReturnTitleAudit.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/ParameterField.h"
@@ -1263,6 +1264,30 @@ namespace cajeta {
                             mc->resolveTypes(module);
                         }
                         if (MethodPtr rm = mc->getResolvedMethod()) {
+                            // 8.2.7 sizing (spec §4.6) — this local binds a
+                            // `#`-returning result with PLAIN `=`. The `#=`
+                            // form wraps its initializer in a MoveExpression
+                            // and so never reaches this cast, which makes
+                            // arriving here with an owning callee exactly the
+                            // population §4.6 would require to change.
+                            // Counted, not rejected: the rule is unwritten
+                            // until the number is known (3.3.3).
+                            if (rm->isReturnsOwnership()
+                                    && ownership::ReturnTitleAudit::enabled()) {
+                                auto holder = module->getCurrentMethod();
+                                std::string in = holder
+                                    ? (holder->getParent()
+                                        ? holder->getParent()->toCanonical() + "."
+                                        : std::string())
+                                        + holder->getName()
+                                    : std::string("<none>");
+                                std::string calleeKey =
+                                    (rm->getParent()
+                                        ? rm->getParent()->toCanonical() + "."
+                                        : std::string()) + rm->getName();
+                                ownership::ReturnTitleAudit::ownedBind(
+                                    calleeKey, in, mc->getSourceLine());
+                            }
                             // A plain return is NOT statically a borrow: the
                             // return flag is RUNTIME state, so a plain-return
                             // wrapper rides an inner `#` call's title through
