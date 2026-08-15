@@ -4,6 +4,7 @@
 
 #include "Block.h"
 #include "LocalVariableDeclaration.h"
+#include "Statement.h"
 #include "../method/Method.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/ScriptUnitSynthesis.h"
@@ -130,7 +131,22 @@ namespace cajeta {
                 arenaMark = builder->CreateCall(markFn, {}, "arena.mark");
             }
         }
-        bool debugInfo = module->getFlags().debugInfo;
+        // EITHER flag. `safepoints` exists so the Jupyter kernel can ask for
+        // statement boundaries WITHOUT the keep-all class-registry retention
+        // that `debugInfo` also implies (CompilerFlags::safepoints explains
+        // why). But debug info without safepoints is not a thing anyone
+        // wants — a debugger stops AT them — so `debugInfo` implies them
+        // here rather than only in `applyDebugInfo`.
+        //
+        // Gating on `safepoints` ALONE was a silent regression for the whole
+        // debugger: `CajetaJitHost` assigns `flags.debugInfo` directly rather
+        // than going through applyDebugInfo, so every JIT debug session
+        // emitted zero safepoints. Nothing caught it because
+        // `SafepointCodegenTests` lives in `cajeta_debug_test`, a second
+        // binary neither ctest nor cajeta_tests.sh runs. Deriving it at the
+        // USE site is what makes the two flags impossible to desync.
+        bool safepoints = module->getFlags().safepoints
+                       || module->getFlags().debugInfo;
         bool lineInfo = module->getFlags().lineInfo;
         // title-tracking §3.1.5 — checkpoint the move log: a block whose
         // codegen ends in a return/throw never reaches the join, so the
@@ -180,6 +196,27 @@ namespace cajeta {
                 }
             }
         }
+        // jupyter-kernel U3 (spec 4.2) — mark the cell's trailing expression,
+        // the candidate for `Out[N]`. Done HERE, at the AST, because the
+        // synthesizer splices token text before any type exists and so cannot
+        // tell `x + y;` (a value to display) from `xs.add(1);` (a statement).
+        // This side only says WHICH statement; ExpressionStatement, which has
+        // the resolved type, decides whether it produces a value at all.
+        //
+        // The candidate is the statement just before the entry's synthesized
+        // trailing `return 0;` — and only when synthesis actually appended
+        // one, since a cell ending in its own `return` has no trailing
+        // expression by definition.
+        const AbstractSyntaxNode* resultCandidate = nullptr;
+        if (module->isScriptUnit() && module->hasScriptSyntheticTail()
+                && m && m->getName() == scriptEntryName()
+                && m->getBlock().get() == this && children.size() >= 2) {
+            auto& last = children[children.size() - 2];
+            if (dynamic_pointer_cast<ExpressionStatement>(last)) {
+                resultCandidate = last.get();
+            }
+        }
+
         for (auto child: children) {
             // Stop emitting once the current BB has a terminator —
             // anything after a return / throw / break / continue is
@@ -211,7 +248,10 @@ namespace cajeta {
             }
             if (lineInfo) dbg::emitLineMark(module, markLine);
             // CP2: statement-boundary safepoint before each statement.
-            if (debugInfo) emitDebugSafepoint(module, child);
+            if (safepoints) emitDebugSafepoint(module, child);
+            if (resultCandidate && child.get() == resultCandidate) {
+                module->setScriptResultPending(true);
+            }
             child->generateCode(module);
         }
 

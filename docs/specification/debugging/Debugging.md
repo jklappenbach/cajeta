@@ -32,14 +32,19 @@ debugger is one frontend; the notebook is another.
 > the `cajeta dap` subcommand (`src/main.cpp` dispatches it to
 > `cajeta::dap::DapServer`); the in-process breakpoint engine
 > (`src/cajeta/dbg/DebugController`); statement-boundary safepoints
-> emitted under `--debug-info` / `-g` (`src/cajeta/asn/Block.cpp`,
-> gated by the `CompilerMode::debugInfo` flag, off by default);
+> emitted under `--debug-info=full` / `-g`, or on their own via the
+> narrower `CompilerFlags::safepoints` the kernel uses
+> (`src/cajeta/asn/Block.cpp`; both off by default);
 > memory-facet local metadata (`dbg::MemoryFacets`,
-> `__cajeta_dbg_local`); and the destructor-breakpoint story below.
-> **Not yet implemented:** `cajeta lsp`, `cajeta kernel` (specced and
-> planned as of 2026-08-07 — `specs/jupyter-kernel-spec.md` over the
-> script-units language feature `specs/script-units-spec.md`, plans in
-> `agents/`; unbuilt), time-travel /
+> `__cajeta_dbg_local`); the destructor-breakpoint story below; and
+> **`cajeta kernel`** — the Jupyter kernel, running against Jupyter Lab
+> as of 2026-08-14: persistent JIT session, cross-cell bindings,
+> `Out[N]` rendering, structured `In[N]` tracebacks, five-channel
+> ZeroMQ transport with HMAC, and safepoint-based interrupt
+> (`src/cajeta/kernel/`). What of it is **not** built: the
+> notebook-plus-debugger bridge staged for v1.5 below, and the richer
+> MIME bundles of jupyter-kernel spec §8.2.
+> **Not yet implemented:** `cajeta lsp`, time-travel /
 > `cajeta record|replay`, and **DWARF emission** — the debug-info path
 > is the in-process safepoint system, *not* standard DWARF (the
 > compiler has no `DIBuilder` / `DICompileUnit` codegen today). Each
@@ -504,14 +509,23 @@ through a "kernel spec" registration:
 ```jsonc
 // ~/.local/share/jupyter/kernels/cajeta/kernel.json
 {
-    "argv":         ["cajeta", "kernel", "--connection-file={connection_file}"],
-    "display_name": "Cajeta",
-    "language":     "cajeta"
+    "argv":           ["cajeta", "kernel", "-f", "{connection_file}"],
+    "display_name":   "Cajeta",
+    "language":       "cajeta",
+    "interrupt_mode": "message"
 }
 ```
 
 `cajeta init --kernel` installs this kernel.json into the right
-place per platform.
+place per platform, with the absolute path of the running `cajeta`
+binary as `argv[0]`. It refuses to overwrite an existing spec unless
+you pass `--force`.
+
+Both `-f <path>` and `--connection-file=<path>` are accepted; `-f` is
+the form a kernel spec's `argv` actually uses. `interrupt_mode` is
+`message`, so a frontend's interrupt arrives as an `interrupt_request`
+on the control channel rather than as a signal — see
+[Interrupt](#interrupt) below for why that matters here.
 
 ### Kernel state model
 
@@ -573,6 +587,37 @@ origin.x + origin.y
 
 This declares `Point`, binds `origin` into the session scope,
 returns `0` as `Out[5]:`.
+
+### Interrupt
+
+Shipped. A frontend's interrupt arrives as an `interrupt_request` on
+the **control** channel and stops the running cell at its next
+statement-boundary safepoint. The cell ends as a `KeyboardInterrupt`
+cell error with an `In[N]` traceback; the session, its bindings, and
+every earlier cell survive, and the next cell runs normally.
+
+Two properties are worth stating because they are structural rather
+than incidental:
+
+**The kernel answers while it is stuck.** `interrupt_request` is
+handled on the transport's IO thread and never queued behind the
+execution thread. Queueing it would put the request behind the very
+cell it is meant to stop — a thread inside a runaway loop cannot drain
+its own queue, so the interrupt would arrive only once the loop ended,
+which is never.
+
+**The interrupt cannot be swallowed.** It unwinds to the session
+guard, not to the innermost handler, so a cell's own
+`catch (Exception e)` does not intercept it.
+
+**Limitation — interruption is safepoint-granular.** Safepoints are
+emitted in the cell's own module only, so a cell parked inside a long
+stdlib call or a native call reaches none and will not stop until it
+returns to its own code. The kernel stays responsive throughout
+regardless; it is the *cell* that is late, not the kernel. An
+interrupt arriving while nothing is running is a no-op, acknowledged
+per protocol — it is cleared at the start of every cell, so it can
+never land on a cell the user did not aim at.
 
 ### Notebook + debugger combined
 

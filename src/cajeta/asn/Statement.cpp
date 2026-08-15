@@ -11,6 +11,7 @@
 #include "expression/NewExpression.h"
 #include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
 #include "../field/HeapField.h"
@@ -426,6 +427,12 @@ namespace cajeta {
     }
 
     llvm::Value* ExpressionStatement::generateCode(CajetaModulePtr module) {
+        // jupyter-kernel U3 — take the unit-result mark BEFORE generating
+        // anything. Our own expression may contain nested expression
+        // statements (a block-form lambda body), and the mark names exactly
+        // one statement; reading it later would let the innermost one claim
+        // it. Cleared by the take, so nothing downstream sees a stale mark.
+        bool unitResult = module->takeScriptResultPending();
         // A statement-position `spawn f(...);` never binds its Task —
         // mark it so the lowering hands ownership to the runtime scope
         // frame instead of a per-site drop entry (see SpawnExpression::
@@ -484,6 +491,10 @@ namespace cajeta {
         }
         llvm::Value* stmtVal = expression
             ? expression->generateCode(module) : nullptr;
+        // Render the cell's result before the discard handling below: a
+        // flagged class-pointer return is about to be dropped, and reading it
+        // afterwards would render freed memory.
+        if (unitResult) emitScriptUnitResult(module, expression, stmtVal);
         // title-tracking 6.2.2 — DISCARDED flagged return. A class-pointer
         // call result in statement position is a temp whose title (if the
         // callee surrendered one — a flagged `remove`, a `#T` return) has

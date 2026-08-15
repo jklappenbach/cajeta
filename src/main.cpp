@@ -20,6 +20,7 @@
 #include "cajeta/cli/XpuProfileCommand.h"
 #include "cajeta/jit/CajetaJitHost.h"
 #include "cajeta/dap/DapServer.h"
+#include "cajeta/kernel/KernelMain.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
 
 // CAJETA_VERSION and CAJETA_GIT_HASH are stamped at configure time by the
@@ -81,6 +82,8 @@ void printUsage(const char* progname) {
               << "                     (ide install | uninstall | list).\n"
               << "  jit-run <root> <package.Class.method>   Compile + run an entry point via the JIT.\n"
               << "  dap                Debug Adapter Protocol server over stdio (for IDE debugging).\n"
+              << "  kernel [-f <file>] Jupyter kernel over ZeroMQ. Started by a notebook frontend;\n"
+              << "                     install its kernelspec with `cajeta init --kernel`.\n"
               << "  compiler-mcp       Model Context Protocol server over stdio, serving skills\n"
               << "                     (searchSkills | listSkills | getSkills) to a coding agent.\n"
               << "  stdlib <cmd>       Embedded stdlib source access (stdlib list |\n"
@@ -317,6 +320,15 @@ int main(int argc, const char* argv[]) {
         cajeta::emitStreamRecordOnce();
         cajeta::dap::DapServer server;
         return server.runOverStdio();
+    }
+
+    // `cajeta kernel [-f <connection-file>]` — Jupyter v5.3 kernel over
+    // ZeroMQ (specs/jupyter-kernel-spec.md §3). Jupyter Lab starts this from
+    // the kernelspec `cajeta init --kernel` installs. Its stdout belongs to
+    // the CELLS being run, which the session captures per cell, so nothing
+    // here may print to stdout after the connection banner.
+    if (argc >= 2 && std::string(argv[1]) == "kernel") {
+        return cajeta::kernel::dispatchKernel(argc, argv);
     }
 
     // `cajeta compiler-mcp` — MCP stdio server for skill discovery

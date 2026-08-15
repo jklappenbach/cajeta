@@ -2383,6 +2383,39 @@ bool cajetaRhsCarriesRedundantSharp(
         if (srcInt && dstPtr) {
             return builder->CreateIntToPtr(val, dstTy);
         }
+        // FLOATING-POINT ↔ POINTER, i.e. a primitive crossing a WILDCARD.
+        //
+        // A `?`-typed slot is one pointer-sized word holding a primitive's
+        // BITS inline, so `(float64) t` on a `?` — and the store back the
+        // other way — are bit REINTERPRETATIONS, not conversions. A bitcast
+        // cannot express one: LLVM rejects a bitcast with a pointer on
+        // exactly one side, and both directions were reaching the fallback
+        // below. That is how `dev.cajeta.ml.grad.GradTape` came out
+        // unverifiable ("Invalid bitcast double -> ptr" / "ptr -> double")
+        // and took every module referencing it down with it.
+        //
+        // Route through the integer domain, which is what a reinterpretation
+        // means, sizing the hop to the POINTER WORD rather than assuming the
+        // two are the same width — `float32` through a 64-bit slot is the
+        // common case and it is a zext/trunc, not a bitcast.
+        if ((srcFp && dstPtr) || (srcPtr && dstFp)) {
+            const llvm::DataLayout& dl =
+                module->getLlvmModule()->getDataLayout();
+            llvm::Type* word = dl.getIntPtrType(dstTy->getContext(), 0);
+            if (srcFp) {
+                llvm::Value* bits = builder->CreateBitCast(
+                    val, llvm::Type::getIntNTy(
+                             dstTy->getContext(),
+                             srcTy->getPrimitiveSizeInBits()), "fp.bits");
+                return builder->CreateIntToPtr(
+                    builder->CreateZExtOrTrunc(bits, word), dstTy, "fp.slot");
+            }
+            llvm::Value* bits = builder->CreatePtrToInt(val, word, "slot.bits");
+            bits = builder->CreateZExtOrTrunc(
+                bits, llvm::Type::getIntNTy(dstTy->getContext(),
+                                            dstTy->getPrimitiveSizeInBits()));
+            return builder->CreateBitCast(bits, dstTy, "slot.fp");
+        }
         // Fallback to bitcast for anything that's bit-compatible.
         return builder->CreateBitCast(val, dstTy);
     }

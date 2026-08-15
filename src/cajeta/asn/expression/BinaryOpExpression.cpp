@@ -60,6 +60,28 @@ namespace cajeta {
         auto* okBB = llvm::BasicBlock::Create(ctx, label + ".ok", curFn);
         b.CreateCondBr(condTrap, trapBB, okBB);
         b.SetInsertPoint(trapBB);
+        // jupyter-kernel 2.3.2 — in a SESSION, hand the stop to the runtime
+        // first: it unwinds the cell to the session guard, which turns it
+        // into a failed cell rather than a dead kernel. It RETURNS when no
+        // cell is guarded, and then we trap exactly as before — so this is
+        // additive, and a module compiled outside a session emits the same
+        // two instructions it always did.
+        if (module->getFlags().trapsUnwind) {
+            llvm::FunctionCallee unwind = lmod->getOrInsertFunction(
+                "__cajeta_session_trap_unwind",
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx),
+                                        {llvm::PointerType::get(ctx, 0)},
+                                        false));
+            // The label names a BASIC BLOCK; the host shows this to a person,
+            // so it is spelled out rather than reused.
+            const std::string what =
+                label == "div"  ? "divide by zero"
+              : label == "mod"  ? "remainder by zero"
+              : (label == "shl" || label == "shr" || label == "ushr")
+                                ? "shift amount is at least the bit width"
+                                : "arithmetic overflow in " + label;
+            b.CreateCall(unwind, {b.CreateGlobalString(what, ".trapwhat")});
+        }
         llvm::Function* trapFn = llvm::Intrinsic::getOrInsertDeclaration(
             lmod, llvm::Intrinsic::trap);
         b.CreateCall(trapFn);
@@ -946,6 +968,19 @@ namespace cajeta {
         if (std::getenv("CAJETA_TRACE_BINOP") || std::getenv("CAJETA_DEBUG_ICMP")) {
             llvm::errs() << "BinaryOpExpression::generateCode binaryOp=" << binaryOp
                          << " children.size=" << children.size() << "\n";
+        }
+
+        // jupyter-kernel 2.1.3a — an assignment cannot take its value from a
+        // session binding whose class a later cell redefined: the old object
+        // would be stored where the new generation's layout is assumed. Every
+        // assignment form funnels through here, ahead of all of them, so the
+        // check cannot be routed around by an operator overload arm. A REBIND
+        // of the stale name itself (`p = heap Point(...)`) is untouched — the
+        // check reads the RHS, and rebinding is exactly the documented fix.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
+            rejectStaleGenerationUse(
+                module, dynamic_pointer_cast<Expression>(children[1]),
+                "the assigned variable");
         }
 
         // Short-circuit ops need to evaluate rhs only conditionally — handle before the
@@ -4202,20 +4237,31 @@ namespace cajeta {
         // assignment shape is covered uniformly. Stock assignment emits no
         // old-value drop for an owner local, so the runtime's rebind drop is
         // the only one — no double-drop.
-        if (binaryOp == BINARY_OP_ASSIGN && module->isScriptUnit()) {
+        // `assignment`, not `== BINARY_OP_ASSIGN`: a COMPOUND assign
+        // (`k += 2`) writes the binding just as surely, and gating on the
+        // plain form left `k` at its declared value for every later cell.
+        if (assignment && module->isScriptUnit()) {
             if (auto lhsId =
                     dynamic_pointer_cast<IdentifierExpression>(children[0])) {
                 const std::string& name = lhsId->getTextValue();
-                if (module->isScriptBindingName(name)) {
+                FieldPtr lookedUp;
+                if (auto sc0 = module->getScopeStack().peek()) {
+                    lookedUp = sc0->getField(name);
+                }
+                // `isScriptBindingName` is the set this UNIT declares, so a
+                // later cell ASSIGNING a name an earlier cell declared —
+                // `tag = "second";` rather than `String tag = "second";` —
+                // fell straight through and the registry never learned. The
+                // write landed in the local staging slot the seeded read
+                // materializes, and the next cell read the OLD value.
+                bool seeded = lookedUp && lookedUp->isSessionSeeded();
+                if (module->isScriptBindingName(name) || seeded) {
                     auto* builder = module->getBuilder();
                     llvm::Function* pfn =
                         builder->GetInsertBlock()->getParent();
                     if (pfn && pfn->getName().find(scriptEntryName())
                                    != llvm::StringRef::npos) {
-                        FieldPtr f;
-                        if (auto sc = module->getScopeStack().peek()) {
-                            f = sc->getField(name);
-                        }
+                        FieldPtr f = lookedUp;
                         auto klass = f
                             ? dynamic_pointer_cast<CajetaClass>(
                                   f->getType())
@@ -4231,17 +4277,55 @@ namespace cajeta {
                             dropFn = module->getRuntimeFunction(
                                 "__cajeta_string_drop");
                         }
-                        llvm::Function* bindFn = module->getRuntimeFunction(
-                            "__cajeta_session_bind");
-                        if (f && dropFn && bindFn) {
-                            auto& sctx = *module->getLlvmContext();
-                            llvm::Value* cur = builder->CreateLoad(
-                                llvm::PointerType::get(sctx, 0),
-                                f->getOrCreateAllocation());
-                            llvm::Value* nameStr =
-                                builder->CreateGlobalString(name);
-                            builder->CreateCall(bindFn,
-                                {nameStr, cur, dropFn});
+                        CajetaTypePtr ft = f ? f->getType() : nullptr;
+                        bool primitive =
+                            ft && (ft->getTypeFlags() & PRIMITIVE_FLAG);
+                        auto& sctx = *module->getLlvmContext();
+                        if (f && primitive) {
+                            // A primitive has no drop and no pointer to
+                            // register — the declaration path boxes its bytes
+                            // (`__cajeta_session_bind_value`) and so must the
+                            // assignment, or `n = 2;` in a later cell leaves
+                            // the box holding 1.
+                            if (llvm::Function* bindVal =
+                                    module->getRuntimeFunction(
+                                        "__cajeta_session_bind_value")) {
+                                llvm::AllocaInst* slot =
+                                    f->getOrCreateAllocation();
+                                auto& dl =
+                                    module->getLlvmModule()->getDataLayout();
+                                uint64_t size = slot
+                                    ? dl.getTypeStoreSize(
+                                          slot->getAllocatedType()) : 0;
+                                if (slot && size > 0) {
+                                    builder->CreateCall(bindVal,
+                                        {builder->CreateGlobalString(name),
+                                         slot,
+                                         llvm::ConstantInt::get(
+                                             llvm::Type::getInt64Ty(sctx),
+                                             size)});
+                                }
+                            }
+                        } else if (llvm::Function* bindFn =
+                                       module->getRuntimeFunction(
+                                           "__cajeta_session_bind")) {
+                            // A reference with no drop of its own — a literal
+                            // view, an alias — still has to be VISIBLE to the
+                            // next cell; register it with a null drop_fn so
+                            // the session sees it without owning it (the
+                            // declaration path's borrow case).
+                            llvm::PointerType* pTy =
+                                llvm::PointerType::get(sctx, 0);
+                            if (f) {
+                                llvm::Value* cur = builder->CreateLoad(
+                                    pTy, f->getOrCreateAllocation());
+                                builder->CreateCall(bindFn,
+                                    {builder->CreateGlobalString(name), cur,
+                                     dropFn ? (llvm::Value*) dropFn
+                                            : (llvm::Value*)
+                                              llvm::ConstantPointerNull::get(
+                                                  pTy)});
+                            }
                         }
                     }
                 }

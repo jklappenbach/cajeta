@@ -60,8 +60,19 @@ files are untouched. Developer directives (verbatim intent):
   replaced tests' lines (diff via `.coverage/index`), all replaced assertions
   present, suite time reduced by the measured redundancy.
 - **3.4** The routine gate becomes: covering set (879) + pinned
-  assertion-bearing tests + folded families; the full battery stays available
-  (nightly/pre-release).
+  assertion-bearing tests + folded families.
+- **3.5 The full battery is DEPRECATED (developer decision, 2026-08-15).**
+  It is not a nightly, not a pre-release gate, and not a fallback. The
+  terminal state is that the corpus EQUALS the gate — every test that exists
+  is a test the everyday sweep runs — at which point `FULL=1` has nothing
+  extra to run and is removed. Until then it remains only because tests
+  outside the gate still exist, and every one of those is a defect to be
+  adjudicated under §7, not a reason to keep the flag.
+
+  Rationale: the routine set is coverage-derived, not sampled, so a bare
+  `./cajeta_tests.sh` already exercises what the battery exercises at a
+  quarter of the runtime. A second gate that is *never* the gate rots: nobody
+  reads its failures, and its tests drift out of compilation silently.
 
 ## 4. Coverage to 90% (§1.3)
 
@@ -84,7 +95,11 @@ files are untouched. Developer directives (verbatim intent):
 
 ## 5. Non-goals
 
-- **5.1** Deleting zero-unique tests wholesale — folds preserve assertions.
+- **5.1** Deleting zero-unique tests **wholesale** — folds preserve
+  assertions, and coverage equivalence is not assertion equivalence. Two
+  tests can execute identical lines and assert different things. Deletion is
+  in scope, but only per-test and only through §7's adjudication; a bulk
+  delete keyed on "adds no unique lines" is still forbidden.
 - **5.2** Chasing 90% through the generated ANTLR front end or headers-only
   inline noise; the metric is src/cajeta executable lines as indexed.
 
@@ -95,3 +110,43 @@ files are untouched. Developer directives (verbatim intent):
 - **6.2** Routine gate wall time reduced ≥50% vs the 2026-08-10 baseline at
   equal-or-better line coverage.
 - **6.3** Measured coverage ≥90% per §4.5.
+- **6.4** Every test outside the routine gate has a recorded disposition
+  under §7; none is left merely unrun.
+- **6.5** `--gtest_list_tests` and the routine set agree (modulo stress), and
+  `FULL=1` no longer exists. This is the terminal condition for §3.5.
+
+## 7. Adjudication of every non-gate test (§3.5)
+
+Reaching corpus == gate means each of the ~4,600 tests outside the routine
+gate gets a disposition. There is no default and no bulk action; "adds no
+unique lines" is a prompt to look, not a verdict.
+
+- **7.1** When a test's assertions are already carried by a folded family
+  program, it is DELETED and the fold names the use-cases it absorbed
+  (§3.2b's naming convention makes this checkable from the name).
+- **7.2** When a test asserts something no gate test asserts, it is PROMOTED
+  into the routine gate, whether or not it adds unique lines.
+- **7.3** When a test asserts nothing that survives review — a duplicate, a
+  scaffold, a test of a removed feature — it is DELETED with its rationale
+  recorded in the commit.
+- **7.4** When a test's disposition is unclear, it is PROMOTED. The gate
+  growing is a cheaper mistake than an assertion disappearing.
+- **7.5** Adjudication is recorded per batch, not per test: a commit states
+  the family, the counts by disposition, and the coverage delta. A reviewer
+  must be able to see what was dropped and why without reading 4,600 lines.
+
+## 8. Gate consolidation (§3.5)
+
+- **8.1** `regression_filter.txt` (563), `light_filter.txt` (188) and
+  `release_filter.txt` (49) name tests explicitly, so deletions silently
+  invalidate them — a filter naming a test that no longer exists matches
+  nothing and simply runs less, with no error.
+- **8.2** After the corpus settles, these lists are RE-DERIVED from coverage
+  by the same tool that builds the routine set, not hand-repaired.
+- **8.3** The stress list (§2) is orthogonal and stays hand-curated: its
+  membership is a judgement about load versus function, which coverage
+  cannot express.
+- **8.4** When every gate is re-derived and the corpus equals the routine set
+  plus stress, `FULL=1` is removed from `cajeta_tests.sh` along with the
+  routine-gate branch it selects — with no filter, the sweep simply runs
+  everything, because everything is the gate.

@@ -27,7 +27,10 @@
 #include "gtest/gtest.h"
 #include "cajeta/kernel/KernelSession.h"
 
+#include <chrono>
 #include <cstdint>
+#include <iostream>
+#include <vector>
 #include <memory>
 #include <string>
 
@@ -248,4 +251,166 @@ TEST(KernelSessionTests, failedCellLeavesSessionUnchanged) {
     auto stillWorks = s->lookup<int32_t (*)()>("stillWorks");
     ASSERT_NE(nullptr, stillWorks);
     EXPECT_EQ(7, stillWorks());
+}
+
+// 1.3.1 — the SCALE acceptance: a twenty-cell session of the shape a
+// notebook actually accumulates (definitions, uses of earlier cells' values,
+// spawned work), then a clean teardown.
+//
+// It ASSERTS structure and MEASURES time. Per-cell timings are printed for
+// the record and reviewed rather than thresholded — a wall-clock bound
+// compiled into a test fails on a loaded machine and says nothing about the
+// code (see the project's perf-acceptance rule). What IS asserted is the
+// thing a threshold was standing in for: one dylib per cell and no merging,
+// so the world cannot be growing quadratically behind a fast wall clock.
+//
+// Run under MALLOC_PERTURB_ for the leak half; the numbers from that run go
+// in the commit message.
+TEST(KernelSessionTests, twentyCellSessionStaysBoundedAndTearsDownClean) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    constexpr int kCells = 20;
+    std::vector<double> millis;
+    millis.reserve(kCells);
+
+    for (int i = 1; i <= kCells; ++i) {
+        const std::string n = std::to_string(i);
+        std::string source;
+        switch (i % 4) {
+            case 1:   // define a type and bind one
+                source = "public class N" + n + " { public int32 v;\n"
+                         "  public N" + n + "(int32 v) { this.v = v; }\n"
+                         "  public int32 get() { return this.v; } }\n"
+                         "N" + n + " obj" + n + " = heap N" + n + "(" + n + ");\n";
+                break;
+            case 2:   // use an EARLIER cell's binding and add one of your own
+                source = "int32 acc" + n + " = obj" + std::to_string(i - 1)
+                       + ".get() + " + n + ";\n";
+                break;
+            case 3:   // a stdlib generic over a cell-defined type
+                source = "import cajeta.collection.ArrayList;\n"
+                         "ArrayList<N" + std::to_string(i - 2) + "> list" + n
+                       + " = heap ArrayList<N" + std::to_string(i - 2) + ">();\n"
+                         "list" + n + ".add(heap N" + std::to_string(i - 2)
+                       + "(" + n + "));\n";
+                break;
+            default:  // spawned work, joined in the same cell
+                source = "int32 spawned" + n + " = 0;\n"
+                         "scope {\n"
+                         "  spawned" + n + " = " + n + ";\n"
+                         "}\n";
+                break;
+        }
+        const auto start = std::chrono::steady_clock::now();
+        CellResult r = s->execute(source);
+        const auto end = std::chrono::steady_clock::now();
+        millis.push_back(
+            std::chrono::duration<double, std::milli>(end - start).count());
+        ASSERT_TRUE(r.ok) << "cell " << i << ": " << r.errorId << ": "
+                          << r.message << "\n--- source ---\n" << source;
+        EXPECT_EQ(i, r.executionCount);
+    }
+
+    // One dylib per cell, and no cell was ever merged into another. This is
+    // the structural form of "compile time does not grow with N": the JIT
+    // world grows by exactly one unit per cell.
+    EXPECT_EQ(kCells, s->stats().cellsCompiled);
+    EXPECT_EQ(kCells, s->stats().cellDylibsCreated);
+    EXPECT_EQ(0, s->stats().crossCellModuleMerges);
+
+    // For the record, not for a threshold — and compared LIKE FOR LIKE. The
+    // four cell kinds cost wildly different amounts (a stdlib generic over a
+    // cell-defined type is ~50x a plain read), and cell 1 also pays for the
+    // session's first compile, so a first-half/second-half mean says nothing
+    // about growth. What answers "does cell N cost more than cell N-4" is the
+    // first and last occurrence of each KIND.
+    static const char* kindName[4] = {"spawn", "define", "use", "generic"};
+    std::cerr << "[1.3.1] per-cell ms:";
+    for (double m : millis) std::cerr << " " << (long) m;
+    std::cerr << "\n";
+    for (int kind = 0; kind < 4; ++kind) {
+        double first = -1, last = -1;
+        int firstAt = 0, lastAt = 0;
+        for (int i = 1; i <= kCells; ++i) {
+            if (i % 4 != kind) continue;
+            if (first < 0) { first = millis[i - 1]; firstAt = i; }
+            last = millis[i - 1];
+            lastAt = i;
+        }
+        if (first < 0 || firstAt == lastAt) continue;
+        std::cerr << "[1.3.1] " << kindName[kind] << ": cell " << firstAt
+                  << " = " << (long) first << " ms, cell " << lastAt << " = "
+                  << (long) last << " ms\n";
+    }
+
+    // Teardown: bindings dropped while the runtime that their drop code
+    // reaches into is still up, then the task shutdown — each exactly once.
+    s->shutdown();
+    EXPECT_EQ(1, s->stats().sessionDropAllCalls);
+    EXPECT_EQ(1, s->stats().taskShutdownCalls);
+    EXPECT_EQ(0, s->stats().liveSessionBindings)
+        << "bindings survived shutdown";
+    EXPECT_GT(s->stats().sessionBindingsAtShutdown, 0)
+        << "twenty cells bound nothing at all — the session never saw them";
+
+    // Idempotent: a second shutdown is a no-op, not a double drop.
+    s->shutdown();
+    EXPECT_EQ(1, s->stats().sessionDropAllCalls);
+    EXPECT_EQ(1, s->stats().taskShutdownCalls);
+}
+
+// 7.2.7 — A SESSION'S TYPES MUST NOT OUTLIVE IT.
+//
+// llvm struct types are CONTEXT-owned, and on the resident path the context
+// outlives the session. So a class a session declared is still registered in
+// the context's NamedStructTypes when the NEXT session declares one by the
+// same name, and the second session gets the first session's LAYOUT: declaring
+// `Point {x, y}` after a dead session left a one-field `Point` behind failed
+// with `Invalid indices for GEP pointer type` on the GEP for `y`.
+//
+// This is written as ONE test with two sessions on purpose. It was found as a
+// cross-test order dependency — KernelIoTests failing only when it happened to
+// follow KernelCellTests — where the test that FAILS is not the test at fault,
+// and each passes alone. Pinning it as an ordering rule between two suites
+// would pin nothing; a session's teardown either gives the name back or it
+// does not.
+//
+// The REDEFINITION in session 1 is load-bearing. A redefined class mints a new
+// generation (`Point$g2`) and takes over the registry key, so generation 1's
+// struct is unreachable from `canonicalMap` — which is exactly why the
+// existing `CajetaType::releaseThrownTransientStructNames()` walk does not
+// cover it, and why the release is by delivered MODULE instead.
+TEST(KernelSessionTests, aSessionsStructNamesDoNotLeakIntoTheNext) {
+    {
+        auto first = KernelSession::create();
+        ASSERT_NE(nullptr, first.get());
+        ASSERT_TRUE(first->execute(
+            "public class Point { public int32 x;\n"
+            "  public Point(int32 x) { this.x = x; }\n"
+            "  public int32 get() { return this.x; } }\n"
+            "Point p = heap Point(3);\n").ok);
+        // Supersede it: `Point` now maps to generation 2, and generation 1's
+        // one-field struct is the thing that leaks.
+        ASSERT_TRUE(first->execute(
+            "public class Point { public int32 x; public int32 y;\n"
+            "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+            "  public int32 get() { return this.x + this.y; } }\n"
+            "Point q = heap Point(1, 2);\n").ok);
+        first->shutdown();
+    }
+
+    // A NEW session, same class name, two fields. Its `y` is at index 2 and
+    // must land in a struct that has an index 2.
+    auto second = KernelSession::create();
+    ASSERT_NE(nullptr, second.get());
+    CellResult r = second->execute(
+        "public class Point { public int32 x; public int32 y;\n"
+        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+        "  public int32 sum() { return this.x + this.y; } }\n"
+        "Point p = heap Point(4, 5);\n"
+        "p.sum();\n");
+    ASSERT_TRUE(r.ok) << r.errorId << ": " << r.message;
+    EXPECT_TRUE(r.hasResult);
+    EXPECT_EQ("9", r.result);
 }

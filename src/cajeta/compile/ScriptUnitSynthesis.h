@@ -22,6 +22,7 @@
 #include "CajetaParser.h"
 
 namespace antlr4 { class CommonTokenStream; }
+namespace llvm { class Value; }
 
 #include "ScriptLineMap.h"
 
@@ -29,6 +30,8 @@ namespace cajeta {
 
     class CajetaModule;
     typedef std::shared_ptr<CajetaModule> CajetaModulePtr;
+    class Expression;
+    typedef std::shared_ptr<Expression> ExpressionPtr;
 
     // The synthesized entry-method name, shared with hosts (`cajeta run`,
     // the Jupyter kernel) and tests.
@@ -69,19 +72,63 @@ namespace cajeta {
     void maybeEmitSessionDisarm(CajetaModulePtr module,
                                 const std::string& name);
 
+    // jupyter-kernel 2.1.3a — refuse a use of a session binding whose class
+    // has been REDEFINED since the value was made (script-units 5.3).
+    //
+    // The two generations share a canonical name and differ only by
+    // `CajetaClass::generationSuffix`, so every type comparison in the
+    // compiler sees a match: passing an old value where the new generation is
+    // declared type-checked cleanly and then read the old object through the
+    // new layout and vtable — a SIGSEGV, not a wrong answer. Call at the
+    // positions that would reinterpret the value: call arguments, and the
+    // right-hand side of an assignment. `position` names the site for the
+    // diagnostic ("parameter `pt`", "the assigned variable").
+    //
+    // Self-gating and cheap: returns immediately unless `expr` is a bare
+    // identifier naming a field marked stale by seedSessionScope. A method
+    // call ON the binding is deliberately NOT a checked position — dispatch
+    // goes through the vtable baked at construction, which is exactly how the
+    // old value keeps its own body.
+    void rejectStaleGenerationUse(CajetaModulePtr module,
+                                  const ExpressionPtr& expr,
+                                  const std::string& position);
+
     // Build the wrapper compilation-unit source. `outCanonical` receives the
     // implicit class's canonical name (package + '.' + stem) so the caller
     // can mark it script-synthesized after registration. `outBindings`
     // receives the names declared at scriptMember level — the unit's
     // session bindings (spec §4); block-nested locals are not collected.
     // `outLineMap` (U5) receives the wrapper→host line spans for diagnostic
-    // translation; pass null to skip.
+    // translation; pass null to skip. `outSyntheticTail` receives whether the
+    // entry's trailing `return 0;` was APPENDED (true) rather than the unit
+    // ending in its own return — the mark jupyter-kernel U3 needs to find the
+    // cell's last statement. This function deliberately does NOT decide
+    // whether that statement produces a value: it works on token text, before
+    // any type is known, and `x + y;` and `xs.add(1);` are indistinguishable
+    // here.
     std::string synthesizeScriptUnit(antlr4::CommonTokenStream& tokens,
                                      CajetaParser::CompilationUnitContext* ctx,
                                      const std::string& stem,
                                      std::string* outCanonical,
                                      std::vector<std::string>* outBindings,
-                                     ScriptLineMap* outLineMap = nullptr);
+                                     ScriptLineMap* outLineMap = nullptr,
+                                     bool* outSyntheticTail = nullptr);
+
+    // jupyter-kernel U3 (spec 4.2) — the unit RESULT, i.e. `Out[N]`.
+    //
+    // Called from `ExpressionStatement::generateCode` for the one statement
+    // `Block` marked as the script entry's trailing expression. This is the
+    // half of the decision that synthesis cannot make: a trailing expression
+    // displays its value only if it HAS one, and `void` is a type answer.
+    // Renders `value` — of `expr`'s resolved type — to text and parks it in
+    // the session runtime for the host to collect.
+    //
+    // Self-gating: no-op outside a session compile, for a void/unresolved
+    // type, or at a terminated insert point. A type with no rendering (an
+    // array, a class with no `toString`) degrades to its name rather than
+    // failing the cell — display must never break a successful run.
+    void emitScriptUnitResult(CajetaModulePtr module, const ExpressionPtr& expr,
+                              llvm::Value* value);
 
     // U5 (spec §6.1) — rewrite a semantic exception into the host's
     // coordinates: host source name as the file, wrapper lines translated

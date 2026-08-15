@@ -89,6 +89,58 @@ if(NOT TARGET zstd::libzstd_shared)
     endif()
 endif()
 
+# libzmq backs the Jupyter kernel transport (`cajeta kernel`, jupyter-kernel
+# U5). Same shape as the zstd block above and for the same reason: libzmq
+# ships a cmake config on some distros and only a pkg-config file or a bare
+# library on others (MSYS2 among them), so try the config first and fall back
+# to find_library + an IMPORTED target. Unlike zstd this is NOT fatal when
+# missing: everything except `cajeta kernel` builds and runs without it, and
+# refusing to configure the whole compiler over a notebook transport would be
+# a poor trade. The kernel sources compile out via CAJETA_HAVE_ZMQ.
+find_package(cppzmq QUIET)
+find_package(ZeroMQ CONFIG QUIET)
+if(TARGET libzmq)
+    set(CAJETA_ZMQ_TARGET libzmq)
+elseif(TARGET libzmq-static)
+    set(CAJETA_ZMQ_TARGET libzmq-static)
+else()
+    set(_cajeta_zmq_win_hint "")
+    if(WIN32 AND EXISTS "C:/msys64/mingw64/lib")
+        set(_cajeta_zmq_win_hint "C:/msys64/mingw64/lib")
+    endif()
+    find_path(ZMQ_INCLUDE_DIR zmq.h
+            HINTS
+                ${_cajeta_zmq_win_hint}
+                /opt/homebrew/opt/zeromq/include
+                /usr/local/opt/zeromq/include
+            PATHS /usr/include /usr/local/include)
+    find_library(ZMQ_LIBRARY
+            NAMES zmq libzmq libzmq.so.5 libzmq.dylib
+            HINTS
+                ${_cajeta_zmq_win_hint}
+                /opt/homebrew/opt/zeromq/lib
+                /usr/local/opt/zeromq/lib
+                $ENV{VCPKG_INSTALLATION_ROOT}/installed/x64-windows/lib
+                C:/vcpkg/installed/x64-windows/lib
+            PATHS
+                /usr/lib/${CMAKE_LIBRARY_ARCHITECTURE}
+                /usr/lib
+                /usr/local/lib)
+    if(ZMQ_INCLUDE_DIR AND ZMQ_LIBRARY)
+        add_library(cajeta::zmq SHARED IMPORTED)
+        set_target_properties(cajeta::zmq PROPERTIES
+                IMPORTED_LOCATION ${ZMQ_LIBRARY}
+                INTERFACE_INCLUDE_DIRECTORIES ${ZMQ_INCLUDE_DIR})
+        set(CAJETA_ZMQ_TARGET cajeta::zmq)
+        message(STATUS "Found libzmq -> ${ZMQ_LIBRARY}")
+    else()
+        set(CAJETA_ZMQ_TARGET "")
+        message(WARNING "libzmq not found — `cajeta kernel` (the Jupyter kernel) "
+                "will be unavailable. Install libzmq3-dev (Linux), "
+                "brew install zeromq (macOS), or pacman -S mingw-w64-x86_64-zeromq.")
+    endif()
+endif()
+
 find_package(LLVM REQUIRED CONFIG)
 # LLVM_DEFINITIONS is a single space-separated string (e.g.
 # "-D_GLIBCXX_USE_CXX11_ABI=1 -D__STDC_CONSTANT_MACROS ..."). Passing it to
@@ -913,6 +965,13 @@ target_link_libraries(${CMAKE_PROJECT_NAME}_lib
         OpenSSL::SSL
         OpenSSL::Crypto
         CURL::libcurl)
+# The Jupyter transport, when libzmq was found. CAJETA_HAVE_ZMQ is PUBLIC so
+# main.cpp's verb dispatch and the transport tests agree with the library
+# about whether `cajeta kernel` exists.
+if(CAJETA_ZMQ_TARGET)
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_ZMQ_TARGET})
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAVE_ZMQ=1)
+endif()
 # The native runtime (cajeta_runtime.c, embedded in this lib) uses
 # BCryptGenRandom for its RNG on Windows — link the bcrypt system lib.
 # Only the test binary actually pulls the native runtime object; on

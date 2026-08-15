@@ -65,6 +65,24 @@ namespace cajeta {
         // bindings reject reads (spec §4.2), live cross-unit reads land with
         // the kernel's read-through-session codegen.
         bool sessionSeeded = false;
+        // script-units §4 — this declaration already registered the name in
+        // the runtime session registry. Not derivable from getDropEntry():
+        // the owner path registers INSTEAD of pushing a drop entry, so a
+        // bound owner and a never-bound borrow both have a null entry.
+        bool sessionBound = false;
+        // jupyter-kernel 2.1.3a — a seeded binding whose class has since been
+        // REDEFINED (script-units 5.3). The value is an instance of the older
+        // generation; the name now resolves to the newer one. Both labels are
+        // kept so the diagnostic can name the two generations rather than
+        // saying only that they differ.
+        //
+        // The flag is separate from the labels ON PURPOSE: the FIRST
+        // generation's suffix is the empty string, so "has a stale suffix"
+        // would be false for the one case that matters most — a value made
+        // before any redefinition, which is every value in the common shape.
+        bool staleGenerationMark = false;
+        string staleGeneration;
+        string currentGeneration;
         bool ownershipAudited = false;
         // slices 9.2.1 — for OWNING String-element array locals: the stack
         // sidecar shared by the element-store helpers and the element-walk
@@ -203,6 +221,19 @@ namespace cajeta {
 
         bool isSessionSeeded() const { return sessionSeeded; }
         void setSessionSeeded(bool v) { sessionSeeded = v; }
+        bool isSessionBound() const { return sessionBound; }
+        void setSessionBound(bool v) { sessionBound = v; }
+        // jupyter-kernel 2.1.3a. `stale` is the generation the VALUE belongs
+        // to, `current` the one the name now names; they always differ when
+        // set. See ScriptUnitSynthesis's seedSessionScope.
+        void setStaleGeneration(const string& stale, const string& current) {
+            staleGenerationMark = true;
+            staleGeneration = stale;
+            currentGeneration = current;
+        }
+        bool isStaleGeneration() const { return staleGenerationMark; }
+        const string& getStaleGeneration() const { return staleGeneration; }
+        const string& getCurrentGeneration() const { return currentGeneration; }
         // title-stores 6.2.1 — this local/formal's drop entry is armed from a
         // RUNTIME bit (transfer word, return flag, or forwarded slot bit), so
         // a plain retaining store of it is the loud-plain-store hazard.

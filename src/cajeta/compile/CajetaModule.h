@@ -236,6 +236,17 @@ namespace cajeta {
         // frame (e.g. during type resolution) still emits into a disposable user
         // module rather than the cached stdlib. Null outside the reuse path.
         static thread_local CajetaModulePtr reuseEmitModule;
+
+        // The unit currently being compiled, for the SESSION emit policy
+        // (jupyter-kernel 2.1.6). Deliberately NOT reuseEmitModule: that one
+        // is the test harness's catch-all sink and is consulted for ANY
+        // instantiation lacking a better target, whereas this is consulted
+        // ONLY for a specialization already known to be user-typed. Routing
+        // pure-stdlib specializations (`Stream<String>`) into a cell module
+        // corrupts the NEXT session — restoreBaseline cannot unwind a
+        // surviving stdlib body whose callee left with a dead session — so
+        // the two must not share a channel. Null outside a kernel session.
+        static thread_local CajetaModulePtr activeUnitModule;
         // The llvm::Module of the function currently being emitted. Set (RAII)
         // by Method::generateCode / clinit body lowering; read by
         // emitTargetLlvmModule() so IR-creation helpers land new IR in the emit
@@ -269,6 +280,14 @@ namespace cajeta {
         // codegen) used to locate exceptions thrown without a location.
         ScriptLineMap scriptLineMap;
         int scriptCurrentHostLine = 0;
+        // jupyter-kernel U3 — the unit RESULT (Out[N]). The synthesizer
+        // appends `return 0;` only when the cell's own last statement was not
+        // a return; when it did, the statement just before that tail is the
+        // cell's trailing one, and if it is an expression statement it is the
+        // result candidate. Whether it actually PRODUCES a value is a type
+        // question, so the mark is set here and resolved in codegen.
+        bool scriptSyntheticTail = false;
+        bool scriptResultPending = false;
         string currentSourceFile_;   // see currentSourceFile()
         string sourceRoot;
         string archiveRoot;
@@ -389,7 +408,12 @@ namespace cajeta {
         list<CajetaClassPtr> structureStack;
         list<MethodPtr> toGenerate;
         llvm::Module* llvmModule;
-        llvm::IRBuilder<>* builder;
+        // Null until this module's codegen begins (setBuilder). Neither
+        // constructor assigns it, so leaving it uninitialized handed callers
+        // a garbage non-null pointer they could not distinguish from a real
+        // builder — `getBuilder()->GetInsertBlock()` then segfaulted on a
+        // module that had simply never been generated.
+        llvm::IRBuilder<>* builder = nullptr;
         llvm::LLVMContext* llvmContext;
         llvm::TargetMachine* targetMachine;
         CajetaTypePtr initializerType;
@@ -543,6 +567,22 @@ namespace cajeta {
         }
         void setScriptCurrentHostLine(int line) { scriptCurrentHostLine = line; }
         int getScriptCurrentHostLine() const { return scriptCurrentHostLine; }
+
+        // jupyter-kernel U3 — unit result. `scriptSyntheticTail` records that
+        // synthesis appended the entry's trailing `return 0;`, which is what
+        // makes the statement before it the cell's own last one.
+        void setScriptSyntheticTail(bool v) { scriptSyntheticTail = v; }
+        bool hasScriptSyntheticTail() const { return scriptSyntheticTail; }
+        // The mark travels from Block (which knows WHICH statement) to
+        // ExpressionStatement (which knows its TYPE). Taken, not read: a
+        // marked statement's own codegen may run nested expression statements
+        // — a block-form lambda body — and the mark belongs to one statement.
+        void setScriptResultPending(bool v) { scriptResultPending = v; }
+        bool takeScriptResultPending() {
+            bool v = scriptResultPending;
+            scriptResultPending = false;
+            return v;
+        }
 
         // The file currently being parsed INTO this module, in remapped
         // (build-root-independent) form. A user module is one file, so this is
@@ -796,6 +836,16 @@ namespace cajeta {
 
         static CajetaModulePtr getReuseEmitModule() { return reuseEmitModule; }
         static void setReuseEmitModule(CajetaModulePtr m) { reuseEmitModule = m; }
+
+        static CajetaModulePtr getActiveUnitModule() { return activeUnitModule; }
+        static void setActiveUnitModule(CajetaModulePtr m) { activeUnitModule = m; }
+        // Where a USER-TYPED specialization should emit: the innermost codegen
+        // frame if one is open, else the unit being compiled. Null when no
+        // session policy is in force, which leaves the default rule intact.
+        static CajetaModulePtr sessionEmitTarget() {
+            if (currentCodegenModule) return currentCodegenModule;
+            return activeUnitModule;
+        }
 
         // Per-test generation counter for the reuse path. Bumped by the harness
         // (StdlibReuseCache::restoreBaseline) before each test. Caches keyed on
