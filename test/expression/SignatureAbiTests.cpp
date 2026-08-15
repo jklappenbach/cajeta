@@ -977,6 +977,105 @@ TEST(SignatureAbiTests, tailCallThroughPlainReturnForwardsBorrow) {
     EXPECT_EQ(runI32(src), 5);
 }
 
+// stdlib-ownership-convention 8.2.5 — PREMISE FALSIFIED, and these three pin
+// what is actually true.
+//
+// 8.2.5 was filed on a leak that does not exist: reading
+// `ReturnStatement::generateCode` showed the title flag forwarded only for a
+// ParameterField, and the conclusion drawn was that every other returned local
+// hands the caller a title while reporting a borrow. It cannot, because a
+// guard upstream (`Statement.cpp` ~2108, `CAJETA_ERROR_FRESH_RETURN_NEEDS_-
+// TRANSFER`) rejects the shape before codegen ever reaches the flag. Reasoning
+// from one site again, exactly as CLAUDE.md §5 warns.
+//
+// What the guard actually keys on is the finding: the local having a DROP
+// ENTRY, not the local holding a title. So it is deliberately conservative,
+// and the second test below pins the cost of that.
+TEST(SignatureAbiTests, plainReturnOfOwnedLocalIsRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public final class D {\n"
+        "    public static Cell makeIt() {\n"
+        "        Cell x = heap Cell(11);\n"
+        "        return x;\n"
+        "    }\n"
+        "    public static int32 run() { return makeIt().n; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        ADD_FAILURE() << "expected FRESH_RETURN_NEEDS_TRANSFER";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+    }
+}
+
+// The conservative edge, and the one worth revisiting: `m` holds only a BORROW
+// (`b.get()` is a view of the Bank's field, flag 0), yet the guard rejects it
+// too — it sees a class-typed local with a drop entry and cannot know the entry
+// is armed 0 at run time. Ownership is runtime state, which is precisely why
+// the guard cannot be precise here.
+//
+// The cost: a plain-return wrapper cannot launder a borrow through a NAMED
+// local. `return b.get();` (the tail-call ride) and `return #= m;` (the
+// mode-carrying return, exempt at Statement.cpp ~2077) both express it; only
+// the named-local plain return is refused.
+TEST(SignatureAbiTests, plainReturnOfBorrowedLocalIsAlsoRejected) {
+    std::string src = std::string(kCellSrc) +
+        "public class Bank {\n"
+        "    public Cell c;\n"
+        "    public Bank(#Cell v) { this.c #= v; }\n"
+        "    public Cell get() { return this.c; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static Cell via(Bank b) {\n"
+        "        Cell m = b.get();\n"
+        "        return m;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        ADD_FAILURE() << "expected FRESH_RETURN_NEEDS_TRANSFER";
+    } catch (cajeta::Exception& e) {
+        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+    }
+}
+
+// And the spelling that DOES carry a local's runtime mode out of a plain-return
+// method: `return #= m`, exempt from the guard because it ships the title's
+// runtime bit and the caller's `#=` receipt registers a drop only when the bit
+// is 1. This is the load-bearing counter-evidence against 8.2.1/8.1.2 (delete
+// the return-statement transfer word): delete it and this pattern has no
+// spelling left.
+TEST(SignatureAbiTests, modeCarryingReturnOfLocalCarriesTheBorrow) {
+    std::string src = std::string(kCellSrc) +
+        "public class Bank {\n"
+        "    public Cell c;\n"
+        "    public Bank(#Cell v) { this.c #= v; }\n"
+        "    public Cell get() { return this.c; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static Cell via(Bank b) {\n"
+        "        Cell m = b.get();\n"
+        "        return #= m;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        int64 base = Cajeta.liveCount();\n"
+        "        int32 t = 0;\n"
+        "        {\n"
+        "            Bank b = heap Bank(#heap Cell(6));\n"
+        "            {\n"
+        "                Cell got = via(b);\n"
+        "                t = got.n;\n"
+        "            }\n"
+        "            if (b.get().n != 6) { return -3; }\n"
+        "        }\n"
+        "        int64 leaked = Cajeta.liveCount() - base;\n"
+        "        return (int32) (leaked * 100) + t;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 6);
+}
+
 // ---------------------------------------------------------------------------
 // Defect fixes found by compiler-mcp skill-example verification (2026-07-31).
 // Both are SILENT UB today: the program compiles clean and misbehaves at run

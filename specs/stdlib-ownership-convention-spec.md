@@ -406,15 +406,43 @@ than as corruption.
   per-local provenance: `#` applied to a `^T` result is an error on the
   spot. That is the `keyAt` bug this spec opened with, caught at the
   line that makes the mistake.
-- **4.8** *(prerequisite for §2.8's `T`)* **Transparent carry must
-  actually be transparent.** A returned local's title flag is currently
-  forwarded only for `ParameterField` (`Statement.cpp` ~2239); every
-  other returned local has its drop entry deactivated while the caller
-  is told "borrow", so `T f() { T x = heap ...; return x; }` LEAKS
-  today. Forwarding must extend to any returned field carrying a drop
-  entry. Until it does, `return #x` is load-bearing and cannot be
-  removed — which is why the return-statement transfer word is retired
-  AFTER this lands, not before.
+- **4.8** ~~*(prerequisite for §2.8's `T`)* Transparent carry must
+  actually be transparent — a returned local's flag is forwarded only
+  for `ParameterField`, so `T f() { T x = heap ...; return x; }`
+  leaks.~~
+
+  **RETRACTED 2026-08-15 — measured, and there is no leak.** The shape
+  never reaches codegen: `CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER`
+  (`Statement.cpp` ~2108) rejects it, with a diagnostic that already
+  prescribes the fix this spec would have — *"returns owned local 'x'
+  but its return type isn't marked `#` … Fix: change the return type to
+  `#T`."* The claim came from reading the forwarding site and inferring
+  a consequence instead of compiling the program, which is the failure
+  mode CLAUDE.md §5 exists to prevent.
+
+  **What is true, and it is a different thing.** The guard keys on the
+  local having a DROP ENTRY, not on the local holding a title — and
+  ownership is runtime state, so it cannot key on the latter. It
+  therefore also rejects a local holding only a borrow
+  (`T f(Bank b) { Cell m = b.get(); return m; }`, pinned by
+  `SignatureAbiTests.plainReturnOfBorrowedLocalIsAlsoRejected`). The
+  cost is narrow: a plain-return method cannot launder a borrow through
+  a NAMED local. Both other spellings work — `return b.get()` rides the
+  callee's flag, and `return #= m` ships the runtime bit (explicitly
+  exempted from the guard at `Statement.cpp` ~2077, because the
+  caller's `#=` receipt registers a drop only when the bit is 1).
+
+  **Consequence for §2.8, and it sharpens the model rather than
+  weakening it:** transparent carry is carried by the RETURN EXPRESSION
+  — a formal, a call result, or `#= local`. A statically-owned local
+  must say `#T`, which is the convention §2.1 asks for anyway. The
+  language already enforces at the return the thing §2.8 asks the
+  reader to see at the signature.
+
+  **Consequence for the return-statement transfer word:** `return #= x`
+  is the ONLY spelling that carries a local's runtime mode out of a
+  plain-return method. Deleting it (plan 8.2.1) would leave that
+  pattern unexpressible, so the word stays.
 
 ## 5. Migration
 
