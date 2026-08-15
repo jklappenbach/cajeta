@@ -527,21 +527,56 @@ namespace cajeta {
     // the default ConsoleErrorListener is removed so the prescan pass doesn't
     // leak "line L:col msg" text into the machine-readable stream — the
     // authoritative parseSource pass re-reports the same syntax errors as NDJSON.
+    // CAJETA_PRIME_TIMING=1 aggregates these across every prescan in the
+    // process. Which of the three dominates decides the lever: lexing is a
+    // lexer problem, `compilationUnit()` is ANTLR's adaptive prediction (a
+    // grammar / prediction-mode problem), and the visit is ours.
+    struct PrescanCost {
+        long long lexNs = 0, parseNs = 0, visitNs = 0;
+        int files = 0;
+        ~PrescanCost() {
+            if (!std::getenv("CAJETA_PRIME_TIMING") || files == 0) return;
+            std::fprintf(stderr,
+                "[prescan] %d files: lex %lld ms, parse %lld ms, visit %lld ms\n",
+                files, lexNs / 1000000, parseNs / 1000000, visitNs / 1000000);
+        }
+    };
+    static PrescanCost g_prescanCost;
+
     static void prescanSource(antlr4::ANTLRInputStream& input,
                               bool suppressConsole = false,
                               const std::string& sourcePath = std::string()) {
+        using PClock = std::chrono::steady_clock;
+        auto t0 = PClock::now();
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
+        auto t1 = PClock::now();
         CajetaParser parser(&tokens);
         if (suppressConsole) {
             lexer.removeErrorListeners();
             parser.removeErrorListeners();
         }
+        // SPIKE (CAJETA_PRESCAN_SLL=1): measure the prediction-mode ceiling.
+        // NOT correct as written — SLL can mis-parse an ambiguity instead of
+        // erroring, which is why the real form is two-stage (SLL with
+        // BailErrorStrategy, re-parse under LL on failure). This is here to
+        // find out whether the two-stage is worth building.
+        if (std::getenv("CAJETA_PRESCAN_SLL")) {
+            parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
+                ->setPredictionMode(antlr4::atn::PredictionMode::SLL);
+        }
         antlr4::tree::ParseTree* tree = parser.compilationUnit();
+        auto t2 = PClock::now();
         ArchivePrescanVisitor v;
         v.sourcePath = sourcePath;
         tree->accept(&v);
+        auto t3 = PClock::now();
+        using NS = std::chrono::nanoseconds;
+        g_prescanCost.lexNs   += std::chrono::duration_cast<NS>(t1 - t0).count();
+        g_prescanCost.parseNs += std::chrono::duration_cast<NS>(t2 - t1).count();
+        g_prescanCost.visitNs += std::chrono::duration_cast<NS>(t3 - t2).count();
+        ++g_prescanCost.files;
     }
 
     // Pre-scan every source file under a root, building the
@@ -680,6 +715,12 @@ namespace cajeta {
             parser.removeErrorListeners();
             lexer.addErrorListener(jsonSyntax.get());
             parser.addErrorListener(jsonSyntax.get());
+        }
+        // SPIKE (CAJETA_PARSE_SLL=1) — see the prescan note: measuring the
+        // prediction-mode ceiling, not a correct implementation.
+        if (std::getenv("CAJETA_PARSE_SLL")) {
+            parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
+                ->setPredictionMode(antlr4::atn::PredictionMode::SLL);
         }
         antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
@@ -967,6 +1008,17 @@ namespace cajeta {
         CajetaModule::setActiveModule(stdlib);
         QualifiedNamePtr originalQName = stdlib->getQName();
         bool parsedAny = false;
+        // CAJETA_PRIME_TIMING=1. The drain is the largest single line in a
+        // dependency cold start and it barely moved under SLL, so the
+        // question is what it is doing that is NOT parsing.
+        using DClock = std::chrono::steady_clock;
+        const bool dTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        long long dPrescanNs = 0, dParseNs = 0, dProtoNs = 0;
+        int dPkgs = 0, dFiles = 0;
+        auto dAdd = [](long long& acc, DClock::time_point a) {
+            acc += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                DClock::now() - a).count();
+        };
         while (!g_lazyQueue.empty()) {
             std::string pkg = g_lazyQueue.back();
             g_lazyQueue.pop_back();
@@ -989,7 +1041,10 @@ namespace cajeta {
             // Matrix.transpose returns Matrix<T,C,R>) re-fires the import hook;
             // the guard above then dedupes rather than re-enqueueing mid-parse.
             g_lazyParsed.insert(pkg);
+            auto dT = DClock::now();
             prescanStdlibPackage(pkg);   // whole-package archive (idempotent)
+            dAdd(dPrescanNs, dT);
+            ++dPkgs;
             auto it = stdlibPackageIndex().find(pkg);
             if (it == stdlibPackageIndex().end()) continue;
             for (size_t idx : it->second) {
@@ -1004,7 +1059,10 @@ namespace cajeta {
                 stdlib->setCurrentSourceFile(rel);   // see parseStdlibInto
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
+                auto dP = DClock::now();
                 parseSource(stdlib, in, /*label=*/"");
+                dAdd(dParseNs, dP);
+                ++dFiles;
             }
             g_stdlibParsedPackages.insert(pkg);
             parsedAny = true;
@@ -1012,7 +1070,16 @@ namespace cajeta {
         stdlib->setCurrentSourceFile("");
         stdlib->setQName(originalQName);
         if (parsedAny) {
+            auto dB = DClock::now();
             CajetaModule::buildPendingPrototypes();
+            dAdd(dProtoNs, dB);
+        }
+        if (dTiming) {
+            std::fprintf(stderr,
+                "[drain] %d packages / %d files: prescan %lld ms, "
+                "parse %lld ms, buildPendingPrototypes %lld ms\n",
+                dPkgs, dFiles, dPrescanNs / 1000000, dParseNs / 1000000,
+                dProtoNs / 1000000);
         }
         CajetaModule::setActiveModule(prevActive);
     }
