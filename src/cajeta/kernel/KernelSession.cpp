@@ -598,11 +598,44 @@ CellResult KernelSession::execute(const std::string& source,
         result.message = e.getMessage();
         result.file = e.getFile().empty() ? cellName : e.getFile();
         result.line = e.getLine();
-        // The throw carried the error out of the stream, so it never became a
-        // record. Fold it in, so `diagnostics` is the complete account of the
-        // cell and a frontend needs to read one place, not two.
-        bridge.engine.report("error", result.errorId, result.message,
-                             result.file, result.line, e.getColumn());
+        // A SYNTAX error arrives here as a COUNT ("source has 2 syntax
+        // error(s)") with no coordinates: the parse aborts after the
+        // listener has already emitted the real, located diagnostics, and
+        // the exception is only the signal to stop. Take the coordinates
+        // from the first of those records so the flat fields point at the
+        // offending line like every other failure does — a notebook shows
+        // the flat message, and `line = -1` points nowhere.
+        if (result.line <= 0) {
+            bridge.finish();               // closes the stream, parses records
+            bool located = false;
+            for (const auto& d : result.diagnostics) {
+                if (d.severity != "error" || d.line <= 0) continue;
+                result.file = d.file;
+                result.line = d.line;
+                located = true;
+                break;
+            }
+            // The fold-back below cannot run now — the engine's channel is
+            // closed — so do its job by hand when there was nothing to adopt.
+            // When there WAS, the account is already complete and adding the
+            // count summary on top would just be a second, vaguer copy.
+            if (!located) {
+                CellDiagnostic d;
+                d.severity = "error";
+                d.code = result.errorId;
+                d.message = result.message;
+                d.file = result.file.empty() ? cellName : result.file;
+                d.line = result.line > 0 ? result.line : 0;
+                d.column = e.getColumn();
+                result.diagnostics.push_back(d);
+            }
+        } else {
+            // The throw carried the error out of the stream, so it never
+            // became a record. Fold it in, so `diagnostics` is the complete
+            // account of the cell and a frontend reads one place, not two.
+            bridge.engine.report("error", result.errorId, result.message,
+                                 result.file, result.line, e.getColumn());
+        }
         if (cellModule && cellModule->getLlvmModule()) {
             impl.poisoned.insert(cellModule->getLlvmModule());
         }

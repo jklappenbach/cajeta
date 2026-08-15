@@ -486,3 +486,92 @@ TEST(KernelCellTests, mixingGenerationsIsRejected) {
     EXPECT_NE(std::string::npos, mix.message.find("generation"))
         << "message did not mention generations: " << mix.message;
 }
+
+// 2.3.1 (spec 4.4; script-units 6.x) — THE Cell$N-FREE CONTRACT, as an
+// acceptance check over the shapes Unit 2 actually produces.
+//
+// Every cell compiles into a synthesized implicit class with a synthesized
+// entry method (`cajeta.script.cell_3::__cajeta_script_entry`). That is
+// scaffolding: the author wrote three lines in a notebook and must be told
+// about them in the coordinates they typed. So each diagnostic has to name
+// `In[N]` and a USER line, and none of them may mention the scaffolding.
+//
+// Asserted over one session across several failure shapes rather than one
+// test per shape: the contract is uniform, and the failure mode it guards
+// against — one diagnostic path that never got the U5 mapping — shows up as
+// a single odd entry among many correct ones.
+TEST(KernelCellTests, everyDiagnosticNamesTheCellAndLine) {
+    auto s = freshSession();
+    ASSERT_NE(nullptr, s.get());
+
+    // Scaffolding vocabulary. `cajeta.script.` alone is NOT on the list: it
+    // is the reserved default package, so a class the author declared in a
+    // cell legitimately canonicalizes into it and naming it is correct.
+    auto namesScaffolding = [](const std::string& text) {
+        return text.find("__cajeta_script_entry") != std::string::npos
+            || text.find("cajeta.script.cell_") != std::string::npos
+            || text.find("cajeta.script.In_") != std::string::npos
+            || text.find("Cell$") != std::string::npos;
+    };
+
+    auto expectWellNamed = [&](const CellResult& r, const char* what) {
+        const std::string cell = "In[" + std::to_string(r.executionCount) + "]";
+        EXPECT_FALSE(r.ok) << what << ": expected a failure";
+        EXPECT_EQ(cell, r.file) << what << ": diagnostic file";
+        EXPECT_GT(r.line, 0) << what << ": no user line";
+        EXPECT_FALSE(namesScaffolding(r.message))
+            << what << ": message leaks scaffolding: " << r.message;
+        for (const auto& d : r.diagnostics) {
+            if (d.severity != "error") continue;
+            EXPECT_EQ(cell, d.file) << what << ": structured diagnostic file";
+            EXPECT_GT(d.line, 0) << what << ": structured diagnostic line";
+            EXPECT_FALSE(namesScaffolding(d.message))
+                << what << ": structured message leaks scaffolding: "
+                << d.message;
+        }
+    };
+
+    ASSERT_TRUE(s->execute(
+        "public class Point { public int32 x;\n"
+        "  public Point(int32 x) { this.x = x; }\n"
+        "  public int32 get() { return this.x; } }\n"
+        "Point p = heap Point(7);\n"
+        "int32 keep = 1;\n").ok);
+
+    // 1. A syntax error — the located-listener path, which does not pass
+    //    through the diagnostic engine at all.
+    expectWellNamed(s->execute("int32 bad = ;\n"), "syntax error");
+
+    // 2. An unknown member — ordinary semantic resolution.
+    expectWellNamed(s->execute("int32 n = keep;\np.nosuch;\n"), "unknown member");
+
+    // 3. A stale-generation use (2.1.3a) — thrown UNLOCATED from the session
+    //    seam and stamped by remapScriptException, so it is the shape most
+    //    likely to arrive with no coordinates at all.
+    ASSERT_TRUE(s->execute(
+        "public class Point { public int32 x; public int32 y;\n"
+        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+        "  public int32 get() { return this.x + this.y; } }\n").ok);
+    expectWellNamed(s->execute("int32 use(Point pt) { return pt.get(); }\nuse(p);\n"),
+                    "stale generation");
+
+    // 4. A cell that RUNS and throws: the traceback is the other half of
+    //    spec 4.4, and a frame in the cell's own entry must render as the
+    //    cell, never as the class it compiles into.
+    CellResult threw = s->execute("int32 pad = 0;\nthrow heap Exception(\"boom\");\n");
+    EXPECT_FALSE(threw.ok) << "the throw did not fail the cell";
+    EXPECT_TRUE(threw.threw) << "reported as a compile failure, not a throw";
+    ASSERT_FALSE(threw.traceback.empty()) << "a throw with no traceback";
+    const std::string cell = "In[" + std::to_string(threw.executionCount) + "]";
+    EXPECT_EQ(cell, threw.traceback.front().file);
+    EXPECT_GT(threw.traceback.front().line, 0);
+    for (const auto& f : threw.traceback) {
+        EXPECT_FALSE(namesScaffolding(f.text))
+            << "traceback frame leaks scaffolding: " << f.text;
+    }
+
+    // The session is still usable after all of it.
+    CellResult after = s->execute("keep + 1;\n");
+    ASSERT_TRUE(after.ok) << after.errorId << ": " << after.message;
+    EXPECT_EQ("2", after.result);
+}
