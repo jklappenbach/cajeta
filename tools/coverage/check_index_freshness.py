@@ -84,11 +84,26 @@ def tests_from_index(index_dir):
     return names
 
 
+def is_disabled(name):
+    """gtest skips DISABLED_ on suite or test, so these never produce coverage."""
+    suite, _, test = name.partition(".")
+    return suite.startswith("DISABLED_") or test.startswith("DISABLED_")
+
+
 def compare(binary_tests, routine_tests, index_tests):
+    # DISABLED tests are enumerated but never executed, so they can never be
+    # measured. Counting them as UNMEASURED makes a clean index look permanently
+    # stale — the check would cry wolf forever and get ignored, which is worse
+    # than not having it. They get their own line instead, because "in the
+    # corpus, never runs, covers nothing" is its own defect: for the corpus ==
+    # gate endgame each one still needs a disposition (re-enable or delete).
+    disabled = {t for t in binary_tests if is_disabled(t)}
+    live = binary_tests - disabled
     return {
-        "unmeasured": binary_tests - index_tests,
+        "unmeasured": live - index_tests,
         "phantom": index_tests - binary_tests,
         "dangling": routine_tests - binary_tests,
+        "disabled": disabled,
     }
 
 
@@ -109,6 +124,14 @@ def report(counts, sets, show):
                 print(f"    {name}")
             if len(items) > show:
                 print(f"    ... and {len(items) - show} more")
+    # Reported, never fatal: a DISABLED test is a disposition question, not a
+    # stale index.
+    dis = sorted(sets["disabled"])
+    print(f"DISABLED   (enumerated, never runs, unmeasurable): {len(dis)}")
+    for name in dis[:show]:
+        print(f"    {name}")
+    if len(dis) > show:
+        print(f"    ... and {len(dis) - show} more")
     return ok
 
 
@@ -129,9 +152,14 @@ def selftest():
         assert sets["phantom"] == {"A.deletedSinceMeasure"}, sets["phantom"]
         assert sets["dangling"] == {"A.renamedAway"}, sets["dangling"]
 
+        # A DISABLED test must not read as a stale index.
+        d = compare({"A.keeps", "A.DISABLED_off"}, {"A.keeps"}, {"A.keeps"})
+        assert d["unmeasured"] == set(), d["unmeasured"]
+        assert d["disabled"] == {"A.DISABLED_off"}, d["disabled"]
+
         # And it must go GREEN when the three agree, or it is just an alarm.
         agreed = compare({"A.keeps"}, {"A.keeps"}, {"A.keeps"})
-        assert not any(agreed.values()), agreed
+        assert not any(agreed[k] for k in ("unmeasured", "phantom", "dangling")), agreed
     print("selftest: ok")
     return 0
 
