@@ -130,6 +130,31 @@ not remove the front end. That conclusion holds and is now sharper: IR
 generation has left the prime entirely (0.6 s of 37 s), so the front end is not
 merely dominant, it is the whole thing.
 
+## Validation of (1), two-stage parsing — 2026-08-15
+
+Implemented behind `CAJETA_TWO_STAGE_PARSE=1` (`6edaef5f`, `941d8ec8`).
+
+* **The grammar is SLL-clean on the stdlib**: `[two-stage] 700 parses: 700
+  SLL, 0 fell back to LL`. Prime 29.7 s → 4.2 s (Release), 4.5 s in the Debug
+  test binary.
+* **Routine gate under the flag: 1435 passed, 0 failed**, 4 skipped, 1 timed
+  out. The timeout is `TableCoreTests.frameSchemaErrorDoesNotPoisonNextCompile`
+  and it is not a regression — re-measured alone it takes **225 s without**
+  two-stage and **136 s with**, so it exceeds the 120 s shard budget either way
+  and two-stage makes it 40% faster.
+* Full battery (`FULL=1`) under the flag is the gate on flipping the default.
+
+Two things learned while validating, both worth keeping:
+
+The aggregate `[two-stage]` counter is a static destructor, and `cajeta_test`
+exits without running static destructors — so a battery run reported nothing at
+all from it. Each fallback now prints as it happens, naming its input.
+
+And an expected-syntax-error test **falls back by design**: bail throws on the
+first error, so malformed input always reaches stage 2, which is how it gets
+its diagnostics. Fallbacks in a battery log are therefore expected and correct.
+The verdict is pass/fail parity; a fallback on VALID input is the signal.
+
 ## The path
 
 Ordered by measured value, not by appeal:
