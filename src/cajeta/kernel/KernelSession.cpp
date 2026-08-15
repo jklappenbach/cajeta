@@ -1317,6 +1317,46 @@ void KernelSession::shutdown() {
             ++impl.stats.taskShutdownCalls;
         }
     }
+    // Give this session's USER struct NAMES back to the shared context.
+    //
+    // llvm struct types are CONTEXT-owned and the resident context outlives
+    // the session, so `%cajeta.script.Point` created here is still registered
+    // in the context's NamedStructTypes when the NEXT session in this process
+    // declares its own `Point` — which then reuses the previous session's
+    // layout and GEPs its own field indices into it. There is no way to
+    // delete a type from a context (LLVM allocates them there and frees them
+    // only with the context); `setName("")` releasing the symbol-table entry
+    // is the whole of the available mechanism, and it is enough, because all
+    // that matters is that the name be free for a fresh StructType::create.
+    //
+    // BY MODULE, not by `canonicalMap` — which is why
+    // `CajetaType::releaseThrownTransientStructNames()` does not cover this.
+    // That walk finds only what the registry currently maps, and a SUPERSEDED
+    // GENERATION is not there: after a redefinition, `cajeta.script.Point`
+    // holds generation 2, and generation 1's struct — the one that leaks — is
+    // unreachable from any key. The modules this session delivered still hold
+    // every generation it built.
+    //
+    // The stdlib's own structs are PRESERVED: they are baseline-resident and
+    // the next session reuses them by name on purpose.
+    {
+        std::set<std::string> stdlibResident;
+        if (auto stdlib = CajetaModule::getStdlibModule()) {
+            if (auto* lm = stdlib->getLlvmModule()) {
+                for (auto* st : lm->getIdentifiedStructTypes()) {
+                    if (st->hasName()) stdlibResident.insert(st->getName().str());
+                }
+            }
+        }
+        for (llvm::Module* lm : impl.delivered) {
+            if (!lm) continue;
+            for (auto* st : lm->getIdentifiedStructTypes()) {
+                if (st->hasName() && !stdlibResident.count(st->getName().str())) {
+                    st->setName("");
+                }
+            }
+        }
+    }
     Compiler::setSharedContext(nullptr);
     // Thread-global: leaving it set would point the next compiler in this
     // process (another test, a lint pass) at a module that is about to die.

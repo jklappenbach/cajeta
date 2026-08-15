@@ -359,3 +359,58 @@ TEST(KernelSessionTests, twentyCellSessionStaysBoundedAndTearsDownClean) {
     EXPECT_EQ(1, s->stats().sessionDropAllCalls);
     EXPECT_EQ(1, s->stats().taskShutdownCalls);
 }
+
+// 7.2.7 — A SESSION'S TYPES MUST NOT OUTLIVE IT.
+//
+// llvm struct types are CONTEXT-owned, and on the resident path the context
+// outlives the session. So a class a session declared is still registered in
+// the context's NamedStructTypes when the NEXT session declares one by the
+// same name, and the second session gets the first session's LAYOUT: declaring
+// `Point {x, y}` after a dead session left a one-field `Point` behind failed
+// with `Invalid indices for GEP pointer type` on the GEP for `y`.
+//
+// This is written as ONE test with two sessions on purpose. It was found as a
+// cross-test order dependency — KernelIoTests failing only when it happened to
+// follow KernelCellTests — where the test that FAILS is not the test at fault,
+// and each passes alone. Pinning it as an ordering rule between two suites
+// would pin nothing; a session's teardown either gives the name back or it
+// does not.
+//
+// The REDEFINITION in session 1 is load-bearing. A redefined class mints a new
+// generation (`Point$g2`) and takes over the registry key, so generation 1's
+// struct is unreachable from `canonicalMap` — which is exactly why the
+// existing `CajetaType::releaseThrownTransientStructNames()` walk does not
+// cover it, and why the release is by delivered MODULE instead.
+TEST(KernelSessionTests, aSessionsStructNamesDoNotLeakIntoTheNext) {
+    {
+        auto first = KernelSession::create();
+        ASSERT_NE(nullptr, first.get());
+        ASSERT_TRUE(first->execute(
+            "public class Point { public int32 x;\n"
+            "  public Point(int32 x) { this.x = x; }\n"
+            "  public int32 get() { return this.x; } }\n"
+            "Point p = heap Point(3);\n").ok);
+        // Supersede it: `Point` now maps to generation 2, and generation 1's
+        // one-field struct is the thing that leaks.
+        ASSERT_TRUE(first->execute(
+            "public class Point { public int32 x; public int32 y;\n"
+            "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+            "  public int32 get() { return this.x + this.y; } }\n"
+            "Point q = heap Point(1, 2);\n").ok);
+        first->shutdown();
+    }
+
+    // A NEW session, same class name, two fields. Its `y` is at index 2 and
+    // must land in a struct that has an index 2.
+    auto second = KernelSession::create();
+    ASSERT_NE(nullptr, second.get());
+    CellResult r = second->execute(
+        "public class Point { public int32 x; public int32 y;\n"
+        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
+        "  public int32 sum() { return this.x + this.y; } }\n"
+        "Point p = heap Point(4, 5);\n"
+        "p.sum();\n");
+    ASSERT_TRUE(r.ok) << r.errorId << ": " << r.message;
+    EXPECT_TRUE(r.hasResult);
+    EXPECT_EQ("9", r.result);
+}
