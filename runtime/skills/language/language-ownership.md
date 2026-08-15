@@ -2,19 +2,64 @@
 id: language-ownership
 applies-to: [cajeta/language/ownership, cajeta/language/borrowing, cajeta/language/slices]
 title: Ownership, borrowing, # transfer, drops, and slices
-description: The rules that keep cajeta memory-safe at compile time — borrow by default, transfer with #, drop at scope exit — and the borrow-checker errors you will meet.
+description: The rules that keep cajeta memory-safe — borrow by default, transfer with #, drop at scope exit — WHO decides ownership at each position, and the borrow-checker errors you will meet.
+keywords: [ownership, borrow, borrowing, transfer, title, move, lend, lifetime, drop, memory, "#=", use-after-free, double-free]
 ---
 
 # Ownership & transfer — read this before storing, returning, or passing heap values
 
-Every heap value has exactly one owner. Plain `=` **borrows** (source still
-owns; the borrow must not outlive it). `#` **transfers** the title. Everything
-is checked at compile time; there is no annotation burden and no runtime cost.
+Every heap value has exactly one owner.
+
+**Ownership is runtime-conditional on BOTH sides of a call.** What differs by
+position is *who decides*:
+
+| Position | Decided by | Carried in | Spelling |
+|---|---|---|---|
+| name → name | the **spelling** | statically | `=` lends, `#=` transfers |
+| call argument | the **caller** | the transfer word | `f(x)` lends, `f(#x)` transfers |
+| return | the **callee** | the return-flag TLS | plain `T` may STILL carry a title |
+| slot store | the **source's mode** | per-slot bit, via `#=` | a lend stays a lend |
+
+Only the first row is the simple "`=` lends, `#` transfers" rule. **Do not
+reason from that rule alone.** An earlier revision of this skill said
+ownership was "checked at compile time … no runtime cost"; that is wrong in
+three ways, each of which produced a real defect. Every correction below was
+measured, with the test named.
+
+## Three things the simple rule gets wrong
+
+**1. A plain (non-`#`) return is NOT statically a borrow.** A plain-return
+wrapper that tail-calls a `#` method rides the inner title through:
+
+```cajeta
+public static #Cell fresh()    { return heap Cell(7); }
+public static Cell  viaPlain() { return D.fresh(); }   // returns a TITLE
+```
+
+[`SignatureAbiTests.tailCallThroughPlainReturnKeepsTitle`. `Stream.fold<R>`
+does the same via its callback's `#R` — genuinely runtime-variable, since the
+callback is a parameter.] So `T x = someCall()` is not a lend: the local's
+drop entry is armed from the arriving flag.
+
+**2. `#x` on a borrow does NOT transfer — it FORWARDS the mode it was
+handed.** The lender keeps title and frees on drop, so a receiver that
+outlives the lender reads reused memory. Measured, both kinds: an array
+payload read back `-83968` instead of `8247`; a class payload came back
+holding the next allocation's bytes [`OwnershipArrayCanaryTests`]. That is a
+use-after-free, not a style issue.
+
+**3. `#=` is MODE-CARRYING — it is not a transfer.** It records whatever mode
+the source actually holds, so a **lent source records a BORROW** and is not
+moved. It makes no claim of title, is therefore always safe, and is the
+correct spelling for a deliberate non-owning alias — an intrusive link, a
+back-pointer, a view handle. `Cache`'s LRU links and `Channel`'s slots both
+use it for exactly that.
 
 ## The four places `#` appears — and the one place it never does
 
 - **Store**: `Point c #= a;`, `this.held #= v;`, `this.data[i] #= v;` — the
-  destination takes the title, the source is moved. `#=` is one token.
+  destination records the SOURCE'S MODE (a title when one was tendered, a
+  borrow otherwise). `#=` is one token.
 - **Move expression**: `this.consume(#a)`, `return #a`, `#this.data[i]` — at
   call arguments, returns, and slot extractions (none of these are stores).
 - **Parameter type**: `void consume(#Point p)` — the callee demands ownership.
@@ -22,9 +67,13 @@ is checked at compile time; there is no annotation burden and no runtime cost.
   `heap T(...)` promotes implicitly.
 
 The rule: **a store uses `#=`; everything else uses `#v`.** `#` never goes on
-the receiving local's declaration — `Point q = this.make();` is plain, because
-the signature already carries the transfer. (Legacy `dst = #v` still compiles
-with a deprecation warning; write `dst #= v`.)
+the receiving local's declaration — `Point q = this.make();` is plain, and the
+title (if one is tendered) arrives on the return flag and arms `q`'s drop
+entry. Note the parenthetical: whether a title IS tendered is the callee's
+runtime decision, not something the return spelling guarantees — see
+correction 1. Treat `#T` on a return as the PRODUCER/VIEW contract it is
+meant to be, and verify rather than assume when it matters. (Legacy
+`dst = #v` still compiles with a deprecation warning; write `dst #= v`.)
 
 **Never both.** `x #= #y` is `CAJETA_ERROR_DOUBLE_TRANSFER` whatever `y` is —
 identifier, field, element, or call result. The store carries the transfer, so
