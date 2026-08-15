@@ -103,7 +103,21 @@ The tests build a `LinkGraph` by hand rather than driving the JIT, so this
 COFF-only pass is covered on Linux and in CI, not only on the Windows runners
 where it bit.
 
-## 3. Follow-up — SEH is dropped, not supported
+## 3. Follow-up — `removeSection` is a footgun worth reporting
+
+Nothing in LLVM stops this. `LinkGraph::removeSection()` has no doc comment
+warning about inbound references and no assertion; upstream only ever calls it
+from `mergeSections()`, which has already moved every block and symbol out, so
+the section it removes is empty and the hazard never shows. A client that
+removes a *populated* section — the obvious reading of the API — silently
+corrupts the graph.
+
+Worth sending upstream with the JITLink COFF patches: a doc comment stating the
+precondition, and a debug assertion that no edge in the graph targets a symbol
+in the section being removed. Cheap, and it converts a silent
+one-in-thirty-modules memory corruption into an immediate failure.
+
+## 4. Follow-up — SEH is dropped, not supported
 
 Dropping `.pdata` is still the right call *today* only because nothing
 registers it: cajeta's JIT never calls `RtlAddFunctionTable`, so the OS has
