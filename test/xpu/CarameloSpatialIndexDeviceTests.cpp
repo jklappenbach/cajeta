@@ -916,9 +916,27 @@ const char* kOptixImplDriver =
     "    }\n"
     "}\n";
 
+// Defined unconditionally by OptixAccel.cpp — the real probe when CAJETA_HAS_OPTIX
+// is on, and a `return 0` stub when it is not.
+extern "C" int cajeta_xpu_optix_available(void);
+
 TEST(CarameloSpatialIndexDeviceTests, optixRecordsImplOnNvptxDevice) {
     if (!cajeta::xpu::nvidia::CudaDriver::available()) {
         GTEST_SKIP() << "no CUDA device/driver available";
+    }
+    // CUDA presence is not OptiX presence. A box with a CUDA driver but no OptiX
+    // engine (no SDK at build time, or no loadable nvoptix at run time) records
+    // the software tier and returns 700, and this test FAILED there rather than
+    // skipping — a red suite on every non-OptiX CUDA host.
+    //
+    // The probe, not the 700 sentinel the lazy-build tests below use: 700 is
+    // ambiguous here. It means EITHER the engine is absent (skip) OR the engine
+    // is present and the CUDA OptiX noun arm did not take — which is the exact
+    // defect this test exists to catch. Skipping on 700 would make it vacuous on
+    // the machines that matter.
+    if (!cajeta_xpu_optix_available()) {
+        GTEST_SKIP() << "CUDA present but OptiX engine unavailable — the OptiX AS "
+                        "tier cannot be recorded on this host";
     }
     AsImplEnvGuard forceOptix("optix");   // CUDA: optix|native -> the OptiX AS tier
     std::map<std::string, std::string> sources = {{"test.RqOptix", kOptixImplDriver}};
