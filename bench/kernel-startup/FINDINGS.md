@@ -217,31 +217,48 @@ belongs to 7.2.9.
 Separately: `EntryKind::ClassBitcode` is written and read by nothing. Every
 `.cja` ships one compiled class per source that no consumer opens.
 
-## The drain is one template, not a routing problem (2026-08-16)
+## Template instantiation is ANTLR re-walking (2026-08-16)
 
-`buildPendingPrototypes` is ~99.9% `drainDeferredInstantiations`; its fixpoint
-scan costs ~2 ms of 44 s. Instrumented per instantiation, quiet box, Release:
+Instrumented `instantiateInternal`, quiet box, Release:
 
 | | eager (all 444) | drain (dependency) |
 |---|---|---|
-| deferred total | 19,381 ms | 43,140 ms |
-| instantiations | 47 | 35 |
-| per instantiation | 412 ms | 1,232 ms |
-| worst single | 2,471 ms | **9,955 ms** |
-| worst template | `cajeta.math.Tensor` | `cajeta.math.Tensor` |
-| prototypes built | 91 | 8 |
+| `visitClassBody` (tree walk) | 52,373 ms | 43,924 ms |
+| `generatePrototype` (LLVM lowering) | 104 ms | 101 ms |
+| instantiations (cache misses) | 160 | 160 |
 
-Baseline for scale: the stdlib prime's worst is 291 ms (`cajeta.collection.HashMap`).
+**Instantiation is ~100% tree re-walking.** LLVM lowering is noise. Every
+instantiation re-walks the template's whole parse tree through `visitClassBody`,
+so cost tracks source size: `cajeta.math.Tensor` is 5,004 lines / 225 methods and
+is re-walked per distinct type argument.
 
-Two defects, not one:
+**There is no lazy-vs-eager penalty.** Total walk is comparable (52 s eager,
+44 s drain) — the eager route walks slightly MORE. What differs is where it
+lands: eager instantiates inline during parsing (19 s inside the deferred
+drain), the drain defers nearly everything (42 s inside it). Per-call "worst
+instantiation" figures (9.3 s drained vs 2.3 s eager) measure that
+concentration, not a cost difference.
 
-1. **`Tensor` costs 2.5 s to instantiate on the BEST path** — 8.5x HashMap's
-   worst. Inherent to the class as written, not to how it is reached.
-2. **The drain multiplies it ~4x** — same template, 9,955 ms vs 2,471 ms, while
-   doing FEWER instantiations (35 vs 47) in more than twice the time. Per
-   instantiation, not volume.
+### Hypotheses killed by measurement — do not re-run these
 
-This is not what 7.2.9 is scoped for. Caching a layout that should not have cost
-10 s persists the wrong artifact; shrinking the eager set moves it; a front-end
-state cache stores it. Ask why one instantiation is 34x the normal worst before
-building a cache tier around it.
+1. *The `buildPendingPrototypes` fixpoint re-scans the whole canonicalMap.* It
+   does, but that scan is **2 ms of 43,956 ms**. Iterating a pending set saves
+   nothing.
+2. *The drain leaves `instantiationReuseTarget` set, so nested instantiations
+   bypass the cache.* It is consumed immediately; the code says why.
+3. *The drain bypasses cache entries that existed.* Counted: `bypass` equals the
+   number of drained instantiations exactly (one each, by design), and misses are
+   identical on both routes (160 = 160).
+
+### What this means for 7.2.9
+
+The item is scoped as caching + scheduling (artifact cache, front-end state
+cache, shrink the eager set, prescan table at build time). None of those touch
+~45 s of repeated tree walking. The lever is to stop re-walking a template body
+per instantiation — memoize the walked body per template, or lower once and
+substitute. That is route-independent and is the dominant cost in both
+measurements.
+
+Note the prescan-table lever the item calls "the cheap half, ~17.6 s" is now
+worth ~4 s: two-stage parsing already took the prescan loop from 17,605 ms to
+3,942 ms.
