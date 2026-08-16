@@ -167,6 +167,63 @@ OUT="$(run_exec "$LF" 3 BATCH=0 VERBOSE=1 || true)"
 bc=$(printf '%s\n' "$OUT" | grep -cE '^>> ZSuite\.t[0-9]+ \.\.\. PASS$')
 check "2.3.3 BATCH=0 emits a per-test breadcrumb for each real test id (6)" "$bc" "6"
 
+# --- 4.1.2 BATCH_CAP must not clamp a deadline below its own measured weight -
+# The defect this pins (test-battery-restructure 4.2.3): chunks were packed by
+# COUNT, weights computed afterward, and any weight-derived deadline over
+# BATCH_CAP was clamped down to it. A chunk the harness KNEW needed 5,691s was
+# handed 1,800s, killed, and then re-run one test at a time — 1,800s burned per
+# occurrence, ~90 min of the 2026-08-15 gate across three suites.
+DF="$TMP/durations.tsv"
+LF="$TMP/heavy.txt"; gen_list "$LF" HeavySuite 16
+: > "$DF"; i=1; while [ "$i" -le 16 ]; do printf 'HeavySuite.t%02d\t120000\n' "$i" >> "$DF"; i=$((i+1)); done
+# 16 x 120s = 1,920s measured; x BATCH_SLACK(3) = 5,760s wanted vs BATCH_CAP 1800.
+PLAN="$(run_plan "$LF" 4 BATCH_MAX=16 BATCH_CAP=1800 BATCH_SLACK=3 CAJETA_TEST_DURATIONS="$DF")"
+viol=$(printf '%s\n' "$PLAN" | sed -nE 's/^CHUNK .* weight=([0-9]+) deadline=([0-9]+) .*/\1 \2/p' \
+       | awk '{ if ($2 * 1000 < $1) c++ } END { print c+0 }')
+check "4.1.2 no chunk's deadline is below its own measured weight" "$viol" "0"
+
+# Every chunk must fit its budget, which means splitting by weight, not count.
+over=$(printf '%s\n' "$PLAN" | sed -nE 's/^CHUNK .* deadline=([0-9]+) .*/\1/p' \
+       | awk '{ if ($1 > 1800) c++ } END { print c+0 }')
+check "4.1.2 no chunk exceeds BATCH_CAP once split by weight" "$over" "0"
+
+# A SINGLE test heavier than the cap cannot be split, so it keeps its measured
+# deadline rather than being clamped into a guaranteed kill.
+LF="$TMP/one.txt"; gen_list "$LF" LoneSuite 1
+: > "$DF"; printf 'LoneSuite.t01\t900000\n' >> "$DF"   # 900s; x3 = 2700s > cap
+PLAN="$(run_plan "$LF" 1 BATCH_CAP=1800 BATCH_SLACK=3 CAJETA_TEST_DURATIONS="$DF")"
+dl=$(printf '%s\n' "$PLAN" | sed -nE 's/^CHUNK .* deadline=([0-9]+) .*/\1/p')
+check "4.1.2 unsplittable over-cap test keeps its measured deadline" "$dl" "2700"
+
+# WEIGHTED=0 must still behave exactly as before: count-based, capped.
+LF="$TMP/heavy.txt"
+PLAN="$(run_plan "$LF" 4 BATCH_MAX=16 BATCH_CAP=1800 WEIGHTED=0)"
+dl=$(printf '%s\n' "$PLAN" | sed -nE 's/^CHUNK .* deadline=([0-9]+) .*/\1/p' | sort -u | paste -sd, -)
+check "4.1.2 WEIGHTED=0 keeps the flat capped budget" "$dl" "1800"
+# --- 5.1.1 the sweep runs the WHOLE corpus minus stress (no routine gate) ----
+# test-battery-restructure unit 5: once corpus == gate, the routine filter is a
+# shadow set waiting to drift out of date, and FULL=1 is a flag nobody should
+# have to know. A bare sweep must discover everything the binary has, less the
+# hand-curated stress battery.
+if [ -x "$ROOT/build/test/cajeta_test" ]; then
+    corpus=$(CAJETA_SOURCE_ROOT="$ROOT" "$ROOT/build/test/cajeta_test" --gtest_list_tests 2>/dev/null \
+        | awk '/^[^ ]/{s=$1;next} NF{split($1,a,"#");gsub(/ /,"",a[1]);print s a[1]}' | sort -u | wc -l | tr -d ' ')
+    stress=$(grep -vcE '^\s*(#|$)' "$ROOT/test/stress_filter.txt" | tr -d ' ')
+    want=$(( corpus - stress ))
+    PLAN="$(cd "$ROOT" && PLAN_ONLY=1 ./cajeta_tests.sh shard=4 2>/dev/null)"
+    got=$(printf '%s\n' "$PLAN" | sed -nE 's/^PLAN .* tests=([0-9]+).*/\1/p')
+    check "5.1.1 bare sweep = corpus - stress ($corpus - $stress)" "$got" "$want"
+    # The MECHANISM must be gone, not the word: a comment explaining why the
+    # routine gate was removed is documentation worth keeping, and grepping for
+    # the bare string would forbid it.
+    nofull=$(grep -cE '\$\{FULL|FULL=1 \]|"\$FULL"|CAJETA_ROUTINE_FILTER|ROUTINE_FILE' "$ROOT/cajeta_tests.sh" || true)
+    check "5.1.1 no FULL/routine-filter mechanism remains" "$nofull" "0"
+    check "5.1.1 routine_filter.txt is gone" \
+          "$([ -e "$ROOT/test/routine_filter.txt" ] && echo present || echo absent)" "absent"
+else
+    ok "5.1.1 skipped (no built binary)"
+fi
+
 echo
 echo "PASS=$pass FAIL=$fail"
 [ "$fail" -eq 0 ]

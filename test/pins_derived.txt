@@ -20,6 +20,8 @@
 # because 759a9cd0 gave it an OptiX-presence skip guard hours before this
 # delete set was computed. A delete set is only as current as the corpus it
 # was derived from; a test someone just fixed is not a deletion candidate.
+# Dropped 3 NetConnectFallbackTests.DISABLED_* pins: gtest never runs a
+# DISABLED test, so the pin was inert, and the suite has since been removed.
 AdviceCodegenTests.afterFiresOnExplicitReturn
 AdviceCodegenTests.afterFiresOnFallThroughExit
 AdviceCodegenTests.beforeAndAfterBothFire
@@ -1406,9 +1408,6 @@ NetAsyncOpsTests.acceptAsyncLoopWakesOnConnect
 NetAsyncOpsTests.readAsyncLoopWakesOnPeerData
 NetAsyncOpsTests.recvFromAsyncLoopWakesOnDatagram
 NetAsyncOpsTests.writeAsyncLoopWritableImmediate
-NetConnectFallbackTests.DISABLED_allAddressesDeadRaisesCitingHost
-NetConnectFallbackTests.DISABLED_connectFallsThroughAddressList
-NetConnectFallbackTests.DISABLED_resolutionFailurePropagates
 NetExceptionTests.accessOrdinalFallsThroughPreservingKind
 NetExceptionTests.addressInUseOrdinalMapsToKind
 NetExceptionTests.addressNotAvailableOrdinalMapsToKind

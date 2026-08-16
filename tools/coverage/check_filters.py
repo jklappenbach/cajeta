@@ -166,16 +166,33 @@ def check(binary_tests, filters, durations, routine_key="routine",
         if dangling:
             problems.append((f"{name}: DANGLING", sorted(dangling)))
 
-    routine = filters.get(routine_key, (set(), None))[0]
+    # Unit 5 removed test/routine_filter.txt: the sweep runs the whole corpus
+    # less stress, so THAT is the gate the untimed/overlap checks are about.
+    # Falling back to an empty set would silently make those checks vacuous.
+    if routine_key in filters:
+        routine = filters[routine_key][0]
+    else:
+        routine = {t for t in binary_tests if is_runnable(t)}
     stress = filters.get("stress", (set(), None))[0]
-    overlap = routine & stress
-    if overlap:
-        problems.append(("routine ∩ stress", sorted(overlap)))
+    # Only meaningful while a routine FILTER exists. Once the corpus is the gate
+    # (unit 5) every stress test is trivially "in" it, and reporting that as an
+    # overlap turns a real check into 9 lines of noise.
+    if routine_key in filters:
+        overlap = routine & stress
+        if overlap:
+            problems.append(("routine ∩ stress", sorted(overlap)))
 
     untimed = {t for t in routine & binary_tests if is_runnable(t)} - durations
     if untimed:
-        problems.append(("UNTIMED in gate (flat TEST_TIMEOUT applies)",
-                         sorted(untimed)))
+        # ADVISORY, not fatal. Most untimed tests SKIP on this host (no CUDA, no
+        # OptiX), so they never approach the budget and can never be timed — a
+        # permanently-red check is one nobody reads. It still lists every name,
+        # because this is what killed 4 tests on the 2026-08-15 gate, including
+        # the battery's largest coverage contributor.
+        notes.append(
+            f"UNTIMED: {len(untimed)} gate test(s) have no duration row, so "
+            "they get the flat TEST_TIMEOUT on their first run:\n    "
+            + "\n    ".join(sorted(untimed)))
 
     if references is not None:
         broken = sorted(r for r in references if not resolves(r, binary_tests))
@@ -184,8 +201,14 @@ def check(binary_tests, filters, durations, routine_key="routine",
                 ("REFERENCE (a test names another test that does not exist)",
                  broken))
 
-    battery = filters.get(routine_key, (set(), None))[1]
     runnable = {t for t in binary_tests if is_runnable(t)}
+    if routine_key not in filters:
+        # The endgame state. Assert it stays that way: a routine filter that
+        # reappears without covering the corpus is a shadow set, and a shadow
+        # set is what made every test outside it invisible to the sweep.
+        notes.append("no routine_filter.txt — corpus IS the gate (spec 8.4)")
+        return problems, notes
+    battery = filters[routine_key][1]
     if battery is None:
         notes.append(f"{routine_key}: no 'Battery:' header — staleness "
                      "unverifiable; regenerate with build_routine.py")
@@ -218,9 +241,11 @@ def selftest():
     kinds = [p[0] for p in problems]
     assert any("DANGLING" in k for k in kinds), kinds        # A.gone
     assert any("∩ stress" in k for k in kinds), kinds        # B.stress in both
-    assert any("UNTIMED" in k for k in kinds), kinds         # A.slow, B.stress
-    untimed = dict(problems)["UNTIMED in gate (flat TEST_TIMEOUT applies)"]
-    assert "A.slow" in untimed and "A.keeps" not in untimed, untimed
+    # UNTIMED is advisory (see the note in check()), so it lands in notes —
+    # but it must still NAME the untimed tests and exclude the timed one.
+    un = [n for n in notes if n.startswith("UNTIMED")]
+    assert un, notes
+    assert "A.slow" in un[0] and "A.keeps" not in un[0], un
 
     # Staleness is ASYMMETRIC. Binary bigger than the recorded battery means
     # tests exist the derivation never saw — the direction that becomes a
@@ -244,9 +269,9 @@ def selftest():
     dang = dict(check(binary, pat, binary)[0]).get("release: DANGLING", [])
     assert dang == ["Nope.*"], dang
     # A DISABLED test is not "untimed" — it never runs.
-    d = check({"A.keeps", "A.DISABLED_x"},
-              {"routine": ({"A.keeps", "A.DISABLED_x"}, 1)}, {"A.keeps"})[0]
-    assert not any("UNTIMED" in p[0] for p in d), d
+    dn = check({"A.keeps", "A.DISABLED_x"},
+               {"routine": ({"A.keeps", "A.DISABLED_x"}, 1)}, {"A.keeps"})[1]
+    assert not any("A.DISABLED_x" in n for n in dn if n.startswith("UNTIMED")), dn
     # A reference to a live test is fine; one to a deleted test must fire.
     r = check(binary, {"routine": ({"A.keeps"}, 4)}, binary,
               references={"A.keeps", "Gone.suite"})[0]

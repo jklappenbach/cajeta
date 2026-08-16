@@ -25,6 +25,15 @@ import os
 import re
 import sys
 
+# Directories a test-source walk must never descend into. `.claude/worktrees/*`
+# is the one that bit: a nested git worktree holding a FULL SECOND COPY of the
+# test tree. On 2026-08-16 a caller passed --root "." by accident (a shell
+# command substitution returned empty, so `dirname ""` became `.`) and this tool
+# obediently deleted 1,874 tests out of that worktree. Nothing in the repo's own
+# sources was touched, which is exactly why it was easy to miss.
+SKIP_DIRS = {'.git', '.claude', '.cache', 'node_modules', '_deps',
+             'build', 'build-cov', 'build-tsan', 'cmake-build-debug'}
+
 # Anchored to COLUMN 0. Every one of this repo's 6,063 test macros starts
 # there and none is indented (checked, not assumed), so the anchor costs
 # nothing and buys immunity to the two decoys that matter: `// TEST(...)` in a
@@ -148,6 +157,16 @@ TEST_F(B, alsoDoomed) { { { } } }
         hits = referenced_by_other_tests(
             t, {("ZoneOffsetTests", "hoursMinutes"), ("Other", "x")})
         assert "ZoneOffsetTests.*" in hits, hits
+    # SKIP_DIRS must keep the walk out of nested worktrees and vendored trees.
+    with tempfile.TemporaryDirectory() as t:
+        os.makedirs(os.path.join(t, ".claude", "worktrees", "baseline"))
+        os.makedirs(os.path.join(t, "test"))
+        body = 'TEST(A, doomed) { }\n'
+        open(os.path.join(t, "test", "real.cpp"), "w").write(body)
+        open(os.path.join(t, ".claude", "worktrees", "baseline", "copy.cpp"),
+             "w").write(body)
+        hits = referenced_by_other_tests(t, {("A", "doomed")})
+        assert not any("baseline" in p for ps in hits.values() for p in ps), hits
     print("selftest: ok")
     return 0
 
@@ -172,7 +191,8 @@ def referenced_by_other_tests(root, doomed):
     """
     doomed_suites = {s for s, _ in doomed}
     hits = {}
-    for dirpath, _, names in os.walk(root):
+    for dirpath, dirnames, names in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in names:
             if not fn.endswith((".cpp", ".cc", ".h")):
                 continue
@@ -197,6 +217,8 @@ def main():
     ap.add_argument("--list")
     ap.add_argument("--root", default="test")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--allow-repo-root", action="store_true",
+                    help="permit --root to be the repo root (see SKIP_DIRS)")
     ap.add_argument("--force", action="store_true",
                     help="delete even when another test references the set")
     ap.add_argument("--selftest", action="store_true")
@@ -211,6 +233,19 @@ def main():
             s, _, n = line.partition(".")
             doomed.add((s, n))
 
+    if not os.path.isdir(args.root):
+        print(f"error: --root {args.root!r} is not a directory", file=sys.stderr)
+        return 2
+    if os.path.realpath(args.root) == os.path.realpath(os.getcwd()) \
+            and not args.allow_repo_root:
+        # A repo-root walk is almost always an accident, and it is the one that
+        # reaches sibling worktrees and vendored trees.
+        print("error: --root is the repository root. Deleting test cases "
+              "repo-wide reaches nested worktrees and vendored copies; pass "
+              "an explicit subtree (e.g. --root test), or --allow-repo-root "
+              "if you really mean it.", file=sys.stderr)
+        return 2
+
     refs = referenced_by_other_tests(args.root, doomed)
     if refs:
         print("REFUSING: these doomed tests are named by other tests; "
@@ -223,7 +258,8 @@ def main():
             return 2
 
     files_changed = files_deleted = total_removed = 0
-    for dirpath, _, names in os.walk(args.root):
+    for dirpath, dirnames, names in os.walk(args.root):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for fn in names:
             if not fn.endswith((".cpp", ".cc")):
                 continue

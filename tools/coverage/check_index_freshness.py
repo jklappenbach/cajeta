@@ -175,11 +175,14 @@ def main():
 
     if args.selftest:
         return selftest()
-    if not (args.binary and args.index and args.routine):
-        ap.error("--binary, --index and --routine are required")
+    if not (args.binary and args.index):
+        ap.error("--binary and --index are required")
 
     binary_tests = tests_from_binary(args.binary)
-    routine_tests = tests_from_routine(args.routine)
+    # The routine gate was removed in unit 5 — the corpus IS the gate, so there
+    # is no separate list to disagree with. DANGLING stays meaningful for any
+    # OTHER filter passed here.
+    routine_tests = tests_from_routine(args.routine) if args.routine else set()
     index_tests = tests_from_index(args.index)
     sets = compare(binary_tests, routine_tests, index_tests)
     counts = {"binary": len(binary_tests), "routine": len(routine_tests),

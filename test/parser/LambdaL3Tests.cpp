@@ -57,6 +57,26 @@ TEST(LambdaL3Tests, transferCaptureRunsWithinScope) {
 // as use-after-move at compile time. This is what makes `#` meaningful:
 // the static check catches a use that would have aliased the moved-out
 // owner.
+TEST(LambdaL3Tests, outerReadAfterTransferIsLegal) {
+    auto src =
+        "package test;\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32[] arr = heap int32[3];\n"
+        "        () -> int64 fn = () -> #arr.count();\n"
+        "        int64 size = arr.count();\n"  // demoted — readable
+        "        return (int32) size;\n"
+        "    }\n"
+        "}\n";
+    // transfer-demotes-to-borrow: the capture demotes `arr` to a borrow of
+    // the same live array; the outer read is an ordinary borrow read.
+    try {
+        CajetaJit::compile(src, "test.D");
+    } catch (cajeta::Exception& e) {
+        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
+                      << ": " << e.getMessage();
+    }
+}
 
 // `#name` only triggers transfer mode for heap values. On a primitive
 // (Rule 1 says primitives capture by value, no exceptions), the `#`

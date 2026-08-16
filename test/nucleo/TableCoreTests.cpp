@@ -364,6 +364,26 @@ TEST(TableCoreTests, frameSchemaErrorDoesNotPoisonNextCompile) {
 // member and fails the compile, phrased against the typo. Its own test: the
 // compile FAILS (the memoization half of 3.1.3 rides the matrix above, as
 // `accessorSetIsDeterministic`).
+TEST(TableCoreTests, accessorTypoFailsCompileNamingTheTypo) {
+    auto typo = std::string(kPrelude) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        + kBuildCols +
+        "        Table<Tick> t = heap Table<Tick>(\n"
+        "            Column.of<int64>(tsv), Column.of<float64>(pv),\n"
+        "            Column.of<float64>(sv), StringColumn.of(vv));\n"
+        "        return (int32) t.prce.get(0);\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(typo, "test.D");
+        FAIL() << "expected the accessor typo to fail the compile";
+    } catch (cajeta::Exception& e) {
+        EXPECT_NE(e.getMessage().find("prce"), std::string::npos)
+            << "must name the missing accessor: " << e.getErrorId()
+            << " — " << e.getMessage();
+    }
+}
 
 // 3.1.4 — the synthesized constructor IS the schema check: a wrong column
 // type at the call site is a named compile error (constructor overload
