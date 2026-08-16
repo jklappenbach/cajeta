@@ -71,7 +71,7 @@ while (i < count) {
 return 0;
 ```
 
-`getConstructor` follows the same pattern — `Constructor ctor = c.getConstructor(i); int32 n = ctor.getParameterCount();` then `ctor.getParameter(j)`.
+`getConstructor` follows the same pattern — `Constructor ctor #= c.getConstructor(i); int32 n = ctor.getParameterCount();` then `ctor.getParameter(j)`.
 
 ## When to use this navigation vs. the rest of the package
 

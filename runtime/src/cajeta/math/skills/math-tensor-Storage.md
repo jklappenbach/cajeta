@@ -60,11 +60,11 @@ import cajeta.math.Tensor;
 import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.KernelStream;
 
-public static Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {
+public static #Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {
     if (a.isOnGpu() && b.isOnGpu()) {        // both device-resident → GPU kernel
-        Tensor<float32> out = Tensor.zeros<float32>(a.shape());
+        Tensor<float32> out #= Tensor.zeros<float32>(a.shape());
         out.gpu();
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         // dispatch a @Kernel over a.deviceBuffer(), b.deviceBuffer(), out.deviceBuffer()
         return out;
     }

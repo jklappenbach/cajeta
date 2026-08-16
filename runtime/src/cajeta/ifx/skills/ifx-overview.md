@@ -23,7 +23,7 @@ here but the OS code lives in an external library — this package is the contra
 | Want to… | Start with |
 | --- | --- |
 | Get the process-wide registry (floor auto-registered) | `BackendRegistry.instance()` |
-| Register an OS backend at load | `BackendRegistry.instance().registerWindow/registerInput/registerAudio(#backend)` |
+| Register an OS backend at load | `BackendRegistry.instance().registerWindow/registerInput/registerAudio(backend)` — a plain LEND; never `#backend` (the registry holds a borrow, so the backend must outlive every `select*`) |
 | Bind the window backend for this launch | `registry.selectWindow(boolean headless)` |
 | Bind input / audio backend | `registry.selectInput()` / `registry.selectAudio()` |
 | Snapshot which backends are bound (never throws) | `IfxInfo.describe()` → `windowBackendName()` etc. |
@@ -66,7 +66,9 @@ Negative rows (avoid the dead end):
 - **Ownership.** Drained-array returns are `#` ownership-transfer — the caller drops them:
   `WindowBackend.poll` → `#WindowEvent[]`, `pollLifecycle` → `#LifecyclePhase[]`. `null`
   (no events) is a valid `#` return. `IfxInfo.describe()` returns a `#IfxInfo` (caller
-  owns). `register*` takes `#` ownership of the backend. Sink buffers (`writeFrame`/
+  owns). `register*` declares a PLAIN formal and lends it on to `ArrayList.add`, so the
+  registry holds a BORROW, not a title — never write `#` at the call site, and keep the
+  backend in a binding that outlives every `select*`. Sink buffers (`writeFrame`/
   `writeSamples`) and `AudioBackend.submit` frames are **borrowed** — copy to keep.
 - **Errors.** `IfxException extends RecoverableException` (catchable/testable; left
   uncaught it aborts loudly at top level). Denied permissions are **reported as

@@ -24,7 +24,7 @@ import cajeta.lang.String;
  * ```cajeta
  * Matcher<int32> m = heap Matcher<int32>();
  * m.add("File", 10);
- * ArrayList<Match<int32>> hits = m.match("Fiel");  // [File, distance 1]
+ * ArrayList<Match<int32>> hits #= m.match("Fiel");  // [File, distance 1]
  * ```
  *
  * @See cajeta.search.ngram.Index

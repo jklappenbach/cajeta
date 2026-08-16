@@ -84,7 +84,7 @@ import cajeta.lang.Object;
 
 // Roundtrip a typed field (User.id is field 0, an int32).
 User u = heap User();
-Field f = Class.of(u).getField(0);   // owned #Field
+Field f #= Class.of(u).getField(0);   // owned #Field
 f.setInt32(u, 77);
 int32 id = f.getInt32(u);            // 77
 

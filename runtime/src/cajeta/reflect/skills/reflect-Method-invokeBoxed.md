@@ -60,7 +60,7 @@ import cajeta.reflect.UnsupportedReflectionException;
 int64[] a = heap int64[1];
 a[0] = (int64) 5;                      // one raw arg per parameter, declared order
 try {
-    Object o = m.invokeBoxed(p, a);    // owned #Object (null if the method is void)
+    Object o #= m.invokeBoxed(p, a);   // owned #Object (null if the method is void)
     if (o != null) {
         // generic consumer: read field 0 via the wrapper's typed accessor
         int32 v = Class.of(o).getInt32(o, 0);

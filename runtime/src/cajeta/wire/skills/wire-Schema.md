@@ -46,7 +46,7 @@ import cajeta.wire.SchemaEncoder;
 
 Schema schema = heap Schema(#schemaBytes);
 SchemaEncoder<Order> codec = AvroEncoder<Order>();
-#int8[] bytes = codec.encode(order, schema);   // caller owns the # result
+int8[] bytes #= codec.encode(order, schema);   // caller owns the # result
 Order  back  #= codec.decode(bytes, schema);    // decode is the inverse
 ```
 

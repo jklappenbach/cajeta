@@ -136,7 +136,7 @@ public class Saxpy {
     }
 
     public static void run(float32[] hx, float32[] hy, uint32 n) {
-        GpuStream s = GpuStream.current();         // per-thread default stream
+        GpuStream s #= GpuStream.current();        // per-thread default stream
         KernelBuffer<float32> x = heap KernelBuffer<float32>(n);   // RAII: allocates VRAM
         KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
         x.upload(hx);

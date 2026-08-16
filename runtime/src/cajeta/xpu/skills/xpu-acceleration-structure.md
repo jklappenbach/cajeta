@@ -49,8 +49,9 @@ mis-resolve. So the explicit-impl override of the AABB build goes through `of`; 
 - The two-arg/three-arg constructors require `heap` (RAII): the ctor acquires the device
   BVH; `~AccelerationStructure()` releases it.
 - `of(...)` returns `#AccelerationStructure` — an **owned** handle transferred to you.
-  Bind it (`AccelerationStructure soft = ...of(...)`) so the drop chain frees it at scope
-  exit, exactly like the `heap` ctors.
+  Receive it with a transfer bind (`AccelerationStructure soft #= ...of(...)`); a plain `=`
+  is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`. The `#=` registers the drop, so the chain
+  frees it at scope exit, exactly like the `heap` ctors.
 - The `AsImpl` preference widens to its ordinal at the ABI boundary; `of` builds the
   representation and records the resolved impl in one shared resolver call, so the built
   rep and `implTag()` always agree.
@@ -137,6 +138,6 @@ public class RqMin {
 ```
 
 To force the software BVH on a ray-query-capable device, swap the build line for
-`AccelerationStructure scene = AccelerationStructure.of(boxes, np, AsImpl.Software);`
+`AccelerationStructure scene #= AccelerationStructure.of(boxes, np, AsImpl.Software);`
 (add `import cajeta.xpu.AsImpl;`) — the recorded impl then drives the kernel onto the
 SoftwareRayQuery walk, and results match the native path.

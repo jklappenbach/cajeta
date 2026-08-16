@@ -58,17 +58,20 @@ storage, so lend through such helpers rather than transferring into them.
 - `void insert(int32 i, T v)` — insert at `i`, shifting `[i, count)` right; `i == count()`
   appends. O(n − i), throws outside `[0, count]`.
 - `#T removeAt(int32 i)` — remove at `i`, shifting the tail left, and hand the element
-  back **owned**: bind it (`Point p = xs.removeAt(0)`) to keep it, or discard the call and
+  back **owned**: bind it (`Point p #= xs.removeAt(0)`) to keep it, or discard the call and
   the drop fires at the statement end. Throws out of range; panics `TITLE_MISS` if that
   slot's title was already `#[]`-extracted.
 - `void clear()` — drop every owned element and reset to the initial capacity; the list
   stays usable.
 - `T operator[](int32 i)` / `void operator[]=(int32 i, T v)` — sugar over `get`/`set`.
   **Plain on both sides** (unlike `HashMap`'s `#K`/`#V` subscript write), so `xs[i] = v`
-  lends, exactly like `set`. Do **not** write `xs[i] = #v` to transfer: `operator[]=`
-  hands `v` on to `set` *plainly*, so the title stops in the subscript frame and frees
-  the value there (measured: a drop beyond the displaced element's, and the slot then
-  reads garbage). `xs.set(i, #v)` is the clean transferring store.
+  lends, exactly like `set`. To transfer into a slot write `xs[i] #= v` (or
+  `xs[i] #= heap Point(...)`): `operator[]=` forwards the arrived mode on to `set`
+  (`this.set(i, #v)`), which stores with `#=`, so the title reaches the slot, the displaced
+  occupant is released, and a later `#xs[i]` extraction finds the title. `xs.set(i, #v)` is
+  the equivalent explicit-call form. (`xs[i] = #v` still transfers but is the deprecated
+  assignment spelling — it warns `CAJETA_WARN_DEPRECATED_TRANSFER_ASSIGN`, whose fix-it
+  is `#=`.)
 - `#T operator#[](int32 i)` — title-extracting subscript, `T t #= xs[i]`. The title moves
   out and the slot stays resident but decays to borrowed; extraction from an out-of-range
   index, or from a slot that holds no title (lent, or already extracted), panics.

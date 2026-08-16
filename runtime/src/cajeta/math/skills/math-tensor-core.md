@@ -109,7 +109,7 @@ keywords. All `DType` factories return an owned `#DType`.
 import cajeta.math.Tensor;
 import cajeta.math.TensorProtocol;
 
-TensorProtocol p = t.protocol();          // export: borrows t's Storage + metadata
+TensorProtocol p #= t.protocol();         // export: you own the descriptor; it BORROWS t's Storage + metadata
 Tensor<?> w #= Tensor.fromProtocol(p);     // rebuild a Tensor<X> sharing the SAME Storage, widened to Tensor<?>
 if (w instanceof Tensor<float32>) {       // reified dtype guard
     Tensor<float32> back = (Tensor<float32>) w;   // reified-capture to the concrete type

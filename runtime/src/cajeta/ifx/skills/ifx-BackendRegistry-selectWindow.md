@@ -36,9 +36,11 @@ Forcing `CAJETA_IFX_WINDOW=null` is therefore an explicit opt-in to the floor re
 
 ## Ownership / lifecycle
 
-The returned `WindowBackend` is a **borrowed** interface reference — it is owned by the
-registry's internal `ArrayList<WindowBackend>` (the backend was handed over with `heap` at
-`registerWindow`). Do **not** drop or free it; do not store it past the registry's lifetime.
+The returned `WindowBackend` is a **borrowed** interface reference — and the registry holds
+only a borrow of it too: `registerWindow(WindowBackend backend)` is a plain formal forwarded
+to a plain `ArrayList.add`, so the slot records a lend (§2.3 — `#=` records the SOURCE's
+mode). Its lifetime is therefore that of whatever binding the registrant kept, not the
+registry's. Do **not** drop or free it; do not use it past that binding.
 There is no `#` transfer on this return. (Arrays returned by the backend's own methods —
 `poll`/`pollLifecycle` — *are* `#`-transferred; that is the `WindowBackend` class contract,
 not this method's.)
@@ -74,7 +76,7 @@ BackendRegistry registry = BackendRegistry.instance();
 
 try {
     // headless = false: demand a real interactive window; only the null floor present → throws.
-    WindowBackend window = registry.selectWindow(false);   // borrowed; owned by the registry
+    WindowBackend window = registry.selectWindow(false);   // borrowed; the registry lends it on
     Window w = window.createWindow("App", 1280u, 720u);
     // ... render loop ...
 } catch (IfxException e) {

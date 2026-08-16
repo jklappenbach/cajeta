@@ -54,7 +54,7 @@ One-shot variant:
 ```cajeta
 import cajeta.io.file.File;
 
-#int8[] all = File.readAllBytes("/etc/hostname");
+int8[] all #= File.readAllBytes("/etc/hostname");
 int8[] out = heap int8[5];
 File.writeAllBytes("/tmp/out.bin", out, 5);   // pass length explicitly; atomic rename
 ```

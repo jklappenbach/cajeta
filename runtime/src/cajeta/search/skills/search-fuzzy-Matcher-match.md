@@ -60,7 +60,7 @@ m.add("Files", 11);
 m.add("Fibonacci", 55);          // shares "fi" but distance > threshold → dropped
 m.add("Network", 99);            // no shared bigram → never a candidate
 
-ArrayList<Match<int32>> r = m.match("Fiel");   // caller owns r
+ArrayList<Match<int32>> r #= m.match("Fiel");   // caller owns r
 // r == [ Match(File, 10, distance 1), Match(Files, 11, distance 2) ]
 Match<int32> top = r.get(0);
 int32 v = top.value();           // 10

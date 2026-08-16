@@ -53,10 +53,17 @@ here** — this library is Base64 + CSV + JSON only.
   to surrender title by writing `#arg` at the call site (a plain `arg` is
   `CAJETA_ERROR_TRANSFER_REQUIRED`). A plain `T` parameter accepts either spelling —
   `f(x)` lends, `f(#x)` transfers — so the call-site `#` is always what moves the title,
-  and only then does the caller's local deactivate. A bare (no-`#`) return is a
-  **borrowed view** the caller must not free and must not outlive the source — e.g.
-  `JsonValue.asBytes()` and `JsonObject.get(...)` hand back borrows into the `JsonValue`
-  tree (copy to keep them past the tree's lifetime).
+  and only then does the caller's local deactivate. A bare (no-`#`) return is
+  **transparent carry** (spec §2.8): the signature claims nothing, and whether a title
+  rides out is decided by the body at run time. Both stances occur here. `Json.parse<T>`,
+  `Json.toBytes<T>` and `Csv.parse<T>` are bare-return **producers** — they materialize a
+  fresh, caller-owned value, which is why the examples below receive them with `#=`.
+  `JsonValue.asBytes()` and `JsonObject.get(...)` are bare-return **views**: interior reads
+  into the `JsonValue` tree that the caller must not free and must not outlive the tree
+  (copy to keep them past its lifetime). Each method's own doc says which it is; do not
+  infer ownership from the absence of `#`. A `#`-marked return is a forced transfer and
+  must be received with `#=` at the lvalue — `int8[] b #= Json.toBytes(v);`; a plain `=`
+  there is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` (spec §4.6).
 - **Errors are exceptions, not sentinels.** All three formats throw a
   `cajeta.error.RecoverableException` subtype on malformed input — `Base64Exception`,
   `CsvParseException`, `JsonParseException` — each carrying an `int64 position` byte offset.

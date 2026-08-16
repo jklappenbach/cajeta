@@ -104,7 +104,7 @@ public class Vault {
 public final class M {
     public static int32 run() {
         Vault v = heap Vault();
-        Field locked = Class.of(v).getField(0);   // secret (private) — lookup never throws
+        Field locked #= Class.of(v).getField(0);   // secret (private) — lookup never throws
         try {
             int32 x = locked.getInt32(v);         // checkAccess() fires here
             return 0;                             // unreachable for a sealed-private field
@@ -112,7 +112,7 @@ public final class M {
             // e.message: "reflective access to a private field of a @Sealed class is denied"
             // recoverable: skip this member and keep walking
         }
-        Field pub = Class.of(v).getField(1);      // open (public) — reachable
+        Field pub #= Class.of(v).getField(1);      // open (public) — reachable
         return pub.getInt32(v);                   // -> 7
     }
 }

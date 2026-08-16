@@ -94,7 +94,7 @@ w.beginObject()
  .key("age").writeNumber((int64) 36)
  .key("admin").writeBoolean(true)
  .endObject();
-#int8[] json = w.toBytes();   // {"name":"Ada","age":36,"admin":true}
+int8[] json #= w.toBytes();   // {"name":"Ada","age":36,"admin":true}
 ```
 
 `key(...)` emits `"name":` and suppresses the separator on the value that
@@ -147,7 +147,7 @@ emits them unchanged while still handling the surrounding separator.
 
 ```cajeta
 // reader r is positioned on a primitive value token
-#int8[] raw = r.currentRawBytes();
+int8[] raw #= r.currentRawBytes();
 w.key("payload").writeRaw(raw, (int32) raw.count());
 ```
 

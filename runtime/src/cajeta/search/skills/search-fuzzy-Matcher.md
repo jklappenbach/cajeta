@@ -71,7 +71,7 @@ m.add("Files", 11);
 m.add("Fibonacci", 55);   // shares "fi" but past threshold -> dropped
 m.add("Network", 99);     // no shared bigram -> never a candidate
 
-ArrayList<Match<int32>> hits = m.match("Fiel");  // caller owns hits + elements
+ArrayList<Match<int32>> hits #= m.match("Fiel");  // caller owns hits + elements
 Match<int32> top = hits.get(0);                  // -> value 10, distance 1
 // hits.count() == 2 (File, Files)
 ```

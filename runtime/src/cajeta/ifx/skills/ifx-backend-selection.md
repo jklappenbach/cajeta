@@ -33,7 +33,8 @@ auto-registers the always-present floor (`NullWindowBackend` / `NullInputBackend
 empty. Backends register into the **same instance** at load:
 
 ```
-BackendRegistry.instance().registerWindow(heap Win32WindowBackend());
+Win32WindowBackend win32 = heap Win32WindowBackend();   // must outlive every select*
+BackendRegistry.instance().registerWindow(win32);       // lend; never `#`
 ```
 
 Because the floor registers first and is lowest priority, any real backend that registers
@@ -58,8 +59,12 @@ boolean-presence flag rather than null-comparing the interface value.
 
 ## Ownership and lifecycle
 
-- Registered backends are **borrowed by the registry** — `register*` adds the `heap`
-  instance to a list; you transfer it in with `heap` and do not free it (process-lifetime).
+- Registered backends are **borrowed by the registry** — `register*` takes a plain formal
+  and forwards it to a plain (lending) `ArrayList.add`, so nothing transfers. Hold the
+  instance in a binding that spans the process (a `main`-level local, a static) and LEND
+  that binding; never write `#` at the call site, and never pass a `heap` temporary built
+  inside the call — its title drops when `register*` returns and the registry is left
+  holding a freed pointer. See `ifx-BackendRegistry` for the measured shape.
 - `select*` returns a **borrowed** backend reference owned by the registry — do not free
   it; it stays valid for the process.
 - `IfxInfo.describe()` returns `#IfxInfo` — **ownership transfers to the caller**, who

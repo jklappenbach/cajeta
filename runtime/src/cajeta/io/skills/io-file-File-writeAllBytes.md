@@ -29,7 +29,7 @@ File.writeAllBytes("/tmp/out.txt", data, 5);
 Round-trips with the owned read side:
 
 ```cajeta
-#int8[] back = File.readAllBytes("/tmp/out.txt"); // caller owns `back`
+int8[] back #= File.readAllBytes("/tmp/out.txt"); // caller owns `back`
 ```
 
 ## Parameters & ownership

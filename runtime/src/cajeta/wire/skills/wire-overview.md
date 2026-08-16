@@ -68,7 +68,7 @@ import cajeta.wire.Encoder;
 // A self-describing format round-trips with just Encoder<T>:
 Encoder<Order> codec = JsonEncoder<Order>();
 
-#int8[] bytes = codec.encode(order);   // T -> fresh, caller-owned bytes
+int8[] bytes #= codec.encode(order);   // T -> fresh, caller-owned bytes
 Order  back  #= codec.decode(bytes);   // owned bytes -> caller-owned T
 ```
 
@@ -81,7 +81,7 @@ import cajeta.wire.Schema;
 Schema schema = heap Schema(#schemaBytes);   // ctor takes ownership of the descriptor
 SchemaEncoder<Order> codec = AvroEncoder<Order>();
 
-#int8[] bytes = codec.encode(order, schema);
+int8[] bytes #= codec.encode(order, schema);
 Order  back  #= codec.decode(bytes, schema); // same schema required to decode
 ```
 
@@ -93,8 +93,8 @@ import cajeta.wire.Decompressor;
 
 Compressor   c     = Snappy();
 Decompressor d     = Snappy();
-#int8[]      block = c.compress(plain);
-#int8[]      plain2 = d.decompress(block, expandedLen);  // expandedLen from block header
+int8[]      block #= c.compress(plain);
+int8[]      plain2 #= d.decompress(block, expandedLen);  // expandedLen from block header
 ```
 
 ## Disambiguation

@@ -56,7 +56,9 @@ The complex promotion path is unreachable until complex types land.
 
 Every factory, `of<T>()`, and `promote(...)` return **`#DType` — an owned heap value**
 (`heap DType(...)` internally; the `#` marks transfer to the caller). The caller owns
-it and is responsible for its lifetime; bind it to a `#DType` local. There is no
+it and is responsible for its lifetime; receive it with a transfer bind —
+`DType dt #= DType.f32();` (a plain `=` is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`).
+There is no
 `close()`/dispose step — it is a plain heap value dropped on scope exit per cajeta's
 ownership model. `equals` takes a borrowed `DType` (no `#`); it does not consume either
 operand.

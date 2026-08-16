@@ -42,9 +42,16 @@ They are independent: pair one of each over the *same* channel to drive a connec
 - Internal ring / scratch / coalescing buffers are **owned**, array-dropped on drop.
 - **Single-fiber ownership**: one reader + one writer drive one connection — no
   internal locking. Do not share an instance across fibers.
-- `readUntil` returns a **fresh owned `#int8[]`** (caller owns it). `next()` returns
-  a `stack Optional<int8[]>` whose present value is a fresh owned array — the
-  interface contract returns a borrow, so this is *not* `#`-marked.
+- `readUntil` returns a **fresh owned `#int8[]`** — a forced transfer, so receive it with
+  `#=`. `next()` returns a `stack Optional<int8[]>` whose present value is a fresh owned
+  array. `AsyncIterator.next()` is declared plain `Optional<T>` — **transparent carry**
+  (spec §2.8), *not* a static borrow — so nothing is `#`-marked, yet the present path
+  still hands out a title: the returned `Optional` holds it. Take it with
+  `int8[] chunk #= opt.take()` when the chunk must outlive the `Optional`; `opt.get()` is
+  a borrow, and letting the `Optional` drop frees the array for you. Plain `T` is also why
+  *both* returns are `stack` and not `heap`: a fresh heap allocation out of a plain-return
+  method is `CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER`, and the interface has no `#`
+  return to satisfy it.
 
 ## EOF / terminate-on-zero (the contract that ends every loop)
 

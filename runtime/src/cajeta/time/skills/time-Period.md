@@ -64,7 +64,8 @@ boolean none  = Period.zero().isZero();       // true
 
 `#String iso()` renders ISO-8601 `PnYnMnD` (`P0D` for zero; negative fields get a
 leading `-`, e.g. `P-1Y2M`). It returns a **heap `String` whose ownership transfers to
-the caller** — bind it with `#String` and the caller is responsible for it.
+the caller** — receive it with `#=` (`String text #= p.iso();`) and the caller is
+responsible for it.
 
 ```cajeta
 import cajeta.time.Period;

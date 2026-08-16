@@ -47,12 +47,12 @@ and `cajeta/process/ProcessResult`); it is simpler and cannot deadlock.
 
 1. `pipeStdin()` / `pipeStdout()` / `pipeStderr()` on the `Command` (only the streams
    you need). These are distinct from `captureStdout/Stderr`, which are for `run()`.
-2. `Process p = cmd.start();` then check `p.launched()`.
-3. `FileWriter w = p.stdin();` write with `writeString`/`write`, then `w.close()` to
+2. `Process p #= cmd.start();` then check `p.launched()`.
+3. `FileWriter w #= p.stdin();` write with `writeString`/`write`, then `w.close()` to
    send EOF.
-4. `FileReader r = p.stdout();` read with `readString`/`read` (loop until `read`
+4. `FileReader r #= p.stdout();` read with `readString`/`read` (loop until `read`
    returns 0), then `r.close()`.
-5. `ProcessResult res = p.waitFor();` (or `waitMillis` to poll — a deadline hit leaves
+5. `ProcessResult res #= p.waitFor();` (or `waitMillis` to poll — a deadline hit leaves
    the child running with `res.timedOut() == true`; `kill()` then `waitFor()` to reap).
 6. `p.close();` — always. It kills a still-running child first then reaps (no zombie)
    and releases the handle; it is idempotent, so calling it after `waitFor()` is fine.

@@ -85,7 +85,7 @@ public class TapStream<T> extends Stream<T> {
     (T) -> void tap;
 
     public TapStream(#Stream<T> source, (T) -> void tap) {
-        this.source = source;          // takes ownership of the upstream
+        this.source #= source;         // takes ownership of the upstream
         this.tap = tap;
     }
 

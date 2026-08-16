@@ -45,7 +45,7 @@ handle drops.
 ```cajeta
 idx.add("apple", 1);
 idx.add("zebra", 2);
-ArrayList<int32> hits = idx.candidates("aple");  // → [1]; shares "ple", "zebra" shares nothing
+ArrayList<int32> hits #= idx.candidates("aple");  // → [1]; shares "ple", "zebra" shares nothing
 ```
 
 ## Gram rules (drive what matches)

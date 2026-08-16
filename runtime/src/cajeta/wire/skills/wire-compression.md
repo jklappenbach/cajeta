@@ -79,10 +79,10 @@ Snappy codec = Snappy();
 
 // write side — keep the original length for the block header
 int64 expandedLen = plain.count();
-#int8[] block = ((Compressor) codec).compress(plain);
+int8[] block #= ((Compressor) codec).compress(plain);
 
 // read side — header gives back expandedLen
-#int8[] restored = ((Decompressor) codec).decompress(block, expandedLen);
+int8[] restored #= ((Decompressor) codec).decompress(block, expandedLen);
 // restored now equals plain, byte for byte
 ```
 

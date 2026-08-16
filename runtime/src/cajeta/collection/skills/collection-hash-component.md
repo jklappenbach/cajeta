@@ -47,20 +47,25 @@ outlives the value **may** opt into transfer by writing `#` at the call site —
 value reads back intact). Nothing diagnoses a borrow stored in a longer-lived table, so
 transfer deliberately when the key/value local dies before the map does.
 
-**`HashSet.add` does not share that property — only lend to a set.** `add(T value)`
-forwards its plain formal on to `this.map.put(value, 1)`, and a title handed to a plain
-formal is dropped when *that* frame returns instead of travelling on to the map. So
-`s.add(#v)` frees `v` at `add`'s return and leaves the set holding a freed pointer
-(measured: the member's destructor runs immediately, `count()` still reports 1). Write
-`s.add(v)` and keep the member alive for as long as it is a member.
+**`HashSet.add` shares that property.** `add(T value)` forwards its plain formal with the
+transfer word (`this.map.put(#value, 1)`), and `HashMap.put` stores with `#=` in its own
+frame, so the mode is the caller's choice exactly as on the map: `s.add(v)` lends — keep
+the member alive for as long as it is a member — and `s.add(#v)` gives the set title,
+after which the set frees it (measured: the member survives allocator churn and
+`contains` still finds it; `remove` reclaims it on the spot). Adding a member that is
+already present is the one exception: the duplicate is not stored, so a transferred one is
+freed at the call's return and the set keeps the original.
 
-**Avoid the subscript write for class-typed keys or values.** `HashMap.operator[]=`
-declares `#K`/`#V`, so the compiler compels the mark — a plain `m[k] = v` is
-`CAJETA_ERROR_TRANSFER_REQUIRED` — but `operator[]=` then forwards to `put` *plainly*,
-so the title dies in the subscript frame and the stored entry dangles (measured:
-`m[1] = #b` runs the destructor immediately and `m.get(1)` reads garbage, while
-`m.put(1, #b)` is clean). Use `put` for class-typed stores. The subscript write is fine
-for primitive keys and values, which carry no title.
+**The subscript write is mode-carrying, exactly like `put`.** `HashMap.operator[]=`
+declares `#K`/`#V` and forwards both on with the transfer word
+(`this.put(#key, #value)`), so the caller's mode threads through to the table's `#=` slot
+stores — `m[k] = #v` gives the map the title and the map frees it. Because the formals are
+`#`-marked, an owned named local must be surrendered explicitly: a plain `m[k] = v` where
+`v` is a class-typed local the frame owns is `CAJETA_ERROR_TRANSFER_REQUIRED`, the same
+`#` that `put(k, #v)` would ask for. A fresh temporary needs no sigil —
+`m["k"] = heap Box(5)` compiles as written. `m[k] = #v` and `m.put(k, #v)` are
+equivalent. Primitive keys and values carry no title, so the subscript write is
+unconditionally fine for them.
 
 ## Key/value contract (the #1 correctness trap)
 A `K` (and a `HashSet` `T`) must answer two things:

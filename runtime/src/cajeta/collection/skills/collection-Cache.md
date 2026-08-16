@@ -46,8 +46,9 @@ String value = hit.isPresent() ? hit.get() : compute(42);
   `Optional.get()` on empty throws (`CAJETA_ERROR_NONE_UNWRAP`), it does not return null.
 - **`void put(K key, V value)`** — insert or replace; replacing bumps access time + moves
   to head. Inserting past `maxEntries` evicts the LRU tail immediately.
-- **`void remove(K key)`** — unlink the key's entry and free its node (the lent key and
-  value are untouched); no-op if absent.
+- **`void remove(K key)`** — unlink the key's entry and free its node; a key or value you
+  *lent* is left to its owner, while a value you *transferred* is freed with the entry.
+  No-op if absent.
 - **`void evict()`** — manual TTL sweep: drops every currently-expired entry. **No-op
   when TTL is disabled.** The size cap is already enforced on every `put`, so `evict` only
   matters for releasing stale entries from an idle cache (call it from a timer/heartbeat).
@@ -59,20 +60,25 @@ String value = hit.isPresent() ? hit.get() : compute(42);
 
 ## Ownership & values crossing the boundary
 
-`put(K key, V value)` declares plain formals and the cache **lends**: `cache.put(k, v)`
-stores your same instances and the cache never frees them. Both the key and the value
-must outlive the entry, and **nothing diagnoses it today** if they do not — a cache
-normally outlives the locals it caches, so that lifetime is yours to arrange.
+`put(K key, V value)` declares plain formals and forwards both with the transfer word
+(`heap CacheNode<K, V>(#key, #value, now)`); `CacheNode` stores them with `#=`. It is the
+§2.3 sink model, so the mode you tender at the call site is the mode the entry records:
 
-**Do not transfer into `put`.** Neither `cache.put(id, #session)` nor a fresh
-`cache.put(id, #heap Session(...))` is the owning spelling: `put` passes both formals
-*plainly* into `heap CacheNode<K, V>(key, value, now)`, so a title that arrives stops in
-`put`'s frame and its formal drop frees the value at return — measured, the value's
-destructor runs before `put` returns and the following `get` reads freed memory, while
-the lent form reads back intact. The `DnsCache.resolve` sites that spell
-`this.store.put(#key, #DnsCacheEntry...)` are on the wrong side of this; they are not a
-pattern to copy. Until `Cache.put` stores with `#=` itself, keep key and value owned by
-something that outlives the cached entry.
+- `cache.put(k, v)` **lends** — the cache stores your instances and never frees them, so
+  both key and value must outlive the entry on your own account, and **nothing diagnoses
+  it today** if they do not.
+- `cache.put(id, #session)` **transfers** — the node takes title to the value, nothing is
+  freed at `put`'s return, and the entry's teardown (`remove`, `evict`, `clear`, or the
+  cache's own drop) releases it.
+
+Use the transfer form for anything built fresh per call, which would otherwise dangle. The
+`DnsCache.resolve` sites that spell `this.store.put(#key, #DnsCacheEntry.positive(#resolved))`
+are the intended pattern for exactly that shape.
+
+One asymmetry worth knowing: the key reaches two slots. The node's key slot records
+whichever mode you tendered, while the backing map's key slot is handed `key` plainly
+(`this.entries.put(key, #fresh)`) and always borrows — aliasing the node's copy. The node
+is the map's value, so the two are removed together and the aliasing is sound.
 
 `get` returns a `stack Optional<V>` holding the stored `V` (you receive the value out,
 not the node). Entry `CacheNode`s are heap-allocated and owned by the cache; you never

@@ -157,7 +157,7 @@ public class RqMin {
 ```
 
 To force the portable tier regardless of device, swap the build line for
-`AccelerationStructure scene = AccelerationStructure.of(boxes, np, AsImpl.Software);` (add
+`AccelerationStructure scene #= AccelerationStructure.of(boxes, np, AsImpl.Software);` (add
 `import cajeta.xpu.AsImpl;`).
 
 Exact-distance refinement (RTNN): read `rq.candidatePrimitiveIndex()` inside the loop to recover

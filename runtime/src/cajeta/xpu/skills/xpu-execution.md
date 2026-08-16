@@ -36,9 +36,9 @@ import cajeta.xpu.KernelBuffer;
 import cajeta.xpu.Event;
 
 // Two independent streams; producer must finish before consumer reads.
-GpuStream producer = GpuStream.create();    // owned handle — must destroy()
-GpuStream consumer = GpuStream.create();
-Event ready = Event.create();               // owned handle — must destroy()
+GpuStream producer #= GpuStream.create();   // owned handle — must destroy()
+GpuStream consumer #= GpuStream.create();
+Event ready #= Event.create();              // owned handle — must destroy()
 
 KernelBuffer<float32> x = heap KernelBuffer<float32>(n);   // device mem, RAII-freed
 x.uploadAsync(hx, producer);

@@ -55,7 +55,7 @@ m.add("Files", 11);
 m.add("Fibonacci", 55);          // shares "fi" but scores past threshold → dropped
 m.add("Network", 99);            // shares no bigram → never a candidate
 
-ArrayList<Match<int32>> hits = m.match("Fiel");   // ranked closest-first
+ArrayList<Match<int32>> hits #= m.match("Fiel");   // ranked closest-first
 Match<int32> top = hits.get(0);
 // top.key() == "File", top.value() == 10, top.distance() == 1
 ```

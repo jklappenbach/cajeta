@@ -61,7 +61,7 @@ m.add("Fibonacci", 55);   // shares a gram with "Fiel" but past threshold → dr
 m.add("Network", 99);     // no shared gram → never prefiltered
 
 // owned list; ranked closest-first. "Fiel" → "File" at distance 1.
-ArrayList<Match<int32>> hits = m.match("Fiel");
+ArrayList<Match<int32>> hits #= m.match("Fiel");
 Match<int32> top = hits.get(0);   // top.value()==10, top.key()=="File", top.distance()==1
 ```
 

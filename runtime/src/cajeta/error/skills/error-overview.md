@@ -27,7 +27,7 @@ throw, define a domain exception, or decide which root to extend.
 | Signal a failed runtime capture cast `(Foo<int32>) w` | `ClassCastException` — thrown *for you* by the runtime |
 | **NOT** here: a `throws` clause that the compiler *enforces* | it doesn't — `throws` is documentation; an uncaught declared type is a **warning** (`uncaught-throws`), never an error |
 | **NOT** here: `Result<T,E>` / `?` propagation / `T!E` value-typed errors | not in v1; use `try`/`catch` |
-| **NOT** here: a constructor that takes a `cause` | none exists — set `e.cause` by field assignment after construction |
+| Chain a lower-level failure onto an `Exception` | `throw heap Exception(msg, #lower)` — `Exception(#String, #Throwable cause)` takes the cause; `RecoverableException`/`UnrecoverableException` have no such ctor, so assign `e.cause` after construction |
 | **NOT** here: leaf types like `IOException`, `ParseException`, `OutOfMemoryError` | illustrative only, not in the prelude; domain leaves live in their owning package (`cajeta.io.file.IoException`, `cajeta.io.net.*`, …) |
 
 ## Cross-cutting invariants (whole library)
@@ -40,8 +40,13 @@ throw, define a domain exception, or decide which root to extend.
   `throw heap RecoverableException("...")` (`new #` and `heap` forms both appear
   in the tree; prefer `heap`). The value must be a `Throwable` or subtype.
 - **`cause` is null-as-`0`.** `Exception` adds `public Throwable cause`, default
-  `0` (none). There is **no cause constructor** — chain by assigning after you
-  build: `wrapper.cause = lower;`. Walk until `cause == 0`.
+  `0` (none). `Exception` DOES have a cause constructor —
+  `Exception(#String message, #Throwable cause)`, whose body stores
+  `this.cause #= cause` — so prefer `throw heap Exception(msg, #lower)` when the
+  wrapper should own its cause chain. `RecoverableException` /
+  `UnrecoverableException` declare only `(#String message)`; chaining onto one of
+  those is the case that still assigns after you build:
+  `wrapper.cause = lower;`. Walk until `cause == 0`.
 - **No `super(...)` calls.** Constructors write inherited fields directly
   (`this.message = message; this.cause = 0;`) because `super` is still
   unsupported — relevant only when you subclass and write your own constructor.

@@ -63,7 +63,7 @@ if (root.kind() == JsonValue.OBJECT) {
         JsonArray a = tags.asArray();
         int32 i = 0;
         while (i < a.count()) {
-            String s = a.get(i).asString();   // owned; null if elem not STRING
+            String s #= a.get(i).asString();   // owned; null if elem not STRING
             i = i + 1;
         }
     }
