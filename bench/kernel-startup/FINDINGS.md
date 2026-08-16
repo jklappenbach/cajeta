@@ -336,3 +336,42 @@ exceeds the drain's `buildPendingPrototypes` (46,072 ms) by 3.7 s, not by the
 NEXT: synthesize a concrete class with N distinct `Column<T>` fields for
 N = 5/10/15/20 and time `parseSource`. That fits the exponent and says whether
 the fix is in the instantiation cache or in the field-resolution path itself.
+
+### ROOT CAUSE: instantiation re-parses synthesized source in full LL
+
+`perf` on a 6-line repro (`import cajeta.nucleo.column.DynCol;` and nothing
+else, 55 s to build, 39 s of it drain):
+
+    11.10%  ParserATNSimulator::closure_
+     3.48%  SingletonPredictionContext::equals
+     3.37%  PredictionModeClass::getConflictingAltSubsets
+     ...    14 more ATN symbols            ~38% total
+    ~19%    malloc/free (ATNConfig / PredictionContext churn)
+
+~57% of the process is ANTLR ATN prediction. But `parseSource`'s own
+`compilationUnit()` call is 4 ms for `DynCol` against a 25,436 ms walk:
+
+    DynCol  25,440 ms = antlr     4 ms + walk 25,436 ms
+    Ewise   13,526 ms = antlr     5 ms + walk 13,521 ms
+    Tensor      33 ms = antlr    16 ms + walk     17 ms
+
+The ATN work is inside the WALK because `TemplateInstantiator` instantiates by
+synthesizing source text and re-parsing it — `ANTLRInputStream` + `CajetaLexer`
++ `parser.compilationUnit()` at three sites (611-616, 750-755, 1231-1236).
+
+**All three call `compilationUnit()` directly and bypass
+`parseCompilationUnitTwoStage`**, which is `static` in `Compiler.cpp` and not
+reachable from that translation unit. Every instantiation re-parse therefore
+runs in full LL. This is why two-stage parsing took the prime 36.4 s -> 4.9 s
+and did nothing for the dependency case.
+
+Explains what misled the investigation: zero `[two-stage]` fallbacks (these
+parses never enter two-stage); `Tensor` parsing in 36 ms while costing 10 s to
+instantiate; and a synthetic template measuring 1.2 ms/method against a real
+45-73 ms (trivial bodies synthesize trivial text, so re-parse cost tracks body
+complexity, not method count).
+
+TWO FIXES, cheap first:
+(a) route the three sites through the two-stage helper (needs it exposed).
+    If SLL pays off as it did for the prime, this is most of the 39 s.
+(b) do not re-parse at all — substitute into the already-parsed tree.

@@ -765,6 +765,10 @@ namespace cajeta {
     // second call's package declaration overwrites the first (the user's
     // package wins, which is what we want — stdlib's package only matters
     // for canonical naming of its own types).
+    // ANTLR's own compilationUnit() time, so a per-file cost can be split into
+    // prediction vs the semantic walk that follows it.
+    static long long g_antlrParseNs = 0;
+
     static void parseSource(CajetaModulePtr module,
                             antlr4::ANTLRInputStream& input,
                             const char* label,
@@ -823,8 +827,11 @@ namespace cajeta {
             lexer.addErrorListener(jsonSyntax.get());
             parser.addErrorListener(jsonSyntax.get());
         }
+        auto psT0 = std::chrono::steady_clock::now();
         antlr4::tree::ParseTree* parseTree = parseCompilationUnitTwoStage(
             parser, tokens, installListeners, module->currentSourceFile());
+        g_antlrParseNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - psT0).count();
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
         // it to the semantic visitor segfaults on some inputs. Abort before
         // visiting whenever the parse had syntax errors (diagnostics already
@@ -1168,11 +1175,17 @@ namespace cajeta {
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
                 auto dP = DClock::now();
+                const long long antlrBefore = g_antlrParseNs;
                 parseSource(stdlib, in, /*label=*/rel.c_str());
                 if (dTiming) {
-                    dPerFile.emplace_back(
+                    long long totMs =
                         std::chrono::duration_cast<std::chrono::milliseconds>(
-                            DClock::now() - dP).count(), rel);
+                            DClock::now() - dP).count();
+                    long long antlrMs = (g_antlrParseNs - antlrBefore) / 1000000;
+                    dPerFile.emplace_back(
+                        totMs, rel + "  (antlr " + std::to_string(antlrMs)
+                                   + " ms, walk " + std::to_string(totMs - antlrMs)
+                                   + " ms)");
                 }
                 dAdd(dParseNs, dP);
                 ++dFiles;
