@@ -632,6 +632,10 @@ CellResult KernelSession::execute(const std::string& source,
                     && impl.poisoned.count(m->getLlvmModule())) continue;
                 mods.push_back(m);
             }
+            // getModules() already returns the stdlib once the session has it,
+            // so this walks its 11,015 methods twice per fixpoint iteration.
+            // Measured 2026-08-16: deduping changes the count 23,394 -> 12,379
+            // and the time not at all, because generateCode() is idempotent.
             if (auto stdlib = CajetaModule::getStdlibModule()) {
                 mods.push_back(stdlib);
             }
@@ -661,6 +665,18 @@ CellResult KernelSession::execute(const std::string& source,
             std::fprintf(stderr,
                 "[cell] codegen fixpoint: %zu iterations over %zu modules, "
                 "%zu methods\n", cgIters, cgMods, cgLastMethods);
+            auto cgm = codegenMods();
+            std::set<CajetaModule*> distinct;
+            size_t dupMethods = 0;
+            for (auto& m : cgm) {
+                if (!distinct.insert(m.get()).second) {
+                    dupMethods += m->getAllMethods().size();
+                }
+            }
+            std::fprintf(stderr,
+                "[cell]   %zu entries, %zu distinct modules; %zu methods are "
+                "duplicate entries\n",
+                cgm.size(), distinct.size(), dupMethods);
         }
         cellPhase("codegen method bodies");
         {

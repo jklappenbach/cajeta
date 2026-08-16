@@ -437,3 +437,30 @@ THE LEVER: emit method bodies on demand instead of eagerly. This is the same
 IR emission, and it is worth ~27 s directly plus most of the 16 s verify (147
 modules / 23k functions) against 7.2.9's few hundred ms. It should be reordered
 ahead of 7.2.9.
+
+### Why a cell codegens 12,379 method bodies
+
+Per-module breakdown of the fixpoint set (`project-with-deps`, cell 1):
+
+    11,015 methods  cajeta.runtime.__stdlib__     89% of the distinct set
+       148 methods  dev.cajeta.ml.grad.GradTape
+       139 methods  dev.cajeta.ml.grad.Ops
+        70 methods  dev.cajeta.ml.grad.StructKernels
+        ...          the whole dependency tree is ~1,300
+
+**It is the stdlib, not dependencies.** The set is the entire world by
+construction: `codegenMods()` is every compiler module plus the stdlib. The
+stdlib's bodies are emitted lazily BY DESIGN ("emitted lazily, on demand"), and
+the kernel defeats that by forcing all of them so a cell cannot fail to
+materialize on `cajeta.lang.Object::drop`. Eager emission substitutes for
+knowing which bodies a cell will reach. Three passes, because emitting a body
+can instantiate a template and add methods.
+
+The stdlib is also in the set TWICE -- `getModules()` already returns it and
+`codegenMods()` appends it again (147 entries, 146 distinct). Deduping was
+measured and REVERTED: it takes the count 23,394 -> 12,379 and the time
+27,319 ms -> 28,014 ms, i.e. nothing, because `generateCode()` is idempotent.
+The duplicate is a counting artifact, not a cost. Do not "fix" it for speed.
+
+12,379 bodies in 27.3 s is ~2.2 ms each -- ordinary LLVM cost, paid on a world
+the cell never touches. The lever is emitting on demand, not emitting faster.
