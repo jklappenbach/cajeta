@@ -34,8 +34,8 @@ public class NullableColumn<T> {
 
     /** All-null column of `n` elements (values zeroed, bitmap cleared). */
     public static #NullableColumn<E> nulls<E>(int64 n) {
-        Column<E> vals = Column.zeros<E>(n);
-        Column<uint8> bits = Column.zeros<uint8>((n + 7) / 8);
+        Column<E> vals #= Column.zeros<E>(n);
+        Column<uint8> bits #= Column.zeros<uint8>((n + 7) / 8);
         return heap NullableColumn<E>(#vals, #bits, n);
     }
 
@@ -44,7 +44,7 @@ public class NullableColumn<T> {
      */
     public static #NullableColumn<E> of<E>(E[] vals, boolean[] valid) {
         int64 n = (int64) vals.count();
-        NullableColumn<E> c = NullableColumn.nulls<E>(n);
+        NullableColumn<E> c #= NullableColumn.nulls<E>(n);
         int64 i = 0;
         while (i < n) {
             c.values.set(i, vals[(int32) i]);
@@ -105,8 +105,8 @@ public class NullableColumn<T> {
     /** Whole-column view: values and validity share storage zero-copy
      *  (through {@link Column#alias}); the frame's lazy-scan snapshot. */
     public #NullableColumn<T> alias() {
-        Column<T> v = this.values.alias();
-        Column<uint8> b = this.validity.alias();
+        Column<T> v #= this.values.alias();
+        Column<uint8> b #= this.validity.alias();
         return heap NullableColumn<T>(#v, #b, this.len);
     }
 
@@ -120,8 +120,8 @@ public class NullableColumn<T> {
             throw heap ColumnTypeException(
                 "slice window out of range for this nullable column");
         }
-        Column<T> v = this.values.slice(off, len);
-        Column<uint8> bits = Column.zeros<uint8>((len + 7) / 8);
+        Column<T> v #= this.values.slice(off, len);
+        Column<uint8> bits #= Column.zeros<uint8>((len + 7) / 8);
         int64 i = 0;
         while (i < len) {
             if (this.isValid(off + i)) {
@@ -178,7 +178,7 @@ public class NullableColumn<T> {
 
     /** Dense copy with every null replaced by `v` (spec 7.5's explicit route). */
     public #Column<T> fillNulls(T v) {
-        Column<T> out = Column.zeros<T>(this.len);
+        Column<T> out #= Column.zeros<T>(this.len);
         int64 i = 0;
         while (i < this.len) {
             if (this.isValid(i)) {
@@ -201,7 +201,7 @@ public class NullableColumn<T> {
             }
             i = i + 1;
         }
-        Column<T> out = Column.zeros<T>(kept);
+        Column<T> out #= Column.zeros<T>(kept);
         int64 o = 0;
         i = 0;
         while (i < this.len) {
@@ -288,7 +288,7 @@ public class NullableColumn<T> {
      * zero-copy borrow exactly as {@link Column#exportArrow} (spec 4.4).
      */
     public int64 exportArrow() {
-        DType d = DType.of<T>();
+        DType d #= DType.of<T>();
         int64 nulls = 0;
         int64 i = 0;
         while (i < this.len) {

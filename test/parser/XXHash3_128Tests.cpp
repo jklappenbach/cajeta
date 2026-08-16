@@ -82,8 +82,8 @@ TEST(XXHash3_128Tests, hexCanonicalForm) {
         "    public static #int8[] run() {\n"
         "        int8[] data = heap int8[3];\n"
         "        data[0L] = (int8) 97; data[1L] = (int8) 98; data[2L] = (int8) 99;\n"
-        "        String s = XXHash3.hash128HexSeeded(data, 3L, 0L);\n"
-        "        int8[] out = s.toBytes();\n"
+        "        String s #= XXHash3.hash128HexSeeded(data, 3L, 0L);\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";

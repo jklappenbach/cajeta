@@ -133,7 +133,7 @@ TEST(Utf8TaggedFormsTests, normalizationInlineFromDynamicWindow) {
         "    String a = \"abcdefghijklm\";\n"
         "    String b = \"nopqrstuvwxyz\";\n"
         "    String s = a + b;\n"
-        "    String w = s.substring(10, 16);\n"                   // "klmnop": 6 B
+        "    String w #= s.substring(10, 16);\n"                   // "klmnop": 6 B
         "    v = Utf8.of(w);\n"
         "    if (Cajeta.sharedPopulation() < pop) { return -1; }\n"
         "}\n"

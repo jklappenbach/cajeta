@@ -131,7 +131,7 @@ TEST(OwnedReturnOfBorrowedThisTests, freshOwnedReturnStillCompiles) {
         "        int32 t = 0;\n"
         "        {\n"
         "            Box b = heap Box(4);\n"
-        "            Box d = b.doubled();\n"
+        "            Box d #= b.doubled();\n"
         "            t = d.n;\n"
         "        }\n"
         "        int64 leaked = Cajeta.liveCount() - base;\n"

@@ -201,7 +201,7 @@ TEST(FiberLocalTests, captureOnly) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
         "        FiberLocal<Box> s = heap FiberLocal<Box>();\n"
-        "        FiberContext ctx = FiberContext.capture();\n"
+        "        FiberContext ctx #= FiberContext.capture();\n"
         "        return 1;\n"
         "    }\n"
     ), 1);
@@ -211,7 +211,7 @@ TEST(FiberLocalTests, captureThenRunEmpty) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
         "        FiberLocal<Box> s = heap FiberLocal<Box>();\n"
-        "        FiberContext ctx = FiberContext.capture();\n"
+        "        FiberContext ctx #= FiberContext.capture();\n"
         "        ctx.run(() -> { });\n"
         "        return 1;\n"
         "    }\n"

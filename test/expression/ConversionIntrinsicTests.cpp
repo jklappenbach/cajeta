@@ -93,7 +93,7 @@ TEST(ConversionIntrinsicTests, doubleToStringMatchesValue) {
 
 TEST(ConversionIntrinsicTests, booleanToStringTrue) {
     EXPECT_EQ(runI32(
-        "String s = Boolean.toString(true);\n"
+        "String s #= Boolean.toString(true);\n"
         "if (s.equals(\"true\")) return 1;\n"
         "return 0;"), 1);
 }

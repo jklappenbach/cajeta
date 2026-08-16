@@ -50,7 +50,7 @@ TEST(CsvWriterTests, plainRow) {
     EXPECT_EQ(runCsv(W,
         "int8[] fa = " + lit("a") + "; int8[] fb = " + lit("b") + ";"
         " CsvWriter w = heap CsvWriter(); w.writeField(fa); w.writeField(fb); w.endRow();"
-        " int8[] out = w.toBytes();"
+        " int8[] out #= w.toBytes();"
         " return ((int32) out.count()) * 1000 + (int32) out[1];"),
         4 * 1000 + ',');   // "a,b\n"  -> 4044
 }
@@ -60,7 +60,7 @@ TEST(CsvWriterTests, quotesFieldWithComma) {
     EXPECT_EQ(runCsv(W,
         "int8[] f0 = " + lit("a,b") + "; int8[] f1 = " + lit("c") + ";"
         " CsvWriter w = heap CsvWriter(); w.writeField(f0); w.writeField(f1); w.endRow();"
-        " int8[] out = w.toBytes();"
+        " int8[] out #= w.toBytes();"
         " return ((int32) out.count()) * 100 + (int32) out[0];"),
         8 * 100 + '"');    // `"a,b",c\n` -> 834
 }
@@ -71,7 +71,7 @@ TEST(CsvWriterTests, escapesInnerQuote) {
     EXPECT_EQ(runCsv(W,
         "int8[] f0 = " + lit("a\"b") + ";"
         " CsvWriter w = heap CsvWriter(); w.writeField(f0); w.endRow();"
-        " int8[] out = w.toBytes();"
+        " int8[] out #= w.toBytes();"
         " return ((int32) out.count()) * 100 + (int32) out[2];"),
         7 * 100 + '"');    // `"a""b"\n` (6 + LF = 7) -> 734
 }
@@ -82,7 +82,7 @@ TEST(CsvWriterTests, roundTripThroughReader) {
     EXPECT_EQ(runCsv(WR,
         "int8[] f0 = " + lit("a,b") + "; int8[] f1 = " + lit("c") + ";"
         " CsvWriter w = heap CsvWriter(); w.writeField(f0); w.writeField(f1); w.endRow();"
-        " int8[] csv = w.toBytes();"
+        " int8[] csv #= w.toBytes();"
         " CsvReader r = heap CsvReader(csv, (int64) csv.count());"
         " r.nextRow(); int32 fc = r.fieldCount(); int8[] g0 = r.field(0);"
         " return fc * 1000 + ((int32) g0.count()) * 100 + (int32) g0[1];"),

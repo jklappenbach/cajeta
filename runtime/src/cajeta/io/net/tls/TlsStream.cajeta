@@ -39,7 +39,7 @@ public class TlsStream implements ByteChannel {
      */
     public static #TlsStream client(#TcpStream stream, int8[] host, int32 hostLen,
                                     int8[] trustPem, int32 trustLen) {
-        TlsConnection tls = TlsConnection.verifyingClient();
+        TlsConnection tls #= TlsConnection.verifyingClient();
         tls.setSni(host, hostLen);
         tls.addTrust(trustPem, trustLen);
         tls.setVerifyHost(host, hostLen);
@@ -57,7 +57,7 @@ public class TlsStream implements ByteChannel {
      */
     public static #TlsStream clientSystemTrust(#TcpStream stream, int8[] host,
                                                int32 hostLen) {
-        TlsConnection tls = TlsConnection.verifyingClient();
+        TlsConnection tls #= TlsConnection.verifyingClient();
         tls.setSni(host, hostLen);
         tls.useSystemTrust();
         tls.setVerifyHost(host, hostLen);
@@ -67,7 +67,7 @@ public class TlsStream implements ByteChannel {
     /** Wrap an accepted `stream` as a TLS server presenting `cert` + `key`. */
     public static #TlsStream server(#TcpStream stream, int8[] cert, int32 certLen,
                                     int8[] key, int32 keyLen) {
-        TlsConnection tls = TlsConnection.server(cert, certLen, key, keyLen);
+        TlsConnection tls #= TlsConnection.server(cert, certLen, key, keyLen);
         return heap TlsStream(#stream, #tls);
     }
 

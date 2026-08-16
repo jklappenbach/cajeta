@@ -97,7 +97,7 @@ TEST(TransformDiagnostics, wrongReturnTypeLocated) {
     Diag d = diagOf(
         "float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
         "            Grad((Tensor<float32> xx) -> Tensor.mul<float32>(xx, xx));\n"
         "        GradResult<float32, Tensor<float32>> r = g(x);\n"
@@ -113,7 +113,7 @@ TEST(TransformDiagnostics, rankMismatchReportsRanksAndDtype) {
     Diag d = diagOf(
         "float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>, float32) -> GradResult<float32, Tensor<float32>> g =\n"
         "            Grad((Tensor<float32> xx, float32 k) ->\n"
         "                Tensor.sum<float32,float32>(Tensor.matmul<float32>(xx, k)));\n"

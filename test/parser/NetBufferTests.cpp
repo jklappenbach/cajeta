@@ -341,7 +341,7 @@ TEST(BufferPoolTests, acquireGivesSlabSizedBuffer) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(128, 4);\n"
-        "        ByteBuffer b = p.acquire();\n"
+        "        ByteBuffer b #= p.acquire();\n"
         "        return b.capacity();\n"
         "    }\n"
         "}\n";
@@ -356,7 +356,7 @@ TEST(BufferPoolTests, releaseRetainsIdleBuffer) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(64, 4);\n"
-        "        ByteBuffer b = p.acquire();\n"
+        "        ByteBuffer b #= p.acquire();\n"
         "        p.release(#b);\n"
         "        return p.idle();\n"
         "    }\n"
@@ -378,7 +378,7 @@ TEST(BufferPoolTests, reuseStaysBounded) {
         "        int32 i = 0;\n"
         // 100 sequential connections: acquire then release each.
         "        while (i < 100) {\n"
-        "            ByteBuffer b = p.acquire();\n"
+        "            ByteBuffer b #= p.acquire();\n"
         "            b.advanceWrite(10);\n"   // use it like a connection would
         "            p.release(#b);\n"
         "            i = i + 1;\n"
@@ -399,14 +399,14 @@ TEST(BufferPoolTests, concurrentHoldsAllocateUpToNeed) {
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(64, 4);\n"
         // Hold 3 at once -> 3 fresh allocations, none reused yet.
-        "        ByteBuffer a = p.acquire();\n"
-        "        ByteBuffer b = p.acquire();\n"
-        "        ByteBuffer c = p.acquire();\n"
+        "        ByteBuffer a #= p.acquire();\n"
+        "        ByteBuffer b #= p.acquire();\n"
+        "        ByteBuffer c #= p.acquire();\n"
         "        int32 allocAfterHold = p.allocations();\n"  // 3
         "        p.release(#a);\n"
         "        p.release(#b);\n"
         "        p.release(#c);\n"
-        "        ByteBuffer d = p.acquire();\n"  // reuse, no new alloc
+        "        ByteBuffer d #= p.acquire();\n"  // reuse, no new alloc
         "        return allocAfterHold * 10 + p.allocations();\n"
         "    }\n"
         "}\n";
@@ -422,9 +422,9 @@ TEST(BufferPoolTests, releaseBeyondMaxIdleDropsExtras) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        BufferPool p = heap BufferPool(64, 2);\n"  // maxIdle 2
-        "        ByteBuffer a = p.acquire();\n"
-        "        ByteBuffer b = p.acquire();\n"
-        "        ByteBuffer c = p.acquire();\n"
+        "        ByteBuffer a #= p.acquire();\n"
+        "        ByteBuffer b #= p.acquire();\n"
+        "        ByteBuffer c #= p.acquire();\n"
         "        p.release(#a);\n"
         "        p.release(#b);\n"
         "        p.release(#c);\n"  // third can't be retained

@@ -39,7 +39,7 @@ std::string bodyOf(const std::string& ir, const std::string& fnNeedle) {
 const char* kPrelude =
     "        float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
     "        int64[] s = heap int64[1]; s[0] = 3;\n"
-    "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n";
+    "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n";
 
 std::string wrap(const std::string& members, const std::string& body) {
     return

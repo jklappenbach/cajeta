@@ -29,7 +29,7 @@ TEST(JsonFactoryTests, parseNumber) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        int8[] buf = [(int8) 52, (int8) 50];\n"
-        "        JsonValue v = Json.parse(buf, (int64) 2);\n"
+        "        JsonValue v #= Json.parse(buf, (int64) 2);\n"
         "        return v.asInt32();\n"
         "    }\n"
         "}\n";
@@ -45,7 +45,7 @@ TEST(JsonFactoryTests, parseArraySum) {
         "        int8[] buf = [(int8) 91, (int8) 49, (int8) 48, (int8) 44,\n"
         "                      (int8) 50, (int8) 48, (int8) 44, (int8) 51,\n"
         "                      (int8) 48, (int8) 93];\n"
-        "        JsonValue v = Json.parse(buf, (int64) 10);\n"
+        "        JsonValue v #= Json.parse(buf, (int64) 10);\n"
         "        JsonArray a = v.asArray();\n"
         "        int32 sum = 0;\n"
         "        int32 i = 0;\n"
@@ -72,7 +72,7 @@ TEST(JsonFactoryTests, toBytesAndReparseSum) {
         "        a.add(#e1);\n"
         "        JsonValue v = heap JsonValue();\n"
         "        v.setArray(#a);\n"
-        "        int8[] bytes = Json.toBytes(v);\n"
+        "        int8[] bytes #= Json.toBytes(v);\n"
         // Find the bytes length by counting until we hit the closing
         // ']' (byte 93). Cheap because the input is bounded.
         "        int32 len = 0;\n"
@@ -80,7 +80,7 @@ TEST(JsonFactoryTests, toBytesAndReparseSum) {
         "            len = len + 1;\n"
         "        }\n"
         "        len = len + 1;\n"
-        "        JsonValue parsed = Json.parse(bytes, (int64) len);\n"
+        "        JsonValue parsed #= Json.parse(bytes, (int64) len);\n"
         "        JsonArray got = parsed.asArray();\n"
         "        return got.get(0).asInt32() + got.get(1).asInt32();\n"
         "    }\n"
@@ -95,7 +95,7 @@ TEST(JsonFactoryTests, parseNullLiteral) {
         "    public static int32 run() {\n"
         // 'n','u','l','l'
         "        int8[] buf = [(int8) 110, (int8) 117, (int8) 108, (int8) 108];\n"
-        "        JsonValue v = Json.parse(buf, (int64) 4);\n"
+        "        JsonValue v #= Json.parse(buf, (int64) 4);\n"
         "        if (v.isNull()) { return 1; }\n"
         "        return -1;\n"
         "    }\n"

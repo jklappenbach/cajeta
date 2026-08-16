@@ -140,7 +140,7 @@ public final class DateTimeFormatter {
      */
     @Inline
     public #String formatDate(LocalDate d) {
-        DateTimeFields f = DateTimeFields.ofDate(d);
+        DateTimeFields f #= DateTimeFields.ofDate(d);
         return this.format(f);
     }
 
@@ -153,7 +153,7 @@ public final class DateTimeFormatter {
      */
     @Inline
     public #String formatTime(LocalTime t) {
-        DateTimeFields f = DateTimeFields.ofTime(t);
+        DateTimeFields f #= DateTimeFields.ofTime(t);
         return this.format(f);
     }
 
@@ -166,7 +166,7 @@ public final class DateTimeFormatter {
      */
     @Inline
     public #String formatDateTime(LocalDateTime t) {
-        DateTimeFields f = DateTimeFields.ofDateTime(t);
+        DateTimeFields f #= DateTimeFields.ofDateTime(t);
         return this.format(f);
     }
 
@@ -179,7 +179,7 @@ public final class DateTimeFormatter {
      */
     @Inline
     public #String formatZoned(ZonedDateTime z) {
-        DateTimeFields f = DateTimeFields.ofZoned(z);
+        DateTimeFields f #= DateTimeFields.ofZoned(z);
         return this.format(f);
     }
 
@@ -236,22 +236,22 @@ public final class DateTimeFormatter {
             // 6.2.2: short names are Inline literals (no root array) —
             // materialize the window for the bulk write.
             String mn = DateTimeFormatter.monthShort(f.month);
-            int8[] mb = mn.toBytes();
+            int8[] mb #= mn.toBytes();
             return Fmt.writeBytes(buf, p, mb, mn.byteLength());
         }
         if (code == 66) { // B full month
             String mn = DateTimeFormatter.monthLong(f.month);
-            int8[] mb = mn.toBytes();
+            int8[] mb #= mn.toBytes();
             return Fmt.writeBytes(buf, p, mb, mn.byteLength());
         }
         if (code == 97) { // a short weekday
             String dn = DateTimeFormatter.dowShort(f.dayOfWeek);
-            int8[] db = dn.toBytes();
+            int8[] db #= dn.toBytes();
             return Fmt.writeBytes(buf, p, db, dn.byteLength());
         }
         if (code == 65) { // A full weekday
             String dn = DateTimeFormatter.dowLong(f.dayOfWeek);
-            int8[] db = dn.toBytes();
+            int8[] db #= dn.toBytes();
             return Fmt.writeBytes(buf, p, db, dn.byteLength());
         }
         if (code == 122) { // z  +HHMM

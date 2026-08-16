@@ -55,7 +55,7 @@ public class ColF64 {
 
     /** Name this expression as a selection item (`select`/`with` output). */
     public #Sel alias(String name) {
-        Sel s = Sel.named(name);
+        Sel s #= Sel.named(name);
         s.bindExpr(this);
         return #s;
     }

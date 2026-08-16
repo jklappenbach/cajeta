@@ -68,25 +68,25 @@ std::string makeSource(const std::string& body) {
 
 TEST(PathTests, ofThenIsAbsoluteTrueForLeadingSlash) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc/passwd\");\n"
+        "Path p #= Path.of(\"/etc/passwd\");\n"
         "return p.isAbsolute() ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, ofThenIsAbsoluteFalseForRelative) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"foo/bar\");\n"
+        "Path p #= Path.of(\"foo/bar\");\n"
         "return p.isAbsolute() ? 1 : 0;")), 0);
 }
 
 TEST(PathTests, ofThenIsRelativeTrueForBareName) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"data.json\");\n"
+        "Path p #= Path.of(\"data.json\");\n"
         "return p.isRelative() ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, ofEmptyStringIsRelative) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"\");\n"
+        "Path p #= Path.of(\"\");\n"
         "return p.isRelative() ? 1 : 0;")), 1);
 }
 
@@ -94,44 +94,44 @@ TEST(PathTests, ofEmptyStringIsRelative) {
 
 TEST(PathTests, nameOfSimplePath) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/foo/bar/baz.txt\");\n"
+        "Path p #= Path.of(\"/foo/bar/baz.txt\");\n"
         "return p.name().equals(\"baz.txt\") ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, nameOfRootPath) {
     // "/foo" → name is "foo".
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/foo\");\n"
+        "Path p #= Path.of(\"/foo\");\n"
         "return p.name().equals(\"foo\") ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, nameOfBareFile) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"file.cajeta\");\n"
+        "Path p #= Path.of(\"file.cajeta\");\n"
         "return p.name().equals(\"file.cajeta\") ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, stemStripsTrailingExtension) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/x/y/data.json\");\n"
+        "Path p #= Path.of(\"/x/y/data.json\");\n"
         "return p.stem().equals(\"data\") ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, stemNoExtensionReturnsWholeName) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc/passwd\");\n"
+        "Path p #= Path.of(\"/etc/passwd\");\n"
         "return p.stem().equals(\"passwd\") ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, extensionLastDotSuffix) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"archive.tar.gz\");\n"
+        "Path p #= Path.of(\"archive.tar.gz\");\n"
         "return p.extension().equals(\"gz\") ? 1 : 0;")), 1);
 }
 
 TEST(PathTests, extensionNoneIsEmpty) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"README\");\n"
+        "Path p #= Path.of(\"README\");\n"
         "return p.extension().isEmpty() ? 1 : 0;")), 1);
 }
 
@@ -139,8 +139,8 @@ TEST(PathTests, extensionNoneIsEmpty) {
 
 TEST(PathTests, parentStripsLastSegment) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/foo/bar/baz.txt\");\n"
-        "Path par = p.parent();\n"
+        "Path p #= Path.of(\"/foo/bar/baz.txt\");\n"
+        "Path par #= p.parent();\n"
         "// Re-format par's bytes through String to compare.\n"
         "int32 n = (int32) par.bytes.count();\n"
         "int8[] cp = heap int8[n];\n"
@@ -152,8 +152,8 @@ TEST(PathTests, parentStripsLastSegment) {
 
 TEST(PathTests, parentOfRootIsRoot) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/\");\n"
-        "Path par = p.parent();\n"
+        "Path p #= Path.of(\"/\");\n"
+        "Path par #= p.parent();\n"
         "int32 n = (int32) par.bytes.count();\n"
         "int8[] cp = heap int8[n];\n"
         "int32 i = 0;\n"
@@ -169,8 +169,8 @@ TEST(PathTests, parentOfRootIsRoot) {
 // differs.
 TEST(PathTests, resolveAppendsSegmentWithSeparator) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc\");\n"
-        "Path q = p.resolve(\"passwd\");\n"
+        "Path p #= Path.of(\"/etc\");\n"
+        "Path q #= p.resolve(\"passwd\");\n"
         "int32 n = (int32) q.bytes.count();\n"
         "int8[] cp = heap int8[n];\n"
         "int32 i = 0;\n"
@@ -181,8 +181,8 @@ TEST(PathTests, resolveAppendsSegmentWithSeparator) {
 
 TEST(PathTests, resolveOntoRelativePath) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"src\");\n"
-        "Path q = p.resolve(\"main.cajeta\");\n"
+        "Path p #= Path.of(\"src\");\n"
+        "Path q #= p.resolve(\"main.cajeta\");\n"
         "int32 n = (int32) q.bytes.count();\n"
         "int8[] cp = heap int8[n];\n"
         "int32 i = 0;\n"
@@ -197,14 +197,14 @@ TEST(PathTests, existsTrueForRealFile) {
     std::string path = tmpFwd("exists.txt");
     writeRaw(path, "x");
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"" + path + "\");\n"
+        "Path p #= Path.of(\"" + path + "\");\n"
         "return p.exists() ? 1 : 0;")), 1);
     std::filesystem::remove(path);
 }
 
 TEST(PathTests, existsFalseForMissingFile) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/this/path/does/not/exist/__cajeta__\");\n"
+        "Path p #= Path.of(\"/this/path/does/not/exist/__cajeta__\");\n"
         "return p.exists() ? 1 : 0;")), 0);
 }
 
@@ -212,7 +212,7 @@ TEST(PathTests, isFileTrueForRegular) {
     std::string path = tmpFwd("isfile.txt");
     writeRaw(path, "x");
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"" + path + "\");\n"
+        "Path p #= Path.of(\"" + path + "\");\n"
         "return p.isFile() ? 1 : 0;")), 1);
     std::filesystem::remove(path);
 }
@@ -221,20 +221,20 @@ TEST(PathTests, isDirTrueForDirectory) {
     std::string dir = tmpFwd("isdir_d");
     std::filesystem::create_directories(dir);
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"" + dir + "\");\n"
+        "Path p #= Path.of(\"" + dir + "\");\n"
         "return p.isDir() ? 1 : 0;")), 1);
     std::filesystem::remove(dir);
 }
 
 TEST(PathTests, isFileFalseForDirectory) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc\");\n"
+        "Path p #= Path.of(\"/etc\");\n"
         "return p.isFile() ? 1 : 0;")), 0);
 }
 
 TEST(PathTests, isDirFalseForRegularFile) {
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc/passwd\");\n"
+        "Path p #= Path.of(\"/etc/passwd\");\n"
         "return p.isDir() ? 1 : 0;")), 0);
 }
 
@@ -247,7 +247,7 @@ TEST(PathTests, mkdirsCreatesNestedDirectory) {
     std::string base = "/tmp/cajeta_path_test_" + std::to_string(::getpid()) + "_mkdirs";
     std::string nested = base + "/a/b/c";
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"" + nested + "\");\n"
+        "Path p #= Path.of(\"" + nested + "\");\n"
         "p.mkdirs();\n"
         "return p.isDir() ? 1 : 0;")), 1);
     // Clean up via cajeta:
@@ -264,7 +264,7 @@ TEST(PathTests, deleteRemovesEmptyFile) {
     // Set up a target file.
     writeRaw(path, "");
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"" + path + "\");\n"
+        "Path p #= Path.of(\"" + path + "\");\n"
         "if (!p.exists()) return -1;\n"
         "p.delete();\n"
         "return p.exists() ? 0 : 1;")), 1);
@@ -283,8 +283,8 @@ TEST(PathTests, canonicalResolvesSymlinkFreePathToItself) {
     // the path under the inevitable Linux container variability rather
     // than rely on a host-specific guarantee.
     EXPECT_EQ(runI32(makeSource(
-        "Path p = Path.of(\"/etc/passwd\");\n"
-        "Path c = p.canonical();\n"
+        "Path p #= Path.of(\"/etc/passwd\");\n"
+        "Path c #= p.canonical();\n"
         "int32 n = (int32) c.bytes.count();\n"
         "int8[] cp = heap int8[n];\n"
         "int32 i = 0;\n"

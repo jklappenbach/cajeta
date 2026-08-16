@@ -35,7 +35,7 @@ int32_t runI32(const std::string& body) {
 // parse → toString is the identity on a canonical lowercase GUID.
 TEST(GuidTests, parseToStringRoundTrip) {
     EXPECT_EQ(runI32(
-        "Guid g = Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543210\");\n"
+        "Guid g #= Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543210\");\n"
         "if (g.toString().equals(\"01234567-89ab-cdef-fedc-ba9876543210\")) { return 0; }\n"
         "return 1;\n"), 0);
 }
@@ -43,7 +43,7 @@ TEST(GuidTests, parseToStringRoundTrip) {
 // parse accepts uppercase hex and normalizes to lowercase on toString.
 TEST(GuidTests, parseUppercaseNormalizes) {
     EXPECT_EQ(runI32(
-        "Guid g = Guid.parse(\"01234567-89AB-CDEF-FEDC-BA9876543210\");\n"
+        "Guid g #= Guid.parse(\"01234567-89AB-CDEF-FEDC-BA9876543210\");\n"
         "if (g.toString().equals(\"01234567-89ab-cdef-fedc-ba9876543210\")) { return 0; }\n"
         "return 1;\n"), 0);
 }
@@ -52,7 +52,7 @@ TEST(GuidTests, parseUppercaseNormalizes) {
 // most significant) renders in canonical order.
 TEST(GuidTests, fromHalvesAccessorsAndLayout) {
     EXPECT_EQ(runI32(
-        "Guid g = Guid.fromHalves((uint64) 255L, (uint64) 1L);\n"
+        "Guid g #= Guid.fromHalves((uint64) 255L, (uint64) 1L);\n"
         "if (g.high() != (uint64) 255L) { return 1; }\n"
         "if (g.low() != (uint64) 1L) { return 2; }\n"
         "if (!g.toString().equals(\"00000000-0000-00ff-0000-000000000001\")) { return 3; }\n"
@@ -62,9 +62,9 @@ TEST(GuidTests, fromHalvesAccessorsAndLayout) {
 // equals() is exact; equal text → equal GUIDs, different text → not.
 TEST(GuidTests, equalsIsExact) {
     EXPECT_EQ(runI32(
-        "Guid a = Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543210\");\n"
-        "Guid b = Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543210\");\n"
-        "Guid c = Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543211\");\n"  // last nibble differs
+        "Guid a #= Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543210\");\n"
+        "Guid b #= Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543210\");\n"
+        "Guid c #= Guid.parse(\"01234567-89ab-cdef-fedc-ba9876543211\");\n"  // last nibble differs
         "if (!a.equals(b)) { return 1; }\n"
         "if (a.equals(c)) { return 2; }\n"
         "return 0;\n"), 0);
@@ -86,7 +86,7 @@ TEST(GuidTests, parseRejectsMalformed) {
 // position (index 14), and a 10xx variant (index 19 in {8,9,a,b}).
 TEST(GuidTests, randomIsVersion4) {
     EXPECT_EQ(runI32(
-        "String s = Guid.random().toString();\n"
+        "String s #= Guid.random().toString();\n"
         "if (s.byteLength() != 36) { return 1; }\n"
         "if (s.byteAt(14) != 52) { return 2; }\n"               // '4'
         "int32 var = (int32) s.byteAt(19);\n"
@@ -97,8 +97,8 @@ TEST(GuidTests, randomIsVersion4) {
 // Two random GUIDs are (overwhelmingly) distinct.
 TEST(GuidTests, randomDistinct) {
     EXPECT_EQ(runI32(
-        "Guid a = Guid.random();\n"
-        "Guid b = Guid.random();\n"
+        "Guid a #= Guid.random();\n"
+        "Guid b #= Guid.random();\n"
         "if (a.equals(b)) { return 1; }\n"
         "return 0;\n"), 0);
 }

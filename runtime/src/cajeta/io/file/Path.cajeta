@@ -157,7 +157,7 @@ public class Path {
      * `extension` pairing).
      */
     public #String stem() {
-        String fullName = this.name();
+        String fullName #= this.name();
         int32 nameLen = fullName.byteLength();
         int32 lastDot = -1;
         int32 i = 0;
@@ -185,7 +185,7 @@ public class Path {
      * counted as an extension separator.
      */
     public #String extension() {
-        String fullName = this.name();
+        String fullName #= this.name();
         int32 nameLen = fullName.byteLength();
         int32 lastDot = -1;
         int32 i = 0;
@@ -397,8 +397,8 @@ public class Path {
      * ```
      */
     public #ArrayList<Path> list() {
-        ArrayList<Path> out #= heap ArrayList<Path>();
-        int8[] joined = this.listJoined();
+        ArrayList<Path> out = heap ArrayList<Path>();
+        int8[] joined #= this.listJoined();
         int32 total = (int32) joined.count();
         int32 pLen = (int32) this.bytes.count();
         boolean needsSep = pLen > 0 && this.bytes[pLen - 1] != (int8) 47;

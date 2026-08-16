@@ -37,7 +37,7 @@ public final class NelderMead {
         float64[] fvals = heap float64[nv];
         float64[] centroid = heap float64[n];
         float64[] trial = heap float64[n];
-        Tensor<float64> xT = x0.copy();
+        Tensor<float64> xT #= x0.copy();
 
         int64 v = 0;
         while (v < nv) {

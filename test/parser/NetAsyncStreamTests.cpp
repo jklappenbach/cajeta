@@ -150,7 +150,7 @@ TEST(AsyncReaderTests, readUntilIncludesDelimiter) {
         "src[0]=(int8)97; src[1]=(int8)98; src[2]=(int8)10;\n"   // a b \n
         "src[3]=(int8)88; src[4]=(int8)89;\n"                    // X Y
         "r.stage(src, 5);\n"
-        "int8[] line = r.readUntil((int8) 10, 0);\n"
+        "int8[] line #= r.readUntil((int8) 10, 0);\n"
         "int32 len = line.count();\n"          // 3 : "ab\n"
         "int32 last = (int32) line[len - 1];\n"// 10 (LF, included)
         "int32 left = r.buffered();\n"         // 2 left: "XY"
@@ -167,7 +167,7 @@ TEST(AsyncReaderTests, readUntilHonorsMaxBytesCap) {
         "int32 i = 0;\n"
         "while (i < 6) { src[i] = (int8) 65; i = i + 1; }\n"   // "AAAAAA"
         "r.stage(src, 6);\n"
-        "int8[] got = r.readUntil((int8) 10, 4);\n"   // LF never seen, cap 4
+        "int8[] got #= r.readUntil((int8) 10, 4);\n"   // LF never seen, cap 4
         "int32 len = got.count();\n"                  // 4
         "int32 left = r.buffered();\n"                // 2 still staged
         // len=4, left=2 -> 4*100 + 2 = 402
@@ -182,7 +182,7 @@ TEST(AsyncReaderTests, readUntilAtEofReturnsRemainderWithoutDelimiter) {
         "src[0]=(int8)1; src[1]=(int8)2; src[2]=(int8)3;\n"   // no LF
         "r.stage(src, 3);\n"
         "r.markEof();\n"
-        "int8[] got = r.readUntil((int8) 10, 0);\n"   // EOF before delimiter
+        "int8[] got #= r.readUntil((int8) 10, 0);\n"   // EOF before delimiter
         "int32 len = got.count();\n"                  // 3
         "int32 ended = 0;\n"
         "if (r.atEnd()) { ended = 1; }\n"

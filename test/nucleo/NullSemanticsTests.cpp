@@ -127,13 +127,13 @@ std::string semanticsSrc() {
         "        xv[0] = 1.0; xv[1] = 2.0; xv[2] = 77.0;\n"
         "        boolean[] xo = heap boolean[3];\n"
         "        xo[0] = true; xo[1] = true; xo[2] = false;\n"
-        "        NullableColumn<float64> nc = NullableColumn.of<float64>(xv, xo);\n"
+        "        NullableColumn<float64> nc #= NullableColumn.of<float64>(xv, xo);\n"
         "        if (nc.mean() == 1.5) { score = score + 1; }\n"      // null SKIPPED
         "        if (nc.count() == 2 && nc.len() == 3) { score = score + 2; }\n"
         "        float64 z = 0.0;\n"
         "        float64[] yv = heap float64[3];\n"
         "        yv[0] = 1.0; yv[1] = 2.0; yv[2] = 0.0 / z;\n"        // NaN value
-        "        Column<float64> cc = Column.of<float64>(yv);\n"
+        "        Column<float64> cc #= Column.of<float64>(yv);\n"
         "        float64 m = cc.mean();\n"
         "        if (m != m) { score = score + 4; }\n"                // NaN PROPAGATES
         "        if (cc.count() == 3 && cc.len() == 3) { score = score + 8; }\n"
@@ -147,7 +147,7 @@ std::string semanticsSrc() {
         + kBuild +
         "        int32 score = 0;\n"
         "        Table<?> w = t.with((TickNCols c) -> (c.price() * 2.0).alias(\"dbl\"));\n"
-        "        String ds = w.describe();\n"
+        "        String ds #= w.describe();\n"
         "        if (ds.contains(\"dbl: float64\") && !ds.contains(\"dbl: float64?\")) {\n"
         "            score = score + 1;\n"
         "        }\n"

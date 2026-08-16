@@ -64,7 +64,7 @@ const char* kLaunch =
     "        a.upload(ha);\n"
     "        b.upload(hb);\n"
     "        c.upload(hc);\n"
-    "        KernelStream s = KernelStream.current();\n"
+    "        KernelStream s #= KernelStream.current();\n"
     "        uint32 total = n * (n / 8);\n"
     "        matmul.launch(s, grid: [(total + 63) / 64], block: [64])(c, a, b, n);\n"
     "        s.sync();\n"

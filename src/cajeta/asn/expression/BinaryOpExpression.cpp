@@ -20,6 +20,7 @@
 #include "../../type/QuaternionOps.h"
 #include "../../type/MatrixOps.h"
 #include "../../util/MemoryManager.h"
+#include "cajeta/ownership/ReturnTitleAudit.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "MethodCallExpression.h"
@@ -1251,6 +1252,44 @@ namespace cajeta {
                                 return valVal;
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // 8.2.7 SIZING ONLY (spec §4.6) — the ASSIGNMENT position.
+        //
+        // §4.6 says "a `#T` result must be received with `#=`", and an lvalue
+        // is an lvalue: `x = f()` and `this.f = f()` are the same acquisition
+        // as `T x = f()`. But 8.2.7's 148-site measurement covered the
+        // DECLARATION position only, and shipping a rule against an unmeasured
+        // second population is precisely what cost Unit 3 its gate (3.3.3).
+        //
+        // So: count here, do not reject. The check lands on declarations,
+        // where the number is known; this emits the same `[owned-bind]` record
+        // tagged `pos=assign` so ONE harvest sizes the remainder, and 8.2.12
+        // decides on the number rather than on the argument.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2
+                && ownership::ReturnTitleAudit::enabled()) {
+            if (auto rhsCall = dynamic_pointer_cast<MethodCallExpression>(
+                    children[1])) {
+                if (!rhsCall->getResolvedType()) {
+                    rhsCall->resolveTypes(module);
+                }
+                if (MethodPtr rm = rhsCall->getResolvedMethod()) {
+                    if (rm->isReturnsOwnership()) {
+                        auto holder = module->getCurrentMethod();
+                        std::string in = holder
+                            ? (holder->getParent()
+                                ? holder->getParent()->toCanonical() + "."
+                                : std::string()) + holder->getName()
+                            : std::string("<none>");
+                        std::string calleeKey =
+                            (rm->getParent()
+                                ? rm->getParent()->toCanonical() + "."
+                                : std::string()) + rm->getName();
+                        ownership::ReturnTitleAudit::ownedBind(
+                            calleeKey + " pos=assign", in, getSourceLine());
                     }
                 }
             }

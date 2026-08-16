@@ -54,7 +54,7 @@ TEST(SliceLint, ResolvedStoreEmitsNote) {
         "    public static int32 run() {\n"
         "        Keep k = heap Keep(\"\");\n"
         "        String s = \"abcdefghijklmnopqrstuvwxyz\";\n"
-        "        String w = s.substring(4, 20);\n"
+        "        String w #= s.substring(4, 20);\n"
         "        k.v = w;\n"
         "        return (int32) k.v.size();\n"
         "    }\n"
@@ -77,7 +77,7 @@ TEST(SliceLint, LocalOnlySliceIsQuiet) {
         "public final class Ut {\n"
         "    public static int32 run() {\n"
         "        String s = \"abcdefghijklmnopqrstuvwxyz\";\n"
-        "        String w = s.substring(4, 20);\n"
+        "        String w #= s.substring(4, 20);\n"
         "        return (int32) w.size();\n"
         "    }\n"
         "}\n";

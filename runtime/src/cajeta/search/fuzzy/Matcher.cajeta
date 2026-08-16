@@ -72,7 +72,7 @@ public class Matcher<T> {
         // Prefilter to candidate ids, then keep those within threshold —
         // collecting parallel id/distance arrays of int32 (cheap to sort
         // without touching owned Match objects).
-        ArrayList<int32> cand = this.index.candidates(query);
+        ArrayList<int32> cand #= this.index.candidates(query);
         ArrayList<int32> ids = heap ArrayList<int32>();
         ArrayList<int32> dists = heap ArrayList<int32>();
         int32 i = 0;
@@ -125,7 +125,7 @@ public class Matcher<T> {
         while (r < n) {
             int32 id = ids.get(r);
             String k = this.keys.get(id);
-            String kc = k.substring(0, (int32) k.count());
+            String kc #= k.substring(0, (int32) k.count());
             Match<T> hit = heap Match<T>(this.values.get(id), #kc, dists.get(r));
             out.add(#hit);
             r = r + 1;

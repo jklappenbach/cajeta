@@ -139,7 +139,7 @@ public class M {
         in.upload(hin);
         oa.upload(hA);
         ob.upload(hB);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         viaHinted.launch(s, grid: [1], block: [256])(oa, in);
         viaPlain.launch(s, grid: [1], block: [256])(ob, in);
         s.sync();

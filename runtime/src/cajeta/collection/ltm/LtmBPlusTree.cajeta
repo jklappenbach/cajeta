@@ -420,14 +420,14 @@ public final class LtmBPlusTree<K, V> {
     public void compact() {
         String scratch = this.pathStr + ".compact";
         // Truncate any stale scratch, then build the compacted tree.
-        File t0 = File.open(scratch, OpenMode.WRITE);
+        File t0 #= File.open(scratch, OpenMode.WRITE);
         t0.close();
         LtmBPlusTree<K, V> fresh = heap LtmBPlusTree<K, V>(scratch,
             this.keyEncB, this.valEncB, this.orderN, this.capacityN);
         if (this.keyFastB != null) {
             fresh.pager.setBufferEncoders(this.keyFastB, this.valFastB);
         }
-        LtmCursor<K, V> cur = this.scan();
+        LtmCursor<K, V> cur #= this.scan();
         while (cur.valid()) {
             fresh.put(cur.key(), cur.value());
             cur.next();
@@ -435,8 +435,8 @@ public final class LtmBPlusTree<K, V> {
         fresh.close();
         this.pager.close();
         // Byte-copy scratch → path (truncating), then empty the scratch.
-        File src = File.open(scratch, OpenMode.READ);
-        File dst = File.open(this.pathStr, OpenMode.WRITE);
+        File src #= File.open(scratch, OpenMode.READ);
+        File dst #= File.open(this.pathStr, OpenMode.WRITE);
         int8[] buf = heap int8[65536];
         int64 n = src.read(buf, 0, 65536);
         while (n > 0) {
@@ -445,7 +445,7 @@ public final class LtmBPlusTree<K, V> {
         }
         src.close();
         dst.close();
-        File t1 = File.open(scratch, OpenMode.WRITE);
+        File t1 #= File.open(scratch, OpenMode.WRITE);
         t1.close();
         this.pager #= heap LtmPager<K, V>(this.pathStr, this.keyEncB,
             this.valEncB, this.orderN, 4096, this.capacityN);

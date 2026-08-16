@@ -49,7 +49,7 @@ TEST(StackFrameFile, stdlibFrameNamesItsSourceFile) {
         "public final class App {\n"
         "    public static int32 run() {\n"
         "        try {\n"
-        "            Guid g = Guid.parse(\"not-a-valid-guid\");\n"
+        "            Guid g #= Guid.parse(\"not-a-valid-guid\");\n"
         "            return 9;\n"
         "        } catch (Exception e) {\n"
         "            StackFrame[] fs = e.getStackTrace();\n"

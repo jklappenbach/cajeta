@@ -36,8 +36,8 @@ std::string oneShotHex(const std::string& input) {
         src += "        data[" + std::to_string(i) + "L] = (int8) "
              + std::to_string((int)(signed char) input[i]) + ";\n";
     }
-    src += "        String s = Sha256.hashHex(data, " + std::to_string(input.size()) + "L);\n"
-        "        int8[] out = s.toBytes();\n"
+    src += "        String s #= Sha256.hashHex(data, " + std::to_string(input.size()) + "L);\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";
@@ -65,8 +65,8 @@ std::string oneShotHexRepeated(int val, size_t count) {
         "        int8[] data = heap int8[n];\n"
         "        int64 i = 0L;\n"
         "        while (i < n) { data[i] = (int8) " + std::to_string(val) + "; i = i + 1L; }\n"
-        "        String s = Sha256.hashHex(data, n);\n"
-        "        int8[] out = s.toBytes();\n"
+        "        String s #= Sha256.hashHex(data, n);\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";
@@ -97,8 +97,8 @@ std::string incrementalHexByteAtATime(const std::string& input) {
              + std::to_string((int)(signed char) input[i]) + "; h.update(one, 1L);\n";
     }
     src +=
-        "        String s = h.hex();\n"
-        "        int8[] out = s.toBytes();\n"
+        "        String s #= h.hex();\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";
@@ -179,8 +179,8 @@ TEST(Sha256Tests, incrementalEqualsOneShot) {
         "        Sha256 h = heap Sha256();\n"
         "        h.update(piece1, 3L);\n"
         "        h.update(piece2, 4L);\n"
-        "        int8[] streamed = h.digest();\n"
-        "        int8[] oneshot = Sha256.hash(full, 7L);\n"
+        "        int8[] streamed #= h.digest();\n"
+        "        int8[] oneshot #= Sha256.hash(full, 7L);\n"
         "        int32 i = 0;\n"
         "        while (i < 32) {\n"
         "            if (streamed[(int64) i] != oneshot[(int64) i]) { return 0; }\n"
@@ -209,8 +209,8 @@ TEST(Sha256Tests, instanceHexMatchesOneShot) {
         "        data[0L] = (int8) 97; data[1L] = (int8) 98; data[2L] = (int8) 99;\n"
         "        Sha256 h = heap Sha256();\n"
         "        h.update(data, 3L);\n"
-        "        String s = h.hex();\n"
-        "        int8[] out = s.toBytes();\n"
+        "        String s #= h.hex();\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";
@@ -264,11 +264,11 @@ TEST(Sha256Tests, resetClearsState) {
         "        second[0L] = (int8) 97;\n"
         "        Sha256 h = heap Sha256();\n"
         "        h.update(first, 3L);\n"
-        "        int8[] firstDigest = h.digest();\n"
+        "        int8[] firstDigest #= h.digest();\n"
         "        h.reset();\n"
         "        h.update(second, 1L);\n"
-        "        int8[] secondDigest = h.digest();\n"
-        "        int8[] reference = Sha256.hash(second, 1L);\n"
+        "        int8[] secondDigest #= h.digest();\n"
+        "        int8[] reference #= Sha256.hash(second, 1L);\n"
         "        int32 i = 0;\n"
         "        while (i < 32) {\n"
         "            if (secondDigest[(int64) i] != reference[(int64) i]) { return 0; }\n"

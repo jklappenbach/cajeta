@@ -113,7 +113,7 @@ TEST(XXHash3Tests, hashStringMatchesByteHash) {
         "        bytes[0L] = (int8) 97; bytes[1L] = (int8) 98; bytes[2L] = (int8) 99;\n"
         "        String s = heap String(#bytes, 3);\n"
         "        int64 h1 = XXHash3.hashStringSeeded(s, 0L);\n"
-        "        int8[] sb = s.toBytes();\n"
+        "        int8[] sb #= s.toBytes();\n"
         "        int64 h2 = XXHash3.hashSeeded(sb, 3L, 0L);\n"
         "        return (h1 == h2) ? 1 : 0;\n"
         "    }\n"

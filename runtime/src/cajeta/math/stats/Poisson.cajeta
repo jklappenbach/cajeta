@@ -61,11 +61,11 @@ public final class Poisson {
         }
         int64[] sh = heap int64[1];
         sh[0] = count;
-        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Tensor<int64> out #= Tensor.zeros<int64>(sh);
         if (count == 0 || lambda == 0.0) { return out; }
         float64 limit = Math.exp(-lambda);
         int64 chunk = 4096;
-        Tensor<float32> buf = g.uniform(chunk);
+        Tensor<float32> buf #= g.uniform(chunk);
         int64 pos = 0;
         int64 i = 0;
         while (i < count) {
@@ -73,7 +73,7 @@ public final class Poisson {
             float64 prod = 1.0;
             while (true) {
                 if (pos >= chunk) {
-                    buf = g.uniform(chunk);
+                    buf #= g.uniform(chunk);
                     pos = 0;
                 }
                 prod = prod * ((float64) buf.get1(pos));

@@ -128,7 +128,7 @@ std::string rollingMatrixSrc() {
         "        Table<Tick> t = heap Table<Tick>(Column.of<int64>(tsv),\n"
         "            Column.of<float64>(pv));\n"
         "        int32 score = 0;\n"
-        "        Table<?> r = t.lazy().rolling(3).agg((TickCols c, Aggs ag) -> {\n"
+        "        Table<?> r #= t.lazy().rolling(3).agg((TickCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().sum().alias(\"s\"));\n"
         "            ag.add(c.px().mean().alias(\"m\"));\n"
         "            ag.add(c.px().count().alias(\"n\"));\n"
@@ -165,7 +165,7 @@ std::string rollingMatrixSrc() {
         + kBuild +
         "        int32 score = 0;\n"
         // Dynamic string time form.
-        "        Table<?> r = t.lazy().rolling(\"ts\", Duration.ofSeconds(60))\n"
+        "        Table<?> r #= t.lazy().rolling(\"ts\", Duration.ofSeconds(60))\n"
         "            .agg((TickCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().sum().alias(\"s\"));\n"
         "        }).collect();\n"
@@ -174,14 +174,14 @@ std::string rollingMatrixSrc() {
         "        }\n"
         // A rolling never completed by an agg cannot be forced.
         "        try {\n"
-        "            Table<?> bad = t.lazy().rolling(\"ts\",\n"
+        "            Table<?> bad #= t.lazy().rolling(\"ts\",\n"
         "                Duration.ofSeconds(60)).collect();\n"
         "        } catch (FrameException e) {\n"
         "            if (e.getMessage().contains(\"agg\")) { score = score + 2; }\n"
         "        }\n"
         // A non-integer time column fails loud.
         "        try {\n"
-        "            Table<?> bad2 = t.lazy().rolling(\"px\",\n"
+        "            Table<?> bad2 #= t.lazy().rolling(\"px\",\n"
         "                Duration.ofSeconds(60)).agg((TickCols c, Aggs ag) -> {\n"
         "                ag.add(c.px().sum().alias(\"s\"));\n"
         "            }).collect();\n"

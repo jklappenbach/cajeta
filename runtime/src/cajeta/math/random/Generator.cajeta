@@ -92,7 +92,7 @@ public final class Generator {
     public #Tensor<float32> uniform(int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             uint32 w = this.bits(i);
@@ -113,7 +113,7 @@ public final class Generator {
     public #Tensor<float32> normal(int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> t = Tensor.zeros<float32>(sh);
+        Tensor<float32> t #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             uint32 w1 = this.bits(2 * i);
@@ -140,7 +140,7 @@ public final class Generator {
         int64 range = high - low;
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<int64> t = Tensor.zeros<int64>(sh);
+        Tensor<int64> t #= Tensor.zeros<int64>(sh);
         int64 i = 0;
         while (i < n) {
             uint32 w = this.bits(i);
@@ -161,7 +161,7 @@ public final class Generator {
     public #Tensor<int64> permutation(int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<int64> t = Tensor.zeros<int64>(sh);
+        Tensor<int64> t #= Tensor.zeros<int64>(sh);
         int64 s = 0;
         while (s < n) { t.set1(s, s); s = s + 1; }
         int64 ctr = 0;
@@ -208,7 +208,7 @@ public final class Generator {
     public #Tensor<int64> choice(int64 nPop, int64 k, boolean replace) {
         int64[] sh = heap int64[1];
         sh[0] = k;
-        Tensor<int64> t = Tensor.zeros<int64>(sh);
+        Tensor<int64> t #= Tensor.zeros<int64>(sh);
         if (replace) {
             int64 i = 0;
             while (i < k) {
@@ -218,7 +218,7 @@ public final class Generator {
                 i = i + 1;
             }
         } else {
-            Tensor<int64> perm = this.permutation(nPop);
+            Tensor<int64> perm #= this.permutation(nPop);
             int64 i = 0;
             while (i < k) {
                 int64 v = perm.get1(i);

@@ -52,12 +52,12 @@ public final class Ewise {
      * 1=sub, 2=mul, 3=div.
      */
     public static #Tensor<float32> arithF32Op(Tensor<float32> a, Tensor<float32> b, int32 op) {
-        Tensor<float32> out = Tensor.zerosLike<float32>(a);
+        Tensor<float32> out #= Tensor.zerosLike<float32>(a);
         int64 n = a.size();
         if (Placement.pair("arith", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             arithF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
             s.sync();
@@ -114,12 +114,12 @@ public final class Ewise {
      * at f16, through the {@link #arithF16} kernel. Same placement routing and op codes.
      */
     public static #Tensor<float16> arithF16Op(Tensor<float16> a, Tensor<float16> b, int32 op) {
-        Tensor<float16> out = Tensor.zerosLike<float16>(a);
+        Tensor<float16> out #= Tensor.zerosLike<float16>(a);
         int64 n = a.size();
         if (Placement.pair("arithF16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             arithF16.launch(s, grid: [(un + 63) / 64], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
             s.sync();
@@ -141,12 +141,12 @@ public final class Ewise {
 
     /** {@link #arithF16Op} at **bfloat16**, through the {@link #arithBf16} kernel. */
     public static #Tensor<bfloat16> arithBf16Op(Tensor<bfloat16> a, Tensor<bfloat16> b, int32 op) {
-        Tensor<bfloat16> out = Tensor.zerosLike<bfloat16>(a);
+        Tensor<bfloat16> out #= Tensor.zerosLike<bfloat16>(a);
         int64 n = a.size();
         if (Placement.pair("arithBf16", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             arithBf16.launch(s, grid: [(un + 63) / 64], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un, op);
             s.sync();
@@ -190,10 +190,10 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
-            Tensor<float32> acc = Tensor.zeros<float32>(os);   // accumulator out[0] = 0
+            Tensor<float32> acc #= Tensor.zeros<float32>(os);   // accumulator out[0] = 0
             acc.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             reduceSumF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -240,10 +240,10 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
-            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            Tensor<float32> acc #= Tensor.zeros<float32>(os);
             acc.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             reduceSumF16.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -265,10 +265,10 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
-            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            Tensor<float32> acc #= Tensor.zeros<float32>(os);
             acc.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             reduceSumBf16.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -309,11 +309,11 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
-            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            Tensor<float32> acc #= Tensor.zeros<float32>(os);
             acc.set1(0, 3.4e38f);                      // +FLT_MAX sentinel
             acc.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             reduceMinF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -336,11 +336,11 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
-            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            Tensor<float32> acc #= Tensor.zeros<float32>(os);
             acc.set1(0, -3.4e38f);                     // -FLT_MAX sentinel
             acc.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             reduceMaxF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -378,11 +378,11 @@ public final class Ewise {
         int64 m = idx.size();
         int64[] os = heap int64[1];
         os[0] = m;
-        Tensor<float32> out = Tensor.zeros<float32>(os);
+        Tensor<float32> out #= Tensor.zeros<float32>(os);
         if (Placement.pair("take", "t", t.isOnGpu(), "idx", idx.isOnGpu())) {
             out.gpu();
             uint32 um = (uint32) m;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             gatherF32.launch(s, grid: [(um + 63) / 64], block: [64])
                 (out.deviceBuffer(), t.deviceBuffer(), idx.deviceBuffer(), um);
             s.sync();
@@ -418,11 +418,11 @@ public final class Ewise {
         int64 m = values.size();
         int64[] os = heap int64[1];
         os[0] = outLen;
-        Tensor<float32> out = Tensor.zeros<float32>(os);
+        Tensor<float32> out #= Tensor.zeros<float32>(os);
         if (Placement.pair("scatter", "values", values.isOnGpu(), "idx", idx.isOnGpu())) {
             out.gpu();                                 // uploads the zero-init buffer
             uint32 um = (uint32) m;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             scatterF32.launch(s, grid: [(um + 63) / 64], block: [64])
                 (out.deviceBuffer(), values.deviceBuffer(), idx.deviceBuffer(), um);
             s.sync();
@@ -457,12 +457,12 @@ public final class Ewise {
     public static #Tensor<int32> bincountI32Op(Tensor<int64> t, int64 outLen) {
         int64[] os = heap int64[1];
         os[0] = outLen;
-        Tensor<int32> counts = Tensor.zeros<int32>(os);
+        Tensor<int32> counts #= Tensor.zeros<int32>(os);
         int64 n = t.size();
         if (Placement.single(t.isOnGpu())) {
             counts.gpu();                              // uploads the zero-init histogram
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             bincountI32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (counts.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();
@@ -566,7 +566,7 @@ public final class Ewise {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        Tensor<float32> out #= Tensor.zeros<float32>(shp);
         if (Placement.pair("matmulF32", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             Ewise.matmulF32Into(out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), m, n, k);
@@ -607,7 +607,7 @@ public final class Ewise {
      */
     public static void matmulF32Into(KernelBuffer<float32> c, KernelBuffer<float32> a,
                                      KernelBuffer<float32> b, int64 m, int64 n, int64 k) {
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             int64 mp = ((m + 15) / 16) * 16;
             int64 np = ((n + 15) / 16) * 16;
             int64 kp = ((k + 15) / 16) * 16;
@@ -627,17 +627,17 @@ public final class Ewise {
                 int64[] ashp = heap int64[2];
                 ashp[0] = mp;
                 ashp[1] = kp;
-                Tensor<float32> ap = Tensor.zeros<float32>(ashp);
+                Tensor<float32> ap #= Tensor.zeros<float32>(ashp);
                 ap.gpu();
                 int64[] bshp = heap int64[2];
                 bshp[0] = kp;
                 bshp[1] = np;
-                Tensor<float32> bp = Tensor.zeros<float32>(bshp);
+                Tensor<float32> bp #= Tensor.zeros<float32>(bshp);
                 bp.gpu();
                 int64[] cshp = heap int64[2];
                 cshp[0] = mp;
                 cshp[1] = np;
-                Tensor<float32> cp = Tensor.zeros<float32>(cshp);
+                Tensor<float32> cp #= Tensor.zeros<float32>(cshp);
                 cp.gpu();
                 uint32 ump = (uint32) mp;
                 uint32 unp = (uint32) np;
@@ -704,13 +704,13 @@ public final class Ewise {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(shp);
+        Tensor<float64> out #= Tensor.zeros<float64>(shp);
         if (Placement.pair("matmulF64", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 um = (uint32) m;
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             matmulF64.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
             s.sync();
@@ -829,7 +829,7 @@ public final class Ewise {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        Tensor<float32> out #= Tensor.zeros<float32>(shp);
         boolean aligned = (m % 16 == 0) && (n % 16 == 0) && (k % 16 == 0);
         boolean onDevice = Placement.pair("matmulF16", "a", a.isOnGpu(), "b", b.isOnGpu());
         if (onDevice && aligned) {
@@ -837,7 +837,7 @@ public final class Ewise {
             uint32 um = (uint32) m;
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             matmulF16.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
             s.sync();
@@ -880,7 +880,7 @@ public final class Ewise {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        Tensor<bfloat16> out = Tensor.zeros<bfloat16>(shp);
+        Tensor<bfloat16> out #= Tensor.zeros<bfloat16>(shp);
         boolean aligned = (m % 16 == 0) && (n % 16 == 0) && (k % 16 == 0);
         boolean onDevice = Placement.pair("matmulBf16", "a", a.isOnGpu(), "b", b.isOnGpu());
         if (onDevice && aligned) {
@@ -888,7 +888,7 @@ public final class Ewise {
             uint32 um = (uint32) m;
             uint32 un = (uint32) n;
             uint32 uk = (uint32) k;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             matmulBf16.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
             s.sync();
@@ -958,7 +958,7 @@ public final class Ewise {
             t.cpu();                                   // stage input to host to seed the copy
             int64[] shp = heap int64[1];
             shp[0] = n;
-            Tensor<float32> out = Tensor.zeros<float32>(shp);
+            Tensor<float32> out #= Tensor.zeros<float32>(shp);
             int64 c = 0;
             while (c < n) {
                 out.flatSet(c, t.flatGet(c));
@@ -967,7 +967,7 @@ public final class Ewise {
             t.gpu();                                   // restore caller's placement invariant
             out.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             uint32 k = 2;
             while (k <= un) {
                 uint32 j = k / 2;
@@ -1010,16 +1010,16 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             t.cpu();                                   // stage input to seed buffer A
             int64[] sa = heap int64[1]; sa[0] = n;
-            Tensor<float32> a = Tensor.zeros<float32>(sa);
+            Tensor<float32> a #= Tensor.zeros<float32>(sa);
             int64 c = 0;
             while (c < n) { a.flatSet(c, t.flatGet(c)); c = c + 1; }
             t.gpu();
             a.gpu();
             int64[] sb = heap int64[1]; sb[0] = n;
-            Tensor<float32> b = Tensor.zeros<float32>(sb);
+            Tensor<float32> b #= Tensor.zeros<float32>(sb);
             b.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             boolean srcIsA = true;                     // `a` holds the latest result
             uint32 offset = 1;
             while (offset < un) {
@@ -1037,7 +1037,7 @@ public final class Ewise {
             if (srcIsA) { return #a; } else { return #b; }
         }
         int64[] os = heap int64[1]; os[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(os);
+        Tensor<float32> out #= Tensor.zeros<float32>(os);
         float32 acc = 0.0f;
         int64 i = 0;
         while (i < n) {
@@ -1071,12 +1071,12 @@ public final class Ewise {
         int64 nb = b.size();
         int64[] os = heap int64[1];
         os[0] = na + nb;
-        Tensor<float32> out = Tensor.zeros<float32>(os);
+        Tensor<float32> out #= Tensor.zeros<float32>(os);
         if (Placement.pair("concat", "a", a.isOnGpu(), "b", b.isOnGpu())) {
             out.gpu();
             uint32 una = (uint32) na;
             uint32 unb = (uint32) nb;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             copyRangeF32.launch(s, grid: [(una + 63) / 64], block: [64])
                 (out.deviceBuffer(), a.deviceBuffer(), una, 0, 0);
             copyRangeF32.launch(s, grid: [(unb + 63) / 64], block: [64])
@@ -1100,12 +1100,12 @@ public final class Ewise {
     public static #Tensor<float32> sliceF32Op(Tensor<float32> t, int64 start, int64 len) {
         int64[] os = heap int64[1];
         os[0] = len;
-        Tensor<float32> out = Tensor.zeros<float32>(os);
+        Tensor<float32> out #= Tensor.zeros<float32>(os);
         if (Placement.single(t.isOnGpu())) {
             out.gpu();
             uint32 ul = (uint32) len;
             uint32 us = (uint32) start;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             copyRangeF32.launch(s, grid: [(ul + 63) / 64], block: [64])
                 (out.deviceBuffer(), t.deviceBuffer(), ul, us, 0);
             s.sync();
@@ -1135,10 +1135,10 @@ public final class Ewise {
         if (Placement.single(t.isOnGpu())) {
             int64[] os = heap int64[1];
             os[0] = 1;
-            Tensor<float32> acc = Tensor.zeros<float32>(os);
+            Tensor<float32> acc #= Tensor.zeros<float32>(os);
             acc.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             reduceSumSqF32.launch(s, grid: [(un + 63) / 64], block: [64])
                 (acc.deviceBuffer(), t.deviceBuffer(), un);
             s.sync();

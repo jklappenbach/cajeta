@@ -56,7 +56,7 @@ TEST(XpuMeshSimplifierTests, accumulateSumsIncidentFacePlanes) {
         "        idx[0] = 0; idx[1] = 1; idx[2] = 2;\n"   // z = 0
         "        idx[3] = 0; idx[4] = 2; idx[5] = 3;\n"   // x = 0
         "        idx[6] = 0; idx[7] = 3; idx[8] = 1;\n"   // y = 0
-        "        float32[] q = MeshSimplifier.accumulateQuadrics(pos, idx, 4);\n"
+        "        float32[] q #= MeshSimplifier.accumulateQuadrics(pos, idx, 4);\n"
         "        Matrix<float32,4,4> q0 = MeshSimplifier.vertexQuadric(q, 0);\n"
         "        Vector<float32,3> probe = stack Vector<float32,3>(1.0f, 2.0f, 2.0f);\n"
         "        float32 e = Qem.error(q0, probe);\n"
@@ -84,7 +84,7 @@ TEST(XpuMeshSimplifierTests, accumulationCountsEachIncidentFace) {
         "        idx[3] = 0; idx[4] = 2; idx[5] = 3;\n"
         "        idx[6] = 0; idx[7] = 3; idx[8] = 4;\n"
         "        idx[9] = 0; idx[10] = 4; idx[11] = 1;\n"
-        "        float32[] q = MeshSimplifier.accumulateQuadrics(pos, idx, 5);\n"
+        "        float32[] q #= MeshSimplifier.accumulateQuadrics(pos, idx, 5);\n"
         "        Matrix<float32,4,4> q0 = MeshSimplifier.vertexQuadric(q, 0);\n"
         "        Matrix<float32,4,4> q1 = MeshSimplifier.vertexQuadric(q, 1);\n"
         "        Vector<float32,3> off = stack Vector<float32,3>(5.0f, 7.0f, 1.0f);\n"
@@ -114,7 +114,7 @@ TEST(XpuMeshSimplifierTests, flatRegionCollapsesAtZeroCost) {
         "        idx[3] = 0; idx[4] = 2; idx[5] = 3;\n"
         "        idx[6] = 0; idx[7] = 3; idx[8] = 4;\n"
         "        idx[9] = 0; idx[10] = 4; idx[11] = 1;\n"
-        "        float32[] q = MeshSimplifier.accumulateQuadrics(pos, idx, 5);\n"
+        "        float32[] q #= MeshSimplifier.accumulateQuadrics(pos, idx, 5);\n"
         "        Matrix<float32,4,4> q0 = MeshSimplifier.vertexQuadric(q, 0);\n"
         "        Matrix<float32,4,4> q1 = MeshSimplifier.vertexQuadric(q, 1);\n"
         "        Vector<float32,3> mid = stack Vector<float32,3>(0.5f, 0.0f, 0.0f);\n"
@@ -138,7 +138,7 @@ TEST(XpuMeshSimplifierTests, edgeCollapseCombinesEndpointQuadrics) {
         "        idx[0] = 0; idx[1] = 1; idx[2] = 2;\n"
         "        idx[3] = 0; idx[4] = 2; idx[5] = 3;\n"
         "        idx[6] = 0; idx[7] = 3; idx[8] = 1;\n"
-        "        float32[] q = MeshSimplifier.accumulateQuadrics(pos, idx, 4);\n"
+        "        float32[] q #= MeshSimplifier.accumulateQuadrics(pos, idx, 4);\n"
         "        Matrix<float32,4,4> q0 = MeshSimplifier.vertexQuadric(q, 0);\n"
         "        Matrix<float32,4,4> q1 = MeshSimplifier.vertexQuadric(q, 1);\n"
         "        Matrix<float32,4,4> sum = q0 + q1;\n"
@@ -186,7 +186,7 @@ static const char* GRID_3X3 =
 // midpoint), and no degenerate triangle survives in the output.
 TEST(XpuMeshSimplifierTests, simplifyReducesFlatSheetPreservingPlane) {
     EXPECT_EQ(runI32(IMP, std::string(GRID_3X3) +
-        "        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 2);\n"
+        "        int32[] out #= MeshSimplifier.simplify(pos, idx, 9, 2);\n"
         "        int32 rc = (int32) (out.count() / 3);\n"
         "        if (rc < 1 || rc > 2) { return -1; }\n"          // reduced 8 -> <= target
         "        int32 i = 0;\n"
@@ -210,7 +210,7 @@ TEST(XpuMeshSimplifierTests, simplifyReducesFlatSheetPreservingPlane) {
 // or above the input triangle count leaves all 8 triangles intact.
 TEST(XpuMeshSimplifierTests, simplifyIsNoOpWhenTargetMet) {
     EXPECT_EQ(runI32(IMP, std::string(GRID_3X3) +
-        "        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 100);\n"
+        "        int32[] out #= MeshSimplifier.simplify(pos, idx, 9, 100);\n"
         "        int32 rc = (int32) (out.count() / 3);\n"
         "        if (rc != 8) { return -1; }\n"
         "        return 0;\n"), 0);
@@ -221,7 +221,7 @@ TEST(XpuMeshSimplifierTests, simplifyIsNoOpWhenTargetMet) {
 // no infinite loop / crash on the degenerate extreme).
 TEST(XpuMeshSimplifierTests, simplifyFullyDecimatesAtTargetZero) {
     EXPECT_EQ(runI32(IMP, std::string(GRID_3X3) +
-        "        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 0);\n"
+        "        int32[] out #= MeshSimplifier.simplify(pos, idx, 9, 0);\n"
         "        int32 rc = (int32) (out.count() / 3);\n"
         "        if (rc != 0) { return -1; }\n"
         "        return 0;\n"), 0);

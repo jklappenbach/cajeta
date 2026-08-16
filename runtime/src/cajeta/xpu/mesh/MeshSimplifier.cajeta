@@ -168,7 +168,7 @@ public class MeshSimplifier {
                                     int32[] indices,
                                     int32 vertexCount,
                                     int32 targetTriangleCount) {
-        float32[] quadrics = MeshSimplifier.accumulateQuadrics(positions, indices, vertexCount);
+        float32[] quadrics #= MeshSimplifier.accumulateQuadrics(positions, indices, vertexCount);
         int32 triCount = (int32) (indices.count() / 3);
         int32[] idx = heap int32[triCount * 3];
         int32 i = 0;

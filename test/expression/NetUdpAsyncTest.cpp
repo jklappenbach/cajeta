@@ -48,13 +48,13 @@ std::string makeSource(const std::string& body) {
 
 TEST(NetUdpAsyncTest, recvFromAsyncCollectsPendingDatagram) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "UdpSocket rx = UdpSocket.bind(bindAddr);\n"
-        "SocketAddress rxAddr = rx.localAddress();\n"
-        "IpAddress lb = IpAddress.loopbackV4();\n"
-        "SocketAddress txBind = SocketAddress.of(#lb, 0);\n"
-        "UdpSocket tx = UdpSocket.bind(txBind);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "UdpSocket rx #= UdpSocket.bind(bindAddr);\n"
+        "SocketAddress rxAddr #= rx.localAddress();\n"
+        "IpAddress lb #= IpAddress.loopbackV4();\n"
+        "SocketAddress txBind #= SocketAddress.of(#lb, 0);\n"
+        "UdpSocket tx #= UdpSocket.bind(txBind);\n"
         "int8[] msg = heap int8[3];\n"
         "msg[0] = (int8) 103;\n"   // 'g'
         "msg[1] = (int8) 115;\n"   // 's'
@@ -62,7 +62,7 @@ TEST(NetUdpAsyncTest, recvFromAsyncCollectsPendingDatagram) {
         "int32 sent = tx.sendTo(msg, 0, 3, rxAddr);\n"
         "if (sent != 3) { return 0; }\n"
         "int8[] buf = heap int8[64];\n"
-        "RecvResult r = rx.recvFromAsync(buf, 0, 64);\n"
+        "RecvResult r #= rx.recvFromAsync(buf, 0, 64);\n"
         "if (r.getCount() != 3) { return 0; }\n"
         "if (buf[0] != 103) { return 0; }\n"
         "if (buf[2] != 112) { return 0; }\n"
@@ -76,13 +76,13 @@ TEST(NetUdpAsyncTest, recvFromAsyncCollectsPendingDatagram) {
 // first receive).
 TEST(NetUdpAsyncTest, recvFromAsyncReArms) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "UdpSocket rx = UdpSocket.bind(bindAddr);\n"
-        "SocketAddress rxAddr = rx.localAddress();\n"
-        "IpAddress lb = IpAddress.loopbackV4();\n"
-        "SocketAddress txBind = SocketAddress.of(#lb, 0);\n"
-        "UdpSocket tx = UdpSocket.bind(txBind);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "UdpSocket rx #= UdpSocket.bind(bindAddr);\n"
+        "SocketAddress rxAddr #= rx.localAddress();\n"
+        "IpAddress lb #= IpAddress.loopbackV4();\n"
+        "SocketAddress txBind #= SocketAddress.of(#lb, 0);\n"
+        "UdpSocket tx #= UdpSocket.bind(txBind);\n"
         "int8[] m1 = heap int8[1];\n"
         "m1[0] = (int8) 1;\n"
         "int8[] m2 = heap int8[1];\n"
@@ -90,10 +90,10 @@ TEST(NetUdpAsyncTest, recvFromAsyncReArms) {
         "tx.sendTo(m1, 0, 1, rxAddr);\n"
         "tx.sendTo(m2, 0, 1, rxAddr);\n"
         "int8[] buf = heap int8[16];\n"
-        "RecvResult r1 = rx.recvFromAsync(buf, 0, 16);\n"
+        "RecvResult r1 #= rx.recvFromAsync(buf, 0, 16);\n"
         "if (r1.getCount() != 1) { return 0; }\n"
         "if (buf[0] != 1) { return 0; }\n"
-        "RecvResult r2 = rx.recvFromAsync(buf, 0, 16);\n"
+        "RecvResult r2 #= rx.recvFromAsync(buf, 0, 16);\n"
         "if (r2.getCount() != 1) { return 0; }\n"
         "if (buf[0] != 2) { return 0; }\n"
         "tx.close();\n"

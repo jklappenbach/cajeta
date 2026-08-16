@@ -52,7 +52,7 @@ std::string makeSource(const std::string& body) {
 
 TEST(UriQueryParamsTests, parseTwoPairs) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"x=1&y=2\");\n"
+        "QueryParams q #= QueryParams.parse(\"x=1&y=2\");\n"
         "if (q.size() != 2) { return 0; }\n"
         "if (!q.keyAt(0).equals(\"x\")) { return 0; }\n"
         "if (!q.valueAt(0).equals(\"1\")) { return 0; }\n"
@@ -65,10 +65,10 @@ TEST(UriQueryParamsTests, parseTwoPairs) {
 
 TEST(UriQueryParamsTests, duplicateKeysPreserveOrder) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"tag=a&tag=b&tag=c\");\n"
+        "QueryParams q #= QueryParams.parse(\"tag=a&tag=b&tag=c\");\n"
         "if (q.size() != 3) { return 0; }\n"
         "if (q.countFor(\"tag\") != 3) { return 0; }\n"
-        "String[] all = q.getAll(\"tag\");\n"
+        "String[] all #= q.getAll(\"tag\");\n"
         "if (all.count() != 3) { return 0; }\n"
         "if (!all[0].equals(\"a\")) { return 0; }\n"
         "if (!all[1].equals(\"b\")) { return 0; }\n"
@@ -77,21 +77,21 @@ TEST(UriQueryParamsTests, duplicateKeysPreserveOrder) {
 
 TEST(UriQueryParamsTests, getFirstReturnsFirstOccurrence) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"k=first&k=second\");\n"
+        "QueryParams q #= QueryParams.parse(\"k=first&k=second\");\n"
         "return q.getFirst(\"k\").equals(\"first\") ? 1 : 0;")), 1);
 }
 
 TEST(UriQueryParamsTests, getFirstAbsentIsNull) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"a=1\");\n"
-        "String v = q.getFirst(\"nope\");\n"
+        "QueryParams q #= QueryParams.parse(\"a=1\");\n"
+        "String v #= q.getFirst(\"nope\");\n"
         "return (v == null) ? 1 : 0;")), 1);
 }
 
 TEST(UriQueryParamsTests, getAllAbsentIsEmptyArray) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"a=1\");\n"
-        "String[] all = q.getAll(\"missing\");\n"
+        "QueryParams q #= QueryParams.parse(\"a=1\");\n"
+        "String[] all #= q.getAll(\"missing\");\n"
         "return (all.count() == 0) ? 1 : 0;")), 1);
 }
 
@@ -99,7 +99,7 @@ TEST(UriQueryParamsTests, getAllAbsentIsEmptyArray) {
 
 TEST(UriQueryParamsTests, bareFlagHasEmptyValue) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"flag&x=1\");\n"
+        "QueryParams q #= QueryParams.parse(\"flag&x=1\");\n"
         "if (q.size() != 2) { return 0; }\n"
         "if (!q.keyAt(0).equals(\"flag\")) { return 0; }\n"
         "if (!q.valueAt(0).equals(\"\")) { return 0; }\n"
@@ -110,7 +110,7 @@ TEST(UriQueryParamsTests, bareFlagHasEmptyValue) {
 
 TEST(UriQueryParamsTests, valueMayContainEquals) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"eq=a=b=c\");\n"
+        "QueryParams q #= QueryParams.parse(\"eq=a=b=c\");\n"
         "if (!q.keyAt(0).equals(\"eq\")) { return 0; }\n"
         "return q.valueAt(0).equals(\"a=b=c\") ? 1 : 0;")), 1);
 }
@@ -119,7 +119,7 @@ TEST(UriQueryParamsTests, valueMayContainEquals) {
 
 TEST(UriQueryParamsTests, emptySegmentsSkipped) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"&a=1&&b=2&\");\n"
+        "QueryParams q #= QueryParams.parse(\"&a=1&&b=2&\");\n"
         "if (q.size() != 2) { return 0; }\n"
         "if (!q.keyAt(0).equals(\"a\")) { return 0; }\n"
         "return q.keyAt(1).equals(\"b\") ? 1 : 0;")), 1);
@@ -127,13 +127,13 @@ TEST(UriQueryParamsTests, emptySegmentsSkipped) {
 
 TEST(UriQueryParamsTests, nullQueryIsEmptyMap) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(null);\n"
+        "QueryParams q #= QueryParams.parse(null);\n"
         "return (q.size() == 0) ? 1 : 0;")), 1);
 }
 
 TEST(UriQueryParamsTests, emptyQueryIsEmptyMap) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"\");\n"
+        "QueryParams q #= QueryParams.parse(\"\");\n"
         "return (q.size() == 0) ? 1 : 0;")), 1);
 }
 
@@ -143,15 +143,15 @@ TEST(UriQueryParamsTests, parseDecodesPercentEscapes) {
     // %26 = '&', %3D = '=' — these are encoded in a value so they don't
     // mis-split, and must decode back to the literal chars.
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"k=a%26b%3Dc\");\n"
+        "QueryParams q #= QueryParams.parse(\"k=a%26b%3Dc\");\n"
         "return q.valueAt(0).equals(\"a&b=c\") ? 1 : 0;")), 1);
 }
 
 TEST(UriQueryParamsTests, parseDecodesUtf8) {
     // %C3%A9 = UTF-8 'é' (0xC3 0xA9).
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"name=%C3%A9\");\n"
-        "String v = q.valueAt(0);\n"
+        "QueryParams q #= QueryParams.parse(\"name=%C3%A9\");\n"
+        "String v #= q.valueAt(0);\n"
         "if (v.byteLength() != 2) { return 0; }\n"
         "int32 b0 = ((int32) v.byteAt(0)) & 0xff;\n"
         "int32 b1 = ((int32) v.byteAt(1)) & 0xff;\n"
@@ -162,14 +162,14 @@ TEST(UriQueryParamsTests, parseDecodesUtf8) {
 
 TEST(UriQueryParamsTests, parsePlusDecodesToSpaceInFormMode) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"q=a+b+c\");\n"
+        "QueryParams q #= QueryParams.parse(\"q=a+b+c\");\n"
         "return q.valueAt(0).equals(\"a b c\") ? 1 : 0;")), 1);
 }
 
 TEST(UriQueryParamsTests, parsePercent2BDecodesToLiteralPlusInFormMode) {
     // %2B is a literal '+', distinct from the space-'+'.
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"q=a%2Bb\");\n"
+        "QueryParams q #= QueryParams.parse(\"q=a%2Bb\");\n"
         "return q.valueAt(0).equals(\"a+b\") ? 1 : 0;")), 1);
 }
 
@@ -177,7 +177,7 @@ TEST(UriQueryParamsTests, parsePercent2BDecodesToLiteralPlusInFormMode) {
 
 TEST(UriQueryParamsTests, parseStrictKeepsPlusLiteral) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parseStrict(\"q=a+b\");\n"
+        "QueryParams q #= QueryParams.parseStrict(\"q=a+b\");\n"
         "return q.valueAt(0).equals(\"a+b\") ? 1 : 0;")), 1);
 }
 
@@ -186,7 +186,7 @@ TEST(UriQueryParamsTests, parseStrictKeepsPlusLiteral) {
 TEST(UriQueryParamsTests, parseRejectsTruncatedEscape) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    QueryParams q = QueryParams.parse(\"k=a%2\");\n"
+        "    QueryParams q #= QueryParams.parse(\"k=a%2\");\n"
         "    return 0;\n"
         "} catch (MalformedUriException e) {\n"
         "    return 1;\n"
@@ -197,13 +197,13 @@ TEST(UriQueryParamsTests, parseRejectsTruncatedEscape) {
 
 TEST(UriQueryParamsTests, toStringJoinsPairs) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"x=1&y=2\");\n"
+        "QueryParams q #= QueryParams.parse(\"x=1&y=2\");\n"
         "return q.toString().equals(\"x=1&y=2\") ? 1 : 0;")), 1);
 }
 
 TEST(UriQueryParamsTests, toStringEmptyMapIsEmptyString) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"\");\n"
+        "QueryParams q #= QueryParams.parse(\"\");\n"
         "return q.toString().equals(\"\") ? 1 : 0;")), 1);
 }
 
@@ -234,7 +234,7 @@ TEST(UriQueryParamsTests, toStringFormModeLiteralPlusBecomesPercent2B) {
 TEST(UriQueryParamsTests, toStringStrictModeSpaceBecomesPercent20) {
     // parseStrict keeps strict mode; a space toString-encodes to %20.
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parseStrict(\"k=v\");\n"
+        "QueryParams q #= QueryParams.parseStrict(\"k=v\");\n"
         "q.add(\"q\", \"a b\");\n"
         "return q.toString().equals(\"k=v&q=a%20b\") ? 1 : 0;")), 1);
 }
@@ -244,7 +244,7 @@ TEST(UriQueryParamsTests, toStringStrictModeSpaceBecomesPercent20) {
 TEST(UriQueryParamsTests, roundTripFormMode) {
     // Spaces (as '+'), duplicate keys, encoded separators all survive.
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"a=1&a=2&q=x+y&v=p%26q\");\n"
+        "QueryParams q #= QueryParams.parse(\"a=1&a=2&q=x+y&v=p%26q\");\n"
         "return q.toString().equals(\"a=1&a=2&q=x+y&v=p%26q\") ? 1 : 0;")), 1);
 }
 
@@ -252,7 +252,7 @@ TEST(UriQueryParamsTests, roundTripFormMode) {
 
 TEST(UriQueryParamsTests, setReplacesAllOccurrences) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"k=a&k=b&other=z\");\n"
+        "QueryParams q #= QueryParams.parse(\"k=a&k=b&other=z\");\n"
         "q.set(\"k\", \"only\");\n"
         "if (q.countFor(\"k\") != 1) { return 0; }\n"
         "if (!q.getFirst(\"k\").equals(\"only\")) { return 0; }\n"
@@ -261,7 +261,7 @@ TEST(UriQueryParamsTests, setReplacesAllOccurrences) {
 
 TEST(UriQueryParamsTests, removeDropsEveryOccurrenceAndKeepsOrder) {
     EXPECT_EQ(runI32(makeSource(
-        "QueryParams q = QueryParams.parse(\"a=1&b=2&a=3&c=4\");\n"
+        "QueryParams q #= QueryParams.parse(\"a=1&b=2&a=3&c=4\");\n"
         "q.remove(\"a\");\n"
         "if (q.size() != 2) { return 0; }\n"
         "if (!q.keyAt(0).equals(\"b\")) { return 0; }\n"
@@ -272,8 +272,8 @@ TEST(UriQueryParamsTests, removeDropsEveryOccurrenceAndKeepsOrder) {
 
 TEST(UriQueryParamsTests, uriQueryParamsParsesRawQuery) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://h.test/a/b?x=1&y=2&x=3\");\n"
-        "QueryParams q = u.queryParams();\n"
+        "Uri u #= Uri.parse(\"https://h.test/a/b?x=1&y=2&x=3\");\n"
+        "QueryParams q #= u.queryParams();\n"
         "if (q.size() != 3) { return 0; }\n"
         "if (q.countFor(\"x\") != 2) { return 0; }\n"
         "if (!q.getFirst(\"x\").equals(\"1\")) { return 0; }\n"
@@ -282,8 +282,8 @@ TEST(UriQueryParamsTests, uriQueryParamsParsesRawQuery) {
 
 TEST(UriQueryParamsTests, uriNoQueryYieldsEmptyParams) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://h.test/a/b\");\n"
-        "QueryParams q = u.queryParams();\n"
+        "Uri u #= Uri.parse(\"https://h.test/a/b\");\n"
+        "QueryParams q #= u.queryParams();\n"
         "return (q.size() == 0) ? 1 : 0;")), 1);
 }
 

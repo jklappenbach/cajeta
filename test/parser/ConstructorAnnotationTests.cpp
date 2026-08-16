@@ -263,7 +263,7 @@ TEST(ConstructorAnnotationTests, allArgsStaticNameOf) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pt p = Pt.of(3, 4);\n"
+        "        Pt p #= Pt.of(3, 4);\n"
         "        return p.x * 10 + p.y;\n"
         "    }\n"
         "}\n";
@@ -282,7 +282,7 @@ TEST(ConstructorAnnotationTests, noArgsStaticNameEmpty) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.empty();\n"
+        "        P p #= P.empty();\n"
         "        return p.n;\n"
         "    }\n"
         "}\n";
@@ -302,7 +302,7 @@ TEST(ConstructorAnnotationTests, requiredArgsStaticNameCreate) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.create(99);\n"
+        "        P p #= P.create(99);\n"
         "        return p.id;\n"
         "    }\n"
         "}\n";
@@ -324,7 +324,7 @@ TEST(ConstructorAnnotationTests, staticNameAccessAppliesToFactory) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pt p = Pt.of(42);\n"
+        "        Pt p #= Pt.of(42);\n"
         "        return p.v;\n"
         "    }\n"
         "}\n";

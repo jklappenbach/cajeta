@@ -28,7 +28,7 @@ TEST(NgramIndexTests, recallOnTypoExcludesUnrelated) {
         "        Index<int32> idx = heap Index<int32>();\n"
         "        idx.add(\"apple\", 1);\n"
         "        idx.add(\"zebra\", 2);\n"
-        "        ArrayList<int32> c = idx.candidates(\"aple\");\n"
+        "        ArrayList<int32> c #= idx.candidates(\"aple\");\n"
         "        int32 sum = 0;\n"
         "        int32 i = 0;\n"
         "        while (i < c.count()) { sum = sum + c.get(i); i = i + 1; }\n"
@@ -51,7 +51,7 @@ TEST(NgramIndexTests, dedupValue) {
         "    public static int32 run() {\n"
         "        Index<int32> idx = heap Index<int32>();\n"
         "        idx.add(\"banana\", 7);\n"
-        "        ArrayList<int32> c = idx.candidates(\"banana\");\n"
+        "        ArrayList<int32> c #= idx.candidates(\"banana\");\n"
         "        return c.count();\n"  // 1, despite many shared grams
         "    }\n"
         "}\n";
@@ -70,7 +70,7 @@ TEST(NgramIndexTests, noSharedGramIsEmpty) {
         "    public static int32 run() {\n"
         "        Index<int32> idx = heap Index<int32>();\n"
         "        idx.add(\"apple\", 1);\n"
-        "        ArrayList<int32> c = idx.candidates(\"xyzqqq\");\n"
+        "        ArrayList<int32> c #= idx.candidates(\"xyzqqq\");\n"
         "        return c.count();\n"  // 0
         "    }\n"
         "}\n";
@@ -89,7 +89,7 @@ TEST(NgramIndexTests, shortKeyFindable) {
         "    public static int32 run() {\n"
         "        Index<int32> idx = heap Index<int32>();\n"
         "        idx.add(\"io\", 9);\n"          // len 2 < 3 → single gram "io"
-        "        ArrayList<int32> c = idx.candidates(\"io\");\n"
+        "        ArrayList<int32> c #= idx.candidates(\"io\");\n"
         "        if (c.count() == 1) { return c.get(0); }\n"  // 9
         "        return -1;\n"
         "    }\n"
@@ -109,7 +109,7 @@ TEST(NgramIndexTests, customGramSize) {
         "    public static int32 run() {\n"
         "        Index<int32> idx = heap Index<int32>(2);\n"  // bigrams
         "        idx.add(\"abc\", 5);\n"                        // bigrams: ab, bc
-        "        ArrayList<int32> c = idx.candidates(\"xbc\");\n" // bigrams: xb, bc → shares bc
+        "        ArrayList<int32> c #= idx.candidates(\"xbc\");\n" // bigrams: xb, bc → shares bc
         "        if (c.count() == 1) { return c.get(0); }\n"   // 5
         "        return -1;\n"
         "    }\n"

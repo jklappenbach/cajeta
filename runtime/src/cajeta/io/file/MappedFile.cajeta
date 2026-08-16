@@ -40,7 +40,7 @@ public class MappedFile {
      * matching the `File` helpers' contract.
      */
     public MappedFile(String path) {
-        File f = File.open(path, OpenMode.READ);
+        File f #= File.open(path, OpenMode.READ);
         this.length = f.size();
         if (this.length > 0) {
             this.base = this.mapFd(f.fd, this.length);

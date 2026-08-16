@@ -170,7 +170,7 @@ public final class XXHash3 implements Hasher {
     @Inline
     public static int64 hashString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return XXHash3.oneshot(w, (int64) s.byteLength(), Hash.processSeed());
         }
         return XXHash3.oneshot(s.root(), (int64) s.byteLength(), Hash.processSeed());
@@ -186,7 +186,7 @@ public final class XXHash3 implements Hasher {
     @Inline
     public static int64 hashStringSeeded(String s, int64 seedArg) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return XXHash3.oneshot(w, (int64) s.byteLength(), seedArg);
         }
         return XXHash3.oneshot(s.root(), (int64) s.byteLength(), seedArg);
@@ -336,7 +336,7 @@ public final class XXHash3 implements Hasher {
     /** Feed a `String`'s UTF-8 bytes into the running hash. */
     public void writeString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             XXHash3.updateNative(this.state, w, (int64) s.byteLength());
             return;
         }
@@ -439,7 +439,7 @@ public final class XXHash3 implements Hasher {
     // (16 stripes + scramble), the trailing stripes, the final stripe, then
     // merge to a 64-bit digest.
     public static int64 hashLong(int8[] data, int64 len, int64 seed) {
-        int8[] secret = XXHash3.buildSecret(seed);
+        int8[] secret #= XXHash3.buildSecret(seed);
         // INIT_ACC built directly as an 8-lane value vector (no heap staging
         // buffer): { PRIME32_3, PRIME64_1..4, PRIME32_2, PRIME64_5, PRIME32_1 }.
         // Vector is a value type — `stack` is syntactic, acc stays in registers.
@@ -505,7 +505,7 @@ public final class XXHash3 implements Hasher {
     // Writes 16 bytes (low64 LE, then high64 LE) into out16 (no Vector-value
     // return — that mis-codegens to zero across a non-inlined call under -O3).
     public static void hashLong128Into(int8[] data, int64 len, int64 seed, int8[] out16) {
-        int8[] secret = XXHash3.buildSecret(seed);
+        int8[] secret #= XXHash3.buildSecret(seed);
         Vector<int64,8> acc = stack Vector<int64,8>(
             0x00000000C2B2AE3DL, 0x9E3779B185EBCA87L, 0xC2B2AE3D27D4EB4FL,
             0x165667B19E3779F9L, 0x85EBCA77C2B2AE63L, 0x0000000085EBCA77L,

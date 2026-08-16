@@ -50,7 +50,7 @@ public final class Bvh {
      * strategies, and the `@Accel` override are later slices.
      */
     public static #Bvh build(float32[] boxes, int32 count) {
-        float32[] blk = Lbvh.build(boxes, count);
+        float32[] blk #= Lbvh.build(boxes, count);
         Bvh b = heap Bvh(#blk, Strategy.Exact, 2, count);
         return #b;
     }

@@ -397,7 +397,27 @@ than as corruption.
   Binding it with plain `=` is an error naming the transfer. This is
   what makes an acquisition visible at the call site, which is the whole
   point of the return-side redesign: the reader sees where title moves
-  without opening the callee.
+  without opening the callee. Concretely, the two lines this separates:
+
+  ```
+  int8[] w = s.toBytes();     // `#int8[]` — w is yours to free
+  int8[] w = s.trimView();    // plain     — the String still owns it
+  ```
+
+  Identical to a reader, opposite facts about who frees `w`.
+
+  **Enforced first at the DECLARATION position** (`T x = f()`), which is
+  the population §5.5's harvest measured — ~148 sites, 38 of them
+  `String.toBytes`. The ASSIGNMENT position (`x = f()`, `this.f = f()`)
+  is equally covered by the rule as stated and is *counted but not yet
+  rejected*, pending its own measurement. That split is deliberate and
+  is §5.5's rule applied to itself: a requirement shipped against an
+  unmeasured population is what left Unit 3's acceptance open.
+
+  Note what this rule is NOT claimed to be. Whether a plain `=` bind
+  also leaks is a separate, measurable question, answered by probe
+  rather than by reading the codegen — the inference route is how §4.8
+  came to be filed on a leak that did not exist.
 - **4.7** *(from §2.8)* **A `^T` body is restricted at compile time** to
   `this`, interior reads, and other `^T` results — never an owned local,
   a fresh allocation, a `#T` result, or a parameter. In exchange the

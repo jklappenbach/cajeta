@@ -27,7 +27,7 @@ public class ColStr {
 
     /** Name this reference as a selection item (`select` output rename). */
     public #Sel alias(String name) {
-        Sel s = Sel.named(name);
+        Sel s #= Sel.named(name);
         s.bindStr(this);
         return #s;
     }

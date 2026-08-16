@@ -129,7 +129,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<T> piece = source.trySplit();
+            Stream<T> piece #= source.trySplit();
             if (piece == null) {
                 break;
             }
@@ -525,7 +525,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -644,7 +644,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -749,7 +749,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -827,7 +827,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -896,7 +896,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -964,7 +964,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -1045,7 +1045,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }
@@ -1162,7 +1162,7 @@ public class ParallelDriver {
         int32 shareCount = 0;
         int32 si = 0;
         while (si < nSplits - 1) {
-            Stream<?> piece = cur.trySplitRoot();
+            Stream<?> piece #= cur.trySplitRoot();
             if (piece == null) {
                 break;
             }

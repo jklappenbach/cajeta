@@ -134,7 +134,7 @@ public class Sobol {
      * base-2 radical inverse (1 -> 0.5, 2 -> 0.25, 3 -> 0.75, 4 -> 0.125).
      */
     public static float32 dim0(int32 index) {
-        int64[] v = Sobol.directionsDim0();
+        int64[] v #= Sobol.directionsDim0();
         return Sobol.sample(index, v);
     }
 
@@ -144,7 +144,7 @@ public class Sobol {
      * forms the 2-D (0,2)-sequence whose first 4 points hit all four quadrants.
      */
     public static float32 dim1(int32 index) {
-        int64[] v = Sobol.directionsDim1();
+        int64[] v #= Sobol.directionsDim1();
         return Sobol.sample(index, v);
     }
 }

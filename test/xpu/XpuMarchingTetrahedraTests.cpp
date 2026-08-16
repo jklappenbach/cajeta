@@ -47,11 +47,11 @@ TEST(XpuMarchingTetrahedraTests, emptyCellsEmitNoTriangles) {
         "        float32[] field = heap float32[8];\n"
         "        int32 i = 0;\n"
         "        while (i < 8) { field[i] = 1.0f; i = i + 1; }\n"   // all outside
-        "        float32[] a = MarchingTetrahedra.polygonize(field, 2, 2, 2, 1.0f, 0.0f);\n"
+        "        float32[] a #= MarchingTetrahedra.polygonize(field, 2, 2, 2, 1.0f, 0.0f);\n"
         "        if (a.count() != 0) { return -1; }\n"
         "        int32 j = 0;\n"
         "        while (j < 8) { field[j] = -1.0f; j = j + 1; }\n"  // all inside
-        "        float32[] b = MarchingTetrahedra.polygonize(field, 2, 2, 2, 1.0f, 0.0f);\n"
+        "        float32[] b #= MarchingTetrahedra.polygonize(field, 2, 2, 2, 1.0f, 0.0f);\n"
         "        if (b.count() != 0) { return -2; }\n"
         "        return 0;\n"), 0);
 }
@@ -65,7 +65,7 @@ TEST(XpuMarchingTetrahedraTests, singleCornerInsideEmitsSixPatches) {
         "        int32 i = 0;\n"
         "        while (i < 8) { field[i] = 1.0f; i = i + 1; }\n"
         "        field[0] = -1.0f;\n"                               // corner 0 inside
-        "        float32[] tris = MarchingTetrahedra.polygonize(field, 2, 2, 2, 1.0f, 0.0f);\n"
+        "        float32[] tris #= MarchingTetrahedra.polygonize(field, 2, 2, 2, 1.0f, 0.0f);\n"
         "        int32 tc = (int32) (tris.count() / 9);\n"
         "        if (tc != 6) { return -1; }\n"
         "        int32 vcount = (int32) (tris.count() / 3);\n"
@@ -113,7 +113,7 @@ TEST(XpuMarchingTetrahedraTests, spherePolygonizesOntoSurface) {
         "            }\n"
         "            k = k + 1;\n"
         "        }\n"
-        "        float32[] tris = MarchingTetrahedra.polygonize(field, N, N, N, h, 0.0f);\n"
+        "        float32[] tris #= MarchingTetrahedra.polygonize(field, N, N, N, h, 0.0f);\n"
         "        int32 tc = (int32) (tris.count() / 9);\n"
         "        if (tc < 1) { return -1; }\n"
         "        int32 vcount = (int32) (tris.count() / 3);\n"

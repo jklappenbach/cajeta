@@ -60,9 +60,9 @@ int32_t runI32(const std::string& body) {
 // of()/value() round-trip across Int32, Int64, Boolean.
 TEST(WrapperTypesTests, roundTrip) {
     EXPECT_EQ(runI32(
-        "Int32 a = Int32.of(42);\n"
-        "Int64 b = Int64.of(9000000000L);\n"     // > 2^32, proves 64-bit storage
-        "Boolean c = Boolean.of(true);\n"
+        "Int32 a #= Int32.of(42);\n"
+        "Int64 b #= Int64.of(9000000000L);\n"     // > 2^32, proves 64-bit storage
+        "Boolean c #= Boolean.of(true);\n"
         "if (a.value() != 42) { return 0; }\n"
         "if (b.value() != 9000000000L) { return 0; }\n"
         "if (c.value()) { return 1; }\n"          // c was boxed true
@@ -83,15 +83,15 @@ TEST(WrapperTypesTests, valueEquality) {
 // Number upcast + virtual dispatch of asInt64()/asFloat64() across wrappers.
 TEST(WrapperTypesTests, numberPolymorphism) {
     EXPECT_EQ(runI32(
-        "Number n = Int32.of(7);\n"
+        "Number n #= Int32.of(7);\n"
         "if (n.asInt64() != 7L) { return 0; }\n"
         "if (n.asFloat64() != 7.0) { return 0; }\n"
-        "Number m = Int64.of(123L);\n"
+        "Number m #= Int64.of(123L);\n"
         "if (m.asInt64() != 123L) { return 0; }\n"
-        "Number p = Float64.of(2.5);\n"
+        "Number p #= Float64.of(2.5);\n"
         "if (p.asFloat64() != 2.5) { return 0; }\n"
         "if (p.asInt64() != 2L) { return 0; }\n"         // truncating conversion
-        "Number q = Float32.of(1.5f);\n"
+        "Number q #= Float32.of(1.5f);\n"
         "if (q.asFloat64() != 1.5) { return 0; }\n"
         "return 1;\n"), 1);
 }
@@ -111,7 +111,7 @@ TEST(WrapperTypesTests, floatBitwiseEquality) {
 // so Class.of(box).getInt32(box, 0) reads it (and the box has exactly 1 field).
 TEST(WrapperTypesTests, reflectionIntrospectable) {
     EXPECT_EQ(runI32(
-        "Int32 box = Int32.of(99);\n"
+        "Int32 box #= Int32.of(99);\n"
         "Class<?> c = Class.of(box);\n"
         "if (c.getFieldCount() != 1) { return -1; }\n"
         "return c.getInt32(box, 0);\n"), 99);
@@ -122,21 +122,21 @@ TEST(WrapperTypesTests, reflectionIntrospectable) {
 // cast (the wrapper's primitive type differs in width from a bare literal).
 TEST(WrapperTypesTests, w2RoundTrip) {
     EXPECT_EQ(runI32(
-        "Int8 a = Int8.of((int8) -5);\n"
+        "Int8 a #= Int8.of((int8) -5);\n"
         "if ((int32) a.value() != -5) { return 1; }\n"
-        "Int16 b = Int16.of((int16) -300);\n"
+        "Int16 b #= Int16.of((int16) -300);\n"
         "if ((int32) b.value() != -300) { return 2; }\n"
-        "UInt8 c = UInt8.of((uint8) 200);\n"
+        "UInt8 c #= UInt8.of((uint8) 200);\n"
         "if ((int32) c.value() != 200) { return 3; }\n"
-        "UInt16 d = UInt16.of((uint16) 60000);\n"
+        "UInt16 d #= UInt16.of((uint16) 60000);\n"
         "if ((int32) d.value() != 60000) { return 4; }\n"
-        "UInt32 e = UInt32.of((uint32) 200000);\n"
+        "UInt32 e #= UInt32.of((uint32) 200000);\n"
         "if (e.asInt64() != 200000L) { return 5; }\n"          // via Number override
-        "UInt64 f = UInt64.of((uint64) 9000000000L);\n"
+        "UInt64 f #= UInt64.of((uint64) 9000000000L);\n"
         "if ((int64) f.value() != 9000000000L) { return 6; }\n"
-        "Char g = Char.of('A');\n"
+        "Char g #= Char.of('A');\n"
         "if ((int32) g.value() != 65) { return 7; }\n"
-        "Number n = Int8.of((int8) 7);\n"                      // upcast + virtual dispatch
+        "Number n #= Int8.of((int8) 7);\n"                      // upcast + virtual dispatch
         "if (n.asInt64() != 7L) { return 8; }\n"
         "return 0;\n"), 0);
 }
@@ -145,14 +145,14 @@ TEST(WrapperTypesTests, w2RoundTrip) {
 // (lossless for half/bfloat; rounded for binary128) via a Number upcast.
 TEST(WrapperTypesTests, w3RoundTrip) {
     EXPECT_EQ(runI32(
-        "Float16 a = Float16.of((float16) 1.5f);\n"
+        "Float16 a #= Float16.of((float16) 1.5f);\n"
         "if (a.asFloat64() != 1.5) { return 1; }\n"            // half 1.5 is exact
-        "BFloat16 b = BFloat16.of((bfloat16) 2.5f);\n"
+        "BFloat16 b #= BFloat16.of((bfloat16) 2.5f);\n"
         "if (b.asFloat64() != 2.5) { return 2; }\n"            // bfloat 2.5 is exact
-        "Float128 c = Float128.of((float128) 3.5);\n"
+        "Float128 c #= Float128.of((float128) 3.5);\n"
         "if (c.asFloat64() != 3.5) { return 3; }\n"
         "if (c.asInt64() != 3L) { return 4; }\n"               // truncating
-        "Number n = Float16.of((float16) 4.0f);\n"             // upcast + virtual dispatch
+        "Number n #= Float16.of((float16) 4.0f);\n"             // upcast + virtual dispatch
         "if (n.asFloat64() != 4.0) { return 5; }\n"
         "return 0;\n"), 0);
 }
@@ -178,20 +178,20 @@ TEST(WrapperTypesTests, w3FloatEquality) {
 // no-op and the comparison is exact.
 TEST(WrapperTypesTests, w4RawBitsRoundTrip) {
     EXPECT_EQ(runI32(
-        "Float8E4M3 a = Float8E4M3.of((float8e4m3) 42);\n"
+        "Float8E4M3 a #= Float8E4M3.of((float8e4m3) 42);\n"
         "if ((int32) a.value() != 42) { return 1; }\n"
         "if (a.asInt64() != 42L) { return 2; }\n"
-        "Float8E5M2 b = Float8E5M2.of((float8e5m2) 100);\n"
+        "Float8E5M2 b #= Float8E5M2.of((float8e5m2) 100);\n"
         "if ((int32) b.value() != 100) { return 3; }\n"
-        "Float8E4M3Fnuz c = Float8E4M3Fnuz.of((float8e4m3fnuz) 7);\n"
+        "Float8E4M3Fnuz c #= Float8E4M3Fnuz.of((float8e4m3fnuz) 7);\n"
         "if ((int32) c.value() != 7) { return 4; }\n"
-        "Float8E5M2Fnuz d = Float8E5M2Fnuz.of((float8e5m2fnuz) 9);\n"
+        "Float8E5M2Fnuz d #= Float8E5M2Fnuz.of((float8e5m2fnuz) 9);\n"
         "if ((int32) d.value() != 9) { return 5; }\n"
-        "Float6E2M3 e = Float6E2M3.of((float6e2m3) 20);\n"
+        "Float6E2M3 e #= Float6E2M3.of((float6e2m3) 20);\n"
         "if ((int32) e.value() != 20) { return 6; }\n"
-        "Float6E3M2 f = Float6E3M2.of((float6e3m2) 15);\n"
+        "Float6E3M2 f #= Float6E3M2.of((float6e3m2) 15);\n"
         "if ((int32) f.value() != 15) { return 7; }\n"
-        "Float4E2M1 g = Float4E2M1.of((float4e2m1) 5);\n"
+        "Float4E2M1 g #= Float4E2M1.of((float4e2m1) 5);\n"
         "if ((int32) g.value() != 5) { return 8; }\n"
         "return 0;\n"), 0);
 }

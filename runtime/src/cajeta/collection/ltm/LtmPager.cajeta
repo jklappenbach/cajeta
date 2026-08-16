@@ -119,7 +119,7 @@ public class LtmPager<K, V> {
         // Move the opened File into the field: a plain `this.file = f`
         // leaves `f` owned by this ctor scope, so its drop fires at ctor
         // exit and closes the fd the pager still needs (use-after-free).
-        File f = File.open(path, OpenMode.READ_WRITE);
+        File f #= File.open(path, OpenMode.READ_WRITE);
         this.file #= f;
         int64 sz = this.file.size();
         if (sz == 0) {
@@ -224,7 +224,7 @@ public class LtmPager<K, V> {
         int64 off = pageId * ps;
         this.file.seek(off);
         this.file.read(buf, 0, ps);
-        LtmBPlusTreeNode<K, V> node = this.deserializeNode(pageId, buf);
+        LtmBPlusTreeNode<K, V> node #= this.deserializeNode(pageId, buf);
         this.frameNode[idx] #= node;
         this.framePageId[idx] = pageId;
         this.frameDirty[idx] = false;
@@ -368,7 +368,7 @@ public class LtmPager<K, V> {
     /** Serialize frame `idx`'s node to its page offset and clear the dirty flag. */
     private void writeFrame(int32 idx) {
         LtmBPlusTreeNode<K, V> node = this.frameNode[idx];
-        int8[] buf = this.serializeNode(node);
+        int8[] buf #= this.serializeNode(node);
         int32 psz = this.pageSize;
         int64 ps = (int64) psz;
         int64 off = node.pageId * ps;
@@ -436,7 +436,7 @@ public class LtmPager<K, V> {
                 klen = this.keyFast.encodeInto(node.keys[i], buf, p + 4);
             } else {
                 K k = node.keys[i];
-                int8[] kb = this.keyEnc.encode(k);
+                int8[] kb #= this.keyEnc.encode(k);
                 klen = (int32) kb.count();
                 int32 j = 0;
                 while (j < klen) {
@@ -456,7 +456,7 @@ public class LtmPager<K, V> {
                     vlen = this.valFast.encodeInto(node.values[i], buf, p + 4);
                 } else {
                     V v = node.values[i];
-                    int8[] vb = this.valEnc.encode(v);
+                    int8[] vb #= this.valEnc.encode(v);
                     vlen = (int32) vb.count();
                     int32 j = 0;
                     while (j < vlen) {
@@ -515,7 +515,7 @@ public class LtmPager<K, V> {
                 j = j + 1;
             }
             p = p + klen;
-            K k = this.keyEnc.decode(kslice);
+            K k #= this.keyEnc.decode(kslice);
             node.keys[i] = k;
             i = i + 1;
         }
@@ -531,7 +531,7 @@ public class LtmPager<K, V> {
                     j = j + 1;
                 }
                 p = p + vlen;
-                V v = this.valEnc.decode(vslice);
+                V v #= this.valEnc.decode(vslice);
                 node.values[i] = v;
                 i = i + 1;
             }

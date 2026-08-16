@@ -48,7 +48,7 @@ std::string buildOneShotMatchSrc(const std::string& input,
         src += "        data[" + std::to_string(i) + "L] = (int8) "
              + std::to_string((int)(uint8_t) input[i]) + ";\n";
     }
-    src += "        int8[] digest = Sha1.hash(data, " + std::to_string(input.size()) + "L);\n";
+    src += "        int8[] digest #= Sha1.hash(data, " + std::to_string(input.size()) + "L);\n";
     src += "        int8[] expected = heap int8[20];\n";
     for (size_t i = 0; i < 20; i++) {
         src += "        expected[" + std::to_string(i) + "L] = (int8) "
@@ -138,8 +138,8 @@ TEST(Sha1Tests, streamingMatchesOneShot) {
         "        Sha1 h = heap Sha1();\n"
         "        h.update(piece1, 3L);\n"
         "        h.update(piece2, 3L);\n"
-        "        int8[] streamed = h.digest();\n"
-        "        int8[] oneshot = Sha1.hash(full, 6L);\n"
+        "        int8[] streamed #= h.digest();\n"
+        "        int8[] oneshot #= Sha1.hash(full, 6L);\n"
         "        int32 ok = 1;\n"
         "        for (int64 i = 0L; i < 20L; i = i + 1L) {\n"
         "            if (streamed[i] != oneshot[i]) { ok = 0; }\n"
@@ -164,10 +164,10 @@ TEST(Sha1Tests, resetReusesInstance) {
         "        abc[0L] = (int8) 97; abc[1L] = (int8) 98; abc[2L] = (int8) 99;\n"
         "        Sha1 h = heap Sha1();\n"
         "        h.update(abc, 3L);\n"
-        "        int8[] first = h.digest();\n"
+        "        int8[] first #= h.digest();\n"
         "        h.reset();\n"
         "        h.update(abc, 3L);\n"
-        "        int8[] second = h.digest();\n"
+        "        int8[] second #= h.digest();\n"
         "        int32 ok = 1;\n"
         "        for (int64 i = 0L; i < 20L; i = i + 1L) {\n"
         "            if (first[i] != second[i]) { ok = 0; }\n"

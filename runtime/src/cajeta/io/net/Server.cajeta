@@ -161,7 +161,7 @@ public class Server {
      * @EntryPoint
      */
     public static #Server bind(SocketAddress addr, (TcpStream) -> void handler) {
-        TcpListener l = TcpListener.bind(addr);
+        TcpListener l #= TcpListener.bind(addr);
         // `#l` moves the listener into the new Server: without the move the
         // local is dropped when this factory returns and the server's
         // `listener` field dangles (closed fd + freed object).
@@ -179,7 +179,7 @@ public class Server {
      */
     public static #Server bindWithBacklog(SocketAddress addr, int32 backlog,
                                           (TcpStream) -> void handler) {
-        TcpListener l = TcpListener.bindWithBacklog(addr, backlog);
+        TcpListener l #= TcpListener.bindWithBacklog(addr, backlog);
         return heap Server(#l, handler);
     }
 
@@ -213,7 +213,7 @@ public class Server {
         }
         scope {
             while (this.state.load() == ServerState.RUNNING) {
-                TcpStream conn = this.acceptNext();
+                TcpStream conn #= this.acceptNext();
                 if (conn == null) {
                     break;   // listener closed by shutdown — stop accepting
                 }

@@ -26,7 +26,11 @@ public final class LtmCursor<K, V> {
     private int32 idx;
 
     LtmCursor(LtmPager<K, V> pager, int64 leafId, int32 idx) {
-        this.pager = pager;
+        // `#=`, not `=` (3.3.3). The field comment above already said this is a
+        // borrow of the tree's pager; `#=` records that in the slot's mode bit
+        // rather than only in prose. A lent pager stays lent and the cursor
+        // frees nothing — identical to the plain store this replaces.
+        this.pager #= pager;
         this.leafId = leafId;
         this.idx = idx;
     }

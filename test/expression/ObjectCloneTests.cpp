@@ -47,7 +47,7 @@ TEST(ObjectCloneTests, cloneSharesStringBufferSafely) {
         "int64 base = Cajeta.liveCount();\n"
         "{\n" +
         std::string(kDyn) +
-        "    String w = s.substring(5, 25);\n"        // windowed view field
+        "    String w #= s.substring(5, 25);\n"        // windowed view field
         "    Rec r1 = heap Rec(7, #w);\n"
         "    Rec r2 = (Rec) r1.clone();\n"
         "    if (r2 == null) { return -1; }\n"
@@ -68,7 +68,7 @@ TEST(ObjectCloneTests, sliceCloneDetaches) {
         "int64 base = Cajeta.liveCount();\n"
         "{\n" +
         std::string(kDyn) +
-        "    String w = s.substring(10, 20);\n"        // "klmnopqrst"
+        "    String w #= s.substring(10, 20);\n"        // "klmnopqrst"
         "    String d = (String) w.clone();\n"         // detach
         "    s = \"\";\n"                              // root's owner gone
         "    if (!d.equals(\"klmnopqrst\")) { return -1; }\n"

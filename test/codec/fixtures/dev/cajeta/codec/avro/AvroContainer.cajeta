@@ -35,7 +35,9 @@ public final class AvroContainer {
      * (P-COMPILER-FQN), but a FQ constructor is fine.
      */
     public AvroContainer(int8[] b, int64 n) {
-        this.b = b;
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent buffer
+        // stays lent, `#b` at the call site transfers it.
+        this.b #= b;
         this.n = n;
         int32 m0 = ((int32) b[0]) & 0xFF;
         int32 m1 = ((int32) b[1]) & 0xFF;
@@ -58,8 +60,8 @@ public final class AvroContainer {
                 }
                 int64 k = (int64) 0;
                 while (k < mm) {
-                    String key = c.readString();
-                    int8[] val = c.readBytes();
+                    String key #= c.readString();
+                    int8[] val #= c.readBytes();
                     if (key.equals("avro.codec")) {
                         codec = heap cajeta.lang.String(#val, (int32) val.count());
                     }
@@ -67,7 +69,9 @@ public final class AvroContainer {
                 }
             }
         }
-        this.codecName = codec;
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent name
+        // stays lent, `#codec` at the call site transfers it.
+        this.codecName #= codec;
         this.dataStart = c.position() + (int64) 16;
         this.pos = this.dataStart;
         this.curCount = (int64) 0;

@@ -136,8 +136,8 @@ public class TlsConnection {
      * @EntryPoint
      */
     public static #TlsConnection client() {
-        pointer ctx = TlsConnection.ctxNew(0);
-        pointer conn = TlsConnection.connNew(ctx, 0);
+        pointer ctx #= TlsConnection.ctxNew(0);
+        pointer conn #= TlsConnection.connNew(ctx, 0);
         return heap TlsConnection(ctx, conn, true);
     }
 
@@ -152,9 +152,9 @@ public class TlsConnection {
      * @EntryPoint
      */
     public static #TlsConnection verifyingClient() {
-        pointer ctx = TlsConnection.ctxNew(0);
+        pointer ctx #= TlsConnection.ctxNew(0);
         TlsConnection.ctxSetVerify(ctx, 1);
-        pointer conn = TlsConnection.connNew(ctx, 0);
+        pointer conn #= TlsConnection.connNew(ctx, 0);
         return heap TlsConnection(ctx, conn, true);
     }
 
@@ -166,9 +166,9 @@ public class TlsConnection {
      */
     public static #TlsConnection server(int8[] certPem, int32 certLen,
                                         int8[] keyPem, int32 keyLen) {
-        pointer ctx = TlsConnection.ctxNew(1);
+        pointer ctx #= TlsConnection.ctxNew(1);
         TlsConnection.ctxUseCertKey(ctx, certPem, certLen, keyPem, keyLen);
-        pointer conn = TlsConnection.connNew(ctx, 1);
+        pointer conn #= TlsConnection.connNew(ctx, 1);
         return heap TlsConnection(ctx, conn, true);
     }
 

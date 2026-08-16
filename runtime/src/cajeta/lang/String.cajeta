@@ -388,7 +388,7 @@ public final class String {
      * returns this String unchanged.
      */
     public #String replace(String from, String repl) {
-        String out = this.replaceNative(from, repl);
+        String out #= this.replaceNative(from, repl);
         if (out == null) {
             // Zero-copy borrow window, not `this`: returning the receiver
             // from a #-returning method hands its OWNERSHIP to the caller's
@@ -437,7 +437,7 @@ public final class String {
                 -1, -1, Encoding.UTF_8, Encoding.UTF_8,
                 "malformed byte sequence");
         }
-        String out = this.normalizeNative(form);
+        String out #= this.normalizeNative(form);
         if (out == null) {
             // Already normalized: hand back a zero-copy borrow WINDOW over
             // this string's bytes (trim's recipe) — NOT `this` itself. A
@@ -500,7 +500,7 @@ public final class String {
                 -1, -1, Encoding.UTF_8, Encoding.UTF_8,
                 "malformed byte sequence");
         }
-        String out = this.caseFoldNative();
+        String out #= this.caseFoldNative();
         if (out == null) {
             // Zero-copy borrow window — see normalizeForm's fast path.
             return Cajeta.stringSliceBorrow(this, 0, this.byteLength());
@@ -521,7 +521,7 @@ public final class String {
                 -1, -1, Encoding.UTF_8, Encoding.UTF_8,
                 "malformed byte sequence");
         }
-        String out = this.stripDefaultIgnorablesNative();
+        String out #= this.stripDefaultIgnorablesNative();
         if (out == null) {
             // Zero-copy borrow window — see normalizeForm's fast path.
             return Cajeta.stringSliceBorrow(this, 0, this.byteLength());

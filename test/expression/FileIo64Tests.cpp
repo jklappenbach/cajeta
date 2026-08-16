@@ -157,7 +157,7 @@ TEST(FileIo64Tests, readHonorsLengthPastBit31) {
         // 2^31 + 16, built by arithmetic so no literal-width questions arise.
         "        int64 want = 1024;\n"
         "        want = want * 1024 * 1024 * 2 + 16;\n"
-        "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+        "        File f #= File.open(\"" + path + "\", OpenMode.READ);\n"
         "        if (f.size() != want) { return -1; }\n"
         "        int8[] buf = heap int8[want];\n"
         "        int64 got = f.read(buf, 0, want);\n"
@@ -226,14 +226,14 @@ TEST(FileIo64Tests, runtimeConstructedPathOpens) {
         // concatenation-built path
         "        String p1 = \"" + base + "\" + \"_concat.bin\";\n"
         "        File.writeAllBytes(p1, d, 3);\n"
-        "        int8[] r1 = File.readAllBytes(p1);\n"
+        "        int8[] r1 #= File.readAllBytes(p1);\n"
         "        if (r1.count() != 3) { return -1; }\n"
         "        if (r1[0] != 88) { return -2; }\n"
         // substring-built path (windowed view; no NUL at the window end)
         "        String longer = \"" + sub + "###\";\n"
-        "        String p2 = longer.substring(0, " + std::to_string(sub.size()) + ");\n"
+        "        String p2 #= longer.substring(0, " + std::to_string(sub.size()) + ");\n"
         "        File.writeAllBytes(p2, d, 3);\n"
-        "        int8[] r2 = File.readAllBytes(p2);\n"
+        "        int8[] r2 #= File.readAllBytes(p2);\n"
         "        if (r2.count() != 3) { return -3; }\n"
         "        if (r2[2] != 90) { return -4; }\n"
         "        return 1;\n"
@@ -413,7 +413,7 @@ TEST(FileIo64Tests, writeReturnsCountWritten) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        File f = File.open(\"" + path + "\", OpenMode.WRITE);\n"
+        "        File f #= File.open(\"" + path + "\", OpenMode.WRITE);\n"
         "        int8[] d = heap int8[10];\n"
         "        int32 i = 0;\n"
         "        while (i < 10) {\n"

@@ -2,13 +2,9 @@
 #include "../field/Field.h"
 #include "../field/ParameterField.h"
 #include "../compile/CajetaModule.h"
-#include "../error/DiagnosticEngine.h"
 #include "../error/Exception.h"
+#include "../ownership/MigrationSwitch.h"
 #include "CajetaClass.h"
-
-#include "llvm/Support/raw_ostream.h"
-
-#include <cstdlib>
 
 namespace cajeta {
     Scope::Scope(string name, CajetaModulePtr module, ScopePtr parent) {
@@ -191,24 +187,17 @@ namespace cajeta {
     }
 
     namespace {
-        // -1 = ask the environment, 0 = error, 1 = warn.
-        int g_capturedBorrowWarnOverride = -1;
+        ownership::MigrationSwitch g_capturedBorrow("CAJETA_CAPTURED_BORROW");
     }
 
-    bool Scope::capturedBorrowWarns() {
-        if (g_capturedBorrowWarnOverride >= 0) {
-            return g_capturedBorrowWarnOverride == 1;
-        }
-        const char* mode = std::getenv("CAJETA_CAPTURED_BORROW");
-        return mode && string(mode) == "warn";
-    }
+    bool Scope::capturedBorrowWarns() { return g_capturedBorrow.warns(); }
 
     void Scope::setCapturedBorrowWarns(bool on) {
-        g_capturedBorrowWarnOverride = on ? 1 : 0;
+        g_capturedBorrow.setWarns(on);
     }
 
     void Scope::clearCapturedBorrowWarnsOverride() {
-        g_capturedBorrowWarnOverride = -1;
+        g_capturedBorrow.clearOverride();
     }
 
     void Scope::rejectCapturedBorrowParam(const string& srcName,
@@ -262,15 +251,7 @@ namespace cajeta {
             throw Exception(message, "CAJETA_ERROR_CAPTURED_BORROW_PARAM");
         }
 
-        // Warn mode (3.3.3). Two channels, deliberately:
-        //
-        //   - the DiagnosticEngine, so the demotion is a real warning in the
-        //     compiler's own stream (`CAJETA_WARN_PLAIN_RETAIN_STORE` is the
-        //     precedent — same "warn at introduction, promote later" shape);
-        //   - a grep-able stderr note, because the engine dedups and CAPS at
-        //     100 and a migration needs the WHOLE list, not the first hundred.
-        //     The 8.1.1 harvest proved this channel survives every entry point,
-        //     including the build tool's.
+        // Warn mode (3.3.3) — see MigrationSwitch for why two channels.
         string className;
         string methodName;
         if (module) {
@@ -283,17 +264,13 @@ namespace cajeta {
                 methodName = m->getName();
             }
         }
-        llvm::errs() << "cajeta: note: [captured-borrow] " << className << "."
-                     << methodName << ":" << sourceLine
-                     << " param=" << origin
-                     << " src=" << srcName
-                     << " into=" << intoDesc
-                     << " type=" << klass->toCanonical() << "\n";
-        if (DiagnosticEngine* eng = DiagnosticEngine::active()) {
-            eng->report("warning", "CAJETA_WARN_CAPTURED_BORROW_PARAM", message,
-                        module ? module->getSourcePath() : string(),
-                        sourceLine, -1);
-        }
+        g_capturedBorrow.report(
+            "[captured-borrow] " + className + "." + methodName + ":"
+                + std::to_string(sourceLine) + " param=" + origin
+                + " src=" + srcName + " into=" + intoDesc
+                + " type=" + klass->toCanonical(),
+            "CAJETA_WARN_CAPTURED_BORROW_PARAM", message,
+            module ? module->getSourcePath() : string(), sourceLine);
     }
 
     set<string> Scope::lendsOf(const string& holder) {

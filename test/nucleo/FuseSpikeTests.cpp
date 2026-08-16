@@ -35,7 +35,7 @@ TEST(FuseSpike, singleElementwiseOpEvaluates) {
     EXPECT_FLOAT_EQ(runTensor(
         "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
         "            Fuse((Tensor<float32> t) -> Tensor.add<float32>(t, t));\n"
         "        Tensor<float32> r = g(x);\n"
@@ -48,7 +48,7 @@ TEST(FuseSpike, threeOpChainEvaluates) {
     EXPECT_FLOAT_EQ(runTensor(
         "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g = Fuse((Tensor<float32> t) ->\n"
         "            Tensor.sub<float32>(Tensor.add<float32>(Tensor.mul<float32>(t, t), t), t));\n"
         "        Tensor<float32> r = g(x);\n"

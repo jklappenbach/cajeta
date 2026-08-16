@@ -127,7 +127,7 @@ public final class Placement {
         key.append(op);
         key.append("/");
         key.append(dtype);
-        String k = key.toString();
+        String k #= key.toString();
         if (Placement.tiered == null) {
             Placement.tiered = heap HashSet<String>(64);
         }

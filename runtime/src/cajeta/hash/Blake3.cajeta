@@ -145,7 +145,7 @@ public final class Blake3 implements Hasher {
     /** One-shot 32-byte digest of a `String`'s UTF-8 bytes. */
     public static #int8[] hashString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return Blake3.hash(w, (int64) s.byteLength());
         }
         return Blake3.hash(s.root(), (int64) s.byteLength());
@@ -154,7 +154,7 @@ public final class Blake3 implements Hasher {
     /** One-shot lowercase hex digest of a `String`'s UTF-8 bytes. */
     public static #String hashStringHex(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return Blake3.hashHex(w, (int64) s.byteLength());
         }
         return Blake3.hashHex(s.root(), (int64) s.byteLength());
@@ -218,7 +218,7 @@ public final class Blake3 implements Hasher {
 
     public void writeString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             Blake3.updateNative(this.state, w, (int64) s.byteLength());
             return;
         }

@@ -170,7 +170,7 @@ TEST(TransferOfBorrowTests, transferOfOwnedStillCompiles) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Box b = heap Box();\n"
-        "        int8[] c = b.copy();\n"       // `#int8[]` return: owned
+        "        int8[] c #= b.copy();\n"       // `#int8[]` return: owned
         "        Sink s = heap Sink(#c);\n"
         "        return s.first();\n"
         "    }\n"

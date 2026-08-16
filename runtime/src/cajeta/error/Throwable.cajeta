@@ -245,9 +245,9 @@ public class Throwable {
             while (i < sc) {
                 int64 d = shadowDesc(this, i);
                 int32 ln = shadowLine(this, i);
-                String t = descType(d);
-                String m = descMethod(d);
-                String f = descFile(d);
+                String t #= descType(d);
+                String m #= descMethod(d);
+                String f #= descFile(d);
                 FrameRole role = roleOf(descRole(d));
                 frames[i] = heap StackFrame(#t, #m, #f, ln, role, 0);
                 i = i + 1;

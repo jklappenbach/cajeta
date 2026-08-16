@@ -35,7 +35,7 @@ const char* kSrc =
     "}\n"
     "public class Box<T> {\n"
     "    T value;\n"
-    "    public Box(T v) { this.value = v; }\n"
+    "    public Box(T v) { this.value #= v; }\n"
     "}\n"
     "public final class D {\n"
     "    public static int32 inspect(Box<? extends Animal> b) {\n"

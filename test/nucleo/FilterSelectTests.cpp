@@ -167,7 +167,7 @@ std::string buildMatrixSrc() {
         "    public static int32 selectWithNarrow() {\n"
         + kBuild +
         "        int32 score = 0;\n"
-        "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
+        "        Table<?> s #= t.lazy().select((TickCols c, Sels ss) -> {\n"
         "            ss.add(c.price());\n"
         "            ss.add((c.price() * c.size()).alias(\"notional\"));\n"
         "        });\n"
@@ -206,7 +206,7 @@ std::string buildMatrixSrc() {
         "    public static int32 narrowErrors() {\n"
         + kBuild +
         "        int32 score = 0;\n"
-        "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
+        "        Table<?> s #= t.lazy().select((TickCols c, Sels ss) -> {\n"
         "            ss.add(c.price());\n"
         "            ss.add(c.venue());\n"
         "        });\n"
@@ -232,7 +232,7 @@ std::string buildMatrixSrc() {
         "            if (m.contains(\"declares 3\")) { score = score + 4; }\n"
         "        }\n"
         "        if (s.executions() == 0) { score = score + 8; }\n"   // no secret force
-        "        Pred still = s.col(\"price\") > 0.0;\n"              // handle not consumed
+        "        Pred still #= s.col(\"price\") > 0.0;\n"              // handle not consumed
         "        score = score + 16;\n"
         "        return score;\n"
         "    }\n"
@@ -245,12 +245,12 @@ std::string buildMatrixSrc() {
         "    public static int32 dynamicCol() {\n"
         + kBuild +
         "        int32 score = 0;\n"
-        "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
+        "        Table<?> s #= t.lazy().select((TickCols c, Sels ss) -> {\n"
         "            ss.add(c.price());\n"
         "            ss.add((c.price() * c.size()).alias(\"notional\"));\n"
         "        });\n"
-        "        Pred p = s.col(\"notional\") > 100.0;\n"   // valid name: plans
-        "        Table<?> f = s.filter(#p);\n"
+        "        Pred p #= s.col(\"notional\") > 100.0;\n"   // valid name: plans
+        "        Table<?> f #= s.filter(#p);\n"
         "        Table<PN> nh = f.as<PN>();\n"
         "        Table<PN> n = nh.collect();\n"
         "        if (n.rowCount() == 3 && n.notional.get(0) == 105.0\n"
@@ -276,11 +276,11 @@ std::string buildMatrixSrc() {
         "        Table<Tick> tr = tf.collect();\n"
         "        if (tr.rowCount() == 3 && tr.price.get(0) == 1.5) { score = score + 8; }\n"
         "        Table<?> g = t.lazy();\n"
-        "        Pred gp = g.col(\"price\") > 0.0;\n"
-        "        Table<?> g1 = g.filter(#gp);\n"            // consumes g
+        "        Pred gp #= g.col(\"price\") > 0.0;\n"
+        "        Table<?> g1 #= g.filter(#gp);\n"            // consumes g
         "        try {\n"
-        "            Pred gp2 = g.col(\"price\") > 1.0;\n"
-        "            Table<?> g2 = g.filter(#gp2);\n"        // chained-away handle
+        "            Pred gp2 #= g.col(\"price\") > 1.0;\n"
+        "            Table<?> g2 #= g.filter(#gp2);\n"        // chained-away handle
         "        } catch (FrameException e) {\n"
         "            if (e.getMessage().contains(\"chained\")) { score = score + 16; }\n"
         "        }\n"
@@ -345,7 +345,7 @@ TEST(FilterSelectTests, typedMemberOnErasedIsGuidedCompileError) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         + kBuild +
-        "        Table<?> s = t.lazy().select((TickCols c, Sels ss) -> {\n"
+        "        Table<?> s #= t.lazy().select((TickCols c, Sels ss) -> {\n"
         "            ss.add(c.price());\n"
         "        });\n"
         "        float64 x = s.price.get(0);\n"

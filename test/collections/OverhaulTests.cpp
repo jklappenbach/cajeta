@@ -123,9 +123,9 @@ TEST(OverhaulTests, arrayListRemoveAtReturnsAndCompacts) {
         "        xs.add(2);\n"
         "        xs.add(3);\n"
         "        xs.add(4);\n"
-        "        int32 mid  = xs.removeAt(1);\n"   // 2 -> [1,3,4]
-        "        int32 last = xs.removeAt(2);\n"   // 4 -> [1,3]
-        "        int32 head = xs.removeAt(0);\n"   // 1 -> [3]
+        "        int32 mid  #= xs.removeAt(1);\n"   // 2 -> [1,3,4]
+        "        int32 last #= xs.removeAt(2);\n"   // 4 -> [1,3]
+        "        int32 head #= xs.removeAt(0);\n"   // 1 -> [3]
         "        return mid * 1000 + last * 100 + head * 10 + xs.get(0)\n"
         "             + (int32) xs.count() * 100000;\n"  // 100000 + 2000+400+10+3
         "    }\n"
@@ -148,7 +148,7 @@ TEST(OverhaulTests, arrayListRemoveAtStringOwnership) {
         "        xs.add(\"alpha\");\n"
         "        xs.add(\"beta\");\n"
         "        xs.add(\"gamma\");\n"
-        "        String taken = xs.removeAt(1);\n"      // \"beta\"\n
+        "        String taken #= xs.removeAt(1);\n"      // \"beta\"\n
         "        xs.removeAt(0);\n"                     // discarded \"alpha\"
         "        int32 acc = 0;\n"
         "        if (taken.equals(\"beta\")) { acc = acc + 1; }\n"
@@ -221,7 +221,7 @@ TEST(OverhaulTests, hashSetDefaultCtorAndStream) {
         "        s.add(3);\n"
         "        s.add(5);\n"
         "        s.add(3);\n"
-        "        Stream<int32> st = s.stream();\n"
+        "        Stream<int32> st #= s.stream();\n"
         "        int32 sum = 0;\n"
         "        Optional<int32> nx = st.next();\n"
         "        while (nx.isPresent()) {\n"

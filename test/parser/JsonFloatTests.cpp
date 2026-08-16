@@ -30,9 +30,9 @@ int32_t runI32(const std::string& body) {
 std::string parseTo(const char* lit) {
     return std::string(
         "        String s = \"") + lit + "\";\n"
-        "        int8[] sb = s.toBytes();\n"
+        "        int8[] sb #= s.toBytes();\n"
         "        JsonReader r = heap JsonReader(sb, (int64) s.byteLength());\n"
-        "        JsonValue v = r.readValue();\n";
+        "        JsonValue v #= r.readValue();\n";
 }
 } // namespace
 
@@ -71,9 +71,9 @@ TEST(JsonFloat, roundTripThroughWriter) {
     EXPECT_EQ(runI32(parseTo("3.14") +
         "        JsonWriter w = heap JsonWriter();\n"
         "        w.writeValue(v);\n"
-        "        int8[] out = w.toBytes();\n"
+        "        int8[] out #= w.toBytes();\n"
         "        JsonReader r2 = heap JsonReader(out, (int64) out.count());\n"
-        "        JsonValue v2 = r2.readValue();\n"
+        "        JsonValue v2 #= r2.readValue();\n"
         "        if (!v2.isFloat()) { return -2; }\n"
         "        return (int32) (v2.asFloat64() * 100.0);\n"), 314);
 }

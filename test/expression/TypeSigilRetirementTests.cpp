@@ -120,7 +120,7 @@ TEST(TypeSigilRetirementTests, signatureSharpReturnStillLegal) {
         "public final class D {\n"
         "    public static #Cell make() { return #heap Cell(8); }\n"
         "    public static int32 run() {\n"
-        "        Cell c = make();\n"
+        "        Cell c #= make();\n"
         "        return c.n;\n"
         "    }\n"
         "}\n";

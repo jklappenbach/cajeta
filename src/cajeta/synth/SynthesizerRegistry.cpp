@@ -286,7 +286,7 @@ namespace cajeta::synth {
             for (std::size_t i = 0; i < plan.outLabels.size(); ++i) {
                 b += "    __e_shp[" + std::to_string(i) + "] = " + dim(plan.outLabels[i]) + ";\n";
             }
-            b += "    Tensor<" + E + "> __e_out = Tensor.zeros<" + E + ">(__e_shp);\n";
+            b += "    Tensor<" + E + "> __e_out #= Tensor.zeros<" + E + ">(__e_shp);\n";
             for (std::size_t g = 0; g < plan.groups.size(); ++g) {
                 b += "    int64[] __e_ix" + std::to_string(g) + " = heap int64["
                     + std::to_string(plan.groups[g].size()) + "];\n";
@@ -454,7 +454,7 @@ namespace cajeta::synth {
             // owned, a use-after-free for frame-owned columns.)
             std::string b;
             b += "public static final #Table<R> fromCsv(String text) {\n";
-            b += "    int8[] __b = text.toBytes();\n";
+            b += "    int8[] __b #= text.toBytes();\n";
             b += "    int64 __len = (int64) __b.count();\n";
             b += "    CsvReader __rh = heap CsvReader(__b, __len);\n";
             b += "    if (!__rh.nextRow()) {\n";
@@ -467,7 +467,7 @@ namespace cajeta::synth {
             }
             b += "    int32 __hi = 0;\n";
             b += "    while (__hi < __hc) {\n";
-            b += "        int8[] __hb = __rh.field(__hi);\n";
+            b += "        int8[] __hb #= __rh.field(__hi);\n";
             b += "        String __hn = heap String(#__hb, (int32) "
                  "__hb.count());\n";
             for (std::size_t i = 0; i < cols.size(); ++i) {
@@ -517,7 +517,7 @@ namespace cajeta::synth {
             b += "    while (__m2) {\n";
             for (std::size_t i = 0; i < cols.size(); ++i) {
                 const std::string ix = std::to_string(i);
-                b += "        int8[] __f" + ix + " = __rd.field(__c" + ix
+                b += "        int8[] __f" + ix + " #= __rd.field(__c" + ix
                     + ");\n";
                 if (cols[i].tag == 11) {
                     b += "        __a" + ix + "[__r] = heap String(#__f" + ix
@@ -968,7 +968,7 @@ namespace cajeta::synth {
                             + schema + "." + cols[i].name + " is '" + expected
                             + "'\");\n"
                         "        }\n"
-                        "        String __t" + ix + " = __d.typeNameAt(__i"
+                        "        String __t" + ix + " #= __d.typeNameAt(__i"
                             + ix + ");\n"
                         "        if (__d.nullableAt(__i" + ix + ")) { __t" + ix
                             + " = __t" + ix + " + \"?\"; }\n"

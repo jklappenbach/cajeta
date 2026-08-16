@@ -256,7 +256,7 @@ public class IpAddress {
             throw heap MalformedAddressException("empty IP address",
                 (int64) -1);
         }
-        int8[] b = input.toBytes();
+        int8[] b #= input.toBytes();
 
         // Family detection: first ':' ⇒ v6, first '.' before any ':' ⇒ v4.
         int32 firstColon = -1;
@@ -409,7 +409,7 @@ public class IpAddress {
             if (sawDot) {
                 // Embedded IPv4 quad spanning groupStart..(next ':' or end).
                 // The quad runs to `end` (IPv4 tail is always last).
-                IpAddress v4 = IpAddress.parseV4(b, groupStart, end);
+                IpAddress v4 #= IpAddress.parseV4(b, groupStart, end);
                 if (inTail) {
                     tail[tailLen] = v4.octets[0];
                     tail[tailLen + 1] = v4.octets[1];

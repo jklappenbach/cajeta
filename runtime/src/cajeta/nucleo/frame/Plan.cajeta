@@ -491,7 +491,7 @@ public class Plan {
      *  optimizer scan leaf shows its rewrites (U7, spec §2.5):
      *  `scan[filter x2, cols: a,b]`. */
     public #String describe() {
-        String name = this.opName();
+        String name #= this.opName();
         if (this.kind == 1 && (this.nScanPreds > 0 || this.scanCols != null)) {
             name = name + "[";
             if (this.nScanPreds > 0) {
@@ -516,7 +516,7 @@ public class Plan {
         if (this.child == null) {
             return #name;
         }
-        String rest = this.child.describe();
+        String rest #= this.child.describe();
         return name + " <- " + rest;
     }
 }

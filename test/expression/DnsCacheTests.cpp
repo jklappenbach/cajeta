@@ -63,7 +63,7 @@ std::string withCounting(const std::string& body) {
            "    public #SocketAddress[] resolve(String host, ResolveFamily family) {\n"
            "        CountingResolver.calls = CountingResolver.calls + 1;\n"
            "        SocketAddress[] out = heap SocketAddress[1];\n"
-           "        IpAddress ip = IpAddress.loopbackV4();\n"
+           "        IpAddress ip #= IpAddress.loopbackV4();\n"
            "        out[0] = SocketAddress.of(#ip, 0);\n"
            "        return #out;\n"
            "    }\n"
@@ -93,9 +93,9 @@ TEST(DnsCacheTests, cacheHitSkipsSecondLookup) {
     // call is served from the cache.
     EXPECT_EQ(runI32(withCounting(
         "CountingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap CountingResolver());\n"
-        "SocketAddress[] a = cache.resolve(\"example.test\", 443, ResolveFamily.BOTH);\n"
-        "SocketAddress[] b = cache.resolve(\"example.test\", 443, ResolveFamily.BOTH);\n"
+        "DnsCache cache #= DnsCache.withResolver(heap CountingResolver());\n"
+        "SocketAddress[] a #= cache.resolve(\"example.test\", 443, ResolveFamily.BOTH);\n"
+        "SocketAddress[] b #= cache.resolve(\"example.test\", 443, ResolveFamily.BOTH);\n"
         "if (CountingResolver.calls != 1) { return -1; }\n"   // one lookup only
         "if (a.count() != 1 || b.count() != 1) { return -2; }\n"
         "if (!b[0].getIp().isV4()) { return -3; }\n"
@@ -109,9 +109,9 @@ TEST(DnsCacheTests, cachedHitReturnsResolvedAddress) {
     // (127.0.0.1), with the caller's port baked on.
     EXPECT_EQ(runI32(withCounting(
         "CountingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap CountingResolver());\n"
+        "DnsCache cache #= DnsCache.withResolver(heap CountingResolver());\n"
         "cache.resolve(\"h.test\", 80, ResolveFamily.BOTH);\n"
-        "SocketAddress[] b = cache.resolve(\"h.test\", 80, ResolveFamily.BOTH);\n"
+        "SocketAddress[] b #= cache.resolve(\"h.test\", 80, ResolveFamily.BOTH);\n"
         "IpAddress ip = b[0].getIp();\n"
         "int8[] o = ip.getOctets();\n"
         "int32 o0 = ((int32) o[0]) & 0xff;\n"
@@ -127,7 +127,7 @@ TEST(DnsCacheTests, clearForcesReResolve) {
     // again (call count climbs to 2).
     EXPECT_EQ(runI32(withCounting(
         "CountingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap CountingResolver());\n"
+        "DnsCache cache #= DnsCache.withResolver(heap CountingResolver());\n"
         "cache.resolve(\"h.test\", 0, ResolveFamily.BOTH);\n"
         "cache.clear();\n"
         "cache.resolve(\"h.test\", 0, ResolveFamily.BOTH);\n"
@@ -142,7 +142,7 @@ TEST(DnsCacheTests, distinctFamiliesCacheSeparately) {
     // cache (stays at 2).
     EXPECT_EQ(runI32(withCounting(
         "CountingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap CountingResolver());\n"
+        "DnsCache cache #= DnsCache.withResolver(heap CountingResolver());\n"
         "cache.resolve(\"h.test\", 0, ResolveFamily.BOTH);\n"
         "cache.resolve(\"h.test\", 0, ResolveFamily.V4_ONLY);\n"
         "if (CountingResolver.calls != 2) { return -1; }\n"
@@ -156,7 +156,7 @@ TEST(DnsCacheTests, distinctHostsCacheSeparately) {
     // Two different hosts → two keys → two lookups.
     EXPECT_EQ(runI32(withCounting(
         "CountingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap CountingResolver());\n"
+        "DnsCache cache #= DnsCache.withResolver(heap CountingResolver());\n"
         "cache.resolve(\"a.test\", 0, ResolveFamily.BOTH);\n"
         "cache.resolve(\"b.test\", 0, ResolveFamily.BOTH);\n"
         "return (CountingResolver.calls == 2) ? 1 : 0;")), 1);
@@ -170,9 +170,9 @@ TEST(DnsCacheTests, portIsBakedPerCallNotCached) {
     // requested port — the port is not part of the cache key.
     EXPECT_EQ(runI32(withCounting(
         "CountingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap CountingResolver());\n"
-        "SocketAddress[] a = cache.resolve(\"h.test\", 80, ResolveFamily.BOTH);\n"
-        "SocketAddress[] b = cache.resolve(\"h.test\", 443, ResolveFamily.BOTH);\n"
+        "DnsCache cache #= DnsCache.withResolver(heap CountingResolver());\n"
+        "SocketAddress[] a #= cache.resolve(\"h.test\", 80, ResolveFamily.BOTH);\n"
+        "SocketAddress[] b #= cache.resolve(\"h.test\", 443, ResolveFamily.BOTH);\n"
         "if (CountingResolver.calls != 1) { return -1; }\n"     // one lookup
         "if (a[0].getPort() != 80) { return -2; }\n"
         "if (b[0].getPort() != 443) { return -3; }\n"
@@ -187,7 +187,7 @@ TEST(DnsCacheTests, negativeResultIsCachedAndReRaises) {
     // the failing resolver is called exactly once.
     EXPECT_EQ(runI32(withCounting(
         "FailingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap FailingResolver());\n"
+        "DnsCache cache #= DnsCache.withResolver(heap FailingResolver());\n"
         "int32 raises = 0;\n"
         "try { cache.resolve(\"dead.test\", 0, ResolveFamily.BOTH); }\n"
         "catch (NetException e) { raises = raises + 1; }\n"
@@ -204,7 +204,7 @@ TEST(DnsCacheTests, negativeCachingDisabledReResolves) {
     // second attempt re-tries the backend (call count climbs to 2).
     EXPECT_EQ(runI32(withCounting(
         "FailingResolver.calls = 0;\n"
-        "DnsCache cache = DnsCache.withResolver(heap FailingResolver());\n"
+        "DnsCache cache #= DnsCache.withResolver(heap FailingResolver());\n"
         "cache.setCacheFailures(false);\n"
         "try { cache.resolve(\"dead.test\", 0, ResolveFamily.BOTH); }\n"
         "catch (NetException e) { }\n"

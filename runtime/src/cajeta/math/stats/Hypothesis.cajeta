@@ -180,7 +180,7 @@ public final class Hypothesis {
         }
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float64> diff = Tensor.of<float64>(d, sh);
+        Tensor<float64> diff #= Tensor.of<float64>(d, sh);
         return tTest1(diff, 0.0, alt);
     }
 

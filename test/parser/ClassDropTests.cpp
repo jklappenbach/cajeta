@@ -129,7 +129,7 @@ TEST(ClassDropTests, returnedInstanceOwnershipTransfers) {
         "    }\n"
         "    public static int32 run() {\n"
         "        Cajeta.dropCountReset();\n"
-        "        Counter received = mk();\n"
+        "        Counter received #= mk();\n"
         "        return received.next();\n"
         "    }\n"
         "    public static int64 read() {\n"

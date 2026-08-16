@@ -30,7 +30,7 @@ TEST(MethodTemplateReturnTypeTests, explicitArgPinsReturnTypeForChaining) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.id = 42;\n"
-        "        int8[] b = Json.toBytes<Box>(a);\n"
+        "        int8[] b #= Json.toBytes<Box>(a);\n"
         "        return Json.parse<Box>(b, (int64) b.count()).id;\n"
         "    }\n"
         "}\n";
@@ -47,8 +47,8 @@ TEST(MethodTemplateReturnTypeTests, explicitArgResultAssignsToInstantiatedType) 
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.id = 7;\n"
-        "        int8[] b = Json.toBytes<Box>(a);\n"
-        "        Box c = Json.parse<Box>(b, (int64) b.count());\n"
+        "        int8[] b #= Json.toBytes<Box>(a);\n"
+        "        Box c #= Json.parse<Box>(b, (int64) b.count());\n"
         "        return c.id;\n"
         "    }\n"
         "}\n";

@@ -78,7 +78,7 @@ TEST(XpuHostLaunchDeviceTests, saxpyHostSourceOnDevice) {
         "        y.allocate();\n"
         "        x.upload(hx);\n"
         "        y.upload(hy);\n"
-        "        KernelStream s = KernelStream.current();\n"
+        "        KernelStream s #= KernelStream.current();\n"
         "        saxpy.launch(s, grid: [4], block: [256])(y, x, 2.0f, n);\n"
         "        s.sync();\n"
         "        y.download(hy);\n"

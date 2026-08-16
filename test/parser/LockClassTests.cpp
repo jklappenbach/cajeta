@@ -85,7 +85,7 @@ TEST(LockClassTests, tryAcquireWhileHeldFails) {
     EXPECT_EQ(runI32(
         "    public static int32 run() {\n"
         "        Lock lock = heap Lock();\n"
-        "        LockGuard held = lock.acquire();\n"
+        "        LockGuard held #= lock.acquire();\n"
         "        int32 second = lock.tryAcquire();\n"
         "        return second;\n"
         "    }\n"
@@ -102,7 +102,7 @@ TEST(LockClassTests, guardDropAtMethodExitReleasesBeforeDestroy) {
     EXPECT_EQ(runI32(
         "    public static int32 acquireAndReturn() {\n"
         "        Lock lock = heap Lock();\n"
-        "        LockGuard g = lock.acquire();\n"
+        "        LockGuard g #= lock.acquire();\n"
         "        return 0;\n"
         "        // At return: g drops first (release), lock drops\n"
         "        // (destroy). If the order were reversed, destroy on\n"
@@ -121,7 +121,7 @@ TEST(LockClassTests, twoIndependentLocks) {
         "    public static int32 run() {\n"
         "        Lock a = heap Lock();\n"
         "        Lock b = heap Lock();\n"
-        "        LockGuard ga = a.acquire();\n"
+        "        LockGuard ga #= a.acquire();\n"
         "        int32 bFree = b.tryAcquire();\n"
         "        if (bFree == 1) b.releaseLock();\n"
         "        return bFree;\n"

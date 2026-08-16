@@ -108,8 +108,8 @@ const std::string HELPERS =
 TEST(XpuAccelContractTests, headerTagReadable) {
     EXPECT_EQ(runI32Full(IMP, HELPERS +
         "    public static int32 run() {\n"
-        "        float32[] boxes = D.scene();\n"
-        "        Bvh b = Bvh.build(boxes, 4);\n"
+        "        float32[] boxes #= D.scene();\n"
+        "        Bvh b #= Bvh.build(boxes, 4);\n"
         "        if (b.strategy() != Strategy.Exact) { return -1; }\n"
         "        if (b.width() != 2) { return -2; }\n"
         "        if (b.primCount() != 4) { return -3; }\n"
@@ -124,8 +124,8 @@ TEST(XpuAccelContractTests, headerTagReadable) {
 TEST(XpuAccelContractTests, closestHitMatchesBrute) {
     EXPECT_EQ(runI32Full(IMP, HELPERS +
         "    public static int32 run() {\n"
-        "        float32[] boxes = D.scene();\n"
-        "        Bvh b = Bvh.build(boxes, 4);\n"
+        "        float32[] boxes #= D.scene();\n"
+        "        Bvh b #= Bvh.build(boxes, 4);\n"
         "        float32 dnz = 0.0f - 1.0f;\n"
         // box 0
         "        int32 p0 = b.closestHit(0.0f,0.0f,5.0f, 0.0f,0.0f,dnz, 0.0f,100.0f);\n"
@@ -153,9 +153,9 @@ TEST(XpuAccelContractTests, closestHitMatchesBrute) {
 TEST(XpuAccelContractTests, defaultBuildByteIdenticalToLbvh) {
     EXPECT_EQ(runI32Full(IMP, HELPERS +
         "    public static int32 run() {\n"
-        "        float32[] boxes = D.scene();\n"
-        "        Bvh b = Bvh.build(boxes, 4);\n"
-        "        float32[] ref = Lbvh.build(boxes, 4);\n"
+        "        float32[] boxes #= D.scene();\n"
+        "        Bvh b #= Bvh.build(boxes, 4);\n"
+        "        float32[] ref #= Lbvh.build(boxes, 4);\n"
         "        int32 total = 8 + 7 * 9 + 4;\n"
         "        int32 i = 0;\n"
         "        while (i < total) {\n"

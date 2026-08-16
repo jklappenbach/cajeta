@@ -48,9 +48,9 @@ std::string runEncode(const std::string& input) {
         "public final class D {\n"
         "    public static #int8[] run() {\n"
         + emitDataArray(input) +
-        "        String s = Base64.encode(data, "
+        "        String s #= Base64.encode(data, "
         + std::to_string(input.size()) + "L);\n"
-        "        int8[] out = s.toBytes();\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";
@@ -72,9 +72,9 @@ std::string runEncodeUrlSafe(const std::string& input) {
         "public final class D {\n"
         "    public static #int8[] run() {\n"
         + emitDataArray(input) +
-        "        String s = Base64.encodeUrlSafe(data, "
+        "        String s #= Base64.encodeUrlSafe(data, "
         + std::to_string(input.size()) + "L);\n"
-        "        int8[] out = s.toBytes();\n"
+        "        int8[] out #= s.toBytes();\n"
         "        return #out;\n"
         "    }\n"
         "}\n";
@@ -103,7 +103,7 @@ std::string runDecode(const std::string& encoded) {
         // the `#` and the return must use the transfer operator, else the
         // borrow checker rejects it (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
         "    public static #int8[] run() {\n"
-        "        int8[] raw = Base64.decode(\"" + lit + "\");\n"
+        "        int8[] raw #= Base64.decode(\"" + lit + "\");\n"
         "        return #raw;\n"
         "    }\n"
         "}\n";
@@ -191,8 +191,8 @@ TEST(Base64Tests, roundTripAllByteValues) {
         "        int8[] data = heap int8[256];\n"
         "        int32 i = 0;\n"
         "        while (i < 256) { data[(int64) i] = (int8) i; i = i + 1; }\n"
-        "        String enc = Base64.encode(data, 256L);\n"
-        "        int8[] back = Base64.decode(enc);\n"
+        "        String enc #= Base64.encode(data, 256L);\n"
+        "        int8[] back #= Base64.decode(enc);\n"
         "        if (back.count() != 256L) { return 0; }\n"
         "        i = 0;\n"
         "        while (i < 256) {\n"
@@ -235,8 +235,8 @@ TEST(Base64Tests, roundTripStdAndUrlSafe) {
         "                j = j + 1;\n"
         "            }\n"
         // Standard, padded.
-        "            String enc = Base64.encode(data, (int64) len);\n"
-        "            int8[] back = Base64.decode(enc);\n"
+        "            String enc #= Base64.encode(data, (int64) len);\n"
+        "            int8[] back #= Base64.decode(enc);\n"
         "            if (back.count() != (int64) len) { return 0; }\n"
         "            j = 0;\n"
         "            while (j < len) {\n"
@@ -244,8 +244,8 @@ TEST(Base64Tests, roundTripStdAndUrlSafe) {
         "                j = j + 1;\n"
         "            }\n"
         // URL-safe, unpadded.
-        "            String encU = Base64.encodeUrlSafe(data, (int64) len);\n"
-        "            int8[] backU = Base64.decode(encU);\n"
+        "            String encU #= Base64.encodeUrlSafe(data, (int64) len);\n"
+        "            int8[] backU #= Base64.decode(encU);\n"
         "            if (backU.count() != (int64) len) { return 0; }\n"
         "            j = 0;\n"
         "            while (j < len) {\n"
@@ -274,7 +274,7 @@ TEST(Base64Tests, decodeInvalidCharThrows) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        try {\n"
-        "            int8[] raw = Base64.decode(\"aa!a\");\n"
+        "            int8[] raw #= Base64.decode(\"aa!a\");\n"
         "            return 0;\n"
         "        } catch (Base64Exception e) {\n"
         "            return 1;\n"
@@ -296,7 +296,7 @@ TEST(Base64Tests, decodeTruncatedQuantumThrows) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        try {\n"
-        "            int8[] raw = Base64.decode(\"Zm9vY\");\n"
+        "            int8[] raw #= Base64.decode(\"Zm9vY\");\n"
         "            return 0;\n"
         "        } catch (Base64Exception e) {\n"
         "            return 1;\n"

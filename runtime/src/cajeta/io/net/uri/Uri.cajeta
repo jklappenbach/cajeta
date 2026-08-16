@@ -348,7 +348,7 @@ public class Uri {
                 j = j + 1;
             }
             if (colonAt > 0) {
-                String rawScheme = Uri.slice(b, 0, colonAt);
+                String rawScheme #= Uri.slice(b, 0, colonAt);
                 u.scheme = rawScheme.toLowerCase();
                 u.hasScheme = true;
                 cursor = colonAt + 1;
@@ -896,7 +896,7 @@ public class Uri {
                     if (Uri.byteAt(ref.path, 0) == 47) {  // absolute
                         t.path = Uri.removeDotSegments(ref.path);
                     } else {
-                        String merged = Uri.merge(base, ref.path);
+                        String merged #= Uri.merge(base, ref.path);
                         t.path = Uri.removeDotSegments(merged);
                     }
                     t.query = Uri.cloneStr(ref.query);

@@ -136,7 +136,7 @@ TEST(ReflectionKeepMethodAnnotated, BoundedEnumeratorNarrowsTheKeepSet) {
         GTEST_SKIP() << "compiler binary unavailable";
     auto root = freshTempDir("bounded");
     writeFile(root / "src/demo/Main.cajeta", userProgram(
-        "        Class<?>[] hits = Class.classesWithMethodAnnotated(\"code.Probe\");\n"
+        "        Class<?>[] hits #= Class.classesWithMethodAnnotated(\"code.Probe\");\n"
         "        return (int32) hits.count();\n"));
 
     Compiled c = compileLean(root, "src", "out", "");
@@ -156,7 +156,7 @@ TEST(ReflectionKeepMethodAnnotated, AllClassesStillForcesKeepAll) {
         GTEST_SKIP() << "compiler binary unavailable";
     auto root = freshTempDir("forceall");
     writeFile(root / "src/demo/Main.cajeta", userProgram(
-        "        Class<?>[] all = Class.allClasses();\n"
+        "        Class<?>[] all #= Class.allClasses();\n"
         "        return (int32) all.count();\n"));
 
     Compiled c = compileLean(root, "src", "out", "");

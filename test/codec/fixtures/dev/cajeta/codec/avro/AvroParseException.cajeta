@@ -11,7 +11,9 @@ public class AvroParseException extends RecoverableException {
     public int64 position;
 
     public AvroParseException(String message, int64 position) {
-        this.message = message;
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent message
+        // stays lent, `#message` at the call site transfers it.
+        this.message #= message;
         this.cause = 0;
         this.position = position;
     }

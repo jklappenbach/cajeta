@@ -177,7 +177,7 @@ std::string tableMatrixSrc() {
         "        } catch (FrameException e) {\n"
         "            score = score + 1;\n"
         "        }\n"
-        "        Column<float64> p = Column.of<float64>(pv);\n"
+        "        Column<float64> p #= Column.of<float64>(pv);\n"
         "        int64 a0 = p.dataAddress();\n"
         "        Table<Tick> t = heap Table<Tick>(\n"
         "            Column.of<int64>(tsv), #p,\n"

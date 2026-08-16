@@ -163,8 +163,8 @@ TEST(KernelDataScienceTests, mlNotebookFlow) {
         "xs[1] = 2;\n"
         "int64[] ys = heap int64[1];\n"
         "ys[0] = n;\n"
-        "Tensor<float64> x = Tensor.of<float64>(xd, xs);\n"
-        "Tensor<float64> y = Tensor.of<float64>(yd, ys);\n");
+        "Tensor<float64> x #= Tensor.of<float64>(xd, xs);\n"
+        "Tensor<float64> y #= Tensor.of<float64>(yd, ys);\n");
     ASSERT_TRUE(load.ok) << "cell 1 (load): " << load.errorId << ": "
                          << load.message;
 

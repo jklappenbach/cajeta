@@ -75,7 +75,7 @@ TEST(LocalDateTimeTests, isoFormat) {
     // "2026-06-05T14:30:15" -> size 19, 'T' at 10
     EXPECT_EQ(runJit(
         "LocalDateTime t = LocalDateTime.ofFull(2026,6,5, 14,30,15, 0);\n"
-        "String s = t.iso();\n"
+        "String s #= t.iso();\n"
         "if (s.size()==19 && s.charAt(10)==84) return 1;\n"
         "return 0;"), 1LL);
 }
@@ -99,7 +99,7 @@ TEST(PeriodTests, isoFormat) {
     // P1Y2M3D
     EXPECT_EQ(runJit(
         "Period p = Period.of(1,2,3);\n"
-        "String s = p.iso();\n"
+        "String s #= p.iso();\n"
         "if (s.size()==7 && s.charAt(0)==80 && s.charAt(2)==89 && s.charAt(6)==68) return 1;\n"
         "return 0;"), 1LL);
 }
@@ -125,12 +125,12 @@ TEST(ZoneOffsetTests, hoursMinutes) {
 TEST(ZoneOffsetTests, isoUtcAndOffset) {
     EXPECT_EQ(runJit(
         "ZoneOffset z = ZoneOffset.utc();\n"
-        "String s = z.iso();\n"
+        "String s #= z.iso();\n"
         "if (s.size()==1 && s.charAt(0)==90) return 1;\n"  // 'Z'
         "return 0;"), 1LL);
     EXPECT_EQ(runJit(
         "ZoneOffset z = ZoneOffset.ofHoursMinutes(5,30);\n"
-        "String s = z.iso();\n"
+        "String s #= z.iso();\n"
         "if (s.size()==6 && s.charAt(0)==43 && s.charAt(3)==58) return 1;\n"  // +05:30
         "return 0;"), 1LL);
 }
@@ -179,7 +179,7 @@ TEST(ZonedDateTimeTests, isoHasOffset) {
         "Instant i = Instant.ofEpochSecond(0);\n"
         "ZoneOffset z = ZoneOffset.ofHours(2);\n"
         "ZonedDateTime zdt = ZonedDateTime.ofInstant(i, z);\n"
-        "String s = zdt.iso();\n"
+        "String s #= zdt.iso();\n"
         "if (s.charAt(s.size()-6)==43 && s.charAt(s.size()-3)==58) return 1;\n"  // +02:00
         "return 0;"), 1LL);
 }

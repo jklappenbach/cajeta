@@ -261,7 +261,7 @@ public class ServerBuilder {
      * server reference to call [`shutdown`](Server.cajeta#shutdown) on.
      */
     public void serve() {
-        Server s = this.build();
+        Server s #= this.build();
         s.serve();
     }
 }

@@ -177,7 +177,7 @@ TEST(LazyPlanTests, describeShowsPlanNotRows) {
         "    public static int32 run() {\n"
         + kBuild +
         "        Table<Tick> h = t.lazy();\n"
-        "        String d = h.describe();\n"
+        "        String d #= h.describe();\n"
         "        int32 score = 0;\n"
         "        if (d.contains(\"unforced\") && d.contains(\"scan\")) { score = score + 1; }\n"
         "        if (!d.contains(\"1.5\") && !d.contains(\"ARCA\")) { score = score + 2; }\n"
@@ -186,7 +186,7 @@ TEST(LazyPlanTests, describeShowsPlanNotRows) {
         "            score = score + 4;\n"
         "        }\n"
         "        h.collect();\n"
-        "        String df = h.describe();\n"
+        "        String df #= h.describe();\n"
         "        if (df.contains(\"3 rows\")) { score = score + 8; }\n"  // forced handle defers to result
         "        return score;\n"
         "    }\n"
@@ -209,7 +209,7 @@ TEST(LazyPlanTests, terminalMisuseFailsLoud) {
         "        }\n"
         "        Table<Tick> h = t.lazy();\n"
         "        try {\n"
-        "            Table<Tick> h2 = h.lazy();\n"
+        "            Table<Tick> h2 #= h.lazy();\n"
         "        } catch (FrameException e) {\n"
         "            score = score + 2;\n"
         "        }\n"

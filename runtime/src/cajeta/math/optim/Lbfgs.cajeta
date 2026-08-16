@@ -57,7 +57,7 @@ public final class Lbfgs {
     private static boolean gradAt(Objective fv, GradObjective fg, boolean analytic,
                                   Tensor<float64> xT, float64[] out, int64 n) {
         if (analytic) {
-            Tensor<float64> g = fg.gradient(xT);
+            Tensor<float64> g #= fg.gradient(xT);
             int64 i = 0;
             while (i < n) {
                 float64 v = g.get1(i);
@@ -126,7 +126,7 @@ public final class Lbfgs {
         int32 histCount = 0;
         int32 histNext = 0;
 
-        Tensor<float64> xT = x0.copy();
+        Tensor<float64> xT #= x0.copy();
         int64 z = 0;
         while (z < n) { x[z] = xT.get1(z); z = z + 1; }
 

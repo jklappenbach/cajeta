@@ -195,7 +195,7 @@ public final class CsrMatrix {
         int64[] sh = heap int64[2];
         sh[0] = this.nRows;
         sh[1] = this.nCols;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < this.nRows) {
             int64 t = this.rowPtr[i];
@@ -215,7 +215,7 @@ public final class CsrMatrix {
         }
         int64[] sh = heap int64[1];
         sh[0] = this.nRows;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < this.nRows) {
             float64 acc = 0.0;
@@ -238,7 +238,7 @@ public final class CsrMatrix {
         }
         int64[] sh = heap int64[1];
         sh[0] = this.nCols;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < this.nRows) {
             float64 xi = x.get1(i);

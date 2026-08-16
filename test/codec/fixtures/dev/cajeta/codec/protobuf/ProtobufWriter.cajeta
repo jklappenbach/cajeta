@@ -166,7 +166,7 @@ public final class ProtobufWriter {
             payload.writeVarint(e);
             i = i + 1;
         }
-        int8[] bytes = payload.toBytes();
+        int8[] bytes #= payload.toBytes();
         this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
     }
 
@@ -180,7 +180,7 @@ public final class ProtobufWriter {
             payload.writeVarint(ProtobufWire.zigzagEncode(e));
             i = i + 1;
         }
-        int8[] bytes = payload.toBytes();
+        int8[] bytes #= payload.toBytes();
         this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
     }
 
@@ -197,7 +197,7 @@ public final class ProtobufWriter {
             payload.putByte((int8) ((e >> 24) & 0xFF));
             i = i + 1;
         }
-        int8[] bytes = payload.toBytes();
+        int8[] bytes #= payload.toBytes();
         this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
     }
 
@@ -216,7 +216,7 @@ public final class ProtobufWriter {
             }
             i = i + 1;
         }
-        int8[] bytes = payload.toBytes();
+        int8[] bytes #= payload.toBytes();
         this.writeLenField(fieldNumber, bytes, (int32) bytes.count());
     }
 

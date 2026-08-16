@@ -174,11 +174,11 @@ public final class Dns {
             throw heap NetException("cannot resolve a null host",
                 NetException.KIND_INVALID);
         }
-        int8[] hostBytes = host.toBytes();
+        int8[] hostBytes #= host.toBytes();
         int32 hostLen = host.byteLength();
         int32 filter = Dns.nativeFilter(family);
 
-        pointer handle = Dns.getaddrinfoNative(hostBytes, hostLen, port, filter);
+        pointer handle #= Dns.getaddrinfoNative(hostBytes, hostLen, port, filter);
 
         // A NULL handle ⇒ failure or zero addresses; the NULL-safe
         // `count` accessor reports 0 for it, and a successful resolve
@@ -201,7 +201,7 @@ public final class Dns {
             // releasing the (NULL) handle here keeps the cleanup uniform.
             int32 err = Dns.getaddrinfoError();
             Dns.freeaddrinfoNative(handle);
-            String detail = Dns.failureMessage(host);
+            String detail #= Dns.failureMessage(host);
             if (err == ResolveErrors.RESOLVE_NONAME) {
                 throw heap UnknownHostException(#detail, err);
             }
@@ -220,7 +220,7 @@ public final class Dns {
             // `n` is 4 (V4) or 16 (V6); fromOctets selects the family
             // from the length, matching the family ordinal the native
             // accessor would report.
-            IpAddress ip = IpAddress.fromOctets(oct, n);
+            IpAddress ip #= IpAddress.fromOctets(oct, n);
             int32 p = Dns.getaddrinfoPort(handle, i);
             out[i] = SocketAddress.of(#ip, p);
             i = i + 1;
@@ -277,7 +277,7 @@ public final class Dns {
         prefix[16] = (int8) 101;  // 'e'
         prefix[17] = (int8) 32;   // ' '
 
-        int8[] hostBytes = host.toBytes();
+        int8[] hostBytes #= host.toBytes();
         int32 hostLen = host.byteLength();
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];

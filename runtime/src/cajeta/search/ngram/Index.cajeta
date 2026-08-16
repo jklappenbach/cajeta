@@ -18,7 +18,7 @@ import cajeta.lang.String;
  * Index<int32> idx = heap Index<int32>();   // trigrams (n = 3)
  * idx.add("apple", 1);
  * idx.add("zebra", 2);
- * ArrayList<int32> hits = idx.candidates("aple");  // → [1] (shares "ple")
+ * ArrayList<int32> hits #= idx.candidates("aple"); // → [1] (shares "ple")
  * ```
  *
  * Gram extraction is lowercased for recall; a key shorter than `n` is
@@ -75,13 +75,13 @@ public class Index<T> {
             return out;
         }
         if (len < this.n) {
-            String whole = lower.substring(0, len);
+            String whole #= lower.substring(0, len);
             out.add(#whole);
             return out;
         }
         int32 i = 0;
         while (i + this.n <= len) {
-            String g = lower.substring(i, i + this.n);
+            String g #= lower.substring(i, i + this.n);
             out.add(#g);
             i = i + 1;
         }
@@ -90,7 +90,7 @@ public class Index<T> {
 
     /** Index `value` under every n-gram of `key`. */
     public void add(String key, T value) {
-        ArrayList<String> gs = this.grams(key);
+        ArrayList<String> gs #= this.grams(key);
         int32 i = 0;
         while (i < gs.count()) {
             String g = gs.get(i);
@@ -103,7 +103,7 @@ public class Index<T> {
                 // Move both key and value into the map: the key must outlive
                 // the temporary `gs` list `g` is read from (substring yields a
                 // fresh #String), and the bucket must outlive this call.
-                String owned = g.substring(0, (int32) g.count());
+                String owned #= g.substring(0, (int32) g.count());
                 this.postings.put(#owned, #bucket);
             }
             i = i + 1;
@@ -118,7 +118,7 @@ public class Index<T> {
     public #ArrayList<T> candidates(String query) {
         ArrayList<T> out = heap ArrayList<T>();
         HashSet<T> seen = heap HashSet<T>(64);
-        ArrayList<String> gs = this.grams(query);
+        ArrayList<String> gs #= this.grams(query);
         int32 i = 0;
         while (i < gs.count()) {
             String g = gs.get(i);

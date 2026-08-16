@@ -21,7 +21,7 @@ public final class Stats {
     public static #Tensor<int64> histogram<E extends Numeric>(Tensor<E> t, int32 bins, E lo, E hi) {
         int64[] sh = heap int64[1];
         sh[0] = bins;
-        Tensor<int64> counts = Tensor.zeros<int64>(sh);
+        Tensor<int64> counts #= Tensor.zeros<int64>(sh);
         E span = hi - lo;
         float32 fspan = (float32) span;
         float32 fbins = (float32) bins;
@@ -73,7 +73,7 @@ public final class Stats {
         }
         int64[] sh = heap int64[1];
         sh[0] = mx + 1;
-        Tensor<int64> counts = Tensor.zeros<int64>(sh);
+        Tensor<int64> counts #= Tensor.zeros<int64>(sh);
         i = 0;
         while (i < n) {
             int64 v = t.get1(i);
@@ -95,7 +95,7 @@ public final class Stats {
         int64 ne = edges.size();
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Tensor<int64> out #= Tensor.zeros<int64>(sh);
         int64 i = 0;
         while (i < n) {
             E x = t.get1(i);
@@ -123,7 +123,7 @@ public final class Stats {
         int64 nobs = m.shapeAt(1);
         int64[] msh = heap int64[1];
         msh[0] = v;
-        Tensor<E> means = Tensor.zeros<E>(msh);
+        Tensor<E> means #= Tensor.zeros<E>(msh);
         int64 i = 0;
         while (i < v) {
             E s = (E) 0;
@@ -140,7 +140,7 @@ public final class Stats {
         int64[] sh = heap int64[2];
         sh[0] = v;
         sh[1] = v;
-        Tensor<E> out = Tensor.zeros<E>(sh);
+        Tensor<E> out #= Tensor.zeros<E>(sh);
         i = 0;
         while (i < v) {
             E mi = means.get1(i);
@@ -171,12 +171,12 @@ public final class Stats {
      * entries lie in `[-1, 1]`.
      */
     public static #Tensor<E> corrcoef<E extends Floating>(Tensor<E> m) {
-        Tensor<E> c = Stats.cov<E>(m);
+        Tensor<E> c #= Stats.cov<E>(m);
         int64 v = c.shapeAt(0);
         int64[] sh = heap int64[2];
         sh[0] = v;
         sh[1] = v;
-        Tensor<E> out = Tensor.zeros<E>(sh);
+        Tensor<E> out #= Tensor.zeros<E>(sh);
         int64 i = 0;
         while (i < v) {
             E cii = c.get2(i, i);
@@ -204,7 +204,7 @@ public final class Stats {
         int64 n = t.size();
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<E> flat = Tensor.zeros<E>(sh);
+        Tensor<E> flat #= Tensor.zeros<E>(sh);
         int32 nd = t.ndim();
         int64[] idx = heap int64[nd];
         int32 z = 0;
@@ -221,7 +221,7 @@ public final class Stats {
                 else { carry = false; }
             }
         }
-        Tensor<E> s = Tensor.sort<E>(flat, 0);
+        Tensor<E> s #= Tensor.sort<E>(flat, 0);
         int64 nm1 = n - 1;
         E en = (E) nm1;
         E pos = q * en;

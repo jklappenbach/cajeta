@@ -69,10 +69,10 @@ int32_t runJit(const std::string& runBody) {
 // mode-1 views, which take no rc and would false-green this).
 TEST(SliceEscapeResolutionTests, localSubstringIsBorrow) {
     EXPECT_EQ(runJit(
-        "String s = makeBig(7);\n"                            // 1 KB owned (drop entry)
+        "String s #= makeBig(7);\n"                            // 1 KB owned (drop entry)
         "int64 pop = Cajeta.sharedPopulation();\n"
         "int64 before = Cajeta.allocatedBytes();\n"
-        "String w = s.substring(10, 26);\n"                    // local-only view
+        "String w #= s.substring(10, 26);\n"                    // local-only view
         "if (w.size() != 16) { return -1; }\n"
         "if (w.charAt(0) != s.charAt(10)) { return -2; }\n"
         "if (Cajeta.sharedPopulation() != pop) { return -3; }\n"   // zero rc
@@ -88,8 +88,8 @@ TEST(SliceEscapeResolutionTests, smallEscapeCopies) {
         "Keep k = heap Keep(\"\");\n"
         "int64 pop = Cajeta.sharedPopulation();\n"
         "{\n"
-        "    String s = heapString(64);\n"
-        "    String w = s.substring(10, 26);\n"                // 16 B window
+        "    String s #= heapString(64);\n"
+        "    String w #= s.substring(10, 26);\n"                // 16 B window
         "    k.v = w;\n"                                        // escape: field store
         "}\n"                                                   // s + w drop
         "if (k.v.size() != 16) { return -1; }\n"
@@ -106,8 +106,8 @@ TEST(SliceEscapeResolutionTests, largeEscapeShares) {
         "Keep k = heap Keep(\"\");\n"
         "int64 pop = Cajeta.sharedPopulation();\n"
         "{\n"
-        "    String s = makeBig(8);\n"                          // 2 KB owned (drop entry)
-        "    String w = s.substring(100, 612);\n"                // 512 B window
+        "    String s #= makeBig(8);\n"                          // 2 KB owned (drop entry)
+        "    String w #= s.substring(100, 612);\n"                // 512 B window
         "    int64 before = Cajeta.allocatedBytes();\n"
         "    k.v = w;\n"                                          // escape: share, no copy
         "    if (Cajeta.allocatedBytes() - before > 128) { return -1; }\n"
@@ -129,7 +129,7 @@ TEST(SliceEscapeResolutionTests, arenaEscapeCopies) {
         "    String a = \"abcdefghijklm\";\n"
         "    String b = \"nopqrstuvwxyz\";\n"
         "    String s = a + b;\n"                                // arena-eligible
-        "    String w = s.substring(10, 16);\n"                  // materializes if arena
+        "    String w #= s.substring(10, 16);\n"                  // materializes if arena
         "    k.v = w;\n"
         "}\n"
         "if (k.v.size() != 6) { return -1; }\n"
@@ -174,9 +174,9 @@ TEST(SliceEscapeResolutionTests, autoMoveOnLastUse) {
         "Keep k = heap Keep(\"\");\n"
         "int64 pop = Cajeta.sharedPopulation();\n"
         "{\n"
-        "    String s = makeBig(8);\n"                          // 2 KB owned (drop entry)
+        "    String s #= makeBig(8);\n"                          // 2 KB owned (drop entry)
         "    int64 before = Cajeta.allocatedBytes();\n"
-        "    String w = s.substring(100, 612);\n"                // 512 B window
+        "    String w #= s.substring(100, 612);\n"                // 512 B window
         "    k.v = w;\n"                                         // w's LAST use: move
         "    if (Cajeta.allocatedBytes() - before > 192) { return -1; }\n"
         "}\n"
@@ -219,8 +219,8 @@ TEST(SliceEscapeResolutionTests, unsureResolves) {
         "        Holder h = heap Holder();\n"
         "        Sink sink = h;\n"
         "        {\n"
-        "            String s = heapString(64);\n"
-        "            String w = s.substring(10, 26);\n"
+        "            String s #= heapString(64);\n"
+        "            String w #= s.substring(10, 26);\n"
         "            sink.accept(w);\n"
         "        }\n"
         "        if (h.kept.size() != 16) { return -1; }\n"

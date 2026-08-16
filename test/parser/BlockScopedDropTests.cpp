@@ -142,11 +142,11 @@ TEST(BlockScopedDropTests, twoBackToBackCriticalSections) {
         "        int32 step1 = 0;\n"
         "        int32 step2 = 0;\n"
         "        {\n"
-        "            LockGuard g = lock.acquire();\n"
+        "            LockGuard g #= lock.acquire();\n"
         "            step1 = 10;\n"
         "        }\n"
         "        {\n"  // would deadlock without block-scoped drops
-        "            LockGuard g = lock.acquire();\n"
+        "            LockGuard g #= lock.acquire();\n"
         "            step2 = 20;\n"
         "        }\n"
         "        return step1 + step2;\n"

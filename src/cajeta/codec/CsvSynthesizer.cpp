@@ -177,7 +177,7 @@ namespace cajeta {
         os << "        int32 hc = rh.fieldCount();\n";
         os << "        int32 hi = 0;\n";
         os << "        while (hi < hc) {\n";
-        os << "            int8[] hb = rh.field(hi);\n";
+        os << "            int8[] hb #= rh.field(hi);\n";
         os << "            cajeta.lang.String hn = "
               "heap cajeta.lang.String(#hb, (int32) hb.count());\n";
         bool first = true;
@@ -225,7 +225,7 @@ namespace cajeta {
         for (auto& b : binds) {
             os << "        if (col_" << b.name << " >= (int32) 0) {\n";
             os << "            int8[] fv_" << b.name
-               << " = rd.field(col_" << b.name << ");\n";
+               << " #= rd.field(col_" << b.name << ");\n";
             if (b.isString) {
                 os << "            int32 fl_" << b.name
                    << " = (int32) fv_" << b.name << ".count();\n";

@@ -93,13 +93,13 @@ namespace cajeta {
                     // Owned #String return: hoist, then surrender into the
                     // field with '#' (a plain store lends a dying temp).
                     const std::string sv = "v" + path + "_" + b.name;
-                    os << "    String " << sv << " = " << cur << ".readString();\n";
+                    os << "    String " << sv << " #= " << cur << ".readString();\n";
                     os << "    " << objVar << "." << b.name << " = #" << sv << ";\n";
                     break;
                 }
                 case Decode::Bytes: {
                     const std::string bv = "v" + path + "_" + b.name;
-                    os << "    int8[] " << bv << " = " << cur << ".readBytes();\n";
+                    os << "    int8[] " << bv << " #= " << cur << ".readBytes();\n";
                     os << "    " << objVar << "." << b.name << " = #" << bv << ";\n";
                     break;
                 }
@@ -150,7 +150,7 @@ namespace cajeta {
         os << "    int32 i = 0;\n";
         os << "    boolean more = ct.nextBlock();\n";
         os << "    while (more) {\n";
-        os << "        int8[] data = ct.currentData();\n";
+        os << "        int8[] data #= ct.currentData();\n";
         os << "        " << AC << " cur = heap " << AC << "(data, (int64) 0);\n";
         os << "        int64 cnt = ct.currentObjectCount();\n";
         os << "        int64 j = (int64) 0;\n";
@@ -287,7 +287,7 @@ namespace cajeta {
         emitRecordEncode(os, E, "body", "e", "");
         os << "        i = i + 1;\n";
         os << "    }\n";
-        os << "    int8[] data = body.result();\n";
+        os << "    int8[] data #= body.result();\n";
         os << "    int64 dlen = body.size();\n";
         os << "    cajeta.lang.String schema = \"" << schema << "\";\n";
         // A FQ static call corrupts synthesized codegen (P-COMPILER-FQN); build

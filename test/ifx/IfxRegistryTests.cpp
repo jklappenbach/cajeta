@@ -290,7 +290,7 @@ TEST(IfxRegistryTests, supportsFalseForUnregisteredDomain) {
 TEST(IfxRegistryTests, ifxInfoDescribeReflectsRegisteredWindow) {
     EXPECT_EQ(runI32(
         "BackendRegistry.instance().registerWindow(heap FakeWindow(\"win32\", 100, true));\n"
-        "IfxInfo info = IfxInfo.describe();\n"
+        "IfxInfo info #= IfxInfo.describe();\n"
         "if (info.windowBackendName().equals(\"win32\")\n"
         "    && info.inputBackendName().equals(\"null\")\n"     // input floor (auto-registered)
         "    && info.audioBackendName().equals(\"null\")) { return 1; }\n"  // audio floor

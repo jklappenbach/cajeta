@@ -128,7 +128,7 @@ TEST(FileIoTests, readAllBytesMatchesContent) {
     std::string path = uniquePath("readAllBytes_basic.txt");
     writeRaw(path, "hello, file");
     std::string src = makeSource(
-        "int8[] bytes = File.readAllBytes(\"" + path + "\");\n"
+        "int8[] bytes #= File.readAllBytes(\"" + path + "\");\n"
         "if (bytes.count() == 11) return 1;\n"
         "return 0;");
     EXPECT_EQ(runI32(src), 1);
@@ -139,7 +139,7 @@ TEST(FileIoTests, readAllBytesEmptyFile) {
     std::string path = uniquePath("readAllBytes_empty.txt");
     writeRaw(path, "");
     std::string src = makeSource(
-        "int8[] bytes = File.readAllBytes(\"" + path + "\");\n"
+        "int8[] bytes #= File.readAllBytes(\"" + path + "\");\n"
         "if (bytes.count() == 0) return 1;\n"
         "return 0;");
     EXPECT_EQ(runI32(src), 1);
@@ -153,7 +153,7 @@ TEST(FileIoTests, writeAllBytesRoundTripsViaReadAllBytes) {
         "int8[] data = [ (int8) 72, (int8) 101, (int8) 108, (int8) 108, "
         "(int8) 111 ];\n"  // "Hello"
         "File.writeAllBytes(\"" + path + "\", data, 5);\n"
-        "int8[] back = File.readAllBytes(\"" + path + "\");\n"
+        "int8[] back #= File.readAllBytes(\"" + path + "\");\n"
         "if (back.count() == 5) return 1;\n"
         "return 0;");
     EXPECT_EQ(runI32(src), 1);
@@ -170,7 +170,7 @@ TEST(FileIoTests, fileReaderReadsBytesInChunks) {
                       "import cajeta.io.file.FileReader;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        FileReader r #= File.openRead(\"" + path + "\");\n"
                       "        int8[] buf = heap int8[16];\n"
                       "        int32 n = r.read(buf, 16);\n"
                       "        return n;\n"
@@ -187,7 +187,7 @@ TEST(FileIoTests, fileReaderPositionTracksBytesRead) {
                       "import cajeta.io.file.FileReader;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        FileReader r #= File.openRead(\"" + path + "\");\n"
                       "        int8[] buf = heap int8[5];\n"
                       "        r.read(buf, 5);\n"
                       "        return (int32) r.position();\n"
@@ -204,7 +204,7 @@ TEST(FileIoTests, fileReaderReturnsZeroAtEof) {
                       "import cajeta.io.file.FileReader;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileReader r = File.openRead(\"" + path + "\");\n"
+                      "        FileReader r #= File.openRead(\"" + path + "\");\n"
                       "        int8[] buf = heap int8[8];\n"
                       "        r.read(buf, 8);\n"
                       "        int32 n2 = r.read(buf, 8);\n"
@@ -226,7 +226,7 @@ TEST(FileIoTests, randomAccessOpenReadAndPosition) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        File f #= File.open(\"" + path + "\", OpenMode.READ);\n"
                       "        int8[] buf = heap int8[5];\n"
                       "        f.read(buf, 0, 5);\n"
                       "        return (int32) f.position();\n"
@@ -243,7 +243,7 @@ TEST(FileIoTests, randomAccessSeekChangesPosition) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        File f #= File.open(\"" + path + "\", OpenMode.READ);\n"
                       "        f.seek(7);\n"
                       "        return (int32) f.position();\n"
                       "    }\n"
@@ -259,7 +259,7 @@ TEST(FileIoTests, randomAccessSizeReturnsFileLength) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        File f #= File.open(\"" + path + "\", OpenMode.READ);\n"
                       "        return (int32) f.size();\n"
                       "    }\n"
                       "}\n";
@@ -274,7 +274,7 @@ TEST(FileIoTests, randomAccessSeekFromEndPositionsAtEof) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        File f = File.open(\"" + path + "\", OpenMode.READ);\n"
+                      "        File f #= File.open(\"" + path + "\", OpenMode.READ);\n"
                       "        f.seekFromEnd(0);\n"
                       "        return (int32) f.position();\n"
                       "    }\n"
@@ -291,7 +291,7 @@ TEST(FileIoTests, randomAccessWriteAtCurrentPosition) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        File f = File.open(\"" + path + "\", OpenMode.READ_WRITE);\n"
+                      "        File f #= File.open(\"" + path + "\", OpenMode.READ_WRITE);\n"
                       "        int8[] data = [ (int8) 72, (int8) 105, (int8) 33 ];\n"  // "Hi!"
                       "        f.write(data, 0, 3);\n"
                       "        f.close();\n"
@@ -304,7 +304,7 @@ TEST(FileIoTests, randomAccessWriteAtCurrentPosition) {
            "import cajeta.io.file.OpenMode;\n"
            "public final class F {\n"
            "    public static int32 run() {\n"
-           "        File f = File.open(\"" + path + "\", OpenMode.READ_WRITE);\n"
+           "        File f #= File.open(\"" + path + "\", OpenMode.READ_WRITE);\n"
            "        int8[] data = [ (int8) 72, (int8) 105, (int8) 33 ];\n"
            "        f.write(data, 0, 3);\n"
            "        f.close();\n"
@@ -325,8 +325,8 @@ TEST(FileIoTests, fileReaderReadStringRoundTrip) {
                       "import cajeta.io.file.FileReader;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileReader r = File.openRead(\"" + path + "\");\n"
-                      "        String s = r.readString(32);\n"
+                      "        FileReader r #= File.openRead(\"" + path + "\");\n"
+                      "        String s #= r.readString(32);\n"
                       "        return s.equals(\"Hello, world!\") ? 1 : 0;\n"
                       "    }\n"
                       "}\n";
@@ -341,8 +341,8 @@ TEST(FileIoTests, fileReaderReadStringSizeMatchesFile) {
                       "import cajeta.io.file.FileReader;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileReader r = File.openRead(\"" + path + "\");\n"
-                      "        String s = r.readString(64);\n"
+                      "        FileReader r #= File.openRead(\"" + path + "\");\n"
+                      "        String s #= r.readString(64);\n"
                       "        return (int32) s.count();\n"
                       "    }\n"
                       "}\n";
@@ -357,7 +357,7 @@ TEST(FileIoTests, fileWriterWriteStringRoundTrip) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileWriter w = File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
+                      "        FileWriter w #= File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
                       "        String greeting = \"Hello from Cajeta!\";\n"
                       "        w.writeString(greeting);\n"
                       "        w.close();\n"
@@ -377,11 +377,11 @@ TEST(FileIoTests, fileWriterWriteStringThenReadStringRoundTrip) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileWriter w = File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
+                      "        FileWriter w #= File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
                       "        w.writeString(\"round trip\");\n"
                       "        w.close();\n"
-                      "        FileReader r = File.openRead(\"" + path + "\");\n"
-                      "        String back = r.readString(64);\n"
+                      "        FileReader r #= File.openRead(\"" + path + "\");\n"
+                      "        String back #= r.readString(64);\n"
                       "        return back.equals(\"round trip\") ? 1 : 0;\n"
                       "    }\n"
                       "}\n";
@@ -396,7 +396,7 @@ TEST(FileIoTests, fileWriterWritesBytesRoundTripsViaReadAllBytes) {
                       "import cajeta.io.file.OpenMode;\n"
                       "public final class F {\n"
                       "    public static int32 run() {\n"
-                      "        FileWriter w = File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
+                      "        FileWriter w #= File.openWrite(\"" + path + "\", OpenMode.WRITE);\n"
                       "        int8[] data = [ (int8) 72, (int8) 101, (int8) 108, "
                       "(int8) 108, (int8) 111 ];\n"  // "Hello"
                       "        w.write(data, 5);\n"

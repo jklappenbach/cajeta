@@ -36,7 +36,7 @@ public final class Poly {
         if (lb > lo) { lo = lb; }
         int64[] sh = heap int64[1];
         sh[0] = lo;
-        Tensor<E> out = Tensor.zeros<E>(sh);
+        Tensor<E> out #= Tensor.zeros<E>(sh);
         int64 i = 0;
         while (i < la) {
             int64 p = lo - la + i;
@@ -64,7 +64,7 @@ public final class Poly {
         int64 lb = b.size();
         int64[] sh = heap int64[1];
         sh[0] = la + lb - 1;
-        Tensor<E> out = Tensor.zeros<E>(sh);
+        Tensor<E> out #= Tensor.zeros<E>(sh);
         int64 i = 0;
         while (i < la) {
             E av = a.get1(i);

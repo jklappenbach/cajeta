@@ -161,7 +161,7 @@ public final class Npy {
         int64 fileLen = total + n * 4;
         int8[] buf = heap int8[fileLen];
         Npy.writeHeader(buf, nd, shape, "<f4", total);
-        Tensor<float32> c = t.copy();
+        Tensor<float32> c #= t.copy();
         int64 e = 0;
         while (e < n) {
             int32 bits = Cajeta.f32ToBits(c.flatGet(e));
@@ -184,7 +184,7 @@ public final class Npy {
         int32 a = 0;
         while (a < nd) { shape[a] = dims[a]; a = a + 1; }
         int64 n = Npy.elemCount(shape, nd);
-        Tensor<float32> out = Tensor.zeros<float32>(shape);
+        Tensor<float32> out #= Tensor.zeros<float32>(shape);
         int64 e = 0;
         while (e < n) {
             int64 bo = dataOff + e * 4;
@@ -203,7 +203,7 @@ public final class Npy {
      * @EntryPoint
      */
     public static void saveF32(String path, Tensor<float32> t) {
-        int8[] buf = Npy.encodeF32(t);
+        int8[] buf #= Npy.encodeF32(t);
         int64 len = buf.count();
         File.writeAllBytes(path, buf, len);
     }
@@ -212,7 +212,7 @@ public final class Npy {
      * @EntryPoint
      */
     public static #Tensor<float32> loadF32(String path) {
-        int8[] buf = File.readAllBytes(path);
+        int8[] buf #= File.readAllBytes(path);
         return Npy.decodeF32(buf);
     }
 
@@ -229,7 +229,7 @@ public final class Npy {
         int64 fileLen = total + n * 8;
         int8[] buf = heap int8[fileLen];
         Npy.writeHeader(buf, nd, shape, "<f8", total);
-        Tensor<float64> c = t.copy();
+        Tensor<float64> c #= t.copy();
         int64 e = 0;
         while (e < n) {
             Cajeta.storeU64(buf, total + e * 8, Cajeta.f64ToBits(c.flatGet(e)));
@@ -247,7 +247,7 @@ public final class Npy {
         int32 a = 0;
         while (a < nd) { shape[a] = dims[a]; a = a + 1; }
         int64 n = Npy.elemCount(shape, nd);
-        Tensor<float64> out = Tensor.zeros<float64>(shape);
+        Tensor<float64> out #= Tensor.zeros<float64>(shape);
         int64 e = 0;
         while (e < n) {
             out.flatSet(e, Cajeta.bitsToF64(Cajeta.loadU64(buf, dataOff + e * 8)));
@@ -258,14 +258,14 @@ public final class Npy {
 
     /** Save a `float64` tensor to `path` as a `.npy` (`'<f8'`, C-order). */
     public static void saveF64(String path, Tensor<float64> t) {
-        int8[] buf = Npy.encodeF64(t);
+        int8[] buf #= Npy.encodeF64(t);
         int64 len = buf.count();
         File.writeAllBytes(path, buf, len);
     }
 
     /** Load a `float64` `.npy` from `path`. */
     public static #Tensor<float64> loadF64(String path) {
-        int8[] buf = File.readAllBytes(path);
+        int8[] buf #= File.readAllBytes(path);
         return Npy.decodeF64(buf);
     }
 
@@ -282,7 +282,7 @@ public final class Npy {
         int64 fileLen = total + n * 4;
         int8[] buf = heap int8[fileLen];
         Npy.writeHeader(buf, nd, shape, "<i4", total);
-        Tensor<int32> c = t.copy();
+        Tensor<int32> c #= t.copy();
         int64 e = 0;
         while (e < n) {
             int32 v = c.flatGet(e);
@@ -305,7 +305,7 @@ public final class Npy {
         int32 a = 0;
         while (a < nd) { shape[a] = dims[a]; a = a + 1; }
         int64 n = Npy.elemCount(shape, nd);
-        Tensor<int32> out = Tensor.zeros<int32>(shape);
+        Tensor<int32> out #= Tensor.zeros<int32>(shape);
         int64 e = 0;
         while (e < n) {
             int64 bo = dataOff + e * 4;
@@ -322,14 +322,14 @@ public final class Npy {
 
     /** Save an `int32` tensor to `path` as a `.npy` (`'<i4'`, C-order). */
     public static void saveI32(String path, Tensor<int32> t) {
-        int8[] buf = Npy.encodeI32(t);
+        int8[] buf #= Npy.encodeI32(t);
         int64 len = buf.count();
         File.writeAllBytes(path, buf, len);
     }
 
     /** Load an `int32` `.npy` from `path`. */
     public static #Tensor<int32> loadI32(String path) {
-        int8[] buf = File.readAllBytes(path);
+        int8[] buf #= File.readAllBytes(path);
         return Npy.decodeI32(buf);
     }
 
@@ -346,7 +346,7 @@ public final class Npy {
         int64 fileLen = total + n * 8;
         int8[] buf = heap int8[fileLen];
         Npy.writeHeader(buf, nd, shape, "<i8", total);
-        Tensor<int64> c = t.copy();
+        Tensor<int64> c #= t.copy();
         int64 e = 0;
         while (e < n) {
             Cajeta.storeU64(buf, total + e * 8, c.flatGet(e));
@@ -364,7 +364,7 @@ public final class Npy {
         int32 a = 0;
         while (a < nd) { shape[a] = dims[a]; a = a + 1; }
         int64 n = Npy.elemCount(shape, nd);
-        Tensor<int64> out = Tensor.zeros<int64>(shape);
+        Tensor<int64> out #= Tensor.zeros<int64>(shape);
         int64 e = 0;
         while (e < n) {
             out.flatSet(e, Cajeta.loadU64(buf, dataOff + e * 8));
@@ -375,14 +375,14 @@ public final class Npy {
 
     /** Save an `int64` tensor to `path` as a `.npy` (`'<i8'`, C-order). */
     public static void saveI64(String path, Tensor<int64> t) {
-        int8[] buf = Npy.encodeI64(t);
+        int8[] buf #= Npy.encodeI64(t);
         int64 len = buf.count();
         File.writeAllBytes(path, buf, len);
     }
 
     /** Load an `int64` `.npy` from `path`. */
     public static #Tensor<int64> loadI64(String path) {
-        int8[] buf = File.readAllBytes(path);
+        int8[] buf #= File.readAllBytes(path);
         return Npy.decodeI64(buf);
     }
 }

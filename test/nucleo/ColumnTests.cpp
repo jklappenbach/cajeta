@@ -47,7 +47,7 @@ int64_t runI64(const std::string& body) {
 TEST(Column, ofStoresAndReadsValues) {
     EXPECT_FLOAT_EQ(runF32(
         "float32[] fa = [ 1.5f, 2.5f, 3.5f ];\n"
-        "        Column<float32> c = Column.of<float32>(fa);\n"
+        "        Column<float32> c #= Column.of<float32>(fa);\n"
         "        return c.get(0) + c.get(1) * 10.0f + c.get(2) * 100.0f\n"
         "             + ((float32) c.size()) * 1000.0f;"),
         1.5f + 25.0f + 350.0f + 3000.0f);
@@ -59,8 +59,8 @@ TEST(Column, ofStoresAndReadsValues) {
 TEST(Column, asTensorIsZeroCopyView) {
     EXPECT_FLOAT_EQ(runF32(
         "float32[] fa = [ 1.0f, 2.0f, 4.0f ];\n"
-        "        Column<float32> c = Column.of<float32>(fa);\n"
-        "        Tensor<float32> t = c.asTensor();\n"
+        "        Column<float32> c #= Column.of<float32>(fa);\n"
+        "        Tensor<float32> t #= c.asTensor();\n"
         "        t.set1(0, 7.0f);\n"
         "        c.set(1, 9.0f);\n"
         "        return c.get(0) + t.get1(1) * 10.0f + t.get1(2) * 100.0f;"),
@@ -73,10 +73,10 @@ TEST(Column, fromTensorSharesTheBuffer) {
     EXPECT_FLOAT_EQ(runF32(
         "float32[] fa = [ 1.0f, 2.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
-        "        Column<float32> c = Column.fromTensor<float32>(x);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
+        "        Column<float32> c #= Column.fromTensor<float32>(x);\n"
         "        c.set(2, 8.0f);\n"
-        "        Tensor<float32> t2 = c.asTensor();\n"
+        "        Tensor<float32> t2 #= c.asTensor();\n"
         "        return x.get1(2) + t2.get1(0) * 10.0f;"),
         8.0f + 10.0f);
 }
@@ -85,10 +85,10 @@ TEST(Column, fromTensorSharesTheBuffer) {
 // widths (aligned start offset; spec 6.1). Sum of (addr % 64) over dtypes = 0.
 TEST(Column, ownedBuffersAre64ByteAligned) {
     EXPECT_EQ(runI64(
-        "Column<float32> a = Column.zeros<float32>(1000);\n"
-        "        Column<float64> b = Column.zeros<float64>(1000);\n"
-        "        Column<int8> c = Column.zeros<int8>(1000);\n"
-        "        Column<int64> d = Column.zeros<int64>(1000);\n"
+        "Column<float32> a #= Column.zeros<float32>(1000);\n"
+        "        Column<float64> b #= Column.zeros<float64>(1000);\n"
+        "        Column<int8> c #= Column.zeros<int8>(1000);\n"
+        "        Column<int64> d #= Column.zeros<int64>(1000);\n"
         "        return a.dataAddress() % 64 + b.dataAddress() % 64\n"
         "             + c.dataAddress() % 64 + d.dataAddress() % 64;"), 0);
 }
@@ -100,7 +100,7 @@ TEST(Column, ownedBuffersAre64ByteAligned) {
 TEST(Column, nonNullColumnAllocatesNoBitmap) {
     int64_t extra = runI64(
         "int64 base = Cajeta.allocatedBytes();\n"
-        "        Column<float32> c = Column.zeros<float32>(8192);\n"
+        "        Column<float32> c #= Column.zeros<float32>(8192);\n"
         "        int64 grew = Cajeta.allocatedBytes() - base;\n"
         "        return grew - 8192 * 4;");
     EXPECT_GE(extra, 0) << "value buffer not allocated?";
@@ -113,7 +113,7 @@ TEST(Column, nonNullColumnAllocatesNoBitmap) {
 TEST(Column, excludedDtypeIsNamedError) {
     EXPECT_EQ(runI64(
         "try {\n"
-        "            Column<boolean> c = Column.zeros<boolean>(4);\n"
+        "            Column<boolean> c #= Column.zeros<boolean>(4);\n"
         "            return 0;\n"
         "        } catch (ColumnTypeException e) {\n"
         "            return 1;\n"

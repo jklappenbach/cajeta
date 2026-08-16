@@ -108,7 +108,7 @@ public class Tensor<T> {
     public static #Tensor<E> empty<E>(int64[] shape) {
         int64 n = Tensor.productOf(shape);
         Storage<E> st = heap Storage<E>(n);
-        int64[] strides = Tensor.contigStrides(shape);
+        int64[] strides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
@@ -120,7 +120,7 @@ public class Tensor<T> {
     public static #Tensor<E> zeros<E>(int64[] shape) {
         int64 n = Tensor.productOf(shape);
         Storage<E> st = heap Storage<E>(n);
-        int64[] strides = Tensor.contigStrides(shape);
+        int64[] strides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
@@ -138,7 +138,7 @@ public class Tensor<T> {
             st.set(i, one);
             i = i + 1;
         }
-        int64[] strides = Tensor.contigStrides(shape);
+        int64[] strides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
@@ -151,7 +151,7 @@ public class Tensor<T> {
             st.set(i, value);
             i = i + 1;
         }
-        int64[] strides = Tensor.contigStrides(shape);
+        int64[] strides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
@@ -214,7 +214,7 @@ public class Tensor<T> {
             st.set(i, v);
             i = i + 1;
         }
-        int64[] strides = Tensor.contigStrides(shape);
+        int64[] strides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
@@ -232,15 +232,15 @@ public class Tensor<T> {
     }
 
     public static #Tensor<E> zerosLike<E>(Tensor<E> src) {
-        int64[] shp = Tensor.shapeOf<E>(src);
+        int64[] shp #= Tensor.shapeOf<E>(src);
         int64 n = Tensor.productOf(shp);
         Storage<E> st = heap Storage<E>(n);
-        int64[] strides = Tensor.contigStrides(shp);
+        int64[] strides #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strides);
     }
 
     public static #Tensor<E> onesLike<E>(Tensor<E> src) {
-        int64[] shp = Tensor.shapeOf<E>(src);
+        int64[] shp #= Tensor.shapeOf<E>(src);
         int64 n = Tensor.productOf(shp);
         Storage<E> st = heap Storage<E>(n);
         E one = (E) 1;
@@ -249,12 +249,12 @@ public class Tensor<T> {
             st.set(i, one);
             i = i + 1;
         }
-        int64[] strides = Tensor.contigStrides(shp);
+        int64[] strides #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strides);
     }
 
     public static #Tensor<E> fullLike<E>(Tensor<E> src, E value) {
-        int64[] shp = Tensor.shapeOf<E>(src);
+        int64[] shp #= Tensor.shapeOf<E>(src);
         int64 n = Tensor.productOf(shp);
         Storage<E> st = heap Storage<E>(n);
         int64 i = 0;
@@ -262,7 +262,7 @@ public class Tensor<T> {
             st.set(i, value);
             i = i + 1;
         }
-        int64[] strides = Tensor.contigStrides(shp);
+        int64[] strides #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strides);
     }
 
@@ -309,7 +309,7 @@ public class Tensor<T> {
             st.set(i * n + i, one);                // flat C-order index of [i][i]
             i = i + 1;
         }
-        int64[] strides = Tensor.contigStrides(shape);
+        int64[] strides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, strides);
     }
 
@@ -345,8 +345,8 @@ public class Tensor<T> {
         int64[] shapeY = heap int64[2];
         shapeY[0] = ny;
         shapeY[1] = nx;
-        int64[] stridesX = Tensor.contigStrides(shapeX);
-        int64[] stridesY = Tensor.contigStrides(shapeY);
+        int64[] stridesX #= Tensor.contigStrides(shapeX);
+        int64[] stridesY #= Tensor.contigStrides(shapeY);
         Tensor<E>[] out = heap Tensor<E>[2];
         out[0] = heap Tensor<E>(#sx, 0, shapeX, stridesX);
         out[1] = heap Tensor<E>(#sy, 0, shapeY, stridesY);
@@ -399,7 +399,7 @@ public class Tensor<T> {
 
     /** Bytes per element. */
     public int32 itemsize() {
-        DType d = DType.of<T>();
+        DType d #= DType.of<T>();
         return d.bytes();
     }
 
@@ -430,7 +430,7 @@ public class Tensor<T> {
      * cycle).
      */
     public int64 exportArrow() {
-        DType d = DType.of<T>();
+        DType d #= DType.of<T>();
         return this.arrowExportFixed(this.hostAddress(), this.size(), 0, 0,
                                      d.kind(), d.bits());
     }
@@ -578,7 +578,7 @@ public class Tensor<T> {
             strd[i] = this.strideDims[i];
             i = i + 1;
         }
-        DType d = DType.of<T>();
+        DType d #= DType.of<T>();
         // Upcast Storage<T> → Object (identity, no wildcard proxy): the protocol
         // borrows the backing (shared, not owned — this tensor keeps ownership; the
         // live-set frees it once). fromProtocol downcasts it back to Storage<E>.
@@ -631,8 +631,8 @@ public class Tensor<T> {
      * Internal — driven by `fromProtocol`'s dtype switch.
      */
     static #Tensor<E> rebuildShared<E>(TensorProtocol p) {
-        int64[] shp = p.shapeCopy();
-        int64[] strd = p.strideCopy();
+        int64[] shp #= p.shapeCopy();
+        int64[] strd #= p.strideCopy();
         // Pass the borrowed backing DIRECTLY (no named `Storage<E> s` local): a
         // class-typed local bound to a borrow gets an owning drop registered, which
         // would virtual-drop this SHARED Storage at scope exit and free the buffer
@@ -677,8 +677,8 @@ public class Tensor<T> {
      * that would free the producer's buffer out from under it on an early drop.
      */
     static #Tensor<?> rebuildContiguous<E>(TensorProtocol p) {
-        int64[] shp = p.shapeCopy();
-        int64[] strd = p.strideCopy();
+        int64[] shp #= p.shapeCopy();
+        int64[] strd #= p.strideCopy();
         if (Tensor.contiguousLayout(shp, strd)) {
             Tensor<E> t = heap Tensor<E>((Storage<E>) p.base(), p.offset(), shp, strd);
             t.markSharedView();          // amenable → zero-copy shared view
@@ -745,7 +745,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(shape);
+        int64[] outStrides #= Tensor.contigStrides(shape);
         return heap Tensor<E>(#st, 0, shape, outStrides);
     }
 
@@ -832,7 +832,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         return heap Tensor<T>(#st, 0, outShape, outStrides);
     }
 
@@ -858,7 +858,7 @@ public class Tensor<T> {
      */
     public #Tensor<T> reshape(int64[] newShape) {
         if (this.isContiguous()) {
-            int64[] ns = Tensor.contigStrides(newShape);
+            int64[] ns #= Tensor.contigStrides(newShape);
             return this.makeView(this.offsetVal, newShape, ns);
         }
         return this.materialize(newShape);
@@ -1178,7 +1178,7 @@ public class Tensor<T> {
         while (i < nd) { outShape[i] = p0.shapeAt(i); i = i + 1; }
         outShape[ax] = axisTotal;
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[nd];
         int32 z = 0;
@@ -1224,7 +1224,7 @@ public class Tensor<T> {
             i = i + 1;
         }
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[outNd];
         int32 z = 0;
@@ -1287,7 +1287,7 @@ public class Tensor<T> {
         int32 i = 0;
         while (i < nd) { outShape[i] = t.shapeAt(i) * reps[i]; i = i + 1; }
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[nd];
         int64[] lidx = heap int64[nd];
@@ -1323,7 +1323,7 @@ public class Tensor<T> {
         while (i < nd) { outShape[i] = t.shapeAt(i); i = i + 1; }
         outShape[ax] = t.shapeAt(ax) * (int64) n;
         int64 cnt = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(cnt);
         int64[] idx = heap int64[nd];
         int64[] lidx = heap int64[nd];
@@ -1357,7 +1357,7 @@ public class Tensor<T> {
         int32 i = 0;
         while (i < nd) { outShape[i] = before[i] + t.shapeAt(i) + after[i]; i = i + 1; }
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[nd];
         int64[] lidx = heap int64[nd];
@@ -1396,9 +1396,9 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 len = t.shapeAt(ax);
-        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64[] outShape #= Tensor.shapeOf<E>(t);
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[nd];
         int64[] lidx = heap int64[nd];
@@ -1475,7 +1475,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        int64[] strd = Tensor.contigStrides(shp);
+        int64[] strd #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
@@ -1501,7 +1501,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        int64[] strd = Tensor.contigStrides(shp);
+        int64[] strd #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
@@ -1531,7 +1531,7 @@ public class Tensor<T> {
         while (j < nd) { outShape[j] = t.shapeAt(j); j = j + 1; }
         outShape[ax] = keptN;
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[nd];
         int64[] lidx = heap int64[nd];
@@ -1565,9 +1565,9 @@ public class Tensor<T> {
         Placement.guardSingle<int64>("Tensor.choose", indices);
         Placement.guardMany<E>("Tensor.choose", choices);
         int32 nd = indices.ndim();
-        int64[] outShape = Tensor.shapeOf<int64>(indices);
+        int64[] outShape #= Tensor.shapeOf<int64>(indices);
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(n);
         int64[] idx = heap int64[nd];
         int32 z = 0;
@@ -1628,7 +1628,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        int64[] strd = Tensor.contigStrides(shp);
+        int64[] strd #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
@@ -1673,7 +1673,7 @@ public class Tensor<T> {
         shp[0] = batch;
         shp[1] = m;
         shp[2] = n;
-        int64[] strd = Tensor.contigStrides(shp);
+        int64[] strd #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
@@ -1735,7 +1735,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[2];
         shp[0] = m;
         shp[1] = n;
-        int64[] strd = Tensor.contigStrides(shp);
+        int64[] strd #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
@@ -1792,7 +1792,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[2];
         shp[0] = m * p;
         shp[1] = oc;
-        int64[] strd = Tensor.contigStrides(shp);
+        int64[] strd #= Tensor.contigStrides(shp);
         return heap Tensor<E>(#st, 0, shp, strd);
     }
 
@@ -1844,7 +1844,7 @@ public class Tensor<T> {
         i = 0;
         while (i < freeBn) { outShape[w] = b.shapeAt(naxes + i); w = w + 1; i = i + 1; }
         int64 outN = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(outN);
         int64[] oidx = heap int64[outNd];
         int64[] aIdx = heap int64[ndA];
@@ -1910,7 +1910,7 @@ public class Tensor<T> {
         i = 0;
         while (i < freeBn) { outShape[w] = b.shapeAt(i); w = w + 1; i = i + 1; }
         int64 outN = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(outN);
         int64[] oidx = heap int64[outNd];
         int64[] aIdx = heap int64[ndA];
@@ -2070,7 +2070,7 @@ public class Tensor<T> {
         // Nested walk: each output cell ← Σ over the summed indices of the product
         // of one element from every operand.
         int64 outN = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<E> st = heap Storage<E>(outN);
         int64[] valOf = heap int64[128];      // label code → current index value
         int64[] eidx = heap int64[maxNd];     // reused per-operand index (getAt reads ndim)
@@ -2134,7 +2134,7 @@ public class Tensor<T> {
      */
     public static #Tensor<E> sort<E extends Numeric>(Tensor<E> t, int32 axis) {
         Placement.guardSingle<E>("Tensor.sort", t);
-        Tensor<E> out = t.copy();
+        Tensor<E> out #= t.copy();
         int32 nd = t.ndim();
         int64 axisLen = t.shapeAt(axis);
         int64[] idx = heap int64[nd];
@@ -2199,7 +2199,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[nd];
         int32 c = 0;
         while (c < nd) { shp[c] = t.shapeAt(c); c = c + 1; }
-        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        Tensor<int64> out #= Tensor.zeros<int64>(shp);
         int64[] idx = heap int64[nd];
         int32 z = 0;
         while (z < nd) { idx[z] = 0; z = z + 1; }
@@ -2271,7 +2271,7 @@ public class Tensor<T> {
         int64 m = values.size();
         int64[] shp = heap int64[1];
         shp[0] = m;
-        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        Tensor<int64> out #= Tensor.zeros<int64>(shp);
         int64 vi = 0;
         while (vi < m) {
             E val = values.get1(vi);
@@ -2387,7 +2387,7 @@ public class Tensor<T> {
      */
     public static #Tensor<E> partition<E extends Numeric>(Tensor<E> t, int64 kth, int32 axis) {
         Placement.guardSingle<E>("Tensor.partition", t);
-        Tensor<E> out = t.copy();
+        Tensor<E> out #= t.copy();
         int32 nd = t.ndim();
         int64 axisLen = t.shapeAt(axis);
         int64[] idx = heap int64[nd];
@@ -2496,7 +2496,7 @@ public class Tensor<T> {
         int64[] shp = heap int64[nd];
         int32 c = 0;
         while (c < nd) { shp[c] = t.shapeAt(c); c = c + 1; }
-        Tensor<int64> out = Tensor.zeros<int64>(shp);
+        Tensor<int64> out #= Tensor.zeros<int64>(shp);
         int64[] idx = heap int64[nd];
         int32 z = 0;
         while (z < nd) { idx[z] = 0; z = z + 1; }
@@ -2544,7 +2544,7 @@ public class Tensor<T> {
         int64 n = t.size();
         int64[] s1 = heap int64[1];
         s1[0] = n;
-        Tensor<E> flat = Tensor.zeros<E>(s1);
+        Tensor<E> flat #= Tensor.zeros<E>(s1);
         int32 nd = t.ndim();
         int64[] idx = heap int64[nd];
         int32 z = 0;
@@ -2561,7 +2561,7 @@ public class Tensor<T> {
                 else { carry = false; }
             }
         }
-        Tensor<E> sorted = Tensor.sort<E>(flat, 0);
+        Tensor<E> sorted #= Tensor.sort<E>(flat, 0);
         int64 cnt = 0;
         if (n > 0) {
             cnt = 1;
@@ -2573,7 +2573,7 @@ public class Tensor<T> {
         }
         int64[] os = heap int64[1];
         os[0] = cnt;
-        Tensor<E> out = Tensor.zeros<E>(os);
+        Tensor<E> out #= Tensor.zeros<E>(os);
         if (n > 0) {
             out.set1(0, sorted.get1(0));
             int64 w = 1;
@@ -2617,7 +2617,7 @@ public class Tensor<T> {
         }
         int64[] os = heap int64[1];
         os[0] = cnt;
-        Tensor<int64> out = Tensor.zeros<int64>(os);
+        Tensor<int64> out #= Tensor.zeros<int64>(os);
         z = 0;
         while (z < nd) { idx[z] = 0; z = z + 1; }
         int64 w = 0;
@@ -2717,7 +2717,7 @@ public class Tensor<T> {
         }
         int64[] os = heap int64[1];
         os[0] = cnt;
-        Tensor<E> out = Tensor.zeros<E>(os);
+        Tensor<E> out #= Tensor.zeros<E>(os);
         int64 w = 0;
         i = 0;
         while (i < n) {
@@ -2773,7 +2773,7 @@ public class Tensor<T> {
      */
     static #Tensor<? extends Numeric> autoBinop<A extends Numeric, B extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
-        DType rr = DType.promote(DType.of<A>(), DType.of<B>());
+        DType rr #= DType.promote(DType.of<A>(), DType.of<B>());
         int32 k = rr.kind();
         int32 bits = rr.bits();
         int32 var = rr.variant();
@@ -2803,7 +2803,7 @@ public class Tensor<T> {
      */
     static #Tensor<? extends Floating> autoDiv<A extends Numeric, B extends Numeric>(
             Tensor<A> a, Tensor<B> b) {
-        DType pr = DType.promote(DType.of<A>(), DType.of<B>());
+        DType pr #= DType.promote(DType.of<A>(), DType.of<B>());
         int32 k = pr.kind();
         int32 bits = pr.bits();
         int32 var = pr.variant();
@@ -2839,7 +2839,7 @@ public class Tensor<T> {
      */
     public static #Tensor<E> add<E>(Tensor<E> a, Tensor<E> b) {
         Placement.guardPair<E>("Tensor.add", a, b);
-        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
         int32 nd = (int32) rshape.count();
@@ -2868,7 +2868,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -2876,7 +2876,7 @@ public class Tensor<T> {
      *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
     public static #Tensor<E> sub<E>(Tensor<E> a, Tensor<E> b) {
         Placement.guardPair<E>("Tensor.sub", a, b);
-        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
         int32 nd = (int32) rshape.count();
@@ -2905,7 +2905,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -2913,7 +2913,7 @@ public class Tensor<T> {
      *  arithmetic lives in a static method-type-param op (concrete dtype at the call). */
     public static #Tensor<E> mul<E>(Tensor<E> a, Tensor<E> b) {
         Placement.guardPair<E>("Tensor.mul", a, b);
-        int64[] rshape = Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<E>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<E> st = heap Storage<E>(n);
         int32 nd = (int32) rshape.count();
@@ -2942,7 +2942,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -2969,7 +2969,7 @@ public class Tensor<T> {
     static #Tensor<R> binop<A extends Numeric, B extends Numeric, R extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
         Placement.guardPair2<A, B>(Tensor.binopName(op), a, b);
-        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
         int32 nd = (int32) rshape.count();
@@ -3003,7 +3003,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<R>(#st, 0, rshape, rstrides);
     }
 
@@ -3046,7 +3046,7 @@ public class Tensor<T> {
     static #Tensor<boolean> cmp<A extends Numeric, B extends Numeric, C extends Numeric>(
             Tensor<A> a, Tensor<B> b, int32 op) {
         Placement.guardPair2<A, B>(Tensor.cmpName(op), a, b);
-        int64[] rshape = Tensor.broadcastShape<C>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<C>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<boolean> st = heap Storage<boolean>(n);
         int32 nd = (int32) rshape.count();
@@ -3082,7 +3082,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<boolean>(#st, 0, rshape, rstrides);
     }
 
@@ -3168,7 +3168,7 @@ public class Tensor<T> {
         } else {
             Placement.guardPair2<A, B>("Tensor.floorDiv", a, b);
         }
-        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
         int32 nd = (int32) rshape.count();
@@ -3202,7 +3202,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<R>(#st, 0, rshape, rstrides);
     }
 
@@ -3244,7 +3244,7 @@ public class Tensor<T> {
     static #Tensor<R> bitop<A extends Integral, B extends Integral, R extends Integral>(
             Tensor<A> a, Tensor<B> b, int32 op) {
         Placement.guardPair2<A, B>(Tensor.bitopName(op), a, b);
-        int64[] rshape = Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<R>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
         int32 nd = (int32) rshape.count();
@@ -3279,7 +3279,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<R>(#st, 0, rshape, rstrides);
     }
 
@@ -3333,7 +3333,7 @@ public class Tensor<T> {
 
     static #Tensor<boolean> logic(Tensor<boolean> a, Tensor<boolean> b, int32 op) {
         Placement.guardPair<boolean>(Tensor.logicName(op), "a", a, "b", b);
-        int64[] rshape = Tensor.broadcastShape<boolean>(a.shapeDims, b.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<boolean>(a.shapeDims, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<boolean> st = heap Storage<boolean>(n);
         int32 nd = (int32) rshape.count();
@@ -3364,7 +3364,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<boolean>(#st, 0, rshape, rstrides);
     }
 
@@ -3415,7 +3415,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<boolean>(#st, 0, rshape, rstrides);
     }
 
@@ -3485,7 +3485,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -3533,7 +3533,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -3571,7 +3571,7 @@ public class Tensor<T> {
             ls[c] = like.shapeDims[c];
             c = c + 1;
         }
-        Tensor<E> acc = Tensor.zeros<E>(ls);
+        Tensor<E> acc #= Tensor.zeros<E>(ls);
         int64 n = Tensor.productOf(g.shapeDims);
         int64[] gi = heap int64[gd];
         int32 k = 0;
@@ -3632,8 +3632,8 @@ public class Tensor<T> {
             Tensor<boolean> cond, Tensor<A> a, Tensor<B> b) {
         Placement.guardSingle<boolean>("Tensor.where", cond);
         Placement.guardPair2<A, B>("Tensor.where", a, b);
-        int64[] s1 = Tensor.broadcastShape<R>(cond.shapeDims, a.shapeDims);
-        int64[] rshape = Tensor.broadcastShape<R>(s1, b.shapeDims);
+        int64[] s1 #= Tensor.broadcastShape<R>(cond.shapeDims, a.shapeDims);
+        int64[] rshape #= Tensor.broadcastShape<R>(s1, b.shapeDims);
         int64 n = Tensor.productOf(rshape);
         Storage<R> st = heap Storage<R>(n);
         int32 nd = (int32) rshape.count();
@@ -3664,7 +3664,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<R>(#st, 0, rshape, rstrides);
     }
 
@@ -3709,7 +3709,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -3766,7 +3766,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<E>(#st, 0, rshape, rstrides);
     }
 
@@ -3815,7 +3815,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] rstrides = Tensor.contigStrides(rshape);
+        int64[] rstrides #= Tensor.contigStrides(rshape);
         return heap Tensor<float64>(#st, 0, rshape, rstrides);
     }
 
@@ -4025,7 +4025,7 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64[] outShape #= Tensor.reducedShape(t.shapeDims, ax, keepdims);
         int64 outN = Tensor.productOf(outShape);
         Storage<R> st = heap Storage<R>(outN);
         int64[] idx = heap int64[nd];
@@ -4055,7 +4055,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         return heap Tensor<R>(#st, 0, outShape, outStrides);
     }
 
@@ -4067,7 +4067,7 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64[] outShape #= Tensor.reducedShape(t.shapeDims, ax, keepdims);
         int64 outN = Tensor.productOf(outShape);
         Storage<R> st = heap Storage<R>(outN);
         int64[] idx = heap int64[nd];
@@ -4097,7 +4097,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         return heap Tensor<R>(#st, 0, outShape, outStrides);
     }
 
@@ -4109,7 +4109,7 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64[] outShape #= Tensor.reducedShape(t.shapeDims, ax, keepdims);
         int64 outN = Tensor.productOf(outShape);
         Storage<E> st = heap Storage<E>(outN);
         int64[] idx = heap int64[nd];
@@ -4139,7 +4139,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         return heap Tensor<E>(#st, 0, outShape, outStrides);
     }
 
@@ -4151,7 +4151,7 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64[] outShape #= Tensor.reducedShape(t.shapeDims, ax, keepdims);
         int64 outN = Tensor.productOf(outShape);
         Storage<E> st = heap Storage<E>(outN);
         int64[] idx = heap int64[nd];
@@ -4181,7 +4181,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         return heap Tensor<E>(#st, 0, outShape, outStrides);
     }
 
@@ -4194,7 +4194,7 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.reducedShape(t.shapeDims, ax, keepdims);
+        int64[] outShape #= Tensor.reducedShape(t.shapeDims, ax, keepdims);
         int64 outN = Tensor.productOf(outShape);
         Storage<R> st = heap Storage<R>(outN);
         int64[] idx = heap int64[nd];
@@ -4224,7 +4224,7 @@ public class Tensor<T> {
                 }
             }
         }
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         return heap Tensor<R>(#st, 0, outShape, outStrides);
     }
 
@@ -4313,7 +4313,7 @@ public class Tensor<T> {
             if (k != axis) { oshape[w] = t.shapeDims[k]; w = w + 1; }
             k = k + 1;
         }
-        Tensor<int64> out = Tensor.zeros<int64>(oshape);
+        Tensor<int64> out #= Tensor.zeros<int64>(oshape);
         int64 outN = Tensor.productOf(oshape);
         int64[] oidx = heap int64[nd - 1];
         int32 z = 0;
@@ -4366,7 +4366,7 @@ public class Tensor<T> {
             if (k != axis) { oshape[w] = t.shapeDims[k]; w = w + 1; }
             k = k + 1;
         }
-        Tensor<int64> out = Tensor.zeros<int64>(oshape);
+        Tensor<int64> out #= Tensor.zeros<int64>(oshape);
         int64 outN = Tensor.productOf(oshape);
         int64[] oidx = heap int64[nd - 1];
         int32 z = 0;
@@ -4673,9 +4673,9 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64[] outShape #= Tensor.shapeOf<E>(t);
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<R> st = heap Storage<R>(n);
         int64[] idx = heap int64[nd];
         int32 k = 0;
@@ -4720,9 +4720,9 @@ public class Tensor<T> {
         int32 ax = axis;
         if (ax < 0) { ax = ax + nd; }
         int64 axisLen = t.shapeDims[ax];
-        int64[] outShape = Tensor.shapeOf<E>(t);
+        int64[] outShape #= Tensor.shapeOf<E>(t);
         int64 n = Tensor.productOf(outShape);
-        int64[] outStrides = Tensor.contigStrides(outShape);
+        int64[] outStrides #= Tensor.contigStrides(outShape);
         Storage<R> st = heap Storage<R>(n);
         int64[] idx = heap int64[nd];
         int32 k = 0;

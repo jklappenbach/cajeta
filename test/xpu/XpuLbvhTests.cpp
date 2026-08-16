@@ -350,7 +350,7 @@ TEST(XpuLbvhTests, buildBlockStructure4) {
         "            boxes[b6 + 5] = 0.5f;\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        float32[] blk = Lbvh.build(boxes, count);\n"
+        "        float32[] blk #= Lbvh.build(boxes, count);\n"
         // header
         "        if (blk[0] != 1.0f) { return -1; }\n"
         "        if (blk[1] != 7.0f) { return -2; }\n"      // nodeCount
@@ -390,7 +390,7 @@ TEST(XpuLbvhTests, buildBlockSinglePrim) {
         "        float32[] boxes = heap float32[6];\n"
         "        boxes[0] = 1.0f; boxes[1] = 2.0f; boxes[2] = 3.0f;\n"
         "        boxes[3] = 4.0f; boxes[4] = 5.0f; boxes[5] = 6.0f;\n"
-        "        float32[] blk = Lbvh.build(boxes, 1);\n"
+        "        float32[] blk #= Lbvh.build(boxes, 1);\n"
         "        if (blk[1] != 1.0f) { return -1; }\n"      // nodeCount
         "        if (blk[2] != 1.0f) { return -2; }\n"      // primCount
         "        if (blk[5] != 17.0f) { return -3; }\n"     // primRefOffset
@@ -424,7 +424,7 @@ TEST(XpuLbvhTests, buildBlockCoverage8) {
         "            boxes[b6 + 3] = fx + 0.5f; boxes[b6 + 4] = fy + 0.5f; boxes[b6 + 5] = fz + 0.5f;\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        float32[] blk = Lbvh.build(boxes, count);\n"
+        "        float32[] blk #= Lbvh.build(boxes, count);\n"
         "        if (blk[1] != 15.0f) { return -1; }\n"     // nodeCount = 2*8-1
         "        if (blk[2] != 8.0f) { return -2; }\n"
         "        if (blk[8] != 0.0f) { return -3; }\n"      // root minX
@@ -476,7 +476,7 @@ TEST(XpuLbvhTests, nearestHitCrossCheck) {
         "            boxes[b6 + 3] = cx + 0.5f; boxes[b6 + 4] = 0.5f;        boxes[b6 + 5] = 0.5f;\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        float32[] blk = Lbvh.build(boxes, count);\n"
+        "        float32[] blk #= Lbvh.build(boxes, count);\n"
         // ray 1: from +x looking -x -> nearest box is the one at x=3 (prim 3)
         "        int32 t1 = D.nearest(blk, 10.0f, 0.0f, 0.0f, 0.0f - 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
         "        int32 r1 = D.brute(boxes, count, 10.0f, 0.0f, 0.0f, 0.0f - 1.0f, 0.0f, 0.0f, 0.0f, 1000.0f);\n"
@@ -521,7 +521,7 @@ TEST(XpuLbvhTests, buildSahNearestHit) {
         "            boxes[b6 + 3] = cx + 0.5f; boxes[b6 + 4] = 0.5f;        boxes[b6 + 5] = 0.5f;\n"
         "            i = i + 1;\n"
         "        }\n"
-        "        float32[] blk = Lbvh.buildSah(boxes, count);\n"
+        "        float32[] blk #= Lbvh.buildSah(boxes, count);\n"
         // structural: nodeCount and full prim coverage
         "        if (blk[1] != 15.0f) { return -1; }\n"
         "        int32 primRefOff = Lbvh.floorToInt(blk[5]);\n"

@@ -45,9 +45,9 @@ TEST(HttpHeadersTests, caseInsensitiveGet) {
     EXPECT_EQ(runI32(
         "Headers h = heap Headers();\n"
         "h.add(\"Content-Type\", \"text/html\");\n"
-        "String v1 = h.get(\"content-type\");\n"
-        "String v2 = h.get(\"CONTENT-TYPE\");\n"
-        "String v3 = h.get(\"Content-Type\");\n"
+        "String v1 #= h.get(\"content-type\");\n"
+        "String v2 #= h.get(\"CONTENT-TYPE\");\n"
+        "String v3 #= h.get(\"Content-Type\");\n"
         "if (v1 == null) return -1;\n"
         "if (!v1.equals(\"text/html\")) return -2;\n"
         "if (!v2.equals(\"text/html\")) return -3;\n"
@@ -63,7 +63,7 @@ TEST(HttpHeadersTests, absentHeaderReturnsNull) {
         "h.add(\"Host\", \"example.test\");\n"
         "if (h.get(\"x-missing\") != null) return -1;\n"
         "if (h.contains(\"x-missing\")) return -2;\n"
-        "String[] all = h.getAll(\"x-missing\");\n"
+        "String[] all #= h.getAll(\"x-missing\");\n"
         "if (all.count() != 0) return -3;\n"
         "return 1;"), 1);
 }
@@ -79,13 +79,13 @@ TEST(HttpHeadersTests, caseInsensitiveMultiValue) {
         "h.add(\"ACCEPT\", \"application/json\");\n"
         "h.add(\"accept\", \"text/plain\");\n"
         // getAll preserves insertion order regardless of header case.
-        "String[] all = h.getAll(\"Accept\");\n"
+        "String[] all #= h.getAll(\"Accept\");\n"
         "if (all.count() != 3) return -1;\n"
         "if (!all[0].equals(\"text/html\")) return -2;\n"
         "if (!all[1].equals(\"application/json\")) return -3;\n"
         "if (!all[2].equals(\"text/plain\")) return -4;\n"
         // get() is case-insensitive and comma-folds in order.
-        "String folded = h.get(\"aCCePt\");\n"
+        "String folded #= h.get(\"aCCePt\");\n"
         "if (folded == null) return -5;\n"
         "if (!folded.equals(\"text/html, application/json, text/plain\")) return -6;\n"
         "return 1;"), 1);
@@ -99,7 +99,7 @@ TEST(HttpHeadersTests, setReplacesAllOccurrences) {
         "h.add(\"X-Tag\", \"b\");\n"
         "if (h.getAll(\"x-tag\").count() != 2) return -1;\n"
         "h.set(\"x-tag\", \"only\");\n"
-        "String[] all = h.getAll(\"X-Tag\");\n"
+        "String[] all #= h.getAll(\"X-Tag\");\n"
         "if (all.count() != 1) return -2;\n"
         "if (!all[0].equals(\"only\")) return -3;\n"
         "if (!h.get(\"X-TAG\").equals(\"only\")) return -4;\n"
@@ -135,11 +135,11 @@ TEST(HttpHeadersTests, setCookieIsNotFolded) {
         "h.add(\"Set-Cookie\", \"a=1\");\n"
         "h.add(\"set-cookie\", \"b=2\");\n"
         // get() must NOT fold Set-Cookie: returns the first value.
-        "String first = h.get(\"Set-Cookie\");\n"
+        "String first #= h.get(\"Set-Cookie\");\n"
         "if (first == null) return -1;\n"
         "if (!first.equals(\"a=1\")) return -2;\n"
         // getAll() exposes both, in order.
-        "String[] all = h.getAll(\"set-cookie\");\n"
+        "String[] all #= h.getAll(\"set-cookie\");\n"
         "if (all.count() != 2) return -3;\n"
         "if (!all[0].equals(\"a=1\")) return -4;\n"
         "if (!all[1].equals(\"b=2\")) return -5;\n"

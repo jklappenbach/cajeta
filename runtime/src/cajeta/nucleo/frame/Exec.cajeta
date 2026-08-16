@@ -42,11 +42,11 @@ public class Exec {
         // A join runs its RIGHT branch as a separate plan against its own
         // scan snapshot (the optimizer never touched it), then combines.
         if (node.kindOf() == 7) {
-            DynFrame lin = Exec.run(node.childOf(), src, st);
-            DynFrame rin = Exec.run(node.rightPlanOf(), node.rightSrcOf(), st);
+            DynFrame lin #= Exec.run(node.childOf(), src, st);
+            DynFrame rin #= Exec.run(node.rightPlanOf(), node.rightSrcOf(), st);
             return Exec.applyJoin(node, #lin, #rin);
         }
-        DynFrame in = Exec.run(node.childOf(), src, st);
+        DynFrame in #= Exec.run(node.childOf(), src, st);
         if (node.kindOf() == 2) {
             return Exec.applyFilter(node.predOf(), #in);
         }
@@ -143,7 +143,7 @@ public class Exec {
             int64 nc = (n + chunkRows - 1) / chunkRows;
             nChunks = (int32) nc;
         }
-        boolean[] mask = Exec.buildChunkMask(node, src, chunkRows, nChunks);
+        boolean[] mask #= Exec.buildChunkMask(node, src, chunkRows, nChunks);
         int64 cap = n;
         if (cap < 1) { cap = 1; }
         int64[] idx = heap int64[cap];
@@ -267,7 +267,7 @@ public class Exec {
                                   ExecStats st) {
         int32 w = src.width();
         boolean isInt = src.tagAt(idxCol) <= 8;
-        BPlusIndex bx = BPlusIndex.buildFromColumn(src, idxCol);
+        BPlusIndex bx #= BPlusIndex.buildFromColumn(src, idxCol);
         IdxBounds b = heap IdxBounds();
         Exec.collectBounds(node, idxCol, isInt, b);
         int64 ecap = bx.entryCount();
@@ -354,7 +354,7 @@ public class Exec {
             pos[r] = r;
             r = r + 1;
         }
-        BPlusIndex bx = BPlusIndex.buildFromKeys(keys, pos, n);
+        BPlusIndex bx #= BPlusIndex.buildFromKeys(keys, pos, n);
         IdxBounds xb = heap IdxBounds();
         IdxBounds yb = heap IdxBounds();
         Exec.collectBounds(node, xo, true, xb);
@@ -469,7 +469,7 @@ public class Exec {
             int32 o = e.ordinal();
             if (o < 0 || o >= src.width()) { return; }
             if (src.tagAt(o) > 10) { return; }
-            ZoneMap z = ZoneMap.build(src, o, chunkRows, nChunks);
+            ZoneMap z #= ZoneMap.build(src, o, chunkRows, nChunks);
             int32 ci = 0;
             while (ci < nChunks) {
                 if (!z.mustRead(k, p.value(), p.iValue(), ci)) {
@@ -485,7 +485,7 @@ public class Exec {
             int32 o = e.ordinal();
             if (o < 0 || o >= src.width()) { return; }
             if (src.tagAt(o) > 8) { return; }
-            ZoneMap z = ZoneMap.build(src, o, chunkRows, nChunks);
+            ZoneMap z #= ZoneMap.build(src, o, chunkRows, nChunks);
             int32 ci = 0;
             while (ci < nChunks) {
                 if (!z.mustRead(k, p.value(), p.iValue(), ci)) {
@@ -642,7 +642,7 @@ public class Exec {
         }
         if (k == 26 || k == 27) {
             // utf8 columns have no nullable physical (v1) — always valid.
-            String a = Exec.evalStr(p.strOperandExpr(), f, i);
+            String a #= Exec.evalStr(p.strOperandExpr(), f, i);
             boolean eq = a.equals(p.strValue());
             if (k == 26 && eq) { return 1; }
             if (k == 27 && !eq) { return 1; }
@@ -796,7 +796,7 @@ public class Exec {
                 nullable = Exec.exprRefsNullable(s.exprOf(), in);
                 if (!schemaOnly) {
                     if (nullable) {
-                        DynCol c = DynCol.newNF64(n);
+                        DynCol c #= DynCol.newNF64(n);
                         int64 i = 0;
                         while (i < n) {
                             if (Exec.exprValidF64(s.exprOf(), in, i)) {
@@ -806,7 +806,7 @@ public class Exec {
                         }
                         cols[at] #= c;
                     } else {
-                        DynCol c = DynCol.newF64(n);
+                        DynCol c #= DynCol.newF64(n);
                         int64 i = 0;
                         while (i < n) {
                             c.setF64(i, Exec.evalF64(s.exprOf(), in, i));
@@ -897,8 +897,8 @@ public class Exec {
             return Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
         }
         if (k >= 10 && k <= 13) {
-            AggResult l = Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
-            AggResult r = Exec.evalAgg(a.rightAgg(), in, gid, n, ng);
+            AggResult l #= Exec.evalAgg(a.leftAgg(), in, gid, n, ng);
+            AggResult r #= Exec.evalAgg(a.rightAgg(), in, gid, n, ng);
             AggResult out = heap AggResult(10, ng);
             int64 g = 0;
             while (g < ng) {
@@ -1155,7 +1155,7 @@ public class Exec {
         int32 ai = nk;
         Agg a2 = node.aggsOf();
         while (a2 != null) {
-            AggResult r = Exec.evalAgg(a2, in, gid, n, ng);
+            AggResult r #= Exec.evalAgg(a2, in, gid, n, ng);
             cols[ai] #= Exec.materialize(#r, tags[ai], nulls[ai], ng);
             ai = ai + 1;
             a2 = a2.nextOf();
@@ -1177,7 +1177,7 @@ public class Exec {
         }
         if (tag == 4) {
             if (nullable) {
-                DynCol c = DynCol.newNI64(ng);
+                DynCol c #= DynCol.newNI64(ng);
                 int64 g = 0;
                 while (g < ng) {
                     if (r.validAt(g)) { c.setNI64(g, r.i64At(g)); }
@@ -1185,7 +1185,7 @@ public class Exec {
                 }
                 return #c;
             }
-            DynCol c = DynCol.newI64(ng);
+            DynCol c #= DynCol.newI64(ng);
             int64 g = 0;
             while (g < ng) {
                 if (r.validAt(g)) { c.setI64(g, r.i64At(g)); }
@@ -1194,7 +1194,7 @@ public class Exec {
             return #c;
         }
         if (nullable) {
-            DynCol c = DynCol.newNF64(ng);
+            DynCol c #= DynCol.newNF64(ng);
             int64 g = 0;
             while (g < ng) {
                 if (r.validAt(g)) { c.setNF64(g, r.f64At(g)); }
@@ -1202,7 +1202,7 @@ public class Exec {
             }
             return #c;
         }
-        DynCol c = DynCol.newF64(ng);
+        DynCol c #= DynCol.newF64(ng);
         int64 g = 0;
         while (g < ng) {
             if (r.validAt(g)) { c.setF64(g, r.f64At(g)); }
@@ -1361,7 +1361,7 @@ public class Exec {
             while (zz < n) { order[zz] = tmp[zz]; zz = zz + 1; }
             width = width * 2;
         }
-        DynFrame sorted = in.rebuild(Exec.gatherAll(in, order, n), n);
+        DynFrame sorted #= in.rebuild(Exec.gatherAll(in, order, n), n);
         // Bucket range across the (now sorted) data — every bucket in
         // [bmin, bmax] is emitted, empty ones included.
         int64 tsMin = sorted.colAt(tsOrd).i64At(0);
@@ -1383,7 +1383,7 @@ public class Exec {
         }
         DynCol[] cols = heap DynCol[w];
         // Bucket-start key column.
-        DynCol keyCol = DynCol.newI64(ng);
+        DynCol keyCol #= DynCol.newI64(ng);
         int64 g = 0;
         while (g < ng) {
             keyCol.setI64(g, base + (bmin + g) * every);
@@ -1393,7 +1393,7 @@ public class Exec {
         int32 ci = 1;
         Agg a2 = node.aggsOf();
         while (a2 != null) {
-            AggResult rr = Exec.evalAgg(a2, sorted, gid, n, ng);
+            AggResult rr #= Exec.evalAgg(a2, sorted, gid, n, ng);
             // Empty buckets: null EVERY aggregate cell (no data, not zero).
             int64 gg = 0;
             while (gg < ng) {
@@ -1460,8 +1460,8 @@ public class Exec {
             return Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
         }
         if (k >= 10 && k <= 13) {
-            AggResult l = Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
-            AggResult r = Exec.evalAggWindow(a.rightAgg(), in, lo, hi, nout);
+            AggResult l #= Exec.evalAggWindow(a.leftAgg(), in, lo, hi, nout);
+            AggResult r #= Exec.evalAggWindow(a.rightAgg(), in, lo, hi, nout);
             AggResult out = heap AggResult(10, nout);
             int64 o = 0;
             while (o < nout) {
@@ -1615,7 +1615,7 @@ public class Exec {
         DynFrame base = in;
         int32 ci = 0;
         if (byTime) {
-            int64[] order = Exec.sortIndicesByI64(in, tsOrd, n);
+            int64[] order #= Exec.sortIndicesByI64(in, tsOrd, n);
             base = in.rebuild(Exec.gatherAll(in, order, n), n);
             int64 lo = 0;
             int64 o = 0;
@@ -1642,7 +1642,7 @@ public class Exec {
         }
         Agg a2 = node.aggsOf();
         while (a2 != null) {
-            AggResult rr = Exec.evalAggWindow(a2, base, loArr, hiArr, n);
+            AggResult rr #= Exec.evalAggWindow(a2, base, loArr, hiArr, n);
             cols[ci] #= Exec.materialize(#rr, tags[ci], nulls[ci], n);
             ci = ci + 1;
             a2 = a2.nextOf();
@@ -1880,7 +1880,7 @@ public class Exec {
         int32 nCols = 0;
         int64 i = 0;
         while (i < n) {
-            String k = in.colAt(keyOrd).strAt(i);
+            String k #= in.colAt(keyOrd).strAt(i);
             int32 found = -1;
             int32 ck = 0;
             while (ck < nCols) {
@@ -2190,7 +2190,7 @@ public class Exec {
         boolean isFloat = tag == 9 || tag == 10;
         if (nullable) {
             if (isFloat) {
-                DynCol o = DynCol.newNF64(m);
+                DynCol o #= DynCol.newNF64(m);
                 int64 i = 0;
                 while (i < m) {
                     if (lpres[i]) {
@@ -2202,7 +2202,7 @@ public class Exec {
                 }
                 return #o;
             }
-            DynCol o = DynCol.newNI64(m);
+            DynCol o #= DynCol.newNI64(m);
             int64 i = 0;
             while (i < m) {
                 if (lpres[i]) {
@@ -2215,7 +2215,7 @@ public class Exec {
             return #o;
         }
         if (isFloat) {
-            DynCol o = DynCol.newF64(m);
+            DynCol o #= DynCol.newF64(m);
             int64 i = 0;
             while (i < m) {
                 if (lpres[i]) { o.setF64(i, lc.f64At(lidx[i])); }
@@ -2224,7 +2224,7 @@ public class Exec {
             }
             return #o;
         }
-        DynCol o = DynCol.newI64(m);
+        DynCol o #= DynCol.newI64(m);
         int64 i = 0;
         while (i < m) {
             if (lpres[i]) { o.setI64(i, lc.i64At(lidx[i])); }
@@ -2484,7 +2484,7 @@ public class Exec {
                 + "' is not in schema " + in.schemaText());
         }
         if (in.isSchemaOnly()) {
-            DynFrame s = in.schemaOnly();
+            DynFrame s #= in.schemaOnly();
             s.clearNullable(target);
             return #s;
         }
@@ -2503,7 +2503,7 @@ public class Exec {
             }
             j = j + 1;
         }
-        DynFrame r = in.rebuild(#out, in.rowsOf());
+        DynFrame r #= in.rebuild(#out, in.rowsOf());
         r.clearNullable(target);
         // Non-target columns alias `in`'s storage — adopt it (see apply).
         r.__adopt(#in);

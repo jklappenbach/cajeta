@@ -71,12 +71,12 @@ public final class GeneratorGpu {
     public static #Tensor<float32> uniformF32(uint64 seed, int64 n) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         out.gpu();
         uint32 k0 = (uint32) seed;
         uint32 k1 = (uint32) (seed >>> 32);
         uint32 un = (uint32) n;
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         philoxUniformF32.launch(s, grid: [(un + 63) / 64], block: [64])
             (out.deviceBuffer(), k0, k1, un);
         s.sync();

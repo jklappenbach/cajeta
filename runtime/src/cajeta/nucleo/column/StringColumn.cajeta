@@ -72,8 +72,8 @@ public class StringColumn {
             total = total + (int64) values[(int32) i].count();
             i = i + 1;
         }
-        Column<int32> offs = Column.zeros<int32>(n + 1);
-        Column<uint8> bytes = Column.zeros<uint8>(total);
+        Column<int32> offs #= Column.zeros<int32>(n + 1);
+        Column<uint8> bytes #= Column.zeros<uint8>(total);
         int64 pos = 0;
         i = 0;
         while (i < n) {
@@ -138,8 +138,8 @@ public class StringColumn {
         if (this.fArray != 0 || this.fOffsets != 0) {
             return this.slice(0, this.len);
         }
-        Column<int32> offs = this.offsets.alias();
-        Column<uint8> bytes = this.data.alias();
+        Column<int32> offs #= this.offsets.alias();
+        Column<uint8> bytes #= this.data.alias();
         return heap StringColumn(#offs, #bytes, this.len);
     }
 

@@ -60,7 +60,7 @@ TEST(TensorTests, tensorConstructionAndShape) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<float32> z = Tensor.zeros<float32>(shp);\n"
+        "        Tensor<float32> z #= Tensor.zeros<float32>(shp);\n"
         "        if (z.ndim() != 2) { return -1; }\n"
         "        if (z.shapeAt(0) != 2) { return -2; }\n"
         "        if (z.shapeAt(1) != 3) { return -3; }\n"
@@ -68,24 +68,24 @@ TEST(TensorTests, tensorConstructionAndShape) {
         "        if (z.strideAt(0) != 3) { return -5; }\n"   // C-order: [3, 1]
         "        if (z.strideAt(1) != 1) { return -6; }\n"
         "        if (z.get2(0, 0) != 0.0f) { return -7; }\n"
-        "        Tensor<int32> o = Tensor.ones<int32>(shp);\n"
+        "        Tensor<int32> o #= Tensor.ones<int32>(shp);\n"
         "        if (o.get2(1, 2) != 1) { return -8; }\n"
-        "        Tensor<int32> f = Tensor.full<int32>(shp, 7);\n"
+        "        Tensor<int32> f #= Tensor.full<int32>(shp, 7);\n"
         "        if (f.get2(0, 1) != 7) { return -9; }\n"
-        "        Tensor<int32> r = Tensor.arange<int32>(5);\n"
+        "        Tensor<int32> r #= Tensor.arange<int32>(5);\n"
         "        if (r.ndim() != 1) { return -10; }\n"
         "        if (r.size() != 5) { return -11; }\n"
         "        if (r.get1(0) != 0) { return -12; }\n"
         "        if (r.get1(4) != 4) { return -13; }\n"
         "        int32[] data = [ 10, 20, 30, 40, 50, 60 ];\n"
-        "        Tensor<int32> t = Tensor.of<int32>(data, shp);\n"
+        "        Tensor<int32> t #= Tensor.of<int32>(data, shp);\n"
         "        if (t.get2(1, 0) != 40) { return -14; }\n"   // row1,col0 = flat idx 3
         "        if (t.get2(0, 2) != 30) { return -15; }\n"
-        "        Tensor<int32> zl = Tensor.zerosLike<int32>(t);\n"
+        "        Tensor<int32> zl #= Tensor.zerosLike<int32>(t);\n"
         "        if (zl.ndim() != 2) { return -16; }\n"
         "        if (zl.shapeAt(1) != 3) { return -17; }\n"
         "        if (zl.get2(1, 0) != 0) { return -18; }\n"
-        "        Tensor<int32> ol = Tensor.onesLike<int32>(t);\n"
+        "        Tensor<int32> ol #= Tensor.onesLike<int32>(t);\n"
         "        if (ol.get2(1, 2) != 1) { return -19; }\n"
         "        return 1;\n"
         "    }\n"
@@ -100,8 +100,8 @@ TEST(TensorTests, storageRefcountDropChain) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tensor<int32> a = Tensor.arange<int32>(4);\n"   // [0,1,2,3]
-        "        Tensor<int32> b = a.alias();\n"
+        "        Tensor<int32> a #= Tensor.arange<int32>(4);\n"   // [0,1,2,3]
+        "        Tensor<int32> b #= a.alias();\n"
         "        if (!b.isView()) { return -1; }\n"
         "        if (a.isView()) { return -2; }\n"
         "        if (b.base() == null) { return -3; }\n"
@@ -110,8 +110,8 @@ TEST(TensorTests, storageRefcountDropChain) {
         "        if (b.get1(2) != 99) { return -5; }\n"          // read via b
         "        b.set1(0, 77);\n"                                // write via b
         "        if (a.get1(0) != 77) { return -6; }\n"          // read via a
-        "        Tensor<int32> c = a.alias();\n"
-        "        Tensor<int32> d = b.alias();\n"
+        "        Tensor<int32> c #= a.alias();\n"
+        "        Tensor<int32> d #= b.alias();\n"
         "        c.set1(3, 55);\n"
         "        if (d.get1(3) != 55) { return -7; }\n"
         "        int32 s = d.get1(0) + d.get1(1) + d.get1(2) + d.get1(3);\n"  // 77+1+99+55
@@ -131,11 +131,11 @@ TEST(TensorTests, tensorAccessors) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<float32> t = Tensor.zeros<float32>(shp);\n"
+        "        Tensor<float32> t #= Tensor.zeros<float32>(shp);\n"
         "        if (t.itemsize() != 4) { return -1; }\n"        // float32 = 4 bytes
         "        if (t.nbytes() != 24) { return -2; }\n"         // 6 * 4
         "        if (!t.isContiguous()) { return -3; }\n"
-        "        DType dt = t.dtype();\n"
+        "        DType dt #= t.dtype();\n"
         "        if (!dt.isFloating()) { return -4; }\n"
         "        if (dt.bits() != 32) { return -5; }\n"
         "        t.set2(1, 2, 3.5f);\n"
@@ -143,7 +143,7 @@ TEST(TensorTests, tensorAccessors) {
         "        if (t.get2(0, 0) != 0.0f) { return -7; }\n"
         "        int64[] shp2 = heap int64[1];\n"
         "        shp2[0] = 8;\n"
-        "        Tensor<int16> s = Tensor.zeros<int16>(shp2);\n"
+        "        Tensor<int16> s #= Tensor.zeros<int16>(shp2);\n"
         "        if (s.itemsize() != 2) { return -8; }\n"
         "        if (s.nbytes() != 16) { return -9; }\n"
         "        return 1;\n"
@@ -162,34 +162,34 @@ TEST(TensorTests, structuralOpsAreViews) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        Tensor<int32> a #= Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
         // reshape (contiguous → view)
         "        int64[] rs = heap int64[2];\n"
         "        rs[0] = 3;\n"
         "        rs[1] = 2;\n"
-        "        Tensor<int32> r = a.reshape(rs);\n"
+        "        Tensor<int32> r #= a.reshape(rs);\n"
         "        if (!r.isView()) { return -1; }\n"
         "        if (r.base() == null) { return -2; }\n"
         "        if (r.shapeAt(0) != 3 || r.shapeAt(1) != 2) { return -3; }\n"
         "        r.set2(0, 0, 100);\n"                                // shares a
         "        if (a.get2(0, 0) != 100) { return -4; }\n"
         // transpose → view
-        "        Tensor<int32> t = a.transpose();\n"                 // shape [3,2], strides [1,3]
+        "        Tensor<int32> t #= a.transpose();\n"                 // shape [3,2], strides [1,3]
         "        if (!t.isView()) { return -5; }\n"
         "        if (t.shapeAt(0) != 3 || t.shapeAt(1) != 2) { return -6; }\n"
         "        if (t.get2(0, 1) != 3) { return -7; }\n"            // a[1,0] = 3
         "        t.set2(0, 1, 99);\n"                                // sets a[1,0]
         "        if (a.get2(1, 0) != 99) { return -8; }\n"
         // slice axis 0 rows [1,2) → shape [1,3]
-        "        Tensor<int32> sl = a.slice(0, 1, 2);\n"
+        "        Tensor<int32> sl #= a.slice(0, 1, 2);\n"
         "        if (!sl.isView()) { return -9; }\n"
         "        if (sl.shapeAt(0) != 1 || sl.shapeAt(1) != 3) { return -10; }\n"
         "        if (sl.get2(0, 0) != 99) { return -11; }\n"        // a[1,0] = 99
         // expandDims at 0 → [1,2,3]; squeeze → [2,3]
-        "        Tensor<int32> e = a.expandDims(0);\n"
+        "        Tensor<int32> e #= a.expandDims(0);\n"
         "        if (!e.isView()) { return -12; }\n"
         "        if (e.ndim() != 3 || e.shapeAt(0) != 1) { return -13; }\n"
-        "        Tensor<int32> sq = e.squeeze();\n"
+        "        Tensor<int32> sq #= e.squeeze();\n"
         "        if (!sq.isView()) { return -14; }\n"
         "        if (sq.ndim() != 2 || sq.shapeAt(0) != 2 || sq.shapeAt(1) != 3) { return -15; }\n"
         "        return 1;\n"
@@ -208,19 +208,19 @@ TEST(TensorTests, copyIsIndependent) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"
-        "        Tensor<int32> c = a.copy();\n"
+        "        Tensor<int32> a #= Tensor.of<int32>(data, shp);\n"
+        "        Tensor<int32> c #= a.copy();\n"
         "        if (c.isView()) { return -1; }\n"
         "        if (c.base() != null) { return -2; }\n"
         "        c.set2(0, 0, 500);\n"
         "        if (a.get2(0, 0) == 500) { return -3; }\n"          // independent
         "        if (c.get2(1, 2) != 5) { return -4; }\n"            // copied the data
         // non-contiguous reshape → copy
-        "        Tensor<int32> t = a.transpose();\n"                 // non-contiguous
+        "        Tensor<int32> t #= a.transpose();\n"                 // non-contiguous
         "        if (t.isContiguous()) { return -5; }\n"
         "        int64[] rs = heap int64[1];\n"
         "        rs[0] = 6;\n"
-        "        Tensor<int32> r = t.reshape(rs);\n"                 // non-contig → copy
+        "        Tensor<int32> r #= t.reshape(rs);\n"                 // non-contig → copy
         "        if (r.isView()) { return -6; }\n"
         // t is transpose of a: logical C-order of t is a[0,0],a[1,0],a[0,1],a[1,1],a[0,2],a[1,2]
         "        if (r.get1(0) != 0 || r.get1(1) != 3 || r.get1(2) != 1) { return -7; }\n"
@@ -242,8 +242,8 @@ TEST(TensorTests, aliasingDefined) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"
-        "        Tensor<int32> t = a.transpose();\n"                 // [3,2]
+        "        Tensor<int32> a #= Tensor.of<int32>(data, shp);\n"
+        "        Tensor<int32> t #= a.transpose();\n"                 // [3,2]
         "        int64 i = 0;\n"
         "        while (i < 3) {\n"
         "            int64 j = 0;\n"
@@ -284,7 +284,7 @@ TEST(TensorTests, broadcastShapeRules) {
         "        a[0] = 2; a[1] = 1; a[2] = 3;\n"
         "        int64[] b = heap int64[2];\n"
         "        b[0] = 4; b[1] = 3;\n"
-        "        int64[] r = Tensor.broadcastShape<int32>(a, b);\n"
+        "        int64[] r #= Tensor.broadcastShape<int32>(a, b);\n"
         "        if (r.count() != 3) { return -1; }\n"
         "        if (r[0] != 2 || r[1] != 4 || r[2] != 3) { return -2; }\n"
         // [5] vs [1] → [5]
@@ -292,7 +292,7 @@ TEST(TensorTests, broadcastShapeRules) {
         "        c[0] = 5;\n"
         "        int64[] d = heap int64[1];\n"
         "        d[0] = 1;\n"
-        "        int64[] r2 = Tensor.broadcastShape<int32>(c, d);\n"
+        "        int64[] r2 #= Tensor.broadcastShape<int32>(c, d);\n"
         "        if (r2[0] != 5) { return -3; }\n"
         // incompatible: [3] vs [4] → throws
         "        int64[] e = heap int64[1];\n"
@@ -301,7 +301,7 @@ TEST(TensorTests, broadcastShapeRules) {
         "        f[0] = 4;\n"
         "        boolean threw = false;\n"
         "        try {\n"
-        "            int64[] bad = Tensor.broadcastShape<int32>(e, f);\n"
+        "            int64[] bad #= Tensor.broadcastShape<int32>(e, f);\n"
         "        } catch (BroadcastException ex) {\n"
         "            threw = true;\n"
         "        }\n"
@@ -322,10 +322,10 @@ TEST(TensorTests, broadcastIsZeroCopyView) {
         "        int32[] data = [ 10, 20, 30 ];\n"
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 3; shp[1] = 1;\n"
-        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"
+        "        Tensor<int32> a #= Tensor.of<int32>(data, shp);\n"
         "        int64[] tgt = heap int64[2];\n"
         "        tgt[0] = 3; tgt[1] = 4;\n"
-        "        Tensor<int32> bc = a.broadcastTo(tgt);\n"
+        "        Tensor<int32> bc #= a.broadcastTo(tgt);\n"
         "        if (!bc.isView()) { return -1; }\n"
         "        if (bc.shapeAt(0) != 3 || bc.shapeAt(1) != 4) { return -2; }\n"
         "        if (bc.strideAt(1) != 0) { return -3; }\n"          // stretched axis stride 0
@@ -339,10 +339,10 @@ TEST(TensorTests, broadcastIsZeroCopyView) {
         "        int32[] row = [ 1, 2, 3, 4 ];\n"
         "        int64[] rshp = heap int64[1];\n"
         "        rshp[0] = 4;\n"
-        "        Tensor<int32> v = Tensor.of<int32>(row, rshp);\n"
+        "        Tensor<int32> v #= Tensor.of<int32>(row, rshp);\n"
         "        int64[] t2 = heap int64[2];\n"
         "        t2[0] = 2; t2[1] = 4;\n"
-        "        Tensor<int32> vb = v.broadcastTo(t2);\n"
+        "        Tensor<int32> vb #= v.broadcastTo(t2);\n"
         "        if (vb.strideAt(0) != 0) { return -7; }\n"
         "        if (vb.get2(0, 2) != 3 || vb.get2(1, 2) != 3) { return -8; }\n"
         // incompatible target throws
@@ -352,7 +352,7 @@ TEST(TensorTests, broadcastIsZeroCopyView) {
         "        int64[] bad2 = heap int64[2];\n"
         "        bad2[0] = 2; bad2[1] = 4;\n"
         "        try {\n"
-        "            Tensor<int32> x = a.broadcastTo(bad2);\n"        // a[3,1] vs [2,4]: 3 vs 2 incompatible
+        "            Tensor<int32> x #= a.broadcastTo(bad2);\n"        // a[3,1] vs [2,4]: 3 vs 2 incompatible
         "        } catch (BroadcastException ex) {\n"
         "            threw = true;\n"
         "        }\n"
@@ -373,28 +373,28 @@ TEST(TensorTests, basicIndexingViews) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        Tensor<int32> a #= Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
         // integer index row 1 → [3,4,5], view
-        "        Tensor<int32> row = a.index(0, 1);\n"
+        "        Tensor<int32> row #= a.index(0, 1);\n"
         "        if (!row.isView()) { return -1; }\n"
         "        if (row.ndim() != 1 || row.shapeAt(0) != 3) { return -2; }\n"
         "        if (row.get1(0) != 3 || row.get1(2) != 5) { return -3; }\n"
         "        row.set1(0, 99);\n"                                 // a[1,0]
         "        if (a.get2(1, 0) != 99) { return -4; }\n"
         // negative integer index → last row [99,4,5]
-        "        Tensor<int32> last = a.index(0, -1);\n"
+        "        Tensor<int32> last #= a.index(0, -1);\n"
         "        if (last.get1(0) != 99) { return -5; }\n"
         // slice with step on a 1-D arange(6): [0,2,4]
-        "        Tensor<int32> r = Tensor.arange<int32>(6);\n"
-        "        Tensor<int32> ev = r.sliceAxis(0, 0, 6, 2);\n"
+        "        Tensor<int32> r #= Tensor.arange<int32>(6);\n"
+        "        Tensor<int32> ev #= r.sliceAxis(0, 0, 6, 2);\n"
         "        if (!ev.isView()) { return -6; }\n"
         "        if (ev.shapeAt(0) != 3) { return -7; }\n"
         "        if (ev.get1(0) != 0 || ev.get1(1) != 2 || ev.get1(2) != 4) { return -8; }\n"
         // negative-index slice [-3, 6) step 1 → [3,4,5]
-        "        Tensor<int32> tail = r.sliceAxis(0, -3, 6, 1);\n"
+        "        Tensor<int32> tail #= r.sliceAxis(0, -3, 6, 1);\n"
         "        if (tail.shapeAt(0) != 3 || tail.get1(0) != 3 || tail.get1(2) != 5) { return -9; }\n"
         // reverse
-        "        Tensor<int32> rev = r.reverseAxis(0);\n"
+        "        Tensor<int32> rev #= r.reverseAxis(0);\n"
         "        if (!rev.isView()) { return -10; }\n"
         "        if (rev.get1(0) != 5 || rev.get1(5) != 0) { return -11; }\n"
         "        return 1;\n"
@@ -413,12 +413,12 @@ TEST(TensorTests, booleanIndexing) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<int32> a = Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        Tensor<int32> a #= Tensor.of<int32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
         "        boolean[] md = heap boolean[6];\n"
         "        md[0] = true; md[1] = false; md[2] = true;\n"       // even-value mask
         "        md[3] = false; md[4] = true; md[5] = false;\n"
-        "        Tensor<boolean> mask = Tensor.of<boolean>(md, shp);\n"
-        "        Tensor<int32> sel = a.maskedSelect(mask);\n"
+        "        Tensor<boolean> mask #= Tensor.of<boolean>(md, shp);\n"
+        "        Tensor<int32> sel #= a.maskedSelect(mask);\n"
         "        if (sel.ndim() != 1 || sel.shapeAt(0) != 3) { return -1; }\n"
         "        if (sel.get1(0) != 0 || sel.get1(1) != 2 || sel.get1(2) != 4) { return -2; }\n"
         // masked read is a copy (independent)
@@ -440,10 +440,10 @@ TEST(TensorTests, fancyIndexing) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tensor<int32> r = Tensor.arange<int32>(10);\n"      // [0..9]
+        "        Tensor<int32> r #= Tensor.arange<int32>(10);\n"      // [0..9]
         "        int64[] idx = heap int64[4];\n"
         "        idx[0] = 2; idx[1] = 5; idx[2] = 8; idx[3] = -1;\n" // -1 → 9
-        "        Tensor<int32> g = r.take(idx);\n"
+        "        Tensor<int32> g #= r.take(idx);\n"
         "        if (g.ndim() != 1 || g.shapeAt(0) != 4) { return -1; }\n"
         "        if (g.get1(0) != 2 || g.get1(1) != 5 || g.get1(2) != 8 || g.get1(3) != 9) { return -2; }\n"
         // gather is a copy
@@ -473,7 +473,7 @@ TEST(TensorTests, wildcardAirlock) {
         "import cajeta.math.Tensor;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tensor<float32> t = Tensor.arange<float32>(4);\n"   // [0,1,2,3]
+        "        Tensor<float32> t #= Tensor.arange<float32>(4);\n"   // [0,1,2,3]
         "        Tensor<?> w = t;\n"                                  // widen to the airlock
         "        if (!(w instanceof Tensor<float32>)) { return -1; }\n"
         "        if (w instanceof Tensor<int32>) { return -2; }\n"   // wrong dtype rejected
@@ -499,7 +499,7 @@ TEST(TensorTests, devicePlacement) {
         "        float32[] da = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        int64[] shp = heap int64[1];\n"
         "        shp[0] = 4;\n"
-        "        Tensor<float32> a = Tensor.of<float32>(da, shp);\n"
+        "        Tensor<float32> a #= Tensor.of<float32>(da, shp);\n"
         "        if (a.device() != 0) { return -1; }\n"        // starts on host
         "        if (a.isOnGpu()) { return -2; }\n"
         "        a.gpu();\n"
@@ -536,12 +536,12 @@ TEST(TensorTests, seamElementwiseCpuGpuAgree) {
         "    }\n"
         // the elementwise-add op, routed through the placement seam
         "    public static #Tensor<float32> add(Tensor<float32> a, Tensor<float32> b) {\n"
-        "        Tensor<float32> out = Tensor.zerosLike<float32>(a);\n"
+        "        Tensor<float32> out #= Tensor.zerosLike<float32>(a);\n"
         "        int64 n = a.size();\n"
         "        if (a.isOnGpu() && b.isOnGpu()) {\n"
         "            out.gpu();\n"
         "            uint32 un = (uint32) n;\n"
-        "            KernelStream s = KernelStream.current();\n"
+        "            KernelStream s #= KernelStream.current();\n"
         "            addF32.launch(s, grid: [(un + 63) / 64], block: [64])"
         "(out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), un);\n"
         "            s.sync();\n"
@@ -560,12 +560,12 @@ TEST(TensorTests, seamElementwiseCpuGpuAgree) {
         "        float32[] db = [ 10.0f, 20.0f, 30.0f, 40.0f, 50.0f, 60.0f, 70.0f, 80.0f ];\n"
         "        int64[] shp = heap int64[1];\n"
         "        shp[0] = 8;\n"
-        "        Tensor<float32> a = Tensor.of<float32>(da, shp);\n"
-        "        Tensor<float32> b = Tensor.of<float32>(db, shp);\n"
-        "        Tensor<float32> cCpu = D.add(a, b);\n"           // both host → CPU path
+        "        Tensor<float32> a #= Tensor.of<float32>(da, shp);\n"
+        "        Tensor<float32> b #= Tensor.of<float32>(db, shp);\n"
+        "        Tensor<float32> cCpu #= D.add(a, b);\n"           // both host → CPU path
         "        a.gpu();\n"
         "        b.gpu();\n"
-        "        Tensor<float32> cGpu = D.add(a, b);\n"           // both device → GPU path
+        "        Tensor<float32> cGpu #= D.add(a, b);\n"           // both device → GPU path
         "        cGpu.cpu();\n"
         "        int64 i = 0;\n"
         "        while (i < 8) {\n"
@@ -596,15 +596,15 @@ TEST(TensorTests, interopRoundTrip) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<float32> t = Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
-        "        TensorProtocol p = t.protocol();\n"                      // export
+        "        Tensor<float32> t #= Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        TensorProtocol p #= t.protocol();\n"                      // export
         "        if (p.ndim() != 2) { return -1; }\n"                    // metadata preserved
         "        if (p.shapeAt(0) != 2 || p.shapeAt(1) != 3) { return -2; }\n"
         "        DType pd = p.dtype();\n"
         "        if (!pd.isFloating() || pd.bits() != 32) { return -3; }\n"
         "        if (p.device() != 0) { return -4; }\n"                  // host
         "        if (p.isReadOnly()) { return -5; }\n"
-        "        Tensor<?> w = Tensor.fromProtocol(p);\n"                // import → Tensor<?>
+        "        Tensor<?> w #= Tensor.fromProtocol(p);\n"                // import → Tensor<?>
         "        if (!(w instanceof Tensor<float32>)) { return -6; }\n"  // reified dtype recovered
         "        Tensor<float32> back = (Tensor<float32>) w;\n"          // capture
         "        if (back.shapeAt(1) != 3) { return -7; }\n"
@@ -629,9 +629,9 @@ TEST(TensorTests, wildcardCaptureFromProtocol) {
         "import cajeta.math.TensorProtocol;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tensor<int32> t = Tensor.arange<int32>(4);\n"          // [0,1,2,3]
-        "        TensorProtocol p = t.protocol();\n"
-        "        Tensor<?> w = Tensor.fromProtocol(p);\n"
+        "        Tensor<int32> t #= Tensor.arange<int32>(4);\n"          // [0,1,2,3]
+        "        TensorProtocol p #= t.protocol();\n"
+        "        Tensor<?> w #= Tensor.fromProtocol(p);\n"
         "        if (w instanceof Tensor<float32>) { return -1; }\n"    // wrong dtype rejected
         "        if (!(w instanceof Tensor<int32>)) { return -2; }\n"   // exact dtype matched
         "        Tensor<int32> back = (Tensor<int32>) w;\n"
@@ -659,12 +659,12 @@ TEST(TensorTests, wildcardBoundedFloatingFromProtocol) {
         "import cajeta.lang.Floating;\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Tensor<float32> tf = Tensor.arange<float32>(4);\n"
-        "        TensorProtocol pf = tf.protocol();\n"
-        "        Tensor<?> wf = Tensor.fromProtocol(pf);\n"
-        "        Tensor<int32> ti = Tensor.arange<int32>(4);\n"
-        "        TensorProtocol pi = ti.protocol();\n"
-        "        Tensor<?> wi = Tensor.fromProtocol(pi);\n"
+        "        Tensor<float32> tf #= Tensor.arange<float32>(4);\n"
+        "        TensorProtocol pf #= tf.protocol();\n"
+        "        Tensor<?> wf #= Tensor.fromProtocol(pf);\n"
+        "        Tensor<int32> ti #= Tensor.arange<int32>(4);\n"
+        "        TensorProtocol pi #= ti.protocol();\n"
+        "        Tensor<?> wi #= Tensor.fromProtocol(pi);\n"
         "        int32 r = 0;\n"
         "        if (wf instanceof Tensor<? extends Floating>) { r = r + 1; }\n"    // float ⊨ Floating
         "        if (wi instanceof Tensor<? extends Floating>) { r = r + 10; }\n"   // int ⊭ Floating
@@ -697,19 +697,19 @@ TEST(TensorTests, externalProducerZeroCopy) {
         "        int64[] shp = heap int64[2];\n"
         "        shp[0] = 2;\n"
         "        shp[1] = 3;\n"
-        "        Tensor<float32> producer = Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
+        "        Tensor<float32> producer #= Tensor.of<float32>(data, shp);\n"   // [[0,1,2],[3,4,5]]
         // (1) amenable: already contiguous → zero-copy view, writes show through
-        "        TensorProtocol pc = producer.protocol();\n"
-        "        Tensor<?> wc = Tensor.fromProtocolContiguous(pc);\n"
+        "        TensorProtocol pc #= producer.protocol();\n"
+        "        Tensor<?> wc #= Tensor.fromProtocolContiguous(pc);\n"
         "        Tensor<float32> capc = (Tensor<float32>) wc;\n"
         "        if (!capc.isView()) { return -1; }\n"
         "        if (capc.get2(1, 2) != 5.0f) { return -2; }\n"
         "        capc.set2(0, 1, 77.0f);\n"
         "        if (producer.get2(0, 1) != 77.0f) { return -3; }\n"           // shows through (zero-copy)
         // (2) non-amenable: transpose → non-contiguous → independent copy
-        "        Tensor<float32> tr = producer.transpose();\n"                  // [3,2], non-contiguous
-        "        TensorProtocol pt = tr.protocol();\n"
-        "        Tensor<?> wt = Tensor.fromProtocolContiguous(pt);\n"
+        "        Tensor<float32> tr #= producer.transpose();\n"                  // [3,2], non-contiguous
+        "        TensorProtocol pt #= tr.protocol();\n"
+        "        Tensor<?> wt #= Tensor.fromProtocolContiguous(pt);\n"
         "        Tensor<float32> capt = (Tensor<float32>) wt;\n"
         "        if (capt.isView()) { return -4; }\n"
         "        if (!capt.isContiguous()) { return -5; }\n"

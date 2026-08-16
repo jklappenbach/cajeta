@@ -369,7 +369,7 @@ public class DynCol {
     public #DynCol gather(int64[] idx, int64 m) {
         if (this.nullable) {
             if (this.tag == 1) {
-                NullableColumn<int8> o = NullableColumn.nulls<int8>(m);
+                NullableColumn<int8> o #= NullableColumn.nulls<int8>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.ni8.isValid(idx[i])) { o.set(i, this.ni8.get(idx[i])); }
@@ -378,7 +378,7 @@ public class DynCol {
                 return DynCol.ofNI8(#o);
             }
             if (this.tag == 2) {
-                NullableColumn<int16> o = NullableColumn.nulls<int16>(m);
+                NullableColumn<int16> o #= NullableColumn.nulls<int16>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.ni16.isValid(idx[i])) { o.set(i, this.ni16.get(idx[i])); }
@@ -387,7 +387,7 @@ public class DynCol {
                 return DynCol.ofNI16(#o);
             }
             if (this.tag == 3) {
-                NullableColumn<int32> o = NullableColumn.nulls<int32>(m);
+                NullableColumn<int32> o #= NullableColumn.nulls<int32>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.ni32.isValid(idx[i])) { o.set(i, this.ni32.get(idx[i])); }
@@ -396,7 +396,7 @@ public class DynCol {
                 return DynCol.ofNI32(#o);
             }
             if (this.tag == 4) {
-                NullableColumn<int64> o = NullableColumn.nulls<int64>(m);
+                NullableColumn<int64> o #= NullableColumn.nulls<int64>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.ni64.isValid(idx[i])) { o.set(i, this.ni64.get(idx[i])); }
@@ -405,7 +405,7 @@ public class DynCol {
                 return DynCol.ofNI64(#o);
             }
             if (this.tag == 5) {
-                NullableColumn<uint8> o = NullableColumn.nulls<uint8>(m);
+                NullableColumn<uint8> o #= NullableColumn.nulls<uint8>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.nu8.isValid(idx[i])) { o.set(i, this.nu8.get(idx[i])); }
@@ -414,7 +414,7 @@ public class DynCol {
                 return DynCol.ofNU8(#o);
             }
             if (this.tag == 6) {
-                NullableColumn<uint16> o = NullableColumn.nulls<uint16>(m);
+                NullableColumn<uint16> o #= NullableColumn.nulls<uint16>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.nu16.isValid(idx[i])) { o.set(i, this.nu16.get(idx[i])); }
@@ -423,7 +423,7 @@ public class DynCol {
                 return DynCol.ofNU16(#o);
             }
             if (this.tag == 7) {
-                NullableColumn<uint32> o = NullableColumn.nulls<uint32>(m);
+                NullableColumn<uint32> o #= NullableColumn.nulls<uint32>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.nu32.isValid(idx[i])) { o.set(i, this.nu32.get(idx[i])); }
@@ -432,7 +432,7 @@ public class DynCol {
                 return DynCol.ofNU32(#o);
             }
             if (this.tag == 8) {
-                NullableColumn<uint64> o = NullableColumn.nulls<uint64>(m);
+                NullableColumn<uint64> o #= NullableColumn.nulls<uint64>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.nu64.isValid(idx[i])) { o.set(i, this.nu64.get(idx[i])); }
@@ -441,7 +441,7 @@ public class DynCol {
                 return DynCol.ofNU64(#o);
             }
             if (this.tag == 9) {
-                NullableColumn<float32> o = NullableColumn.nulls<float32>(m);
+                NullableColumn<float32> o #= NullableColumn.nulls<float32>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.nf32.isValid(idx[i])) { o.set(i, this.nf32.get(idx[i])); }
@@ -450,7 +450,7 @@ public class DynCol {
                 return DynCol.ofNF32(#o);
             }
             if (this.tag == 10) {
-                NullableColumn<float64> o = NullableColumn.nulls<float64>(m);
+                NullableColumn<float64> o #= NullableColumn.nulls<float64>(m);
                 int64 i = 0;
                 while (i < m) {
                     if (this.nf64.isValid(idx[i])) { o.set(i, this.nf64.get(idx[i])); }
@@ -460,61 +460,61 @@ public class DynCol {
             }
         }
         if (this.tag == 1) {
-            Column<int8> o = Column.zeros<int8>(m);
+            Column<int8> o #= Column.zeros<int8>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.i8.get(idx[i])); i = i + 1; }
             return DynCol.ofI8(#o);
         }
         if (this.tag == 2) {
-            Column<int16> o = Column.zeros<int16>(m);
+            Column<int16> o #= Column.zeros<int16>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.i16.get(idx[i])); i = i + 1; }
             return DynCol.ofI16(#o);
         }
         if (this.tag == 3) {
-            Column<int32> o = Column.zeros<int32>(m);
+            Column<int32> o #= Column.zeros<int32>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.i32.get(idx[i])); i = i + 1; }
             return DynCol.ofI32(#o);
         }
         if (this.tag == 4) {
-            Column<int64> o = Column.zeros<int64>(m);
+            Column<int64> o #= Column.zeros<int64>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.i64.get(idx[i])); i = i + 1; }
             return DynCol.ofI64(#o);
         }
         if (this.tag == 5) {
-            Column<uint8> o = Column.zeros<uint8>(m);
+            Column<uint8> o #= Column.zeros<uint8>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.u8.get(idx[i])); i = i + 1; }
             return DynCol.ofU8(#o);
         }
         if (this.tag == 6) {
-            Column<uint16> o = Column.zeros<uint16>(m);
+            Column<uint16> o #= Column.zeros<uint16>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.u16.get(idx[i])); i = i + 1; }
             return DynCol.ofU16(#o);
         }
         if (this.tag == 7) {
-            Column<uint32> o = Column.zeros<uint32>(m);
+            Column<uint32> o #= Column.zeros<uint32>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.u32.get(idx[i])); i = i + 1; }
             return DynCol.ofU32(#o);
         }
         if (this.tag == 8) {
-            Column<uint64> o = Column.zeros<uint64>(m);
+            Column<uint64> o #= Column.zeros<uint64>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.u64.get(idx[i])); i = i + 1; }
             return DynCol.ofU64(#o);
         }
         if (this.tag == 9) {
-            Column<float32> o = Column.zeros<float32>(m);
+            Column<float32> o #= Column.zeros<float32>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.f32.get(idx[i])); i = i + 1; }
             return DynCol.ofF32(#o);
         }
         if (this.tag == 10) {
-            Column<float64> o = Column.zeros<float64>(m);
+            Column<float64> o #= Column.zeros<float64>(m);
             int64 i = 0;
             while (i < m) { o.set(i, this.f64.get(idx[i])); i = i + 1; }
             return DynCol.ofF64(#o);
@@ -547,7 +547,7 @@ public class DynCol {
                 "DynCol.joinGather: a utf8 column cannot be null-extended");
         }
         if (this.tag == 9 || this.tag == 10) {
-            NullableColumn<float64> of = NullableColumn.nulls<float64>(m);
+            NullableColumn<float64> of #= NullableColumn.nulls<float64>(m);
             int64 i = 0;
             while (i < m) {
                 if (present[i] && this.validAt(idx[i])) {
@@ -556,7 +556,7 @@ public class DynCol {
                 i = i + 1;
             }
             if (this.tag == 9) {
-                NullableColumn<float32> o32 = NullableColumn.nulls<float32>(m);
+                NullableColumn<float32> o32 #= NullableColumn.nulls<float32>(m);
                 int64 j = 0;
                 while (j < m) {
                     if (present[j] && this.validAt(idx[j])) {
@@ -568,7 +568,7 @@ public class DynCol {
             }
             return DynCol.ofNF64(#of);
         }
-        NullableColumn<int64> o = NullableColumn.nulls<int64>(m);
+        NullableColumn<int64> o #= NullableColumn.nulls<int64>(m);
         int64 i = 0;
         while (i < m) {
             if (present[i] && this.validAt(idx[i])) {
@@ -590,43 +590,43 @@ public class DynCol {
     // physical, preserving validity — the join gather materializes exact
     // integers through int64 then narrows to the source physical.
     #NullableColumn<int8> __narrowNI8(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<int8> r = NullableColumn.nulls<int8>(m);
+        NullableColumn<int8> r #= NullableColumn.nulls<int8>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (int8) o.get(i)); } i = i + 1; }
         return #r;
     }
     #NullableColumn<int16> __narrowNI16(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<int16> r = NullableColumn.nulls<int16>(m);
+        NullableColumn<int16> r #= NullableColumn.nulls<int16>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (int16) o.get(i)); } i = i + 1; }
         return #r;
     }
     #NullableColumn<int32> __narrowNI32(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<int32> r = NullableColumn.nulls<int32>(m);
+        NullableColumn<int32> r #= NullableColumn.nulls<int32>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (int32) o.get(i)); } i = i + 1; }
         return #r;
     }
     #NullableColumn<uint8> __narrowNU8(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<uint8> r = NullableColumn.nulls<uint8>(m);
+        NullableColumn<uint8> r #= NullableColumn.nulls<uint8>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (uint8) o.get(i)); } i = i + 1; }
         return #r;
     }
     #NullableColumn<uint16> __narrowNU16(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<uint16> r = NullableColumn.nulls<uint16>(m);
+        NullableColumn<uint16> r #= NullableColumn.nulls<uint16>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (uint16) o.get(i)); } i = i + 1; }
         return #r;
     }
     #NullableColumn<uint32> __narrowNU32(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<uint32> r = NullableColumn.nulls<uint32>(m);
+        NullableColumn<uint32> r #= NullableColumn.nulls<uint32>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (uint32) o.get(i)); } i = i + 1; }
         return #r;
     }
     #NullableColumn<uint64> __narrowNU64(#NullableColumn<int64> o, int64 m) {
-        NullableColumn<uint64> r = NullableColumn.nulls<uint64>(m);
+        NullableColumn<uint64> r #= NullableColumn.nulls<uint64>(m);
         int64 i = 0;
         while (i < m) { if (o.isValid(i)) { r.set(i, (uint64) o.get(i)); } i = i + 1; }
         return #r;

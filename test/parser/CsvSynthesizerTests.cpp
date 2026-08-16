@@ -57,7 +57,7 @@ TEST(CsvSynthesizerTests, parseSingleInt32ColumnTwoRows) {
     EXPECT_EQ(runCsv(
         "public class Box { public int32 id; }\n",
         "id\n42\n7",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return ((int32) rows.count()) * 100 + rows[0].id + rows[1].id;"),
         2 * 100 + 42 + 7);   // 249
 }
@@ -67,7 +67,7 @@ TEST(CsvSynthesizerTests, parseInt64Column) {
     EXPECT_EQ(runCsv(
         "public class Box { public int64 v; }\n",
         "v\n1000000\n3",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return (int32) (rows[0].v / (int64) 1000000) + (int32) rows[1].v;"),
         1 + 3);   // 4
 }
@@ -77,7 +77,7 @@ TEST(CsvSynthesizerTests, parseFloat64Column) {
     EXPECT_EQ(runCsv(
         "public class Box { public float64 x; }\n",
         "x\n3.5\n-2.25",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return (int32) (rows[0].x * 100.0) + (int32) (rows[1].x * 100.0);"),
         350 + (-225));   // 125
 }
@@ -87,7 +87,7 @@ TEST(CsvSynthesizerTests, parseBooleanColumn) {
     EXPECT_EQ(runCsv(
         "public class Box { public boolean b; }\n",
         "b\ntrue\nfalse",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " int32 r = 0;"
         " if (rows[0].b) { r = r + 10; }"
         " if (rows[1].b) { r = r + 1; }"
@@ -100,7 +100,7 @@ TEST(CsvSynthesizerTests, parseStringColumn) {
     EXPECT_EQ(runCsv(
         "public class Box { public cajeta.lang.String s; }\n",
         "s\nhi\nyo",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return (int32) rows[0].s.byteAt(0) * 100 + (int32) rows[1].s.byteAt(0);"),
         'h' * 100 + 'y');   // 10421
 }
@@ -111,7 +111,7 @@ TEST(CsvSynthesizerTests, parseColumnsBoundByName) {
     EXPECT_EQ(runCsv(
         "public class Rec { public int32 a; public int32 b; }\n",
         "b,a\n10,20\n30,40",
-        "Rec[] rows = Csv.parse<Rec[]>(buf, n);"
+        "Rec[] rows #= Csv.parse<Rec[]>(buf, n);"
         " return rows[0].a * 100 + rows[0].b + rows[1].a + rows[1].b;"),
         20 * 100 + 10 + 40 + 30);   // 2080
 }
@@ -122,7 +122,7 @@ TEST(CsvSynthesizerTests, unmappedHeaderColumnIgnored) {
     EXPECT_EQ(runCsv(
         "public class Box { public int32 a; }\n",
         "a,x\n5,9",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return ((int32) rows.count()) * 100 + rows[0].a;"),
         1 * 100 + 5);   // 105
 }
@@ -136,7 +136,7 @@ TEST(CsvSynthesizerTests, unmappedFieldDefaultsWhenNotRequired) {
     EXPECT_EQ(runCsv(
         "public class Box { public int32 a; public int32 b; }\n",
         "a\n5",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return rows[0].a * 100 + rows[0].b;"),
         5 * 100 + 0);   // 500
 }
@@ -146,7 +146,7 @@ TEST(CsvSynthesizerTests, requiredColumnPresentBinds) {
     EXPECT_EQ(runCsv(
         "public class Box { @CsvRequired public int32 id; }\n",
         "id\n42",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return rows[0].id;"),
         42);
 }
@@ -158,7 +158,7 @@ TEST(CsvSynthesizerTests, requiredColumnMissingThrows) {
         "public class Box { @CsvRequired public int32 id; public int32 x; }\n",
         "x\n9",
         "try {"
-        "   Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "   Box[] rows #= Csv.parse<Box[]>(buf, n);"
         "   return 0;"
         " } catch (cajeta.codec.csv.CsvParseException e) {"
         "   return 1;"
@@ -173,7 +173,7 @@ TEST(CsvSynthesizerTests, requiredOnePresentOneMissingThrows) {
         " @CsvRequired public int32 right; }\n",
         "left\n1",
         "try {"
-        "   Pair[] rows = Csv.parse<Pair[]>(buf, n);"
+        "   Pair[] rows #= Csv.parse<Pair[]>(buf, n);"
         "   return 0;"
         " } catch (cajeta.codec.csv.CsvParseException e) {"
         "   return 1;"
@@ -188,7 +188,7 @@ TEST(CsvSynthesizerTests, csvColumnRename) {
     EXPECT_EQ(runCsv(
         "public class Box { @CsvColumn(\"user_id\") public int32 id; }\n",
         "user_id\n42",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return rows[0].id;"),
         42);
 }
@@ -200,7 +200,7 @@ TEST(CsvSynthesizerTests, csvNamingStrategySnakeCase) {
         "@CsvNamingStrategy(\"SNAKE_CASE\")\n"
         "public class User { public int32 firstName; }\n",
         "first_name\n7",
-        "User[] rows = Csv.parse<User[]>(buf, n);"
+        "User[] rows #= Csv.parse<User[]>(buf, n);"
         " return rows[0].firstName;"),
         7);
 }
@@ -211,7 +211,7 @@ TEST(CsvSynthesizerTests, csvNamingStrategyKebabCase) {
         "@CsvNamingStrategy(\"KEBAB_CASE\")\n"
         "public class User { public int32 firstName; }\n",
         "first-name\n8",
-        "User[] rows = Csv.parse<User[]>(buf, n);"
+        "User[] rows #= Csv.parse<User[]>(buf, n);"
         " return rows[0].firstName;"),
         8);
 }
@@ -223,7 +223,7 @@ TEST(CsvSynthesizerTests, csvColumnOverridesStrategy) {
         "@CsvNamingStrategy(\"SNAKE_CASE\")\n"
         "public class User { @CsvColumn(\"EXPLICIT\") public int32 firstName; }\n",
         "EXPLICIT\n9",
-        "User[] rows = Csv.parse<User[]>(buf, n);"
+        "User[] rows #= Csv.parse<User[]>(buf, n);"
         " return rows[0].firstName;"),
         9);
 }
@@ -234,7 +234,7 @@ TEST(CsvSynthesizerTests, csvIgnoreField) {
     EXPECT_EQ(runCsv(
         "public class Box { public int32 a; @CsvIgnore public int32 secret; }\n",
         "a,secret\n5,99",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return rows[0].a * 100 + rows[0].secret;"),
         5 * 100 + 0);   // 500 — secret ignored
 }
@@ -244,7 +244,7 @@ TEST(CsvSynthesizerTests, csvAliasReadsAlternateKey) {
     EXPECT_EQ(runCsv(
         "public class Box { @CsvAlias({\"uid\", \"user-id\"}) public int32 id; }\n",
         "uid\n42",
-        "Box[] rows = Csv.parse<Box[]>(buf, n);"
+        "Box[] rows #= Csv.parse<Box[]>(buf, n);"
         " return rows[0].id;"),
         42);
 }

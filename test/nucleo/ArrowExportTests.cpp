@@ -62,7 +62,7 @@ const char* kProgram =
     "    static NullableColumn<float32> heldN;\n"
     "    public static int64 run() {\n"
     "        float32[] fa = [ 1.5f, 2.5f, 3.5f ];\n"
-    "        Column<float32> c = Column.of<float32>(fa);\n"
+    "        Column<float32> c #= Column.of<float32>(fa);\n"
     "        T.held = c;\n"                 // the BackendRegistry.shared idiom
     "        return T.held.exportArrow();\n"
     "    }\n"
@@ -72,7 +72,7 @@ const char* kProgram =
     "    public static int64 runNullable() {\n"
     "        float32[] va = [ 10.0f, 20.0f, 30.0f, 40.0f ];\n"
     "        boolean[] ok = [ true, false, true, false ];\n"
-    "        NullableColumn<float32> c = NullableColumn.of<float32>(va, ok);\n"
+    "        NullableColumn<float32> c #= NullableColumn.of<float32>(va, ok);\n"
     "        T.heldN = c;\n"
     "        return T.heldN.exportArrow();\n"
     "    }\n"

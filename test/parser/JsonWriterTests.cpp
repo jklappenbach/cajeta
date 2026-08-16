@@ -30,7 +30,7 @@ TEST(JsonWriterTests, emptyObjectByteCount) {
         "    public static int32 run() {\n"
         "        JsonWriter w = heap JsonWriter();\n"
         "        w.beginObject().endObject();\n"
-        "        int8[] out = w.toBytes();\n"
+        "        int8[] out #= w.toBytes();\n"
         "        return (int32) out[0] * 100 + (int32) out[1];\n"
         "    }\n"
         "}\n";
@@ -45,7 +45,7 @@ TEST(JsonWriterTests, emptyArrayByteCount) {
         "    public static int32 run() {\n"
         "        JsonWriter w = heap JsonWriter();\n"
         "        w.beginArray().endArray();\n"
-        "        int8[] out = w.toBytes();\n"
+        "        int8[] out #= w.toBytes();\n"
         "        return (int32) out[0] * 100 + (int32) out[1];\n"
         "    }\n"
         "}\n";
@@ -67,7 +67,7 @@ TEST(JsonWriterTests, arrayThreeNumbers) {
         "         .endArray();\n"
         "        int32 sz = w.size();\n"
         "        if (sz != 7) { return -sz; }\n"
-        "        int8[] out = w.toBytes();\n"
+        "        int8[] out #= w.toBytes();\n"
         "        // expected bytes: '[','1',',','2',',','3',']'\n"
         "        if (out[0] != (int8) 91)  { return -10; }\n"
         "        if (out[1] != (int8) 49)  { return -11; }\n"
@@ -91,7 +91,7 @@ TEST(JsonWriterTests, negativeLargeInteger) {
         "        w.writeNumber((int64) -1234567890);\n"
         "        int32 sz = w.size();\n"
         "        if (sz != 11) { return -sz; }\n"
-        "        int8[] out = w.toBytes();\n"
+        "        int8[] out #= w.toBytes();\n"
         "        if (out[0] != (int8) 45)  { return -1; }\n"  // '-'
         "        if (out[1] != (int8) 49)  { return -2; }\n"  // '1'
         "        if (out[10] != (int8) 48) { return -3; }\n"  // '0'
@@ -149,7 +149,7 @@ TEST(JsonWriterTests, roundTripWithReader) {
         "            .writeNumber((int64) 30)\n"
         "         .endArray();\n"
         "        int32 sz = w.size();\n"
-        "        int8[] bytes = w.toBytes();\n"
+        "        int8[] bytes #= w.toBytes();\n"
         "        JsonReader r = heap JsonReader(bytes, (int64) sz);\n"
         "        int32 sum = 0;\n"
         "        sum = sum + r.next();\n"  // 2 START_ARRAY
@@ -247,7 +247,7 @@ TEST(JsonReaderBytesTests, currentBytesCopiesKeySpan) {
         "        JsonReader r = heap JsonReader(buf, (int64) 8);\n"
         "        r.next();\n"  // START_OBJECT
         "        r.next();\n"  // KEY
-        "        int8[] k = r.currentBytes();\n"
+        "        int8[] k #= r.currentBytes();\n"
         "        // k must be 2 bytes: 'a','b'\n"
         "        return (int32) k[0] * 100 + (int32) k[1];\n"
         "    }\n"

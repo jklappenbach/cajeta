@@ -18,6 +18,22 @@ using cajeta_test::CajetaJit;
 
 namespace {
 
+// `setBorrow` was `{ this.f = c; }` until ownership 3.3.3. That spelling is
+// now CAPTURED_BORROW_PARAM — a plain store of a plain parameter is the defect
+// Unit 3 rejects — so the shape this suite exercises is unreachable by any
+// legal program and the fixture had to be re-spelled.
+//
+// `#=` is the re-spelling, and it preserves the suite's subject exactly. `#=`
+// records the SOURCE's mode in the field's bit, so `setBorrow(c)` with a lent
+// `c` still stores a BORROW: source books untouched, teardown skips, the
+// property every test below asserts. What changed is only which spelling
+// expresses it.
+//
+// The two methods now differ solely in their PARAMETER (`#Cell` vs `Cell`)
+// while sharing a body — which is not an accident to tidy away but the
+// convention's own sink model (spec §2.3, the `ArrayList.add` shape): the
+// caller's spelling decides, and `#=` is what lets it. The fixture reads as a
+// better statement of what the bits mean than it did before.
 const char* kHolderSrc =
     "package test;\n"
     "public class Cell {\n"
@@ -27,7 +43,7 @@ const char* kHolderSrc =
     "public class Holder {\n"
     "    public Cell f;\n"
     "    public void setOwned(#Cell c) { this.f #= c; }\n"
-    "    public void setBorrow(Cell c) { this.f = c; }\n"
+    "    public void setBorrow(Cell c) { this.f #= c; }\n"
     "}\n";
 
 int32_t runI32(const std::string& src, const char* entryClass = "test.D") {

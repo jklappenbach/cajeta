@@ -101,7 +101,7 @@ TEST(UpcastThreadingTests, returnUpcastToNonFirstParentAdjustsPointer) {
         "public final class D {\n"
         "  public static int32 run() {\n"
         "    Maker m = heap Maker();\n"
-        "    B b = m.makeAsB();\n"  // b receives B-adjusted pointer
+        "    B b #= m.makeAsB();\n"  // b receives B-adjusted pointer
         "    return b.readBx();\n"  // 73
         "  }\n"
         "}\n";

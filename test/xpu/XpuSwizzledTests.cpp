@@ -59,7 +59,7 @@ public class M {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint32> out = heap KernelBuffer<uint32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         swz.launch(s, grid: [1], block: [256])(out);
         s.sync();
         out.download(hout);
@@ -112,7 +112,7 @@ public class M {
         in.upload(hin);
         oa.upload(hA);
         ob.upload(hB);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         viaSwizzle.launch(s, grid: [1], block: [256])(oa, in);
         viaPlain.launch(s, grid: [1], block: [256])(ob, in);
         s.sync();
@@ -170,7 +170,7 @@ public class M {
         in.upload(hin);
         oa.upload(hA);
         ob.upload(hB);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         viaCoop.launch(s, grid: [1], block: [256])(oa, in);
         viaAsync.launch(s, grid: [1], block: [256])(ob, in);
         s.sync();
@@ -235,7 +235,7 @@ public class M {
         a.upload(ha);
         b.upload(hb);
         c.upload(hc);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         wmma.launch(s, grid: [1], block: [32])(a, b, c);
         s.sync();
         c.download(hc);

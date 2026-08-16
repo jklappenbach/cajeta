@@ -47,7 +47,7 @@ TEST(BuilderHandlerCollisionTests, fieldAndMethodSameNameDispatchesToMethod) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Builder b = Builder.make().handler((int32 x) -> heap Resp(x));\n"
+        "        Builder b #= Builder.make().handler((int32 x) -> heap Resp(x));\n"
         "        return b.marker();\n"
         "    }\n"
         "}\n";
@@ -75,7 +75,7 @@ TEST(BuilderHandlerCollisionTests, fluentBareParamLambdaInfers) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Builder b = Builder.make()\n"
+        "        Builder b #= Builder.make()\n"
         "            .pool(16)\n"
         "            .handler((req) -> heap Resp(req));\n"   // BARE param
         "        if (b.poolSize != 16) return -2;\n"

@@ -48,7 +48,7 @@ TEST(SharedFieldDropTests, fieldHeldStakeReleasesOnObjectDrop) {
         "int64 base = Cajeta.liveCount();\n"
         "{\n" +
         std::string(kDyn) +
-        "    String w = s.substring(5, 30);\n"
+        "    String w #= s.substring(5, 30);\n"
         "    Holder h = heap Holder(#w);\n"
         "    if (h.s.size() != 25) { return -1; }\n"
         "    if (h.s.charAt(0) != (int8) 102) { return -2; }\n"   // 'f'
@@ -72,9 +72,9 @@ TEST(SharedFieldDropTests, containerHeldStakesRelease) {
         "{\n" +
         std::string(kDyn) +
         "    ArrayList<String> parts = heap ArrayList<String>();\n"
-        "    String p0 = s.substring(0, 10);\n"
-        "    String p1 = s.substring(10, 20);\n"
-        "    String p2 = s.substring(20, 36);\n"
+        "    String p0 #= s.substring(0, 10);\n"
+        "    String p1 #= s.substring(10, 20);\n"
+        "    String p2 #= s.substring(20, 36);\n"
         "    parts.add(#p0);\n"
         "    parts.add(#p1);\n"
         "    parts.add(#p2);\n"
@@ -96,7 +96,7 @@ TEST(SharedFieldDropTests, moveIsRcNeutral) {
         "int64 base = Cajeta.liveCount();\n"
         "{\n" +
         std::string(kDyn) +
-        "    String w = s.substring(3, 23);\n"
+        "    String w #= s.substring(3, 23);\n"
         "    String w2 #= w;\n"                       // move: no retain
         "    Holder h = heap Holder(#w2);\n"          // move into field
         "    if (h.s.size() != 20) { return -1; }\n"

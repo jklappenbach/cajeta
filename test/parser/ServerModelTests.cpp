@@ -50,7 +50,7 @@ int32_t runI32(const std::string& body) {
 // not isSharedPool, pool size 0 (unused).
 TEST(ServerModelTests, fiberPerConnectionSelectsModelA) {
     EXPECT_EQ(runI32(
-        "ServerModel m = ServerModel.fiberPerConnection();\n"
+        "ServerModel m #= ServerModel.fiberPerConnection();\n"
         "if (!m.isFiberPerConnection()) return -1;\n"
         "if (m.isSharedPool()) return -2;\n"
         "if (m.getPoolSize() != 0) return -3;\n"
@@ -63,7 +63,7 @@ TEST(ServerModelTests, fiberPerConnectionSelectsModelA) {
 // SharedPool(8) selects Model B and carries the worker-pool size through.
 TEST(ServerModelTests, sharedPoolSelectsModelBWithPoolSize) {
     EXPECT_EQ(runI32(
-        "ServerModel m = ServerModel.sharedPool(8);\n"
+        "ServerModel m #= ServerModel.sharedPool(8);\n"
         "if (!m.isSharedPool()) return -1;\n"
         "if (m.isFiberPerConnection()) return -2;\n"
         "if (m.getPoolSize() != 8) return -3;\n"
@@ -75,9 +75,9 @@ TEST(ServerModelTests, sharedPoolSelectsModelBWithPoolSize) {
 // so the model never names a zero-worker pool.
 TEST(ServerModelTests, sharedPoolFloorsNonPositiveToOne) {
     EXPECT_EQ(runI32(
-        "ServerModel zero = ServerModel.sharedPool(0);\n"
+        "ServerModel zero #= ServerModel.sharedPool(0);\n"
         "if (zero.getPoolSize() != 1) return -1;\n"
-        "ServerModel neg = ServerModel.sharedPool(-4);\n"
+        "ServerModel neg #= ServerModel.sharedPool(-4);\n"
         "if (neg.getPoolSize() != 1) return -2;\n"
         "if (!neg.isSharedPool()) return -3;\n"
         "return 1;"), 1);

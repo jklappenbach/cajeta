@@ -34,8 +34,8 @@ public final class LinAlg {
         }
         int64 k = 1;
         if (b.ndim() == 2) { k = b.shapeAt(1); }
-        Tensor<E> m = a.copy();
-        Tensor<E> x = b.copy();
+        Tensor<E> m #= a.copy();
+        Tensor<E> x #= b.copy();
         int64 col = 0;
         while (col < n) {
             // partial pivot: row with the largest |m[r,col]| at or below the diagonal
@@ -99,12 +99,12 @@ public final class LinAlg {
     }
 
     /**
-     * Solve the triangular system `T·x = b` (scipy `solve_triangular`) by forward or
+     * Solve the triangular system `T·x #= b` (scipy `solve_triangular`) by forward or
      * back substitution — the factor-application primitive `choSolve`/`luSolve` and
      * QR-based `lstsq` stand on. `t` is `(n,n)` with its significant triangle chosen
      * by `lower`; `b` is `(n,)` or `(n,k)` (multi-RHS); the result has `b`'s shape.
      * `unitDiag` treats the diagonal as 1 (stored diagonal values are ignored);
-     * `transposed` solves `Tᵀ·x = b` without materializing the transpose. Inputs are
+     * `transposed` solves `Tᵀ·x #= b` without materializing the transpose. Inputs are
      * not modified. Throws {@link LinAlgException} on a non-square `t`, a row-count
      * mismatch, or — unless `unitDiag` — a zero diagonal (singular).
      *
@@ -134,7 +134,7 @@ public final class LinAlg {
         // upper-triangular (backward) pass reading t[j,i] in place of t[i,j].
         boolean effLower = lower;
         if (transposed) { effLower = !lower; }
-        Tensor<E> x = b.copy();
+        Tensor<E> x #= b.copy();
         int64 c = 0;
         while (c < k) {
             if (effLower) {
@@ -184,7 +184,7 @@ public final class LinAlg {
      */
     public static E det<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
-        Tensor<E> m = a.copy();
+        Tensor<E> m #= a.copy();
         E sign = (E) 1;
         int64 col = 0;
         while (col < n) {
@@ -232,8 +232,8 @@ public final class LinAlg {
      */
     public static #Tensor<E> inv<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
-        Tensor<E> ident = Tensor.eye<E>(n);
-        Tensor<E> x = LinAlg.solve<E>(a, ident);
+        Tensor<E> ident #= Tensor.eye<E>(n);
+        Tensor<E> x #= LinAlg.solve<E>(a, ident);
         return #x;
     }
 
@@ -248,7 +248,7 @@ public final class LinAlg {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = n;
-        Tensor<E> l = Tensor.zeros<E>(sh);
+        Tensor<E> l #= Tensor.zeros<E>(sh);
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -282,7 +282,7 @@ public final class LinAlg {
      */
     public static #Tensor<E>[] lu<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
-        Tensor<E> m = a.copy();
+        Tensor<E> m #= a.copy();
         int64[] perm = heap int64[n];
         int64 t = 0;
         while (t < n) { perm[t] = t; t = t + 1; }
@@ -356,8 +356,8 @@ public final class LinAlg {
      * @EntryPoint
      */
     public static #Tensor<E> choSolve<E extends Floating>(Tensor<E> l, Tensor<E> b) {
-        Tensor<E> y = LinAlg.solveTriangular<E>(l, b, true, false, false);
-        Tensor<E> x = LinAlg.solveTriangular<E>(l, y, true, false, true);
+        Tensor<E> y #= LinAlg.solveTriangular<E>(l, b, true, false, false);
+        Tensor<E> x #= LinAlg.solveTriangular<E>(l, y, true, false, true);
         return #x;
     }
 
@@ -376,7 +376,7 @@ public final class LinAlg {
         }
         int64 k = 1;
         if (b.ndim() == 2) { k = b.shapeAt(1); }
-        Tensor<E> bsrc = b.copy();
+        Tensor<E> bsrc #= b.copy();
         Tensor<E> bp = b.copy();
         // bp = Pᵀ·B (P has exactly one 1 per column: P[perm[i]][i] = 1)
         int64 i = 0;
@@ -394,8 +394,8 @@ public final class LinAlg {
             }
             i = i + 1;
         }
-        Tensor<E> y = LinAlg.solveTriangular<E>(l, bp, true, false, false);
-        Tensor<E> x = LinAlg.solveTriangular<E>(u, y, false, false, false);
+        Tensor<E> y #= LinAlg.solveTriangular<E>(l, bp, true, false, false);
+        Tensor<E> x #= LinAlg.solveTriangular<E>(u, y, false, false, false);
         return #x;
     }
 
@@ -418,10 +418,10 @@ public final class LinAlg {
         int64 n = a.shapeAt(1);
         int64 rk = m;
         if (n < m) { rk = n; }
-        Tensor<E> w = a.copy();
+        Tensor<E> w #= a.copy();
         int64[] tsh = heap int64[1];
         tsh[0] = rk;
-        Tensor<E> tau = Tensor.zeros<E>(tsh);
+        Tensor<E> tau #= Tensor.zeros<E>(tsh);
         // Factor: reflector j (H = I - tau·v·vᵀ, v[j] = 1) zeroes w[j+1.., j].
         // v's tail is stored below the diagonal of column j; R accumulates in
         // the upper triangle of w.
@@ -547,8 +547,8 @@ public final class LinAlg {
      */
     public static #Tensor<E>[] eigh<E extends Floating>(Tensor<E> a) {
         int64 n = a.shapeAt(0);
-        Tensor<E> m = a.copy();
-        Tensor<E> v = Tensor.eye<E>(n);
+        Tensor<E> m #= a.copy();
+        Tensor<E> v #= Tensor.eye<E>(n);
         E eps = (E) 1 / (E) 10000000;            // off-diagonal convergence floor (~1e-7)
         E eps2 = (E) 1 / (E) 100000000;          // per-element skip floor (~1e-8)
         int64 sweep = 0;
@@ -716,8 +716,8 @@ public final class LinAlg {
         int64 am = a.shapeAt(0);
         int64 an = a.shapeAt(1);
         if (am >= an) {
-            Tensor<E> w = a.copy();
-            Tensor<E>[] core = LinAlg.svdCore<E>(w, am, an);
+            Tensor<E> w #= a.copy();
+            Tensor<E>[] core #= LinAlg.svdCore<E>(w, am, an);
             return #core;
         }
         // m < n: factor Aᵀ (n,m), then A = U·S·Vt with U = V'ᵀᵀ… i.e. swap:
@@ -725,7 +725,7 @@ public final class LinAlg {
         int64[] tsh = heap int64[2];
         tsh[0] = an;
         tsh[1] = am;
-        Tensor<E> at = Tensor.zeros<E>(tsh);
+        Tensor<E> at #= Tensor.zeros<E>(tsh);
         int64 ti = 0;
         while (ti < an) {
             int64 tj = 0;
@@ -735,7 +735,7 @@ public final class LinAlg {
             }
             ti = ti + 1;
         }
-        Tensor<E>[] core = LinAlg.svdCore<E>(at, an, am);   // U' (n,m), S (m), Vt' (m,m)
+        Tensor<E>[] core #= LinAlg.svdCore<E>(at, an, am);   // U' (n,m), S (m), Vt' (m,m)
         int64 r = am;
         int64[] ush = heap int64[2];
         ush[0] = am;
@@ -783,12 +783,12 @@ public final class LinAlg {
     private static #Tensor<E>[] svdCore<E extends Floating>(Tensor<E> u, int64 m, int64 n) {
         int64[] vs = heap int64[1];
         vs[0] = n;
-        Tensor<E> w = Tensor.zeros<E>(vs);                   // singular values
-        Tensor<E> rv1 = Tensor.zeros<E>(vs);                 // superdiagonal workspace
+        Tensor<E> w #= Tensor.zeros<E>(vs);                   // singular values
+        Tensor<E> rv1 #= Tensor.zeros<E>(vs);                 // superdiagonal workspace
         int64[] vsh = heap int64[2];
         vsh[0] = n;
         vsh[1] = n;
-        Tensor<E> v = Tensor.zeros<E>(vsh);
+        Tensor<E> v #= Tensor.zeros<E>(vsh);
         E g = (E) 0;
         E scale = (E) 0;
         E anorm = (E) 0;
@@ -1178,7 +1178,7 @@ public final class LinAlg {
         int64 n = a.shapeAt(1);
         int64 r = m;
         if (n < m) { r = n; }
-        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E>[] sv #= LinAlg.svd<E>(a);
         Tensor<E> u = sv[0];                      // (m,r)
         Tensor<E> s = sv[1];                      // (r,)
         Tensor<E> vt = sv[2];                     // (r,n)
@@ -1189,7 +1189,7 @@ public final class LinAlg {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = m;
-        Tensor<E> out = Tensor.zeros<E>(sh);
+        Tensor<E> out #= Tensor.zeros<E>(sh);
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -1235,7 +1235,7 @@ public final class LinAlg {
         if (b.ndim() == 2) { k = b.shapeAt(1); }
         boolean deficient = true;
         if (m >= n) {
-            Tensor<E>[] f = LinAlg.qr<E>(a);
+            Tensor<E>[] f #= LinAlg.qr<E>(a);
             Tensor<E> r = f[1];                // (n,n)
             E rmax = (E) 0;
             int64 d = 0;
@@ -1253,17 +1253,17 @@ public final class LinAlg {
                 d = d + 1;
             }
             if (!deficient) {
-                Tensor<E> xq = LinAlg.lstsqQrPath<E>(f[0], r, b, m, n, k);
+                Tensor<E> xq #= LinAlg.lstsqQrPath<E>(f[0], r, b, m, n, k);
                 return #xq;
             }
         }
         // svd minimum-norm path (rank-deficient or m < n): x = A⁺·B
-        Tensor<E> pv = LinAlg.pinv<E>(a);      // (n,m)
-        Tensor<E> bsrc2 = b.copy();
+        Tensor<E> pv #= LinAlg.pinv<E>(a);      // (n,m)
+        Tensor<E> bsrc2 #= b.copy();
         int64[] xsh2 = heap int64[2];
         xsh2[0] = n;
         xsh2[1] = k;
-        Tensor<E> xm = Tensor.zeros<E>(xsh2);
+        Tensor<E> xm #= Tensor.zeros<E>(xsh2);
         int64 i2 = 0;
         while (i2 < n) {
             int64 c2i = 0;
@@ -1282,7 +1282,7 @@ public final class LinAlg {
         if (b.ndim() == 1) {
             int64[] vs3 = heap int64[1];
             vs3[0] = n;
-            Tensor<E> xv2 = Tensor.zeros<E>(vs3);
+            Tensor<E> xv2 #= Tensor.zeros<E>(vs3);
             int64 i4 = 0;
             while (i4 < n) {
                 xv2.set1(i4, xm.get2(i4, 0));
@@ -1297,11 +1297,11 @@ public final class LinAlg {
     private static #Tensor<E> lstsqQrPath<E extends Floating>(
             Tensor<E> q, Tensor<E> r, Tensor<E> b, int64 m, int64 n, int64 k) {
         // c = Qᵀ·B, computed as (n,k) regardless of b's rank
-        Tensor<E> bsrc = b.copy();
+        Tensor<E> bsrc #= b.copy();
         int64[] csh = heap int64[2];
         csh[0] = n;
         csh[1] = k;
-        Tensor<E> c2 = Tensor.zeros<E>(csh);
+        Tensor<E> c2 #= Tensor.zeros<E>(csh);
         int64 i = 0;
         while (i < n) {
             int64 c = 0;
@@ -1317,11 +1317,11 @@ public final class LinAlg {
             }
             i = i + 1;
         }
-        Tensor<E> x2 = LinAlg.solveTriangular<E>(r, c2, false, false, false);
+        Tensor<E> x2 #= LinAlg.solveTriangular<E>(r, c2, false, false, false);
         if (b.ndim() == 1) {
             int64[] vs2 = heap int64[1];
             vs2[0] = n;
-            Tensor<E> xv = Tensor.zeros<E>(vs2);
+            Tensor<E> xv #= Tensor.zeros<E>(vs2);
             int64 i3 = 0;
             while (i3 < n) {
                 xv.set1(i3, x2.get2(i3, 0));
@@ -1343,7 +1343,7 @@ public final class LinAlg {
         int64 n = a.shapeAt(1);
         int64 r = m;
         if (n < m) { r = n; }
-        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E>[] sv #= LinAlg.svd<E>(a);
         Tensor<E> s = sv[1];
         E smax = s.get1(0);
         E mx = (E) m;
@@ -1369,7 +1369,7 @@ public final class LinAlg {
         int64 n = a.shapeAt(1);
         int64 r = m;
         if (n < m) { r = n; }
-        Tensor<E>[] sv = LinAlg.svd<E>(a);
+        Tensor<E>[] sv #= LinAlg.svd<E>(a);
         Tensor<E> s = sv[1];
         E smax = s.get1(0);
         E smin = s.get1(r - 1);
@@ -1411,7 +1411,7 @@ public final class LinAlg {
             throw heap LinAlgException("slogdet: a must be square (n,n)");
         }
         int64 n = a.shapeAt(0);
-        Tensor<E> m = a.copy();
+        Tensor<E> m #= a.copy();
         E sign = (E) 1;
         E logsum = (E) 0;
         int64 col = 0;
@@ -1451,7 +1451,7 @@ public final class LinAlg {
         }
         int64[] sh = heap int64[1];
         sh[0] = 2;
-        Tensor<E> out = Tensor.zeros<E>(sh);
+        Tensor<E> out #= Tensor.zeros<E>(sh);
         out.set1(0, sign);
         out.set1(1, logsum);
         return #out;
@@ -1805,7 +1805,7 @@ public final class LinAlg {
         LinAlg.hqrD(h, n, s, wr, wi);
         int64[] osh = heap int64[1];
         osh[0] = 2 * n;
-        Tensor<float64> out = Tensor.zeros<float64>(osh);
+        Tensor<float64> out #= Tensor.zeros<float64>(osh);
         int64 k = 1;
         while (k <= n) {
             out.flatSet(2 * (k - 1), wr[k]);

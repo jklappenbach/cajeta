@@ -45,7 +45,7 @@ int64_t runI64(const std::string& body) {
 const char* kMasked =
     "float32[] va = [ 10.0f, 20.0f, 30.0f, 40.0f ];\n"
     "        boolean[] ok = [ true, false, true, false ];\n"
-    "        NullableColumn<float32> c = NullableColumn.of<float32>(va, ok);\n";
+    "        NullableColumn<float32> c #= NullableColumn.of<float32>(va, ok);\n";
 } // namespace
 
 // 2.1.1 — the bitmap reflects construction: isValid per element, get on a
@@ -82,8 +82,8 @@ TEST(NullableColumn, setAndSetNullFlipBitsIndependently) {
 // untouched.
 TEST(NullableColumn, fillNullsAndDropNullsMaterializeDense) {
     EXPECT_FLOAT_EQ(runF32(std::string(kMasked) +
-        "        Column<float32> filled = c.fillNulls(-1.0f);\n"
-        "        Column<float32> dense = c.dropNulls();\n"
+        "        Column<float32> filled #= c.fillNulls(-1.0f);\n"
+        "        Column<float32> dense #= c.dropNulls();\n"
         "        return filled.get(0) + filled.get(1) * 10.0f\n"
         "             + dense.get(1) * 100.0f + ((float32) dense.size()) * 1000.0f\n"
         "             + ((float32) c.size());"),
@@ -113,15 +113,15 @@ TEST(NullableColumn, bitmapIsSeparateAndAligned) {
     int64_t delta = runI64(
         "int64 n = 8192;\n"
         "        int64 base = Cajeta.allocatedBytes();\n"
-        "        Column<float32> plain = Column.zeros<float32>(n);\n"
+        "        Column<float32> plain #= Column.zeros<float32>(n);\n"
         "        int64 plainBytes = Cajeta.allocatedBytes() - base;\n"
         "        base = Cajeta.allocatedBytes();\n"
-        "        NullableColumn<float32> nul = NullableColumn.nulls<float32>(n);\n"
+        "        NullableColumn<float32> nul #= NullableColumn.nulls<float32>(n);\n"
         "        int64 nulBytes = Cajeta.allocatedBytes() - base;\n"
         "        return nulBytes - plainBytes;");
     EXPECT_GE(delta, 8192 / 8) << "no bitmap-sized allocation difference";
     EXPECT_LT(delta, 8192) << "bitmap overhead far larger than 1 bit/element";
     EXPECT_EQ(runI64(
-        "NullableColumn<float32> c = NullableColumn.nulls<float32>(1000);\n"
+        "NullableColumn<float32> c #= NullableColumn.nulls<float32>(1000);\n"
         "        return c.validityAddress() % 64 + c.dataAddress() % 64;"), 0);
 }

@@ -76,13 +76,13 @@ std::string verifyBody(const std::string& cert, const std::string& key, bool tru
         "        host[0L]=(int8)108; host[1L]=(int8)111; host[2L]=(int8)99;\n"
         "        host[3L]=(int8)97; host[4L]=(int8)108; host[5L]=(int8)104;\n"
         "        host[6L]=(int8)111; host[7L]=(int8)115; host[8L]=(int8)116;\n"
-        "        TlsConnection client = TlsConnection.verifyingClient();\n";
+        "        TlsConnection client #= TlsConnection.verifyingClient();\n";
     if (trust) {
         b += "        client.addTrust(cert, " + std::to_string(cert.size()) + ");\n";
     }
     b +=
         "        client.setVerifyHost(host, 9);\n"
-        "        TlsConnection server = TlsConnection.server(cert, " + std::to_string(cert.size()) +
+        "        TlsConnection server #= TlsConnection.server(cert, " + std::to_string(cert.size()) +
         ", key, " + std::to_string(key.size()) + ");\n"
         "        int8[] buf = heap int8[16384];\n"
         "        int32 round = 0;\n"
@@ -127,8 +127,8 @@ TEST(TlsConnectionTests, handshakeAndPlaintextThroughCajetaSurface) {
     std::string body =
         emitBytes("cert", cert) +
         emitBytes("key", key) +
-        "        TlsConnection client = TlsConnection.client();\n"
-        "        TlsConnection server = TlsConnection.server(cert, " + std::to_string(cert.size()) +
+        "        TlsConnection client #= TlsConnection.client();\n"
+        "        TlsConnection server #= TlsConnection.server(cert, " + std::to_string(cert.size()) +
         ", key, " + std::to_string(key.size()) + ");\n"
         // pump the handshake
         "        int8[] buf = heap int8[16384];\n"

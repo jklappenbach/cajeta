@@ -26,14 +26,16 @@ public final class IonCursor {
     int64 topTd;     // type-descriptor position of the current top-level value
 
     public IonCursor(int8[] b, int64 n) {
-        this.b = b;
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent buffer
+        // stays lent, `#b` at the call site transfers it.
+        this.b #= b;
         this.n = n;
-        IonSymbolTable t = IonSymbolTable.parse(b, n);
+        IonSymbolTable t #= IonSymbolTable.parse(b, n);
         this.table = #t;
         IonIndex[] f0 = heap IonIndex[32];
         this.frames = #f0;
         this.topTd = this.table.userValueStart();
-        IonIndex root = IonIndex.buildAt(b, this.topTd, this.table);
+        IonIndex root #= IonIndex.buildAt(b, this.topTd, this.table);
         this.frames[0] = #root;
         this.depth = 1;
     }
@@ -49,7 +51,7 @@ public final class IonCursor {
         int64 next = this.topTd + hl + cl;
         if (next >= this.n) { return false; }
         this.topTd = next;
-        IonIndex idx = IonIndex.buildAt(this.b, next, this.table);
+        IonIndex idx #= IonIndex.buildAt(this.b, next, this.table);
         this.frames[0] = #idx;
         this.depth = 1;
         return true;
@@ -58,7 +60,7 @@ public final class IonCursor {
     /** Re-point to the first top-level value (for a second pass). */
     public void reset() {
         this.topTd = this.table.userValueStart();
-        IonIndex idx = IonIndex.buildAt(this.b, this.topTd, this.table);
+        IonIndex idx #= IonIndex.buildAt(this.b, this.topTd, this.table);
         this.frames[0] = #idx;
         this.depth = 1;
     }
@@ -72,7 +74,7 @@ public final class IonCursor {
     /** Descend into the struct at slot `i`, sharing the one symbol table. */
     public void stepIn(int32 i) {
         int64 tdPos = this.cur().valueTd(i);
-        IonIndex child = IonIndex.buildAt(this.b, tdPos, this.table);
+        IonIndex child #= IonIndex.buildAt(this.b, tdPos, this.table);
         this.frames[this.depth] = #child;
         this.depth = this.depth + 1;
     }

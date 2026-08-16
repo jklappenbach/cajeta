@@ -62,7 +62,7 @@ std::string makeSource(const std::string& body) {
 TEST(UriMalformedExceptionTests, caughtAsNetExceptionRoot) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"\");\n"
+        "    Uri u #= Uri.parse(\"\");\n"
         "    return 0;\n"
         "} catch (NetException e) {\n"
         "    return 1;\n"
@@ -77,7 +77,7 @@ TEST(UriMalformedExceptionTests, caughtAsNetExceptionRoot) {
 TEST(UriMalformedExceptionTests, carriesKindInvalidViaBase) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"http://[::1/path\");\n"
+        "    Uri u #= Uri.parse(\"http://[::1/path\");\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return e.kind;\n"
@@ -102,7 +102,7 @@ TEST(UriMalformedExceptionTests, carriesKindInvalidViaBase) {
 TEST(UriMalformedExceptionTests, emptyInputCitesNegativeOnePosition) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"\");\n"
+        "    Uri u #= Uri.parse(\"\");\n"
         "    return -2;\n"
         "} catch (MalformedUriException e) {\n"
         "    return (int32) e.position;\n"

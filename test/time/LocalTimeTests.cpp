@@ -90,7 +90,7 @@ TEST(LocalTimeTests, isoHmShort) {
     // "08:05" -> size 5, chars '0','8',':','0','5'
     EXPECT_EQ(runJit(
         "LocalTime t = LocalTime.of(8, 5);\n"
-        "String s = t.iso();\n"
+        "String s #= t.iso();\n"
         "if (s.size()==5 && s.charAt(0)==48 && s.charAt(1)==56 && s.charAt(2)==58 "
         "&& s.charAt(3)==48 && s.charAt(4)==53) return 1;\n"
         "return 0;"), 1LL);
@@ -100,7 +100,7 @@ TEST(LocalTimeTests, isoWithSeconds) {
     // "23:09:07" -> size 8
     EXPECT_EQ(runJit(
         "LocalTime t = LocalTime.ofHms(23, 9, 7);\n"
-        "String s = t.iso();\n"
+        "String s #= t.iso();\n"
         "if (s.size()==8 && s.charAt(5)==58 && s.charAt(6)==48 && s.charAt(7)==55) return 1;\n"
         "return 0;"), 1LL);
 }
@@ -109,7 +109,7 @@ TEST(LocalTimeTests, isoWithNanos) {
     // "00:00:00.000000009" -> size 18, '.' at 8, '9' at 17
     EXPECT_EQ(runJit(
         "LocalTime t = LocalTime.ofHmsn(0, 0, 0, 9);\n"
-        "String s = t.iso();\n"
+        "String s #= t.iso();\n"
         "if (s.size()==18 && s.charAt(8)==46 && s.charAt(17)==57) return 1;\n"
         "return 0;"), 1LL);
 }

@@ -22,7 +22,7 @@ public final class AvroContainerWriter {
      */
     public AvroContainerWriter(int8[] data, int64 dataLen, int64 count,
                                String schemaJson) {
-        int8[] w = AvroContainerWriter.wrap(data, dataLen, count, schemaJson);
+        int8[] w #= AvroContainerWriter.wrap(data, dataLen, count, schemaJson);
         this.bytes = #w;
     }
 
@@ -63,7 +63,7 @@ public final class AvroContainerWriter {
         w.writeString(vNull);
         w.writeLong((int64) 0);
         // sync marker
-        int8[] sync = AvroContainerWriter.syncMarker();
+        int8[] sync #= AvroContainerWriter.syncMarker();
         w.writeRaw(sync, 16);
         // one data block
         w.writeLong(count);

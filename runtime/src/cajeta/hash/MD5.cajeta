@@ -180,7 +180,7 @@ public final class MD5 implements Hasher {
      */
     public static #int8[] hashString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return MD5.hash(w, (int64) s.byteLength());
         }
         return MD5.hash(s.root(), (int64) s.byteLength());
@@ -195,7 +195,7 @@ public final class MD5 implements Hasher {
      */
     public static #String hashStringHex(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return MD5.hashHex(w, (int64) s.byteLength());
         }
         return MD5.hashHex(s.root(), (int64) s.byteLength());
@@ -262,7 +262,7 @@ public final class MD5 implements Hasher {
 
     public void writeString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             MD5.updateNative(this.state, w, (int64) s.byteLength());
             return;
         }

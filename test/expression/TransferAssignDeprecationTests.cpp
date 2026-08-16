@@ -150,7 +150,7 @@ TEST(TransferAssignDeprecationTests, returnTransferStaysQuiet) {
         "        return #c;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Cell c = make();\n"
+        "        Cell c #= make();\n"
         "        return c.n;\n"
         "    }\n"
         "}\n";

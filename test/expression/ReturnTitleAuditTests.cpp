@@ -155,7 +155,7 @@ TEST(ReturnTitleAuditTests, ownedReturnIsNotEnumerated) {
         "public final class D {\n"
         "    public static #Cell fresh() { return heap Cell(7); }\n"
         "    public static int32 run() {\n"
-        "        Cell m = D.fresh();\n"
+        "        Cell m #= D.fresh();\n"
         "        return m.n;\n"
         "    }\n"
         "}\n";

@@ -271,7 +271,7 @@ public final class JsonWriter {
      */
     public JsonWriter writeString(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return this.writeString(w, s.byteLength());
         }
         return this.writeString(s.root(), s.byteLength());
@@ -303,7 +303,7 @@ public final class JsonWriter {
      */
     public JsonWriter key(String name) {
         if (name.root() == null || name.byteOffset() != (int64) 0) {
-            int8[] w = name.toBytes();
+            int8[] w #= name.toBytes();
             return this.key(w, name.byteLength());
         }
         return this.key(name.root(), name.byteLength());

@@ -49,43 +49,43 @@ std::string makeSource(const std::string& body) {
 
 TEST(UriParseTests, fullUriParsesScheme) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getScheme().equals(\"https\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, fullUriParsesUserinfo) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getUserinfo().equals(\"u:p\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, fullUriParsesHost) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getHost().equals(\"h.test\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, fullUriParsesExplicitPort) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getPort() == 8443 ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, fullUriParsesPath) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getPath().equals(\"/a/b\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, fullUriParsesQuery) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getQuery().equals(\"x=1&y=2\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, fullUriParsesFragment) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.getFragment().equals(\"frag\") ? 1 : 0;")), 1);
 }
 
@@ -93,31 +93,31 @@ TEST(UriParseTests, fullUriParsesFragment) {
 
 TEST(UriParseTests, httpDefaultPort80) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test/x\");\n"
+        "Uri u #= Uri.parse(\"http://h.test/x\");\n"
         "return u.getPort() == 80 ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, httpsDefaultPort443) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://h.test/x\");\n"
+        "Uri u #= Uri.parse(\"https://h.test/x\");\n"
         "return u.getPort() == 443 ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, wsDefaultPort80) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"ws://h.test/x\");\n"
+        "Uri u #= Uri.parse(\"ws://h.test/x\");\n"
         "return u.getPort() == 80 ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, wssDefaultPort443) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"wss://h.test/x\");\n"
+        "Uri u #= Uri.parse(\"wss://h.test/x\");\n"
         "return u.getPort() == 443 ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, explicitPortOverridesDefault) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test:8080/x\");\n"
+        "Uri u #= Uri.parse(\"http://h.test:8080/x\");\n"
         "return u.getPort() == 8080 ? 1 : 0;")), 1);
 }
 
@@ -126,19 +126,19 @@ TEST(UriParseTests, explicitPortOverridesDefault) {
 
 TEST(UriParseTests, ipv6LiteralHostStripsBrackets) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://[::1]:80/\");\n"
+        "Uri u #= Uri.parse(\"http://[::1]:80/\");\n"
         "return u.getHost().equals(\"::1\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, ipv6LiteralPort) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://[::1]:80/\");\n"
+        "Uri u #= Uri.parse(\"http://[::1]:80/\");\n"
         "return u.getPort() == 80 ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, ipv6LiteralNoExplicitPortUsesDefault) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://[2001:db8::1]/path\");\n"
+        "Uri u #= Uri.parse(\"https://[2001:db8::1]/path\");\n"
         "return (u.getHost().equals(\"2001:db8::1\") && u.getPort() == 443) ? 1 : 0;")), 1);
 }
 
@@ -147,7 +147,7 @@ TEST(UriParseTests, ipv6LiteralNoExplicitPortUsesDefault) {
 TEST(UriParseTests, mailtoHasNoAuthority) {
     // mailto:a@b.test — no "//", so the whole "a@b.test" is the path.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"mailto:a@b.test\");\n"
+        "Uri u #= Uri.parse(\"mailto:a@b.test\");\n"
         "if (u.hasAuthority) { return 0; }\n"
         "if (!u.getScheme().equals(\"mailto\")) { return 0; }\n"
         "return u.getPath().equals(\"a@b.test\") ? 1 : 0;")), 1);
@@ -155,7 +155,7 @@ TEST(UriParseTests, mailtoHasNoAuthority) {
 
 TEST(UriParseTests, urnHasNoAuthority) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"urn:isbn:0451450523\");\n"
+        "Uri u #= Uri.parse(\"urn:isbn:0451450523\");\n"
         "if (u.hasAuthority) { return 0; }\n"
         "if (!u.getScheme().equals(\"urn\")) { return 0; }\n"
         "return u.getPath().equals(\"isbn:0451450523\") ? 1 : 0;")), 1);
@@ -164,7 +164,7 @@ TEST(UriParseTests, urnHasNoAuthority) {
 TEST(UriParseTests, bareRelativePathNoScheme) {
     // "a/b/c" — no scheme (no ':' before first '/'), no authority.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"a/b/c\");\n"
+        "Uri u #= Uri.parse(\"a/b/c\");\n"
         "if (u.hasScheme) { return 0; }\n"
         "if (u.hasAuthority) { return 0; }\n"
         "return u.getPath().equals(\"a/b/c\") ? 1 : 0;")), 1);
@@ -173,7 +173,7 @@ TEST(UriParseTests, bareRelativePathNoScheme) {
 TEST(UriParseTests, pathWithColonSegmentIsNotScheme) {
     // "a/b:c" — the ':' is after a '/', so it is NOT a scheme delim.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"a/b:c\");\n"
+        "Uri u #= Uri.parse(\"a/b:c\");\n"
         "if (u.hasScheme) { return 0; }\n"
         "return u.getPath().equals(\"a/b:c\") ? 1 : 0;")), 1);
 }
@@ -182,7 +182,7 @@ TEST(UriParseTests, pathWithColonSegmentIsNotScheme) {
 
 TEST(UriParseTests, schemeLowercased) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"HTTPS://h.test/\");\n"
+        "Uri u #= Uri.parse(\"HTTPS://h.test/\");\n"
         "return u.getScheme().equals(\"https\") ? 1 : 0;")), 1);
 }
 
@@ -191,14 +191,14 @@ TEST(UriParseTests, schemeLowercased) {
 TEST(UriParseTests, emptyPathWhenAuthorityOnly) {
     // "http://h.test" — authority present, empty path.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test\");\n"
+        "Uri u #= Uri.parse(\"http://h.test\");\n"
         "if (!u.hasAuthority) { return 0; }\n"
         "return u.getPath().equals(\"\") ? 1 : 0;")), 1);
 }
 
 TEST(UriParseTests, noQueryNoFragmentFlagsFalse) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test/p\");\n"
+        "Uri u #= Uri.parse(\"http://h.test/p\");\n"
         "if (u.hasQuery) { return 0; }\n"
         "if (u.hasFragment) { return 0; }\n"
         "return 1;")), 1);
@@ -207,7 +207,7 @@ TEST(UriParseTests, noQueryNoFragmentFlagsFalse) {
 TEST(UriParseTests, emptyQueryPresentButEmpty) {
     // "http://h.test/p?" — query present, empty string.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test/p?\");\n"
+        "Uri u #= Uri.parse(\"http://h.test/p?\");\n"
         "if (!u.hasQuery) { return 0; }\n"
         "return u.getQuery().equals(\"\") ? 1 : 0;")), 1);
 }
@@ -217,7 +217,7 @@ TEST(UriParseTests, emptyQueryPresentButEmpty) {
 TEST(UriParseTests, emptyInputRejected) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"\");\n"
+        "    Uri u #= Uri.parse(\"\");\n"
         "    return 0;\n"
         "} catch (MalformedUriException e) {\n"
         "    return 1;\n"
@@ -227,7 +227,7 @@ TEST(UriParseTests, emptyInputRejected) {
 TEST(UriParseTests, unterminatedIpv6LiteralRejected) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"http://[::1/path\");\n"
+        "    Uri u #= Uri.parse(\"http://[::1/path\");\n"
         "    return 0;\n"
         "} catch (MalformedUriException e) {\n"
         "    return 1;\n"
@@ -237,7 +237,7 @@ TEST(UriParseTests, unterminatedIpv6LiteralRejected) {
 TEST(UriParseTests, nonNumericPortRejected) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"http://h.test:8o80/x\");\n"
+        "    Uri u #= Uri.parse(\"http://h.test:8o80/x\");\n"
         "    return 0;\n"
         "} catch (MalformedUriException e) {\n"
         "    return 1;\n"
@@ -247,7 +247,7 @@ TEST(UriParseTests, nonNumericPortRejected) {
 TEST(UriParseTests, portOutOfRangeRejected) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"http://h.test:99999/x\");\n"
+        "    Uri u #= Uri.parse(\"http://h.test:99999/x\");\n"
         "    return 0;\n"
         "} catch (MalformedUriException e) {\n"
         "    return 1;\n"
@@ -262,7 +262,7 @@ TEST(UriParseTests, malformedPortCitesPosition) {
     //  ':'=13, '8'=14, 'o'=15. The exception position should be 15.
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"http://h.test:8o80/x\");\n"
+        "    Uri u #= Uri.parse(\"http://h.test:8o80/x\");\n"
         "    return -1;\n"
         "} catch (MalformedUriException e) {\n"
         "    return (int32) e.position;\n"

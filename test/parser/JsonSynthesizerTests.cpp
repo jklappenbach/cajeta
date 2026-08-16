@@ -64,7 +64,7 @@ TEST(JsonSynthesizerTests, parseSingleInt32Field) {
         "        buf[7] = (int8) 0x32;\n"   // '2'
         "        buf[8] = (int8) 0x7D;\n"   // '}'
         "        buf[9] = (int8) 0x00;\n"   // (unused; length=9 passed)
-        "        Box b = Json.parse<Box>(buf, (int64) 9);\n"
+        "        Box b #= Json.parse<Box>(buf, (int64) 9);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -102,7 +102,7 @@ TEST(JsonSynthesizerTests, parseInt64Field) {
         "        buf[16] = (int8) 0x32;\n"  // '2'
         "        buf[17] = (int8) 0x33;\n"  // '3'
         "        buf[18] = (int8) 0x7D;\n"  // '}'
-        "        Box b = Json.parse<Box>(buf, (int64) 19);\n"
+        "        Box b #= Json.parse<Box>(buf, (int64) 19);\n"
         "        return b.n;\n"
         "    }\n"
         "}\n";
@@ -134,7 +134,7 @@ TEST(JsonSynthesizerTests, parseBooleanTrueField) {
         "        buf[10] = (int8) 0x75;\n"  // 'u'
         "        buf[11] = (int8) 0x65;\n"  // 'e'
         "        buf[12] = (int8) 0x7D;\n"  // '}'
-        "        Box b = Json.parse<Box>(buf, (int64) 13);\n"
+        "        Box b #= Json.parse<Box>(buf, (int64) 13);\n"
         "        if (b.flag) return 1;\n"
         "        return 0;\n"
         "    }\n"
@@ -168,7 +168,7 @@ TEST(JsonSynthesizerTests, parseBooleanFalseField) {
         "        buf[11] = (int8) 0x73;\n"  // 's'
         "        buf[12] = (int8) 0x65;\n"  // 'e'
         "        buf[13] = (int8) 0x7D;\n"
-        "        Box b = Json.parse<Box>(buf, (int64) 14);\n"
+        "        Box b #= Json.parse<Box>(buf, (int64) 14);\n"
         "        if (b.flag) return 1;\n"
         "        return 0;\n"
         "    }\n"
@@ -204,7 +204,7 @@ TEST(JsonSynthesizerTests, parseStringField) {
         "        buf[10] = (int8) 0x69;\n"   // 'i'
         "        buf[11] = (int8) 0x22;\n"   // '"'
         "        buf[12] = (int8) 0x7D;\n"   // '}'
-        "        Person p = Json.parse<Person>(buf, (int64) 13);\n"
+        "        Person p #= Json.parse<Person>(buf, (int64) 13);\n"
         // p.name should be a 2-codepoint String ("hi")
         "        return (int32) p.name.count();\n"
         "    }\n"
@@ -243,7 +243,7 @@ TEST(JsonSynthesizerTests, parseNestedClass) {
         "        buf[14] = (int8) 0x37;\n"  // '7'
         "        buf[15] = (int8) 0x7D;\n"  // '}'
         "        buf[16] = (int8) 0x7D;\n"  // '}'
-        "        Outer o = Json.parse<Outer>(buf, (int64) 17);\n"
+        "        Outer o #= Json.parse<Outer>(buf, (int64) 17);\n"
         "        return o.point.x;\n"
         "    }\n"
         "}\n";
@@ -263,9 +263,9 @@ TEST(JsonSynthesizerTests, roundTripNestedClass) {
         "        Inner ip = heap Inner();\n"
         "        ip.x = 99;\n"
         "        a.point = ip;\n"
-        "        int8[] bytes = Json.toBytes<Outer>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Outer>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Outer b = Json.parse<Outer>(bytes, n);\n"
+        "        Outer b #= Json.parse<Outer>(bytes, n);\n"
         "        return b.point.x;\n"
         "    }\n"
         "}\n";
@@ -294,7 +294,7 @@ TEST(JsonSynthesizerTests, parseFloat64Field) {
         "        buf[7] = (int8) 0x31;\n"   // '1'
         "        buf[8] = (int8) 0x34;\n"   // '4'
         "        buf[9] = (int8) 0x7D;\n"   // '}'
-        "        Box b = Json.parse<Box>(buf, (int64) 10);\n"
+        "        Box b #= Json.parse<Box>(buf, (int64) 10);\n"
         "        return b.x;\n"
         "    }\n"
         "}\n";
@@ -313,9 +313,9 @@ TEST(JsonSynthesizerTests, roundTripFloat64) {
         "    public static float64 run() {\n"
         "        Box a = heap Box();\n"
         "        a.x = 2.5;\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Box b = Json.parse<Box>(bytes, n);\n"
+        "        Box b #= Json.parse<Box>(bytes, n);\n"
         "        return b.x;\n"
         "    }\n"
         "}\n";
@@ -334,9 +334,9 @@ TEST(JsonSynthesizerTests, roundTripInt32) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.id = 42;\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Box b = Json.parse<Box>(bytes, n);\n"
+        "        Box b #= Json.parse<Box>(bytes, n);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -359,9 +359,9 @@ TEST(JsonSynthesizerTests, roundTripMixedPrimitives) {
         "        a.id = 7;\n"
         "        a.n = (int64) 99999999999;\n"
         "        a.flag = true;\n"
-        "        int8[] bytes = Json.toBytes<Mix>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Mix>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Mix b = Json.parse<Mix>(bytes, len);\n"
+        "        Mix b #= Json.parse<Mix>(bytes, len);\n"
         "        int64 r = b.n;\n"
         "        if (b.flag) r = r + 1;\n"
         "        return r + (int64) (b.id * 1000000);\n"
@@ -403,7 +403,7 @@ TEST(JsonSynthesizerTests, parseInt32ArrayField) {
         "        buf[12] = (int8) 0x33;\n"  // '3'
         "        buf[13] = (int8) 0x5D;\n"  // ']'
         "        buf[14] = (int8) 0x7D;\n"  // '}'
-        "        Bag b = Json.parse<Bag>(buf, (int64) 15);\n"
+        "        Bag b #= Json.parse<Bag>(buf, (int64) 15);\n"
         "        return b.ids[0] * 100 + b.ids[1] * 10 + b.ids[2];\n"
         "    }\n"
         "}\n";
@@ -433,7 +433,7 @@ TEST(JsonSynthesizerTests, parseEmptyInt32ArrayField) {
         "        buf[7] = (int8) 0x5B;\n"  // '['
         "        buf[8] = (int8) 0x5D;\n"  // ']'
         "        buf[9] = (int8) 0x7D;\n"  // '}'
-        "        Bag b = Json.parse<Bag>(buf, (int64) 10);\n"
+        "        Bag b #= Json.parse<Bag>(buf, (int64) 10);\n"
         "        return (int32) b.ids.count();\n"
         "    }\n"
         "}\n";
@@ -455,9 +455,9 @@ TEST(JsonSynthesizerTests, roundTripInt32Array) {
         "        a.ids[0] = 4;\n"
         "        a.ids[1] = 5;\n"
         "        a.ids[2] = 6;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Bag>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
+        "        Bag b #= Json.parse<Bag>(bytes, len);\n"
         "        return b.ids[0] * 100 + b.ids[1] * 10 + b.ids[2];\n"
         "    }\n"
         "}\n";
@@ -478,9 +478,9 @@ TEST(JsonSynthesizerTests, roundTripInt64Array) {
         "        a.ns = heap int64[2];\n"
         "        a.ns[0] = (int64) 100000000000;\n"
         "        a.ns[1] = (int64) 200000000000;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Bag>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
+        "        Bag b #= Json.parse<Bag>(bytes, len);\n"
         "        return b.ns[0] + b.ns[1];\n"
         "    }\n"
         "}\n";
@@ -502,9 +502,9 @@ TEST(JsonSynthesizerTests, roundTripBooleanArray) {
         "        a.flags[0] = true;\n"
         "        a.flags[1] = false;\n"
         "        a.flags[2] = true;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Bag>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
+        "        Bag b #= Json.parse<Bag>(bytes, len);\n"
         "        int32 r = 0;\n"
         "        if (b.flags[0]) r = r + 4;\n"
         "        if (b.flags[1]) r = r + 2;\n"
@@ -529,9 +529,9 @@ TEST(JsonSynthesizerTests, roundTripFloat64Array) {
         "        a.xs = heap float64[2];\n"
         "        a.xs[0] = 1.5;\n"
         "        a.xs[1] = 2.25;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Bag>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
+        "        Bag b #= Json.parse<Bag>(bytes, len);\n"
         "        return b.xs[0] + b.xs[1];\n"
         "    }\n"
         "}\n";
@@ -558,9 +558,9 @@ TEST(JsonSynthesizerTests, roundTripMixedWithArray) {
         "        a.ids[0] = 7;\n"
         "        a.ids[1] = 8;\n"
         "        a.flag = true;\n"
-        "        int8[] bytes = Json.toBytes<Mix>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Mix>(a);\n"
         "        int64 len = (int64) bytes.count();\n"
-        "        Mix m = Json.parse<Mix>(bytes, len);\n"
+        "        Mix m #= Json.parse<Mix>(bytes, len);\n"
         "        int32 r = m.id * 100 + m.ids[0] * 10 + m.ids[1];\n"
         "        if (m.flag) r = r + 1000;\n"
         "        return r;\n"
@@ -586,7 +586,7 @@ TEST(JsonSynthesizerTests, jsonPropertyRenameOnWrite) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.id = 7;\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         // Expect: {"user_id":7} → 13 bytes (1 + 9 quoted-key + 1 + 1 + 1)
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -609,7 +609,7 @@ TEST(JsonSynthesizerTests, jsonPropertyRenameOnRead) {
         "    public static int32 run() {\n"
         // {"user_id":42} → 15 bytes
         "        String s = \"{\\\"user_id\\\":42}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -629,9 +629,9 @@ TEST(JsonSynthesizerTests, jsonPropertyRoundTrip) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.id = 13;\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Box b = Json.parse<Box>(bytes, n);\n"
+        "        Box b #= Json.parse<Box>(bytes, n);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -654,7 +654,7 @@ TEST(JsonSynthesizerTests, jsonIgnoreNotWritten) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.secret = 999;\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         // Expect: {} → 2 bytes
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -677,7 +677,7 @@ TEST(JsonSynthesizerTests, jsonIgnoreNotRead) {
         "    public static int32 run() {\n"
         // {"secret":42} — 14 bytes
         "        String s = \"{\\\"secret\\\":42}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.secret;\n"   // default-zero, not 42
         "    }\n"
         "}\n";
@@ -699,11 +699,11 @@ TEST(JsonSynthesizerTests, jsonIgnoreOnWriteReadStillRuns) {
         "    public static int32 run() {\n"
         // Read: internalTag should still pick up 99.
         "        String s = \"{\\\"id\\\":7,\\\"internalTag\\\":99}\";\n"
-        "        AuditEvent e = Json.parse<AuditEvent>(s);\n"
+        "        AuditEvent e #= Json.parse<AuditEvent>(s);\n"
         "        if (e.internalTag != 99) return 0;\n"
         "        if (e.id != 7) return 0;\n"
         // Write: internalTag omitted.
-        "        int8[] bytes = Json.toBytes<AuditEvent>(e);\n"
+        "        int8[] bytes #= Json.toBytes<AuditEvent>(e);\n"
         // {"id":7} = 8 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -728,12 +728,12 @@ TEST(JsonSynthesizerTests, jsonIgnoreOnReadWriteStillRuns) {
         "    public static int32 run() {\n"
         // Read: derived stays at default 0 (input value ignored).
         "        String s = \"{\\\"id\\\":3,\\\"derived\\\":777}\";\n"
-        "        Computed c = Json.parse<Computed>(s);\n"
+        "        Computed c #= Json.parse<Computed>(s);\n"
         "        if (c.derived != 0) return 0;\n"
         "        if (c.id != 3) return 0;\n"
         // Write: derived emits — but it's 0 right now.
         "        c.derived = 42;\n"
-        "        int8[] bytes = Json.toBytes<Computed>(c);\n"
+        "        int8[] bytes #= Json.toBytes<Computed>(c);\n"
         // {"id":3,"derived":42} = 21 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -756,10 +756,10 @@ TEST(JsonSynthesizerTests, jsonIgnoreBareStillSkipsBoth) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":1,\\\"hidden\\\":555}\";\n"
-        "        Both b = Json.parse<Both>(s);\n"
+        "        Both b #= Json.parse<Both>(s);\n"
         "        if (b.hidden != 0) return -1;\n"  // read-skipped → 0
         "        b.hidden = 999;\n"
-        "        int8[] bytes = Json.toBytes<Both>(b);\n"
+        "        int8[] bytes #= Json.toBytes<Both>(b);\n"
         // {"id":1} = 8 bytes; hidden write-skipped too.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -824,7 +824,7 @@ TEST(JsonSynthesizerTests, jsonOptionalInt32PresentReadsValue) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"age\\\":42}\";\n"
-        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        WithOpt w #= Json.parse<WithOpt>(s);\n"
         "        if (w.age == null) return -1;\n"
         "        if (w.age.isEmpty()) return -2;\n"
         "        return w.age.get();\n"
@@ -844,7 +844,7 @@ TEST(JsonSynthesizerTests, jsonOptionalInt32NullValueProducesEmpty) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"age\\\":null}\";\n"
-        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        WithOpt w #= Json.parse<WithOpt>(s);\n"
         "        if (w.age == null) return -1;\n"
         "        if (w.age.isEmpty()) return 1;\n"
         "        return 0;\n"
@@ -864,7 +864,7 @@ TEST(JsonSynthesizerTests, jsonOptionalKeyAbsentLeavesFieldNull) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{}\";\n"
-        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        WithOpt w #= Json.parse<WithOpt>(s);\n"
         "        if (w.age == null) return 1;\n"
         "        return 0;\n"
         "    }\n"
@@ -886,7 +886,7 @@ TEST(JsonSynthesizerTests, jsonOptionalNullFieldOmittedFromWrite) {
         "        WithOpt w = heap WithOpt();\n"
         "        w.id = 1;\n"
         "        // age stays null — should be omitted.\n"
-        "        int8[] bytes = Json.toBytes<WithOpt>(w);\n"
+        "        int8[] bytes #= Json.toBytes<WithOpt>(w);\n"
         // {"id":1} = 8 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -906,7 +906,7 @@ TEST(JsonSynthesizerTests, jsonOptionalEmptyWritesNull) {
         "    public static int32 run() {\n"
         "        WithOpt w = heap WithOpt();\n"
         "        w.age = heap Optional<int32>(false, 0);\n"
-        "        int8[] bytes = Json.toBytes<WithOpt>(w);\n"
+        "        int8[] bytes #= Json.toBytes<WithOpt>(w);\n"
         // {"age":null} = 12 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -926,7 +926,7 @@ TEST(JsonSynthesizerTests, jsonOptionalStringPresentReadsValue) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"name\\\":\\\"alice\\\"}\";\n"
-        "        WithOpt w = Json.parse<WithOpt>(s);\n"
+        "        WithOpt w #= Json.parse<WithOpt>(s);\n"
         "        if (w.name == null) return -1;\n"
         "        if (w.name.isEmpty()) return -2;\n"
         "        return 1;\n"  // just check presence, skip get() for now
@@ -947,7 +947,7 @@ TEST(JsonSynthesizerTests, jsonOptionalPresentWritesValue) {
         "    public static int32 run() {\n"
         "        WithOpt w = heap WithOpt();\n"
         "        w.age = heap Optional<int32>(true, 99);\n"
-        "        int8[] bytes = Json.toBytes<WithOpt>(w);\n"
+        "        int8[] bytes #= Json.toBytes<WithOpt>(w);\n"
         // {"age":99} = 10 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -972,7 +972,7 @@ TEST(JsonSynthesizerTests, jsonRawCapturesStringWireForm) {
         "    public static int32 run() {\n"
         // "payload":"hi" → captured bytes include the quotes, so 4 bytes.
         "        String s = \"{\\\"payload\\\":\\\"hi\\\"}\";\n"
-        "        WithRaw w = Json.parse<WithRaw>(s);\n"
+        "        WithRaw w #= Json.parse<WithRaw>(s);\n"
         "        return (int32) w.payload.count();\n"
         "    }\n"
         "}\n";
@@ -993,7 +993,7 @@ TEST(JsonSynthesizerTests, jsonRawCapturesNumberWireForm) {
         "    public static int32 run() {\n"
         // "amount":42 → captured bytes are "42" → 2 bytes.
         "        String s = \"{\\\"amount\\\":42}\";\n"
-        "        WithRaw w = Json.parse<WithRaw>(s);\n"
+        "        WithRaw w #= Json.parse<WithRaw>(s);\n"
         "        return (int32) w.amount.count();\n"
         "    }\n"
         "}\n";
@@ -1015,8 +1015,8 @@ TEST(JsonSynthesizerTests, jsonRawRoundTripsStringPrimitive) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"payload\\\":\\\"hi\\\"}\";\n"
-        "        WithRaw w = Json.parse<WithRaw>(s);\n"
-        "        int8[] out = Json.toBytes<WithRaw>(w);\n"
+        "        WithRaw w #= Json.parse<WithRaw>(s);\n"
+        "        int8[] out #= Json.toBytes<WithRaw>(w);\n"
         // Round-trip: 16-byte output {"payload":"hi"} matches input.
         "        return (int32) out.count();\n"
         "    }\n"
@@ -1043,9 +1043,9 @@ TEST(JsonSynthesizerTests, mixedAnnotatedFields) {
         "        a.id = 1;\n"
         "        a.displayName = 2;\n"
         "        a.secret = 999;\n"
-        "        int8[] bytes = Json.toBytes<Mix>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Mix>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Mix b = Json.parse<Mix>(bytes, n);\n"
+        "        Mix b #= Json.parse<Mix>(bytes, n);\n"
         // b.id and b.displayName round-trip; b.secret stays 0
         "        return b.id * 100 + b.displayName * 10 + b.secret;\n"
         "    }\n"
@@ -1066,7 +1066,7 @@ TEST(JsonSynthesizerTests, jsonObjectGetByString) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":42}\";\n"
-        "        JsonValue v = Json.parse(s);\n"
+        "        JsonValue v #= Json.parse(s);\n"
         "        JsonObject o = v.asObject();\n"
         "        JsonValue idValue = o.get(\"id\");\n"
         "        return idValue.asInt32();\n"
@@ -1085,11 +1085,11 @@ TEST(JsonSynthesizerTests, jsonReaderCurrentString) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"\\\"hi\\\"\";\n"
-        "        int8[] sb = s.toBytes();\n"
+        "        int8[] sb #= s.toBytes();\n"
         "        JsonReader r = heap JsonReader(sb, (int64) s.byteLength());\n"
         "        int32 t = r.next();\n"
         "        if (t != JsonToken.STRING) return 0;\n"
-        "        String got = r.currentString();\n"
+        "        String got #= r.currentString();\n"
         "        return (int32) got.count();\n"  // 2 codepoints
         "    }\n"
         "}\n";
@@ -1110,7 +1110,7 @@ TEST(JsonSynthesizerTests, parseFromStringOverload) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":99}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -1164,7 +1164,7 @@ TEST(JsonSynthesizerTests, parseMixedInt32Int64Boolean) {
         "        int32 i = 0;\n"
         "        while (i < 26) { buf2[i] = buf[i]; i = i + 1; }\n"
         "        buf2[26] = (int8) 0x7D;\n"  // '}'
-        "        Mix m = Json.parse<Mix>(buf2, (int64) 27);\n"
+        "        Mix m #= Json.parse<Mix>(buf2, (int64) 27);\n"
         "        int64 r = (int64) m.id * 1000 + m.n;\n"  // 7*1000 + 99 = 7099
         "        if (m.flag) r = r + 1000000;\n"
         "        return r;\n"
@@ -1189,7 +1189,7 @@ TEST(JsonSynthesizerTests, parseNestedClassArray) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"items\\\":[{\\\"x\\\":3},{\\\"x\\\":5}]}\";\n"
-        "        Wrap w = Json.parse<Wrap>(s);\n"
+        "        Wrap w #= Json.parse<Wrap>(s);\n"
         "        return w.items[0].x * 100 + w.items[1].x;\n"
         "    }\n"
         "}\n";
@@ -1206,7 +1206,7 @@ TEST(JsonSynthesizerTests, parseEmptyNestedClassArray) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"items\\\":[]}\";\n"
-        "        Wrap w = Json.parse<Wrap>(s);\n"
+        "        Wrap w #= Json.parse<Wrap>(s);\n"
         "        return (int32) w.items.count();\n"
         "    }\n"
         "}\n";
@@ -1228,9 +1228,9 @@ TEST(JsonSynthesizerTests, roundTripNestedClassArray) {
         "        a.items[0].x = 7;\n"
         "        a.items[1] = heap Inner();\n"
         "        a.items[1].x = 9;\n"
-        "        int8[] bytes = Json.toBytes<Wrap>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Wrap>(a);\n"
         "        int64 n = (int64) bytes.count();\n"
-        "        Wrap b = Json.parse<Wrap>(bytes, n);\n"
+        "        Wrap b #= Json.parse<Wrap>(bytes, n);\n"
         "        return b.items[0].x * 10 + b.items[1].x;\n"
         "    }\n"
         "}\n";
@@ -1251,7 +1251,7 @@ TEST(JsonSynthesizerTests, jsonRequiredFieldPresent) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":7}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -1276,7 +1276,7 @@ TEST(JsonSynthesizerTests, jsonRequiredFieldMissing) {
         // JSON contains `other` but not `id`. Parse should throw.
         "        String s = \"{\\\"other\\\":99}\";\n"
         "        try {\n"
-        "            Box b = Json.parse<Box>(s);\n"
+        "            Box b #= Json.parse<Box>(s);\n"
         "            return 0;\n"   // no throw — fail
         "        } catch (cajeta.codec.json.JsonParseException e) {\n"
         "            return 1;\n"   // expected throw
@@ -1301,7 +1301,7 @@ TEST(JsonSynthesizerTests, jsonRequiredOnePresentOneMissing) {
         "    public static int32 run() {\n"
         "        String s = \"{\\\"left\\\":1}\";\n"
         "        try {\n"
-        "            Pair p = Json.parse<Pair>(s);\n"
+        "            Pair p #= Json.parse<Pair>(s);\n"
         "            return 0;\n"
         "        } catch (cajeta.codec.json.JsonParseException e) {\n"
         "            return 1;\n"
@@ -1329,7 +1329,7 @@ TEST(JsonSynthesizerTests, jsonAliasReadsAlternateKey) {
         // and user-id both also work, but pick the un-declared alias
         // to prove it's not just falling back on the declared name.
         "        String s = \"{\\\"userId\\\":42}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -1348,7 +1348,7 @@ TEST(JsonSynthesizerTests, jsonAliasPrimaryStillWorks) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":7}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -1373,7 +1373,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNonNullOmitsNullReference) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.name = null;\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         "        return (int32) bytes.count();\n"  // 2: just `{}`
         "    }\n"
         "}\n";
@@ -1394,7 +1394,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNonNullKeepsValue) {
         "    public static int32 run() {\n"
         "        Box a = heap Box();\n"
         "        a.name = \"hi\";\n"
-        "        int8[] bytes = Json.toBytes<Box>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Box>(a);\n"
         // {"name":"hi"} → 13 bytes
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1415,7 +1415,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNonNullArray) {
         "    public static int32 run() {\n"
         "        Bag a = heap Bag();\n"
         "        a.ids = null;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Bag>(a);\n"
         "        return (int32) bytes.count();\n"
         "    }\n"
         "}\n";
@@ -1438,7 +1438,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNeverOmitsFromWrite) {
         "        Audit a = heap Audit();\n"
         "        a.id = 1;\n"
         "        a.internalHash = 42;\n"
-        "        int8[] bytes = Json.toBytes<Audit>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Audit>(a);\n"
         // {"id":1} → 8 bytes; internalHash never written.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1461,7 +1461,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNonDefaultOmitsZeroInt) {
         "        Counters c = heap Counters();\n"
         "        c.keep = 1;\n"
         "        c.maybe = 0;\n"  // default → omitted
-        "        int8[] bytes = Json.toBytes<Counters>(c);\n"
+        "        int8[] bytes #= Json.toBytes<Counters>(c);\n"
         // {"keep":1} → 10 bytes; maybe omitted because == 0.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1484,7 +1484,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNonDefaultKeepsNonZeroInt) {
         "        Counters c = heap Counters();\n"
         "        c.keep = 1;\n"
         "        c.maybe = 7;\n"
-        "        int8[] bytes = Json.toBytes<Counters>(c);\n"
+        "        int8[] bytes #= Json.toBytes<Counters>(c);\n"
         // {"keep":1,"maybe":7} → 20 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1506,7 +1506,7 @@ TEST(JsonSynthesizerTests, jsonIncludeNonDefaultOnReferenceCollapsesToNonNull) {
         "    public static int32 run() {\n"
         "        Bag a = heap Bag();\n"
         "        a.ids = null;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
+        "        int8[] bytes #= Json.toBytes<Bag>(a);\n"
         // Empty object {} → 2 bytes.
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1533,7 +1533,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategySnakeCase) {
         "        User a = heap User();\n"
         "        a.firstName = 1;\n"
         "        a.lastName = 2;\n"
-        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        "        int8[] bytes #= Json.toBytes<User>(a);\n"
         // {"first_name":1,"last_name":2} → 30 bytes
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1556,7 +1556,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategyKebabCase) {
         "        User a = heap User();\n"
         "        a.firstName = 1;\n"
         "        a.lastName = 2;\n"
-        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        "        int8[] bytes #= Json.toBytes<User>(a);\n"
         // {"first-name":1,"last-name":2} → 30 bytes
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1577,7 +1577,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategyPascalCase) {
         "    public static int32 run() {\n"
         "        User a = heap User();\n"
         "        a.firstName = 7;\n"
-        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        "        int8[] bytes #= Json.toBytes<User>(a);\n"
         // {"FirstName":7} → 15 bytes
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1597,7 +1597,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategyPascalCaseRead) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"FirstName\\\":42}\";\n"
-        "        User u = Json.parse<User>(s);\n"
+        "        User u #= Json.parse<User>(s);\n"
         "        return u.firstName;\n"
         "    }\n"
         "}\n";
@@ -1617,7 +1617,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategyCamelCaseIsIdentity) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"firstName\\\":5}\";\n"
-        "        User u = Json.parse<User>(s);\n"
+        "        User u #= Json.parse<User>(s);\n"
         "        return u.firstName;\n"
         "    }\n"
         "}\n";
@@ -1638,7 +1638,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategyIdentity) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"firstName\\\":9}\";\n"
-        "        User u = Json.parse<User>(s);\n"
+        "        User u #= Json.parse<User>(s);\n"
         "        return u.firstName;\n"
         "    }\n"
         "}\n";
@@ -1659,7 +1659,7 @@ TEST(JsonSynthesizerTests, jsonNamingStrategySnakeCaseRead) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"first_name\\\":3,\\\"last_name\\\":4}\";\n"
-        "        User u = Json.parse<User>(s);\n"
+        "        User u #= Json.parse<User>(s);\n"
         "        return u.firstName * 10 + u.lastName;\n"
         "    }\n"
         "}\n";
@@ -1682,7 +1682,7 @@ TEST(JsonSynthesizerTests, jsonPropertyOverridesNamingStrategy) {
         "        User a = heap User();\n"
         "        a.firstName = 0;\n"
         "        a.lastName = 0;\n"
-        "        int8[] bytes = Json.toBytes<User>(a);\n"
+        "        int8[] bytes #= Json.toBytes<User>(a);\n"
         // {"first_name":0,"surname":0} → 28 bytes
         "        return (int32) bytes.count();\n"
         "    }\n"
@@ -1704,7 +1704,7 @@ TEST(JsonSynthesizerTests, jsonStrictRejectsUnknownKeys) {
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":1,\\\"unknown\\\":2}\";\n"
         "        try {\n"
-        "            Box b = Json.parse<Box>(s);\n"
+        "            Box b #= Json.parse<Box>(s);\n"
         "            return 0;\n"
         "        } catch (cajeta.codec.json.JsonParseException e) {\n"
         "            return 1;\n"
@@ -1726,7 +1726,7 @@ TEST(JsonSynthesizerTests, withoutJsonStrictUnknownKeysSkipped) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"id\\\":7,\\\"unknown\\\":9}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -1747,7 +1747,7 @@ TEST(JsonSynthesizerTests, jsonRequiredWithRename) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"user_id\\\":42}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.id;\n"
         "    }\n"
         "}\n";
@@ -1770,11 +1770,11 @@ TEST(JsonSynthesizerTests, jsonOptionalInt64PresentAndNull) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        String present = \"{\\\"n\\\":1234567890123}\";\n"
-        "        WithOpt a = Json.parse<WithOpt>(present);\n"
+        "        WithOpt a #= Json.parse<WithOpt>(present);\n"
         "        if (a.n == null) { return (int64) -1; }\n"
         "        if (a.n.isEmpty()) { return (int64) -2; }\n"
         "        String nulled = \"{\\\"n\\\":null}\";\n"
-        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
+        "        WithOpt b #= Json.parse<WithOpt>(nulled);\n"
         "        if (b.n == null) { return (int64) -3; }\n"
         "        if (!b.n.isEmpty()) { return (int64) -4; }\n"
         "        return a.n.get();\n"
@@ -1794,12 +1794,12 @@ TEST(JsonSynthesizerTests, jsonOptionalBooleanPresentAndNull) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String present = \"{\\\"flag\\\":true}\";\n"
-        "        WithOpt a = Json.parse<WithOpt>(present);\n"
+        "        WithOpt a #= Json.parse<WithOpt>(present);\n"
         "        if (a.flag == null) { return -1; }\n"
         "        if (a.flag.isEmpty()) { return -2; }\n"
         "        if (!a.flag.get()) { return -3; }\n"
         "        String nulled = \"{\\\"flag\\\":null}\";\n"
-        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
+        "        WithOpt b #= Json.parse<WithOpt>(nulled);\n"
         "        if (!b.flag.isEmpty()) { return -4; }\n"
         "        return 1;\n"
         "    }\n"
@@ -1818,11 +1818,11 @@ TEST(JsonSynthesizerTests, jsonOptionalFloat64PresentAndNull) {
         "public final class D {\n"
         "    public static float64 run() {\n"
         "        String nulled = \"{\\\"x\\\":null}\";\n"
-        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
+        "        WithOpt b #= Json.parse<WithOpt>(nulled);\n"
         "        if (b.x == null) { return -1.0; }\n"
         "        if (!b.x.isEmpty()) { return -2.0; }\n"
         "        String present = \"{\\\"x\\\":2.5}\";\n"
-        "        WithOpt a = Json.parse<WithOpt>(present);\n"
+        "        WithOpt a #= Json.parse<WithOpt>(present);\n"
         "        if (a.x.isEmpty()) { return -3.0; }\n"
         "        return a.x.get();\n"
         "    }\n"
@@ -1843,7 +1843,7 @@ TEST(JsonSynthesizerTests, jsonRequiredUnderNamingStrategy) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        String s = \"{\\\"user_id\\\":42}\";\n"
-        "        Box b = Json.parse<Box>(s);\n"
+        "        Box b #= Json.parse<Box>(s);\n"
         "        return b.userId;\n"
         "    }\n"
         "}\n";

@@ -213,7 +213,7 @@ public final class Base64 {
     @Inline
     public static #int8[] decode(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            int8[] w = s.toBytes();
+            int8[] w #= s.toBytes();
             return Base64.decodeBytes(w, (int64) s.byteLength());
         }
         return Base64.decodeBytes(s.root(), (int64) s.byteLength());

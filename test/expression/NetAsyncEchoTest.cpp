@@ -68,15 +68,15 @@ std::string makeSource(const std::string& body) {
 
 TEST(NetAsyncEchoTest, asyncLoopbackEchoRoundTrips) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress ca = IpAddress.loopbackV4();\n"
-        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
-        "TcpStream client = TcpStream.connect(#connAddr);\n"
-        "TcpStream server = listener.accept();\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "TcpStream server #= listener.accept();\n"
         // client → server: async write "ping"
         "int8[] ping = heap int8[4];\n"
         "ping[0] = (int8) 112;\n"   // 'p'
@@ -111,15 +111,15 @@ TEST(NetAsyncEchoTest, asyncLoopbackEchoRoundTrips) {
 
 TEST(NetAsyncEchoTest, acceptAsyncReturnsPendingConnection) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress ca = IpAddress.loopbackV4();\n"
-        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
-        "TcpStream client = TcpStream.connect(#connAddr);\n"
-        "TcpStream server = listener.acceptAsync();\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "TcpStream server #= listener.acceptAsync();\n"
         "int8[] hi = heap int8[2];\n"
         "hi[0] = (int8) 72;\n"   // 'H'
         "hi[1] = (int8) 105;\n"  // 'i'
@@ -156,15 +156,15 @@ TEST(NetAsyncEchoTest, acceptAsyncReturnsPendingConnection) {
 // (the direct repro) is green again.
 TEST(NetAsyncEchoTest, bufferedReaderWriterRoundTrips) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress ca = IpAddress.loopbackV4();\n"
-        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
-        "TcpStream client = TcpStream.connect(#connAddr);\n"
-        "TcpStream server = listener.accept();\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "TcpStream server #= listener.accept();\n"
         "AsyncWriter w = heap AsyncWriter(client);\n"
         "int8[] msg = heap int8[3];\n"
         "msg[0] = (int8) 97;\n"   // 'a'
@@ -197,15 +197,15 @@ TEST(NetAsyncEchoTest, bufferedReaderWriterRoundTrips) {
 // over it confirms the fd was wrapped correctly.
 TEST(NetAsyncEchoTest, connectAsyncLoopbackEchoRoundTrips) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress ca = IpAddress.loopbackV4();\n"
-        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
-        "TcpStream client = TcpStream.connectAsync(#connAddr);\n"
-        "TcpStream server = listener.accept();\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connectAsync(#connAddr);\n"
+        "TcpStream server #= listener.accept();\n"
         "int8[] ping = heap int8[4];\n"
         "ping[0] = (int8) 112;\n"   // 'p'
         "ping[1] = (int8) 105;\n"   // 'i'

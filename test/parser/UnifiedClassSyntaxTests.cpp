@@ -346,7 +346,7 @@ TEST(UnifiedClassSyntaxTests, covariantReturnConcreteReceiverSeesNarrower) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        Dog d = heap Dog(5);\n"
-        "        Dog d2 = d.copy();\n"  // concrete: Dog return, Dog binding works only if covariant
+        "        Dog d2 #= d.copy();\n"  // concrete: Dog return, Dog binding works only if covariant
         "        return d2.dogTag();\n"  // 5 + 7 = 12 — proves d2 is a Dog (has dogTag)
         "    }\n"
         "}\n";
@@ -542,7 +542,7 @@ TEST(UnifiedClassSyntaxTests, covariantReturnBaseReceiverSeesWider) {
         "public final class S {\n"
         "    public static int32 run() {\n"
         "        Animal a = heap Dog(42);\n"
-        "        Animal b = a.copy();\n"  // copy() goes to Dog::copy via vtable
+        "        Animal b #= a.copy();\n"  // copy() goes to Dog::copy via vtable
         "        return b.tag();\n"  // 42 — dispatches through Animal's vtable slot
         "    }\n"
         "}\n";

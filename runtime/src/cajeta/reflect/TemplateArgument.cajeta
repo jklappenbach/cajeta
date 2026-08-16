@@ -58,7 +58,7 @@ public final class TemplateArgument {
      * process-lifetime cached instance; the caller never frees it.
      */
     public Class<?> getType() {
-        String name = this.getTypeName();
+        String name #= this.getTypeName();
         Optional<Class<?>> resolved = Class.forName(name);
         if (resolved.isEmpty()) {
             throw heap UnsupportedReflectionException(

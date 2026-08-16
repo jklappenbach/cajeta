@@ -49,7 +49,7 @@ TEST(FactoryAssistedTests, assistedCallThreadsInjectedArg) {
         "    public App() { return; }\n"
         "    public static int32 run() {\n"
         "        App a = __cajeta_inject();\n"
-        "        Connection c = a.factory.make(7);\n"
+        "        Connection c #= a.factory.make(7);\n"
         "        return c.value;\n"
         "    }\n"
         "}\n";
@@ -83,7 +83,7 @@ TEST(FactoryAssistedTests, assistedInterleavedWithInjectedMiddle) {
         "    public App() { return; }\n"
         "    public static int32 run() {\n"
         "        App a = __cajeta_inject();\n"
-        "        Connection c = a.factory.make(2, 5);\n"
+        "        Connection c #= a.factory.make(2, 5);\n"
         "        return c.value;\n"
         "    }\n"
         "}\n";

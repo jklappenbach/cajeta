@@ -54,7 +54,7 @@ public class TlsListener {
      */
     public static #TlsListener bind(SocketAddress addr, int8[] cert, int32 certLen,
                                     int8[] key, int32 keyLen) {
-        TcpListener l = TcpListener.bind(addr);
+        TcpListener l #= TcpListener.bind(addr);
         return heap TlsListener(#l, cert, certLen, key, keyLen);
     }
 
@@ -81,8 +81,8 @@ public class TlsListener {
      * [`TlsStream.handshake`](TlsStream.cajeta#handshake) on a failed handshake.
      */
     public #TlsStream accept() {
-        TcpStream sock = this.listener.accept();
-        TlsStream tls = TlsStream.server(#sock, this.cert, this.certLen,
+        TcpStream sock #= this.listener.accept();
+        TlsStream tls #= TlsStream.server(#sock, this.cert, this.certLen,
                                          this.key, this.keyLen);
         if (this.hasAlpn) {
             tls.supportAlpn(this.alpn, this.alpnLen);
@@ -101,8 +101,8 @@ public class TlsListener {
      * runs on the same scheduler as the peer that will connect.
      */
     public #TlsStream acceptAsync() {
-        TcpStream sock = this.listener.acceptAsync();
-        TlsStream tls = TlsStream.server(#sock, this.cert, this.certLen,
+        TcpStream sock #= this.listener.acceptAsync();
+        TlsStream tls #= TlsStream.server(#sock, this.cert, this.certLen,
                                          this.key, this.keyLen);
         if (this.hasAlpn) {
             tls.supportAlpn(this.alpn, this.alpnLen);

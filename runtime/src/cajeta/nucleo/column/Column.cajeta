@@ -89,7 +89,7 @@ public class Column<T> {
 
     // The v1 dtype gate. One place; import/export reuse it (plan U3/U4).
     static void admit<E>() {
-        DType d = DType.of<E>();
+        DType d #= DType.of<E>();
         if (d.isBool() || d.bits() > 64) {
             throw heap ColumnTypeException(
                 "Column v1 admits fixed-width numerics (int8..int64, "
@@ -107,7 +107,7 @@ public class Column<T> {
         // <= 8, so (64 - rem) is an exact multiple of eb.
         int64[] shp = heap int64[1];
         shp[0] = n + 64 / eb;
-        Tensor<E> root = Tensor.zeros<E>(shp);
+        Tensor<E> root #= Tensor.zeros<E>(shp);
         int64 rem = root.hostAddress() % 64;
         int64 off = 0;
         if (rem != 0) {
@@ -121,7 +121,7 @@ public class Column<T> {
      */
     public static #Column<E> of<E>(E[] data) {
         int64 n = (int64) data.count();
-        Column<E> c = Column.zeros<E>(n);
+        Column<E> c #= Column.zeros<E>(n);
         int64 i = 0;
         while (i < n) {
             c.set(i, data[(int32) i]);
@@ -158,7 +158,7 @@ public class Column<T> {
             // conversion here miscompiles under the `Column<?>` wildcard
             // instantiation's pointer-shaped sentinel.)
             ArrowFfi f = stack ArrowFfi();
-            DType d = DType.of<T>();
+            DType d #= DType.of<T>();
             f.peekInto(this.fData, i, d.bytes(), this.stage.hostAddress());
             return this.stage.get(0);
         }
@@ -199,7 +199,7 @@ public class Column<T> {
      * narrowed; also a plain deep copy for owned columns).
      */
     public #Column<T> materialize() {
-        Column<T> out = Column.zeros<T>(this.len);
+        Column<T> out #= Column.zeros<T>(this.len);
         int64 i = 0;
         while (i < this.len) {
             out.set(i, this.get(i));
@@ -220,7 +220,7 @@ public class Column<T> {
         if (this.fData != 0) {
             return this.materialize();
         }
-        Tensor<T> r = this.root.alias();
+        Tensor<T> r #= this.root.alias();
         return heap Column<T>(#r, this.off, this.len);
     }
 
@@ -235,10 +235,10 @@ public class Column<T> {
                 "slice window out of range for this column");
         }
         if (this.fData != 0) {
-            Column<T> m = this.materialize();
+            Column<T> m #= this.materialize();
             return m.slice(off, len);
         }
-        Tensor<T> r = this.root.alias();
+        Tensor<T> r #= this.root.alias();
         return heap Column<T>(#r, this.off + off, len);
     }
 
@@ -427,15 +427,15 @@ public class Column<T> {
     }
 
     static #Tensor<?> importTensorTyped<E>(int64 schemaAddr, int64 arrayAddr) {
-        Column<?> w = Column.importForeign(schemaAddr, arrayAddr, 0);
-        Column<E> c = (Column<E>) w;
+        Column<?> w #= Column.importForeign(schemaAddr, arrayAddr, 0);
+        Column<E> c #= (Column<E>) w;
         // Copy into a tensor that OWNS its storage outright — returning a
         // view of a column-owned root would dangle once the transient
         // column drops (the root has no owner but the doomed wrapper).
         int64 n = c.size();
         int64[] shp = heap int64[1];
         shp[0] = n;
-        Tensor<E> t = Tensor.zeros<E>(shp);
+        Tensor<E> t #= Tensor.zeros<E>(shp);
         int64 i = 0;
         while (i < n) {
             t.set1(i, c.get(i));
@@ -458,7 +458,7 @@ public class Column<T> {
      * (the `TensorProtocol` discipline: round-trip promptly).
      */
     public int64 exportArrow() {
-        DType d = DType.of<T>();
+        DType d #= DType.of<T>();
         return this.exportFixed(this.dataAddress(), this.len, 0, 0,
                                 d.kind(), d.bits());
     }

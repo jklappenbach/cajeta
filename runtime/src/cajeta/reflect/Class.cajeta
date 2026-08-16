@@ -189,7 +189,7 @@ public final class Class<T> {
         // toBytes(), not raw `.bytes`: the native reads the array's count
         // word, so a windowed view's root (longer count, offset window)
         // would never match. The copy sizes the array to the exact window.
-        int8[] nb = name.toBytes();
+        int8[] nb #= name.toBytes();
         Class<?> c = forNameNative(nb);
         if (c == null) {
             return stack Optional<Class<?>>(false, #null);
@@ -226,7 +226,7 @@ public final class Class<T> {
      * @EntryPoint
      */
     public static Optional<T> heapInstance<T>(String name, Class<?> bound) {
-        int8[] nb = name.toBytes();
+        int8[] nb #= name.toBytes();
         Class<?> c = forNameNative(nb);
         if (c == null) {
             return stack Optional<T>(false, #null);
@@ -568,7 +568,7 @@ public final class Class<T> {
      * top-level type in principle) is "in" the empty package.
      */
     private static boolean inPackage(Class<?> c, String packageName) {
-        String full = c.getName();
+        String full #= c.getName();
         int32 len = (int32) full.size();
         int32 lastDot = -1;
         int32 i = len - 1;
@@ -582,7 +582,7 @@ public final class Class<T> {
         if (lastDot < 0) {
             return packageName.size() == 0;
         }
-        String pkg = full.substring(0, lastDot);
+        String pkg #= full.substring(0, lastDot);
         return pkg.equals(packageName);
     }
 

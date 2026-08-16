@@ -291,7 +291,7 @@ TEST(MultiSourceCompileTests, userClassShadowingStdlibShortName) {
         "public final class App {\n"
         "    public static int32 run() {\n"
         "        Uri r = heap Uri();\n"
-        "        String d = PercentCodec.decode(\"a%20b\");\n"
+        "        String d #= PercentCodec.decode(\"a%20b\");\n"
         "        if (d.byteLength() != 3) return -1;\n"
         "        return r.v;\n"
         "    }\n"

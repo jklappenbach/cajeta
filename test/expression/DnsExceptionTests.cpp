@@ -79,7 +79,7 @@ std::string makeSource(const std::string& body) {
 TEST(DnsExceptionTests, unknownHostThrownForNxdomain) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"   // must not resolve
         "} catch (UnknownHostException e) {\n"
         "    return 1;\n"
@@ -92,7 +92,7 @@ TEST(DnsExceptionTests, unknownHostThrownForNxdomain) {
 TEST(DnsExceptionTests, unknownHostCaughtAsNetExceptionRoot) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return 1;\n"
@@ -108,7 +108,7 @@ TEST(DnsExceptionTests, unknownHostCaughtAsNetExceptionRoot) {
 TEST(DnsExceptionTests, unknownHostCarriesNonameResolveErrno) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"
         "} catch (UnknownHostException e) {\n"
         "    return e.resolveErrno;\n"   // 1 = CAJETA_RESOLVE_NONAME
@@ -121,7 +121,7 @@ TEST(DnsExceptionTests, unknownHostKindIsOtherViaBase) {
     // (99), not the resolve ordinal.
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return e.kind;\n"   // 99 = KIND_OTHER
@@ -136,7 +136,7 @@ TEST(DnsExceptionTests, unknownHostKindIsOtherViaBase) {
 TEST(DnsExceptionTests, unknownHostMessageNamesHost) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"
         "} catch (UnknownHostException e) {\n"
         "    String m = e.message;\n"
@@ -169,7 +169,7 @@ TEST(DnsExceptionTests, unknownHostMessageNamesHost) {
 // ResolutionFailed catch and vice-versa.
 static std::string classifyBody(int ord) {
     return
-        "NetException e = ResolveErrors.fromResolveErrno(" + std::to_string(ord) + ", \"x\");\n"
+        "NetException e #= ResolveErrors.fromResolveErrno(" + std::to_string(ord) + ", \"x\");\n"
         "try {\n"
         "    throw e;\n"
         "} catch (UnknownHostException u) {\n"
@@ -224,7 +224,7 @@ TEST(DnsExceptionTests, mapperOtherIsResolutionFailed) {
 // misuse loudly rather than NPE-ing later.
 TEST(DnsExceptionTests, mapperOkOrdinalIsLoudResolutionFailure) {
     EXPECT_EQ(runI32(makeSource(
-        "NetException e = ResolveErrors.fromResolveErrno(0, \"x\");\n"
+        "NetException e #= ResolveErrors.fromResolveErrno(0, \"x\");\n"
         "if (e == null) { return -1; }\n"
         + std::string(
         "try {\n"
@@ -242,7 +242,7 @@ TEST(DnsExceptionTests, mapperOkOrdinalIsLoudResolutionFailure) {
 // subtype handle, whose static type carries the field.
 TEST(DnsExceptionTests, mapperPreservesResolveErrnoOnFailureLeaf) {
     EXPECT_EQ(runI32(makeSource(
-        "NetException e = ResolveErrors.fromResolveErrno(3, \"x\");\n"   // AGAIN
+        "NetException e #= ResolveErrors.fromResolveErrno(3, \"x\");\n"   // AGAIN
         "try {\n"
         "    throw e;\n"
         "} catch (ResolutionFailedException r) {\n"
@@ -254,7 +254,7 @@ TEST(DnsExceptionTests, mapperPreservesResolveErrnoOnFailureLeaf) {
 
 TEST(DnsExceptionTests, mapperPreservesResolveErrnoOnUnknownHostLeaf) {
     EXPECT_EQ(runI32(makeSource(
-        "NetException e = ResolveErrors.fromResolveErrno(2, \"x\");\n"   // NODATA
+        "NetException e #= ResolveErrors.fromResolveErrno(2, \"x\");\n"   // NODATA
         "try {\n"
         "    throw e;\n"
         "} catch (UnknownHostException u) {\n"

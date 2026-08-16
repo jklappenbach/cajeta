@@ -58,8 +58,8 @@ const char* HELPERS =
 TEST(InformationTests, klMatchesScipyAndIsAsymmetric) {
     std::string src = std::string(PRE) + HELPERS +
         "    public static int32 run() {\n"
-        "        Tensor<float64> p = D.v3(0.5, 0.3, 0.2);\n"
-        "        Tensor<float64> q = D.v3(0.2, 0.5, 0.3);\n"
+        "        Tensor<float64> p #= D.v3(0.5, 0.3, 0.2);\n"
+        "        Tensor<float64> q #= D.v3(0.2, 0.5, 0.3);\n"
         "        float64 pq = Information.klDivergence(p, q);\n"
         "        float64 qp = Information.klDivergence(q, p);\n"
         "        if (!D.close(pq, 0.22380465718564752)) { return -1; }\n"
@@ -78,19 +78,19 @@ TEST(InformationTests, klDegenerateCases) {
     std::string src = std::string(PRE) + HELPERS +
         "    public static int32 run() {\n"
         // q has a zero where p > 0 -> +inf, not NaN
-        "        Tensor<float64> p = D.v3(0.5, 0.3, 0.2);\n"
-        "        Tensor<float64> qz = D.v3(0.0, 0.5, 0.5);\n"
+        "        Tensor<float64> p #= D.v3(0.5, 0.3, 0.2);\n"
+        "        Tensor<float64> qz #= D.v3(0.0, 0.5, 0.5);\n"
         "        float64 inf = Information.klDivergence(p, qz);\n"
         "        if (inf != inf) { return -1; }\n"              // NaN guard
         "        if (inf < 1.0e300) { return -2; }\n"           // infinite
         // p = 0 contributes zero: finite scipy value on the pz fixture
-        "        Tensor<float64> pz = D.v3(0.0, 0.6, 0.4);\n"
-        "        Tensor<float64> q2 = D.v3(0.5, 0.25, 0.25);\n"
+        "        Tensor<float64> pz #= D.v3(0.0, 0.6, 0.4);\n"
+        "        Tensor<float64> q2 #= D.v3(0.5, 0.25, 0.25);\n"
         "        float64 f = Information.klDivergence(pz, q2);\n"
         "        if (!D.close(f, 0.713282694110634)) { return -3; }\n"
         // BOTH zero at the same index: the p=0 rule wins, term is 0
-        "        Tensor<float64> pb = D.v3(0.0, 0.6, 0.4);\n"
-        "        Tensor<float64> qb = D.v3(0.0, 0.5, 0.5);\n"
+        "        Tensor<float64> pb #= D.v3(0.0, 0.6, 0.4);\n"
+        "        Tensor<float64> qb #= D.v3(0.0, 0.5, 0.5);\n"
         "        float64 g = Information.klDivergence(pb, qb);\n"
         "        if (g != g) { return -4; }\n"
         "        if (g > 1.0e300) { return -5; }\n"
@@ -106,7 +106,7 @@ TEST(InformationTests, klDegenerateCases) {
 TEST(InformationTests, entropyBothBases) {
     std::string src = std::string(PRE) + HELPERS +
         "    public static int32 run() {\n"
-        "        Tensor<float64> h = D.v2(0.625, 0.375);\n"
+        "        Tensor<float64> h #= D.v2(0.625, 0.375);\n"
         "        if (!D.close(Information.entropy(h, 2.0), 0.954434002924965)) { return -1; }\n"
         "        if (!D.close(Information.entropy(h, 2.718281828459045), 0.6615632381579821)) { return -2; }\n"
         // uniform over 4 -> exactly 2 bits
@@ -114,13 +114,13 @@ TEST(InformationTests, entropyBothBases) {
         "        int64 i = 0;\n"
         "        while (i < 4) { u4[i] = 0.25; i = i + 1; }\n"
         "        int64[] sh = heap int64[1]; sh[0] = 4;\n"
-        "        Tensor<float64> u = Tensor.of<float64>(u4, sh);\n"
+        "        Tensor<float64> u #= Tensor.of<float64>(u4, sh);\n"
         "        if (Information.entropy(u, 2.0) != 2.0) { return -3; }\n"
-        "        Tensor<float64> p = D.v3(0.5, 0.3, 0.2);\n"
+        "        Tensor<float64> p #= D.v3(0.5, 0.3, 0.2);\n"
         "        if (!D.close(Information.entropy(p, 2.718281828459045), 1.0296530140645737)) { return -4; }\n"
         "        if (!D.close(Information.entropy(p, 2.0), 1.4854752972273346)) { return -5; }\n"
         // a zero probability contributes zero, not NaN
-        "        Tensor<float64> pz = D.v3(0.0, 0.5, 0.5);\n"
+        "        Tensor<float64> pz #= D.v3(0.0, 0.5, 0.5);\n"
         "        if (Information.entropy(pz, 2.0) != 1.0) { return -6; }\n"
         "        return 1;\n"
         "    }\n"
@@ -133,8 +133,8 @@ TEST(InformationTests, entropyBothBases) {
 TEST(InformationTests, crossEntropyBothBases) {
     std::string src = std::string(PRE) + HELPERS +
         "    public static int32 run() {\n"
-        "        Tensor<float64> p = D.v3(0.5, 0.3, 0.2);\n"
-        "        Tensor<float64> q = D.v3(0.2, 0.5, 0.3);\n"
+        "        Tensor<float64> p #= D.v3(0.5, 0.3, 0.2);\n"
+        "        Tensor<float64> q #= D.v3(0.2, 0.5, 0.3);\n"
         "        float64 e = 2.718281828459045;\n"
         "        if (!D.close(Information.crossEntropy(p, q, e), 1.2534576712502208)) { return -1; }\n"
         "        if (!D.close(Information.crossEntropy(p, q, 2.0), 1.8083571662769222)) { return -2; }\n"
@@ -143,7 +143,7 @@ TEST(InformationTests, crossEntropyBothBases) {
         "        float64 rhs = Information.entropy(p, e) + Information.klDivergence(p, q);\n"
         "        if (!D.close(lhs, rhs)) { return -4; }\n"
         // q=0 where p>0 -> +infinity, never NaN
-        "        Tensor<float64> qz = D.v3(0.0, 0.5, 0.5);\n"
+        "        Tensor<float64> qz #= D.v3(0.0, 0.5, 0.5);\n"
         "        float64 inf = Information.crossEntropy(p, qz, e);\n"
         "        if (inf != inf) { return -5; }\n"
         "        if (inf < 1.0e300) { return -6; }\n"
@@ -158,7 +158,7 @@ TEST(InformationTests, invalidInputRejected) {
     std::string src = std::string(PRE) + HELPERS +
         "    public static int32 run() {\n"
         "        int32 caught = 0;\n"
-        "        Tensor<float64> p = D.v3(0.5, 0.3, 0.2);\n"
+        "        Tensor<float64> p #= D.v3(0.5, 0.3, 0.2);\n"
         "        try {\n"
         "            float64 x = Information.klDivergence(p, D.v3(-0.1, 0.6, 0.5));\n"
         "            if (x > 1.0e308) { return 99; }\n"

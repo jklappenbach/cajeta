@@ -133,7 +133,7 @@ TEST(ViewOwningTests, owningFormViewMayEscape) {
         "        return h;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        H h = makeOwned();\n"
+        "        H h #= makeOwned();\n"
         "        return h.a;\n"
         "    }\n"
         "}\n";

@@ -18,8 +18,10 @@ public final class ProtobufCursor {
     ProtobufIndex idx;
 
     public ProtobufCursor(int8[] b, int64 n) {
-        this.b = b;
-        ProtobufIndex ix = ProtobufIndex.build(b, n);
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent buffer
+        // stays lent, `#b` at the call site transfers it.
+        this.b #= b;
+        ProtobufIndex ix #= ProtobufIndex.build(b, n);
         this.idx = #ix;
     }
 
@@ -236,7 +238,7 @@ public final class ProtobufCursor {
 
     /** Every value of a repeated zigzag (`sint32`/`sint64`) field. */
     public #int64[] readRepeatedZigzag(int32 fnum) {
-        int64[] raw = this.readRepeatedVarint(fnum);
+        int64[] raw #= this.readRepeatedVarint(fnum);
         int32 n = (int32) raw.count();
         int64[] out = heap int64[n];
         int32 i = 0;

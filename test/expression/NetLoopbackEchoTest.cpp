@@ -60,15 +60,15 @@ std::string makeSource(const std::string& body) {
 
 TEST(NetLoopbackEchoTest, loopbackEchoRoundTrips) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress ca = IpAddress.loopbackV4();\n"
-        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
-        "TcpStream client = TcpStream.connect(#connAddr);\n"
-        "TcpStream server = listener.accept();\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "TcpStream server #= listener.accept();\n"
         "int8[] ping = heap int8[4];\n"
         "ping[0] = (int8) 112;\n"   // 'p'
         "ping[1] = (int8) 105;\n"   // 'i'
@@ -96,9 +96,9 @@ TEST(NetLoopbackEchoTest, loopbackEchoRoundTrips) {
 
 TEST(NetLoopbackEchoTest, ephemeralBindReportsNonZeroPort) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "listener.close();\n"
         "return port > 0 ? 1 : 0;")), 1);

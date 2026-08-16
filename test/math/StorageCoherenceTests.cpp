@@ -71,7 +71,7 @@ TEST(StorageCoherenceTests, deviceResidentHostAccessFaults) {
         "    public static int32 run() {\n"
         "        float32[] d = [ 3.0f, 4.0f, 5.0f, 6.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 4;\n"
-        "        Tensor<float32> t = Tensor.of<float32>(d, s);\n"
+        "        Tensor<float32> t #= Tensor.of<float32>(d, s);\n"
         "        t.gpu();\n"
         "        boolean threwGet = false;\n"
         "        try {\n"
@@ -190,11 +190,11 @@ TEST(StorageCoherenceTests, toHostAfterDeviceMutationReturnsMutatedData) {
         "        float32[] da = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        float32[] db = [ 10.0f, 20.0f, 30.0f, 40.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 4;\n"
-        "        Tensor<float32> a = Tensor.of<float32>(da, s);\n"
-        "        Tensor<float32> b = Tensor.of<float32>(db, s);\n"
+        "        Tensor<float32> a #= Tensor.of<float32>(da, s);\n"
+        "        Tensor<float32> b #= Tensor.of<float32>(db, s);\n"
         "        a.gpu();\n"
         "        b.gpu();\n"
-        "        Tensor<float32> c = Ewise.arithF32Op(a, b, 0);\n"  // add, on device
+        "        Tensor<float32> c #= Ewise.arithF32Op(a, b, 0);\n"  // add, on device
         "        if (!c.isOnGpu()) { return -1; }\n"
         "        c.cpu();\n"
         "        if (c.get1(0) != 11.0f) { return -2; }\n"
@@ -215,8 +215,8 @@ TEST(StorageCoherenceTests, viewAndBaseShareResidency) {
         "    public static int32 run() {\n"
         "        float32[] d = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 4;\n"
-        "        Tensor<float32> t = Tensor.of<float32>(d, s);\n"
-        "        Tensor<float32> v = t.alias();\n"
+        "        Tensor<float32> t #= Tensor.of<float32>(d, s);\n"
+        "        Tensor<float32> v #= t.alias();\n"
         "        if (!v.isView()) { return -1; }\n"
         "        v.gpu();\n"                                  // move the VIEW
         "        if (!t.isOnGpu()) { return -2; }\n"          // base moved with it

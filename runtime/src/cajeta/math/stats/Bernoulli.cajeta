@@ -41,9 +41,9 @@ public final class Bernoulli {
         }
         int64[] sh = heap int64[1];
         sh[0] = count;
-        Tensor<int64> out = Tensor.zeros<int64>(sh);
+        Tensor<int64> out #= Tensor.zeros<int64>(sh);
         if (count == 0) { return out; }
-        Tensor<float32> u = g.uniform(count);
+        Tensor<float32> u #= g.uniform(count);
         float32 fp = (float32) p;
         int64 i = 0;
         while (i < count) {

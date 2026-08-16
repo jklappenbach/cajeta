@@ -62,7 +62,7 @@ TEST(BorrowParamEscapeTests, returnBorrowParamThroughOwnershipSignatureForwardsF
         "    }\n"
         "    public static int32 run() {\n"
         "        Foo a = heap Foo(7);\n"
-        "        Foo b = escape(a);\n"
+        "        Foo b #= escape(a);\n"
         "        return b.v;\n"
         "    }\n"
         "}\n";
@@ -85,7 +85,7 @@ TEST(BorrowParamEscapeTests, returnTransferredParamThroughOwnershipSignatureAcce
         "    }\n"
         "    public static int32 run() {\n"
         "        Foo a = heap Foo(11);\n"
-        "        Foo b = passThrough(#a);\n"
+        "        Foo b #= passThrough(#a);\n"
         "        return b.v;\n"
         "    }\n"
         "}\n";
@@ -107,7 +107,7 @@ TEST(BorrowParamEscapeTests, returnBorrowParamThroughBorrowSignatureAccepted) {
         "    }\n"
         "    public static int32 run() {\n"
         "        Foo a = heap Foo(13);\n"
-        "        Foo b = identity(a);\n"  // borrow passthrough
+        "        Foo b #= identity(a);\n"  // borrow passthrough
         "        return b.v;\n"
         "    }\n"
         "}\n";

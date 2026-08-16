@@ -13,7 +13,9 @@ public final class AvroCursor {
     int64 pos;
 
     public AvroCursor(int8[] b, int64 pos) {
-        this.b = b;
+        // `#=` (ownership 3.3.3): record the caller's mode — a lent buffer
+        // stays lent, `#b` at the call site transfers it.
+        this.b #= b;
         this.pos = pos;
     }
 

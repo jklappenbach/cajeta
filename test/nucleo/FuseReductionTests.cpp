@@ -34,7 +34,7 @@ float runTensor(const std::string& body) {
 const char* kInput =
     "float32[] fa = [ 1.0f, 2.0f, 3.0f, 4.0f ];\n"
     "        int64[] s = heap int64[1]; s[0] = 4;\n"
-    "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n";
+    "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n";
 } // namespace
 
 // 2.1.1 — a reduction runs as its own stage: sum(t*t) over {1,2,3,4} = 30.

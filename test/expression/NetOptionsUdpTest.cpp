@@ -62,15 +62,15 @@ std::string makeSource(const std::string& body) {
 
 TEST(NetOptionsUdpTest, tcpOptionRoundTrip) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress la = IpAddress.loopbackV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#la, 0);\n"
-        "TcpListener listener = TcpListener.bind(bindAddr);\n"
+        "IpAddress la #= IpAddress.loopbackV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#la, 0);\n"
+        "TcpListener listener #= TcpListener.bind(bindAddr);\n"
         "int32 port = listener.boundPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress ca = IpAddress.loopbackV4();\n"
-        "SocketAddress connAddr = SocketAddress.of(#ca, port);\n"
-        "TcpStream client = TcpStream.connect(#connAddr);\n"
-        "TcpStream server = listener.accept();\n"
+        "IpAddress ca #= IpAddress.loopbackV4();\n"
+        "SocketAddress connAddr #= SocketAddress.of(#ca, port);\n"
+        "TcpStream client #= TcpStream.connect(#connAddr);\n"
+        "TcpStream server #= listener.accept();\n"
         // NoDelay: exact round-trip (false -> true).
         "client.setNoDelay(true);\n"
         "boolean nd = client.getNoDelay();\n"
@@ -95,19 +95,19 @@ TEST(NetOptionsUdpTest, tcpOptionRoundTrip) {
 TEST(NetOptionsUdpTest, udpLoopbackDatagram) {
     EXPECT_EQ(runI32(makeSource(
         // Bind B on an ephemeral loopback port.
-        "IpAddress bip = IpAddress.loopbackV4();\n"
-        "SocketAddress bAddr = SocketAddress.of(#bip, 0);\n"
-        "UdpSocket b = UdpSocket.bind(bAddr);\n"
-        "SocketAddress bLocal = b.localAddress();\n"
+        "IpAddress bip #= IpAddress.loopbackV4();\n"
+        "SocketAddress bAddr #= SocketAddress.of(#bip, 0);\n"
+        "UdpSocket b #= UdpSocket.bind(bAddr);\n"
+        "SocketAddress bLocal #= b.localAddress();\n"
         "int32 bPort = bLocal.getPort();\n"
         "if (bPort <= 0) { return 0; }\n"
         // Bind A (any local ephemeral port).
-        "IpAddress aip = IpAddress.loopbackV4();\n"
-        "SocketAddress aAddr = SocketAddress.of(#aip, 0);\n"
-        "UdpSocket a = UdpSocket.bind(aAddr);\n"
+        "IpAddress aip #= IpAddress.loopbackV4();\n"
+        "SocketAddress aAddr #= SocketAddress.of(#aip, 0);\n"
+        "UdpSocket a #= UdpSocket.bind(aAddr);\n"
         // Datagram A -> B's bound port.
-        "IpAddress dip = IpAddress.loopbackV4();\n"
-        "SocketAddress dest = SocketAddress.of(#dip, bPort);\n"
+        "IpAddress dip #= IpAddress.loopbackV4();\n"
+        "SocketAddress dest #= SocketAddress.of(#dip, bPort);\n"
         "int8[] payload = heap int8[4];\n"
         "payload[0] = (int8) 100;\n"   // 'd'
         "payload[1] = (int8) 103;\n"   // 'g'
@@ -117,7 +117,7 @@ TEST(NetOptionsUdpTest, udpLoopbackDatagram) {
         "if (sent != 4) { return 0; }\n"
         // Receive on B.
         "int8[] rbuf = heap int8[8];\n"
-        "RecvResult rr = b.recvFrom(rbuf, 0, 8);\n"
+        "RecvResult rr #= b.recvFrom(rbuf, 0, 8);\n"
         "int32 got = rr.getCount();\n"
         "a.close();\n"
         "b.close();\n"

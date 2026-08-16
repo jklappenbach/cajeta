@@ -70,7 +70,7 @@ public final class FftGpu {
             x.cpu();
             int64[] shp = heap int64[1];
             shp[0] = len2;
-            Tensor<float32> out = Tensor.zeros<float32>(shp);
+            Tensor<float32> out #= Tensor.zeros<float32>(shp);
             int32 bits = 0;
             int64 tmp = n;
             while (tmp > 1) { tmp = tmp / 2; bits = bits + 1; }
@@ -93,7 +93,7 @@ public final class FftGpu {
             x.gpu();
             out.gpu();
             uint32 un = (uint32) n;
-            KernelStream s = KernelStream.current();
+            KernelStream s #= KernelStream.current();
             uint32 len = 2;
             while (len <= un) {
                 fftStageF32.launch(s, grid: [(un / 2 + 63) / 64], block: [64])

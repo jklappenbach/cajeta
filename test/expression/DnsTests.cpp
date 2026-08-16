@@ -70,7 +70,7 @@ TEST(DnsTests, localhostResolvesToLoopback) {
     // and inspects the returned SocketAddress[] through the Cajeta
     // IpAddress accessors (not raw octet intrinsics).
     EXPECT_EQ(runI32(makeSource(
-        "SocketAddress[] addrs = Dns.resolve(\"localhost\", 443);\n"
+        "SocketAddress[] addrs #= Dns.resolve(\"localhost\", 443);\n"
         "int32 c = addrs.count();\n"
         "if (c < 1) { return -1; }\n"
         "int32 sawLoopback = 0;\n"
@@ -100,7 +100,7 @@ TEST(DnsTests, numericV4ResolvesToItself) {
     // A numeric literal resolves (via getaddrinfo's AI_NUMERICSERV +
     // numeric-host fast path) to exactly that address.
     EXPECT_EQ(runI32(makeSource(
-        "SocketAddress[] addrs = Dns.resolve(\"127.0.0.1\", 8080);\n"
+        "SocketAddress[] addrs #= Dns.resolve(\"127.0.0.1\", 8080);\n"
         "if (addrs.count() < 1) { return -1; }\n"
         "SocketAddress a = addrs[0];\n"
         "IpAddress ip = a.getIp();\n"
@@ -118,7 +118,7 @@ TEST(DnsTests, numericV4ResolvesToItself) {
 TEST(DnsTests, portIsBakedIntoEveryAddress) {
     // Every SocketAddress in the result carries the requested port.
     EXPECT_EQ(runI32(makeSource(
-        "SocketAddress[] addrs = Dns.resolve(\"localhost\", 9090);\n"
+        "SocketAddress[] addrs #= Dns.resolve(\"localhost\", 9090);\n"
         "int32 c = addrs.count();\n"
         "if (c < 1) { return -1; }\n"
         "int32 i = 0;\n"
@@ -134,7 +134,7 @@ TEST(DnsTests, portIsBakedIntoEveryAddress) {
 TEST(DnsTests, singleArgOverloadDefaultsPortZero) {
     // Dns.resolve(host) bakes port 0 and applies no family restriction.
     EXPECT_EQ(runI32(makeSource(
-        "SocketAddress[] addrs = Dns.resolve(\"127.0.0.1\");\n"
+        "SocketAddress[] addrs #= Dns.resolve(\"127.0.0.1\");\n"
         "if (addrs.count() < 1) { return -1; }\n"
         "return (addrs[0].getPort() == 0) ? 1 : 0;")), 1);
 }
@@ -145,7 +145,7 @@ TEST(DnsTests, v6OnlyFilterSelectsV6) {
     // Resolving the numeric "::1" with V6_ONLY yields a single V6
     // address (::1).
     EXPECT_EQ(runI32(makeSource(
-        "SocketAddress[] addrs = Dns.resolve(\"::1\", 80, ResolveFamily.V6_ONLY);\n"
+        "SocketAddress[] addrs #= Dns.resolve(\"::1\", 80, ResolveFamily.V6_ONLY);\n"
         "if (addrs.count() < 1) { return -1; }\n"
         "IpAddress ip = addrs[0].getIp();\n"
         "if (!ip.isV6()) { return -2; }\n"
@@ -163,7 +163,7 @@ TEST(DnsTests, v6OnlyFilterSelectsV6) {
 TEST(DnsTests, v4OnlyFilterReturnsOnlyV4) {
     // localhost under V4_ONLY returns only V4 addresses (no V6 in the set).
     EXPECT_EQ(runI32(makeSource(
-        "SocketAddress[] addrs = Dns.resolve(\"localhost\", 80, ResolveFamily.V4_ONLY);\n"
+        "SocketAddress[] addrs #= Dns.resolve(\"localhost\", 80, ResolveFamily.V4_ONLY);\n"
         "int32 c = addrs.count();\n"
         "if (c < 1) { return -1; }\n"
         "int32 i = 0;\n"
@@ -183,7 +183,7 @@ TEST(DnsTests, badHostRaisesNetException) {
     // ordinal is carried in `kind` (1 = NONAME for a not-found name).
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"   // should not reach here
         "} catch (NetException e) {\n"
         "    return 1;\n"
@@ -198,7 +198,7 @@ TEST(DnsTests, nullHostRaisesNetException) {
     EXPECT_EQ(runI32(makeSource(
         "String h = null;\n"
         "try {\n"
-        "    SocketAddress[] addrs = Dns.resolve(h, 80);\n"
+        "    SocketAddress[] addrs #= Dns.resolve(h, 80);\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return (e.kind == NetException.KIND_INVALID) ? 1 : 0;\n"

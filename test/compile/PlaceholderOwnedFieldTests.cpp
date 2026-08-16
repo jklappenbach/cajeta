@@ -208,7 +208,7 @@ TEST(PlaceholderOwnedFieldTests, ownedInterfaceReturnSurvivesContainerField) {
         "        return heap Times(k);\n"
         "    }\n"
         "    public void enroll(int32 which, int32 k) {\n"
-        "        Face f = this.make(which, k);\n"
+        "        Face f #= this.make(which, k);\n"
         "        this.faces.add(#f);\n"
         "    }\n"
         // read back in a LATER call — the frame that produced the value is
@@ -258,7 +258,7 @@ TEST(PlaceholderOwnedFieldTests, PROBE_ifaceReturnToLocalDispatch) {
         "public final class D {\n"
         "    public static #Face make(int32 k) { return heap Plus(k); }\n"
         "    public static int32 run() {\n"
-        "        Face f = D.make(10);\n"
+        "        Face f #= D.make(10);\n"
         "        return f.poke(5);\n"          // 15
         "    }\n"
         "}\n";
@@ -285,7 +285,7 @@ TEST(PlaceholderOwnedFieldTests, PROBE_ifaceReturnToLocalContainer) {
         "    public static #Face make(int32 k) { return heap Plus(k); }\n"
         "    public static int32 run() {\n"
         "        ArrayList<Face> xs = heap ArrayList<Face>();\n"
-        "        Face f = D.make(10);\n"
+        "        Face f #= D.make(10);\n"
         "        xs.add(#f);\n"
         "        return xs.get(0).poke(5);\n"   // 15
         "    }\n"
@@ -315,7 +315,7 @@ TEST(PlaceholderOwnedFieldTests, PROBE_ifaceReturnToFieldContainerSameFrame) {
         "    public RegP() { this.faces #= heap ArrayList<Face>(); }\n"
         "    public #Face make(int32 k) { return heap Plus(k); }\n"
         "    public int32 both(int32 v) {\n"
-        "        Face f = this.make(10);\n"
+        "        Face f #= this.make(10);\n"
         "        this.faces.add(#f);\n"
         "        return this.faces.get(0).poke(v);\n"
         "    }\n"
@@ -396,7 +396,7 @@ TEST(PlaceholderOwnedFieldTests, ownedBaseClassReturnSurvivesContainerField) {
         "        return heap Derived(k);\n"
         "    }\n"
         "    public void enroll(int32 which, int32 k) {\n"
-        "        Base b = this.make(which, k);\n"
+        "        Base b #= this.make(which, k);\n"
         "        this.items.add(#b);\n"
         "    }\n"
         "    public int32 pokeAll(int32 v) {\n"

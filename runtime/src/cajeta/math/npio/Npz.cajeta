@@ -118,33 +118,33 @@ public final class Npz {
 
     /** Load member `key` from the `.npz` at `path` as a `float32` tensor. */
     public static #Tensor<float32> loadF32(String path, String key) {
-        int8[] z = File.readAllBytes(path);
+        int8[] z #= File.readAllBytes(path);
         int64 zlen = z.count();
-        int8[] mem = Npz.extractMember(z, zlen, key);
+        int8[] mem #= Npz.extractMember(z, zlen, key);
         return Npy.decodeF32(mem);
     }
 
     /** Load member `key` from the `.npz` at `path` as a `float64` tensor. */
     public static #Tensor<float64> loadF64(String path, String key) {
-        int8[] z = File.readAllBytes(path);
+        int8[] z #= File.readAllBytes(path);
         int64 zlen = z.count();
-        int8[] mem = Npz.extractMember(z, zlen, key);
+        int8[] mem #= Npz.extractMember(z, zlen, key);
         return Npy.decodeF64(mem);
     }
 
     /** Load member `key` from the `.npz` at `path` as an `int32` tensor. */
     public static #Tensor<int32> loadI32(String path, String key) {
-        int8[] z = File.readAllBytes(path);
+        int8[] z #= File.readAllBytes(path);
         int64 zlen = z.count();
-        int8[] mem = Npz.extractMember(z, zlen, key);
+        int8[] mem #= Npz.extractMember(z, zlen, key);
         return Npy.decodeI32(mem);
     }
 
     /** Load member `key` from the `.npz` at `path` as an `int64` tensor. */
     public static #Tensor<int64> loadI64(String path, String key) {
-        int8[] z = File.readAllBytes(path);
+        int8[] z #= File.readAllBytes(path);
         int64 zlen = z.count();
-        int8[] mem = Npz.extractMember(z, zlen, key);
+        int8[] mem #= Npz.extractMember(z, zlen, key);
         return Npy.decodeI64(mem);
     }
 }
@@ -246,28 +246,28 @@ public final class NpzWriter {
 
     /** Add a `float32` array under `name` (stored as `name.npy`). */
     public void addF32(String name, Tensor<float32> t) {
-        int8[] mem = Npy.encodeF32(t);
+        int8[] mem #= Npy.encodeF32(t);
         int64 mlen = mem.count();
         this.writeMember(name, mem, mlen);
     }
 
     /** Add a `float64` array under `name`. */
     public void addF64(String name, Tensor<float64> t) {
-        int8[] mem = Npy.encodeF64(t);
+        int8[] mem #= Npy.encodeF64(t);
         int64 mlen = mem.count();
         this.writeMember(name, mem, mlen);
     }
 
     /** Add an `int32` array under `name`. */
     public void addI32(String name, Tensor<int32> t) {
-        int8[] mem = Npy.encodeI32(t);
+        int8[] mem #= Npy.encodeI32(t);
         int64 mlen = mem.count();
         this.writeMember(name, mem, mlen);
     }
 
     /** Add an `int64` array under `name`. */
     public void addI64(String name, Tensor<int64> t) {
-        int8[] mem = Npy.encodeI64(t);
+        int8[] mem #= Npy.encodeI64(t);
         int64 mlen = mem.count();
         this.writeMember(name, mem, mlen);
     }

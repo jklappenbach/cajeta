@@ -127,7 +127,7 @@ public class Headers {
      * True iff at least one slot carries `name` (case-insensitive).
      */
     public boolean contains(String name) {
-        String lname = name.toLowerCase();
+        String lname #= name.toLowerCase();
         int32 i = 0;
         while (i < this.sizeCount) {
             if (this.keys[i].equals(lname)) {
@@ -143,7 +143,7 @@ public class Headers {
      * size the `getAll` result + to drive the comma-fold decision.
      */
     public int32 countFor(String name) {
-        String lname = name.toLowerCase();
+        String lname #= name.toLowerCase();
         int32 n = 0;
         int32 i = 0;
         while (i < this.sizeCount) {
@@ -168,7 +168,7 @@ public class Headers {
      * handles and doesn't alias the map's field-owned `String`s.
      */
     public #String[] getAll(String name) {
-        String lname = name.toLowerCase();
+        String lname #= name.toLowerCase();
         int32 n = this.countFor(lname);
         String[] out = heap String[n];
         int32 w = 0;
@@ -201,7 +201,7 @@ public class Headers {
      * `String`. Returns `null` (a genuine null reference) when absent.
      */
     public #String get(String name) {
-        String lname = name.toLowerCase();
+        String lname #= name.toLowerCase();
         // Find the first matching slot.
         int32 first = -1;
         int32 i = 0;
@@ -230,7 +230,7 @@ public class Headers {
      * survivors is preserved.
      */
     public void remove(String name) {
-        String lname = name.toLowerCase();
+        String lname #= name.toLowerCase();
         int32 w = 0;
         int32 r = 0;
         while (r < this.sizeCount) {

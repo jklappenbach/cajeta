@@ -338,7 +338,7 @@ TEST(XpuNvptxEmitTests, imageLoadStoreRmwOnNvptx) {
         "        uint32 h = 4;\n"
         "        uint32 n = w * h;\n"
         "        Image2D img = heap Image2D(w, h);\n"
-        "        KernelStream s = KernelStream.current();\n"
+        "        KernelStream s #= KernelStream.current();\n"
         "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
         "        s.sync();\n"
         "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"

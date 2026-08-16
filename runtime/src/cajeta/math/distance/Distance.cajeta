@@ -204,10 +204,10 @@ public final class Distance {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < n) {
-            Tensor<float64> ri = x.index(0, i);
+            Tensor<float64> ri #= x.index(0, i);
             int64 j = i + 1;
             while (j < n) {
                 float64 d = metric.distance(ri, x.index(0, j));
@@ -235,8 +235,8 @@ public final class Distance {
         int64[] sh = heap int64[2];
         sh[0] = n;
         sh[1] = n;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
-        Tensor<float64> gram = Tensor.matmul<float64>(x, x.transpose());
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
+        Tensor<float64> gram #= Tensor.matmul<float64>(x, x.transpose());
         int64 i = 0;
         while (i < n) {
             int64 j = i + 1;
@@ -273,10 +273,10 @@ public final class Distance {
         int64[] sh = heap int64[2];
         sh[0] = nx;
         sh[1] = ny;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
         int64 i = 0;
         while (i < nx) {
-            Tensor<float64> ri = x.index(0, i);
+            Tensor<float64> ri #= x.index(0, i);
             int64 j = 0;
             while (j < ny) {
                 out.set2(i, j, metric.distance(ri, y.index(0, j)));
@@ -310,8 +310,8 @@ public final class Distance {
         int64[] sh = heap int64[2];
         sh[0] = nx;
         sh[1] = ny;
-        Tensor<float64> out = Tensor.zeros<float64>(sh);
-        Tensor<float64> gram = Tensor.matmul<float64>(x, y.transpose());
+        Tensor<float64> out #= Tensor.zeros<float64>(sh);
+        Tensor<float64> gram #= Tensor.matmul<float64>(x, y.transpose());
         int64 d = x.shapeAt(1);
         float64[] sqx = heap float64[nx];
         float64[] sqy = heap float64[ny];

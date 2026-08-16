@@ -70,8 +70,8 @@ TEST(CodecTierInterfacesTests, schemaEncoderRoundTrip) {
         "Schema s = heap Schema(#def);\n"
         "SchemaEncoder<Box> codec = heap BoxCodec();\n"
         "Box b = heap Box(12345);\n"
-        "int8[] bytes = codec.encode(b, s);\n"
-        "Box back = codec.decode(bytes, s);\n"
+        "int8[] bytes #= codec.encode(b, s);\n"
+        "Box back #= codec.decode(bytes, s);\n"
         "return back.v;";
     EXPECT_EQ(runCodec(imports, classes, body), 12345);
 }
@@ -118,8 +118,8 @@ TEST(CodecTierInterfacesTests, compressorDecompressorRoundTrip) {
         "int8[] raw = [(int8) 4, (int8) 8, (int8) 15, (int8) 16, (int8) 23];\n"
         "Compressor c = heap IdCompressor();\n"
         "Decompressor d = heap IdDecompressor();\n"
-        "int8[] packed = c.compress(raw);\n"
-        "int8[] back = d.decompress(packed, (int64) 5);\n"
+        "int8[] packed #= c.compress(raw);\n"
+        "int8[] back #= d.decompress(packed, (int64) 5);\n"
         "return ((int32) back.count()) * 100 + (int32) back[3];";  // len 5, back[3]==16
     EXPECT_EQ(runCodec(imports, classes, body), 5 * 100 + 16);
 }
@@ -152,8 +152,8 @@ TEST(CodecTierInterfacesTests, shippedEncoderUnchanged) {
     const std::string body =
         "Encoder<Box> codec = heap BoxEncoder();\n"
         "Box b = heap Box(305419896);\n"   // 0x12345678
-        "int8[] bytes = codec.encode(b);\n"
-        "Box back = codec.decode(bytes);\n"
+        "int8[] bytes #= codec.encode(b);\n"
+        "Box back #= codec.decode(bytes);\n"
         "return back.v - 305419896;";       // 0 iff round-trip exact
     EXPECT_EQ(runCodec(imports, classes, body), 0);
 }

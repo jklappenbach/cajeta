@@ -760,7 +760,7 @@ namespace cajeta {
         } else if (et == "float64") {
             elem = list + ".add(JsonIndex.decodeF64(b, (int64) ep_" + f + ")); ci = ci + 1;\n";
         } else if (et == "cajeta.lang.String") {
-            elem = "int8[] esb_" + f + " = JsonIndex.decodeStrBytes(b, (int64) ep_" + f + ");\n"
+            elem = "int8[] esb_" + f + " #= JsonIndex.decodeStrBytes(b, (int64) ep_" + f + ");\n"
                    "                    int32 esl_" + f + " = (int32) esb_" + f + ".count();\n"
                    "                    " + list + ".add(heap cajeta.lang.String(#esb_" + f + ", esl_" + f + ")); ci = ci + 1;\n";
         } else if (elementIsClass) {
@@ -844,7 +844,7 @@ namespace cajeta {
                 readInner = "float64 v = JsonIndex.decodeF64(b, (int64) vp_" + f + ");";
                 defaultInner = "(float64) 0.0";
             } else if (ic == "cajeta.lang.String") {
-                readInner = "int8[] vb_" + f + " = JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
+                readInner = "int8[] vb_" + f + " #= JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
                             "                int32 vl_" + f + " = (int32) vb_" + f + ".count();\n"
                             "                cajeta.lang.String v = heap cajeta.lang.String(#vb_" + f + ", vl_" + f + ");";
                 defaultInner = "null";
@@ -894,7 +894,7 @@ namespace cajeta {
         }
         if (tc == "cajeta.lang.String") {
             return "int32 vp_" + f + " = idx[ci];\n"
-                   "            int8[] sb_" + f + " = JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
+                   "            int8[] sb_" + f + " #= JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
                    "            int32 sl_" + f + " = (int32) sb_" + f + ".count();\n"
                    "            out." + f + " = heap cajeta.lang.String(#sb_" + f + ", sl_" + f + ");\n"
                    "            ci = ci + 1;\n";

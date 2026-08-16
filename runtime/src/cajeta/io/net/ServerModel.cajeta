@@ -182,10 +182,10 @@ public class ServerModel {
      */
     public #Server bindServer(SocketAddress addr, (TcpStream) -> void handler) {
         if (this.kind == ServerModel.SHARED_POOL_KIND) {
-            SharedPoolServer pool = SharedPoolServer.bind(addr, this.poolSize, handler);
+            SharedPoolServer pool #= SharedPoolServer.bind(addr, this.poolSize, handler);
             return #pool;
         }
-        Server core = Server.bind(addr, handler);
+        Server core #= Server.bind(addr, handler);
         return #core;
     }
 
@@ -198,11 +198,11 @@ public class ServerModel {
     public #Server bindServerWithBacklog(SocketAddress addr, int32 backlog,
                                          (TcpStream) -> void handler) {
         if (this.kind == ServerModel.SHARED_POOL_KIND) {
-            SharedPoolServer pool =
+            SharedPoolServer pool #=
                 SharedPoolServer.bindWithBacklog(addr, backlog, this.poolSize, handler);
             return #pool;
         }
-        Server core = Server.bindWithBacklog(addr, backlog, handler);
+        Server core #= Server.bindWithBacklog(addr, backlog, handler);
         return #core;
     }
 }

@@ -171,8 +171,8 @@ public class QueryParams {
             rawKey = query.substring(start, eq);
             rawVal = query.substring(eq + 1, end);
         }
-        String decKey = QueryParams.decodeComponent(rawKey, form);
-        String decVal = QueryParams.decodeComponent(rawVal, form);
+        String decKey #= QueryParams.decodeComponent(rawKey, form);
+        String decVal #= QueryParams.decodeComponent(rawVal, form);
         q.append(#decKey, #decVal);
     }
 
@@ -183,7 +183,7 @@ public class QueryParams {
      */
     private static #String decodeComponent(String raw, boolean form) {
         if (form) {
-            String spaced = QueryParams.plusToSpace(raw);
+            String spaced #= QueryParams.plusToSpace(raw);
             return PercentCodec.decode(spaced);
         }
         return PercentCodec.decode(raw);
@@ -376,8 +376,8 @@ public class QueryParams {
             // (arrives empty); the workaround BPlusTree/ArrayList use.
             String rk = this.keys[i];
             String rv = this.values[i];
-            String ek = this.encodeComponent(rk);
-            String ev = this.encodeComponent(rv);
+            String ek #= this.encodeComponent(rk);
+            String ev #= this.encodeComponent(rv);
             // "key" + "=" + "val"; plus a '&' before every pair but the first.
             total = total + ek.byteLength() + ev.byteLength() + 1;
             if (i > 0) {
@@ -394,12 +394,12 @@ public class QueryParams {
                 dst = dst + 1;
             }
             String rk = this.keys[i];
-            String ek = this.encodeComponent(rk);
+            String ek #= this.encodeComponent(rk);
             dst = QueryParams.copyBytes(out, dst, ek);
             out[dst] = (int8) 61;                               // '='
             dst = dst + 1;
             String rv = this.values[i];
-            String ev = this.encodeComponent(rv);
+            String ev #= this.encodeComponent(rv);
             dst = QueryParams.copyBytes(out, dst, ev);
             i = i + 1;
         }
@@ -416,7 +416,7 @@ public class QueryParams {
      * `%20`, `+` stays `%2B`).
      */
     #String encodeComponent(String decoded) {
-        String enc = PercentCodec.encode(decoded, UriComponent.QUERY_PARAM);
+        String enc #= PercentCodec.encode(decoded, UriComponent.QUERY_PARAM);
         if (this.formEncoded) {
             return QueryParams.percent20ToPlus(enc);
         }

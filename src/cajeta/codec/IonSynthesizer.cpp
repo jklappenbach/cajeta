@@ -120,15 +120,17 @@ namespace cajeta {
                     // the field with '#' — a plain store is a lend of a
                     // dying temp under the 0.9 ownership rules.
                     const std::string sv = "v" + path + "_" + b.name;
-                    os << "            String " << sv << " = "
+                    os << "            String " << sv << " #= "
                        << cursorVar << ".readString(" << slot << ");\n";
                     os << "            " << objVar << "." << b.name << " = #"
                        << sv << ";\n";
                     break;
                 }
                 case Decode::Bytes: {
+                    // readBytes returns an OWNED #int8[]: same shape as Str
+                    // above — adopt into the local with '#=', then surrender.
                     const std::string bv = "v" + path + "_" + b.name;
-                    os << "            int8[] " << bv << " = "
+                    os << "            int8[] " << bv << " #= "
                        << cursorVar << ".readBytes(" << slot << ");\n";
                     os << "            " << objVar << "." << b.name << " = #"
                        << bv << ";\n";
@@ -245,7 +247,11 @@ namespace cajeta {
                        << "." << b.name << ";\n";
                     os << "    if (" << vloc << " != null) {\n";
                     os << "        " << w << ".writeFieldSid(" << sid << ");\n";
-                    os << "        int8[] sb" << path << "_" << b.name << " = "
+                    // `#=`: `String.toBytes` returns `#int8[]` (ownership
+                    // §4.6). The lvalue is built by concatenation
+                    // (`sb` + path + `_` + name), which is why neither the
+                    // lvalue- nor the callee-anchored sweep located this one.
+                    os << "        int8[] sb" << path << "_" << b.name << " #= "
                        << vloc << ".toBytes();\n";
                     os << "        " << w << ".writeStringValue(sb" << path << "_"
                        << b.name << ", (int32) sb" << path << "_" << b.name

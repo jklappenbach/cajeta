@@ -24,7 +24,7 @@ const char* kBuildProgram =
     "        StringBuilder sb = heap StringBuilder();\n"
     "        int32 i = 0;\n"
     "        while (i < n) { sb.append(\"abcdefgh\"); i = i + 1; }\n"
-    "        String s = sb.toString();\n"
+    "        String s #= sb.toString();\n"
     "        return s.size();\n"
     "    }\n"
     "}\n";

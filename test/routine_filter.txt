@@ -1451,3 +1451,29 @@ YamlTests.nestedSequences
 YamlTests.quotedScalarsAreAlwaysStrings
 YamlTests.scalarTypingAndMap
 YamlTests.tabIndentationIsError
+
+# --- HAND-ADDED 2026-08-15 (stdlib-ownership-convention 3.3.2) ---------
+# The ownership-check suites were in NO gate manifest, so the checks that
+# REJECT programs had never run in the routine gate. They are now pinned in
+# test/regression_filter.txt, which build_routine.py unions into this file
+# via --pins — so the next regeneration derives them and these lines become
+# redundant rather than stale. Added by hand only to bring that forward:
+# this worktree has no .coverage/ index, so the generator cannot be re-run
+# here without dropping every coverage-derived entry.
+CapturedBorrowParamTests.captureThroughStraightLineLocalRejected
+CapturedBorrowParamTests.defaultModeStillThrows
+CapturedBorrowParamTests.plainParamReadOnlyStillCompiles
+CapturedBorrowParamTests.plainParamStoredIntoElementRejected
+CapturedBorrowParamTests.plainParamStoredIntoFieldRejected
+CapturedBorrowParamTests.sharpParamStoredStillCompiles
+CapturedBorrowParamTests.sinkStoringWithSharpAssignStillCompiles
+CapturedBorrowParamTests.unprovableCaptureIsAllowed
+CapturedBorrowParamTests.warnModeAdmitsTheCaptureAndKeepsCompiling
+CapturedBorrowParamTests.warnModeCoversTheElementStoreSiteToo
+OwnedResultTransferTests.defaultModeStillThrows
+OwnedResultTransferTests.plainBindOfBorrowResultStillCompiles
+OwnedResultTransferTests.plainBindOfOwnedResultRejected
+OwnedResultTransferTests.sharpAssignBindIsBalanced
+OwnedResultTransferTests.sharpAssignBindOfOwnedResultCompilesAndRuns
+OwnedResultTransferTests.warnModeAdmitsThePlainBind
+OwnedResultTransferTests.whatAPlainBindOfAnOwnedResultActuallyDoes

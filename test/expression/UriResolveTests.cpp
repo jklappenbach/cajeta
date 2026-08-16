@@ -94,8 +94,8 @@ TEST(UriResolveTests, rfc3986ReferenceResolutionVectors) {
         std::string id = std::to_string(i);
         methods +=
             "    private static int32 check" + id + "() {\n"
-            "        Uri base = Uri.parse(" + lit(v.base) + ");\n"
-            "        Uri r = Uri.resolve(base, " + lit(v.reference) + ");\n"
+            "        Uri base #= Uri.parse(" + lit(v.base) + ");\n"
+            "        Uri r #= Uri.resolve(base, " + lit(v.reference) + ");\n"
             "        return r.toString().equals(" + lit(v.resolved)
             + ") ? 1 : 0;\n"
             "    }\n";
@@ -128,7 +128,7 @@ TEST(UriResolveTests, rfc3986ReferenceResolutionVectors) {
 TEST(UriResolveTests, toStringRoundTripsFullUri) {
     // Explicit port present in the input → serialized back verbatim.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
+        "Uri u #= Uri.parse(\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\");\n"
         "return u.toString().equals("
         "\"https://u:p@h.test:8443/a/b?x=1&y=2#frag\") ? 1 : 0;")), 1);
 }
@@ -136,25 +136,25 @@ TEST(UriResolveTests, toStringRoundTripsFullUri) {
 TEST(UriResolveTests, toStringOmitsSchemeDefaultPort) {
     // http default port 80 is NOT explicit → must not appear in output.
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test/p\");\n"
+        "Uri u #= Uri.parse(\"http://h.test/p\");\n"
         "return u.toString().equals(\"http://h.test/p\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, toStringRebracketsIpv6Literal) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://[::1]:8080/x\");\n"
+        "Uri u #= Uri.parse(\"http://[::1]:8080/x\");\n"
         "return u.toString().equals(\"http://[::1]:8080/x\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, toStringRoundTripsAuthorityless) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"mailto:a@b.test\");\n"
+        "Uri u #= Uri.parse(\"mailto:a@b.test\");\n"
         "return u.toString().equals(\"mailto:a@b.test\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, toStringRoundTripsEmptyQuery) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.parse(\"http://h.test/p?\");\n"
+        "Uri u #= Uri.parse(\"http://h.test/p?\");\n"
         "return u.toString().equals(\"http://h.test/p?\") ? 1 : 0;")), 1);
 }
 
@@ -162,7 +162,7 @@ TEST(UriResolveTests, toStringRoundTripsEmptyQuery) {
 
 TEST(UriResolveTests, builderAssemblesFullUri) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.builder()\n"
+        "Uri u #= Uri.builder()\n"
         "    .scheme(\"https\").host(\"h.test\").port(8443)\n"
         "    .path(\"/a/b\").query(\"x=1\").fragment(\"frag\")\n"
         "    .build();\n"
@@ -172,21 +172,21 @@ TEST(UriResolveTests, builderAssemblesFullUri) {
 
 TEST(UriResolveTests, builderLowercasesScheme) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.builder().scheme(\"HTTPS\").host(\"h.test\")\n"
+        "Uri u #= Uri.builder().scheme(\"HTTPS\").host(\"h.test\")\n"
         "    .path(\"/\").build();\n"
         "return u.getScheme().equals(\"https\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, builderBracketsIpv6Host) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.builder().scheme(\"http\").host(\"::1\").port(80)\n"
+        "Uri u #= Uri.builder().scheme(\"http\").host(\"::1\").port(80)\n"
         "    .path(\"/\").build();\n"
         "return u.toString().equals(\"http://[::1]:80/\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, builderOmitsUnsetPort) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri u = Uri.builder().scheme(\"http\").host(\"h.test\")\n"
+        "Uri u #= Uri.builder().scheme(\"http\").host(\"h.test\")\n"
         "    .path(\"/p\").build();\n"
         "return u.toString().equals(\"http://h.test/p\") ? 1 : 0;")), 1);
 }
@@ -195,21 +195,21 @@ TEST(UriResolveTests, builderOmitsUnsetPort) {
 
 TEST(UriResolveTests, resolveRelativeDotDotSpotCheck) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri base = Uri.parse(\"http://a/b/c/d;p?q\");\n"
-        "Uri r = Uri.resolve(base, \"../../g\");\n"
+        "Uri base #= Uri.parse(\"http://a/b/c/d;p?q\");\n"
+        "Uri r #= Uri.resolve(base, \"../../g\");\n"
         "return r.toString().equals(\"http://a/g\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, resolveAbsoluteReferenceKeepsItsScheme) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri base = Uri.parse(\"http://a/b/c/d;p?q\");\n"
-        "Uri r = Uri.resolve(base, \"https://other.test/x\");\n"
+        "Uri base #= Uri.parse(\"http://a/b/c/d;p?q\");\n"
+        "Uri r #= Uri.resolve(base, \"https://other.test/x\");\n"
         "return r.toString().equals(\"https://other.test/x\") ? 1 : 0;")), 1);
 }
 
 TEST(UriResolveTests, resolveEmptyReferenceKeepsBasePathAndQuery) {
     EXPECT_EQ(runI32(makeSource(
-        "Uri base = Uri.parse(\"http://a/b/c/d;p?q\");\n"
-        "Uri r = Uri.resolve(base, \"\");\n"
+        "Uri base #= Uri.parse(\"http://a/b/c/d;p?q\");\n"
+        "Uri r #= Uri.resolve(base, \"\");\n"
         "return r.toString().equals(\"http://a/b/c/d;p?q\") ? 1 : 0;")), 1);
 }

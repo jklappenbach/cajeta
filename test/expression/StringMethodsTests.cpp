@@ -215,7 +215,7 @@ TEST(StringMethodsTests, containsFalse) {
 TEST(StringMethodsTests, substringSliceMatches) {
     EXPECT_EQ(runJit(
         "String s = \"hello world\";\n"
-        "String sub = s.substring(6, 11);\n"
+        "String sub #= s.substring(6, 11);\n"
         "if (sub.equals(\"world\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -223,7 +223,7 @@ TEST(StringMethodsTests, substringSliceMatches) {
 TEST(StringMethodsTests, substringEmptyWindow) {
     EXPECT_EQ(runJit(
         "String s = \"abc\";\n"
-        "String sub = s.substring(2, 2);\n"
+        "String sub #= s.substring(2, 2);\n"
         "if (sub.isEmpty()) return 1;\n"
         "return 0;"), 1);
 }
@@ -231,7 +231,7 @@ TEST(StringMethodsTests, substringEmptyWindow) {
 TEST(StringMethodsTests, toUpperCaseAscii) {
     EXPECT_EQ(runJit(
         "String s = \"Hello, World!\";\n"
-        "String u = s.toUpperCase();\n"
+        "String u #= s.toUpperCase();\n"
         "if (u.equals(\"HELLO, WORLD!\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -239,7 +239,7 @@ TEST(StringMethodsTests, toUpperCaseAscii) {
 TEST(StringMethodsTests, toLowerCaseAscii) {
     EXPECT_EQ(runJit(
         "String s = \"Hello, World!\";\n"
-        "String l = s.toLowerCase();\n"
+        "String l #= s.toLowerCase();\n"
         "if (l.equals(\"hello, world!\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -248,7 +248,7 @@ TEST(StringMethodsTests, toUpperCaseLong) {
     // 46 bytes: exercises the 32-byte SWAR path + 8-byte word + scalar tail.
     EXPECT_EQ(runJit(
         "String s = \"the quick brown fox jumps over the lazy dog 123\";\n"
-        "String u = s.toUpperCase();\n"
+        "String u #= s.toUpperCase();\n"
         "if (u.equals(\"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 123\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -256,7 +256,7 @@ TEST(StringMethodsTests, toUpperCaseLong) {
 TEST(StringMethodsTests, toLowerCaseLong) {
     EXPECT_EQ(runJit(
         "String s = \"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 123\";\n"
-        "String l = s.toLowerCase();\n"
+        "String l #= s.toLowerCase();\n"
         "if (l.equals(\"the quick brown fox jumps over the lazy dog 123\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -264,7 +264,7 @@ TEST(StringMethodsTests, toLowerCaseLong) {
 TEST(StringMethodsTests, trimBothSides) {
     EXPECT_EQ(runJit(
         "String s = \"   spaced   \";\n"
-        "String t = s.trim();\n"
+        "String t #= s.trim();\n"
         "if (t.equals(\"spaced\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -279,7 +279,7 @@ TEST(StringMethodsTests, trimAllWhitespace) {
 TEST(StringMethodsTests, replaceSingleMatch) {
     EXPECT_EQ(runJit(
         "String s = \"foo bar\";\n"
-        "String r = s.replace(\"bar\", \"baz\");\n"
+        "String r #= s.replace(\"bar\", \"baz\");\n"
         "if (r.equals(\"foo baz\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -287,7 +287,7 @@ TEST(StringMethodsTests, replaceSingleMatch) {
 TEST(StringMethodsTests, replaceMultipleMatches) {
     EXPECT_EQ(runJit(
         "String s = \"a-b-c-d\";\n"
-        "String r = s.replace(\"-\", \"::\");\n"
+        "String r #= s.replace(\"-\", \"::\");\n"
         "if (r.equals(\"a::b::c::d\")) return 1;\n"
         "return 0;"), 1);
 }
@@ -295,7 +295,7 @@ TEST(StringMethodsTests, replaceMultipleMatches) {
 TEST(StringMethodsTests, replaceNoMatch) {
     EXPECT_EQ(runJit(
         "String s = \"hello\";\n"
-        "String r = s.replace(\"x\", \"y\");\n"
+        "String r #= s.replace(\"x\", \"y\");\n"
         "if (r.equals(\"hello\")) return 1;\n"
         "return 0;"), 1);
 }

@@ -89,7 +89,7 @@ public class M {
         KernelBuffer<uint32> b = heap KernelBuffer<uint32>(n);
         a.upload(ha);
         b.upload(hb);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         twostage.launch(s, grid: [1], block: [256])(a, b);
         s.sync();
         a.download(ha);
@@ -132,7 +132,7 @@ public class M {
         KernelBuffer<uint32> out = heap KernelBuffer<uint32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         stageback.launch(s, grid: [1], block: [256])(out, in);
         s.sync();
         out.download(hout);
@@ -181,7 +181,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         reduce.launch(s, grid: [1], block: [256])(out, in, n);
         s.sync();
         out.download(hout);
@@ -202,7 +202,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(blocks);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         reduce.launch(s, grid: [32], block: [256])(out, in, n);
         s.sync();
         out.download(hout);
@@ -259,7 +259,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         pingpong.launch(s, grid: [1], block: [256])(out, in, k);
         s.sync();
         out.download(hout);
@@ -315,7 +315,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         localcarry.launch(s, grid: [1], block: [256])(out, in, k);
         s.sync();
         out.download(hout);
@@ -371,7 +371,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         accum.launch(s, grid: [1], block: [256])(out, in, k);
         s.sync();
         out.download(hout);
@@ -432,7 +432,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         nested.launch(s, grid: [1], block: [256])(out, in, ki, kj);
         s.sync();
         out.download(hout);
@@ -497,7 +497,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         nested2.launch(s, grid: [1], block: [256])(out, in, ki, kj);
         s.sync();
         out.download(hout);
@@ -551,7 +551,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         blockReduce.launch(s, grid: [1], block: [256])(out, in);
         s.sync();
         out.download(hout);
@@ -595,7 +595,7 @@ public class M {
         for (uint32 i = 0; i < n; i = i + 1) { hw[i] = 0; }
         KernelBuffer<uint32> wbuf = heap KernelBuffer<uint32>(n);
         wbuf.upload(hw);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         widthk.launch(s, grid: [1], block: [256])(wbuf);
         s.sync();
         wbuf.download(hw);
@@ -656,7 +656,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         dynreduce.launch(s, grid: [1], block: [256], sharedBytes: [1024])(out, in, n);
         s.sync();
         out.download(hout);
@@ -698,7 +698,7 @@ public class M {
         KernelBuffer<int32> out = heap KernelBuffer<int32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         transpose2d.launch(s, grid: [1], block: [8, 8])(out, in);
         s.sync();
         out.download(hout);

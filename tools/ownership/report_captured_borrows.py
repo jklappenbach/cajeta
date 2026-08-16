@@ -31,7 +31,7 @@ import sys
 from collections import defaultdict
 
 NOTE_RE = re.compile(
-    r'\[captured-borrow\] (?P<key>[\w.$<>]*)\.(?P<method>[\w$<>]+):(?P<line>-?\d+) '
+    r'\[captured-borrow\] (?P<key>\S*?)\.(?P<method>[\w$<>]+):(?P<line>-?\d+) '
     r'param=(?P<param>\S+) src=(?P<src>\S+) into=(?P<into>.*?) type=(?P<type>\S+)$')
 
 GENERIC_RE = re.compile(r'<[^<>]*>')

@@ -64,7 +64,7 @@ std::string makeSource(const std::string& body) {
 // own constructor stamped its `kind`, so reading it back proves the table
 // selected the right concrete type for the ordinal.
 std::string mapKind(int ordinal) {
-    return "NetException e = NetErrors.fromErrno(" + std::to_string(ordinal) +
+    return "NetException e #= NetErrors.fromErrno(" + std::to_string(ordinal) +
            ", \"detail\");\n"
            "return e.kind;";
 }
@@ -174,6 +174,6 @@ TEST(NetExceptionTests, subtypeCaughtAsNetExceptionRoot) {
 
 TEST(NetExceptionTests, detailMessagePassesThrough) {
     EXPECT_EQ(runI32(makeSource(
-        "NetException e = NetErrors.fromErrno(2, \"connect to 127.0.0.1:9\");\n"
+        "NetException e #= NetErrors.fromErrno(2, \"connect to 127.0.0.1:9\");\n"
         "return e.message.equals(\"connect to 127.0.0.1:9\") ? 1 : 0;")), 1);
 }

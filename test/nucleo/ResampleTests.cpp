@@ -165,7 +165,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "        int32 score = 0;\n"
         // LEFT-closed (default): the 60s row opens bucket b1 [60,120), the
         // 45s row is in b0 [0,60). Two buckets, both non-empty.
-        "        Table<?> rl = t.lazy().resample((BarCols c) -> c.ts(),\n"
+        "        Table<?> rl #= t.lazy().resample((BarCols c) -> c.ts(),\n"
         "            Duration.ofSeconds(60)).agg((BarCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().last().alias(\"cl\"));\n"
         "        }).collect();\n"
@@ -177,7 +177,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "        }\n"
         // RIGHT-closed: (start, start+every]. The 60s row now CLOSES bucket
         // b0 (0,60], the 45s row is also in b0. One bucket, both rows.
-        "        Table<?> rr = t.lazy().resample((BarCols c) -> c.ts(),\n"
+        "        Table<?> rr #= t.lazy().resample((BarCols c) -> c.ts(),\n"
         "            Duration.ofSeconds(60), Duration.zero(), Duration.zero(),\n"
         "            true).agg((BarCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().count().alias(\"n\"));\n"
@@ -190,7 +190,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         // OFFSET shifts the grid by 30s: boundaries at 30s, 90s. The 45s
         // row falls in [30,90), the 60s row also in [30,90). One bucket
         // starting at 30s.
-        "        Table<?> ro = t.lazy().resample((BarCols c) -> c.ts(),\n"
+        "        Table<?> ro #= t.lazy().resample((BarCols c) -> c.ts(),\n"
         "            Duration.ofSeconds(60), Duration.zero(),\n"
         "            Duration.ofSeconds(30), false).agg((BarCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().count().alias(\"n\"));\n"
@@ -207,7 +207,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         + kBuild +
         "        int32 score = 0;\n"
         // The dynamic string form: resample keyed by a named column.
-        "        Table<?> r = t.lazy().resample(\"ts\", Duration.ofSeconds(60))\n"
+        "        Table<?> r #= t.lazy().resample(\"ts\", Duration.ofSeconds(60))\n"
         "            .agg((BarCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().last().alias(\"cl\"));\n"
         "        }).collect();\n"
@@ -216,7 +216,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "        }\n"
         // A non-integer time column: px is float64, not an epoch column.
         "        try {\n"
-        "            Table<?> bad = t.lazy().resample(\"px\",\n"
+        "            Table<?> bad #= t.lazy().resample(\"px\",\n"
         "                Duration.ofSeconds(60)).agg((BarCols c, Aggs ag) -> {\n"
         "                ag.add(c.px().last().alias(\"cl\"));\n"
         "            }).collect();\n"
@@ -228,7 +228,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "        }\n"
         // An absent time column names the schema it searched.
         "        try {\n"
-        "            Table<?> bad2 = t.lazy().resample(\"nope\",\n"
+        "            Table<?> bad2 #= t.lazy().resample(\"nope\",\n"
         "                Duration.ofSeconds(60)).agg((BarCols c, Aggs ag) -> {\n"
         "                ag.add(c.px().last().alias(\"cl\"));\n"
         "            }).collect();\n"
@@ -237,7 +237,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "        }\n"
         // A resample never completed by an agg cannot be forced.
         "        try {\n"
-        "            Table<?> bad3 = t.lazy().resample(\"ts\",\n"
+        "            Table<?> bad3 #= t.lazy().resample(\"ts\",\n"
         "                Duration.ofSeconds(60)).collect();\n"
         "        } catch (FrameException e) {\n"
         "            if (e.getMessage().contains(\"agg\")) { score = score + 8; }\n"

@@ -180,7 +180,7 @@ public class AsyncWriter {
      * storage.
      */
     public void writeString(String s) {
-        int8[] b = s.toBytes();
+        int8[] b #= s.toBytes();
         this.writeAll(b, 0, s.byteLength());
     }
 

@@ -22,7 +22,7 @@ TEST(OwnedArrayReturnProbe, multiParamOwnedPrimitiveArrayReturn) {
         "        return #r;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32[] x = T.make(3, 7);\n"
+        "        int32[] x #= T.make(3, 7);\n"
         "        return x[0];\n"
         "    }\n"
         "}\n";
@@ -45,7 +45,7 @@ TEST(OwnedArrayReturnProbe, multiParamOwnedClassArrayReturn) {
         "        return #r;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        String[] x = T.make(\"hi\", \"yo\");\n"
+        "        String[] x #= T.make(\"hi\", \"yo\");\n"
         "        return x[0].byteLength();\n"
         "    }\n"
         "}\n";
@@ -66,7 +66,7 @@ TEST(OwnedArrayReturnProbe, multiParamOwnedSocketAddressArrayReturn) {
         "        return #r;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        SocketAddress[] x = T.make(\"h\", 80);\n"
+        "        SocketAddress[] x #= T.make(\"h\", 80);\n"
         "        return x.count();\n"
         "    }\n"
         "}\n";

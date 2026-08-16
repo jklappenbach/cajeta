@@ -72,7 +72,7 @@ TEST(StringClassTests, rootAndOffsetReplaceMode) {
         "        if (inl.byteOffset() == (int64) 0) { r = r + 10; }\n"
         "        if (big.root() != null) { r = r + 100; }\n"
         "        if (big.byteOffset() == (int64) 0) { r = r + 1000; }\n"
-        "        String w = big.substring(10, 26);\n"
+        "        String w #= big.substring(10, 26);\n"
         "        if (w.byteOffset() == (int64) 10) { r = r + 10000; }\n"
         "        return r;\n"
         "    }\n"

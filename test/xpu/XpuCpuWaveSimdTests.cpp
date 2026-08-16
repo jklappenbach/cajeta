@@ -96,7 +96,7 @@ public class M {
         uint32[] h = heap uint32[n];
         for (uint32 i = 0; i < n; i = i + 1) { h[i] = 0; }
         KernelBuffer<uint32> b = heap KernelBuffer<uint32>(n);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         widthk.launch(s, grid: [1], block: [256])(b);
         s.sync();
         b.download(h);
@@ -107,7 +107,7 @@ public class M {
         uint32 n = 256;
         uint32[] h = heap uint32[n];
         KernelBuffer<uint32> b = heap KernelBuffer<uint32>(n);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         widthk.launch(s, grid: [1], block: [256])(b);
         s.sync();
         b.download(h);
@@ -129,7 +129,7 @@ public class M {
         KernelBuffer<uint32> bin = heap KernelBuffer<uint32>(n);
         KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
         bin.upload(hin);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         sumk.launch(s, grid: [1], block: [256])(bout, bin);
         s.sync();
         bout.download(hout);
@@ -155,7 +155,7 @@ public class M {
         KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
         bin.upload(hin);
         bout.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         divsumk.launch(s, grid: [1], block: [256])(bout, bin, active);
         s.sync();
         bout.download(hout);
@@ -178,7 +178,7 @@ public class M {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         ballotk.launch(s, grid: [1], block: [256])(bout);
         s.sync();
         bout.download(hout);
@@ -201,7 +201,7 @@ public class M {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         lanek.launch(s, grid: [1], block: [256])(bout);
         s.sync();
         bout.download(hout);
@@ -218,7 +218,7 @@ public class M {
         uint32 n = 256;
         uint32[] hout = heap uint32[n];
         KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         firstk.launch(s, grid: [1], block: [256])(bout);
         s.sync();
         bout.download(hout);
@@ -241,7 +241,7 @@ public class M {
         KernelBuffer<uint32> bin = heap KernelBuffer<uint32>(n);
         KernelBuffer<uint32> bout = heap KernelBuffer<uint32>(n);
         bin.upload(hin);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         shufflek.launch(s, grid: [1], block: [256])(bout, bin);
         s.sync();
         bout.download(hout);

@@ -76,9 +76,9 @@ std::string makeAsyncSource(const std::string& body) {
 // --- option round-trip + membership through the Cajeta surface -------------
 TEST(NetMulticastSurfaceTests, surfaceOptionRoundTrip) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress any = IpAddress.anyV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#any, 0);\n"
-        "UdpSocket s = UdpSocket.bind(bindAddr);\n"
+        "IpAddress any #= IpAddress.anyV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#any, 0);\n"
+        "UdpSocket s #= UdpSocket.bind(bindAddr);\n"
         // TTL: exact round-trip on the v4 u_char path.
         "s.setMulticastTtl(4);\n"
         "if (s.getMulticastTtl() != 4) { return 0; }\n"
@@ -88,14 +88,14 @@ TEST(NetMulticastSurfaceTests, surfaceOptionRoundTrip) {
         "s.setMulticastLoopback(true);\n"
         "if (!s.getMulticastLoopback()) { return 0; }\n"
         // Outbound v4 interface: pin to loopback, read it back.
-        "IpAddress lo = IpAddress.loopbackV4();\n"
+        "IpAddress lo #= IpAddress.loopbackV4();\n"
         "s.setMulticastInterface(lo);\n"
-        "IpAddress got = s.getMulticastInterface();\n"
+        "IpAddress got #= s.getMulticastInterface();\n"
         "if (!got.isV4()) { return 0; }\n"
         // Join + leave a 239.x group via the loopback interface (v4 named
         // interface path); both must complete without throwing.
-        "IpAddress group = IpAddress.fromV4(239, 255, 77, 89);\n"
-        "IpAddress lo2 = IpAddress.loopbackV4();\n"
+        "IpAddress group #= IpAddress.fromV4(239, 255, 77, 89);\n"
+        "IpAddress lo2 #= IpAddress.loopbackV4();\n"
         "s.joinGroupOn(group, lo2);\n"
         "s.leaveGroupOn(group, lo2);\n"
         "s.close();\n"
@@ -105,10 +105,10 @@ TEST(NetMulticastSurfaceTests, surfaceOptionRoundTrip) {
 // --- surface validation: family mismatch throws before any native call ------
 TEST(NetMulticastSurfaceTests, familyMismatchThrows) {
     EXPECT_EQ(runI32(makeSource(
-        "IpAddress any = IpAddress.anyV4();\n"
-        "SocketAddress bindAddr = SocketAddress.of(#any, 0);\n"
-        "UdpSocket s = UdpSocket.bind(bindAddr);\n"
-        "IpAddress group = IpAddress.fromV4(239, 255, 77, 90);\n"
+        "IpAddress any #= IpAddress.anyV4();\n"
+        "SocketAddress bindAddr #= SocketAddress.of(#any, 0);\n"
+        "UdpSocket s #= UdpSocket.bind(bindAddr);\n"
+        "IpAddress group #= IpAddress.fromV4(239, 255, 77, 90);\n"
         "int32 caught = 0;\n"
         "try {\n"
         "    s.joinGroupOnIndex(group, 0);\n"     // v4 group down the v6 path
@@ -126,31 +126,31 @@ TEST(NetMulticastSurfaceTests, groupDatagramRoundTrip) {
 #else
     EXPECT_EQ(runI32(makeSource(
         // Receiver: bind ANY:0, join the group on loopback.
-        "IpAddress any = IpAddress.anyV4();\n"
-        "SocketAddress rxAddr = SocketAddress.of(#any, 0);\n"
-        "UdpSocket rx = UdpSocket.bind(rxAddr);\n"
-        "SocketAddress rxLocal = rx.localAddress();\n"
+        "IpAddress any #= IpAddress.anyV4();\n"
+        "SocketAddress rxAddr #= SocketAddress.of(#any, 0);\n"
+        "UdpSocket rx #= UdpSocket.bind(rxAddr);\n"
+        "SocketAddress rxLocal #= rx.localAddress();\n"
         "int32 port = rxLocal.getPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress group = IpAddress.fromV4(239, 255, 77, 91);\n"
-        "IpAddress lo = IpAddress.loopbackV4();\n"
+        "IpAddress group #= IpAddress.fromV4(239, 255, 77, 91);\n"
+        "IpAddress lo #= IpAddress.loopbackV4();\n"
         "rx.joinGroupOn(group, lo);\n"
         // Sender: pin the outbound interface to loopback, loop on.
-        "IpAddress any2 = IpAddress.anyV4();\n"
-        "SocketAddress txAddr = SocketAddress.of(#any2, 0);\n"
-        "UdpSocket tx = UdpSocket.bind(txAddr);\n"
-        "IpAddress lo2 = IpAddress.loopbackV4();\n"
+        "IpAddress any2 #= IpAddress.anyV4();\n"
+        "SocketAddress txAddr #= SocketAddress.of(#any2, 0);\n"
+        "UdpSocket tx #= UdpSocket.bind(txAddr);\n"
+        "IpAddress lo2 #= IpAddress.loopbackV4();\n"
         "tx.setMulticastInterface(lo2);\n"
         "tx.setMulticastLoopback(true);\n"
         // Send one datagram to group:port; receive it on the joined socket.
-        "IpAddress gdst = IpAddress.fromV4(239, 255, 77, 91);\n"
-        "SocketAddress dest = SocketAddress.of(#gdst, port);\n"
+        "IpAddress gdst #= IpAddress.fromV4(239, 255, 77, 91);\n"
+        "SocketAddress dest #= SocketAddress.of(#gdst, port);\n"
         "int8[] msg = heap int8[2];\n"
         "msg[0] = (int8) 71;\n"    // 'G'
         "msg[1] = (int8) 52;\n"    // '4'
         "if (tx.sendTo(msg, 0, 2, dest) != 2) { return 0; }\n"
         "int8[] buf = heap int8[16];\n"
-        "RecvResult r = rx.recvFrom(buf, 0, 16);\n"
+        "RecvResult r #= rx.recvFrom(buf, 0, 16);\n"
         "if (r.getCount() != 2) { return 0; }\n"
         "if (buf[0] != 71) { return 0; }\n"
         "if (buf[1] != 52) { return 0; }\n"
@@ -166,30 +166,30 @@ TEST(NetMulticastSurfaceTests, recvFromAsyncWakesOnGroupTraffic) {
     GTEST_SKIP() << "delivery semantics are validated on POSIX CI";
 #else
     EXPECT_EQ(runI32(makeAsyncSource(
-        "IpAddress any = IpAddress.anyV4();\n"
-        "SocketAddress rxAddr = SocketAddress.of(#any, 0);\n"
-        "UdpSocket rx = UdpSocket.bind(rxAddr);\n"
-        "SocketAddress rxLocal = rx.localAddress();\n"
+        "IpAddress any #= IpAddress.anyV4();\n"
+        "SocketAddress rxAddr #= SocketAddress.of(#any, 0);\n"
+        "UdpSocket rx #= UdpSocket.bind(rxAddr);\n"
+        "SocketAddress rxLocal #= rx.localAddress();\n"
         "int32 port = rxLocal.getPort();\n"
         "if (port <= 0) { return 0; }\n"
-        "IpAddress group = IpAddress.fromV4(239, 255, 77, 92);\n"
-        "IpAddress lo = IpAddress.loopbackV4();\n"
+        "IpAddress group #= IpAddress.fromV4(239, 255, 77, 92);\n"
+        "IpAddress lo #= IpAddress.loopbackV4();\n"
         "rx.joinGroupOn(group, lo);\n"
-        "IpAddress any2 = IpAddress.anyV4();\n"
-        "SocketAddress txAddr = SocketAddress.of(#any2, 0);\n"
-        "UdpSocket tx = UdpSocket.bind(txAddr);\n"
-        "IpAddress lo2 = IpAddress.loopbackV4();\n"
+        "IpAddress any2 #= IpAddress.anyV4();\n"
+        "SocketAddress txAddr #= SocketAddress.of(#any2, 0);\n"
+        "UdpSocket tx #= UdpSocket.bind(txAddr);\n"
+        "IpAddress lo2 #= IpAddress.loopbackV4();\n"
         "tx.setMulticastInterface(lo2);\n"
         "tx.setMulticastLoopback(true);\n"
-        "IpAddress gdst = IpAddress.fromV4(239, 255, 77, 92);\n"
-        "SocketAddress dest = SocketAddress.of(#gdst, port);\n"
+        "IpAddress gdst #= IpAddress.fromV4(239, 255, 77, 92);\n"
+        "SocketAddress dest #= SocketAddress.of(#gdst, port);\n"
         "int8[] msg = heap int8[1];\n"
         "msg[0] = (int8) 77;\n"    // 'M'
         "if (tx.sendTo(msg, 0, 1, dest) != 1) { return 0; }\n"
         // recvFromAsync parks the fiber on the reactor; the group datagram
         // (already queued, level-triggered) must satisfy it.
         "int8[] buf = heap int8[8];\n"
-        "RecvResult r = rx.recvFromAsync(buf, 0, 8);\n"
+        "RecvResult r #= rx.recvFromAsync(buf, 0, 8);\n"
         "if (r.getCount() != 1) { return 0; }\n"
         "if (buf[0] != 77) { return 0; }\n"
         "tx.close();\n"

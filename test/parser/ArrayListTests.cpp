@@ -107,7 +107,7 @@ TEST(ArrayListTests, streamWalksAddedElements) {
         "        list.add(5);\n"
         "        list.add(10);\n"
         "        list.add(15);\n"
-        "        ArrayStream<int32> s = list.stream();\n"
+        "        ArrayStream<int32> s #= list.stream();\n"
         "        return s.count();\n"
         "    }\n"
         "}\n";

@@ -54,7 +54,7 @@ TEST(Utf8Tests, inlineCapAndWindowedSource) {
         "String a = \"abcdefghijklmnopqrstuvwxyz\";\n"
         "String b = \"0123456789\";\n"
         "String s = a + b;\n"
-        "String w = s.substring(10, 16);\n"                   // "klmnop" (view)
+        "String w #= s.substring(10, 16);\n"                   // "klmnop" (view)
         "Utf8 u = Utf8.of(w);\n"
         "if (u.size() != 6) { return -3; }\n"
         "if (!u.equalsString(\"klmnop\")) { return -4; }\n"
@@ -104,7 +104,7 @@ TEST(Utf8Tests, utf8AsRecordField) {
         "            Tick u = t;\n"                          // value copy: memcpy
         "            if (u.price != 42.5) { return -1; }\n"
         "            if (!u.venue.equalsString(\"NYSE\")) { return -2; }\n"
-        "            String round = u.venue.toString();\n"
+        "            String round #= u.venue.toString();\n"
         "            if (round.size() != 4) { return -3; }\n"
         "        }\n"
         "        if (Cajeta.liveCount() != base) { return -4; }\n"

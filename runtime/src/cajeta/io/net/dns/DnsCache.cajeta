@@ -186,7 +186,7 @@ public final class DnsCache {
             throw heap NetException("cannot resolve a null host",
                 NetException.KIND_INVALID);
         }
-        String key = DnsCache.keyFor(host, family);
+        String key #= DnsCache.keyFor(host, family);
 
         Optional<DnsCacheEntry> hit = this.store.get(key);
         if (hit.isPresent()) {
@@ -210,13 +210,13 @@ public final class DnsCache {
         // the direct and cached failures to `UnknownHost` /
         // `ResolutionFailed` uniformly.
         try {
-            SocketAddress[] resolved = this.resolver.resolve(host, family);
+            SocketAddress[] resolved #= this.resolver.resolve(host, family);
             // Bake the caller's port out of the still-owned result
             // *before* moving it into the cache: `bakePort` only reads
             // `resolved` (copying each address's octets), so the returned
             // array is the caller's, and the cache then takes ownership
             // of the canonical port-0 `resolved` for the TTL window.
-            SocketAddress[] baked = DnsCache.bakePort(resolved, port);
+            SocketAddress[] baked #= DnsCache.bakePort(resolved, port);
             // Transfer the key into the cache: it must own the key, since this
             // local `key` is freed when `resolve` returns (a borrowed cache key
             // would dangle). Exactly one of the two put sites runs per call.
@@ -250,7 +250,7 @@ public final class DnsCache {
         } else if (family == ResolveFamily.V6_ONLY) {
             tag = 2;
         }
-        int8[] hostBytes = host.toBytes();
+        int8[] hostBytes #= host.toBytes();
         int32 hostLen = host.byteLength();
         int32 total = hostLen + 1;
         int8[] keyBytes = heap int8[total];
@@ -284,7 +284,7 @@ public final class DnsCache {
             if (srcIp.isV4()) {
                 len = 4;
             }
-            IpAddress copy = IpAddress.fromOctets(oct, len);
+            IpAddress copy #= IpAddress.fromOctets(oct, len);
             out[i] = SocketAddress.of(#copy, port);
             i = i + 1;
         }
@@ -319,7 +319,7 @@ public final class DnsCache {
         prefix[16] = (int8) 101;  // 'e'
         prefix[17] = (int8) 32;   // ' '
 
-        int8[] hostBytes = host.toBytes();
+        int8[] hostBytes #= host.toBytes();
         int32 hostLen = host.byteLength();
         int32 total = 18 + hostLen;
         int8[] msg = heap int8[total];

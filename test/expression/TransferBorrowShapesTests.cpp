@@ -118,7 +118,7 @@ TEST(TransferBorrowShapes, stringByteCtorRejectsFieldBorrow) {
         "    public #String take() { return #heap String(this.bytes, 20); }\n"
         "    public static int32 run() {\n"
         "        T t = heap T();\n"
-        "        String s = t.take();\n"
+        "        String s #= t.take();\n"
         "        return s.count();\n"
         "    }\n"
         "}\n";

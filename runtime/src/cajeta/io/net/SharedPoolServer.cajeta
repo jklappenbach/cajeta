@@ -177,7 +177,7 @@ public class SharedPoolServer extends Server {
      */
     public static #SharedPoolServer bind(SocketAddress addr, int32 poolSize,
                                          (TcpStream) -> void handler) {
-        TcpListener l = TcpListener.bind(addr);
+        TcpListener l #= TcpListener.bind(addr);
         // `#l` moves the listener in (see Server.bind) so the factory's
         // scope-exit drop can't leave the field dangling.
         return heap SharedPoolServer(#l, poolSize, handler);
@@ -194,7 +194,7 @@ public class SharedPoolServer extends Server {
     public static #SharedPoolServer bindWithBacklog(SocketAddress addr,
                                                     int32 backlog, int32 poolSize,
                                                     (TcpStream) -> void handler) {
-        TcpListener l = TcpListener.bindWithBacklog(addr, backlog);
+        TcpListener l #= TcpListener.bindWithBacklog(addr, backlog);
         return heap SharedPoolServer(#l, poolSize, handler);
     }
 
@@ -240,7 +240,7 @@ public class SharedPoolServer extends Server {
                 i = i + 1;
             }
             while (this.state.load() == ServerState.RUNNING) {
-                TcpStream conn = this.acceptNext();
+                TcpStream conn #= this.acceptNext();
                 if (conn == null) {
                     break;   // listener closed by shutdown — stop accepting
                 }
@@ -332,7 +332,7 @@ public class SharedPoolServer extends Server {
             // stayed a lend and nothing was freed twice. See
             // OwnershipRuntimeProbeTests.classBorrowSurrenderedAtArgument,
             // which measures it as balanced.
-            TcpStream conn = next.take();
+            TcpStream conn #= next.take();
             queued.fetchAdd(-1);   // dequeued: now in-handler, no longer staged
             SharedPoolServer.runTurn(handler, inflight, #conn);
         }

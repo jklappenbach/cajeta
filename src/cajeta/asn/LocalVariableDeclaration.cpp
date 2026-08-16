@@ -6,6 +6,7 @@
 #include "VariableDeclarator.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/ScriptUnitSynthesis.h"
+#include "cajeta/ownership/OwnedBindCheck.h"
 #include "cajeta/ownership/ReturnTitleAudit.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
@@ -1272,8 +1273,7 @@ namespace cajeta {
                             // population §4.6 would require to change.
                             // Counted, not rejected: the rule is unwritten
                             // until the number is known (3.3.3).
-                            if (rm->isReturnsOwnership()
-                                    && ownership::ReturnTitleAudit::enabled()) {
+                            if (rm->isReturnsOwnership()) {
                                 auto holder = module->getCurrentMethod();
                                 std::string in = holder
                                     ? (holder->getParent()
@@ -1285,8 +1285,28 @@ namespace cajeta {
                                     (rm->getParent()
                                         ? rm->getParent()->toCanonical() + "."
                                         : std::string()) + rm->getName();
-                                ownership::ReturnTitleAudit::ownedBind(
-                                    calleeKey, in, mc->getSourceLine());
+                                // The audit's record is the SIZING channel
+                                // (8.2.7's original 148-site count). Suppress
+                                // it in warn mode: the check below emits a
+                                // strictly richer record for the same site, so
+                                // running both would double every declaration
+                                // in the harvest — and a migration counted
+                                // twice is a migration nobody can size.
+                                if (ownership::ReturnTitleAudit::enabled()
+                                        && !ownership::ownedBindWarns()) {
+                                    ownership::ReturnTitleAudit::ownedBind(
+                                        calleeKey, in, mc->getSourceLine());
+                                }
+                                // 8.2.7 (spec §4.6) — THE CHECK. A `#T` result
+                                // bound with plain `=` leaves the acquisition
+                                // invisible at the line that performs it; `#=`
+                                // is what puts it in the reader's view without
+                                // opening the callee, which is the whole point
+                                // of the return-side redesign (§2.8).
+                                ownership::rejectPlainOwnedBind(
+                                    calleeKey, field->getName(),
+                                    module->getSourcePath(),
+                                    (int) mc->getSourceLine(), in);
                             }
                             // A plain return is NOT statically a borrow: the
                             // return flag is RUNTIME state, so a plain-return

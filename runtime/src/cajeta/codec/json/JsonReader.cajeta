@@ -643,7 +643,7 @@ public final class JsonReader {
      * to avoid the wrapper allocation.
      */
     public #String currentString() {
-        int8[] bytes = this.currentBytes();
+        int8[] bytes #= this.currentBytes();
         int32 n = (int32) bytes.count();
         return heap String(#bytes, n);
     }
@@ -749,7 +749,7 @@ public final class JsonReader {
 
     /** `currentDecodedBytes()` materialized as a `String`. */
     public #String currentDecodedString() {
-        int8[] bytes = this.currentDecodedBytes();
+        int8[] bytes #= this.currentDecodedBytes();
         int32 n = (int32) bytes.count();
         return heap String(#bytes, n);
     }
@@ -1025,7 +1025,7 @@ public final class JsonReader {
             this.readArrayBody(a);
             v.setArray(#a);
         } else if (t == JsonToken.STRING) {
-            int8[] bytes = this.currentBytes();
+            int8[] bytes #= this.currentBytes();
             int32 len = (int32) (this.tokenEnd - this.tokenStart);
             v.setStringOwned(#bytes, len);
         } else if (t == JsonToken.NUMBER) {
@@ -1066,10 +1066,10 @@ public final class JsonReader {
                     "expected key in object body",
                     this.pos);
             }
-            int8[] keyBytes = this.currentBytes();
+            int8[] keyBytes #= this.currentBytes();
             int32 keyLen = (int32) (this.tokenEnd - this.tokenStart);
             JsonToken vt = this.next();
-            JsonValue child = this.readValueAfter(vt);
+            JsonValue child #= this.readValueAfter(vt);
             o.put(#keyBytes, keyLen, #child);
         }
     }
@@ -1085,7 +1085,7 @@ public final class JsonReader {
             if (t == JsonToken.END_ARRAY) {
                 return;
             }
-            JsonValue child = this.readValueAfter(t);
+            JsonValue child #= this.readValueAfter(t);
             a.add(#child);
         }
     }

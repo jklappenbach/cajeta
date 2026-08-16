@@ -355,6 +355,55 @@ WrapperArrayInTemplateTests.optionalArrayReturnFromMethodTemplate
 WrapperArrayInTemplateTests.pairArrayWithTwoTypeParams
 WrapperArrayInTemplateTests.workerSharedSlotPairResult
 
+# --- ownership convention — the compiler checks that ENFORCE it -------------
+#
+# Added 2026-08-15 (stdlib-ownership-convention 3.3.2). These suites were in NO
+# gate manifest, so none had ever run in the routine gate — the checks were
+# validated only by running their suites by hand. That is how Unit 3's own
+# record came to read "the targeted suites were 20/20 green and the gate still
+# found 76": the targeted suites were never in the gate.
+#
+# A compiler check whose tests are ungated regresses silently, and these are
+# checks that REJECT programs. A regression is either a build nobody can
+# complete, or a rule that quietly stops firing — and the second one looks
+# exactly like success.
+#
+# `defaultModeStillThrows` in two of these suites pins the END of a spec §5.5
+# warning-first migration: it asserts the check is an ERROR by default, so the
+# flip back from `warn` is verified rather than asserted. Both fail by
+# construction if the gate is run with `CAJETA_CAPTURED_BORROW=warn` or
+# `CAJETA_OWNED_BIND=warn` in the environment — which is correct. That
+# environment is a migration in progress, not a green build.
+CapturedBorrowParamTests.plainParamStoredIntoFieldRejected
+CapturedBorrowParamTests.plainParamStoredIntoElementRejected
+CapturedBorrowParamTests.sinkStoringWithSharpAssignStillCompiles
+CapturedBorrowParamTests.sharpParamStoredStillCompiles
+CapturedBorrowParamTests.captureThroughStraightLineLocalRejected
+CapturedBorrowParamTests.unprovableCaptureIsAllowed
+CapturedBorrowParamTests.plainParamReadOnlyStillCompiles
+CapturedBorrowParamTests.warnModeAdmitsTheCaptureAndKeepsCompiling
+CapturedBorrowParamTests.warnModeCoversTheElementStoreSiteToo
+CapturedBorrowParamTests.defaultModeStillThrows
+OwnedResultTransferTests.plainBindOfOwnedResultRejected
+OwnedResultTransferTests.sharpAssignBindOfOwnedResultCompilesAndRuns
+OwnedResultTransferTests.plainBindOfBorrowResultStillCompiles
+OwnedResultTransferTests.warnModeAdmitsThePlainBind
+OwnedResultTransferTests.defaultModeStillThrows
+OwnedResultTransferTests.whatAPlainBindOfAnOwnedResultActuallyDoes
+OwnedResultTransferTests.sharpAssignBindIsBalanced
+OwnedReturnOfBorrowTests.returnOfLocalFromPlainParamRejected
+OwnedReturnOfBorrowTests.returnOfLocalFromBorrowingCallRejected
+OwnedReturnOfBorrowTests.moveReturnOfBorrowedLocalIsUnit2s
+OwnedReturnOfBorrowTests.legitimateOwnedReturnsStillCompile
+ParallelDriverTitleTests.emptyParallelReduceDoesNotForgeATitle
+ReturnTitleAuditTests.plainReturnTailCallIsEnumerated
+ReturnTitleAuditTests.chainedPlainCalleeIsMarkedNotOwning
+ReturnTitleAuditTests.viewReturnIsNotEnumerated
+ReturnTitleAuditTests.ownedReturnIsNotEnumerated
+ReturnTitleAuditTests.returnedFormalIsEnumerated
+ReturnTitleAuditTests.moveReturnUnderPlainTypeIsEnumerated
+ReturnTitleAuditTests.disabledAuditRecordsNothing
+
 # --- expression — expression codegen, ownership/transfer, net + uri + utf8 ---
 ArrayTests.instanceFieldAsArrayDimension
 ArrayTests.staticFinalFieldAsArrayDimension

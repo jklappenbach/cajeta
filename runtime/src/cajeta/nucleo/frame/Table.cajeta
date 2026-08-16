@@ -207,7 +207,7 @@ public class Table<T> {
         }
         this.execCount = this.execCount + 1;
         ExecStats st = heap ExecStats();
-        DynFrame out = this.__execute(st);
+        DynFrame out #= this.__execute(st);
         this.statRows = st.scanRows();
         this.statCols = st.scanCols();
         this.statChunks = st.scanChunks();
@@ -241,7 +241,7 @@ public class Table<T> {
         if (this.optOff) {
             return Exec.run(this.plan, this.src, st);
         }
-        Plan opt = Opt.rewrite(this.plan, this.src);
+        Plan opt #= Opt.rewrite(this.plan, this.src);
         return Exec.run(opt, this.src, st);
     }
 
@@ -366,10 +366,10 @@ public class Table<T> {
      *  (`t.filter(t.col("price") > 0.0)`); the typed lambda form is the
      *  synthesized `filter((TickCols c) -> ...)`. Lazy: builds a node. */
     public #Table<T> filter(#Pred p) {
-        DynFrame sch = this.__schemaClone();
+        DynFrame sch #= this.__schemaClone();
         boolean ty = this.typed || this.plan == null;
         if (this.erased) { ty = false; }
-        Plan node = Plan.filterNode(#p, this.__takeChain());
+        Plan node #= Plan.filterNode(#p, this.__takeChain());
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #sch, ty);
         h.label = this.label;
         h.rebinder = this.rebinder;
@@ -382,9 +382,9 @@ public class Table<T> {
     public #Table<T> __project(#Sel sels, int32 nsels, boolean keepAll) {
         // Compute (and validate) the output schema at PLAN BUILD time
         // against this node's input schema — nothing executes.
-        DynFrame inSchema = this.__schemaClone();
-        Plan node = Plan.selNode(keepAll, #sels, nsels, this.__takeChain());
-        DynFrame outSchema = Exec.apply(node.selsOf(), node.selCount(),
+        DynFrame inSchema #= this.__schemaClone();
+        Plan node #= Plan.selNode(keepAll, #sels, nsels, this.__takeChain());
+        DynFrame outSchema #= Exec.apply(node.selsOf(), node.selCount(),
             #inSchema, keepAll);
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
@@ -458,9 +458,9 @@ public class Table<T> {
      *  filled record. Lazy: builds a node. */
     public #Table<?> fillNull(String name, float64 v) {
         int32 i = this.__nullableColIndex("fillNull", name);
-        DynFrame outSchema = this.__schemaClone();
+        DynFrame outSchema #= this.__schemaClone();
         outSchema.clearNullable(i);
-        Plan node = Plan.fillNullNode(name, v, this.__takeChain());
+        Plan node #= Plan.fillNullNode(name, v, this.__takeChain());
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
     }
@@ -468,9 +468,9 @@ public class Table<T> {
     /** Explicit null fill, exact-integer value (integer physicals). */
     public #Table<?> fillNull(String name, int64 v) {
         int32 i = this.__nullableColIndex("fillNull", name);
-        DynFrame outSchema = this.__schemaClone();
+        DynFrame outSchema #= this.__schemaClone();
         outSchema.clearNullable(i);
-        Plan node = Plan.fillNullIntNode(name, v, this.__takeChain());
+        Plan node #= Plan.fillNullIntNode(name, v, this.__takeChain());
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
     }
@@ -490,10 +490,10 @@ public class Table<T> {
     }
 
     #Table<T> __dropNulls(String name) {
-        DynFrame sch = this.__schemaClone();
+        DynFrame sch #= this.__schemaClone();
         boolean ty = this.typed || this.plan == null;
         if (this.erased) { ty = false; }
-        Plan node = Plan.dropNullsNode(name, this.__takeChain());
+        Plan node #= Plan.dropNullsNode(name, this.__takeChain());
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #sch, ty);
         h.label = this.label;
         h.rebinder = this.rebinder;
@@ -505,9 +505,9 @@ public class Table<T> {
      *  the keys until `agg` completes the node, and forcing it before then
      *  is a named error rather than a silent whole-table reduction. */
     public #Table<T> __groupBy(#Sel keys, int32 nkeys) {
-        DynFrame sch = this.__schemaClone();
-        Plan pl = this.__takeChain();
-        DynFrame sr = this.__takeSrc();
+        DynFrame sch #= this.__schemaClone();
+        Plan pl #= this.__takeChain();
+        DynFrame sr #= this.__takeSrc();
         Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
         h.groupKeys #= keys;
         h.nGroupKeys = nkeys;
@@ -523,22 +523,22 @@ public class Table<T> {
      *  runs. The shape changes, so the result is erased. */
     public #Table<?> __agg(#Agg aggs, int32 naggs) {
         if (this.windowing) {
-            DynFrame inSchema = this.__schemaClone();
+            DynFrame inSchema #= this.__schemaClone();
             this.windowing = false;
-            Plan node = Plan.windowNode(this.winTsName, this.winSize,
+            Plan node #= Plan.windowNode(this.winTsName, this.winSize,
                 this.winByTime, #aggs, naggs, this.__takeChain());
-            DynFrame outSchema = Exec.applyWindow(node, #inSchema);
+            DynFrame outSchema #= Exec.applyWindow(node, #inSchema);
             Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema,
                 false);
             return #h;
         }
         if (this.resampling) {
-            DynFrame inSchema = this.__schemaClone();
+            DynFrame inSchema #= this.__schemaClone();
             this.resampling = false;
-            Plan node = Plan.resampleNode(this.rsTsName, this.rsEvery,
+            Plan node #= Plan.resampleNode(this.rsTsName, this.rsEvery,
                 this.rsOrigin, this.rsOffset, this.rsClosedRight, #aggs,
                 naggs, this.__takeChain());
-            DynFrame outSchema = Exec.applyResample(node, #inSchema);
+            DynFrame outSchema #= Exec.applyResample(node, #inSchema);
             Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema,
                 false);
             return #h;
@@ -548,12 +548,12 @@ public class Table<T> {
                 "Table.agg: no group keys - call groupBy(...) or "
                 + "resample(...) first");
         }
-        DynFrame inSchema = this.__schemaClone();
+        DynFrame inSchema #= this.__schemaClone();
         Sel k #= this.groupKeys;
         this.grouped = false;
-        Plan node = Plan.groupNode(#k, this.nGroupKeys, #aggs, naggs,
+        Plan node #= Plan.groupNode(#k, this.nGroupKeys, #aggs, naggs,
             this.__takeChain());
-        DynFrame outSchema = Exec.applyGroup(node, #inSchema);
+        DynFrame outSchema #= Exec.applyGroup(node, #inSchema);
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
     }
@@ -567,9 +567,9 @@ public class Table<T> {
      *  (spec §8). */
     public #Table<T> __resample(String tsName, int64 every, int64 origin,
                                 int64 offset, boolean closedRight) {
-        DynFrame sch = this.__schemaClone();
-        Plan pl = this.__takeChain();
-        DynFrame sr = this.__takeSrc();
+        DynFrame sch #= this.__schemaClone();
+        Plan pl #= this.__takeChain();
+        DynFrame sr #= this.__takeSrc();
         Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
         h.rsTsName = tsName;
         h.rsEvery = every;
@@ -594,9 +594,9 @@ public class Table<T> {
      *  passes a null name). Like `resample`, the handle holds the window
      *  until `agg` completes the node (spec §8 resolution). */
     public #Table<T> __rolling(String tsName, int64 size, boolean byTime) {
-        DynFrame sch = this.__schemaClone();
-        Plan pl = this.__takeChain();
-        DynFrame sr = this.__takeSrc();
+        DynFrame sch #= this.__schemaClone();
+        Plan pl #= this.__takeChain();
+        DynFrame sr #= this.__takeSrc();
         Table<T> h = heap Table<T>(#pl, #sr, #sch, false);
         h.winTsName = tsName;
         h.winSize = size;
@@ -626,10 +626,10 @@ public class Table<T> {
      *  Lazy: builds a node. A computed key was already rejected by the
      *  collector (`Sorts.add`). */
     public #Table<T> __sort(#SortKey keys, int32 nkeys) {
-        DynFrame sch = this.__schemaClone();
+        DynFrame sch #= this.__schemaClone();
         boolean ty = this.typed || this.plan == null;
         if (this.erased) { ty = false; }
-        Plan node = Plan.sortNode(#keys, nkeys, this.__takeChain());
+        Plan node #= Plan.sortNode(#keys, nkeys, this.__takeChain());
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #sch, ty);
         h.label = this.label;
         h.rebinder = this.rebinder;
@@ -646,13 +646,13 @@ public class Table<T> {
     public #Table<?> __join(Table<?> other, #Sel keys, int32 nkeys,
                             int32 how) {
         this.__liveCheck();
-        DynFrame lsch = this.__schemaClone();
-        DynFrame rsch = other.__schemaClone();
-        Plan rp = other.__takeChain();
-        DynFrame rs = other.__takeSrc();
-        Plan node = Plan.joinNode(#keys, nkeys, how, #rp, #rs,
+        DynFrame lsch #= this.__schemaClone();
+        DynFrame rsch #= other.__schemaClone();
+        Plan rp #= other.__takeChain();
+        DynFrame rs #= other.__takeSrc();
+        Plan node #= Plan.joinNode(#keys, nkeys, how, #rp, #rs,
             this.__takeChain());
-        DynFrame outSchema = Exec.applyJoin(node, #lsch, #rsch);
+        DynFrame outSchema #= Exec.applyJoin(node, #lsch, #rsch);
         node.__setJoinOut(outSchema.schemaOnly());
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
@@ -698,10 +698,10 @@ public class Table<T> {
      *  narrows at plan build with `.as<R>()`. */
     public #Table<?> melt(String[] idVars, int32 nId, String[] valVars,
                           int32 nVal, String variableName, String valueName) {
-        DynFrame inSchema = this.__schemaClone();
-        Plan node = Plan.meltNode(idVars, nId, valVars, nVal, variableName,
+        DynFrame inSchema #= this.__schemaClone();
+        Plan node #= Plan.meltNode(idVars, nId, valVars, nVal, variableName,
             valueName, this.__takeChain());
-        DynFrame outSchema = Exec.applyMelt(node, #inSchema);
+        DynFrame outSchema #= Exec.applyMelt(node, #inSchema);
         Table<T> h = heap Table<T>(#node, this.__takeSrc(), #outSchema, false);
         return #h;
     }
@@ -723,8 +723,8 @@ public class Table<T> {
     public #Table<?> pivot(String[] index, int32 nIndex, String columnsKey,
                            String valuesKey) {
         Table<T> m = this.collect();
-        DynFrame in = m.__matDyn("pivot").aliasFrame();
-        DynFrame out = Exec.pivot(in, index, nIndex, columnsKey, valuesKey);
+        DynFrame in #= m.__matDyn("pivot").aliasFrame();
+        DynFrame out #= Exec.pivot(in, index, nIndex, columnsKey, valuesKey);
         Table<?> r = heap Table<T>(#out);
         return #r;
     }
@@ -788,9 +788,9 @@ public class Table<T> {
         Table<R> probe = heap Table<R>(this.__schemaClone());
         probe.__narrowCheck();
         if (this.plan != null && this.cached == null) {
-            DynFrame sch = this.__schemaClone();
-            Plan pl = this.__takeChain();
-            DynFrame sr = this.__takeSrc();
+            DynFrame sch #= this.__schemaClone();
+            Plan pl #= this.__takeChain();
+            DynFrame sr #= this.__takeSrc();
             Table<R> h = heap Table<R>(#pl, #sr, #sch, true);
             h.__attachRebinder();
             return #h;
@@ -828,7 +828,7 @@ public class Table<T> {
 
     public static final #Table<R> importArrow<R>(int64[] schemas,
                                                  int64[] arrays, int32 n) {
-        DynFrame df = DynFrame.fromArrow(schemas, arrays, n);
+        DynFrame df #= DynFrame.fromArrow(schemas, arrays, n);
         Table<R> probe = heap Table<R>(df.schemaOnly());
         if (n != probe.colCount()) {
             throw heap FrameException("Table.importArrow: the Arrow set has a "
@@ -850,8 +850,8 @@ public class Table<T> {
             return this.label + " [unforced] plan: " + this.plan.describe()
                 + " schema " + this.schema.schemaText();
         }
-        String n = stack Int64(this.rows).toString();
-        String w = stack Int64((int64) this.dyn.width()).toString();
+        String n #= stack Int64(this.rows).toString();
+        String w #= stack Int64((int64) this.dyn.width()).toString();
         return this.label + " [" + n + " rows x " + w + " cols] "
             + this.dyn.schemaText();
     }
@@ -867,8 +867,8 @@ public class Table<T> {
         if (this.plan == null) {
             return this.describe();
         }
-        Plan opt = Opt.rewrite(this.plan, this.src);
-        String pd = opt.describe();
+        Plan opt #= Opt.rewrite(this.plan, this.src);
+        String pd #= opt.describe();
         return this.label + " [optimized] plan: " + pd
             + " schema " + this.schema.schemaText();
     }

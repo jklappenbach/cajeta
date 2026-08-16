@@ -46,7 +46,7 @@ public final class Fft {
         int64 n = len2 / 2;
         int64[] shp = heap int64[1];
         shp[0] = len2;
-        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        Tensor<float32> out #= Tensor.zeros<float32>(shp);
         int64 c = 0;
         while (c < len2) {
             out.set1(c, x.get1(c));
@@ -137,7 +137,7 @@ public final class Fft {
     public static #Tensor<float32> fftfreq(int64 n, float32 d) {
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         float32 scale = 1.0f / ((float32) n * d);
         int64 half = (n + 1) / 2;          // count of non-negative freqs
         int64 i = 0;
@@ -161,7 +161,7 @@ public final class Fft {
         int64 s = n / 2;
         int64[] sh = heap int64[1];
         sh[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(sh);
+        Tensor<float32> out #= Tensor.zeros<float32>(sh);
         int64 i = 0;
         while (i < n) {
             int64 src = (i + n - s) % n;
@@ -184,18 +184,18 @@ public final class Fft {
         int64 n = real.size();
         int64[] ish = heap int64[1];
         ish[0] = 2 * n;
-        Tensor<float32> inter = Tensor.zeros<float32>(ish);
+        Tensor<float32> inter #= Tensor.zeros<float32>(ish);
         int64 i = 0;
         while (i < n) {
             float32 rv = real.get1(i);
             inter.set1(2 * i, rv);
             i = i + 1;
         }
-        Tensor<float32> full = Fft.fft(inter);
+        Tensor<float32> full #= Fft.fft(inter);
         int64 nb = n / 2 + 1;
         int64[] osh = heap int64[1];
         osh[0] = 2 * nb;
-        Tensor<float32> out = Tensor.zeros<float32>(osh);
+        Tensor<float32> out #= Tensor.zeros<float32>(osh);
         int64 k = 0;
         while (k < nb) {
             float32 re = full.get1(2 * k);
@@ -217,7 +217,7 @@ public final class Fft {
     public static #Tensor<float32> irfft(Tensor<float32> half, int64 n) {
         int64[] fsh = heap int64[1];
         fsh[0] = 2 * n;
-        Tensor<float32> full = Tensor.zeros<float32>(fsh);
+        Tensor<float32> full #= Tensor.zeros<float32>(fsh);
         int64 nh = n / 2;
         int64 k = 0;
         while (k <= nh) {
@@ -237,10 +237,10 @@ public final class Fft {
             full.set1(2 * dst + 1, nim);
             k = k + 1;
         }
-        Tensor<float32> time = Fft.ifft(full);
+        Tensor<float32> time #= Fft.ifft(full);
         int64[] rsh = heap int64[1];
         rsh[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(rsh);
+        Tensor<float32> out #= Tensor.zeros<float32>(rsh);
         int64 i = 0;
         while (i < n) {
             float32 rv = time.get1(2 * i);
@@ -265,7 +265,7 @@ public final class Fft {
         int64 len = 2 * total;
         int64[] shp = heap int64[1];
         shp[0] = len;
-        Tensor<float32> out = Tensor.zeros<float32>(shp);
+        Tensor<float32> out #= Tensor.zeros<float32>(shp);
         int64 c = 0;
         while (c < len) { out.set1(c, x.get1(c)); c = c + 1; }
         int32 a = 0;
@@ -282,7 +282,7 @@ public final class Fft {
                     int64 base = hi * (na * stride) + low; // complex index of sample 0
                     int64[] tsh = heap int64[1];
                     tsh[0] = 2 * na;
-                    Tensor<float32> line = Tensor.zeros<float32>(tsh);
+                    Tensor<float32> line #= Tensor.zeros<float32>(tsh);
                     int64 s = 0;
                     while (s < na) {
                         int64 ci = base + s * stride;
@@ -290,7 +290,7 @@ public final class Fft {
                         line.set1(2 * s + 1, out.get1(2 * ci + 1));
                         s = s + 1;
                     }
-                    Tensor<float32> fl = Fft.transform(line, inverse);
+                    Tensor<float32> fl #= Fft.transform(line, inverse);
                     s = 0;
                     while (s < na) {
                         int64 ci = base + s * stride;
@@ -342,17 +342,17 @@ public final class Fft {
         int64 m = half.size() / 2;                        // complex bins in `half`
         int64[] hsh = heap int64[1];
         hsh[0] = 2 * m;
-        Tensor<float32> conj = Tensor.zeros<float32>(hsh);
+        Tensor<float32> conj #= Tensor.zeros<float32>(hsh);
         int64 k = 0;
         while (k < m) {
             conj.set1(2 * k, half.get1(2 * k));
             conj.set1(2 * k + 1, -half.get1(2 * k + 1));
             k = k + 1;
         }
-        Tensor<float32> r = Fft.irfft(conj, n);
+        Tensor<float32> r #= Fft.irfft(conj, n);
         int64[] rsh = heap int64[1];
         rsh[0] = n;
-        Tensor<float32> out = Tensor.zeros<float32>(rsh);
+        Tensor<float32> out #= Tensor.zeros<float32>(rsh);
         float32 fn = (float32) n;
         int64 i = 0;
         while (i < n) {

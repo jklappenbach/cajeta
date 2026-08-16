@@ -166,7 +166,7 @@ public class SocketAddress {
             throw heap MalformedAddressException(
                 "empty socket address", (int64) -1);
         }
-        int8[] b = input.toBytes();
+        int8[] b #= input.toBytes();
 
         if (SocketAddress.byteAt(b, 0) == 91) {     // '[' → bracketed IPv6
             // Find the closing ']'.
@@ -191,8 +191,8 @@ public class SocketAddress {
                 throw heap MalformedAddressException(
                     "expected ':port' after IPv6 ']'", (int64) afterBracket);
             }
-            String hostStr = SocketAddress.slice(b, 1, close);
-            IpAddress addr = IpAddress.parse(hostStr);
+            String hostStr #= SocketAddress.slice(b, 1, close);
+            IpAddress addr #= IpAddress.parse(hostStr);
             if (!addr.isV6()) {
                 throw heap MalformedAddressException(
                     "bracketed host is not an IPv6 literal", (int64) 1);
@@ -227,8 +227,8 @@ public class SocketAddress {
                 "IPv6 socket address must bracket the host: [v6]:port",
                 (int64) 0);
         }
-        String hostStr2 = SocketAddress.slice(b, 0, colonIdx);
-        IpAddress addr2 = IpAddress.parse(hostStr2);
+        String hostStr2 #= SocketAddress.slice(b, 0, colonIdx);
+        IpAddress addr2 #= IpAddress.parse(hostStr2);
         if (!addr2.isV4()) {
             throw heap MalformedAddressException(
                 "unbracketed host must be IPv4", (int64) 0);
@@ -273,9 +273,9 @@ public class SocketAddress {
      * the exact inverse of [`parse`](#parse).
      */
     public #String toString() {
-        String ipStr = this.ip.toString();
+        String ipStr #= this.ip.toString();
         int32 ipLen = ipStr.byteLength();
-        int8[] ipBytes = ipStr.toBytes();
+        int8[] ipBytes #= ipStr.toBytes();
         boolean v6 = this.ip.isV6();
 
         // Size the output: ip text, optional 2 brackets, ':' + up to 5

@@ -39,7 +39,7 @@ TEST(FuseLaziness, buildingAllocatesNothing) {
     EXPECT_EQ(runI64(
         "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        int64 base = Cajeta.liveCount();\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
         "            Fuse((Tensor<float32> t) ->\n"
@@ -53,7 +53,7 @@ TEST(FuseLaziness, callingAllocatesTheResult) {
     EXPECT_GT(runI64(
         "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
         "            Fuse((Tensor<float32> t) ->\n"
         "                Tensor.sub<float32>(Tensor.mul<float32>(t, t), t));\n"
@@ -76,7 +76,7 @@ TEST(FuseLaziness, reductionOperandStagesAndBroadcasts) {
         "    public static float32 run() {\n"
         "        float32[] fa = [ 1.0f, 2.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 2;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> #Tensor<float32> g =\n"
         "            Fuse((Tensor<float32> t) ->\n"
         "                Tensor.mul<float32>(t, Tensor.sum<float32,float32>(t)));\n"

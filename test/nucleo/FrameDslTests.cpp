@@ -55,7 +55,7 @@ TEST(FrameDslTests, typedBuildersComposeIntrospectableTrees) {
         "        ColF64 vwapExpr = c.price() * c.size();\n"
         "        if (vwapExpr.kind() == 4) { acc = acc + 1000000; }\n"
         "        if (vwapExpr.leftChild().ordinal() == 0) { acc = acc + 10000000; }\n"
-        "        ColStr sc = ColStr.colRef(2, \"venue\");\n"
+        "        ColStr sc #= ColStr.colRef(2, \"venue\");\n"
         "        Pred sp = sc == \"NYSE\";\n"
         "        if (sp.kind() == 26) { acc = acc + 100000000; }\n"
         "        return acc;\n"
@@ -74,7 +74,7 @@ TEST(FrameDslTests, typeMismatchInDslIsCompileError) {
     std::string src = std::string(kPrefix) +
         "public final class T {\n"
         "    public static int32 run() {\n"
-        "        ColStr sc = ColStr.colRef(2, \"venue\");\n"
+        "        ColStr sc #= ColStr.colRef(2, \"venue\");\n"
         "        Pred p = sc > 0.0;\n"
         "        return p.kind();\n"
         "    }\n"

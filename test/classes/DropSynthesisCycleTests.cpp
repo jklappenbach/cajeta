@@ -58,7 +58,7 @@ TEST(DropSynthesisCycleTests, interfaceVtableBackReferenceCycleCompiles) {
         "public final class D {\n"
         "    public static int64 run() {\n"
         "        Store s = heap Store();\n"
-        "        IWriter w = s.openWrite();\n"
+        "        IWriter w #= s.openWrite();\n"
         "        int64 a = w.write();\n"
         "        int64 b = w.write();\n"
         "        return a + b + s.count;\n"      // 1 + 2 + 2

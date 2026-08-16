@@ -29,7 +29,7 @@ TEST(BuilderAnnotationTests, basicFlow) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Point p = Point.builder().x(3).y(7).build();\n"
+        "        Point p #= Point.builder().x(3).y(7).build();\n"
         "        return p.x * 100 + p.y;\n"
         "    }\n"
         "}\n";
@@ -49,7 +49,7 @@ TEST(BuilderAnnotationTests, settersInArbitraryOrder) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.builder().c(3).a(1).b(2).build();\n"
+        "        P p #= P.builder().c(3).a(1).b(2).build();\n"
         "        return p.a * 100 + p.b * 10 + p.c;\n"
         "    }\n"
         "}\n";
@@ -69,7 +69,7 @@ TEST(BuilderAnnotationTests, partialFillUsesZeros) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.builder().a(7).build();\n"
+        "        P p #= P.builder().a(7).build();\n"
         "        return p.a * 100 + p.b;\n"  // b stays 0
         "    }\n"
         "}\n";
@@ -158,7 +158,7 @@ TEST(BuilderAnnotationTests, builderMethodNameCustom) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Cfg c = Cfg.newBuilder()\n"
+        "        Cfg c #= Cfg.newBuilder()\n"
         "            .x(5)\n"
         "            .y(7)\n"
         "            .build();\n"
@@ -179,7 +179,7 @@ TEST(BuilderAnnotationTests, buildMethodNameCustom) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Cfg c = Cfg.builder().x(9).create();\n"
+        "        Cfg c #= Cfg.builder().x(9).create();\n"
         "        return c.x;\n"
         "    }\n"
         "}\n";
@@ -200,7 +200,7 @@ TEST(BuilderAnnotationTests, setterPrefixWith) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Cfg c = Cfg.builder()\n"
+        "        Cfg c #= Cfg.builder()\n"
         "            .withX(3)\n"
         "            .withY(8)\n"
         "            .build();\n"
@@ -225,7 +225,7 @@ TEST(BuilderAnnotationTests, allNamingCustomizationsComposed) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Cfg c = Cfg.of().setV(99).make();\n"
+        "        Cfg c #= Cfg.of().setV(99).make();\n"
         "        return c.v;\n"
         "    }\n"
         "}\n";
@@ -246,7 +246,7 @@ TEST(BuilderAnnotationTests, defaultUsedWhenSetterNotCalled) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         // Only y is set; x should keep its declared default of 5.
-        "        P p = P.builder().y(2).build();\n"
+        "        P p #= P.builder().y(2).build();\n"
         "        return p.x * 10 + p.y;\n"
         "    }\n"
         "}\n";
@@ -264,7 +264,7 @@ TEST(BuilderAnnotationTests, defaultOverriddenWhenSetterCalled) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.builder().x(7).build();\n"
+        "        P p #= P.builder().x(7).build();\n"
         "        return p.x;\n"
         "    }\n"
         "}\n";
@@ -284,7 +284,7 @@ TEST(BuilderAnnotationTests, multipleDefaults) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.builder().c(3).build();\n"
+        "        P p #= P.builder().c(3).build();\n"
         "        return p.a + p.b + p.c;\n"
         "    }\n"
         "}\n";
@@ -302,7 +302,7 @@ TEST(BuilderAnnotationTests, floatDefault) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.builder().build();\n"
+        "        P p #= P.builder().build();\n"
         // Multiply by 100 to get an integer-encoded result.
         "        return (int32) (p.ratio * 100.0);\n"
         "    }\n"
@@ -322,7 +322,7 @@ TEST(BuilderAnnotationTests, booleanDefault) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        P p = P.builder().n(0).build();\n"
+        "        P p #= P.builder().n(0).build();\n"
         "        if (p.active) { return 1; }\n"
         "        return 0;\n"
         "    }\n"

@@ -48,7 +48,7 @@ public final class IonIndex {
      * afterward (the cursor parses + retains its own).
      */
     public static #IonIndex build(int8[] b, int64 n) {
-        IonSymbolTable table = IonSymbolTable.parse(b, n);
+        IonSymbolTable table #= IonSymbolTable.parse(b, n);
         return IonIndex.buildAt(b, table.userValueStart(), table);
     }
 

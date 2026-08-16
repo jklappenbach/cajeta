@@ -75,7 +75,7 @@ std::string makeSource(const std::string& body) {
 TEST(NetTaxonomyTests, malformedAddressCaughtAsNetExceptionRoot) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    IpAddress a = IpAddress.parse(\"garbage\");\n"
+        "    IpAddress a #= IpAddress.parse(\"garbage\");\n"
         "    return 0;\n"
         "} catch (NetException e) {\n"
         "    return 1;\n"
@@ -89,7 +89,7 @@ TEST(NetTaxonomyTests, malformedAddressCaughtAsNetExceptionRoot) {
 TEST(NetTaxonomyTests, malformedAddressCarriesKindInvalidViaBase) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    IpAddress a = IpAddress.parse(\"999.0.0.0\");\n"
+        "    IpAddress a #= IpAddress.parse(\"999.0.0.0\");\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return e.kind;\n"
@@ -103,7 +103,7 @@ TEST(NetTaxonomyTests, malformedAddressCarriesKindInvalidViaBase) {
 TEST(NetTaxonomyTests, malformedAddressPositionPreservedAfterReparent) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    IpAddress a = IpAddress.parse(\"999.0.0.0\");\n"
+        "    IpAddress a #= IpAddress.parse(\"999.0.0.0\");\n"
         "    return -1;\n"
         "} catch (MalformedAddressException e) {\n"
         "    return (int32) e.position;\n"
@@ -116,7 +116,7 @@ TEST(NetTaxonomyTests, malformedAddressPositionPreservedAfterReparent) {
 TEST(NetTaxonomyTests, malformedAddressEmptyCitesNegativeOnePosition) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    IpAddress a = IpAddress.parse(\"\");\n"
+        "    IpAddress a #= IpAddress.parse(\"\");\n"
         "    return -2;\n"
         "} catch (MalformedAddressException e) {\n"
         "    return (int32) e.position;\n"
@@ -129,7 +129,7 @@ TEST(NetTaxonomyTests, malformedAddressEmptyCitesNegativeOnePosition) {
 TEST(NetTaxonomyTests, malformedAddressStillCaughtBySpecificSubtype) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    SocketAddress s = SocketAddress.parse(\"127.0.0.1\");\n"  // no :port
+        "    SocketAddress s #= SocketAddress.parse(\"127.0.0.1\");\n"  // no :port
         "    return 0;\n"
         "} catch (MalformedAddressException e) {\n"
         "    return 1;\n"
@@ -157,7 +157,7 @@ TEST(NetTaxonomyTests, socketSubtypeCaughtAtRoot) {
 TEST(NetTaxonomyTests, addressFailureCaughtAtRoot) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    IpAddress a = IpAddress.parse(\"not-an-ip\");\n"
+        "    IpAddress a #= IpAddress.parse(\"not-an-ip\");\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return e.kind;\n"   // parse failure → KIND_INVALID 12
@@ -169,7 +169,7 @@ TEST(NetTaxonomyTests, addressFailureCaughtAtRoot) {
 TEST(NetTaxonomyTests, uriFailureFromOtherPackageCaughtAtRoot) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    Uri u = Uri.parse(\"\");\n"
+        "    Uri u #= Uri.parse(\"\");\n"
         "    return -1;\n"
         "} catch (NetException e) {\n"
         "    return e.kind;\n"   // URI parse failure → KIND_INVALID 12
@@ -183,7 +183,7 @@ TEST(NetTaxonomyTests, uriFailureFromOtherPackageCaughtAtRoot) {
 TEST(NetTaxonomyTests, specificArmBindsBeforeRootArm) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    IpAddress a = IpAddress.parse(\"garbage\");\n"
+        "    IpAddress a #= IpAddress.parse(\"garbage\");\n"
         "    return -1;\n"
         "} catch (MalformedAddressException e) {\n"
         "    return 7;\n"        // specific arm wins

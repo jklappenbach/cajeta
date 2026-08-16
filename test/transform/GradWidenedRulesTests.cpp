@@ -74,7 +74,7 @@ TEST(GradWidenedRules, tensorMeanOfSquare) {
     EXPECT_NEAR(runTensor(
         "float32[] fa = [ 1.0f, 2.0f, 3.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
         "            Grad((Tensor<float32> t) -> Tensor.mean<float32,float32>(Tensor.mul<float32>(t, t)));\n"
         "        GradResult<float32, Tensor<float32>> r = g(x);\n"
@@ -86,7 +86,7 @@ TEST(GradWidenedRules, tensorLogUnderSum) {
     EXPECT_NEAR(runTensor(
         "float32[] fa = [ 1.0f, 2.0f, 4.0f ];\n"
         "        int64[] s = heap int64[1]; s[0] = 3;\n"
-        "        Tensor<float32> x = Tensor.of<float32>(fa, s);\n"
+        "        Tensor<float32> x #= Tensor.of<float32>(fa, s);\n"
         "        (Tensor<float32>) -> GradResult<float32, Tensor<float32>> g =\n"
         "            Grad((Tensor<float32> t) -> Tensor.sum<float32,float32>(Tensor.log<float32>(t)));\n"
         "        GradResult<float32, Tensor<float32>> r = g(x);\n"

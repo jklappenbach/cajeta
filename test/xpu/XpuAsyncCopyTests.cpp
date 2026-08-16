@@ -62,7 +62,7 @@ public class M {
         KernelBuffer<uint32> out = heap KernelBuffer<uint32>(n);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         asyncstage.launch(s, grid: [1], block: [256])(out, in);
         s.sync();
         out.download(hout);
@@ -117,7 +117,7 @@ public class M {
         in.upload(hin);
         oa.upload(hA);
         ob.upload(hB);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         viaAsync.launch(s, grid: [1], block: [256])(oa, in);
         viaPanel.launch(s, grid: [1], block: [256])(ob, in);
         s.sync();

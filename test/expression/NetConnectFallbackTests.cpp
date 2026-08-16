@@ -91,7 +91,7 @@ TEST(NetConnectFallbackTests, DISABLED_connectFallsThroughAddressList) {
     EXPECT_EQ(runI32(makeSource(
         // A live loopback listener on `port` is assumed established by the
         // harness before run(); see the file header for why this is gated.
-        "TcpStream s = TcpStream.connect(\"localhost\", 80);\n"
+        "TcpStream s #= TcpStream.connect(\"localhost\", 80);\n"
         "if (s.fd < 0) { return 0; }\n"
         "s.close();\n"
         "return 1;")), 1);
@@ -110,7 +110,7 @@ TEST(NetConnectFallbackTests, DISABLED_allAddressesDeadRaisesCitingHost) {
         "try {\n"
         // Resolves, but port 1 on loopback has nothing listening, so every
         // candidate refuses and the loop exhausts.
-        "    TcpStream s = TcpStream.connect(\"127.0.0.1\", 1);\n"
+        "    TcpStream s #= TcpStream.connect(\"127.0.0.1\", 1);\n"
         "    return -1;\n"   // should not reach here
         "} catch (ConnectionRefusedException e) {\n"
         "    return (e.kind == NetException.KIND_CONNECTION_REFUSED) ? 1 : 0;\n"
@@ -130,7 +130,7 @@ TEST(NetConnectFallbackTests, DISABLED_allAddressesDeadRaisesCitingHost) {
 TEST(NetConnectFallbackTests, DISABLED_resolutionFailurePropagates) {
     EXPECT_EQ(runI32(makeSource(
         "try {\n"
-        "    TcpStream s = TcpStream.connect(\"no.such.host.cajeta.invalid\", 80);\n"
+        "    TcpStream s #= TcpStream.connect(\"no.such.host.cajeta.invalid\", 80);\n"
         "    return -1;\n"   // should not reach here
         "} catch (NetException e) {\n"
         "    return 1;\n"

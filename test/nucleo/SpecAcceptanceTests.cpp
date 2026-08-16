@@ -48,14 +48,14 @@ TEST(SpecAcceptanceTests, nullIsRealAbsenceNotNaN) {
         "        nv[0] = 1.0; nv[1] = 2.0; nv[2] = 0.0;\n"
         "        boolean[] ok = heap boolean[3];\n"
         "        ok[0] = true; ok[1] = true; ok[2] = false;\n"
-        "        NullableColumn<float64> nc = NullableColumn.of<float64>(nv, ok);\n"
+        "        NullableColumn<float64> nc #= NullableColumn.of<float64>(nv, ok);\n"
         "        if (nc.mean() == 1.5) { score = score + 1; }\n"    // null skipped: (1+2)/2
         // [1, 2, NaN] — the third element is a NaN VALUE, not a missing.
         "        float64 z = 0.0;\n"
         "        float64 nan = z / z;\n"
         "        float64[] pv = heap float64[3];\n"
         "        pv[0] = 1.0; pv[1] = 2.0; pv[2] = nan;\n"
-        "        Column<float64> pc = Column.of<float64>(pv);\n"
+        "        Column<float64> pc #= Column.of<float64>(pv);\n"
         "        float64 m = pc.mean();\n"
         "        if (m != m) { score = score + 2; }\n"              // NaN propagated
         "        return score;\n"
@@ -80,13 +80,13 @@ TEST(SpecAcceptanceTests, relationalOpLeavesInputUnchanged) {
         "        vv[0] = 1.0; vv[1] = 5.0; vv[2] = 2.0; vv[3] = 9.0;\n"
         "        Table<Px> t = heap Table<Px>(Column.of<float64>(vv));\n"
         "        int32 score = 0;\n"
-        "        Table<Px> f = t.lazy()\n"
+        "        Table<Px> f #= t.lazy()\n"
         "            .filter((PxCols c) -> { Pred p = c.v() > 3.0; return #p; })\n"
         "            .collect();\n"
         "        if (f.rowCount() == 2) { score = score + 1; }\n"   // 5.0 and 9.0 survive
         "        if (t.rowCount() == 4) { score = score + 2; }\n"   // the input is untouched
         // re-deriving from the SAME t again yields the full set — no mutation stuck.
-        "        Table<Px> g = t.lazy().collect();\n"
+        "        Table<Px> g #= t.lazy().collect();\n"
         "        if (g.rowCount() == 4) { score = score + 4; }\n"
         "        return score;\n"
         "    }\n"

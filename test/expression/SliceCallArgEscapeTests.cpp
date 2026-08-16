@@ -32,16 +32,16 @@ std::string makeSource(const std::string& body) {
            "    // Rolling n-grams of a DYING local root — the Index shape.\n"
            "    public static #ArrayList<String> grams(String key, int32 n) {\n"
            "        ArrayList<String> out = heap ArrayList<String>();\n"
-           "        String lower = key.toLowerCase();\n"
+           "        String lower #= key.toLowerCase();\n"
            "        int32 len = (int32) lower.count();\n"
            "        if (len < n) {\n"
-           "            String whole = lower.substring(0, len);\n"
+           "            String whole #= lower.substring(0, len);\n"
            "            out.add(#whole);\n"
            "            return out;\n"
            "        }\n"
            "        int32 i = 0;\n"
            "        while (i + n <= len) {\n"
-           "            String g = lower.substring(i, i + n);\n"
+           "            String g #= lower.substring(i, i + n);\n"
            "            out.add(#g);\n"
            "            i = i + 1;\n"
            "        }\n"
@@ -65,7 +65,7 @@ int32_t runJit(const std::string& body) {
 // root's owner (grams()'s `lower`) drops before the views are read.
 TEST(SliceCallArgEscapeTests, rollingViewsSurviveSourceDrop) {
     EXPECT_EQ(runJit(
-        "ArrayList<String> ks = Ut.grams(\"APPLE\", 3);\n"   // app ppl ple
+        "ArrayList<String> ks #= Ut.grams(\"APPLE\", 3);\n"   // app ppl ple
         "if (ks.count() != 3) { return -1; }\n"
         "String k0 = ks.get(0);\n"
         "if (!(k0 == \"app\")) { return -2; }\n"
@@ -82,17 +82,17 @@ TEST(SliceCallArgEscapeTests, rollingViewsSurviveSourceDrop) {
 TEST(SliceCallArgEscapeTests, escapedViewKeysProbeCorrectly) {
     EXPECT_EQ(runJit(
         "HashMap<String, int32> m = heap HashMap<String, int32>(64);\n"
-        "ArrayList<String> ks = Ut.grams(\"APPLE\", 3);\n"
+        "ArrayList<String> ks #= Ut.grams(\"APPLE\", 3);\n"
         "int32 i = 0;\n"
         "while (i < ks.count()) {\n"
-        "    String g = ks.get(i);\n"
+        "    String g #= ks.get(i);\n"
         "    if (!m.containsKey(g)) {\n"
-        "        String owned = g.substring(0, (int32) g.count());\n"
+        "        String owned #= g.substring(0, (int32) g.count());\n"
         "        m.put(#owned, 1);\n"
         "    }\n"
         "    i = i + 1;\n"
         "}\n"
-        "ArrayList<String> qs = Ut.grams(\"aple\", 3);\n"     // apl ple
+        "ArrayList<String> qs #= Ut.grams(\"aple\", 3);\n"     // apl ple
         "int32 hits = 0;\n"
         "int32 j = 0;\n"
         "while (j < qs.count()) {\n"

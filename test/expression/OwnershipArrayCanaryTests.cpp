@@ -122,7 +122,7 @@ TEST(OwnershipArrayCanaryTests, DISABLED_arrayPayloadSurvivesOwnerDrop) {
         "        return heap Sink(#v);\n"     // surrendered; b drops on return
         "    }\n"
         "    public static int32 run() {\n"
-        "        Sink s = D.make();\n"
+        "        Sink s #= D.make();\n"
         "        int8[] c1 = heap int8[4];\n" // churn: recycle the freed block
         "        c1[0] = (int8) 99; c1[1] = (int8) 99;\n"
         "        c1[2] = (int8) 99; c1[3] = (int8) 99;\n"
@@ -172,7 +172,7 @@ TEST(OwnershipArrayCanaryTests, DISABLED_classPayloadSurvivesOwnerDrop) {
         "        return heap Sink(#v);\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        Sink s = D.make();\n"
+        "        Sink s #= D.make();\n"
         "        Cell c1 = heap Cell(99, 99);\n"
         "        Cell c2 = heap Cell(98, 98);\n"
         "        return s.a() * 1000 + s.b() * 100 + c1.a - c2.a - 1;\n"

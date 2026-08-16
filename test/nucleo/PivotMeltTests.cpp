@@ -167,7 +167,7 @@ TEST(PivotMeltTests, pivotLongToWideIsEagerAndErased) {
         "        Table<Long> dup = heap Table<Long>(StringColumn.of(ds),\n"
         "            StringColumn.of(dq), Column.of<float64>(da));\n"
         "        try {\n"
-        "            Table<?> bad = dup.pivot(idx, 1, \"quarter\", \"amt\");\n"
+        "            Table<?> bad #= dup.pivot(idx, 1, \"quarter\", \"amt\");\n"
         "            bad.rowCount();\n"
         "        } catch (FrameException e) {\n"
         "            if (e.getMessage().contains(\"duplicate\")) {\n"
@@ -195,7 +195,7 @@ TEST(PivotMeltTests, meltThenPivotRoundTrips) {
         // long -> wide (pivot forces the long frame it is handed)
         "        String[] idx = heap String[1];\n"
         "        idx[0] = \"sym\";\n"
-        "        Table<?> back = lng.pivot(idx, 1, \"quarter\", \"amt\");\n"
+        "        Table<?> back #= lng.pivot(idx, 1, \"quarter\", \"amt\");\n"
         "        if (back.rowCount() == 2 && back.width() == 3\n"
         "                && back.strAt(\"sym\", 0).equals(\"A\")\n"
         "                && back.f64At(\"q1\", 0) == 1.0\n"

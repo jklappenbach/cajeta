@@ -50,7 +50,7 @@ TEST(SubtypeArgLookupTests, derivedClassArgBindsToBaseClassParamUserDefined) {
         "    public Stream<T> field;\n"
         "    public int32 n;\n"
         "    public Holder(Stream<T> s, int32 n) {\n"
-        "        this.field = s;\n"
+        "        this.field #= s;\n"
         "        this.n = n;\n"
         "    }\n"
         "    public int32 getN() { return this.n; }\n"

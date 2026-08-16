@@ -126,7 +126,7 @@ namespace cajeta {
             s += "        return (Tensor" + e + " " + paramName + ") -> {\n";
             s += "            int64 __n = " + paramName + ".size();\n";
             s += hoistBlock(hoists, elem);
-            s += "            Tensor" + e + " __out = Tensor.zerosLike" + e
+            s += "            Tensor" + e + " __out #= Tensor.zerosLike" + e
                + "(" + paramName + ");\n";
             s += "            for (int64 __i = 0; __i < __n; __i = __i + 1) {\n";
             s += "                " + elem + " __v = " + elemExprSrc + ";\n";

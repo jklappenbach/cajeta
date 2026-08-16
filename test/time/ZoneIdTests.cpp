@@ -40,7 +40,7 @@ int64_t runJit(const std::string& body) {
 
 TEST(ZoneIdTests, utcFastPathNoFilesystem) {
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"UTC\");\n"
+        "ZoneId z #= ZoneId.of(\"UTC\");\n"
         "Instant i = Instant.ofEpochSecond(1625140800);\n"
         "ZoneOffset off = z.offsetAt(i);\n"
         "return (int64) off.getTotalSeconds();"), 0LL);
@@ -49,7 +49,7 @@ TEST(ZoneIdTests, utcFastPathNoFilesystem) {
 TEST(ZoneIdTests, newYorkSummerIsEdt) {
     // 2021-07-01T12:00Z -> America/New_York is EDT = -4h = -14400s
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"America/New_York\");\n"
+        "ZoneId z #= ZoneId.of(\"America/New_York\");\n"
         "Instant i = Instant.ofEpochSecond(1625140800);\n"
         "ZoneOffset off = z.offsetAt(i);\n"
         "return (int64) off.getTotalSeconds();"), -14400LL);
@@ -58,7 +58,7 @@ TEST(ZoneIdTests, newYorkSummerIsEdt) {
 TEST(ZoneIdTests, newYorkWinterIsEst) {
     // 2021-01-01T12:00Z -> America/New_York is EST = -5h = -18000s
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"America/New_York\");\n"
+        "ZoneId z #= ZoneId.of(\"America/New_York\");\n"
         "Instant i = Instant.ofEpochSecond(1609502400);\n"
         "ZoneOffset off = z.offsetAt(i);\n"
         "return (int64) off.getTotalSeconds();"), -18000LL);
@@ -67,7 +67,7 @@ TEST(ZoneIdTests, newYorkWinterIsEst) {
 TEST(ZoneIdTests, kolkataHalfHourOffset) {
     // Asia/Kolkata is +05:30 = +19800s year-round (no DST).
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"Asia/Kolkata\");\n"
+        "ZoneId z #= ZoneId.of(\"Asia/Kolkata\");\n"
         "Instant i = Instant.ofEpochSecond(1625140800);\n"
         "ZoneOffset off = z.offsetAt(i);\n"
         "return (int64) off.getTotalSeconds();"), 19800LL);
@@ -77,7 +77,7 @@ TEST(ZoneIdTests, dstTransitionChangesOffset) {
     // Same zone, two instants straddling the 2021-03-14 spring-forward:
     // before -> EST(-18000), after -> EDT(-14400).
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"America/New_York\");\n"
+        "ZoneId z #= ZoneId.of(\"America/New_York\");\n"
         "Instant before = Instant.ofEpochSecond(1615708800);\n"  // 2021-03-14T08:00Z (pre? actually post)
         "Instant winter = Instant.ofEpochSecond(1609502400);\n"
         "Instant summer = Instant.ofEpochSecond(1625140800);\n"
@@ -89,7 +89,7 @@ TEST(ZoneIdTests, dstTransitionChangesOffset) {
 
 TEST(ZoneIdTests, unknownZoneThrows) {
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"Not/ARealZone\");\n"
+        "ZoneId z #= ZoneId.of(\"Not/ARealZone\");\n"
         "Instant i = Instant.ofEpochSecond(1625140800);\n"
         "try {\n"
         "    ZoneOffset off = z.offsetAt(i);\n"
@@ -102,7 +102,7 @@ TEST(ZoneIdTests, unknownZoneThrows) {
 TEST(ZoneIdTests, resolveProducesZonedDateTime) {
     // Instant epoch 0 in America/New_York (EST -5h) -> local 1969-12-31T19:00.
     EXPECT_EQ(runJit(
-        "ZoneId z = ZoneId.of(\"America/New_York\");\n"
+        "ZoneId z #= ZoneId.of(\"America/New_York\");\n"
         "Instant i = Instant.ofEpochSecond(0);\n"
         "ZonedDateTime zdt = z.resolve(i);\n"
         "if (zdt.getYear()==1969 && zdt.getMonthValue()==12 && zdt.getDayOfMonth()==31 "

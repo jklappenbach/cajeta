@@ -188,7 +188,7 @@ public class Opt {
         }
         // Build the rewritten chain: configured scan leaf, then the
         // remaining ops above it (payloads borrowed throughout).
-        Plan leaf = Plan.scan();
+        Plan leaf #= Plan.scan();
         if (nSink > 0) {
             Pred[] preds = heap Pred[nSink];
             int32 s = 0;
@@ -294,15 +294,15 @@ public class Opt {
     static #DynFrame schemaThrough(Plan node, DynFrame in) {
         int32 k = node.kindOf();
         if (k == 3) {
-            DynFrame c3 = in.schemaOnly();
+            DynFrame c3 #= in.schemaOnly();
             return Exec.apply(node.selsOf(), node.selCount(), #c3, false);
         }
         if (k == 4) {
-            DynFrame c4 = in.schemaOnly();
+            DynFrame c4 #= in.schemaOnly();
             return Exec.apply(node.selsOf(), node.selCount(), #c4, true);
         }
         if (k == 5) {
-            DynFrame c5 = in.schemaOnly();
+            DynFrame c5 #= in.schemaOnly();
             return Exec.applyGroup(node, #c5);
         }
         if (k == 7) {
@@ -311,19 +311,19 @@ public class Opt {
             return node.joinOutOf().schemaOnly();
         }
         if (k == 8) {
-            DynFrame c8 = in.schemaOnly();
+            DynFrame c8 #= in.schemaOnly();
             return Exec.applyResample(node, #c8);
         }
         if (k == 9) {
-            DynFrame c9 = in.schemaOnly();
+            DynFrame c9 #= in.schemaOnly();
             return Exec.applyWindow(node, #c9);
         }
         if (k == 11) {
-            DynFrame c11 = in.schemaOnly();
+            DynFrame c11 #= in.schemaOnly();
             return Exec.applyMelt(node, #c11);
         }
         if (k == 12) {
-            DynFrame c12 = in.schemaOnly();
+            DynFrame c12 #= in.schemaOnly();
             return Exec.applyFillNull(node, #c12);
         }
         // filter / sort / dropNulls preserve the schema

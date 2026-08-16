@@ -211,7 +211,11 @@ namespace cajeta {
         }
 
         if (!reader.empty()) {
-            os << "    " << rawElem << "[] " << r << " = cur." << reader
+            // `#=`: every `readRepeated*` returns `#T[]`, so this binding takes
+            // a title (ownership §4.6). The callee here is a C++ VARIABLE, so
+            // the source reads `cur.<reader>(...)` — which is why the
+            // callee-anchored sweep could not see this site.
+            os << "    " << rawElem << "[] " << r << " #= cur." << reader
                << "(" << N << ");\n";
             // When the element type already matches what the reader returns,
             // hand the array straight over — no copy.
@@ -255,14 +259,14 @@ namespace cajeta {
         os << "    int32 " << i << " = 0;\n";
         os << "    while (" << i << " < " << n << ") {\n";
         os << "        int32 " << s << " = cur.slotOfNth(" << N << ", " << i << ");\n";
-        os << "        int8[] " << bv << " = cur.readBytes(" << s << ");\n";
+        os << "        int8[] " << bv << " #= cur.readBytes(" << s << ");\n";
         if (b.decode == Decode::StringLen) {
             os << "        int32 bn_" << b.name << " = (int32) " << bv << ".count();\n";
             os << "        cajeta.lang.String str_" << b.name
                << " = heap cajeta.lang.String(#" << bv << ", bn_" << b.name << ");\n";
             os << "        " << a << "[" << i << "] = #str_" << b.name << ";\n";
         } else {
-            os << "        " << b.canon << " m_" << b.name << " = Protobuf.parse<"
+            os << "        " << b.canon << " m_" << b.name << " #= Protobuf.parse<"
                << b.canon << ">(" << bv << ", (int64) " << bv << ".count());\n";
             os << "        " << a << "[" << i << "] = #m_" << b.name << ";\n";
         }
@@ -366,14 +370,14 @@ namespace cajeta {
                 break;
             case Decode::StringLen:
                 os << "            if (" << v << " != null) {\n";
-                os << "                int8[] sb_" << b.name << " = " << v << ".toBytes();\n";
+                os << "                int8[] sb_" << b.name << " #= " << v << ".toBytes();\n";
                 os << "                w.writeLenField(" << N << ", sb_" << b.name
                    << ", (int32) sb_" << b.name << ".count());\n";
                 os << "            }\n";
                 break;
             case Decode::MessageLen:
                 os << "            if (" << v << " != null) {\n";
-                os << "                int8[] mb_" << b.name << " = Protobuf.toBytes<"
+                os << "                int8[] mb_" << b.name << " #= Protobuf.toBytes<"
                    << b.canon << ">(" << v << ");\n";
                 os << "                w.writeLenField(" << N << ", mb_" << b.name
                    << ", (int32) mb_" << b.name << ".count());\n";
@@ -461,7 +465,7 @@ namespace cajeta {
                     break;
                 case Decode::StringLen: {
                     const std::string bv = "b_" + b.name;
-                    os << "        int8[] " << bv << " = cur.readBytes("
+                    os << "        int8[] " << bv << " #= cur.readBytes("
                        << slot << ");\n";
                     // Length BEFORE the ctor adopts #bv; the String local
                     // then surrenders its title into the field ('#') — the
@@ -476,7 +480,7 @@ namespace cajeta {
                 }
                 case Decode::BytesLen: {
                     const std::string bv = "b_" + b.name;
-                    os << "        int8[] " << bv << " = cur.readBytes("
+                    os << "        int8[] " << bv << " #= cur.readBytes("
                        << slot << ");\n";
                     os << "        e." << b.name << " = #" << bv << ";\n";
                     break;
@@ -486,10 +490,10 @@ namespace cajeta {
                     // synthesizer. Same-class static call → short `Protobuf`
                     // receiver (a fully-qualified static call NULL_OPERANDs).
                     const std::string bv = "b_" + b.name;
-                    os << "        int8[] " << bv << " = cur.readBytes("
+                    os << "        int8[] " << bv << " #= cur.readBytes("
                        << slot << ");\n";
                     os << "        " << b.canon << " m_" << b.name
-                       << " = Protobuf.parse<" << b.canon << ">(" << bv
+                       << " #= Protobuf.parse<" << b.canon << ">(" << bv
                        << ", (int64) " << bv << ".count());\n";
                     os << "        e." << b.name << " = #m_" << b.name << ";\n";
                     break;
@@ -548,7 +552,7 @@ namespace cajeta {
         os << "            frame[k] = fb;\n";
         os << "            k = k + 1;\n";
         os << "        }\n";
-        os << "        " << Ec << " m = Protobuf.parse<" << Ec << ">(frame, fl);\n";
+        os << "        " << Ec << " m #= Protobuf.parse<" << Ec << ">(frame, fl);\n";
         os << "        outv[i] = #m;\n";
         os << "        i = i + 1;\n";
         os << "        p = start + fl;\n";
@@ -703,7 +707,7 @@ namespace cajeta {
                 case Decode::StringLen:
                     os << "    cajeta.lang.String " << fv << " = value." << b.name << ";\n";
                     os << "    if (" << fv << " != null) {\n";
-                    os << "        int8[] sb_" << b.name << " = " << fv << ".toBytes();\n";
+                    os << "        int8[] sb_" << b.name << " #= " << fv << ".toBytes();\n";
                     os << "        w.writeLenField(" << tag << ", sb_" << b.name
                        << ", (int32) sb_" << b.name << ".count());\n";
                     os << "    }\n";
@@ -718,7 +722,7 @@ namespace cajeta {
                 case Decode::MessageLen:
                     os << "    " << b.canon << " " << fv << " = value." << b.name << ";\n";
                     os << "    if (" << fv << " != null) {\n";
-                    os << "        int8[] mb_" << b.name << " = Protobuf.toBytes<"
+                    os << "        int8[] mb_" << b.name << " #= Protobuf.toBytes<"
                        << b.canon << ">(" << fv << ");\n";
                     os << "        w.writeLenField(" << tag << ", mb_" << b.name
                        << ", (int32) mb_" << b.name << ".count());\n";
@@ -745,7 +749,7 @@ namespace cajeta {
         os << "    int32 i = 0;\n";
         os << "    while (i < n) {\n";
         os << "        " << Ec << " ev = values[i];\n";
-        os << "        int8[] mb = Protobuf.toBytes<" << Ec << ">(ev);\n";
+        os << "        int8[] mb #= Protobuf.toBytes<" << Ec << ">(ev);\n";
         os << "        w.writeDelimited(mb, (int32) mb.count());\n";
         os << "        i = i + 1;\n";
         os << "    }\n";

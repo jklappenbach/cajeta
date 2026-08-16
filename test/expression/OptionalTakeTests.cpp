@@ -73,7 +73,7 @@ int32_t runJit(const std::string& body) {
 TEST(OptionalTakeTests, takeYieldsValueWithTitle) {
     EXPECT_EQ(runJit(
         "Optional<Cell> o = stack Optional<Cell>(true, #heap Cell(41));\n"
-        "        Cell c = o.take();\n"
+        "        Cell c #= o.take();\n"
         "        Holder h = heap Holder(#c);\n"
         "        return h.value() + 1;"), 42);
 }
@@ -102,7 +102,7 @@ TEST(OptionalTakeTests, transferOfGetResultRejected) {
 TEST(OptionalTakeTests, takeLeavesTheOptionalEmpty) {
     EXPECT_EQ(runJit(
         "Optional<Cell> o = stack Optional<Cell>(true, #heap Cell(7));\n"
-        "        Cell c = o.take();\n"
+        "        Cell c #= o.take();\n"
         "        if (o.isPresent()) { return -1; }\n"
         "        return c.n;"), 7);
 }
@@ -113,7 +113,7 @@ TEST(OptionalTakeTests, takeOnEmptyThrows) {
     EXPECT_EQ(runJit(
         "Optional<Cell> o = stack Optional<Cell>(false);\n"
         "        try {\n"
-        "            Cell c = o.take();\n"
+        "            Cell c #= o.take();\n"
         "            return -1;\n"
         "        } catch (NoOptionalValueException e) {\n"
         "            return 5;\n"
