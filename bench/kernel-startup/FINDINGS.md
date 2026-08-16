@@ -375,3 +375,33 @@ TWO FIXES, cheap first:
 (a) route the three sites through the two-stage helper (needs it exposed).
     If SLL pays off as it did for the prime, this is most of the 39 s.
 (b) do not re-parse at all — substitute into the already-parsed tree.
+
+### After (a): two-stage on synthesized units (2026-08-16)
+
+    scenario           2026-08-15    now      vs session start
+    no-project            20.25s   14.09s     54.2s  -74%
+    project-no-deps       19.97s   14.13s     53.5s  -74%
+    project-with-deps    147.18s   50.31s    255.7s  -80%
+
+    [ingest] drain lazy stdlib   86,308 ms ->  3,015 ms   28.6x
+    [ingest] cumulative          91,888 ms ->  4,743 ms   19.4x
+
+Full battery green and 3,043s -> 2,109s (-31%).
+
+**(b) is not worth building.** The synth counter sizes it directly: across the
+whole drain, synthetic parsing is now ~283 ms (DynCol 210 ms over 42 parses,
+Ewise 42 ms over 22). Memoizing the tree could recover maybe 250 ms of a
+3,015 ms drain, in exchange for sharing a mutable parse tree across
+instantiations -- a miscompile-class risk against a sub-second win. Drop it.
+
+### The unaccounted term is now the whole problem
+
+    project-with-deps cell 1        50.31 s
+      [ingest] total                 4.74 s
+      [prime] stdlib                ~5.8 s
+      unaccounted (IR emit/JIT)     ~40 s     ~80%
+
+It was ~46.6 s before (a) and barely moved, which confirms it is neither parse
+nor instantiation. Nothing has instrumented it yet. It is now the dominant cost
+of a dependency notebook start and should be measured before any further work
+on the front end.
