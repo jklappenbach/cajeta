@@ -16,6 +16,7 @@
 #include "cajeta/error/Diagnostics.h"
 
 #include "cajeta/jit/CajetaJitErrorShim.h"
+#include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
 #include <algorithm>
@@ -1255,6 +1256,24 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
             if (residentStdlib) v.push_back(residentStdlib);
             return v;
         };
+        // lazy-codegen 1.2.2 — index alongside the eager loop. Observed only;
+        // Unit 2's DefinitionGenerator is what will consult it. Built here so
+        // both hosts index the SAME set they codegen — an index over a
+        // different set resolves symbols the JIT never asks for and misses the
+        // ones it does.
+        {
+            cajeta::CajetaSymbolIndex symbolIndex;
+            auto ixT0 = std::chrono::steady_clock::now();
+            symbolIndex.build(codegenMods());
+            if (std::getenv("CAJETA_PRIME_TIMING")) {
+                auto ixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - ixT0).count();
+                std::fprintf(stderr,
+                    "[jit] symbol index: %zu entries in %lld ms\n",
+                    symbolIndex.size(), (long long) ixMs);
+            }
+        }
+
         size_t prevMethodCount = 0;
         while (true) {
             auto mods = codegenMods();
