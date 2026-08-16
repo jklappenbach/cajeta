@@ -6,6 +6,15 @@ CMAKE_MINIMUM_REQUIRED(VERSION 3.25 FATAL_ERROR)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" CAJETA_VERSION)
 string(STRIP "${CAJETA_VERSION}" CAJETA_VERSION)
 
+# Re-run CMake when VERSION changes. file(READ) is a configure-time snapshot, so
+# without this a bump leaves the OLD string baked into CAJETA_VERSION: you edit
+# VERSION, rebuild, and `cajeta --version` still reports the previous release.
+# Caught cutting v0.20.0 — VERSION said 0.20.0, the binary said 0.19.1. CI never
+# sees it because every run configures from scratch; a developer bumping locally
+# always does.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+             "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
+
 # CAJETA_VERSION is the full, human-facing version string and may carry a
 # semver pre-release suffix (e.g. "0.7.0-rc1") — that's what gets baked into
 # `cajeta --version` and used for asset/package naming. CMake's project(VERSION)
