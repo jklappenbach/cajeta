@@ -25,6 +25,18 @@
 #
 # Regenerate after a full sweep, or whenever the suite's shape changes enough
 # that shard balance drifts. Check the result in.
+#
+# PRUNING (test-battery-restructure 4.2.4). Rows are filtered to the tests the
+# binary actually has. Deleting 2,447 tests left 2,892 rows naming tests that no
+# longer exist — harmless to the packer, which never looks them up, but it is the
+# same silent-mismatch shape as a filter naming a missing test, and it makes the
+# durations table useless as a cross-check.
+#
+# MERGING, not overwriting. The seed sometimes holds a timing for a test the
+# local file lacks (it ran on a host with CUDA, or before a filtered run). Local
+# values win where both exist -- they are in-process gtest ms, which is what the
+# packer models -- but a seed-only row is kept rather than dropped, because
+# losing it costs a real budget and gains nothing.
 
 set -euo pipefail
 
@@ -56,6 +68,34 @@ else
     echo "  run the parallel suite once (./cajeta_tests.sh) to produce $LOCAL," >&2
     echo "  or a ctest sweep to produce $COST" >&2
     exit 1
+fi
+
+# Filter to the live corpus and merge in seed-only rows. Needs the binary; with
+# no binary the corpus is unknown, so pruning is skipped rather than guessed at.
+TEST_BIN="${TEST_BIN:-build/test/cajeta_test}"
+if [ -x "$TEST_BIN" ]; then
+    live=$(mktemp); merged=$(mktemp)
+    CAJETA_SOURCE_ROOT="$SCRIPT_DIR" "$TEST_BIN" --gtest_list_tests 2>/dev/null \
+        | awk '/^[^ ]/{s=$1;next} NF{split($1,a,"#");gsub(/ /,"",a[1]);print s a[1]}' \
+        | sort -u > "$live"
+    before=$(wc -l < "$tmp" | tr -d ' ')
+    awk -F'\t' -v live="$live" -v seed="$SEED" '
+        BEGIN {
+            while ((getline l < live) > 0) alive[l] = 1
+            while ((getline l < seed) > 0) {
+                n = split(l, f, "\t"); if (n >= 2) seedms[f[1]] = f[2]
+            }
+        }
+        $1 in alive { print $1 "\t" $2; have[$1] = 1 }
+        END {
+            for (t in seedms)
+                if ((t in alive) && !(t in have)) print t "\t" seedms[t]
+        }' "$tmp" | sort -t$'\t' -k1,1 -u > "$merged"
+    kept=$(wc -l < "$merged" | tr -d ' ')
+    echo ">> Pruned to the live corpus: $before -> $kept rows ($(( before - kept )) stale dropped)"
+    mv "$merged" "$tmp"; rm -f "$live"
+else
+    echo ">> No $TEST_BIN — skipping the corpus prune (cannot know what is live)"
 fi
 
 n=$(wc -l < "$tmp" | tr -d ' ')
