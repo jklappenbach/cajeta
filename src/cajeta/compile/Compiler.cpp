@@ -1122,6 +1122,7 @@ namespace cajeta {
         const bool dTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
         long long dPrescanNs = 0, dParseNs = 0, dProtoNs = 0;
         int dPkgs = 0, dFiles = 0;
+        std::vector<std::pair<long long, std::string>> dPerFile;
         auto dAdd = [](long long& acc, DClock::time_point a) {
             acc += std::chrono::duration_cast<std::chrono::nanoseconds>(
                 DClock::now() - a).count();
@@ -1167,7 +1168,12 @@ namespace cajeta {
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
                 auto dP = DClock::now();
-                parseSource(stdlib, in, /*label=*/"");
+                parseSource(stdlib, in, /*label=*/rel.c_str());
+                if (dTiming) {
+                    dPerFile.emplace_back(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            DClock::now() - dP).count(), rel);
+                }
                 dAdd(dParseNs, dP);
                 ++dFiles;
             }
@@ -1187,6 +1193,12 @@ namespace cajeta {
                 "parse %lld ms, buildPendingPrototypes %lld ms\n",
                 dPkgs, dFiles, dPrescanNs / 1000000, dParseNs / 1000000,
                 dProtoNs / 1000000);
+            std::sort(dPerFile.begin(), dPerFile.end(),
+                      [](const auto& a, const auto& b) { return b < a; });
+            for (size_t i = 0; i < dPerFile.size() && i < 12; ++i) {
+                std::fprintf(stderr, "[drain] %9lld ms  %s\n",
+                             dPerFile[i].first, dPerFile[i].second.c_str());
+            }
         }
         CajetaModule::setActiveModule(prevActive);
     }

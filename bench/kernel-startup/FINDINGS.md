@@ -262,3 +262,77 @@ measurements.
 Note the prescan-table lever the item calls "the cheap half, ~17.6 s" is now
 worth ~4 s: two-stage parsing already took the prescan loop from 17,605 ms to
 3,942 ms.
+
+## Full phase accounting, one dependency (2026-08-16)
+
+`CAJETA_PRIME_TIMING=1`, release binary, `project-with-deps`
+(`cajeta-timeseries`), cell 1 = 144.3 s:
+
+    [prime]  stdlib total                       5,838 ms    4%
+    [ingest] prescan dep sources                1,365 ms
+    [ingest] drain lazy stdlib                 86,308 ms   60%
+               parse            80 files/8 pkgs 39,284 ms
+               buildPendingPrototypes           46,072 ms
+               ([defer] walk=49,796 proto=110 insts=160)
+    [ingest] parse dep sources                  4,210 ms
+    [ingest] buildPendingPrototypes                 4 ms
+    unaccounted (IR emit + JIT + session)     ~46,600 ms   32%
+
+**One dependency drags in 8 lazy stdlib packages.** `cajeta-timeseries`
+references `Tensor`, so all of `cajeta.math` is parsed and fully instantiated,
+whether or not the cell touches it. That drain is 60% of first-cell latency.
+
+The stdlib prime is NOT the problem — 5.8 s of 144.3 s, and its own
+`drainLazyStdlib` phase is 0 ms. An earlier read of this table that omitted the
+`[ingest]` tag concluded the lazy-stdlib cost had evaporated; it had not, it is
+in the ingest.
+
+### Open: the drain parses 55x slower per file than the prime
+
+    [prime] parse loop   3,108 ms / 349 files =   8.9 ms/file
+    [drain] parse       39,284 ms /  80 files = 491.0 ms/file
+
+`cajeta.math` files are large (`Tensor` is 5,004 lines) and the prime's own
+worst file is 821 ms, so part of the gap is content. Unexplained on the average.
+Check before redesigning anything: does the drain re-parse, parse once per
+referencing package, or miss the two-stage SLL fast path the prime gets?
+
+### The drain's parse is three files, and it is not parsing
+
+Per-file, same run (`[drain]` top entries of 40,845 ms over 80 files):
+
+    30,743 ms  cajeta/nucleo/column/DynCol.cajeta      735 lines
+     5,791 ms  cajeta/math/Ewise.cajeta              1,157 lines
+     2,910 ms  cajeta/nucleo/sparse/CsrMatrix.cajeta   344 lines
+        36 ms  cajeta/math/Tensor.cajeta             5,004 lines
+
+Top three are 97% of it. `DynCol` alone is 21% of the whole 144 s cell.
+
+NOT the parser. Zero `[two-stage]` fallbacks — the drain is SLL-clean. And
+`Tensor` is 6.8x the lines of `DynCol` at 1/850th the cost, so cost does not
+track source size.
+
+`parseSource` is parse + body walk, and a TEMPLATE defers its walk to
+instantiation. `Tensor` is a template (156 generic decls); `DynCol` is a plain
+`public class` whose 21 fields are each a distinct instantiation
+(`Column<int8..float64>`, `NullableColumn<int8..float64>`, `StringColumn`).
+Those instantiate during field resolution, inside `parseSource`.
+
+Cost is superlinear in distinct instantiations per concrete class:
+
+    DynCol      20 insts   30,743 ms
+    Ewise       15 insts    5,791 ms
+    CsrMatrix    1 inst      2,910 ms
+    RebindSlot   0 insts       519 ms
+    Tensor      35 insts        36 ms   (template — deferred)
+
+1.3x the instantiations for 5.3x the cost between Ewise and DynCol. Two points
+do not fit an exponent; it is not linear.
+
+This is also NOT the 7.2.9 template body walk: process-wide `walk` (49,796 ms)
+exceeds the drain's `buildPendingPrototypes` (46,072 ms) by 3.7 s, not by the
+30 s `DynCol` would contribute if it were walking template bodies.
+
+NEXT: synthesize a concrete class with N distinct `Column<T>` fields for
+N = 5/10/15/20 and time `parseSource`. That fits the exponent and says whether
+the fix is in the instantiation cache or in the field-resolution path itself.
