@@ -180,3 +180,29 @@ Ordered by measured value, not by appeal:
 
 Against a target of 1–2 s for an empty project: (1) alone lands at ~19 s, so
 (1) + (3) + (4) are all required. No single change gets there.
+
+## Dependency ingest, re-measured 2026-08-16
+
+`cajeta build` on a one-dependency project (`dev.cajeta.ml 0.10.0`), Release,
+two cold runs at load ~4 (another clone's battery held ~3 of 32 cores):
+
+| phase | run 1 | run 2 | share of ingest |
+|---|---|---|---|
+| prescan dep sources | 1.5 s | 1.4 s | 1.5% |
+| **drain lazy stdlib** | **89.0 s** | **91.5 s** | **93-94%** |
+| parse dep sources | 4.2 s | 4.9 s | 4.5% |
+| buildPendingPrototypes | 0.004 s | 0.004 s | — |
+| ingest total | 94.7 s | 97.8 s | |
+| build total | 122.2 s | 126.4 s | |
+
+**No regression since 2026-08-15.** The drain's parse line was 42,858 ms then and
+42,785 / 43,204 ms now — within 1%. An earlier run of this benchmark showed the
+drain at 158 s and was reported as a 44 s regression; that run was taken at load
+27 and is void. Check `uptime` before believing a benchmark here.
+
+**What this means for 7.2.10.** Reading `class_bitcode` instead of `class_source`
+addresses `parse dep sources` (~4.5% of the ingest) plus the dependency's own
+codegen. The 89-91 s drain is stdlib packages instantiated because the
+dependency's SIGNATURES name them — `cajeta.math` via `GradTape`'s
+`ArrayList<Tensor<E>>`. Those are stdlib classes, so no dependency archive can
+supply them. That cost belongs to 7.2.9.
