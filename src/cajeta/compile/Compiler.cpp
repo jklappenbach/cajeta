@@ -765,6 +765,34 @@ namespace cajeta {
     // second call's package declaration overwrites the first (the user's
     // package wins, which is what we want — stdlib's package only matters
     // for canonical naming of its own types).
+    // ANTLR's own compilationUnit() time, so a per-file cost can be split into
+    // prediction vs the semantic walk that follows it.
+    static long long g_antlrParseNs = 0;
+
+    // Synthesized units never reached the two-stage path, so every template
+    // instantiation re-parsed in full LL — the reason two-stage took the prime
+    // 36.4s -> 4.9s and left dependency ingest untouched.
+    // Sizes fix (b) -- memoizing a template's tree instead of re-parsing it per
+    // instantiation. The text is argument-invariant, so every instantiation of
+    // one template parses identical input; this says what that repetition costs
+    // now that stage 1 handles it.
+    static long long g_syntheticParseNs = 0;
+    static long long g_syntheticParses = 0;
+
+    antlr4::tree::ParseTree* parseSyntheticCompilationUnit(
+            CajetaParser& parser, antlr4::CommonTokenStream& tokens,
+            const std::string& what) {
+        auto t0 = std::chrono::steady_clock::now();
+        auto* tree = parseCompilationUnitTwoStage(
+            parser, tokens,
+            [&] { parser.addErrorListener(&antlr4::ConsoleErrorListener::INSTANCE); },
+            what);
+        g_syntheticParseNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        ++g_syntheticParses;
+        return tree;
+    }
+
     static void parseSource(CajetaModulePtr module,
                             antlr4::ANTLRInputStream& input,
                             const char* label,
@@ -823,8 +851,11 @@ namespace cajeta {
             lexer.addErrorListener(jsonSyntax.get());
             parser.addErrorListener(jsonSyntax.get());
         }
+        auto psT0 = std::chrono::steady_clock::now();
         antlr4::tree::ParseTree* parseTree = parseCompilationUnitTwoStage(
             parser, tokens, installListeners, module->currentSourceFile());
+        g_antlrParseNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - psT0).count();
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
         // it to the semantic visitor segfaults on some inputs. Abort before
         // visiting whenever the parse had syntax errors (diagnostics already
@@ -943,6 +974,11 @@ namespace cajeta {
     }
 
     static bool isLazyStdlibPackage(const std::string& pkg) {
+        // CAJETA_NO_LAZY_STDLIB=1 forces every package eager. The A/B separates
+        // the drain's route cost from its content cost — the lazy split moves
+        // when parsing is paid, not whether.
+        static const bool noLazy = std::getenv("CAJETA_NO_LAZY_STDLIB") != nullptr;
+        if (noLazy) return false;
         // cajeta.math — the numpy-equivalent, including its nested submodules
         // (cajeta.math.linalg / fft / random / stats) — is parsed on demand.
         if (pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0) return true;
@@ -1117,6 +1153,7 @@ namespace cajeta {
         const bool dTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
         long long dPrescanNs = 0, dParseNs = 0, dProtoNs = 0;
         int dPkgs = 0, dFiles = 0;
+        std::vector<std::pair<long long, std::string>> dPerFile;
         auto dAdd = [](long long& acc, DClock::time_point a) {
             acc += std::chrono::duration_cast<std::chrono::nanoseconds>(
                 DClock::now() - a).count();
@@ -1162,7 +1199,24 @@ namespace cajeta {
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
                 auto dP = DClock::now();
-                parseSource(stdlib, in, /*label=*/"");
+                const long long antlrBefore = g_antlrParseNs;
+                const long long synthBefore = g_syntheticParseNs;
+                const long long synthCountBefore = g_syntheticParses;
+                parseSource(stdlib, in, /*label=*/rel.c_str());
+                if (dTiming) {
+                    long long totMs =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            DClock::now() - dP).count();
+                    long long antlrMs = (g_antlrParseNs - antlrBefore) / 1000000;
+                    long long synthMs = (g_syntheticParseNs - synthBefore) / 1000000;
+                    dPerFile.emplace_back(
+                        totMs, rel + "  (antlr " + std::to_string(antlrMs)
+                                   + " ms, synth " + std::to_string(synthMs)
+                                   + " ms x" + std::to_string(
+                                         g_syntheticParses - synthCountBefore)
+                                   + ", walk " + std::to_string(totMs - antlrMs - synthMs)
+                                   + " ms)");
+                }
                 dAdd(dParseNs, dP);
                 ++dFiles;
             }
@@ -1182,6 +1236,12 @@ namespace cajeta {
                 "parse %lld ms, buildPendingPrototypes %lld ms\n",
                 dPkgs, dFiles, dPrescanNs / 1000000, dParseNs / 1000000,
                 dProtoNs / 1000000);
+            std::sort(dPerFile.begin(), dPerFile.end(),
+                      [](const auto& a, const auto& b) { return b < a; });
+            for (size_t i = 0; i < dPerFile.size() && i < 12; ++i) {
+                std::fprintf(stderr, "[drain] %9lld ms  %s\n",
+                             dPerFile[i].first, dPerFile[i].second.c_str());
+            }
         }
         CajetaModule::setActiveModule(prevActive);
     }

@@ -85,6 +85,11 @@ namespace cajeta {
         return pending;
     }
 
+    // Instantiation cost, split into the ANTLR body re-walk vs LLVM lowering.
+    // Reported by the [defer] line under CAJETA_PRIME_TIMING; the split is what
+    // says whether a change to 7.2.9 landed. Single-threaded compile.
+    static long long g_walkNs = 0, g_protoNs = 0, g_instCount = 0;
+
     CajetaClassPtr& CajetaClass::instantiationReuseTarget() {
         static thread_local CajetaClassPtr target;
         return target;
@@ -120,8 +125,15 @@ namespace cajeta {
                 pending.clear();
             }
         } guard{pending, instantiationReuseTarget()};
+        const bool diTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        const auto diStart = std::chrono::steady_clock::now();
+        long long diSeen = 0, diRan = 0;
+        long long diWorstNs = 0;
+        size_t diWorstMethods = 0;
+        std::string diWorst;
         for (size_t i = 0; i < pending.size(); ++i) {
             auto& d = pending[i];
+            ++diSeen;
             if (!d.templateClass || !d.target) continue;
             if (d.templateClass->isPlaceholder()) continue;   // still unseen
             if (!d.target->isPlaceholder()) continue;         // already done
@@ -130,9 +142,33 @@ namespace cajeta {
             reuse = d.target;
             // The template is real now, so this takes the normal path and
             // fills `d.target` in place instead of allocating.
+            const auto diOne = std::chrono::steady_clock::now();
             d.templateClass->instantiateInternal(d.args);
+            if (diTiming) {
+                auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - diOne).count();
+                ++diRan;
+                if (ns > diWorstNs) {
+                    diWorstNs = ns;
+                    diWorst = d.templateClass->getQName()
+                        ? d.templateClass->getQName()->toCanonical() : "?";
+                    diWorstMethods = d.target ? d.target->getMethods().size() : 0;
+                }
+            }
             reuse = saved;
             if (!d.target->isPlaceholder()) progressed = true;
+        }
+        if (diTiming) {
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - diStart).count();
+            if (ms > 50) {
+                std::fprintf(stderr,
+                    "[defer] %lld ms  seen=%lld ran=%lld  worst=%lld ms (%s: "
+                    "%zu methods)  walk=%lld ms proto=%lld ms insts=%lld\n",
+                    (long long) ms, diSeen, diRan, diWorstNs / 1000000,
+                    diWorst.c_str(), diWorstMethods,
+                    g_walkNs / 1000000, g_protoNs / 1000000, g_instCount);
+            }
         }
         guard.dismissed = true;
         // Drop the completed entries.
@@ -492,6 +528,7 @@ namespace cajeta {
         // complete and nothing ever progresses.
         const bool drainingThis = (bool) instantiationReuseTarget();
         auto cached = structures.find(instCanonical);
+        if (cached == structures.end()) ++g_instCount;
         if (!drainingThis && cached != structures.end()) {
             return cached->second;
         }
@@ -576,7 +613,9 @@ namespace cajeta {
             antlr4::CommonTokenStream ifTokens(&ifLexer);
             ifTokens.fill();
             CajetaParser ifParser(&ifTokens);
-            auto* ifUnit = ifParser.compilationUnit();
+            auto* ifUnit = dynamic_cast<CajetaParser::CompilationUnitContext*>(
+                parseSyntheticCompilationUnit(ifParser, ifTokens,
+                                              "synthetic:interface"));
             CajetaParser::InterfaceDeclarationContext* ifDecl = nullptr;
             for (auto* td : ifUnit->typeDeclaration()) {
                 if (auto* id = td->interfaceDeclaration()) {
@@ -715,7 +754,9 @@ namespace cajeta {
         antlr4::CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
-        auto* compUnit = parser.compilationUnit();
+        auto* compUnit = dynamic_cast<CajetaParser::CompilationUnitContext*>(
+            parseSyntheticCompilationUnit(parser, tokens,
+                                          "synthetic:instantiate"));
 
         // The synthesized input wraps one class (or record) declaration. Find
         // it; bail loudly if the snippet structure is somehow wrong (would
@@ -996,10 +1037,13 @@ namespace cajeta {
         // restored on a throw — otherwise a caught-and-continued compile runs
         // with a corrupted module state.
         try {
+        const auto walkT0 = std::chrono::steady_clock::now();
         CajetaLlvmVisitor visitor(module);
         auto bodyAny = visitor.visitClassBody(
             classDecl ? classDecl->classBody() : recordDecl->classBody());
         inst->setClassBody(std::any_cast<ClassBodyDeclarationPtr>(bodyAny));
+        g_walkNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - walkT0).count();
 
         // Field→type-param linkage: the walk above resolved every field
         // type through the substitution stack, so a bare `P` field no longer
@@ -1069,7 +1113,12 @@ namespace cajeta {
         // any IR the walk emitted already targets the emit module — no
         // after-the-fact reparent. generatePrototype emits the class's own
         // vtable/RTTI/struct into the emit module via its own swap.
-        inst->generatePrototype();
+        {
+            const auto protoT0 = std::chrono::steady_clock::now();
+            inst->generatePrototype();
+            g_protoNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - protoT0).count();
+        }
         } catch (...) {
             CajetaModule::setActiveModule(prevActive);
             stack.clear();
@@ -1188,7 +1237,9 @@ namespace cajeta {
         antlr4::CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
-        auto* compUnit = parser.compilationUnit();
+        auto* compUnit = dynamic_cast<CajetaParser::CompilationUnitContext*>(
+            parseSyntheticCompilationUnit(parser, tokens,
+                                          "synthetic:inspect"));
 
         CajetaParser::ClassBodyContext* declBody = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {

@@ -114,6 +114,14 @@ namespace cajeta {
 
     class SessionState;
 
+    // Parse a SYNTHESIZED compilation unit (template instantiation and friends)
+    // through the same two-stage SLL/LL path real sources take. These snippets
+    // are compiler-generated and always well-formed, so stage 1 all but always
+    // resolves; the LL retry stays as the correctness backstop.
+    antlr4::tree::ParseTree* parseSyntheticCompilationUnit(
+        CajetaParser& parser, antlr4::CommonTokenStream& tokens,
+        const std::string& what);
+
     class Compiler {
     private:
         string targetTriple;
