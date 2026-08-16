@@ -200,9 +200,19 @@ two cold runs at load ~4 (another clone's battery held ~3 of 32 cores):
 drain at 158 s and was reported as a 44 s regression; that run was taken at load
 27 and is void. Check `uptime` before believing a benchmark here.
 
-**What this means for 7.2.10.** Reading `class_bitcode` instead of `class_source`
-addresses `parse dep sources` (~4.5% of the ingest) plus the dependency's own
-codegen. The 89-91 s drain is stdlib packages instantiated because the
-dependency's SIGNATURES name them — `cajeta.math` via `GradTape`'s
-`ArrayList<Tensor<E>>`. Those are stdlib classes, so no dependency archive can
-supply them. That cost belongs to 7.2.9.
+**What this means for 7.2.10 — it was dropped.** Reading `class_bitcode` would
+address the dependency's own codegen, but that codegen is gated:
+`linkClasspathDeps = (emitMode == Obj || Exe)`. `emitMode` defaults to `IR` and
+neither KernelSession nor the JIT host sets it, so the notebook path never
+re-codegens dependency bodies. A library build does not either — measured
+`emitMode=2 linkClasspathDeps=0`, 1,164 dep methods present, none re-derived.
+Only `--emit=obj/exe` takes that branch, so on first-cell latency the fix returns
+zero.
+
+The 89-91 s drain is stdlib packages instantiated because the dependency's
+SIGNATURES name them — `cajeta.math` via `GradTape`'s `ArrayList<Tensor<E>>`.
+Those are stdlib classes, so no dependency archive can supply them. That cost
+belongs to 7.2.9.
+
+Separately: `EntryKind::ClassBitcode` is written and read by nothing. Every
+`.cja` ships one compiled class per source that no consumer opens.
