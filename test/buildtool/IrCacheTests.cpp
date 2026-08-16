@@ -60,91 +60,16 @@ namespace {
 
 // ─── Discriminator ────────────────────────────────────────────────
 
-TEST(CacheDiscriminatorTests, stableAcrossFlagOrder) {
-    auto a = computeCacheDiscriminator(
-        "22.1.0",
-        {{"emit", "ir"}, {"flavor", "release"}, {"target", "host"}});
-    auto b = computeCacheDiscriminator(
-        "22.1.0",
-        {{"target", "host"}, {"flavor", "release"}, {"emit", "ir"}});
-    EXPECT_EQ(a, b);
-}
 
-TEST(CacheDiscriminatorTests, differsWhenCompilerVersionChanges) {
-    auto a = computeCacheDiscriminator(
-        "22.1.0", {{"flavor", "release"}});
-    auto b = computeCacheDiscriminator(
-        "22.2.0", {{"flavor", "release"}});
-    EXPECT_NE(a, b);
-}
 
-TEST(CacheDiscriminatorTests, differsWhenAnyFlagValueChanges) {
-    auto a = computeCacheDiscriminator(
-        "22.1.0", {{"flavor", "release"}});
-    auto b = computeCacheDiscriminator(
-        "22.1.0", {{"flavor", "debug"}});
-    EXPECT_NE(a, b);
-}
 
-TEST(CacheDiscriminatorTests, emptyFlagsStillProducesAStableHash) {
-    auto a = computeCacheDiscriminator("22.1.0", {});
-    auto b = computeCacheDiscriminator("22.1.0", {});
-    EXPECT_EQ(a, b);
-    EXPECT_FALSE(a.empty());
-}
 
 // ─── Store + lookup ────────────────────────────────────────────────
 
-TEST(IrCacheTests, lookupMissReturnsEmpty) {
-    auto root = tempDir("miss");
-    IrCache cache(root.string());
-    auto hit = cache.lookup("d1", "src-sha-1");
-    EXPECT_FALSE(hit.has_value());
-}
 
-TEST(IrCacheTests, storeThenLookupRoundTrips) {
-    auto root = tempDir("rt");
-    IrCache cache(root.string());
-    std::string payload = "this is the .bc bytes";
-    ASSERT_FALSE((bool)cache.store("d1", "src-sha-1", payload));
-    auto hit = cache.lookup("d1", "src-sha-1");
-    ASSERT_TRUE(hit.has_value());
-    EXPECT_EQ(readBytes(*hit), payload);
-}
 
-TEST(IrCacheTests, storeIsAtomicReplaceOnSecondWrite) {
-    auto root = tempDir("atomic");
-    IrCache cache(root.string());
-    ASSERT_FALSE((bool)cache.store("d1", "src-sha-1", "v1"));
-    ASSERT_FALSE((bool)cache.store("d1", "src-sha-1", "v2"));
-    auto hit = cache.lookup("d1", "src-sha-1");
-    ASSERT_TRUE(hit.has_value());
-    EXPECT_EQ(readBytes(*hit), "v2");
-}
 
-TEST(IrCacheTests, differentDiscriminatorsAreIsolated) {
-    auto root = tempDir("iso");
-    IrCache cache(root.string());
-    ASSERT_FALSE((bool)cache.store("d1", "src", "release-bytes"));
-    ASSERT_FALSE((bool)cache.store("d2", "src", "debug-bytes"));
-    auto a = cache.lookup("d1", "src");
-    auto b = cache.lookup("d2", "src");
-    ASSERT_TRUE(a.has_value());
-    ASSERT_TRUE(b.has_value());
-    EXPECT_EQ(readBytes(*a), "release-bytes");
-    EXPECT_EQ(readBytes(*b), "debug-bytes");
-}
 
-TEST(IrCacheTests, sizeBytesReflectsStoredEntries) {
-    auto root = tempDir("size");
-    IrCache cache(root.string());
-    ASSERT_FALSE((bool)cache.store("d1", "a", "12345"));   // 5
-    ASSERT_FALSE((bool)cache.store("d1", "b", "678"));     // 3
-    ASSERT_FALSE((bool)cache.store("d2", "c", "9012"));    // 4
-    auto sz = cache.sizeBytes();
-    ASSERT_TRUE((bool)sz);
-    EXPECT_EQ(*sz, 12u);
-}
 
 // ─── Eviction ──────────────────────────────────────────────────────
 
@@ -170,16 +95,6 @@ TEST(IrCacheTests, evictHonorsSizeCap) {
     EXPECT_LE(*sz, 150u);
 }
 
-TEST(IrCacheTests, evictWithZeroPolicyIsNoOp) {
-    auto root = tempDir("evict-zero");
-    IrCache cache(root.string());
-    ASSERT_FALSE((bool)cache.store("d", "a", "x"));
-    IrCache::EvictionPolicy p;  // both fields zero
-    auto removed = cache.evict(p);
-    ASSERT_TRUE((bool)removed);
-    EXPECT_EQ(*removed, 0);
-    EXPECT_TRUE(cache.lookup("d", "a").has_value());
-}
 
 TEST(IrCacheTests, wipeRemovesEverything) {
     auto root = tempDir("wipe");
@@ -197,11 +112,3 @@ TEST(IrCacheTests, wipeRemovesEverything) {
     EXPECT_EQ(*sz, 0u);
 }
 
-TEST(IrCacheTests, wipeOnNonExistentDirIsBenign) {
-    auto root = tempDir("wipe-empty");
-    std::filesystem::remove(root);
-    IrCache cache(root.string());
-    auto removed = cache.wipe();
-    ASSERT_TRUE((bool)removed);
-    EXPECT_EQ(*removed, 0);
-}

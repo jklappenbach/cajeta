@@ -61,441 +61,92 @@ int32_t runCustomI32(const std::string& fullSource) {
 }  // namespace
 
 // getClass() reaches the cached Class via the vtable's classObject slot.
-TEST(ReflectionTests, getClassFieldCount) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "return c.getFieldCount();\n"), 5);
-}
 
 // The class declares at least bump(); method count is non-zero.
-TEST(ReflectionTests, getClassMethodCountNonZero) {
-    EXPECT_GE(runI32(
-        "User u = heap User();\n"
-        "return Class.of(u).getMethodCount();\n"), 1);
-}
 
 // Canonical name read from the RTTI typeName pointer.
-TEST(ReflectionTests, getNameMatchesCanonical) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "String n = Class.of(u).getName();\n"
-        "return (n == \"test.User\") ? 1 : 0;\n"), 1);
-}
 
 // Class modifier flags carry PUBLIC (0x02).
-TEST(ReflectionTests, classIsPublic) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "return Class.of(u).isPublic() ? 1 : 0;\n"), 1);
-}
 
 // First declared field name comes back from the field table.
-TEST(ReflectionTests, firstFieldNameIsId) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "String f = Class.of(u).getFieldName(0);\n"
-        "return (f == \"id\") ? 1 : 0;\n"), 1);
-}
 
 // Instance size is the RTTI allocationSize (non-zero for a real class).
-TEST(ReflectionTests, instanceSizeNonZero) {
-    EXPECT_GT(runI32(
-        "User u = heap User();\n"
-        "return (int32) Class.of(u).getInstanceSize();\n"), 0);
-}
 
 // REFL-2A: data-driven field offsets. User = { i32 id, i64 score, boolean
 // active } behind an 8-byte vtable header. Offsets must be past the header,
 // declaration-monotonic, the i64 field 8-aligned, and all within the instance
 // size. (Exact offsets aren't asserted to stay robust to layout choices.)
-TEST(ReflectionTests, fieldOffsetsAreSaneAndAligned) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "int32 o0 = c.getFieldOffset(0);\n"   // id    (int32)
-        "int32 o1 = c.getFieldOffset(1);\n"   // score (int64)
-        "int32 o2 = c.getFieldOffset(2);\n"   // active (boolean)
-        "boolean ok = (o0 >= 8) && (o1 > o0) && (o2 > o1)\n"
-        "    && ((o1 % 8) == 0)\n"
-        "    && (((int64) o2) < c.getInstanceSize());\n"
-        "return ok ? 1 : 0;\n"), 1);
-}
 
 // The field type-flag word is non-zero and carries the primitive bit (0x1)
 // for a primitive field (id : int32).
-TEST(ReflectionTests, fieldTypeFlagsCarryPrimitiveBit) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "int64 f = Class.of(u).getFieldTypeFlags(0);\n"
-        "return ((f & 1) != 0) ? 1 : 0;\n"), 1);
-}
 
 // REFL-2B: the synthesized per-class invoke adapter dispatches a reflective
 // no-arg method call to a direct LLVM call. Scan User's no-arg methods and
 // invoke each on the instance; bump() (id starts 0, returns id+1 = 1) must be
 // reached through the adapter. Only zero-parameter methods are invoked (the
 // no-arg entry passes a null arg buffer), so this stays crash-safe.
-TEST(ReflectionTests, invokeReachesNoArgMethod) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 found = 0;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    if (c.getMethodParamCount(i) == 0) {\n"
-        "        int64 r = Class.invokeScalar0(u, i);\n"
-        "        if (((int32) r) == 1) { found = 1; }\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return found;\n"), 1);
-}
 
 // REFL-3: data-driven typed field write/read roundtrip on int32 `id` (field 0).
-TEST(ReflectionTests, fieldInt32Roundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setInt32(u, 0, 41);\n"
-        "return c.getInt32(u, 0);\n"), 41);
-}
 
 // REFL-3: int64 `score` (field 1) roundtrip (returned narrowed for the harness).
-TEST(ReflectionTests, fieldInt64Roundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setInt64(u, 1, (int64) 1000000);\n"
-        "return (int32) c.getInt64(u, 1);\n"), 1000000);
-}
 
 // REFL-3: boolean `active` (field 2) roundtrip.
-TEST(ReflectionTests, fieldBooleanRoundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setBoolean(u, 2, true);\n"
-        "return c.getBoolean(u, 2) ? 1 : 0;\n"), 1);
-}
 
 // REFL-3: float32 `ratio` (field 3) roundtrip. Written/read through the FP-typed
 // accessor; checked by scaling to an int the harness can assert exactly.
-TEST(ReflectionTests, fieldFloat32Roundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setFloat32(u, 3, 2.5f);\n"
-        "return (int32) (c.getFloat32(u, 3) * 4.0f);\n"), 10);
-}
 
 // REFL-3: float64 `precise` (field 4) roundtrip (returned scaled for the harness).
-TEST(ReflectionTests, fieldFloat64Roundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setFloat64(u, 4, 1.25);\n"
-        "return (int32) (c.getFloat64(u, 4) * 8.0);\n"), 10);
-}
 
 // REFL-3 object model: Field object float32 roundtrip on `ratio` (field 3).
-TEST(ReflectionTests, fieldObjectFloat32Roundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Field f = Class.of(u).getField(3);\n"
-        "f.setFloat32(u, 3.5f);\n"
-        "return (int32) (f.getFloat32(u) * 2.0f);\n"), 7);
-}
 
 // REFL-3 × REFL-2B: a reflectively-set field is observed by a reflective
 // invoke. Set id=41, then the no-arg bump() (returns id+1) must yield 42 —
 // proving the field offset the setter writes matches what the method reads.
-TEST(ReflectionTests, reflectiveSetVisibleToReflectiveInvoke) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setInt32(u, 0, 41);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 found = 0;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    if (c.getMethodParamCount(i) == 0) {\n"
-        "        if (((int32) Class.invokeScalar0(u, i)) == 42) { found = 1; }\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return found;\n"), 1);
-}
 
 // REFL-4 object model: Field object read/write roundtrip on `id` (field 0).
-TEST(ReflectionTests, fieldObjectRoundtrip) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Field f = Class.of(u).getField(0);\n"
-        "f.setInt32(u, 77);\n"
-        "return f.getInt32(u);\n"), 77);
-}
 
 // REFL-4 object model: a Field object reports its declared name.
-TEST(ReflectionTests, fieldObjectName) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Field f = Class.of(u).getField(0);\n"
-        "return (f.getName() == \"id\") ? 1 : 0;\n"), 1);
-}
 
 // REFL-4 object model: invoke a no-arg method through a Method object. Scan
 // Method objects for a zero-parameter one and invoke it; bump() yields 1.
-TEST(ReflectionTests, methodObjectInvoke) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 found = 0;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    Method m = c.getMethod(i);\n"
-        "    if (m.getParameterCount() == 0) {\n"
-        "        if (((int32) m.invokeScalar(u)) == 1) { found = 1; }\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return found;\n"), 1);
-}
 
 // REFL-4 object model: "access down to the parameter" — find the 1-arg method
 // (addId) via Method objects and read its parameter's name + type.
-TEST(ReflectionTests, parameterIntrospection) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 ok = 0;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    Method m = c.getMethod(i);\n"
-        "    if (m.getParameterCount() == 1) {\n"
-        "        Parameter p = m.getParameter(0);\n"
-        "        if ((p.getName() == \"delta\") && (p.getTypeName() == \"int32\")) { ok = 1; }\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return ok;\n"), 1);
-}
 
 // REFL-4 object model: construct via a Constructor object, verify validity.
-TEST(ReflectionTests, constructorObjectHeapInstance) {
-    EXPECT_EQ(runI32(
-        "User seed = heap User();\n"
-        "Constructor ctor = Class.of(seed).getConstructor(0);\n"
-        "Object o = ctor.heapInstance();\n"
-        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 5);
-}
 
 // REFL-2C: User declares two constructors (User() and User(int32)).
-TEST(ReflectionTests, constructorCountIsTwo) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "return Class.of(u).getConstructorCount();\n"), 2);
-}
 
 // REFL-4 marshalling: invoke addId(delta) through a Method object with one
 // argument. id=10, delta=5 -> 15. Proves the args buffer reaches the call.
-TEST(ReflectionTests, methodInvokeWithArg) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setInt32(u, 0, 10);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 result = -1;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    Method m = c.getMethod(i);\n"
-        "    if (m.getParameterCount() == 1) {\n"
-        "        int64[] args = heap int64[1];\n"
-        "        args[0] = (int64) 5;\n"
-        "        result = (int32) m.invokeScalar(u, args);\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return result;\n"), 15);
-}
 
 // REFL-4.4 (Strategy 6): fiber-stack arg buffer, 1-arg form. Same addId(delta)
 // call as methodInvokeWithArg, but the arg is passed directly (no heap int64[]);
 // the native assembles the buffer on the fiber stack. id=10, delta=5 -> 15.
-TEST(ReflectionTests, methodInvokeStackArg1) {
-    EXPECT_EQ(runI32(
-        "User u = heap User();\n"
-        "Class<?> c = Class.of(u);\n"
-        "c.setInt32(u, 0, 10);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 result = -1;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    Method m = c.getMethod(i);\n"
-        "    if (m.getParameterCount() == 1) {\n"
-        "        result = m.invokeInt32(u, (int64) 5);\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return result;\n"), 15);
-}
 
 // REFL-4.4: fiber-stack arg buffers, 2- and 3-arg forms. A custom class with
 // sum2/sum3 (so the shared fixture's 1-arg method-scan tests are undisturbed);
 // each arg is passed directly. base=100: sum2(7,9)=116, sum3(7,9,4)=120.
-TEST(ReflectionTests, methodInvokeStackArgsMulti) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Adder {\n"
-        "    public int32 base;\n"
-        "    public Adder() { return; }\n"
-        "    public int32 sum2(int32 a, int32 b) { return this.base + a + b; }\n"
-        "    public int32 sum3(int32 a, int32 b, int32 c) { return this.base + a + b + c; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Adder x = heap Adder();\n"
-        "        Class<?> c = Class.of(x);\n"
-        "        c.setInt32(x, 0, 100);\n"
-        "        int32 count = c.getMethodCount();\n"
-        "        int32 r2 = -1;\n"
-        "        int32 r3 = -1;\n"
-        "        int32 i = 0;\n"
-        "        while (i < count) {\n"
-        "            Method m = c.getMethod(i);\n"
-        "            if (m.getParameterCount() == 2) {\n"
-        "                r2 = m.invokeInt32(x, (int64) 7, (int64) 9);\n"
-        "            }\n"
-        "            if (m.getParameterCount() == 3) {\n"
-        "                r3 = m.invokeInt32(x, (int64) 7, (int64) 9, (int64) 4);\n"
-        "            }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return (r2 == 116) ? ((r3 == 120) ? 1 : 0) : 0;\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // REFL-4 marshalling: construct via the 1-arg User(int32 startId) through a
 // Constructor object; the new instance's id is the passed argument (99).
-TEST(ReflectionTests, constructorHeapInstanceWithArg) {
-    EXPECT_EQ(runI32(
-        "User seed = heap User();\n"
-        "Class<?> c = Class.of(seed);\n"
-        "int32 cc = c.getConstructorCount();\n"
-        "int32 result = -1;\n"
-        "int32 i = 0;\n"
-        "while (i < cc) {\n"
-        "    Constructor ctor = c.getConstructor(i);\n"
-        "    if (ctor.getParameterCount() == 1) {\n"
-        "        int64[] args = heap int64[1];\n"
-        "        args[0] = (int64) 99;\n"
-        "        Object o = ctor.heapInstance(args);\n"
-        "        result = c.getInt32(o, 0);\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return result;\n"), 99);
-}
 
 // REFL-2C: reflectively construct a User via the synthesized heapInstance
 // adapter, then confirm the result is a valid, fully-formed instance — its
 // vtable->classObject->rtti chain resolves and reports the right field count.
-TEST(ReflectionTests, heapInstanceProducesValidObject) {
-    EXPECT_EQ(runI32(
-        "User seed = heap User();\n"
-        "Class<?> c = Class.of(seed);\n"
-        "Object o = c.heapInstance(0);\n"
-        "return (o == null) ? -1 : Class.of(o).getFieldCount();\n"), 5);
-}
 
 // REFL-2C: a heapInstance'd object is functional — reflectively invoking the
 // no-arg bump() on it returns 1 (its id was zero-initialized by construction).
-TEST(ReflectionTests, heapInstanceObjectIsFunctional) {
-    EXPECT_EQ(runI32(
-        "User seed = heap User();\n"
-        "Class<?> c = Class.of(seed);\n"
-        "Object o = c.heapInstance(0);\n"
-        "int32 count = c.getMethodCount();\n"
-        "int32 found = 0;\n"
-        "int32 i = 0;\n"
-        "while (i < count) {\n"
-        "    if (c.getMethodParamCount(i) == 0) {\n"
-        "        if (((int32) Class.invokeScalar0(o, i)) == 1) { found = 1; }\n"
-        "    }\n"
-        "    i = i + 1;\n"
-        "}\n"
-        "return found;\n"), 1);
-}
 
 // REFL-4.1 typed invoke: a float64-returning method comes back as a real FP
 // value through Method.invokeFloat64 (the adapter stores the double in its FP
 // register; the typed native reads it as a double, not int64-widened bits).
 // Box has a single method (index 0) so the index is unambiguous.
-TEST(ReflectionTests, invokeFloat64ReturnsRealValue) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Box {\n"
-        "    public float64 d;\n"
-        "    public Box() { return; }\n"
-        "    public float64 getD() { return this.d; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Box bx = heap Box();\n"
-        "        Class<?> c = Class.of(bx);\n"
-        "        c.setFloat64(bx, 0, 3.25);\n"
-        "        Method m = c.getMethod(0);\n"
-        "        return (int32) (m.invokeFloat64(bx) * 4.0);\n"
-        "    }\n"
-        "}\n"), 13);
-}
 
 // REFL-4.1 typed invoke: float32 return via Method.invokeFloat32.
-TEST(ReflectionTests, invokeFloat32ReturnsRealValue) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Half {\n"
-        "    public Half() { return; }\n"
-        "    public float32 getHalf() { return 0.5f; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Half h = heap Half();\n"
-        "        Method m = Class.of(h).getMethod(0);\n"
-        "        return (int32) (m.invokeFloat32(h) * 6.0f);\n"
-        "    }\n"
-        "}\n"), 3);
-}
 
 // REFL-4.1 typed invoke: invokeInt32 narrows the int64 path for an
 // int32-returning method.
-TEST(ReflectionTests, invokeInt32Narrows) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Seven {\n"
-        "    public Seven() { return; }\n"
-        "    public int32 get() { return 7; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Seven s = heap Seven();\n"
-        "        Method m = Class.of(s).getMethod(0);\n"
-        "        return m.invokeInt32(s);\n"
-        "    }\n"
-        "}\n"), 7);
-}
 
 // --- REFL-3.3: @Sealed visibility enforcement (decision D1) ------------------
 // Reflection is DEFAULT-OPEN; a @Sealed class bars reflective access to its
@@ -660,377 +311,37 @@ TEST(ReflectionTests, sealedPrivateConstructorThrows) {
 // A method that returns `heap Cell` is invoked reflectively; the returned
 // #Object is owned (drop-tracked). We read its field reflectively (no downcast)
 // to prove the real reference came back, not int64-widened bits.
-TEST(ReflectionTests, invokeObjectReturnsReference) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Cell {\n"
-        "    public int32 v;\n"
-        "    public Cell(int32 x) { this.v = x; return; }\n"
-        "}\n"
-        "public class Factory {\n"
-        "    public Factory() { return; }\n"
-        "    public #Cell make() { return heap Cell(42); }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Factory f = heap Factory();\n"
-        "        Method m = Class.of(f).getMethod(0);\n"   // make (only user method)
-        "        Object o = m.invokeObject(f);\n"
-        "        return (o == null) ? -1 : Class.of(o).getInt32(o, 0);\n"  // Cell.v
-        "    }\n"
-        "}\n"), 42);
-}
 
 // REFL-4.1 boxing (W5): invokeBoxed hands back the right cajeta.lang wrapper for
 // each primitive return, read back through the wrapper's field-0 value via the
 // matching typed accessor. base=100: asI(5)->Int32(105), asD->Float64(2.5),
 // asB->Boolean(true). Three distinct param counts keep the scan off the
 // inherited 0-param methods (hash/toString/clone). ok reaches 3.
-TEST(ReflectionTests, invokeBoxedPrimitiveReturns) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Producer {\n"
-        "    public int32 base;\n"
-        "    public Producer() { return; }\n"
-        "    public int32 asI(int32 x) { return this.base + x; }\n"
-        "    public float64 asD(int32 x, int32 y) { return 2.5; }\n"
-        "    public boolean asB(int32 a, int32 b, int32 c) { return true; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Producer p = heap Producer();\n"
-        "        Class<?> c = Class.of(p);\n"
-        "        c.setInt32(p, 0, 100);\n"
-        "        int32 ok = 0;\n"
-        "        int32 i = 0;\n"
-        "        int32 n = c.getMethodCount();\n"
-        "        while (i < n) {\n"
-        "            Method m = c.getMethod(i);\n"
-        "            int32 pc = m.getParameterCount();\n"
-        "            if (pc == 1) {\n"
-        "                int64[] a = heap int64[1];\n"
-        "                a[0] = (int64) 5;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (Class.of(o).getInt32(o, 0) == 105) { ok = ok + 1; }\n"
-        "            }\n"
-        "            if (pc == 2) {\n"
-        "                int64[] a = heap int64[2];\n"
-        "                a[0] = (int64) 1;\n"
-        "                a[1] = (int64) 2;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (Class.of(o).getFloat64(o, 0) == 2.5) { ok = ok + 1; }\n"
-        "            }\n"
-        "            if (pc == 3) {\n"
-        "                int64[] a = heap int64[3];\n"
-        "                a[0] = (int64) 1;\n"
-        "                a[1] = (int64) 2;\n"
-        "                a[2] = (int64) 3;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (Class.of(o).getBoolean(o, 0)) { ok = ok + 1; }\n"
-        "            }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return ok;\n"
-        "    }\n"
-        "}\n"), 3);
-}
 
 // REFL-4.1 boxing: a reference return passes through invokeObject (the boxed
 // #Object IS the returned instance), and a void method boxes to null while still
 // running its side effect.
-TEST(ReflectionTests, invokeBoxedReferenceAndVoid) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class Cell {\n"
-        "    public int32 v;\n"
-        "    public Cell(int32 x) { this.v = x; return; }\n"
-        "}\n"
-        "public class Maker {\n"
-        "    public int32 tag;\n"
-        "    public Maker() { return; }\n"
-        "    public #Cell mk(int32 x) { return heap Cell(x); }\n"          // 1 param: reference
-        "    public void stamp(int32 a, int32 b) { this.tag = a + b; return; }\n" // 2 params: void
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Maker p = heap Maker();\n"
-        "        Class<?> c = Class.of(p);\n"
-        "        int32 ok = 0;\n"
-        "        int32 i = 0;\n"
-        "        int32 n = c.getMethodCount();\n"
-        "        while (i < n) {\n"
-        "            Method m = c.getMethod(i);\n"
-        "            int32 pc = m.getParameterCount();\n"
-        "            if (pc == 1) {\n"
-        "                int64[] a = heap int64[1];\n"
-        "                a[0] = (int64) 42;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (o == null) { return -1; }\n"
-        "                if (Class.of(o).getInt32(o, 0) == 42) { ok = ok + 1; }\n"
-        "            }\n"
-        "            if (pc == 2) {\n"
-        "                int64[] a = heap int64[2];\n"
-        "                a[0] = (int64) 3;\n"
-        "                a[1] = (int64) 4;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (o == null) {\n"                                // void -> null
-        "                    if (c.getInt32(p, 0) == 7) { ok = ok + 1; }\n" // side effect ran
-        "                }\n"
-        "            }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return ok;\n"
-        "    }\n"
-        "}\n"), 2);
-}
 
 // REFL-4.1 boxing: a primitive with no wrapper (int128 — doesn't fit the 64-bit
 // boxing paths) raises UnsupportedReflectionException rather than widening or
 // returning null. The method takes 4 params so the scan ignores the inherited
 // 0-param methods. (int8/int16 etc. are now boxable as of W2.)
-TEST(ReflectionTests, invokeBoxedUnsupportedThrows) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "import cajeta.reflect.UnsupportedReflectionException;\n"
-        "public class Narrow {\n"
-        "    public Narrow() { return; }\n"
-        "    public int128 small(int32 a, int32 b, int32 c, int32 d) { return (int128) 5; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Narrow p = heap Narrow();\n"
-        "        Class<?> c = Class.of(p);\n"
-        "        int32 i = 0;\n"
-        "        int32 n = c.getMethodCount();\n"
-        "        while (i < n) {\n"
-        "            Method m = c.getMethod(i);\n"
-        "            if (m.getParameterCount() == 4) {\n"
-        "                int64[] a = heap int64[4];\n"
-        "                a[0] = (int64) 1;\n"
-        "                a[1] = (int64) 2;\n"
-        "                a[2] = (int64) 3;\n"
-        "                a[3] = (int64) 4;\n"
-        "                try {\n"
-        "                    Object o = m.invokeBoxed(p, a);\n"
-        "                    return 0;\n"                                   // should not reach
-        "                } catch (UnsupportedReflectionException e) {\n"
-        "                    return 1;\n"
-        "                }\n"
-        "            }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return -1;\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // REFL-4.1 boxing (W5b): Field.getBoxed / Class.getBoxed read each primitive
 // field as its cajeta.lang wrapper, verified through the wrapper's field-0 value
 // via the matching typed accessor. All five W1 field types round-trip; ok == 5.
-TEST(ReflectionTests, getBoxedPrimitiveFields) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.reflect.Class;\n"
-        "public class Bag {\n"
-        "    public int32 i;\n"
-        "    public int64 l;\n"
-        "    public boolean b;\n"
-        "    public float32 f;\n"
-        "    public float64 d;\n"
-        "    public Bag(int32 i, int64 l, boolean b, float32 f, float64 d) {\n"
-        "        this.i = i; this.l = l; this.b = b; this.f = f; this.d = d; return;\n"
-        "    }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Bag x = heap Bag(7, 9000000000L, true, 1.5f, 2.5);\n"
-        "        Class<?> c = Class.of(x);\n"
-        "        int32 ok = 0;\n"
-        "        Object o0 = c.getBoxed(x, 0);\n"
-        "        if (Class.of(o0).getInt32(o0, 0) == 7) { ok = ok + 1; }\n"
-        "        Object o1 = c.getBoxed(x, 1);\n"
-        "        if (Class.of(o1).getInt64(o1, 0) == 9000000000L) { ok = ok + 1; }\n"
-        "        Object o2 = c.getBoxed(x, 2);\n"
-        "        if (Class.of(o2).getBoolean(o2, 0)) { ok = ok + 1; }\n"
-        "        Object o3 = c.getBoxed(x, 3);\n"
-        "        if (Class.of(o3).getFloat32(o3, 0) == 1.5f) { ok = ok + 1; }\n"
-        "        Object o4 = c.getBoxed(x, 4);\n"
-        "        if (Class.of(o4).getFloat64(o4, 0) == 2.5) { ok = ok + 1; }\n"
-        "        return ok;\n"
-        "    }\n"
-        "}\n"), 5);
-}
 
 // REFL-4.1 boxing (W5b): a reference field is ownership-unsafe to box (handing
 // the held reference back as an owned #Object would double-drop), so getBoxed
 // raises UnsupportedReflectionException rather than returning it.
-TEST(ReflectionTests, getBoxedReferenceFieldThrows) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.UnsupportedReflectionException;\n"
-        "public class Cell {\n"
-        "    public int32 v;\n"
-        "    public Cell(int32 x) { this.v = x; return; }\n"
-        "}\n"
-        "public class Holder {\n"
-        "    public Cell cell;\n"                         // field 0: a reference
-        "    public Holder() { this.cell = heap Cell(1); return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = heap Holder();\n"
-        "        Class<?> c = Class.of(h);\n"
-        "        try {\n"
-        "            Object o = c.getBoxed(h, 0);\n"
-        "            return 0;\n"                          // should not reach
-        "        } catch (UnsupportedReflectionException e) {\n"
-        "            return 1;\n"
-        "        }\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // W2 boxing: invokeBoxed yields the right wrapper for narrow/unsigned/char
 // returns. Type checked via Class.of(result).getName(); value via a Number
 // downcast (asInt64) / a Char downcast. i16->-300, u32->200000, ch->'Z'. ok==3.
-TEST(ReflectionTests, invokeBoxedW2Returns) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.lang.Number;\n"
-        "import cajeta.lang.Char;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Method;\n"
-        "public class P {\n"
-        "    public P() { return; }\n"
-        "    public int16 i16(int32 a) { return (int16) -300; }\n"
-        "    public uint32 u32(int32 a, int32 b) { return (uint32) 200000; }\n"
-        "    public char ch(int32 a, int32 b, int32 c) { return 'Z'; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        P p = heap P();\n"
-        "        Class<?> c = Class.of(p);\n"
-        "        int32 ok = 0;\n"
-        "        int32 i = 0;\n"
-        "        int32 n = c.getMethodCount();\n"
-        "        while (i < n) {\n"
-        "            Method m = c.getMethod(i);\n"
-        "            int32 pc = m.getParameterCount();\n"
-        "            if (pc == 1) {\n"
-        "                int64[] a = heap int64[1];\n"
-        "                a[0] = (int64) 0;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (Class.of(o).getName() == \"cajeta.lang.Int16\") {\n"
-        "                    Number nb = (Number) o;\n"
-        "                    if (nb.asInt64() == -300L) { ok = ok + 1; }\n"
-        "                }\n"
-        "            }\n"
-        "            if (pc == 2) {\n"
-        "                int64[] a = heap int64[2];\n"
-        "                a[0] = (int64) 0;\n"
-        "                a[1] = (int64) 0;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (Class.of(o).getName() == \"cajeta.lang.UInt32\") {\n"
-        "                    Number nb = (Number) o;\n"
-        "                    if (nb.asInt64() == 200000L) { ok = ok + 1; }\n"
-        "                }\n"
-        "            }\n"
-        "            if (pc == 3) {\n"
-        "                int64[] a = heap int64[3];\n"
-        "                a[0] = (int64) 0;\n"
-        "                a[1] = (int64) 0;\n"
-        "                a[2] = (int64) 0;\n"
-        "                Object o = m.invokeBoxed(p, a);\n"
-        "                if (Class.of(o).getName() == \"cajeta.lang.Char\") {\n"
-        "                    Char cc = (Char) o;\n"
-        "                    if (cc.value() == 'Z') { ok = ok + 1; }\n"
-        "                }\n"
-        "            }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return ok;\n"
-        "    }\n"
-        "}\n"), 3);
-}
 
 // W2 boxing: getBoxed reads each narrow/unsigned/char field as the right wrapper
 // (width-correct loads). Type via getName, value via a Number/Char downcast.
 // All seven W2 field types round-trip; ok == 7.
-TEST(ReflectionTests, getBoxedW2Fields) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.Object;\n"
-        "import cajeta.lang.Number;\n"
-        "import cajeta.lang.Char;\n"
-        "import cajeta.reflect.Class;\n"
-        "public class Bag2 {\n"
-        "    public int8 i8;\n"
-        "    public int16 i16;\n"
-        "    public uint8 u8;\n"
-        "    public uint16 u16;\n"
-        "    public uint32 u32;\n"
-        "    public uint64 u64;\n"
-        "    public char ch;\n"
-        "    public Bag2(int8 i8, int16 i16, uint8 u8, uint16 u16,\n"
-        "                uint32 u32, uint64 u64, char ch) {\n"
-        "        this.i8 = i8; this.i16 = i16; this.u8 = u8; this.u16 = u16;\n"
-        "        this.u32 = u32; this.u64 = u64; this.ch = ch; return;\n"
-        "    }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Bag2 x = heap Bag2((int8) -5, (int16) -300, (uint8) 200,\n"
-        "            (uint16) 60000, (uint32) 200000, (uint64) 9000000000L, 'Q');\n"
-        "        Class<?> c = Class.of(x);\n"
-        "        int32 ok = 0;\n"
-        "        Object o0 = c.getBoxed(x, 0);\n"
-        "        if (Class.of(o0).getName() == \"cajeta.lang.Int8\") {\n"
-        "            Number nb = (Number) o0; if (nb.asInt64() == -5L) { ok = ok + 1; }\n"
-        "        }\n"
-        "        Object o1 = c.getBoxed(x, 1);\n"
-        "        if (Class.of(o1).getName() == \"cajeta.lang.Int16\") {\n"
-        "            Number nb = (Number) o1; if (nb.asInt64() == -300L) { ok = ok + 1; }\n"
-        "        }\n"
-        "        Object o2 = c.getBoxed(x, 2);\n"
-        "        if (Class.of(o2).getName() == \"cajeta.lang.UInt8\") {\n"
-        "            Number nb = (Number) o2; if (nb.asInt64() == 200L) { ok = ok + 1; }\n"
-        "        }\n"
-        "        Object o3 = c.getBoxed(x, 3);\n"
-        "        if (Class.of(o3).getName() == \"cajeta.lang.UInt16\") {\n"
-        "            Number nb = (Number) o3; if (nb.asInt64() == 60000L) { ok = ok + 1; }\n"
-        "        }\n"
-        "        Object o4 = c.getBoxed(x, 4);\n"
-        "        if (Class.of(o4).getName() == \"cajeta.lang.UInt32\") {\n"
-        "            Number nb = (Number) o4; if (nb.asInt64() == 200000L) { ok = ok + 1; }\n"
-        "        }\n"
-        "        Object o5 = c.getBoxed(x, 5);\n"
-        "        if (Class.of(o5).getName() == \"cajeta.lang.UInt64\") {\n"
-        "            Number nb = (Number) o5; if (nb.asInt64() == 9000000000L) { ok = ok + 1; }\n"
-        "        }\n"
-        "        Object o6 = c.getBoxed(x, 6);\n"
-        "        if (Class.of(o6).getName() == \"cajeta.lang.Char\") {\n"
-        "            Char cc = (Char) o6; if (cc.value() == 'Q') { ok = ok + 1; }\n"
-        "        }\n"
-        "        return ok;\n"
-        "    }\n"
-        "}\n"), 7);
-}
 
 // --- REFL-6a: annotation NAME reflection -------------------------------------
 // Annotation names ride the RTTI for every owner (class / field / method /
@@ -1552,29 +863,6 @@ TEST(ReflectionTests, parameterAnnotationArg) {
 }
 
 // String-list argument: @Tags({"a","b","c"}) -> StringList (kind 5), 3 elements.
-TEST(ReflectionTests, annotationStringListArg) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Annotation;\n"
-        "@Tags({\"a\", \"b\", \"c\"})\n"
-        "public class Widget {\n"
-        "    public Widget() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
-        "        int32 idx = a.getArgIndex(\"value\");\n"
-        "        if (idx < 0) { return 10; }\n"
-        "        if (a.getArgKind(idx) != 5) { return 11; }\n"
-        "        if (a.getArgListCount(idx) != 3) { return 12; }\n"
-        "        if (!a.getArgListString(idx, 0).equals(\"a\")) { return 13; }\n"
-        "        if (!a.getArgListString(idx, 2).equals(\"c\")) { return 14; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // Int-list argument: @Sizes({1,2,3}) -> Int64List (kind 4).
 TEST(ReflectionTests, annotationIntListArg) {
@@ -1631,148 +919,20 @@ TEST(ReflectionTests, annotationBoolListArg) {
 // type names do (e.g. "int32").
 
 // A template instantiation reports its concrete template arguments.
-TEST(ReflectionTests, templateArguments) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.TemplateArgument;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Box<int32> b = heap Box<int32>(5);\n"
-        "        Class<?> c = Class.of(b);\n"
-        "        if (!c.isTemplateInstantiation()) { return 10; }\n"
-        "        if (c.getTemplateArgumentCount() != 1) { return 11; }\n"
-        "        if (!c.getTemplateArgument(0).getTypeName().equals(\"int32\")) { return 12; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // A template instantiation still carries its declared parameter (the <T>).
-TEST(ReflectionTests, templateParameters) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.TemplateParameter;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Box<int32> b = heap Box<int32>(5);\n"
-        "        Class<?> c = Class.of(b);\n"
-        "        if (c.getTemplateParameterCount() != 1) { return 11; }\n"
-        "        TemplateParameter p = c.getTemplateParameter(0);\n"
-        "        if (!p.getName().equals(\"T\")) { return 12; }\n"
-        "        if (p.isNonType()) { return 13; }\n"
-        "        if (p.getBoundCount() != 0) { return 14; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // A non-template class reports zero parameters and arguments.
-TEST(ReflectionTests, nonTemplateClassZero) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "public class Plain {\n"
-        "    public Plain() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Class<?> c = Class.of(heap Plain());\n"
-        "        if (c.isTemplateInstantiation()) { return 11; }\n"
-        "        if (c.getTemplateArgumentCount() != 0) { return 12; }\n"
-        "        if (c.getTemplateParameterCount() != 0) { return 13; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // ---- REFL-8: Class.forName + registry -----------------------------------
 
 // forName resolves a registered class by its canonical name to its Class.
-TEST(ReflectionTests, forNameResolvesClass) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.lang.Optional;\n"
-        "public class User {\n"
-        "    public int32 id;\n"
-        "    public int32 score;\n"
-        "    public User() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Class<?>> c = Class.forName(\"test.User\");\n"
-        "        if (c.isEmpty()) { return 11; }\n"
-        "        return c.get().getFieldCount();\n"
-        "    }\n"
-        "}\n"), 2);
-}
 
 // forName on an unknown name yields an empty Optional, not a crash.
-TEST(ReflectionTests, forNameAbsentEmpty) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.lang.Optional;\n"
-        "public class User {\n"
-        "    public int32 id;\n"
-        "    public User() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Class<?>> c = Class.forName(\"test.NoSuchClass\");\n"
-        "        return c.isPresent() ? 1 : 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // getName() then forName(name) round-trips back to the same class.
-TEST(ReflectionTests, forNameRoundTrip) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.lang.Optional;\n"
-        "public class User {\n"
-        "    public int32 id;\n"
-        "    public User() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        User u = heap User();\n"
-        "        String n = Class.of(u).getName();\n"
-        "        Optional<Class<?>> c = Class.forName(n);\n"
-        "        if (c.isEmpty()) { return 11; }\n"
-        "        if (!c.get().getName().equals(\"test.User\")) { return 12; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // A stdlib class is registered too — forName finds cajeta.lang.String.
-TEST(ReflectionTests, forNameStdlibClass) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.lang.Optional;\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Class<?>> c = Class.forName(\"cajeta.lang.String\");\n"
-        "        return c.isPresent() ? 1 : 0;\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // ---- REFL-12: bounded reflection (Class.heapInstance<T> / Class.forName<T>) --
 
@@ -1797,55 +957,14 @@ TEST(ReflectionTests, forNameStdlibClass) {
 
 // Bounded heapInstance: a subtype name resolves, constructs, and the result is
 // statically a Shape (no cast) — sideCount() dispatches to Circle's state (7).
-TEST(ReflectionTests, boundedHeapInstanceSubtypeResolves) {
-    EXPECT_EQ(runCustomI32(
-        REFL12_HIERARCHY
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Circle\");\n"
-        "        if (s.isEmpty()) { return 11; }\n"
-        "        return s.get().sideCount();\n"
-        "    }\n"
-        "}\n"), 7);
-}
 
 // The exact-type bound is the degenerate case: heapInstance<Shape> of Shape
 // itself resolves (identity counts as subtype) and runs Shape's ctor (sides=0).
-TEST(ReflectionTests, boundedHeapInstanceExactTypeResolves) {
-    EXPECT_EQ(runCustomI32(
-        REFL12_HIERARCHY
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Shape\");\n"
-        "        return s.isPresent() ? 100 : 0;\n"
-        "    }\n"
-        "}\n"), 100);
-}
 
 // Boundary check: a name that resolves to a NON-subtype (Animal is not a Shape)
 // yields empty — a clean not-found, not a bad cast / crash.
-TEST(ReflectionTests, boundedHeapInstanceNonSubtypeEmpty) {
-    EXPECT_EQ(runCustomI32(
-        REFL12_HIERARCHY
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.Animal\");\n"
-        "        return s.isPresent() ? 1 : 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // An unknown name also yields empty (same path as unbounded forName).
-TEST(ReflectionTests, boundedHeapInstanceUnknownEmpty) {
-    EXPECT_EQ(runCustomI32(
-        REFL12_HIERARCHY
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Optional<Shape> s = Class.heapInstance<Shape>(\"test.NoSuch\");\n"
-        "        return s.isPresent() ? 1 : 0;\n"
-        "    }\n"
-        "}\n"), 0);
-}
 
 // Bounded enumeration: subtypes<Shape>() is the closed-world closure — Shape
 // itself + Circle (inclusive of the bound), and nothing unrelated (Animal).
@@ -1900,29 +1019,6 @@ TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
 
 // A primitive template argument has no Class — getType() throws
 // UnsupportedReflectionException (use getTypeName() instead).
-TEST(ReflectionTests, templateArgGetTypePrimitiveThrows) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.TemplateArgument;\n"
-        "import cajeta.reflect.UnsupportedReflectionException;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Box<int32> b = heap Box<int32>(5);\n"
-        "        Class<?> c = Class.of(b);\n"
-        "        try {\n"
-        "            Class<?> t = c.getTemplateArgument(0).getType();\n"
-        "            return 0;\n"
-        "        } catch (UnsupportedReflectionException e) {\n"
-        "            return 1;\n"
-        "        }\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // ---------------------------------------------------------------------------
 // REFL-10 — package / annotation registry queries (Class.allClasses /
@@ -1931,28 +1027,6 @@ TEST(ReflectionTests, templateArgGetTypePrimitiveThrows) {
 // ---------------------------------------------------------------------------
 
 // allClasses() includes every registered class — find the fixture exactly once.
-TEST(ReflectionTests, allClassesFindsRegistered) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "import cajeta.reflect.Class;\n"
-        "public class User {\n"
-        "    public int32 id;\n"
-        "    public User() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Class<?>[] all = Class.allClasses();\n"
-        "        int32 found = 0;\n"
-        "        int32 i = 0;\n"
-        "        while (i < (int32) all.count()) {\n"
-        "            if (all[i].getName().equals(\"test.User\")) { found = found + 1; }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return found;\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // classesInPackage("test") contains User; classesInPackage("cajeta.lang") does
 // NOT contain User but DOES contain String (a stdlib class is registered too).
@@ -1990,34 +1064,6 @@ TEST(ReflectionTests, classesInPackageFilters) {
 }
 
 // classesAnnotated("code.Marker") finds the @Marker class, not the plain one.
-TEST(ReflectionTests, classesAnnotatedFilters) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "import cajeta.reflect.Class;\n"
-        "public class Plain {\n"
-        "    public Plain() { return; }\n"
-        "}\n"
-        "@Marker\n"
-        "public class Tagged {\n"
-        "    public Tagged() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Class<?>[] tagged = Class.classesAnnotated(\"code.Marker\");\n"
-        "        int32 found = 0;\n"
-        "        int32 other = 0;\n"
-        "        int32 i = 0;\n"
-        "        while (i < (int32) tagged.count()) {\n"
-        "            if (tagged[i].getName().equals(\"test.Tagged\")) { found = found + 1; }\n"
-        "            if (tagged[i].getName().equals(\"test.Plain\"))  { other = other + 1; }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        if (found == 1 && other == 0) { return 1; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // REFL-12: classesAnnotated<@A>() token form — the annotation rides as a method
 // type arg (resolved now that annotation decls register as types) and lowers to
@@ -2134,23 +1180,6 @@ TEST(ReflectionTests, classesWithMethodAnnotatedTokenForm) {
 // ---------------------------------------------------------------------------
 
 // Metadata fold: getFieldCount() over a final class -> compile-time constant.
-TEST(ReflectionTests, foldFinalFieldCount) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "public final class Gadget {\n"
-        "    public int32 a;\n"
-        "    public int32 b;\n"
-        "    public int32 c;\n"
-        "    public Gadget() { return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Gadget g = heap Gadget();\n"
-        "        return Class.of(g).getFieldCount();\n"
-        "    }\n"
-        "}\n"), 3);
-}
 
 // Field-load fold: getInt32(g, litIdx) over a final class -> direct field load.
 TEST(ReflectionTests, foldFinalFieldLoad) {
@@ -2172,46 +1201,9 @@ TEST(ReflectionTests, foldFinalFieldLoad) {
 
 // A non-final class declines the fold (subclass could shift layout) — the
 // runtime reflective path still returns the correct value.
-TEST(ReflectionTests, foldDeclinesNonFinal) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "public class Widget {\n"
-        "    public int32 a;\n"
-        "    public Widget() { this.a = 42; return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Widget w = heap Widget();\n"
-        "        return Class.of(w).getInt32(w, 0);\n"
-        "    }\n"
-        "}\n"), 42);
-}
 
 // The fold must NOT bypass visibility: a @Sealed final class's private field
 // stays un-folded so the runtime IllegalAccessException still fires.
-TEST(ReflectionTests, foldDeclinesSealedPrivate) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.IllegalAccessException;\n"
-        "@Sealed\n"
-        "public final class Secret {\n"
-        "    private int32 s;\n"
-        "    public Secret() { this.s = 5; return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Secret x = heap Secret();\n"
-        "        try {\n"
-        "            int32 v = Class.of(x).getInt32(x, 0);\n"
-        "            return v;\n"
-        "        } catch (IllegalAccessException e) {\n"
-        "            return 99;\n"
-        "        }\n"
-        "    }\n"
-        "}\n"), 99);
-}
 
 // REFL-1.7: the Modifiers value object reflects a class's packed flags.
 // public final class -> isPublic && isFinal, NOT isStatic. (1 + 2 = 3.)
@@ -2239,67 +1231,11 @@ TEST(ReflectionTests, modifiersObjectClassFlags) {
 
 // REFL-1.7: a Field's Modifiers — a private field of a NON-sealed class is
 // isPrivate (and not public). (4.)
-TEST(ReflectionTests, modifiersObjectFieldFlags) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "import cajeta.reflect.Field;\n"
-        "import cajeta.reflect.Modifiers;\n"
-        "public final class Gadget {\n"
-        "    private int32 secret;\n"
-        "    public Gadget() { this.secret = 1; return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Gadget g = heap Gadget();\n"
-        "        Field f = Class.of(g).getField(0);\n"
-        "        Modifiers m = f.getModifiers();\n"
-        "        int32 r = 0;\n"
-        "        if (m.isPrivate()) { r = r + 4; }\n"
-        "        if (m.isPublic())  { r = r + 100; }\n"
-        "        return r;\n"
-        "    }\n"
-        "}\n"), 4);
-}
 
 // REFL-1.6: obj.getClass() returns the object's dynamic Class<?> (synthesized,
 // no Object source edit). Field count off the RTTI = 2.
-TEST(ReflectionTests, getClassMethodReturnsClass) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "public final class Gadget {\n"
-        "    public int32 a;\n"
-        "    public int32 b;\n"
-        "    public Gadget() { this.a = 1; this.b = 2; return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Gadget g = heap Gadget();\n"
-        "        Class<?> c = g.getClass();\n"
-        "        return c.getFieldCount();\n"
-        "    }\n"
-        "}\n"), 2);
-}
 
 // REFL-1.5: T.class is the statically-known type's Class<T>. Field count = 3.
-TEST(ReflectionTests, classLiteralResolvesClass) {
-    EXPECT_EQ(runCustomI32(
-        "package test;\n"
-        "import cajeta.reflect.Class;\n"
-        "public final class Gadget {\n"
-        "    public int32 a;\n"
-        "    public int32 b;\n"
-        "    public int32 d;\n"
-        "    public Gadget() { this.a = 1; this.b = 2; this.d = 3; return; }\n"
-        "}\n"
-        "public final class M {\n"
-        "    public static int32 run() {\n"
-        "        Class<Gadget> k = Gadget.class;\n"
-        "        return k.getFieldCount();\n"
-        "    }\n"
-        "}\n"), 3);
-}
 
 // REFL-1.5/1.6: T.class and obj.getClass() name the SAME #ClassObject — the
 // per-type process-lifetime singleton. getInstanceSize matches on both.

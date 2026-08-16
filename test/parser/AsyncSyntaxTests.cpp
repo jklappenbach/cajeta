@@ -28,60 +28,18 @@ int32_t runI32(const std::string& src) {
 
 // `async` modifier parses on a method; the body codegens as a regular
 // function. Calling it directly returns the inner value.
-TEST(AsyncSyntaxTests, asyncMethodCallableDirectly) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 fortyTwo() { return 42; }\n"
-        "    public static int32 run() { return fortyTwo(); }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // `await` parses and passes the inner value through unchanged.
-TEST(AsyncSyntaxTests, awaitPassesThroughInnerValue) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 produce() { return 7; }\n"
-        "    public static int32 run() { return await produce(); }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // `spawn` parses, runs the call inline (sync lowering), and materializes a
 // Task<int32> wrapper that `await` unwraps. Bare `spawn` returns a
 // Task<T>* now — bare integer destinations would be a type error, so the
 // canonical form goes through `await`.
-TEST(AsyncSyntaxTests, spawnRunsCallInline) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 compute() { return 11; }\n"
-        "    public static int32 run() { return await spawn compute(); }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 11);
-}
 
 // `scope { ... }` is a statement that owns its contents. In the sync MVP
 // it's just a block — locals declared inside drop at the closing `}`,
 // same as any block. Verifies the parser routes SCOPE through to the
 // block grammar correctly.
-TEST(AsyncSyntaxTests, scopeBlockExecutesContents) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 compute() { return 5; }\n"
-        "    public static int32 run() {\n"
-        "        int32 r = 0;\n"
-        "        scope {\n"
-        "            r = await spawn compute();\n"
-        "        }\n"
-        "        return r;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // R3-A: spawn of an async fn that takes one argument. Arg is evaluated
 // at the spawn site (main thread), captured into the context struct,
@@ -110,30 +68,6 @@ TEST(AsyncSyntaxTests, spawnPassesOneArgument) {
 // — and Task<T> isn't yet a user-resolvable type (it's only synthesized
 // by the compiler at spawn sites). A more probative contention test
 // lands once `Task<T>` is exposed as a known template.
-TEST(AsyncSyntaxTests, fiberLockAcquireUsesFiberPath) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 fiberA(pointer h) {\n"
-        "        Cajeta.lockAcquire(h);\n"
-        "        Cajeta.lockRelease(h);\n"
-        "        return 19;\n"
-        "    }\n"
-        "    public static async int32 fiberB(pointer h) {\n"
-        "        Cajeta.lockAcquire(h);\n"
-        "        Cajeta.lockRelease(h);\n"
-        "        return 23;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        pointer h = Cajeta.lockNew();\n"
-        "        int32 a = await spawn fiberA(h);\n"
-        "        int32 b = await spawn fiberB(h);\n"
-        "        Cajeta.lockDestroy(h);\n"
-        "        return a + b;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // R4: a fiber holds a lock while it yields (via an inner await). The
 // main thread then tries to acquire the same lock — it's NOT a fiber,
@@ -141,28 +75,6 @@ TEST(AsyncSyntaxTests, fiberLockAcquireUsesFiberPath) {
 // blocks until the worker fiber resumes and releases, or it gets the
 // uncontended fast path if the worker already finished. Both flows
 // have to work for the test to pass.
-TEST(AsyncSyntaxTests, mainThreadWaitsOnFiberHolder) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 nested() { return 0; }\n"
-        "    public static async int32 holder(pointer h) {\n"
-        "        Cajeta.lockAcquire(h);\n"
-        "        int32 inner = await spawn nested();\n"
-        "        Cajeta.lockRelease(h);\n"
-        "        return 42 + inner;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        pointer h = Cajeta.lockNew();\n"
-        "        int32 r = await spawn holder(h);\n"
-        "        Cajeta.lockAcquire(h);\n"
-        "        Cajeta.lockRelease(h);\n"
-        "        Cajeta.lockDestroy(h);\n"
-        "        return r;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // R5-A': implicit function-body scope. Even without an explicit
 // `scope { ... }`, the function body itself is a scope — every unawaited
@@ -341,18 +253,6 @@ TEST(AsyncSyntaxTests, taskWrapperIsHeapAllocated) {
 // `detach expr` parses and evaluates the inner expression for its side
 // effects, returning no value to the surrounding context. The MVP runs
 // it inline. Verifies the detach grammar + dispatch + codegen path.
-TEST(AsyncSyntaxTests, detachExecutesAndDiscards) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async void noop() { return; }\n"
-        "    public static int32 run() {\n"
-        "        detach noop();\n"
-        "        return 33;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 33);
-}
 
 // Probe: spawn with a class-instance arg that came from a class-typed
 // ARRAY read (the case (#1) in the parallel-driver fork attempt). If

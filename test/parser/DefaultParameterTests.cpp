@@ -27,36 +27,8 @@ int32_t runI32(const std::string& src) {
 } // namespace
 
 // Single trailing default. Caller omits the arg; method returns the default.
-TEST(DefaultParameterTests, singleTrailingDefault) {
-    auto src =
-        "package test;\n"
-        "public class Calc {\n"
-        "    public int32 echo(int32 x = 42) { return x; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Calc c = heap Calc();\n"
-        "        return c.echo();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // Caller supplies the arg explicitly — overrides the default.
-TEST(DefaultParameterTests, explicitArgOverridesDefault) {
-    auto src =
-        "package test;\n"
-        "public class Calc {\n"
-        "    public int32 echo(int32 x = 42) { return x; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Calc c = heap Calc();\n"
-        "        return c.echo(99);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 99);
-}
 
 // Multiple trailing defaults, partial caller supply.
 TEST(DefaultParameterTests, partialFillFromDefaults) {

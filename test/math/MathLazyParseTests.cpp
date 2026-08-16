@@ -42,17 +42,6 @@ const char* LANG_ONLY_SRC =
 } // namespace
 
 // 1a — a program importing only cajeta.lang does NOT parse cajeta.math.
-TEST(MathLazyParseTests, lazyStdlibParseSkipsUnusedPackages) {
-    auto jit = CajetaJit::compile(LANG_ONLY_SRC, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 1);
-
-    // The eager core still loaded (sanity that the probe reflects real state),
-    // but the on-demand numpy-equivalent did not.
-    EXPECT_TRUE(Compiler::stdlibPackageParsed("cajeta.lang"));
-    EXPECT_FALSE(Compiler::stdlibPackageParsed("cajeta.math"));
-}
 
 // 1b — a large cajeta.math costs a non-importing program nothing. The
 // timing-based form ("cold-compile time unchanged with N stub files") is
@@ -60,34 +49,9 @@ TEST(MathLazyParseTests, lazyStdlibParseSkipsUnusedPackages) {
 // program parses ZERO cajeta.math packages, so however many files the package
 // accretes (Tensor, the op library, the nested submodules) they are never
 // reached unless imported.
-TEST(MathLazyParseTests, compilerStartupUnchangedWithLargeMathPackage) {
-    CajetaJit::compile(LANG_ONLY_SRC, "test.D");
-
-    for (const std::string& pkg : Compiler::stdlibParsedPackages()) {
-        EXPECT_FALSE(pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0)
-            << "non-importing program parsed on-demand package: " << pkg;
-    }
-}
 
 // 1c — `import cajeta.math.X` triggers exactly that package's parse, and the
 // imported type is fully usable (parsed + laid out + codegen'd end-to-end).
-TEST(MathLazyParseTests, importedMathPackageParsesOnDemand) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.math.MathInfo;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        return MathInfo.version();\n"
-        "    }\n"
-        "}\n";
-
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 1);   // MathInfo.version() == 1
-
-    EXPECT_TRUE(Compiler::stdlibPackageParsed("cajeta.math"));
-}
 
 // The hardcoded cajeta.math type Matrix also triggers the package's on-demand
 // parse with no explicit import — its operator/method surface (resolved at

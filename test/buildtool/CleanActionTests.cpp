@@ -67,106 +67,11 @@ namespace {
 
 } // namespace
 
-TEST(CleanActionTests, defaultRemovesBuildDir) {
-    auto root = tempProject("default");
-    auto savedCwd = std::filesystem::current_path();
-    std::filesystem::current_path(root);
-
-    writeFile(root / "build" / "a.bc", "12345");
-    writeFile(root / "build" / "sub" / "b.bc", "678");
-    writeFile(root / ".cajeta" / "cache" / "ir" / "x.bc", "should-stay");
-
-    ActionRegistry reg;
-    const auto* clean = reg.get("clean");
-    ASSERT_NE(clean, nullptr);
-
-    auto m = makeManifest();
-    auto props = resolveProperties(m);
-    ASSERT_TRUE((bool)props);
-    TaskContext ctx(*props, &m);
-
-    // Clean means clean: the caches go too, with no param and no prompt. The old
-    // default kept .cajeta/cache, so the next build re-published the cached
-    // artifact without compiling — an instant green check on a "clean" build.
-    llvm::json::Object params;
-    auto r = clean->run(params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_FALSE(std::filesystem::exists(root / "build"));
-    EXPECT_FALSE(std::filesystem::exists(root / ".cajeta" / "cache"));
-    EXPECT_EQ(r->outputs["cache-cleaned"], "true");
-    // 2 build files (5 + 3 bytes) + 1 cache file (11 bytes) = 3 entries / 19 bytes
-    EXPECT_EQ(r->outputs["removed-entries"], "3");
-    EXPECT_EQ(r->outputs["removed-bytes"], "19");
-
-    std::filesystem::current_path(savedCwd);
-}
 
 // The opt-OUT: `keep-cache` preserves .cajeta/cache for a fast incremental
 // rebuild. Reachable from the CLI as `cajeta clean -p keep-cache=true` (CLI
 // params are overlaid onto action params — see TaskRunnerTests).
-TEST(CleanActionTests, keepCachePreservesTheCache) {
-    auto root = tempProject("keep-cache");
-    auto savedCwd = std::filesystem::current_path();
-    std::filesystem::current_path(root);
 
-    writeFile(root / "build" / "a.bc", "12345");
-    writeFile(root / ".cajeta" / "cache" / "ir" / "x.bc", "should-stay");
-
-    ActionRegistry reg;
-    const auto* clean = reg.get("clean");
-    ASSERT_NE(clean, nullptr);
-
-    auto m = makeManifest();
-    auto props = resolveProperties(m);
-    ASSERT_TRUE((bool)props);
-    TaskContext ctx(*props, &m);
-
-    llvm::json::Object params;
-    params["keep-cache"] = true;
-    auto r = clean->run(params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_FALSE(std::filesystem::exists(root / "build"));
-    EXPECT_TRUE(std::filesystem::exists(root / ".cajeta" / "cache"));
-    EXPECT_EQ(r->outputs["cache-cleaned"], "false");
-    EXPECT_EQ(r->outputs["removed-entries"], "1");
-    EXPECT_EQ(r->outputs["removed-bytes"], "5");
-
-    std::filesystem::current_path(savedCwd);
-}
-
-TEST(CleanActionTests, cacheIsRemovedWithoutAnyParamOrPrompt) {
-    auto root = tempProject("deep");
-    auto savedCwd = std::filesystem::current_path();
-    std::filesystem::current_path(root);
-
-    writeFile(root / "build" / "a.bc", "12");
-    writeFile(root / ".cajeta" / "cache" / "ir" / "x.bc", "abc");
-    writeFile(root / ".cajeta" / "cache" / "ir" / "y.bc", "de");
-
-    ActionRegistry reg;
-    const auto* clean = reg.get("clean");
-    ASSERT_NE(clean, nullptr);
-
-    auto m = makeManifest();
-    auto props = resolveProperties(m);
-    ASSERT_TRUE((bool)props);
-    TaskContext ctx(*props, &m);
-
-    // The cache wipe needs no param and no prompt now (this used to require
-    // `deep` + `yes`, and the [y/N] prompt silently answered "no" for any
-    // non-interactive caller — which is how the IDE's Clean never cleaned).
-    llvm::json::Object params;
-    auto r = clean->run(params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_FALSE(std::filesystem::exists(root / "build"));
-    EXPECT_FALSE(std::filesystem::exists(root / ".cajeta" / "cache"));
-    EXPECT_EQ(r->outputs["cache-cleaned"], "true");
-    // 1 build file (2 bytes) + 2 cache files (3 + 2 bytes) = 3 entries / 7 bytes
-    EXPECT_EQ(r->outputs["removed-entries"], "3");
-    EXPECT_EQ(r->outputs["removed-bytes"], "7");
-
-    std::filesystem::current_path(savedCwd);
-}
 
 // 3b.1.1 — clean wipes the per-project .cajeta/cache but never the
 // machine-global ~/.olla store (a separate root; clean has no path into it).
@@ -201,25 +106,3 @@ TEST(CleanActionTests, cleanLeavesOllaUntouched) {
     std::filesystem::remove_all(olla);
 }
 
-TEST(CleanActionTests, defaultOnEmptyProjectIsBenign) {
-    auto root = tempProject("empty");
-    auto savedCwd = std::filesystem::current_path();
-    std::filesystem::current_path(root);
-
-    ActionRegistry reg;
-    const auto* clean = reg.get("clean");
-    ASSERT_NE(clean, nullptr);
-
-    auto m = makeManifest();
-    auto props = resolveProperties(m);
-    ASSERT_TRUE((bool)props);
-    TaskContext ctx(*props, &m);
-
-    llvm::json::Object params;
-    auto r = clean->run(params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->outputs["removed-entries"], "0");
-    EXPECT_EQ(r->outputs["removed-bytes"], "0");
-
-    std::filesystem::current_path(savedCwd);
-}

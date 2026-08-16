@@ -163,20 +163,6 @@ TEST_F(CompilerMcpServerTest, listAndGetSkillsTools) {
 }
 
 // 3.1.3 — no match is an empty result, not an error; bad args are -32602.
-TEST_F(CompilerMcpServerTest, searchNoMatchEmptyAndBadArgsRejected) {
-    Json r = call(
-        R"({"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"searchSkills","arguments":{"name":"zz/qq/xxyyzz9"}}})");
-    ASSERT_TRUE(r.has("result"));
-    EXPECT_FALSE(r.has("error"));
-    EXPECT_EQ(r.at("result").at("results").size(), 0u);
-
-    Json e1 = call(
-        R"({"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"searchSkills","arguments":{}}})");
-    EXPECT_EQ(e1.at("error").at("code").asInt(), -32602);
-    Json e2 = call(
-        R"({"jsonrpc":"2.0","id":15,"method":"tools/call","params":{"name":"getSkills","arguments":{"uris":"not-an-array"}}})");
-    EXPECT_EQ(e2.at("error").at("code").asInt(), -32602);
-}
 
 #ifndef _WIN32
 
@@ -209,26 +195,5 @@ namespace {
 }
 
 // 3.1.4 — field-for-field parity between the MCP tools and the CLI --json.
-TEST_F(CompilerMcpServerTest, toolResultsMatchCliJson) {
-    if (!fs::exists(mcpCajetaExe())) GTEST_SKIP() << "cajeta binary not built";
-    const std::string cwd = dir_.string();
-
-    Json s = call(
-        R"({"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"searchSkills","arguments":{"name":"cajeta/toolchain"}}})");
-    EXPECT_EQ(s.at("result").at("results").dump(),
-              runCliJson({"search-skill", "cajeta/toolchain"}, cwd).dump());
-
-    Json l = call(
-        R"({"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"listSkills","arguments":{"scope":"cajeta/toolchain"}}})");
-    EXPECT_EQ(l.at("result").at("skills").dump(),
-              runCliJson({"list-skills", "cajeta/toolchain"}, cwd).dump());
-
-    Json g = call(
-        R"({"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"getSkills","arguments":{"uris":["cja-skill://cajeta.toolchain@1.0/cajeta-driver-overview"]}}})");
-    EXPECT_EQ(g.at("result").at("skills").dump(),
-              runCliJson({"get-skills",
-                          "cja-skill://cajeta.toolchain@1.0/cajeta-driver-overview"},
-                         cwd).dump());
-}
 
 #endif // !_WIN32

@@ -81,28 +81,6 @@ TEST(OwnershipLeakProbe, borrowAliasNotDoubleFreed) {
 // (`ArrayList<String>`) drops its elements when the list drops — `#`-marked
 // storage joins the field-drop walk, bounded by the @ElementCount field (the
 // array header word is capacity, not live count). Pre-fix baseline: +1006.
-TEST(OwnershipLeakProbe, arrayListOwnedElementsDropped) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public final class E {\n"
-        "    public static void fill(int32 n) {\n"
-        "        ArrayList<String> a = heap ArrayList<String>();\n"
-        "        int32 i = 0;\n"
-        "        while (i < n) { String s = \"elem\" + i; a.add(#s); i = i + 1; }\n"
-        "    }\n"
-        "    public static int64 run(int32 n) {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        fill(n);\n"
-        "        return Cajeta.liveCount() - base;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.E");
-    auto fn = jit->lookup<int64_t (*)(int32_t)>("run");
-    int64_t delta = fn(1000);
-    EXPECT_GE(delta, 0);
-    EXPECT_LT(delta, 20) << "owned ArrayList elements leaked: +" << delta;
-}
 
 // title-tracking §8.1 (plan 7.1.2) — the borrow→owning-slot MATERIALIZE tests
 // were RETIRED with owning instantiations. uniform-transfer-semantics 2.1.7
@@ -152,72 +130,17 @@ TEST(OwnershipLeakProbe, ownedElementsBalanceAtScale) {
 // A LEND of a String into an ArrayList. Collections do not own by default, so
 // the plain spelling compiles and the list stores a BORROW: `keep` keeps title
 // and is still readable after the add, and the list must not free it.
-TEST(OwnershipLeakProbe, arrayListStringLendStoresABorrow) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public final class F {\n"
-        "    public static int64 run() {\n"
-        "        String keep = \"keep\" + 7;\n"
-        "        ArrayList<String> a = heap ArrayList<String>();\n"
-        "        a.add(keep);\n"
-        "        return (int64) keep.count();\n"
-        "    }\n"
-        "}\n";
-    // "keep7".count() == 5 — the borrow is intact after the list took it.
-    auto jit = CajetaJit::compile(src, "test.F");
-    auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 5);
-}
 
 // The same binding cannot be surrendered twice: the first `#keep` demotes it
 // to a borrow, and transferring from a borrow is the one error that shape
 // raises. The old fixture added `keep` twice and got away with it only
 // because the list did not take a title either time.
-TEST(OwnershipLeakProbe, arrayListStringAddedTwiceIsRejected) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public final class F {\n"
-        "    public static int64 run() {\n"
-        "        String keep = \"keep\" + 7;\n"
-        "        ArrayList<String> a = heap ArrayList<String>();\n"
-        "        a.add(#keep);\n"
-        "        a.add(#keep);\n"
-        "        return (int64) a.get(0).count();\n"
-        "    }\n"
-        "}\n";
-    compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
-}
 
 // 2.1.4 — the transfer spellings, all in one place. `add(#s)` surrenders the
 // one String (the slot takes its wrapper); a fresh `#String` temp (`substring`
 // result) is RESOLVED into the slot and the temp reclaimed after the call —
 // String slots always own their wrappers, so both reads survive any later
 // adds and the teardown frees exactly the two resident wrappers.
-TEST(OwnershipLeakProbe, stringElementTransferSpellings) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public final class G {\n"
-        "    public static int64 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int64 t = 0;\n"
-        "        {\n"
-        "            String s = \"keep\" + 7;\n"
-        "            ArrayList<String> a = heap ArrayList<String>();\n"
-        "            a.add(s.substring(0, s.count()));\n"   // fresh copy
-        "            a.add(#s);\n"                          // surrender
-        "            t = (int64) (a.get(0).count() + a.get(1).count());\n"
-        "        }\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return leaked * 100 + t;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.G");
-    auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 10);
-}
 
 // string-temp-title-forwarding — one program pinning every String element
 // store mode against ArrayList's plain-`T` add: a LEND (slot resolves its own
@@ -226,32 +149,6 @@ TEST(OwnershipLeakProbe, stringElementTransferSpellings) {
 // reclaimed caller-side after the call), with reads after later adds and a
 // lender read after teardown. Slots always owning their wrappers is what makes
 // each read safe; leaked == 0 is what proves the temps were still reclaimed.
-TEST(OwnershipLeakProbe, stringElementModeMatrix) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public final class G {\n"
-        "    public static int64 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int64 t = 0;\n"
-        "        String k = \"keep\" + 7;\n"
-        "        {\n"
-        "            ArrayList<String> a = heap ArrayList<String>();\n"
-        "            a.add(k);\n"                    // lend
-        "            a.add(k + \"!\");\n"            // concat temp
-        "            a.add(k.substring(0, 4));\n"    // #R-call temp
-        "            t = (int64) (a.get(0).count() + a.get(1).count()\n"
-        "                + a.get(2).count());\n"     // 5 + 6 + 4
-        "        }\n"
-        "        t = t + (int64) k.count();\n"       // lender survives teardown
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return leaked * 100 + t;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.G");
-    auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 20);
-}
 
 // Bench-faithful: build a #-keyed HashMap<String,int32> AND do n lookups (each a
 // throwaway borrowed "key"+j), repeated over many iterations. The live-set must

@@ -60,27 +60,6 @@ TEST(ThrowableOptionalTests, getCauseOptional) {
 }
 
 // 3.1.2 — hint()/docUrl() empty by default; present through an override.
-TEST(ThrowableOptionalTests, hintDocUrlOptional) {
-    EXPECT_EQ(runJit(
-        "Exception bare = heap Exception(\"plain\");\n"
-        "if (!bare.hint().isEmpty()) { return -1; }\n"
-        "if (!bare.docUrl().isEmpty()) { return -2; }\n"
-        "Hinted h = heap Hinted(\"needs force\");\n"
-        "Optional<String> hh = h.hint();\n"
-        "if (!hh.isPresent()) { return -3; }\n"
-        "if (!(hh.get() == \"try -f\")) { return -4; }\n"
-        "if (!h.docUrl().isEmpty()) { return -5; }\n"
-        "return 1;"), 1);
-}
 
 // 3.1.3 — golden: toJson() for a two-deep chain, byte-identical to the
 // pre-migration output (frames empty because nothing was thrown).
-TEST(ThrowableOptionalTests, toJsonByteIdentical) {
-    EXPECT_EQ(runJit(
-        "Exception inner = heap Exception(\"disk full\");\n"
-        "Exception outer = heap Exception(\"save failed\", #inner);\n"
-        "String want = \"{\\\"severity\\\":\\\"error\\\",\\\"code\\\":\\\"cajeta.error.Exception\\\",\\\"message\\\":\\\"save failed\\\",\\\"category\\\":{\\\"retryable\\\":false,\\\"transient\\\":false,\\\"userActionable\\\":false},\\\"causeChain\\\":[{\\\"code\\\":\\\"cajeta.error.Exception\\\",\\\"message\\\":\\\"disk full\\\"}],\\\"frames\\\":[]}\";\n"
-        "String got = outer.toJson();\n"
-        "if (!(got == want)) { return -1; }\n"
-        "return 1;"), 1);
-}

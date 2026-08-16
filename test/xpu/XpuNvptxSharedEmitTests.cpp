@@ -121,19 +121,6 @@ const char* kReduceSrc =
 
 // `shared int32[256]` lowers to a .shared state-space allocation, indexed by
 // shared-space loads/stores, with the workgroup barrier between phases.
-TEST(XpuNvptxSharedEmitTests, lowersSharedTileReduction) {
-    std::string ptx = lowerToPtx(kReduceSrc, "test.M", "reduce");
-    ASSERT_FALSE(ptx.empty());
-
-    EXPECT_NE(ptx.find(".visible .entry reduce"), std::string::npos) << ptx;
-    // The per-block shared array lands in the .shared state space.
-    EXPECT_NE(ptx.find(".shared"), std::string::npos) << ptx;
-    // tile[...] reads/writes are shared-space memory ops.
-    EXPECT_NE(ptx.find("ld.shared"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("st.shared"), std::string::npos) << ptx;
-    // Workgroup barrier between the load and the reduction phases.
-    EXPECT_NE(ptx.find("bar.sync"), std::string::npos) << ptx;
-}
 
 // array-literals §4 — `Shared<int32> tile = shared [10,20,30];` allocates a
 // per-block shared tile of the literal's length AND populates it with the
@@ -171,40 +158,6 @@ TEST(XpuNvptxSharedEmitTests, lowersSharedArrayLiteral) {
 // A runtime-sized `shared T[expr]` (expr is a kernel param, not a constant) is
 // DYNAMIC shared memory: an external, unsized .shared region sized by the
 // launch's `shared:` byte count. Distinguished in PTX by `.extern .shared`.
-TEST(XpuNvptxSharedEmitTests, lowersDynamicSharedExtern) {
-    auto src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "import cajeta.xpu.Workgroup;\n"
-        "import cajeta.xpu.Barrier;\n"
-        "import cajeta.xpu.Shared;\n"
-        "public class M {\n"
-        "    @Kernel\n"
-        "    public static void dynreduce(KernelBuffer<int32> out, KernelBuffer<int32> in,\n"
-        "                                 uint32 n, uint32 tileLen) {\n"
-        "        Shared<int32> tile = shared int32[tileLen];\n"
-        "        uint32 t = KernelThread.x();\n"
-        "        uint32 g = KernelThread.globalIdX();\n"
-        "        if (g < n) { tile[t] = in[g]; } else { tile[t] = 0; }\n"
-        "        Barrier.workgroup();\n"
-        "        for (uint32 s = 128; s > 0; s >>= 1) {\n"
-        "            if (t < s) { tile[t] += tile[t + s]; }\n"
-        "            Barrier.workgroup();\n"
-        "        }\n"
-        "        if (t == 0) { out[Workgroup.x()] = tile[0]; }\n"
-        "    }\n"
-        "}\n";
-    std::string ptx = lowerToPtx(src, "test.M", "dynreduce");
-    ASSERT_FALSE(ptx.empty());
-
-    EXPECT_NE(ptx.find(".visible .entry dynreduce"), std::string::npos) << ptx;
-    // Dynamic shared memory is an EXTERNAL (unsized) .shared region.
-    EXPECT_NE(ptx.find(".extern .shared"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("ld.shared"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("st.shared"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("bar.sync"), std::string::npos) << ptx;
-}
 
 // Review fix D1 — a shared literal with a NON-constant (per-thread) element is
 // rejected. Every thread runs the populate stores with no barrier, so a

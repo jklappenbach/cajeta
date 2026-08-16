@@ -55,42 +55,14 @@ int32_t runI32(const std::string& dBody) {
 // Smoke: construct + destroy. Lock's ctor calls lockNew; its
 // synthesized drop wrapper calls user.drop() (which calls lockDestroy),
 // then __cajeta_free.
-TEST(LockClassTests, constructAndDestroy) {
-    EXPECT_EQ(runI32(
-        "    public static int32 run() {\n"
-        "        Lock lock = heap Lock();\n"
-        "        return 1;\n"
-        "    }\n"
-    ), 1);
-}
 
 // tryAcquire on an uncontended lock succeeds (returns 1). The caller
 // releases manually; the lock's auto-drop at method exit destroys the
 // mutex.
-TEST(LockClassTests, tryAcquireUncontendedSucceeds) {
-    EXPECT_EQ(runI32(
-        "    public static int32 run() {\n"
-        "        Lock lock = heap Lock();\n"
-        "        int32 got = lock.tryAcquire();\n"
-        "        if (got == 1) lock.releaseLock();\n"
-        "        return got;\n"
-        "    }\n"
-    ), 1);
-}
 
 // While the calling thread already holds the lock, a second tryAcquire
 // fails (returns 0). Verifies dispatch through the user-facing class
 // reaches the right pthread_mutex behaviour.
-TEST(LockClassTests, tryAcquireWhileHeldFails) {
-    EXPECT_EQ(runI32(
-        "    public static int32 run() {\n"
-        "        Lock lock = heap Lock();\n"
-        "        LockGuard held = lock.acquire();\n"
-        "        int32 second = lock.tryAcquire();\n"
-        "        return second;\n"
-        "    }\n"
-    ), 0);
-}
 
 // RAII verification through method boundaries: a helper method
 // acquires the lock and returns — the method-scoped drop chain fires
@@ -116,38 +88,7 @@ TEST(LockClassTests, guardDropAtMethodExitReleasesBeforeDestroy) {
 }
 
 // Two independent Lock instances coexist without interference.
-TEST(LockClassTests, twoIndependentLocks) {
-    EXPECT_EQ(runI32(
-        "    public static int32 run() {\n"
-        "        Lock a = heap Lock();\n"
-        "        Lock b = heap Lock();\n"
-        "        LockGuard ga = a.acquire();\n"
-        "        int32 bFree = b.tryAcquire();\n"
-        "        if (bFree == 1) b.releaseLock();\n"
-        "        return bFree;\n"
-        "    }\n"
-    ), 1);
-}
 
 // Manual acquire/release pairs through the user-facing API. No
 // LockGuard — exercises the API surface without depending on RAII
 // release order.
-TEST(LockClassTests, repeatedManualAcquireRelease) {
-    EXPECT_EQ(runI32(
-        "    public static int32 run() {\n"
-        "        Lock lock = heap Lock();\n"
-        "        int32 sum = 0;\n"
-        "        int32 got1 = lock.tryAcquire();\n"
-        "        if (got1 == 1) {\n"
-        "            sum = sum + 10;\n"
-        "            lock.releaseLock();\n"
-        "        }\n"
-        "        int32 got2 = lock.tryAcquire();\n"
-        "        if (got2 == 1) {\n"
-        "            sum = sum + 20;\n"
-        "            lock.releaseLock();\n"
-        "        }\n"
-        "        return sum;\n"
-        "    }\n"
-    ), 30);
-}

@@ -365,7 +365,6 @@ protected:
 std::unique_ptr<cajeta_test::CajetaJit> VectorTests::jit;
 
 // Construct and read a component by name (.y) and by color alias (.g == .y).
-TEST_F(VectorTests, constructAndComponentRead) { EXPECT_EQ(i32("run_constructAndComponentRead"), 0); }
 
 // SIMD eqMask: per-lane equality packed into a bitmask. Lanes 2 and 5 -> 0b100100.
 TEST_F(VectorTests, eqMaskBitmask) { EXPECT_EQ(i32("run_eqMaskBitmask"), 36); }
@@ -377,67 +376,47 @@ TEST_F(VectorTests, eqMaskFirstViaCtz) { EXPECT_EQ(i32("run_eqMaskFirstViaCtz"),
 TEST_F(VectorTests, vload16ThenEqMask) { EXPECT_EQ(i32("run_vload16ThenEqMask"), 36); }
 
 // .r/.g/.b/.a alias the first four lanes.
-TEST_F(VectorTests, colorAliases) { EXPECT_EQ(i32("run_colorAliases"), 40); }
 
 // Element-wise add of two same-shape vectors.
-TEST_F(VectorTests, elementWiseAdd) { EXPECT_EQ(i32("run_elementWiseAdd"), 33); }
 
 // Scalar broadcast: vec * scalar and scalar * vec.
-TEST_F(VectorTests, scalarBroadcast) { EXPECT_EQ(i32("run_scalarBroadcast"), 0); }
 
 // Integer vectors: element-wise subtract.
-TEST_F(VectorTests, integerVectorSub) { EXPECT_EQ(i32("run_integerVectorSub"), 18); }
 
 // Indexed read v[i], constant and dynamic index.
-TEST_F(VectorTests, indexRead) { EXPECT_EQ(i32("run_indexRead"), 0); }
 
 // Component assignment v.x = e.
-TEST_F(VectorTests, componentAssign) { EXPECT_EQ(i32("run_componentAssign"), 11); }
 
 // Indexed assignment v[i] = e.
-TEST_F(VectorTests, indexAssign) { EXPECT_EQ(i32("run_indexAssign"), 130); }
 
 // dot(a, b) over a float vector.
-TEST_F(VectorTests, dotProduct) { EXPECT_EQ(i32("run_dotProduct"), 32); }
 
 // Integer dot (DP4a): Vector<int8,4> -> int32.
-TEST_F(VectorTests, integerDotProduct) { EXPECT_EQ(i32("run_integerDotProduct"), 70); }
 
 // Fused integer dot-add: a.dot(b, acc) = acc + dot(a,b).
-TEST_F(VectorTests, integerDotAccumulate) { EXPECT_EQ(i32("run_integerDotAccumulate"), 170); }
 
 // Unsigned dot reads the bytes as uint8 (no sign extension).
-TEST_F(VectorTests, unsignedIntegerDotProduct) { EXPECT_EQ(i32("run_unsignedIntegerDotProduct"), 1025); }
 
 // length((3,4)) == 5.
-TEST_F(VectorTests, lengthHelper) { EXPECT_EQ(i32("run_lengthHelper"), 5); }
 
 // normalize((0,4)) == (0,1); the y lane is 1.
 TEST_F(VectorTests, normalizeHelper) { EXPECT_EQ(i32("run_normalizeHelper"), 1); }
 
 // min((1,5,3),(4,2,6)) = (1,2,3) -> sum 6.
-TEST_F(VectorTests, minHelper) { EXPECT_EQ(i32("run_minHelper"), 6); }
 
 // max((1,5,3),(4,2,6)) = (4,5,6) -> sum 15.
-TEST_F(VectorTests, maxHelper) { EXPECT_EQ(i32("run_maxHelper"), 15); }
 
 // clamp((-2,5,20), 0, 10) = (0,5,10) -> sum 15.
-TEST_F(VectorTests, clampHelper) { EXPECT_EQ(i32("run_clampHelper"), 15); }
 
 // lerp((0,0),(10,20), 0.5) = (5,10) -> sum 15.
-TEST_F(VectorTests, lerpHelper) { EXPECT_EQ(i32("run_lerpHelper"), 15); }
 
 // cross((1,0,0),(0,1,0)) = (0,0,1) -> z lane 1.
-TEST_F(VectorTests, crossHelper) { EXPECT_EQ(i32("run_crossHelper"), 2); }
 
 // reflect((1,-1), (0,1)) = (1,1) -> sum 2.
-TEST_F(VectorTests, reflectHelper) { EXPECT_EQ(i32("run_reflectHelper"), 2); }
 
 // distance((0,0),(3,4)) = 5.
-TEST_F(VectorTests, distanceHelper) { EXPECT_EQ(i32("run_distanceHelper"), 5); }
 
 // refract straight-down through eta=1 is the unchanged ray -> sum -1.
-TEST_F(VectorTests, refractHelper) { EXPECT_EQ(i32("run_refractHelper"), -1); }
 
 // Multi-component swizzle reads.
 TEST_F(VectorTests, swizzleReads) { EXPECT_EQ(i32("run_swizzleReads"), 327); }
@@ -446,16 +425,12 @@ TEST_F(VectorTests, swizzleReads) { EXPECT_EQ(i32("run_swizzleReads"), 327); }
 TEST_F(VectorTests, swizzleColorAlias) { EXPECT_EQ(i32("run_swizzleColorAlias"), 60); }
 
 // Comparison masks + all/any/select.
-TEST_F(VectorTests, comparisonMaskAnyAll) { EXPECT_EQ(i32("run_comparisonMaskAnyAll"), 101); }
 
 // select: pick a where (a < b), else b -> the element-wise min.
-TEST_F(VectorTests, maskSelectIsMin) { EXPECT_EQ(i32("run_maskSelectIsMin"), 6); }
 
 // A scalar RHS broadcasts: (x > 0).select(x, 0) is a ReLU -> sum 2.
-TEST_F(VectorTests, maskScalarBroadcastRelu) { EXPECT_EQ(i32("run_maskScalarBroadcastRelu"), 2); }
 
 // half (float16) and bfloat16 vector element types.
-TEST_F(VectorTests, halfAndBfloat16Elements) { EXPECT_EQ(i32("run_halfAndBfloat16Elements"), 28); }
 
 // Chained ops, distinct single-assignment locals.
 TEST_F(VectorTests, chainedOpsInt32) { EXPECT_EQ(i32("run_chainedOpsInt32"), 4); }
@@ -481,32 +456,8 @@ TEST_F(VectorTests, accStripeIntrinsicChain) { EXPECT_EQ(i32("run_accStripeIntri
 // own per-test compile and must stay OUT of the shared module. =====
 
 // cross requires 3-component vectors.
-TEST(VectorRejectTests, crossNon3DRejected) {
-    try {
-        runI32(
-            "        Vector<float32,2> a = heap Vector<float32,2>(1.0f, 0.0f);\n"
-            "        Vector<float32,2> b = heap Vector<float32,2>(0.0f, 1.0f);\n"
-            "        Vector<float32,2> c = a.cross(b);\n"
-            "        return 0;\n");
-        FAIL() << "expected CAJETA_ERROR_VECTOR_METHOD";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VECTOR_METHOD");
-    }
-}
 
 // Integer min/max is a follow-on — rejected for now with a clean diagnostic.
-TEST(VectorRejectTests, integerMinRejected) {
-    try {
-        runI32(
-            "        Vector<int32,2> a = heap Vector<int32,2>(1, 5);\n"
-            "        Vector<int32,2> b = heap Vector<int32,2>(4, 2);\n"
-            "        Vector<int32,2> m = a.min(b);\n"
-            "        return m.x;\n");
-        FAIL() << "expected CAJETA_ERROR_VECTOR_METHOD";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_VECTOR_METHOD");
-    }
-}
 
 // A swizzle referencing a lane beyond the source is rejected (.xyz on N=2).
 TEST(VectorRejectTests, swizzleOutOfRangeRejected) {

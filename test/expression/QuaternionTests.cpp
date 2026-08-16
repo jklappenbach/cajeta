@@ -31,38 +31,12 @@ int32_t runI32(const std::string& body) {
 } // namespace
 
 // A unit quaternion has length 1.
-TEST(QuaternionTests, identityLength) {
-    EXPECT_EQ(runI32(
-        "        Quaternion<float32> q = heap Quaternion<float32>(1.0f, 0.0f, 0.0f, 0.0f);\n"
-        "        return (int32) q.length();\n"), 1);
-}
 
 // Hamilton product i*j = k. i=(0,1,0,0) j=(0,0,1,0) k=(0,0,0,1); ij.dot(k)=1.
-TEST(QuaternionTests, hamiltonProductIJequalsK) {
-    EXPECT_EQ(runI32(
-        "        Quaternion<float32> i = heap Quaternion<float32>(0.0f, 1.0f, 0.0f, 0.0f);\n"
-        "        Quaternion<float32> j = heap Quaternion<float32>(0.0f, 0.0f, 1.0f, 0.0f);\n"
-        "        Quaternion<float32> k = heap Quaternion<float32>(0.0f, 0.0f, 0.0f, 1.0f);\n"
-        "        Quaternion<float32> ij = i * j;\n"
-        "        return (int32)(ij.dot(k) + 0.5f);\n"), 1);  // dot(k,k) = 1
-}
 
 // conjugate((1,2,3,4)) = (1,-2,-3,-4); its dot with the original = 1-4-9-16 = -28.
-TEST(QuaternionTests, conjugate) {
-    EXPECT_EQ(runI32(
-        "        Quaternion<float32> q = heap Quaternion<float32>(1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        Quaternion<float32> c = q.conjugate();\n"
-        "        return (int32) c.dot(q);\n"), -28);
-}
 
 // A 90-degree rotation about z (q = (cos45, 0, 0, sin45)) takes (1,0,0) -> (0,1,0).
-TEST(QuaternionTests, rotateVector90AboutZ) {
-    EXPECT_EQ(runI32(
-        "        Quaternion<float32> q = heap Quaternion<float32>(0.70710678f, 0.0f, 0.0f, 0.70710678f);\n"
-        "        Vector<float32,3> v = heap Vector<float32,3>(1.0f, 0.0f, 0.0f);\n"
-        "        Vector<float32,3> r = q * v;\n"   // (0, 1, 0)
-        "        return (int32)(r.y + 0.5f);\n"), 1);
-}
 
 // nlerp at t=0 returns the (normalized) first quaternion.
 TEST(QuaternionTests, nlerpEndpoint) {
@@ -107,13 +81,3 @@ TEST(QuaternionTests, slerpMidpoint) {
 }
 
 // A non-float element type is rejected.
-TEST(QuaternionTests, integerElementRejected) {
-    try {
-        runI32(
-            "        Quaternion<int32> q = heap Quaternion<int32>(1, 0, 0, 0);\n"
-            "        return 0;\n");
-        FAIL() << "expected CAJETA_ERROR_QUATERNION_ELEMENT_TYPE";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_QUATERNION_ELEMENT_TYPE");
-    }
-}

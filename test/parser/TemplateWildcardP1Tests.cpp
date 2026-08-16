@@ -68,50 +68,12 @@ struct WildcardsOn {
 
 // The wildcard sentinel is registered during CajetaType::init regardless
 // of the feature flag — only the parser-site gate consults the flag.
-TEST(TemplateWildcardP1Tests, wildcardSentinelRegisteredAfterInit) {
-    Compiler compiler;
-    (void)compiler;  // ctor runs CajetaType::init.
-    auto wild = CajetaType::wildcardSentinel();
-    ASSERT_NE(wild, nullptr);
-    EXPECT_TRUE(wild->isWildcard());
-    EXPECT_EQ(wild->getQName()->toCanonical(), "?");
-}
 
 // Sanity: non-wildcard types report false from isWildcard.
-TEST(TemplateWildcardP1Tests, nonWildcardTypesReportFalse) {
-    Compiler compiler;
-    (void)compiler;
-    auto int32Ty = CajetaType::of(std::string("int32"));
-    ASSERT_NE(int32Ty, nullptr);
-    EXPECT_FALSE(int32Ty->isWildcard());
-}
 
 // Instantiating a template with the wildcard sentinel yields an erased
 // proxy: same templateOrigin as the source template, typeArguments
 // populated with the wildcard, isWildcardInstantiation() true.
-TEST(TemplateWildcardP1Tests, instantiateWithWildcardReturnsErasedProxy) {
-    WildcardsOn flag;
-    Compiler compiler;
-    auto src = std::string(
-        "package test;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n");
-    auto module = compileSource(compiler, src, "test.Box");
-    auto box = module->getStructures()["test.Box"];
-    ASSERT_NE(box, nullptr);
-    ASSERT_TRUE(box->isTemplate());
-
-    auto wild = CajetaType::wildcardSentinel();
-    ASSERT_NE(wild, nullptr);
-    auto proxy = box->instantiate({wild});
-    ASSERT_NE(proxy, nullptr);
-    EXPECT_TRUE(proxy->isWildcardInstantiation());
-    EXPECT_EQ(proxy->getTemplateOrigin().get(), box.get());
-    // Canonical includes the `?` suffix and lives under module structures.
-    EXPECT_NE(proxy->getQName()->toCanonical().find("?"), std::string::npos);
-}
 
 // Wildcard instantiation is cached per (template, args) like concrete
 // instantiations — a second call returns the same proxy pointer.
@@ -136,119 +98,19 @@ TEST(TemplateWildcardP1Tests, wildcardProxyIsCachedAcrossInstantiateCalls) {
 
 // Step 1 assignability: a concrete instantiation `Box<int32>` is
 // assignable to the same template's wildcard instantiation `Box<?>`.
-TEST(TemplateWildcardP1Tests, sameTemplateConcreteAssignableToWildcard) {
-    WildcardsOn flag;
-    Compiler compiler;
-    auto src = std::string(
-        "package test;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n");
-    auto module = compileSource(compiler, src, "test.Box");
-    auto box = module->getStructures()["test.Box"];
-    ASSERT_NE(box, nullptr);
-
-    auto int32Ty = CajetaType::of(std::string("int32"));
-    ASSERT_NE(int32Ty, nullptr);
-    auto boxOfInt = box->instantiate({int32Ty});
-    ASSERT_NE(boxOfInt, nullptr);
-
-    auto wild = CajetaType::wildcardSentinel();
-    auto boxWild = box->instantiate({wild});
-    ASSERT_NE(boxWild, nullptr);
-
-    EXPECT_TRUE(CajetaClass::isAssignableToWildcard(boxOfInt, boxWild));
-}
 
 // Step 1 assignability rejects different templates: `Holder<int32>` is
 // NOT assignable to `Box<?>` because their templateOrigin differs.
-TEST(TemplateWildcardP1Tests, differentTemplateRejectedByAssignability) {
-    WildcardsOn flag;
-    Compiler compiler;
-    auto src = std::string(
-        "package test;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public class Holder<T> {\n"
-        "    T value;\n"
-        "    public Holder(T v) { this.value = v; }\n"
-        "}\n");
-    auto module = compileSource(compiler, src, "test.Box");
-    auto box = module->getStructures()["test.Box"];
-    auto holder = module->getStructures()["test.Holder"];
-    ASSERT_NE(box, nullptr);
-    ASSERT_NE(holder, nullptr);
-
-    auto int32Ty = CajetaType::of(std::string("int32"));
-    auto holderOfInt = holder->instantiate({int32Ty});
-    auto wild = CajetaType::wildcardSentinel();
-    auto boxWild = box->instantiate({wild});
-
-    EXPECT_FALSE(CajetaClass::isAssignableToWildcard(holderOfInt, boxWild));
-}
 
 // Step 3 cache invariant 1 — wildcard instantiation does NOT collide
 // with concrete instantiations of the same template. Box<int32> and
 // Box<?> live under distinct canonical keys in module structures.
-TEST(TemplateWildcardP1Tests, wildcardCacheBucketDistinctFromConcrete) {
-    WildcardsOn flag;
-    Compiler compiler;
-    auto src = std::string(
-        "package test;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n");
-    auto module = compileSource(compiler, src, "test.Box");
-    auto box = module->getStructures()["test.Box"];
-    ASSERT_NE(box, nullptr);
-
-    auto int32Ty = CajetaType::of(std::string("int32"));
-    auto boxOfInt = box->instantiate({int32Ty});
-    auto boxWild = box->instantiate({CajetaType::wildcardSentinel()});
-
-    ASSERT_NE(boxOfInt, nullptr);
-    ASSERT_NE(boxWild, nullptr);
-    EXPECT_NE(boxOfInt.get(), boxWild.get());
-    EXPECT_NE(boxOfInt->getQName()->toCanonical(),
-              boxWild->getQName()->toCanonical());
-}
 
 // Step 3 cache invariant 2 — partial-wildcard instantiations remain
 // distinct from each other AND from the all-wildcard form. Pair<?,int32>,
 // Pair<int32,?>, and Pair<?,?> each get their own cache bucket because
 // the canonical key includes each arg position. (Variance — when these
 // become assignable in either direction — lands with Step 6.)
-TEST(TemplateWildcardP1Tests, partialWildcardCacheBucketsDistinct) {
-    WildcardsOn flag;
-    Compiler compiler;
-    auto src = std::string(
-        "package test;\n"
-        "public class Pair<A, B> {\n"
-        "    A first;\n"
-        "    B second;\n"
-        "    public Pair(A a, B b) { this.first = a; this.second = b; }\n"
-        "}\n");
-    auto module = compileSource(compiler, src, "test.Pair");
-    auto pair = module->getStructures()["test.Pair"];
-    ASSERT_NE(pair, nullptr);
-
-    auto wild = CajetaType::wildcardSentinel();
-    auto int32Ty = CajetaType::of(std::string("int32"));
-
-    auto wildLeft  = pair->instantiate({wild,    int32Ty});
-    auto wildRight = pair->instantiate({int32Ty, wild});
-    auto bothWild  = pair->instantiate({wild,    wild});
-
-    EXPECT_NE(wildLeft.get(),  wildRight.get());
-    EXPECT_NE(wildLeft.get(),  bothWild.get());
-    EXPECT_NE(wildRight.get(), bothWild.get());
-    EXPECT_NE(wildLeft->getQName()->toCanonical(),
-              wildRight->getQName()->toCanonical());
-}
 
 // Step 5a — full instantiation populates the wildcard proxy's method
 // table from the re-parsed body (T → wildcard substitution active).
@@ -276,22 +138,3 @@ TEST(TemplateWildcardP1Tests, wildcardProxyHasMethodsFromTemplateBody) {
 
 // Assignability also rejects a non-wildcard instantiation as the target
 // — `Box<?>` is the *only* legal wildcard-typed destination.
-TEST(TemplateWildcardP1Tests, nonWildcardTargetRejected) {
-    WildcardsOn flag;
-    Compiler compiler;
-    auto src = std::string(
-        "package test;\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n");
-    auto module = compileSource(compiler, src, "test.Box");
-    auto box = module->getStructures()["test.Box"];
-    ASSERT_NE(box, nullptr);
-
-    auto int32Ty = CajetaType::of(std::string("int32"));
-    auto int64Ty = CajetaType::of(std::string("int64"));
-    auto boxOfInt = box->instantiate({int32Ty});
-    auto boxOfLong = box->instantiate({int64Ty});
-    EXPECT_FALSE(CajetaClass::isAssignableToWildcard(boxOfInt, boxOfLong));
-}

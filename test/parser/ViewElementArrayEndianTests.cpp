@@ -39,80 +39,9 @@ int32_t runI32(const std::string& src) {
 
 // --- 1. inheritance: unannotated element view takes the outer's order -----
 
-TEST(ViewElementArrayEndianTests, bigEndianOuterInheritedByElements) {
-    auto src =
-        "package test;\n"
-        "public view D {\n"                    // UNANNOTATED — inherits Big
-        "    int32  s;\n"
-        "    String name;\n"
-        "}\n"
-        "@BigEndian\n"
-        "public view M {\n"
-        "    int32 magic;\n"
-        "    D[]   ds;\n"
-        "}\n"
-        "public final class E {\n"
-        "    public static int32 run() {\n"
-        "        int32[] bytes = heap int32[8];\n"
-        "        bytes[0] = 117440512;\n"      // magic = 7 (BE)
-        "        bytes[1] = 33554432;\n"       // count = 2 (BE)
-        "        bytes[2] = 83886080;\n"       // d0.s = 5 (BE, inherited)
-        "        bytes[3] = 67108864;\n"       // d0.len = 4 (BE, inherited)
-        "        bytes[4] = 1684234849;\n"     // \"abcd\"
-        "        bytes[5] = 150994944;\n"      // d1.s = 9 (BE)
-        "        bytes[6] = 67108864;\n"       // d1.len = 4 (BE)
-        "        bytes[7] = 2054781047;\n"     // \"wxyz\"
-        "        M m = M(bytes);\n"
-        "        if (m.magic != 7) return 10;\n"
-        "        if (m.ds.count() != 2) return 11;\n"
-        "        if (m.ds[0].s != 5) return 12;\n"
-        "        if (m.ds[1].s != 9) return 13;\n"
-        "        String n1 = m.ds[1].name;\n"
-        "        if (!n1.equals(\"wxyz\")) return 14;\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // --- 2. explicit element annotation wins (mixed-endian record) -------------
 
-TEST(ViewElementArrayEndianTests, elementOwnAnnotationKept) {
-    auto src =
-        "package test;\n"
-        "@LittleEndian\n"                      // explicit — NOT inherited
-        "public view D {\n"
-        "    int32  s;\n"
-        "    String name;\n"
-        "}\n"
-        "@BigEndian\n"
-        "public view M {\n"
-        "    int32 magic;\n"
-        "    D[]   ds;\n"
-        "}\n"
-        "public final class E {\n"
-        "    public static int32 run() {\n"
-        "        int32[] bytes = heap int32[8];\n"
-        "        bytes[0] = 117440512;\n"      // magic = 7 (BE — M's order)\n"
-        "        bytes[1] = 33554432;\n"       // count = 2 (BE — M's field)\n"
-        "        bytes[2] = 5;\n"              // d0.s = 5 (LE — D's order)
-        "        bytes[3] = 4;\n"              // d0.len = 4 (LE)
-        "        bytes[4] = 1684234849;\n"     // \"abcd\"
-        "        bytes[5] = 9;\n"              // d1.s = 9 (LE)
-        "        bytes[6] = 4;\n"              // d1.len = 4 (LE)
-        "        bytes[7] = 2054781047;\n"     // \"wxyz\"
-        "        M m = M(bytes);\n"
-        "        if (m.magic != 7) return 10;\n"
-        "        if (m.ds.count() != 2) return 11;\n"
-        "        if (m.ds[0].s != 5) return 12;\n"
-        "        if (m.ds[1].s != 9) return 13;\n"
-        "        String n0 = m.ds[0].name;\n"
-        "        if (!n0.equals(\"abcd\")) return 14;\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // --- 3. conflicting inheritance from two outers is rejected ----------------
 

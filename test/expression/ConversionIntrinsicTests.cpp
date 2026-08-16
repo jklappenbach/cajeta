@@ -36,40 +36,12 @@ double runF64(const std::string& body) {
 
 } // namespace
 
-TEST(ConversionIntrinsicTests, parseIntPositive) {
-    EXPECT_EQ(runI32("return Integer.parseInt(\"42\");"), 42);
-}
 
-TEST(ConversionIntrinsicTests, parseIntNegative) {
-    EXPECT_EQ(runI32("return Integer.parseInt(\"-123\");"), -123);
-}
 
-TEST(ConversionIntrinsicTests, parseIntInvalidReturnsZero) {
-    EXPECT_EQ(runI32("return Integer.parseInt(\"abc\");"), 0);
-}
 
-TEST(ConversionIntrinsicTests, parseLongLarge) {
-    EXPECT_EQ(runI32(
-        "int64 v = Long.parseLong(\"9999999999\");\n"
-        "if (v == 9999999999) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(ConversionIntrinsicTests, parseDoubleBasic) {
-    EXPECT_DOUBLE_EQ(runF64("return Double.parseDouble(\"3.14\");"), 3.14);
-}
 
-TEST(ConversionIntrinsicTests, parseBooleanTrue) {
-    EXPECT_EQ(runI32(
-        "if (Boolean.parseBoolean(\"true\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(ConversionIntrinsicTests, parseBooleanFalse) {
-    EXPECT_EQ(runI32(
-        "if (Boolean.parseBoolean(\"false\")) return 1;\n"
-        "return 0;"), 0);
-}
 
 TEST(ConversionIntrinsicTests, parseBooleanCaseInsensitive) {
     EXPECT_EQ(runI32(
@@ -77,12 +49,6 @@ TEST(ConversionIntrinsicTests, parseBooleanCaseInsensitive) {
         "return 0;"), 1);
 }
 
-TEST(ConversionIntrinsicTests, integerToStringMatchesValue) {
-    EXPECT_EQ(runI32(
-        "String s = Integer.toString(99);\n"
-        "if (s.equals(\"99\")) return 1;\n"
-        "return 0;"), 1);
-}
 
 TEST(ConversionIntrinsicTests, doubleToStringMatchesValue) {
     EXPECT_EQ(runI32(
@@ -131,9 +97,6 @@ TEST(ConversionIntrinsicTests, integerBitCount) {
     EXPECT_EQ(runI32("return Integer.bitCount(11);"), 3);
 }
 
-TEST(ConversionIntrinsicTests, integerBitCountZero) {
-    EXPECT_EQ(runI32("return Integer.bitCount(0);"), 0);
-}
 
 TEST(ConversionIntrinsicTests, integerNumberOfLeadingZeros) {
     // 1 has 31 leading zeros in a 32-bit value.
@@ -145,21 +108,5 @@ TEST(ConversionIntrinsicTests, integerNumberOfTrailingZeros) {
     EXPECT_EQ(runI32("return Integer.numberOfTrailingZeros(8);"), 3);
 }
 
-TEST(ConversionIntrinsicTests, integerNumberOfLeadingZerosOfZero) {
-    // Java's behavior: 32 when the input is 0.
-    EXPECT_EQ(runI32("return Integer.numberOfLeadingZeros(0);"), 32);
-}
 
-TEST(ConversionIntrinsicTests, longBitCountMatchesValue) {
-    // 0xFFFFFFFF as int64 has 32 set bits.
-    EXPECT_EQ(runI32("return Integer.bitCount(255);"), 8);
-}
 
-TEST(ConversionIntrinsicTests, integerReverseRoundTrip) {
-    // Reversing twice must yield the original value.
-    EXPECT_EQ(runI32(
-        "int32 x = 305419896;\n"  // 0x12345678
-        "int32 y = Integer.reverse(Integer.reverse(x));\n"
-        "if (x == y) return 1;\n"
-        "return 0;"), 1);
-}

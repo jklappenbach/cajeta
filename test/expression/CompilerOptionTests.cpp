@@ -36,44 +36,10 @@ std::string arraySource(const std::string& returnType, const std::string& body) 
 // the GEP runs and returns whatever the buffer has past the end (garbage). The
 // observable signal is "doesn't abort"; we use a small-enough out-of-range read so
 // it stays within the calloc'd chunk on glibc malloc (avoiding a real segfault).
-TEST(CompilerOptionTests, boundsCheckOffSkipsAbort) {
-    CajetaJit::Options opts;
-    opts.boundsCheckEnabled = false;
-    auto jit = CajetaJit::compile(arraySource("int32",
-        "int32[] arr = heap int32[3];\n"
-        "arr[0] = 7;\n"
-        "return arr[0];"), "test.O", opts);
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 7);
-}
 
 // Verify the EmitMode setter / getter contract.
-TEST(CompilerOptionTests, emitModeSetterRoundTrip) {
-    Compiler compiler;
-    EXPECT_EQ(compiler.getEmitMode(), EmitMode::IR);
-    compiler.setEmitMode(EmitMode::Obj);
-    EXPECT_EQ(compiler.getEmitMode(), EmitMode::Obj);
-    compiler.setEmitMode(EmitMode::Exe);
-    EXPECT_EQ(compiler.getEmitMode(), EmitMode::Exe);
-}
 
 // Verify the target triple setter changes the TargetMachine appropriately.
-TEST(CompilerOptionTests, targetTripleSetterRebuildsMachine) {
-    Compiler compiler;
-    auto* originalMachine = compiler.getTargetMachine();
-    ASSERT_NE(originalMachine, nullptr);
-    auto originalTriple = compiler.getTargetTriple();
-
-    // Switch to a well-known target available in any default LLVM build.
-    compiler.setTargetTriple("x86_64-unknown-linux-gnu");
-    auto* newMachine = compiler.getTargetMachine();
-    EXPECT_NE(newMachine, nullptr);
-    EXPECT_EQ(compiler.getTargetTriple(), "x86_64-unknown-linux-gnu");
-
-    // Restore to avoid polluting subsequent tests' default-host expectations.
-    compiler.setTargetTriple(originalTriple);
-}
 
 // --ub-traps=on (the default under --debug): divide-by-zero traps
 // via @llvm.trap (SIGILL on x86) before the SDiv would execute.

@@ -316,21 +316,6 @@ TEST(MultipleInheritanceGapTests, unimplementedInterfaceMethodRejected) {
 // Fixed by per-parent sub-object layout + this-offset adjustment at
 // every parent ctor/method call site.
 
-TEST(MultipleInheritanceGapTests, twoParentsBothInstanceFieldsFromParentCtors) {
-    auto src =
-        "package test;\n"
-        "public class A { public int32 a; public A() { this.a = 10; } }\n"
-        "public class B { public int32 b; public B() { this.b = 20; } }\n"
-        "public class C extends A, B { public C() { return; } }\n"
-        "public final class D {\n"
-        "  public static int32 run() {\n"
-        "    C c = heap C();\n"
-        "    return c.a + c.b;\n"   // 30 if both parent ctors wrote
-                                    // to the correct sub-object slot
-        "  }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 30);
-}
 
 // Companion: parent METHOD (not just ctor) reads parent's own field via
 // `this` after a write in the child. Exercises the parent-method

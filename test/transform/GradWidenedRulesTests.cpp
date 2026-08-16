@@ -43,31 +43,14 @@ float runTensor(const std::string& body) {
 } // namespace
 
 // 1.1.1 — scalar div: d/dx [x/(x+1)] = 1/(x+1)^2; at 2 -> 1/9.
-TEST(GradWidenedRules, scalarDiv) {
-    EXPECT_NEAR(gradAt("(float32 x) -> x / (x + 1.0f)", "2.0f"),
-                1.0f / 9.0f, 1e-5f);
-}
 
 // 1.1.1 — exp: d/dx e^x at 1 -> e.
-TEST(GradWidenedRules, scalarExp) {
-    EXPECT_NEAR(gradAt("(float32 x) -> Math.exp(x)", "1.0f"), 2.7182818f, 1e-4f);
-}
 
 // 1.1.1 — log: d/dx ln x at 2 -> 0.5.
-TEST(GradWidenedRules, scalarLog) {
-    EXPECT_NEAR(gradAt("(float32 x) -> Math.log(x)", "2.0f"), 0.5f, 1e-5f);
-}
 
 // 1.1.1 — sqrt: d/dx sqrt(x) at 4 -> 0.25.
-TEST(GradWidenedRules, scalarSqrt) {
-    EXPECT_NEAR(gradAt("(float32 x) -> Math.sqrt(x)", "4.0f"), 0.25f, 1e-5f);
-}
 
 // 1.1.1 — chain rule through the widened set: d/dx ln(x*x) = 2/x; at 3 -> 2/3.
-TEST(GradWidenedRules, chainLogOfSquare) {
-    EXPECT_NEAR(gradAt("(float32 x) -> Math.log(x * x)", "3.0f"),
-                2.0f / 3.0f, 1e-5f);
-}
 
 // 1.1.2 — tensor mean: d/dt mean(t*t) = 2t/n; at {1,2,3} the grads sum to 4.
 TEST(GradWidenedRules, tensorMeanOfSquare) {

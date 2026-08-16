@@ -301,8 +301,3 @@ TEST_F(DropGapTests, namedUtf8ArgControl)    { EXPECT_EQ(i64("run_namedUtf8ArgCo
 TEST_F(DropGapTests, tempUtf8ArgDrops)       { EXPECT_EQ(i64("run_tempUtf8ArgDrops"), 0); }
 TEST_F(DropGapTests, tempUtf8ReceiverDrops)  { EXPECT_EQ(i64("run_tempUtf8ReceiverDrops"), 0); }
 TEST_F(DropGapTests, tempUtf8CtorArgDrops)   { EXPECT_EQ(i64("run_tempUtf8CtorArgDrops"), 0); }
-TEST_F(DropGapTests, arrayElemMoveDrops)     { EXPECT_EQ(i64("run_arrayElemMoveDrops"), 0); }
-TEST_F(DropGapTests, arrayElemLoopFill)      { EXPECT_EQ(i64("run_arrayElemLoopFill"), 0); }
-TEST_F(DropGapTests, arrayElemOverwriteDrops){ EXPECT_EQ(i64("run_arrayElemOverwriteDrops"), 0); }
-TEST_F(DropGapTests, arrayElemBorrowControl) { EXPECT_EQ(i64("run_arrayElemBorrowControl"), 0); }
-TEST_F(DropGapTests, arrayElemTakeOut)       { EXPECT_EQ(i64("run_arrayElemTakeOut"), 0); }

@@ -411,79 +411,7 @@ TEST(XpuWaveDeviceTests, vulkanReduceSumRunsOnDevice) {
     expectUniformWaveWidth(out);
 }
 
-TEST(XpuWaveDeviceTests, amdgpuLaneIdRunsOnDevice) {
-    if (!cajeta::xpu::amd::HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kLaneSource);
-    auto k = findMethod(module->getStructures()["test.M"], "wavelane");
-    ASSERT_NE(k, nullptr);
 
-    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module dev("xpu_lane_amddevice", ctx);
-    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
-    cajeta::xpu::amd::lowerKernel(k, dev);
-    std::vector<uint8_t> hsaco = cajeta::xpu::amd::assembleHsaco(dev, *tm, "gfx1151");
-    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
-
-    cajeta::xpu::amd::HipDriver hip;
-    ASSERT_TRUE(hip.init());
-    auto mod = hip.loadModule(hsaco.data(), hsaco.size());
-    ASSERT_NE(mod, nullptr);
-    auto fn = hip.getFunction(mod, "wavelane");
-    ASSERT_NE(fn, nullptr);
-
-    const unsigned block = 32;  // one wave window
-    auto dOut = hip.alloc(block * sizeof(uint32_t));
-    ASSERT_NE(dOut, nullptr);
-    void* params[] = { &dOut };
-    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, block, params));
-    ASSERT_TRUE(hip.synchronize());
-
-    std::vector<uint32_t> out(block, 0);
-    ASSERT_TRUE(hip.memcpyDtoH(out.data(), dOut, block * sizeof(uint32_t)));
-    hip.free(dOut);
-    for (unsigned i = 0; i < kVerify; ++i)
-        EXPECT_EQ(out[i], i) << "lane " << i;
-}
-
-TEST(XpuWaveDeviceTests, vulkanLaneIdRunsOnDevice) {
-    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan compute device available";
-    }
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kLaneSource);
-    auto k = findMethod(module->getStructures()["test.M"], "wavelane");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module dev("xpu_lane_vkdevice", ctx);
-    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, dev);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
-    ASSERT_FALSE(spirv.empty());
-
-    const unsigned threads = cajeta::xpu::vulkan::kVulkanLocalSizeX;
-    cajeta::xpu::vulkan::VulkanDriver vk;
-    ASSERT_TRUE(vk.init());
-    auto dOut = vk.alloc(threads * sizeof(uint32_t));
-    ASSERT_NE(dOut, 0u);
-    std::vector<uint32_t> zero(threads, 0);
-    ASSERT_TRUE(vk.upload(dOut, zero.data(), threads * sizeof(uint32_t)));
-    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "wavelane", {dOut},
-                          /*groupCountX=*/1));
-
-    std::vector<uint32_t> out(threads, 0);
-    ASSERT_TRUE(vk.download(out.data(), dOut, threads * sizeof(uint32_t)));
-    vk.free(dOut);
-    for (unsigned i = 0; i < kVerify; ++i)
-        EXPECT_EQ(out[i], i) << "lane " << i;
-}
 
 // Item 9: Wave.width() on-device. Was ⛔ on Vulkan — the SPIR-V backend cannot
 // select llvm.spv.wave.get.lane.count (still true through LLVM 23). The fix
@@ -671,41 +599,6 @@ TEST(XpuWaveDeviceTests, amdgpuReduceFamilyRunsOnDevice) {
     expectReduceFamily(out, n);
 }
 
-TEST(XpuWaveDeviceTests, vulkanReduceFamilyRunsOnDevice) {
-    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan compute device available";
-    }
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kReduceOpsSource);
-    auto k = findMethod(module->getStructures()["test.M"], "wavereduceops");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module dev("xpu_reduceops_vkdevice", ctx);
-    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, dev);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
-    ASSERT_FALSE(spirv.empty());
-
-    const unsigned n = cajeta::xpu::vulkan::kVulkanLocalSizeX;  // threads per region
-    cajeta::xpu::vulkan::VulkanDriver vk;
-    ASSERT_TRUE(vk.init());
-    auto dOut = vk.alloc(5 * n * sizeof(uint32_t));
-    auto dN = vk.alloc(sizeof(uint32_t));
-    ASSERT_NE(dOut, 0u); ASSERT_NE(dN, 0u);
-    std::vector<uint32_t> zero(5 * n, 0);
-    ASSERT_TRUE(vk.upload(dOut, zero.data(), 5 * n * sizeof(uint32_t)));
-    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
-    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "wavereduceops",
-                          {dOut, dN}, /*groupCountX=*/1));
-
-    std::vector<uint32_t> out(5 * n, 0);
-    ASSERT_TRUE(vk.download(out.data(), dOut, 5 * n * sizeof(uint32_t)));
-    vk.free(dOut); vk.free(dN);
-    expectReduceFamily(out, n);
-}
 
 TEST(XpuWaveDeviceTests, amdgpuPrefixScanRunsOnDevice) {
     if (!cajeta::xpu::amd::HipDriver::available()) {

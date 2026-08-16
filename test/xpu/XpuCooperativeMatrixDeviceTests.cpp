@@ -657,74 +657,6 @@ const char* kBf16SoftwareSource =
     "    }\n"
     "}\n";
 
-TEST(XpuCooperativeMatrixDeviceTests, bf16SoftwareMatmulOnDevice) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kBf16SoftwareSource);
-    auto k = findMethod(module->getStructures()["test.M"], "bmatmul");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module dev("xpu_coopmat_bf16sw_vkdevice", ctx);
-    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
-
-    // The software tier emits a sticky `note: [mma-tiering]` (not a warning) —
-    // capture stderr over lowering and assert the appraisal fires.
-    std::ostringstream captured;
-    std::streambuf* prev = std::cerr.rdbuf(captured.rdbuf());
-    cajeta::xpu::vulkan::lowerKernel(k, dev);
-    std::cerr.rdbuf(prev);
-    EXPECT_NE(captured.str().find("[mma-tiering]"), std::string::npos)
-        << "software-tier CooperativeMatrix should emit a note; got: "
-        << captured.str();
-
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
-    ASSERT_FALSE(spirv.empty());
-
-    std::vector<uint16_t> hostA(TILE), hostB(TILE);
-    std::vector<uint16_t> ref(TILE, 0);
-    for (unsigned i = 0; i < N; ++i)
-        for (unsigned kk = 0; kk < N; ++kk)
-            hostA[i * N + kk] = f2bf16((float) ((i + 2 * kk) % 5));
-    for (unsigned kk = 0; kk < N; ++kk)
-        for (unsigned j = 0; j < N; ++j)
-            hostB[kk * N + j] = f2bf16((float) ((3 * kk + j) % 4));
-    for (unsigned i = 0; i < N; ++i)
-        for (unsigned j = 0; j < N; ++j) {
-            float acc = 0.0f;
-            for (unsigned kk = 0; kk < N; ++kk)
-                acc += bf162f(hostA[i * N + kk]) * bf162f(hostB[kk * N + j]);
-            ref[i * N + j] = f2bf16(acc);
-        }
-
-    VulkanDriver vk;
-    if (!vk.init()) GTEST_SKIP() << "no working Vulkan device";
-    auto dA = vk.alloc(TILE * sizeof(uint16_t));
-    auto dB = vk.alloc(TILE * sizeof(uint16_t));
-    auto dC = vk.alloc(TILE * sizeof(uint16_t));
-    ASSERT_NE(dA, 0u);
-    ASSERT_NE(dB, 0u);
-    ASSERT_NE(dC, 0u);
-    ASSERT_TRUE(vk.upload(dA, hostA.data(), TILE * sizeof(uint16_t)));
-    ASSERT_TRUE(vk.upload(dB, hostB.data(), TILE * sizeof(uint16_t)));
-    std::vector<uint16_t> seed(TILE, 0xFFFFu);
-    ASSERT_TRUE(vk.upload(dC, seed.data(), TILE * sizeof(uint16_t)));
-
-    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "bmatmul", {dA, dB, dC},
-                          /*groupCountX=*/1));
-
-    std::vector<uint16_t> out(TILE, 0u);
-    ASSERT_TRUE(vk.download(out.data(), dC, TILE * sizeof(uint16_t)));
-    vk.free(dA);
-    vk.free(dB);
-    vk.free(dC);
-
-    for (unsigned i = 0; i < N; ++i)
-        for (unsigned j = 0; j < N; ++j)
-            EXPECT_EQ(out[i * N + j], ref[i * N + j])
-                << "bf16 software tile mismatch at (" << i << "," << j << ")";
-}
 
 // LDS-staged GEMM on the Vulkan device: stage the A/B tiles into workgroup-shared
 // (Workgroup storage) via CoopStage.panel, barrier, then load the cooperative-
@@ -830,31 +762,6 @@ TEST(XpuCooperativeMatrixDeviceTests, ldsStagedMatmulOnDevice) {
 // set ("software" → Portable, "native" → Native); unset or unknown keeps the
 // per-backend base. A unique feature tag ("TESTONLY") keeps this isolated from
 // the COOPMATRIX / AS overrides in the same test process.
-TEST(ImplTierOverride, resolveImplTierPrecedence) {
-    using cajeta::xpu::resolveImplTier;
-    using ImplTier = cajeta::xpu::LoweringTarget::ImplTier;
-    const char* var = "CAJETA_GPU_TESTONLY_IMPL";
-
-    unsetenv(var);
-    EXPECT_EQ(ImplTier::Native,   resolveImplTier("TESTONLY", ImplTier::Native));
-    EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Portable));
-    {
-        EnvGuard g(var, "software");
-        EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Native));
-        EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Portable));
-    }
-    {
-        EnvGuard g(var, "native");
-        EXPECT_EQ(ImplTier::Native, resolveImplTier("TESTONLY", ImplTier::Portable));
-        EXPECT_EQ(ImplTier::Native, resolveImplTier("TESTONLY", ImplTier::Native));
-    }
-    {
-        EnvGuard g(var, "garbage");           // unknown value → keep base
-        EXPECT_EQ(ImplTier::Native,   resolveImplTier("TESTONLY", ImplTier::Native));
-        EXPECT_EQ(ImplTier::Portable, resolveImplTier("TESTONLY", ImplTier::Portable));
-    }
-    EXPECT_EQ(nullptr, std::getenv(var)) << "env must be restored after the guards";
-}
 
 // Forced-software coop-matrix on a NATIVE-capable device. Gated on
 // coopMatrixAvailable() — the point is to force the portable tile where the

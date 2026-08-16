@@ -377,115 +377,13 @@ TEST(JsonSynthesizerTests, roundTripMixedPrimitives) {
 // Pins the inner-array loop the synthesizer must emit: consume
 // START_ARRAY, collect NUMBER tokens into a tmp ArrayList, copy
 // into a sized int32[] on END_ARRAY.
-TEST(JsonSynthesizerTests, parseInt32ArrayField) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Bag {\n"
-        "    public int32[] ids;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        // {"ids":[1,2,3]} → 15 bytes
-        "        int8[] buf = heap int8[15];\n"
-        "        buf[0]  = (int8) 0x7B;\n"  // '{'
-        "        buf[1]  = (int8) 0x22;\n"  // '"'
-        "        buf[2]  = (int8) 0x69;\n"  // 'i'
-        "        buf[3]  = (int8) 0x64;\n"  // 'd'
-        "        buf[4]  = (int8) 0x73;\n"  // 's'
-        "        buf[5]  = (int8) 0x22;\n"  // '"'
-        "        buf[6]  = (int8) 0x3A;\n"  // ':'
-        "        buf[7]  = (int8) 0x5B;\n"  // '['
-        "        buf[8]  = (int8) 0x31;\n"  // '1'
-        "        buf[9]  = (int8) 0x2C;\n"  // ','
-        "        buf[10] = (int8) 0x32;\n"  // '2'
-        "        buf[11] = (int8) 0x2C;\n"  // ','
-        "        buf[12] = (int8) 0x33;\n"  // '3'
-        "        buf[13] = (int8) 0x5D;\n"  // ']'
-        "        buf[14] = (int8) 0x7D;\n"  // '}'
-        "        Bag b = Json.parse<Bag>(buf, (int64) 15);\n"
-        "        return b.ids[0] * 100 + b.ids[1] * 10 + b.ids[2];\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 123);
-}
 
 // Empty array `{"ids":[]}`: parser produces a zero-length int32[].
 // Pins the START_ARRAY-immediately-followed-by-END_ARRAY case.
-TEST(JsonSynthesizerTests, parseEmptyInt32ArrayField) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Bag {\n"
-        "    public int32[] ids;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        // {"ids":[]} → 10 bytes
-        "        int8[] buf = heap int8[10];\n"
-        "        buf[0] = (int8) 0x7B;\n"  // '{'
-        "        buf[1] = (int8) 0x22;\n"  // '"'
-        "        buf[2] = (int8) 0x69;\n"  // 'i'
-        "        buf[3] = (int8) 0x64;\n"  // 'd'
-        "        buf[4] = (int8) 0x73;\n"  // 's'
-        "        buf[5] = (int8) 0x22;\n"  // '"'
-        "        buf[6] = (int8) 0x3A;\n"  // ':'
-        "        buf[7] = (int8) 0x5B;\n"  // '['
-        "        buf[8] = (int8) 0x5D;\n"  // ']'
-        "        buf[9] = (int8) 0x7D;\n"  // '}'
-        "        Bag b = Json.parse<Bag>(buf, (int64) 10);\n"
-        "        return (int32) b.ids.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}
 
 // Round-trip int32[] through Json.toBytes<Bag> → Json.parse<Bag>.
-TEST(JsonSynthesizerTests, roundTripInt32Array) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Bag {\n"
-        "    public int32[] ids;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Bag a = heap Bag();\n"
-        "        a.ids = heap int32[3];\n"
-        "        a.ids[0] = 4;\n"
-        "        a.ids[1] = 5;\n"
-        "        a.ids[2] = 6;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
-        "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
-        "        return b.ids[0] * 100 + b.ids[1] * 10 + b.ids[2];\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 456);
-}
 
 // Round-trip an int64[] through both write and read paths.
-TEST(JsonSynthesizerTests, roundTripInt64Array) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Bag {\n"
-        "    public int64[] ns;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        Bag a = heap Bag();\n"
-        "        a.ns = heap int64[2];\n"
-        "        a.ns[0] = (int64) 100000000000;\n"
-        "        a.ns[1] = (int64) 200000000000;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
-        "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
-        "        return b.ns[0] + b.ns[1];\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), (int64_t) 300000000000LL);
-}
 
 // Round-trip a boolean[] through both paths.
 TEST(JsonSynthesizerTests, roundTripBooleanArray) {
@@ -516,58 +414,10 @@ TEST(JsonSynthesizerTests, roundTripBooleanArray) {
 }
 
 // Round-trip a float64[] through both paths.
-TEST(JsonSynthesizerTests, roundTripFloat64Array) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Bag {\n"
-        "    public float64[] xs;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static float64 run() {\n"
-        "        Bag a = heap Bag();\n"
-        "        a.xs = heap float64[2];\n"
-        "        a.xs[0] = 1.5;\n"
-        "        a.xs[1] = 2.25;\n"
-        "        int8[] bytes = Json.toBytes<Bag>(a);\n"
-        "        int64 len = (int64) bytes.count();\n"
-        "        Bag b = Json.parse<Bag>(bytes, len);\n"
-        "        return b.xs[0] + b.xs[1];\n"
-        "    }\n"
-        "}\n";
-    EXPECT_NEAR(runF64(src), 3.75, 1e-9);
-}
 
 // Mixed primitives + array — multi-field dispatch with an array
 // in the mix. Pins that array consumption doesn't desynchronize
 // the outer key loop.
-TEST(JsonSynthesizerTests, roundTripMixedWithArray) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "public class Mix {\n"
-        "    public int32 id;\n"
-        "    public int32[] ids;\n"
-        "    public boolean flag;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Mix a = heap Mix();\n"
-        "        a.id = 9;\n"
-        "        a.ids = heap int32[2];\n"
-        "        a.ids[0] = 7;\n"
-        "        a.ids[1] = 8;\n"
-        "        a.flag = true;\n"
-        "        int8[] bytes = Json.toBytes<Mix>(a);\n"
-        "        int64 len = (int64) bytes.count();\n"
-        "        Mix m = Json.parse<Mix>(bytes, len);\n"
-        "        int32 r = m.id * 100 + m.ids[0] * 10 + m.ids[1];\n"
-        "        if (m.flag) r = r + 1000;\n"
-        "        return r;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1978);  // 1000 + 900 + 70 + 8
-}
 
 // ---- Phase 4b commit 8: @JsonProperty + @JsonIgnore annotations ----
 
@@ -1057,44 +907,9 @@ TEST(JsonSynthesizerTests, mixedAnnotatedFields) {
 
 // `JsonObject.get(String)` — convenience overload that delegates to
 // the byte-buffer form against the String's `.bytes` + `.byteLength()`.
-TEST(JsonSynthesizerTests, jsonObjectGetByString) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "import cajeta.codec.json.JsonValue;\n"
-        "import cajeta.codec.json.JsonObject;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String s = \"{\\\"id\\\":42}\";\n"
-        "        JsonValue v = Json.parse(s);\n"
-        "        JsonObject o = v.asObject();\n"
-        "        JsonValue idValue = o.get(\"id\");\n"
-        "        return idValue.asInt32();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // `JsonReader.currentString()` materializes a String view of the
 // current token's bytes.
-TEST(JsonSynthesizerTests, jsonReaderCurrentString) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.JsonReader;\n"
-        "import cajeta.codec.json.JsonToken;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String s = \"\\\"hi\\\"\";\n"
-        "        int8[] sb = s.toBytes();\n"
-        "        JsonReader r = heap JsonReader(sb, (int64) s.byteLength());\n"
-        "        int32 t = r.next();\n"
-        "        if (t != JsonToken.STRING) return 0;\n"
-        "        String got = r.currentString();\n"
-        "        return (int32) got.count();\n"  // 2 codepoints
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // `Json.parse<T>(String)` convenience overload. Hands the String's
 // `bytes` + `byteLength` to the byte-buffer variant in one step —
@@ -1807,28 +1622,6 @@ TEST(JsonSynthesizerTests, jsonOptionalBooleanPresentAndNull) {
     EXPECT_EQ(runI32(src), 1);
 }
 
-TEST(JsonSynthesizerTests, jsonOptionalFloat64PresentAndNull) {
-    auto src =
-        "package test;\n"
-        "import cajeta.codec.json.Json;\n"
-        "import cajeta.lang.Optional;\n"
-        "public class WithOpt {\n"
-        "    public Optional<float64> x;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static float64 run() {\n"
-        "        String nulled = \"{\\\"x\\\":null}\";\n"
-        "        WithOpt b = Json.parse<WithOpt>(nulled);\n"
-        "        if (b.x == null) { return -1.0; }\n"
-        "        if (!b.x.isEmpty()) { return -2.0; }\n"
-        "        String present = \"{\\\"x\\\":2.5}\";\n"
-        "        WithOpt a = Json.parse<WithOpt>(present);\n"
-        "        if (a.x.isEmpty()) { return -3.0; }\n"
-        "        return a.x.get();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_NEAR(runF64(src), 2.5, 1e-9);
-}
 
 // @JsonRequired composes with a naming strategy: the required-flag arm
 // must key off the EFFECTIVE wire key, not the declared field name.

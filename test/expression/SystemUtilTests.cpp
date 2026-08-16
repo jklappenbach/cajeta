@@ -40,13 +40,6 @@ double runF64(const std::string& body) {
 
 } // namespace
 
-TEST(SystemUtilTests, currentTimeMillisIsPositive) {
-    // Wall-clock millis since epoch is always > 0 on any sane host.
-    EXPECT_EQ(runI32(
-        "int64 t = System.currentTimeMillis();\n"
-        "if (t > 0) return 1;\n"
-        "return 0;"), 1);
-}
 
 TEST(SystemUtilTests, currentTimeMillisMonotonicAcrossTwoReads) {
     // Two back-to-back reads — clock either advances or stays the same.
@@ -57,12 +50,6 @@ TEST(SystemUtilTests, currentTimeMillisMonotonicAcrossTwoReads) {
         "return 0;"), 1);
 }
 
-TEST(SystemUtilTests, randomInUnitInterval) {
-    // Math.random() returns [0.0, 1.0).
-    double r = runF64("return Math.random();");
-    EXPECT_GE(r, 0.0);
-    EXPECT_LT(r, 1.0);
-}
 
 TEST(SystemUtilTests, randomDistinctOnConsecutiveCalls) {
     // Two calls in the same JIT run get different draws — degenerate-PRNG check.

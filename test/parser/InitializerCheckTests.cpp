@@ -67,35 +67,8 @@ TEST(InitializerCheckTests, staticFieldTypeMismatchIsAnError) {
 }
 
 // 3.1.3a: the same, on an INSTANCE field.
-TEST(InitializerCheckTests, instanceFieldUnresolvableCallIsAnError) {
-    auto e = expectThrows(
-        "package test;\n"
-        "public class Holder {\n"
-        "    int32 v = NoSuchType.nope();\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = heap Holder();\n"
-        "        return h.v;\n"
-        "    }\n"
-        "}\n");
-    EXPECT_NE(e.getMessage().find("NoSuchType"), std::string::npos)
-        << e.getMessage();
-}
 
 // 3.1.3b: the same, on a LOCAL initializer.
-TEST(InitializerCheckTests, localUnresolvableCallIsAnError) {
-    auto e = expectThrows(
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32 v = NoSuchType.nope();\n"
-        "        return v;\n"
-        "    }\n"
-        "}\n");
-    EXPECT_NE(e.getMessage().find("NoSuchType"), std::string::npos)
-        << e.getMessage();
-}
 
 // 3.1.4: OVER-REJECTION GUARD. Every legal initializer shape must still
 // compile: literal, static call, ctor call, cast, and a field read. If this

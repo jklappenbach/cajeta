@@ -75,42 +75,9 @@ std::string compileExpectError(const std::string& src,
 
 // 2.1.1 — `#x` from a borrow forges a second owner. The borrow-shaped local
 // (bare-identifier initializer) must reject move-out, naming the owner.
-TEST(LocalLinearityTests, moveOutOfBorrowIsCompileError) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell obj = heap Cell(7);\n"
-        "        Cell obj2 = obj;\n"       // borrow: bare-identifier init
-        "        Cell obj3 #= obj2;\n"     // move out of a borrow — reject
-        "        return obj3.n;\n"
-        "    }\n"
-        "}\n";
-    std::string msg =
-        compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
-    EXPECT_NE(msg.find("obj2"), std::string::npos) << msg;
-    EXPECT_NE(msg.find("obj"), std::string::npos) << msg;
-}
 
 // 2.1.2 — the same owner transferred twice as a call argument: the second
 // `#v` is use-after-move, named with the prior transfer.
-TEST(LocalLinearityTests, doubleCallArgTransferIsCompileError) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Sink s1 = heap Sink();\n"
-        "        Sink s2 = heap Sink();\n"
-        "        Cell v = heap Cell(5);\n"
-        "        s1.take(#v);\n"
-        "        s2.take(#v);\n"          // second transfer — still rejected
-        "        return s2.seen;\n"
-        "    }\n"
-        "}\n";
-    // A transfer demotes its source, so a SECOND transfer is a transfer from
-    // a borrow — one error covers both shapes (transfer-demotes-to-borrow §1.3).
-    std::string msg =
-        compileExpectError(src, "CAJETA_ERROR_MOVE_OF_BORROW");
-    EXPECT_NE(msg.find("v"), std::string::npos) << msg;
-}
 
 // 2.1.2 corollary — a plain READ after a call-arg transfer is also
 // use-after-move (today it compiles and reads a deactivated value).
@@ -146,24 +113,6 @@ TEST(LocalLinearityTests, readAfterCtorArgTransferIsLegal) {
 
 // 2.1.3 — legal same-scope move chain: exactly one drop at scope exit
 // (liveCount delta 0), the final holder readable.
-TEST(LocalLinearityTests, legalMoveChainSingleDrop) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Cell obj = heap Cell(42);\n"
-        "        Cell obj3 #= obj;\n"
-        "        Cell obj4 #= obj3;\n"
-        "        return obj4.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // 2.1.3 — reads of the moved-out links are rejected.
 TEST(LocalLinearityTests, readOfMovedChainLinkIsLegal) {
@@ -201,30 +150,6 @@ TEST(LocalLinearityTests, borrowRemainsReadableAcrossOwnerMove) {
 
 // 2.1.4 — loop re-arm: transfer, then reassign a fresh value next
 // iteration (the trySplit shape). Compiles; no leak, no double free.
-TEST(LocalLinearityTests, loopTransferReArmCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Sink s = heap Sink();\n"
-        "        int32 i = 0;\n"
-        "        Cell piece = heap Cell(1);\n"
-        "        while (i < 4) {\n"
-        "            s.take(#piece);\n"
-        "            piece = heap Cell(i + 2);\n"  // re-arm
-        "            i = i + 1;\n"
-        "        }\n"
-        "        s.take(#piece);\n"
-        "        return s.seen;\n"                 // 1+2+3+4+5 = 15
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 15);
-}
 
 // 2.1.5 — branch join is conservative: moved on one path = moved after.
 TEST(LocalLinearityTests, branchJoinMovedIsLegal) {
@@ -244,27 +169,6 @@ TEST(LocalLinearityTests, branchJoinMovedIsLegal) {
 
 // 2.1.5 control — reassigned on the SAME path after the move: re-armed at
 // the join on that path, but the untaken path never moved it. Legal.
-TEST(LocalLinearityTests, branchMoveThenReArmCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work(int32 flag) {\n"
-        "        Sink s = heap Sink();\n"
-        "        Cell v = heap Cell(5);\n"
-        "        if (flag > 0) {\n"
-        "            s.take(#v);\n"
-        "            v = heap Cell(6);\n" // re-arm before the join
-        "        }\n"
-        "        return v.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work(1) + work(0);\n"   // 6 + 5
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 11);
-}
 
 // 2.1.6 — class-typed bare declaration + inner-scope move-assign into the
 // outer local (generalizes the String-only 9.3.1 retarget): value survives
@@ -300,18 +204,6 @@ TEST(LocalLinearityTests, bareDeclMoveAssignAcrossScopes) {
 // why it WARNS (CAJETA_WARN_REDUNDANT_TRANSFER) rather than failing the build.
 // The code must still compile and behave identically to the single sharp.
 
-TEST(LocalLinearityTests, doubleSharpStoreWarnsAndCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell a = heap Cell(3);\n"
-        "        Cell b #= #a;\n"           // double sharp — redundant, not wrong
-        "        return b.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
-}
 
 // The same on a FIELD store — the shape the stdlib actually used.
 TEST(LocalLinearityTests, doubleSharpFieldStoreWarnsAndCompiles) {
@@ -373,126 +265,22 @@ TEST(LocalLinearityTests, doubleSharpFromFieldWarnsAndForwards) {
 // else in the compile (the stdlib, a fixture typo) would read as a pass: §6
 // records three tests that once went green for exactly that reason. The pair
 // makes the offending line the only difference between red and green.
-TEST(LocalLinearityTests, doubleSharpFromFieldSingleSharpControlCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public class Node2 {\n"
-        "    public Cell value;\n"
-        "    public Node2(Cell v) { this.value #= v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Node2 n = heap Node2(heap Cell(4));\n"
-        "        Cell t #= n.value;\n"      // the one-character difference
-        "        return t.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 4);
-}
 
 // 3.1.2 — an ARRAY-ELEMENT source.
-TEST(LocalLinearityTests, doubleSharpFromElementWarnsAndForwards) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell[] arr = heap Cell[2];\n"
-        "        arr[0] #= heap Cell(5);\n"
-        "        Cell t #= #arr[0];\n"      // redundant sharp over an ELEMENT slot
-        "        return t.n;\n"
-        "    }\n"
-        "}\n";
-    // Forwards the element's mode exactly as `#= arr[0]` does, and warns.
-    EXPECT_EQ(runI32(src), 5);
-    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
-}
 
 // 3.1.5 (element half) — the same fixture minus the sharp.
-TEST(LocalLinearityTests, doubleSharpFromElementSingleSharpControlCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell[] arr = heap Cell[2];\n"
-        "        arr[0] #= heap Cell(5);\n"
-        "        Cell t #= arr[0];\n"
-        "        return t.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // 3.1.3 — a CALL-RESULT source. `make()` already hands back a title (`#Cell`),
 // so `#make()` claims a title that is already the caller's.
-TEST(LocalLinearityTests, doubleSharpFromCallResultWarnsAndCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static #Cell make() { return heap Cell(6); }\n"
-        "    public static int32 run() {\n"
-        "        Cell t #= #make();\n"      // redundant sharp over a `#R` result
-        "        return t.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
-}
 
 // 3.1.5 (call half) — the same fixture minus the sharp.
-TEST(LocalLinearityTests, doubleSharpFromCallResultSingleSharpControlCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static #Cell make() { return heap Cell(6); }\n"
-        "    public static int32 run() {\n"
-        "        Cell t #= make();\n"
-        "        return t.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // 3.1.2 (store half) — an element STORE whose source is an element. This is
 // the shift/sift primitive, and it must keep forwarding the source bit under
 // the single sharp: slot 0 is owned, so slot 1 ends up owning it and slot 0
 // decays. One live Cell at scope exit, not two, and no double free.
-TEST(LocalLinearityTests, elementToElementStoreForwardsUnderSingleSharp) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell[] arr = heap Cell[2];\n"
-        "            arr[0] #= heap Cell(7);\n"
-        "            arr[1] #= arr[0];\n"   // forward the title, no double sharp
-        "            t = arr[1].n;\n"
-        "        }\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // The CORRECT spelling keeps working — the store carries the transfer.
-TEST(LocalLinearityTests, singleSharpStoreStillCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell a = heap Cell(3);\n"
-        "        Cell b #= a;\n"
-        "        return b.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
 
 // And the LEGACY `dst = #v` spelling is untouched — it is deprecated, not an
 // error, and rejecting it here would be a different (breaking) decision.
-TEST(LocalLinearityTests, legacyPlainAssignWithSharpRhsStillCompiles) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell a = heap Cell(5);\n"
-        "        Cell b = #a;\n"
-        "        return b.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}

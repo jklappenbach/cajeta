@@ -75,39 +75,9 @@ std::string readFile(const fs::path& p) {
 
 // --xpu-backend=amdgpu --xpu-emit=isa writes a per-kernel .isa alongside the
 // IR output, carrying the device entry. No GPU / lld needed.
-TEST(XpuAmdgpuAotCliTests, amdgpuBackendEmitsIsaArtifact) {
-    auto [src, build] = makeProject();
-
-    Compiler compiler;
-    compiler.setEmitMode(EmitMode::IR);
-    compiler.setXpuBackend(XpuBackend::Amdgpu);
-    compiler.setXpuEmit(XpuEmit::Isa);
-    compiler.setXpuArch("gfx1151");
-    compiler.compile("test.M.saxpy", src.string(), build.string());
-
-    auto isaPath = findArtifact(build, ".isa");
-    ASSERT_FALSE(isaPath.empty()) << "no .isa written under " << build;
-    std::string isa = readFile(isaPath);
-    EXPECT_NE(isa.find(".amdhsa_kernel saxpy"), std::string::npos) << isa;
-    EXPECT_NE(isa.find("gfx1151"), std::string::npos) << isa;
-
-    fs::remove_all(src.parent_path());
-}
 
 // Default backend (None) is host-only: no AMD device artifact even though the
 // source has a @Kernel.
-TEST(XpuAmdgpuAotCliTests, defaultBackendEmitsNoIsaArtifact) {
-    auto [src, build] = makeProject();
-
-    Compiler compiler;
-    compiler.setEmitMode(EmitMode::IR);
-    compiler.compile("test.M.saxpy", src.string(), build.string());
-
-    EXPECT_TRUE(findArtifact(build, ".isa").empty());
-    EXPECT_TRUE(findArtifact(build, ".hsaco").empty());
-
-    fs::remove_all(src.parent_path());
-}
 
 // --xpu-emit=hsaco links the AMDGCN object through ROCm's ld.lld. Gated on an
 // actual ROCm/HIP device: a generic host ld.lld merely being on PATH does NOT

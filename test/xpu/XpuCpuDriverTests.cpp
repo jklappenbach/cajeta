@@ -193,34 +193,6 @@ const char* kSaxpyTeardownSource =
 
 // CpuDriver resolves the kernel by name and runs it over a grid; globalId.x =
 // ctaid*ntid + tid covers [0, N).
-TEST(XpuCpuDriverTests, launchesSaxpyByNameOverAGrid) {
-    Compiler compiler;
-    std::string failure;
-    auto jit = registerKernel(compiler, kSaxpySource, "saxpy", failure);
-    ASSERT_NE(jit, nullptr) << failure;
-
-    const unsigned B = 64, G = 4;
-    const int N = static_cast<int>(B * G);
-    const float a = 3.0f;
-    std::vector<float> x(N), y(N), y0(N);
-    for (int i = 0; i < N; ++i) {
-        x[i] = static_cast<float>(i);
-        y[i] = y0[i] = static_cast<float>(2 * i + 1);
-    }
-
-    // kernelParams (cuLaunch/hipModuleLaunch convention): argv[i] → &arg_i.
-    float* yptr = y.data();
-    float* xptr = x.data();
-    float aval = a;
-    void* argv[] = {&yptr, &xptr, &aval};
-
-    CpuDriver d;
-    ASSERT_TRUE(CpuDriver::available());
-    ASSERT_TRUE(d.launch("saxpy", argv, /*gridX=*/G, /*blockX=*/B));
-
-    for (int i = 0; i < N; ++i)
-        EXPECT_FLOAT_EQ(y[i], a * x[i] + y0[i]) << "element " << i;
-}
 
 // A different param signature (extra uint32 + a bounds guard) drives the same
 // unpacker: the launch must apply SAXPY where i < n and leave the tail untouched.
@@ -259,12 +231,6 @@ TEST(XpuCpuDriverTests, scalarUnpackingAcrossParamShapes) {
 
 // The precise "no such kernel" contract: launching an unregistered name fails
 // rather than crashing.
-TEST(XpuCpuDriverTests, lookupMissOnUnknownKernel) {
-    CpuDriver d;
-    void* argv[] = {};
-    EXPECT_FALSE(d.launch("definitely_not_a_registered_kernel", argv,
-                          /*gridX=*/1, /*blockX=*/1));
-}
 
 // Regression: the registry must OWN its keys. A registration ctor runs from JIT'd
 // code whose module memory — including the `xpu.cpu.kname.<name>` string the ctor

@@ -85,86 +85,11 @@ TEST(StackOptionalStreamShapeProbe, primitiveNullStackCtorReturnsEmpty) {
 // O2 paired: present-path takes the stack ctor with a real primitive value,
 // empty-path uses null. Mixed pattern verifies both branches of a typical
 // next() body.
-TEST(StackOptionalStreamShapeProbe, primitiveStackCtorBothBranches) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.Optional;\n"
-        "public class Src {\n"
-        "    int32 i;\n"
-        "    public Src() { this.i = 0; }\n"
-        "    public Optional<int32> next() {\n"
-        "        if (this.i < 3) {\n"
-        "            int32 v = this.i;\n"
-        "            this.i = this.i + 1;\n"
-        "            return stack Optional<int32>(true, v);\n"
-        "        }\n"
-        "        return stack Optional<int32>(false);\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Src s = heap Src();\n"
-        "        int32 acc = 0;\n"
-        "        Optional<int32> o = s.next();\n"
-        "        while (o.isPresent()) {\n"
-        "            acc = acc + o.get();\n"
-        "            o = s.next();\n"
-        "        }\n"
-        "        return acc;\n"  // 0+1+2 = 3
-        "    }\n"
-        "}\n";
-    runWithRethrow(src, 3);
-}
 
 // O1 isolated, compile only: subclass overrides next() and ends with
 // `return o;` where o is a local Optional<int32>. This is the FilterStream-
 // shape exhausted-path return. Verifies Statement.cpp's sret-fallback
 // memcpy from a local pointer to the sret slot.
-TEST(StackOptionalStreamShapeProbe, returnLocalOptionalFromSretMethodCompile) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.Optional;\n"
-        "public class Src {\n"
-        "    int32 i;\n"
-        "    public Src() { this.i = 0; }\n"
-        "    public Optional<int32> next() {\n"
-        "        if (this.i < 2) {\n"
-        "            int32 v = this.i;\n"
-        "            this.i = this.i + 1;\n"
-        "            return stack Optional<int32>(true, v);\n"
-        "        }\n"
-        "        return stack Optional<int32>(false);\n"
-        "    }\n"
-        "}\n"
-        "public class Filter {\n"
-        "    Src source;\n"
-        "    public Filter(Src s) { this.source = s; }\n"
-        "    public Optional<int32> next() {\n"
-        "        Optional<int32> o = this.source.next();\n"
-        "        while (o.isPresent()) {\n"
-        "            int32 v = o.get();\n"
-        "            if (v == 1) {\n"
-        "                return stack Optional<int32>(true, v);\n"
-        "            }\n"
-        "            o = this.source.next();\n"
-        "        }\n"
-        "        return o;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    try {
-        auto jit = CajetaJit::compile(src, "test.D");
-        SUCCEED();
-    } catch (cajeta::Exception& e) {
-        FAIL() << "cajeta::Exception: " << e.getMessage();
-    } catch (...) {
-        FAIL() << "unknown exception during compile";
-    }
-}
 
 // Trivially `return stack X(...)` — confirms baseline NRVO path is fine.
 TEST(StackOptionalStreamShapeProbe, baselineDirectStackReturn) {

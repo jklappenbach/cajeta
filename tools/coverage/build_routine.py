@@ -107,7 +107,32 @@ def main():
         for name in read_names(p):
             if name in runnable:
                 pinned.add(name)
-    unmeasured = runnable - set(units)
+
+    # UNMEASURABLE, not redundant. A unit whose index entry attributes ZERO
+    # lines ran and covered nothing the parent process could see — the
+    # signature of a test that drives the `cajeta` CLI as a child process
+    # (ANALYSIS caveat 2). gcov instruments the parent; the work happens in the
+    # fork. Treating that as "covers nothing, therefore droppable" deletes the
+    # only tests of the entire CLI surface, which is what happened on
+    # 2026-08-15: 227 such tests went, including every BuildToolArms and
+    # ArchiveCommand case.
+    #
+    # "Can't be proven redundant, so it stays" already governs tests with no
+    # entry at all. A zero-line entry is the same epistemic position with more
+    # steps, so it gets the same answer.
+    #
+    # NOTE the conflation, which is deliberate: zero attribution also means "the
+    # test CRASHED before gcov could flush" (index_gcov.py says so where it
+    # records the empty unit). This rule therefore promotes known-crashing tests
+    # into the gate, which is how
+    # SharedStdlibDylibSpike.sharedStdlibResolvesAcrossUserDylibsCtorRunsOnce
+    # was found on 2026-08-15 — crashing since at least the 2026-08-10 measure,
+    # outside the gate, so the sweep never ran it and nobody knew. Keeping a
+    # crasher visible is the right answer; a test that cannot complete is the
+    # last thing that should be silently deleted for "covering nothing".
+    unmeasurable = {u for u, files in units.items()
+                    if not any(files.values())}
+    unmeasured = (runnable - set(units)) | unmeasurable
 
     gate = sorted(cover | pinned | unmeasured)
 
@@ -128,8 +153,10 @@ def main():
             f"#   greedy {a.target:.1%} line-coverage cover"
             f" ({len(cover)} tests)\n"
             f"#   + curated pins ({len(pinned - cover)} additional)\n"
-            f"#   + not-yet-measured tests ({len(unmeasured - cover - pinned)}"
-            " additional)\n"
+            f"#   + unmeasured/unmeasurable tests "
+            f"({len(unmeasured - cover - pinned)} additional, of which "
+            f"{len(unmeasurable - cover - pinned)} attribute zero lines "
+            "because their work happens in a child process)\n"
             f"# Coverage held: {held.bit_count()}/{universe} measured lines"
             f" = {held.bit_count()/max(1,universe):.2%}\n"
             f"# Battery: {len(runnable)} runnable tests -> gate keeps"
@@ -146,7 +173,9 @@ def main():
           f'{got.bit_count()}/{universe} = '
           f'{got.bit_count()/max(1,universe):.2%}')
     print(f'pins added:        {len(pinned - cover)}')
-    print(f'unmeasured kept:   {len(unmeasured - cover - pinned)}')
+    print(f'unmeasured kept:   {len(unmeasured - cover - pinned)} '
+          f'(of which {len(unmeasurable - cover - pinned)} measured-as-zero: '
+          f'subprocess blind spot)')
     print(f'GATE TOTAL:        {len(gate)} '
           f'({len(gate)/max(1,len(runnable)):.0%} of battery), '
           f'holding {held.bit_count()/max(1,universe):.2%} of measured lines')

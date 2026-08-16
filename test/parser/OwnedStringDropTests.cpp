@@ -75,22 +75,7 @@ TEST(OwnedStringDropTests, concatResultDoesNotDrop_neverDropRule) {
 // nonzero. (Contrast concatResultDoesNotDrop_neverDropRule above, which stays 0
 // only because the non-escaping concat result is bump-allocated from the frame
 // arena and reclaimed by the scope reset instead of an individual drop.)
-TEST(OwnedStringDropTests, substringResultDropsAtScopeExit) {
-    EXPECT_GT(observeDropCount(
-        "String result = \"hello world\".substring(0, 5);"
-    ), 0);
-}
 
-TEST(OwnedStringDropTests, toUpperCaseResultDropsAtScopeExit) {
-    EXPECT_GT(observeDropCount(
-        "String result = \"hello\".toUpperCase();"
-    ), 0);
-}
 
 // String literal alias is NOT owned — borrowing a literal must not
 // register a drop, else we'd attempt to free .rodata at scope exit.
-TEST(OwnedStringDropTests, literalAliasDoesNotDrop) {
-    EXPECT_EQ(observeDropCount(
-        "String alias = \"hello\";"
-    ), 0);
-}

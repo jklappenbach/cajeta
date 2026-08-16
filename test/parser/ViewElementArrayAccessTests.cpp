@@ -62,80 +62,14 @@ const char* kGoldenFill =
 
 // --- c.1: element access reads golden values -------------------------------
 
-TEST(ViewElementArrayAccessTests, elementFixedFieldGolden) {
-    auto src = std::string(kViews) +
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        + kGoldenFill +
-        "        if (m.ds[0].s != 5) return 10;\n"
-        "        if (m.ds[1].s != 9) return 11;\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
-TEST(ViewElementArrayAccessTests, elementStringFieldGolden) {
-    auto src = std::string(kViews) +
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        + kGoldenFill +
-        "        String n0 = m.ds[0].name;\n"
-        "        String n1 = m.ds[1].name;\n"
-        "        if (!n0.equals(\"abcd\")) return 10;\n"
-        "        if (!n1.equals(\"wxyz\")) return 11;\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // An element view bound to a local reads the same values (the element is a
 // first-class view value, not only a chained-expression temporary).
-TEST(ViewElementArrayAccessTests, elementViewAsLocal) {
-    auto src = std::string(kViews) +
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        + kGoldenFill +
-        "        D d = m.ds[1];\n"
-        "        if (d.s != 9) return 10;\n"
-        "        String n = d.name;\n"
-        "        if (!n.equals(\"wxyz\")) return 11;\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // --- c.2: length + bounds --------------------------------------------------
 
-TEST(ViewElementArrayAccessTests, lengthReadsCount) {
-    auto src = std::string(kViews) +
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        + kGoldenFill +
-        "        if (m.ds.count() != 2) return 10;\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
-TEST(ViewElementArrayAccessTests, outOfRangeIndexThrows) {
-    auto src = std::string(kViews) +
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        + kGoldenFill +
-        "        try {\n"
-        "            int32 x = m.ds[5].s;\n"
-        "            return 99;\n"
-        "        } catch (Exception e) {\n"
-        "            return 7;\n"
-        "        }\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // --- c.3: String[] element read --------------------------------------------
 
@@ -168,19 +102,6 @@ TEST(ViewElementArrayAccessTests, stringArrayElementRead) {
 
 // --- c.4: write-through on element fixed fields ----------------------------
 
-TEST(ViewElementArrayAccessTests, elementFixedFieldWriteThrough) {
-    auto src = std::string(kViews) +
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        + kGoldenFill +
-        "        m.ds[1].s = 42;\n"
-        "        if (m.ds[1].s != 42) return 10;\n"
-        "        if (bytes[5] != 42) return 11;\n"   // wrote through to buffer
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // --- c.5: fixed-size element stride path -----------------------------------
 

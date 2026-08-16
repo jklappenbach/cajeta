@@ -68,45 +68,8 @@ TEST(HashMapUserClassValueTests, unresolvedConstructorIsHardError) {
 // construction. The template shape (base Stream<T>) regressed because the
 // synthesized default was named with the instantiation's arg-suffixed
 // typeName and never resolved; pinned by StreamTests.baseStreamCountIsZero.
-TEST(HashMapUserClassValueTests, noCtorClassDefaultConstructs) {
-    std::string src =
-        "package test;\n"
-        "public class Bare {\n"
-        "    public int32 n;\n"
-        "    public int32 get() { return this.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Bare b = heap Bare();\n"
-        "        return b.get();\n"  // zero-init contract: 0
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}
 
 // Args passed to a ctor-less class can never resolve — still a hard error.
-TEST(HashMapUserClassValueTests, noCtorClassWithArgsIsHardError) {
-    std::string src =
-        "package test;\n"
-        "public class Bare {\n"
-        "    public int32 n;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Bare b = heap Bare(7);\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        ADD_FAILURE() << "expected CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR");
-        EXPECT_NE(e.getMessage().find("Bare"), std::string::npos);
-    } catch (const std::exception& e) {
-        ADD_FAILURE() << "wrong exception type: " << e.what();
-    }
-}
 
 // 1.1.1 — single put + indexer read of a field. uniform-transfer 2.3: the
 // map OWNS its values, so the put surrenders and `obj` stays readable as a

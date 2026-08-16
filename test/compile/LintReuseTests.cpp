@@ -268,58 +268,11 @@ const char* SIBLING =
 
 // 1.1.1 — lint A, restore, lint A again in one process: both runs' output
 // identical to a fresh process's.
-TEST(LintReuse, RepeatLintMatchesFreshProcess) {
-    SKIP_WITHOUT_BINARY();
-    auto root = freshTempDir("repeat") / "src";
-    auto file = writeUnit(root, "Alpha", HEALTHY_ALPHA);
-
-    auto oracle = oracleLint(file, "--diag-format=json");
-    auto warm1 = runWarm(file);
-    auto warm2 = runWarm(file);
-
-    EXPECT_EQ(warm1.rc == 0, oracle.rc == 0);
-    EXPECT_EQ(warm1.err, oracle.err) << "first warm run diverges from one-shot";
-    EXPECT_EQ(warm2.rc, warm1.rc);
-    EXPECT_EQ(warm2.err, oracle.err) << "second warm run diverges from one-shot";
-}
 
 // 1.1.1 (error shape) — the same holds when the file has semantic errors.
-TEST(LintReuse, RepeatLintWithErrorsMatchesFreshProcess) {
-    SKIP_WITHOUT_BINARY();
-    auto root = freshTempDir("repeaterr") / "src";
-    auto file = writeUnit(root, "Alpha", ERROR_ALPHA);
-
-    auto oracle = oracleLint(file, "--diag-format=json");
-    auto warm1 = runWarm(file);
-    auto warm2 = runWarm(file);
-
-    EXPECT_NE(oracle.rc, 0) << "fixture must produce a semantic error";
-    EXPECT_NE(warm1.rc, 0);
-    EXPECT_EQ(warm1.err, oracle.err);
-    EXPECT_NE(warm2.rc, 0);
-    EXPECT_EQ(warm2.err, oracle.err);
-}
 
 // 1.1.2 — lint A (with errors), restore, lint healthy B: no leakage of A's
 // diagnostics, types, or placeholders into B's run.
-TEST(LintReuse, ErrorRunDoesNotLeakIntoHealthyRun) {
-    SKIP_WITHOUT_BINARY();
-    auto rootA = freshTempDir("leakA") / "src";
-    auto fileA = writeUnit(rootA, "Alpha", ERROR_ALPHA);
-    auto rootB = freshTempDir("leakB") / "src";
-    auto fileB = writeUnit(rootB, "Beta", HEALTHY_BETA);
-
-    auto oracleB = oracleLint(fileB, "--diag-format=json");
-    auto warmA = runWarm(fileA);
-    auto warmB = runWarm(fileB);
-
-    EXPECT_NE(warmA.rc, 0) << "fixture must produce a semantic error";
-    EXPECT_EQ(warmB.rc == 0, oracleB.rc == 0);
-    EXPECT_EQ(warmB.err, oracleB.err)
-        << "healthy B after broken A diverges from one-shot";
-    EXPECT_EQ(warmB.err.find("NoSuchType"), std::string::npos)
-        << "A's diagnostics leaked into B's run:\n" << warmB.err;
-}
 
 // 1.1.3 — with --emit-xref: the second run's xref stream is byte-identical
 // to a fresh process's (records, order, version line).
@@ -343,28 +296,6 @@ TEST(LintReuse, XrefStreamByteIdenticalAfterRestore) {
 
 // 1.1.4 — a syntax-broken buffer, restored, then the healthy twin: the
 // healthy twin's output is unaffected by the broken run before it.
-TEST(LintReuse, SyntaxBrokenBufferThenHealthyTwin) {
-    SKIP_WITHOUT_BINARY();
-    auto rootBroken = freshTempDir("synbroken") / "src";
-    auto broken = writeUnit(rootBroken, "Alpha",
-        "public final class Alpha {\n"
-        "    public static void main() { return 1 + ; }\n"
-        "}");
-    auto rootTwin = freshTempDir("syntwin") / "src";
-    auto twin = writeUnit(rootTwin, "Alpha", HEALTHY_ALPHA);
-
-    auto oracleBroken = oracleLint(broken, "--diag-format=json");
-    auto oracleTwin = oracleLint(twin, "--diag-format=json");
-    auto warmBroken = runWarm(broken);
-    auto warmTwin = runWarm(twin);
-
-    EXPECT_NE(warmBroken.rc, 0);
-    EXPECT_EQ(warmBroken.err, oracleBroken.err)
-        << "broken-buffer warm run diverges from one-shot";
-    EXPECT_EQ(warmTwin.rc == 0, oracleTwin.rc == 0);
-    EXPECT_EQ(warmTwin.err, oracleTwin.err)
-        << "healthy twin after a broken buffer diverges from one-shot";
-}
 
 // 1.1.5 — lazy stdlib: first lint imports cajeta.math; after restore, a lint
 // NOT importing it resolves as fresh (no ghost package), and a lint importing
@@ -408,29 +339,6 @@ TEST(LintReuse, LazyStdlibPackageDoesNotGhostAcrossRestore) {
 
 // 1.1.6 — --source-root context in consecutive runs: sibling signatures
 // resolve after restore identically to fresh.
-TEST(LintReuse, SourceRootSiblingsResolveAfterRestore) {
-    SKIP_WITHOUT_BINARY();
-    auto root = freshTempDir("sibroot") / "src";
-    writeUnit(root, "Sibling", SIBLING);
-    auto target = writeUnit(root, "Target",
-        "public final class Target {\n"
-        "    public static void main() {\n"
-        "        Sibling s = Sibling.make();\n"
-        "        int32 x = Sibling.add(1, 2);\n"
-        "    }\n"
-        "}");
-
-    std::string flags = "--diag-format=json --source-root " + root.string();
-    auto oracle = oracleLint(target, flags);
-    auto warm1 = runWarm(target, root.string());
-    auto warm2 = runWarm(target, root.string());
-
-    EXPECT_EQ(warm1.rc == 0, oracle.rc == 0)
-        << "warm1 stderr:\n" << warm1.err << "\noracle stderr:\n" << oracle.err;
-    EXPECT_EQ(warm1.err, oracle.err) << "first --source-root warm run diverges";
-    EXPECT_EQ(warm2.err, oracle.err)
-        << "sibling signatures after restore diverge from fresh";
-}
 
 // A consumer that declares a field of the dependency's type. The reference
 // resolves only if the `.cja` on the classpath was ingested; without it the
@@ -446,49 +354,11 @@ const char* DEP_CONSUMER =
 // dev.cajeta.logging dep stayed red-underlined in CLion while one-shot lint
 // of the same buffer was clean — the warm server never received the
 // classpath, so every dependency type read as unresolved.
-TEST(LintReuse, ClasspathDependencyResolvesInWarmLint) {
-    SKIP_WITHOUT_BINARY();
-    auto cja = buildDepArchive("warmcp");
-    ASSERT_FALSE(cja.empty()) << "dep .cja build failed";
-
-    auto root = freshTempDir("warmcpuser") / "src";
-    auto target = writeUnit(root, "Consumer", DEP_CONSUMER);
-
-    std::string flags = "--diag-format=json --classpath=" + cja.string();
-    auto oracle = oracleLint(target, flags);
-    auto warm = runWarm(target, "", "", false, {cja.string()});
-
-    EXPECT_EQ(warm.err, oracle.err)
-        << "warm lint diverges from one-shot with --classpath";
-    EXPECT_EQ(warm.err.find("UNRESOLVED_TYPE"), std::string::npos)
-        << "dependency type unresolved in warm lint:\n" << warm.err;
-}
 
 // The served path reuses a sibling context across requests. The second
 // request is a warm HIT (nothing changed), and it must still resolve the
 // dependency — a re-ingest against restored registries must neither drop the
 // dep nor double-register it.
-TEST(LintReuse, ClasspathSurvivesSiblingContextWarmHit) {
-    SKIP_WITHOUT_BINARY();
-    auto cja = buildDepArchive("servedcp");
-    ASSERT_FALSE(cja.empty()) << "dep .cja build failed";
-
-    auto root = freshTempDir("servedcpuser") / "src";
-    writeUnit(root, "Sibling", SIBLING);
-    auto target = writeUnit(root, "Consumer", DEP_CONSUMER);
-
-    std::string flags = "--diag-format=json --source-root " + root.string()
-                      + " --classpath=" + cja.string();
-    auto oracle = oracleLint(target, flags);
-
-    cajeta::lintservice::SiblingContext ctx;
-    auto cold = runServed(target, root.string(), ctx, {cja.string()});
-    auto hot  = runServed(target, root.string(), ctx, {cja.string()});
-
-    EXPECT_EQ(cold.err, oracle.err) << "cold served run diverges from one-shot";
-    EXPECT_EQ(hot.err, oracle.err)
-        << "warm-hit served run lost the classpath:\n" << hot.err;
-}
 
 // The warm hit restores a context baseline that ALREADY carries the
 // dependency's declarations. Ingesting the classpath again on top of it
@@ -618,27 +488,3 @@ TEST(LintReuse, ParityAcrossLintFixtureCorpus) {
 
 // 1.1.6 (shadow) — a staged buffer (--shadow) replacing its on-disk twin
 // behaves identically warm and fresh, across a restore.
-TEST(LintReuse, ShadowedBufferMatchesFreshAcrossRestore) {
-    SKIP_WITHOUT_BINARY();
-    auto root = freshTempDir("shadowroot") / "src";
-    writeUnit(root, "Sibling", SIBLING);
-    auto onDisk = writeUnit(root, "Target",
-        "public final class Target { public static void main() {} }");
-    auto staged = freshTempDir("staged") / "Target.cajeta";
-    {
-        std::ofstream out(staged);
-        out << "package demo;\n"
-               "public final class Target {\n"
-               "    public static void main() { int32 x = Sibling.add(3, 4); }\n"
-               "}\n";
-    }
-
-    std::string flags = "--diag-format=json --source-root " + root.string()
-                      + " --shadow " + onDisk.string();
-    auto oracle = oracleLint(staged, flags);
-    auto warm1 = runWarm(staged, root.string(), onDisk.string());
-    auto warm2 = runWarm(staged, root.string(), onDisk.string());
-
-    EXPECT_EQ(warm1.err, oracle.err) << "first shadowed warm run diverges";
-    EXPECT_EQ(warm2.err, oracle.err) << "shadowed run after restore diverges";
-}

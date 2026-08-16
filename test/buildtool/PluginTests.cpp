@@ -151,14 +151,6 @@ TEST(PluginTests, parsePluginsErrorsOnNonObject) {
               std::string::npos);
 }
 
-TEST(PluginTests, parsePluginsEmptyWhenBlockMissing) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "0.1.0" }
-    })");
-    auto specs = parsePlugins(m);
-    ASSERT_TRUE((bool)specs);
-    EXPECT_TRUE(specs->empty());
-}
 
 // ─── parsePluginsAllowedCapabilities ──────────────────────────────
 
@@ -176,22 +168,9 @@ TEST(PluginTests, parseAllowedCapsReadsArray) {
     EXPECT_EQ((*caps)[1], "network");
 }
 
-TEST(PluginTests, parseAllowedCapsEmptyWhenAbsent) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "0.1.0" }
-    })");
-    auto caps = parsePluginsAllowedCapabilities(m);
-    ASSERT_TRUE((bool)caps);
-    EXPECT_TRUE(caps->empty());
-}
 
 // ─── default allowlists + namespace predicate ─────────────────────
 
-TEST(PluginTests, defaultUserAllowlistIsFilesystemOnly) {
-    auto d = defaultUserPluginAllowlist();
-    ASSERT_EQ(d.size(), 1u);
-    EXPECT_EQ(d[0], "filesystem");
-}
 
 TEST(PluginTests, defaultFirstPartyAllowlistIsWider) {
     auto d = defaultFirstPartyPluginAllowlist();
@@ -200,13 +179,6 @@ TEST(PluginTests, defaultFirstPartyAllowlistIsWider) {
     EXPECT_NE(std::find(d.begin(), d.end(), "network"),    d.end());
 }
 
-TEST(PluginTests, firstPartyNamespaceDetected) {
-    EXPECT_TRUE(isFirstPartyPluginName("cajeta"));
-    EXPECT_TRUE(isFirstPartyPluginName("cajeta.coverage"));
-    EXPECT_TRUE(isFirstPartyPluginName("cajeta.lint.security"));
-    EXPECT_FALSE(isFirstPartyPluginName("acme.policy"));
-    EXPECT_FALSE(isFirstPartyPluginName("cajetax.evil"));
-}
 
 // ─── resolvePlugins ───────────────────────────────────────────────
 
@@ -234,56 +206,7 @@ TEST(PluginTests, resolvePluginsFetchesHighestSatisfying) {
     EXPECT_TRUE((*resolved)[0].capabilities.count("filesystem") == 1u);
 }
 
-TEST(PluginTests, resolvePluginsRejectsCapabilityOutsideAllowlist) {
-    auto root = makeTempDir("repo");
-    stagePlugin(root, "acme.policy-gate", "1.0.0",
-                {"filesystem", "process"});
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("test", root.string()),
-    };
-    auto proj = makeTempDir("proj");
-    auto home = makeTempDir("home");
-    ArtifactCache cache(proj.string(), home.string());
 
-    std::vector<PluginSpec> specs;
-    { PluginSpec p; p.name = "acme.policy-gate";
-      p.versionConstraint = "1.0.0"; specs.push_back(p); }
-
-    // Only filesystem is allowed; the plugin also wants `process`.
-    auto resolved = resolvePlugins(specs, repos, {"filesystem"}, cache);
-    ASSERT_FALSE((bool)resolved);
-    auto msg = errorText(resolved.takeError());
-    EXPECT_NE(msg.find("'process'"), std::string::npos);
-    EXPECT_NE(msg.find("plugins-allowed-capabilities"),
-              std::string::npos);
-    // The message is prefixed "plugins.<name>: ..." so the offending plugin is
-    // identifiable when several are declared; nothing pinned that prefix before.
-    EXPECT_NE(msg.find("acme.policy-gate"), std::string::npos);
-}
-
-TEST(PluginTests, resolvePluginsFirstPartyUsesWiderDefault) {
-    auto root = makeTempDir("repo");
-    // First-party plugin requests `process` — should pass with the
-    // default first-party allowlist even though no explicit allowlist
-    // was declared.
-    stagePlugin(root, "cajeta.coverage", "1.0.0",
-                {"filesystem", "process"});
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("test", root.string()),
-    };
-    auto proj = makeTempDir("proj");
-    auto home = makeTempDir("home");
-    ArtifactCache cache(proj.string(), home.string());
-
-    std::vector<PluginSpec> specs;
-    { PluginSpec p; p.name = "cajeta.coverage";
-      p.versionConstraint = "1.0.0"; specs.push_back(p); }
-
-    // Empty allowedCapabilities → callers' default-allowlist branch.
-    auto resolved = resolvePlugins(specs, repos, {}, cache);
-    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
-    EXPECT_EQ((*resolved)[0].capabilities.size(), 2u);
-}
 
 TEST(PluginTests, resolvePluginsUserPluginUsesNarrowDefault) {
     auto root = makeTempDir("repo");

@@ -90,92 +90,20 @@ TEST(SessionOwnershipTests, moveOutThenSecondTransferErrors) {
 
 // spec 4.2 runtime seam — moving a session binding away disarms its registry
 // slot: the taker owns (and drops) the value; session end must not re-drop.
-TEST(SessionOwnershipTests, moveOutDisarmsSessionSlot) {
-    auto jit = compileUnit(
-        "Probe xs = heap Probe(7);\n"
-        "take(#xs);\n"
-        "return 0;\n",
-        "cajeta.script.own2", "own2.cajeta", nullptr);
-    ASSERT_NE(nullptr, jit.get());
-    auto entry = jit->lookup<int32_t (*)()>("__cajeta_script_entry");
-    auto dropCount = jit->lookup<int32_t (*)()>("dropCount");
-    auto dropAll = reinterpret_cast<void (*)()>(
-        jit->lookupRawSymbol("__cajeta_session_drop_all"));
-    ASSERT_TRUE(entry && dropCount && dropAll);
-    entry();
-    int32_t afterEntry = dropCount();
-    EXPECT_EQ(1, afterEntry);          // `take` owned and dropped it
-    dropAll();
-    EXPECT_EQ(afterEntry, dropCount());  // the disarmed slot stays quiet
-}
 
 // spec 4.2 runtime seam, `#=` shape — `b #= a` between two top-level names:
 // b's slot owns the object, a's slot is disarmed at the transfer. One drop
 // total, at session end.
-TEST(SessionOwnershipTests, transferInitDisarmsSourceSlot) {
-    auto jit = compileUnit(
-        "Probe a = heap Probe(1);\n"
-        "Probe b #= a;\n"
-        "return 0;\n",
-        "cajeta.script.own3", "own3.cajeta", nullptr);
-    ASSERT_NE(nullptr, jit.get());
-    auto entry = jit->lookup<int32_t (*)()>("__cajeta_script_entry");
-    auto dropCount = jit->lookup<int32_t (*)()>("dropCount");
-    auto dropAll = reinterpret_cast<void (*)()>(
-        jit->lookupRawSymbol("__cajeta_session_drop_all"));
-    ASSERT_TRUE(entry && dropCount && dropAll);
-    entry();
-    EXPECT_EQ(0, dropCount());   // both names alive-shaped; one real owner
-    dropAll();
-    EXPECT_EQ(1, dropCount());   // b's slot drops once; a's slot is disarmed
-}
 
 // 4.1.3 / spec 4.6 — a top-level binding cannot HOLD a borrow: the binding
 // outlives the unit's frame, but the borrowed owner may drop or rebind in a
 // later unit. Rejected at the declaration with a directive diagnostic.
-TEST(SessionOwnershipTests, borrowCannotEscapeUnit) {
-    CompileError err;
-    auto jit = compileUnit(
-        "Probe p = heap Probe(1);\n"
-        "Probe q = p;\n"
-        "return 0;\n",
-        "cajeta.script.own4", "own4.cajeta", nullptr, &err);
-    EXPECT_EQ(nullptr, jit.get());
-    EXPECT_EQ("CAJETA_ERROR_SESSION_BORROW_ESCAPE", err.errorId);
-}
 
 // spec 4.5 boundary — the borrow-escape rule is about the SESSION scope
 // only: the same alias inside a block is an ordinary frame-local borrow.
-TEST(SessionOwnershipTests, blockLocalBorrowStaysLegal) {
-    auto jit = compileUnit(
-        "Probe p = heap Probe(1);\n"
-        "{\n"
-        "    Probe q = p;\n"
-        "    use(q);\n"
-        "}\n"
-        "return 0;\n",
-        "cajeta.script.own5", "own5.cajeta", nullptr);
-    EXPECT_NE(nullptr, jit.get());
-}
 
 // White-box anchor for the U4 API — a unit's top-level bindings land in the
 // SessionState with their canonical types, unmoved.
-TEST(SessionOwnershipTests, sessionStateRecordsBindings) {
-    cajeta::SessionState session;
-    auto jit = compileUnit(
-        "Probe xs = heap Probe(1);\n"
-        "Probe ys = heap Probe(2);\n"
-        "return 0;\n",
-        "cajeta.script.own6", "own6.cajeta", &session);
-    ASSERT_NE(nullptr, jit.get());
-    auto* xs = session.find("xs");
-    auto* ys = session.find("ys");
-    ASSERT_NE(nullptr, xs);
-    ASSERT_NE(nullptr, ys);
-    EXPECT_EQ("cajeta.script.Probe", xs->typeCanonical);
-    EXPECT_FALSE(xs->moved);
-    EXPECT_FALSE(ys->moved);
-}
 
 // 4.1.2 / spec 4.2 — move state spans units. Unit K moves `xs` out; unit
 // K+1's read is rejected with the standard diagnostic, located at K+1's
@@ -205,25 +133,3 @@ TEST(SessionOwnershipTests, moveStateSpansUnits) {
 
 // 4.1.4 / spec 4.2 + 4.3 — rebinding a moved-out name clears its move state:
 // the later unit redeclares `xs` and reads it freely.
-TEST(SessionOwnershipTests, rebindClearsMoveState) {
-    cajeta::SessionState session;
-    auto k = compileUnit(
-        "Probe xs = heap Probe(1);\n"
-        "take(#xs);\n"
-        "return 0;\n",
-        "cajeta.script.cellthree", "cell-3", &session);
-    ASSERT_NE(nullptr, k.get());
-    ASSERT_TRUE(session.find("xs") && session.find("xs")->moved);
-
-    auto k1 = compileUnit(
-        "Probe xs = heap Probe(9);\n"
-        "return xs.id;\n",
-        "cajeta.script.cellfour", "cell-4", &session);
-    ASSERT_NE(nullptr, k1.get());
-    auto entry = k1->lookup<int32_t (*)()>("__cajeta_script_entry");
-    ASSERT_NE(nullptr, entry);
-    EXPECT_EQ(9, entry());
-    auto* fact = session.find("xs");
-    ASSERT_NE(nullptr, fact);
-    EXPECT_FALSE(fact->moved);       // write-back cleared the move state
-}

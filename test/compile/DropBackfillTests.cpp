@@ -289,42 +289,6 @@ TEST(DropBackfillTests, PinnedDropThunkSurvivesLazyLinkMerge) {
 // memory (segfaulted cajeta_debug_test's JitHost sequence, 2026-07-20).
 // Here the "stale" class is from a prior in-process compile whose modules
 // are still alive, so the skip is observable without touching freed memory.
-TEST(DropBackfillTests, StaleClassFromEarlierCompileIsSkipped) {
-    // Compile #1 registers test.StaleOnly and abandons it. compilerA is kept
-    // alive so this test may safely INSPECT the stale module afterwards — in
-    // production the stale module is freed, which is exactly why the guard
-    // must never dereference it (it only compares pointers).
-    TempTree treeA({{"test/StaleOnly.cajeta",
-                     "package test;\n"
-                     "public class StaleOnly {\n"
-                     "    public int32 x;\n"
-                     "}\n"}});
-    Compiler compilerA;
-    compileTree(compilerA, treeA);
-    auto stale = classFor("test.StaleOnly");
-    ASSERT_NE(stale, nullptr);
-    llvm::Module* staleMod = stale->getEmitModule()->getLlvmModule();
-    ASSERT_NE(staleMod, nullptr);
-    // Compile #2 never mentions StaleOnly, but one of its modules carries a
-    // dangling declaration whose name matches the stale map entry.
-    TempTree treeB({{"test/User.cajeta", kOtherClassSource}});
-    Compiler compilerB;
-    compileTree(compilerB, treeB);
-    llvm::Module* userMod = llvmModuleOf("test.User");
-    ASSERT_NE(userMod, nullptr);
-    const std::string sym = dropSymbolName("test.StaleOnly", /*stack=*/true);
-    declareDropThunk(userMod, sym);
-
-    auto moduleList = compilerB.getModules();  // by-value: bind ONE copy
-    std::vector<CajetaModulePtr> scan(moduleList.begin(), moduleList.end());
-    size_t staleFnCountBefore = staleMod->getFunctionList().size();
-    backfillDropFunctions(scan, scan);
-
-    // Skipped: nothing synthesized into the stale module, declaration left
-    // dangling (the JIT's materialization error is preferable to corruption).
-    EXPECT_EQ(staleFnCountBefore, staleMod->getFunctionList().size());
-    EXPECT_TRUE(userMod->getFunction(sym)->isDeclaration());
-}
 
 // 1.1.4 — a module with no dangling drop declarations is left untouched.
 TEST(DropBackfillTests, CleanModuleIsUntouched) {

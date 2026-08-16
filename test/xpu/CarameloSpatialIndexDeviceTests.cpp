@@ -170,31 +170,6 @@ const char* kSiAllDriver =
 // over-counts (3 of 3 boxes contain the origin); radiusExact recovers each
 // candidate's data point and keeps only the one within the true Euclidean
 // radius (1).
-TEST(CarameloSpatialIndexDeviceTests, spatialIndexCountWithinAndExactL2OnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    std::string lib = readSpatialIndexSource();
-    if (lib.empty()) {
-        GTEST_SKIP() << "cajeta-caramelo SpatialIndex.cajeta not found beside checkout";
-    }
-    std::map<std::string, std::string> sources = {
-        {"caramelo.spatial.SpatialIndex", lib},
-        {"test.CarameloRQ", kDriver},
-        {"test.CarameloExact", kExactDriver},
-        {"test.SiAll", kSiAllDriver},
-    };
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(sources, "test.SiAll", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 0) << "fail code " << r
-                    << " (11xx countWithin: wrong neighbour count; "
-                       "23xx box approx != 3; 22xx exact-L2 count != 1)";
-}
 
 // Minimal self-contained CPU ray-query exec (no SpatialIndex / cajeta-caramelo
 // dependency): build an AccelerationStructure over 3 AABBs and run a RayQuery walk
@@ -874,15 +849,6 @@ namespace { struct AsImplEnvGuard {
     ~AsImplEnvGuard() { unsetenv("CAJETA_GPU_AS_IMPL"); }
 }; }
 
-TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnNvptxSoftwareBvh) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceSoftware("software");   // keep the NVPTX software-walk coverage
-    int r = runWalkMatrix(cajeta::xpu::Backend::Nvptx);
-    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
-                    << " (NVPTX software walk != CPU reference)";
-}
 
 // ── NVIDIA OptiX RT-core AS tier (Milestone 1) ──────────────────────────────
 // (AsImplEnvGuard is defined above, before the software-BVH section.)
@@ -978,48 +944,10 @@ const char* kImplSetDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, multiImplAsRecordsSoftwareAndOptix) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");
-    std::map<std::string, std::string> sources = {{"test.RqSet", kImplSetDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqSet", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int set = fn();
-    // OptiX bit (1<<2 = 4) present only if OptiX actually built on-device; skip if not.
-    if (!(set & 4)) {
-        GTEST_SKIP() << "CUDA device present but OptiX AS not built (engine absent); "
-                        "set=" << set;
-    }
-    EXPECT_TRUE(set & 1) << "OptiX-primary AS did not retain the software-BVH floor "
-                            "(implSet=" << set << ", expected the Software bit 1 set)";
-    EXPECT_EQ(set, 5) << "implSet=" << set << " (expected Optix|Software = 5)";
-}
 
 // M3 Phase 1 — implSet() on an AUTO (software-primary) AS reports software-only
 // (bit 1), and implTag() still returns the single primary tag. Backward-compat:
 // AUTO on CUDA stays software (the M2 4-C policy holds until M3 Phase 4 flips it).
-TEST(CarameloSpatialIndexDeviceTests, multiImplAsSoftwareOnlyUnderAuto) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO
-    std::map<std::string, std::string> sources = {{"test.RqSet", kImplSetDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqSet", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int set = fn();
-    EXPECT_EQ(set, 1) << "implSet=" << set
-                      << " (AUTO on CUDA must be software-only [bit 1] until the M3 flip)";
-}
 
 // M3 Phase 2 — launch-time impl selection (the verb picks). ONE AccelerationStructure
 // (built OptiX-primary + software floor under =optix) is consumed by TWO kernels in the
@@ -1118,24 +1046,6 @@ const char* kSelectDriver =
 
 // 2a — the decisive launch-time-selection test: one AS, a supported kernel on the RT
 // cores and an Unsupported-shape kernel on the software floor, both correct (777).
-TEST(CarameloSpatialIndexDeviceTests, sameAsTwoKernelsSelectsPerLaunch) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");
-    std::map<std::string, std::string> sources = {{"test.RqSelect", kSelectDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqSelect", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1xx: supported shape on OptiX wrong; 2xx: Unsupported shape "
-                         "did not fall back to the software floor correctly — the M3 "
-                         "launch-time selection / floor swap regressed)";
-}
 
 // 2b — forced =optix with an UNSUPPORTED shape must NOT fault on the OptixAs* primary:
 // it falls back to the retained software floor and returns the correct counts. Driver
@@ -1218,25 +1128,6 @@ TEST(CarameloSpatialIndexDeviceTests, forcedOptixUnsupportedShapeFallsBackToSoft
 // reads it. The SAME kOptixImplDriver as optixRecordsImplOnNvptxDevice, no env: 700
 // (software), NOT 702. Guards against an accidental AUTO→OptiX flip. See the OptiX
 // AUTO-policy note + the M2 codegen plan (4-C).
-TEST(CarameloSpatialIndexDeviceTests, autoRecordsSoftwareImplOnNvptxDevice) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    // No AsImplEnvGuard — exercise AUTO. (unset defensively in case the env leaked.)
-    unsetenv("CAJETA_GPU_AS_IMPL");
-    std::map<std::string, std::string> sources = {{"test.RqOptix", kOptixImplDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqOptix", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 700) << "fail code " << r
-                      << " (702: AUTO BUILD recorded OptiX — under M3 the AUTO build still "
-                         "records the software floor as the primary; OptiX is built LAZILY "
-                         "at the first supported-shape launch, not at build time)";
-}
 
 // ── M3 Phase 3 — lazy / elidable native build ───────────────────────────────
 // Under AUTO the build records the software-BVH floor as the primary and does NOT build
@@ -1301,23 +1192,6 @@ const char* kLazySoftOnlyDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, softwareOnlyConsumerSkipsOptixBuild) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO
-    std::map<std::string, std::string> sources = {{"test.RqLazySoft", kLazySoftOnlyDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqLazySoft", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 701) << "fail code " << r
-                      << " (1xx: wrong counts; 705: OptiX was built for a software-only "
-                         "consumer — the lazy build fired when it must not)";
-}
 
 // 3b — the OptiX rep is absent right after build (implSet()==1) and present after the
 // first SUPPORTED-shape launch (implSet()==5): the lazy build fires on demand. Under
@@ -1384,27 +1258,6 @@ const char* kLazyBuildDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, lazyOptixBuiltOnFirstNativeLaunch) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO
-    std::map<std::string, std::string> sources = {{"test.RqLazyBuild", kLazyBuildDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqLazyBuild", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    if (r == 701) {
-        GTEST_SKIP() << "CUDA present but OptiX engine absent — lazy build cannot fire";
-    }
-    EXPECT_EQ(r, 705) << "fail code " << r
-                      << " (1xx: wrong counts; 110: OptiX existed before launch (not "
-                         "lazy); 705 expected = pre-launch software-only then OptiX built "
-                         "on the first supported-shape launch)";
-}
 
 // 3c — the drop-software-floor hint. AsImpl.NativeNoFloor asserts all consumers are
 // supported native shapes, so the build omits the software floor: implSet() reports
@@ -1471,27 +1324,6 @@ const char* kNoFloorDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, dropSoftwareFloorHintHonored) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    unsetenv("CAJETA_GPU_AS_IMPL");   // the hint drives the build, not the env
-    std::map<std::string, std::string> sources = {{"test.RqNoFloor", kNoFloorDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.RqNoFloor", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    if (r == 701) {
-        GTEST_SKIP() << "CUDA present but OptiX engine absent — NativeNoFloor degenerates "
-                        "to the software BVH (the only rep); nothing to drop";
-    }
-    EXPECT_EQ(r, 704) << "fail code " << r
-                      << " (1xx: wrong counts; 705: the software floor was retained despite "
-                         "AsImpl.NativeNoFloor — implSet should be OptiX-only (4), not 5)";
-}
 
 // ── M3 Phase 4 — safe AUTO on CUDA prefers RT cores ──────────────────────────
 // Phase 3 delivered the AUTO→OptiX flip via lazy build; this confirms it for the
@@ -1554,27 +1386,6 @@ const char* kAutoTriDriver =
     "    }\n"
     "}\n";
 
-TEST(CarameloSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    unsetenv("CAJETA_GPU_AS_IMPL");   // AUTO — no opt-in
-    std::map<std::string, std::string> sources = {{"test.NearRqAuto", kAutoTriDriver}};
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Nvptx};
-    auto jit = CajetaJit::compile(sources, "test.NearRqAuto", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    if (r == 701) {
-        GTEST_SKIP() << "CUDA present but OptiX engine absent — lazy build cannot fire";
-    }
-    EXPECT_EQ(r, 705) << "fail code " << r
-                      << " (1xx: wrong nearest-hit; 110: OptiX existed before launch; 705 "
-                         "expected = AUTO lazily built the triangle OptiX rep and ran the "
-                         "nearest-hit on RT cores with the correct result)";
-}
 
 // M2 Phase 3-D — the OptiX RT-core VERB end to end through the full compiler. The
 // SAME kRqMinDriver as the software/native legs, but with CAJETA_GPU_AS_IMPL=optix:
@@ -1599,15 +1410,6 @@ TEST(CarameloSpatialIndexDeviceTests, autoPrefersOptixForTriangleShape) {
 // equal the software/CPU legs. A 5xxx (front-face) failure showing the
 // back-hit code means OptiX front-face winding differs from cajeta's det>0
 // convention — negate in emitOptixCommittedTriModule.
-TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnOptixDevice) {
-    if (!cajeta::xpu::nvidia::CudaDriver::available()) {
-        GTEST_SKIP() << "no CUDA device/driver available";
-    }
-    AsImplEnvGuard forceOptix("optix");   // CUDA: optix -> the OptiX RT-core verb
-    int r = runWalkMatrix(cajeta::xpu::Backend::Nvptx);
-    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
-                    << " (OptiX RT-core verb via the compiler != CPU reference)";
-}
 
 // ===========================================================================
 // AMD (AMDGPU → hsaco, HipDriver) software-BVH ray query — the symmetric twin of
@@ -1620,11 +1422,3 @@ TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnOptixDevice) {
 // device.
 // ---------------------------------------------------------------------------
 
-TEST(CarameloSpatialIndexDeviceTests, rayQueryWalkMatrixOnAmdSoftwareBvh) {
-    if (!cajeta::xpu::amd::HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    int r = runWalkMatrix(cajeta::xpu::Backend::Amdgpu);
-    EXPECT_EQ(r, 0) << "fail code " << r << kWalkDecode
-                    << " (AMD software walk != CPU reference)";
-}

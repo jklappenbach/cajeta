@@ -760,18 +760,6 @@ const char* kHipTexCubeSampleSrc() {
 
 // The dispatcher routes a host-source @Kernel program to HIP on the real AMD
 // device — allocate/upload/launch/sync/download all through the in-C HIP path.
-TEST(XpuHipDispatchDeviceTests, saxpyRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kSaxpyHostSource, "test.Saxpy", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<float (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(), 4096.0f);   // 1024 * (2*1 + 2)
-}
 
 // Item 4 (user path): --xpu-arch=gfx1100,gfx1151 builds a MULTI-ARCH bundle for
 // the kernel; the runtime loads it on the real device (gfx1151) and runs SAXPY —
@@ -847,108 +835,11 @@ TEST(XpuHipDispatchDeviceTests, gridStrideForEachRoutesToHipOnDevice) {
 // device. The kernel passes its two buffer bases (addrspace(1) pointers) into the
 // inlined helper, which reads `in` and writes `out`. out[i]=in[i]*3, in[i]=i ⇒
 // sum over [0,256) of 3i = 3·(255·256/2) = 97920.
-TEST(XpuHipDispatchDeviceTests, deviceBufferParamHelperRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class DevBuf {\n"
-        "    @Device\n"
-        "    public static void scale(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
-        "                             uint32 i) {\n"
-        "        out[i] = in[i] * 3.0f;\n"
-        "    }\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<float32> out, KernelBuffer<float32> in) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        scale(out, in, i);\n"
-        "    }\n"
-        "    public static float32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        float32[] hx = heap float32[n];\n"
-        "        float32[] hy = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hx[i] = (float32)i; hy[i] = 0.0f; }\n"
-        "        KernelBuffer<float32> x = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
-        "        x.allocate();\n"
-        "        y.allocate();\n"
-        "        x.upload(hx);\n"
-        "        y.upload(hy);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        k.launch(s, grid: [4], block: [64])(y, x);\n"
-        "        s.sync();\n"
-        "        y.download(hy);\n"
-        "        x.free();\n"
-        "        y.free();\n"
-        "        float32 sum = 0.0f;\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + hy[i]; }\n"
-        "        return sum;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.DevBuf", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<float (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(), 97920.0f);   // sum 3i over [0,256)
-}
 
 // Item 7: a POD struct passed BY VALUE as a kernel arg, on the real AMD device.
 // `Params { float32 scale; float32 bias; }` rides the hipModuleLaunch kernelParams
 // ABI by value; the kernel reads p.scale/p.bias to compute out[i] = i*scale+bias.
 // scale=2, bias=1, n=256 ⇒ Σ(2i+1) = 2·(255·256/2)+256 = 65536.
-TEST(XpuHipDispatchDeviceTests, podStructArgRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class Params {\n"
-        "    float32 scale;\n"
-        "    float32 bias;\n"
-        "    public Params(float32 scale, float32 bias)"
-        " { this.scale = scale; this.bias = bias; }\n"
-        "}\n"
-        "public class PodArg {\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<float32> out, Params p) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        out[i] = (float32)i * p.scale + p.bias;\n"
-        "    }\n"
-        "    public static float32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        float32[] hy = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hy[i] = 0.0f; }\n"
-        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
-        "        y.allocate();\n"
-        "        y.upload(hy);\n"
-        "        Params p = heap Params(2.0f, 1.0f);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        k.launch(s, grid: [4], block: [64])(y, p);\n"
-        "        s.sync();\n"
-        "        y.download(hy);\n"
-        "        y.free();\n"
-        "        float32 sum = 0.0f;\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + hy[i]; }\n"
-        "        return sum;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.PodArg", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<float (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(), 65536.0f);   // Σ(2i+1) over [0,256)
-}
 
 // Item 8 Stage C: a Texture2D sampled through a Sampler with bilinear filtering,
 // on the real AMD device (gfx1151). The Texture2D is a hipArray; at launch the
@@ -957,77 +848,6 @@ TEST(XpuHipDispatchDeviceTests, podStructArgRoutesToHipOnDevice) {
 // → a hardware image_sample. A 2×2 image {0,1,2,3} sampled at the four texel
 // centers returns the exact texels; the dead-center (0.5,0.5) returns the
 // 4-texel average 1.5. Epsilon compare guards GPU interpolation-weight precision.
-TEST(XpuHipDispatchDeviceTests, textureSampleRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.gfx.Texture2D;\n"
-        "import cajeta.gfx.Sampler;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class TexSample {\n"
-        "    @Kernel\n"
-        "    public static void sample(Texture2D tex, Sampler s,\n"
-        "                              KernelBuffer<float32> us, KernelBuffer<float32> vs,\n"
-        "                              KernelBuffer<float32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { Vector<float32,4> c = tex.sample(s, us[i], vs[i]); out[i] = c.x; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 w = 2;\n"
-        "        uint32 h = 2;\n"
-        "        float32[] pixels = heap float32[4];\n"
-        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
-        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
-        "        Texture2D tex = heap Texture2D(w, h);\n"
-        "        tex.upload(pixels);\n"
-        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
-        "        uint32 n = 5;\n"
-        "        float32[] hus = heap float32[n];\n"
-        "        float32[] hvs = heap float32[n];\n"
-        "        float32[] hexp = heap float32[n];\n"
-        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
-        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
-        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
-        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
-        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
-        "        float32[] hout = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
-        "        KernelBuffer<float32> us = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> vs = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> out = heap KernelBuffer<float32>(0, n);\n"
-        "        us.allocate();\n"
-        "        vs.allocate();\n"
-        "        out.allocate();\n"
-        "        us.upload(hus);\n"
-        "        vs.upload(hvs);\n"
-        "        out.upload(hout);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        us.free();\n"
-        "        vs.free();\n"
-        "        out.free();\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            float32 d = hout[i] - hexp[i];\n"
-        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.TexSample", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
-}
 
 // B3 mipmaps on the real AMD device (gfx1151): a 2-level R32F Texture2D backed by a
 // hipMipmappedArray (hipMallocMipmappedArray + per-level hipGetMipmappedArrayLevel
@@ -1118,160 +938,26 @@ TEST(XpuHipDispatchDeviceTests, mipmapFetchAndSampleLodRoutesToHipOnDevice) {
 // L1 = 99. sampleLod at lod 0.5 must read lerp(1.5, 99, 0.5) = 50.25 (well clear
 // of both 1.5 and 99); lod 0.0 = 1.5 and lod 1.0 = 99 bracket it. 555 = emulation
 // unavailable (graceful degrade), exactly like mipmapFetchAndSampleLod.
-TEST(XpuHipDispatchDeviceTests, mipTrilinearBlendRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.gfx.Texture2D;\n"
-        "import cajeta.gfx.TextureFormat;\n"
-        "import cajeta.gfx.Sampler;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class TriHip {\n"
-        "    @Kernel\n"
-        "    public static void mip(Texture2D tex, Sampler sl, KernelBuffer<float32> out) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < 1) {\n"
-        "            Vector<float32,4> a = tex.sampleLod(sl, 0.5f, 0.5f, 0.0f);\n"
-        "            Vector<float32,4> b = tex.sampleLod(sl, 0.5f, 0.5f, 1.0f);\n"
-        "            Vector<float32,4> c = tex.sampleLod(sl, 0.5f, 0.5f, 0.5f);\n"
-        "            out[0] = a.x; out[1] = b.x; out[2] = c.x;\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 w = 2; uint32 h = 2;\n"
-        "        Texture2D tex = heap Texture2D(w, h, TextureFormat.R32F, 2);\n"
-        "        float32[] l0 = heap float32[4];\n"
-        "        l0[0] = 0.0f; l0[1] = 1.0f; l0[2] = 2.0f; l0[3] = 3.0f;\n"
-        "        float32[] l1 = heap float32[1]; l1[0] = 99.0f;\n"
-        "        tex.uploadLevel(0, l0);\n"
-        "        tex.uploadLevel(1, l1);\n"
-        "        Sampler sl = heap Sampler(1, 0);\n"   // linear filter, clamp
-        "        float32[] hout = heap float32[3];\n"
-        "        for (uint32 i = 0; i < 3; i = i + 1) { hout[i] = -1.0f; }\n"
-        "        KernelBuffer<float32> out = heap KernelBuffer<float32>(3);\n"
-        "        out.upload(hout);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        mip.launch(s, grid: [1], block: [1])(tex, sl, out);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        if (hout[0] == -1.0f) { return (int32)(555); }\n"
-        "        float32 d0 = hout[0] - 1.5f;\n"
-        "        if (d0 < -0.05f || d0 > 0.05f) { return (int32)(100); }\n"
-        "        float32 d1 = hout[1] - 99.0f;\n"
-        "        if (d1 < -0.05f || d1 > 0.05f) { return (int32)(200); }\n"
-        "        float32 dc = hout[2] - 50.25f;\n"        // lerp(1.5, 99, 0.5)
-        "        if (dc < -1.0f || dc > 1.0f) { return (int32)(300); }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.TriHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    if (r == 555) {
-        GTEST_SKIP() << "AMD mip emulation unavailable (no libcajeta_amdtex / "
-                        "unrecognised gfx arch)";
-    }
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100: lod0=1.5; 200: lod1=99; 300: lod0.5 trilinear=50.25)";
-}
 
 // B3 multi-channel on the real AMD device: an RGBA32F Texture2D sampled on
 // gfx1151 returns all four channels (sample() -> Vector<float32,4>). Verifies the
 // 4-channel-float HIP channel descriptor + the AMD vec4 sampler path.
-TEST(XpuHipDispatchDeviceTests, textureSampleRgba32fRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kHipRgbaSampleSrc("TextureFormat.RGBA32F"),
-                                  "test.TexRgbaHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F sample mismatch at i)";
-}
 
 // B3 8-bit normalized RGBA on the real AMD device: bytes 0..255 stored, read back
 // as float [0,1]. Exercises the float->unorm8 quantize-on-upload + the 4-channel
 // unorm8 HIP channel descriptor (readMode NormalizedFloat), within the 0.02 tol.
-TEST(XpuHipDispatchDeviceTests, textureSampleRgba8UnormRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kHipRgbaSampleSrc("TextureFormat.RGBA8_UNORM"),
-                                  "test.TexRgbaHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA8_UNORM sample mismatch at i)";
-}
 
 // B3 half-float single channel on the real AMD device (R16F): float uploaded,
 // binary16 stored in the 16-bit-float hipArray, read back as float. Texel values
 // {0,1,2,3} are f16-exact.
-TEST(XpuHipDispatchDeviceTests, textureSampleR16fRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kHipR1SampleSrc("TextureFormat.R16F"),
-                                  "test.TexR1Hip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R16F sample mismatch at i)";
-}
 
 // B3 half-float RGBA on the real AMD device (RGBA16F): four-channel cheap HDR via
 // the 4-channel 16-bit-float HIP channel descriptor. Within the 0.02 tol.
-TEST(XpuHipDispatchDeviceTests, textureSampleRgba16fRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kHipRgbaSampleSrc("TextureFormat.RGBA16F"),
-                                  "test.TexRgbaHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
-}
 
 // B3 texelFetch on the real AMD device: an RGBA32F Texture2D fetched by exact
 // integer coord on gfx1151 (__ockl_image_load_2D -> image_load), all four
 // channels bit-exact — the device twin of the CPU/Vulkan fetch tests, and proof
 // the ockl image-load link gate fires for fetch as it does for sample.
-TEST(XpuHipDispatchDeviceTests, textureFetchRgba32fRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kHipRgbaFetchSrc("TextureFormat.RGBA32F"),
-                                  "test.TexFetchHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F fetch mismatch at i)";
-}
 
 // B3 Step 2b: integer texelFetch on the real AMD device (gfx1151) — an RGBA32I
 // Texture2D<int32>; __ockl_image_load_2D's raw v4f32 result is bitcast to <4 x i32>
@@ -1413,38 +1099,11 @@ TEST(XpuHipDispatchDeviceTests, texture1dSampleRoutesToHipOnDevice) {
 
 // Integer Texture3D fetch on the real AMD device (gfx1151) — RGBA32I 3-D hipArray,
 // __ockl_image_load_3D + bitcast, voxel-exact across all channels.
-TEST(XpuHipDispatchDeviceTests, texture3dFetchRgba32iRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(kHipTex3dIntFetchSrc("int32", "TextureFormat.RGBA32I"),
-                                  "test.Tex3dIntFetchHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (3D RGBA32I device fetch mismatch)";
-}
 
 // Bundle BOTH amdgpu and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU
 // even on a box with the GPU present — the explicit-bundle degrade-to-CPU
 // contract, validated against real hardware. GPU-independent (forced to CPU),
 // but builds the amdgpu hsaco too, exercising the multi-target bundle.
-TEST(XpuHipDispatchDeviceTests, bundledAmdgpuCpuForcedToCpu) {
-    setenv("CAJETA_XPU_BACKEND", "cpu", /*overwrite=*/1);
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu, cajeta::xpu::Backend::Cpu};
-    auto jit = CajetaJit::compile(kSaxpyHostSource, "test.Saxpy", o);
-    auto fn = jit ? jit->lookup<float (*)()>("run") : nullptr;
-    float result = fn ? fn() : 0.0f;
-    unsetenv("CAJETA_XPU_BACKEND");
-
-    ASSERT_NE(jit, nullptr);
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(result, 4096.0f);   // ran on the CPU rung
-}
 
 // KernelBuffer.slice (Stage B4) on HIP/AMD — device-verify the pointer-fold path. On
 // HIP the device handle is a pointer, so slice() folds the byte offset into it
@@ -1454,53 +1113,6 @@ TEST(XpuHipDispatchDeviceTests, bundledAmdgpuCpuForcedToCpu) {
 // on real gfx1151. A 128-element parent is filled -1; the tail half [64,128) is
 // sliced and a kernel writes globalIdX (0..63) through the view → lands at
 // parent[64+i], head untouched, the non-owning view double-free-safe.
-TEST(XpuHipDispatchDeviceTests, bufferSliceKernelRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class Slice {\n"
-        "    @Kernel\n"
-        "    public static void fill(KernelBuffer<int32> b, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { b[i] = (int32) i; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 128;\n"
-        "        uint32 half = 64;\n"
-        "        int32[] h = heap int32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }\n"
-        "        KernelBuffer<int32> all = heap KernelBuffer<int32>(n);\n"
-        "        all.upload(h);\n"
-        "        KernelBuffer<int32> tail = all.slice(half, half);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        fill.launch(s, grid: [1], block: [64])(tail, half);\n"
-        "        s.sync();\n"
-        "        all.download(h);\n"
-        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
-        "            if (h[i] != -1) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
-        "            if (h[half + i] != (int32) i) { return (int32)(200 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.Slice", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1xx: head overwritten — bad offset; "
-                         "2xx: tail wrong — view base off)";
-}
 
 // KernelBuffer MemoryKind (Stage B4) on HIP/AMD — genuine zero-copy UNIFIED (managed)
 // memory on gfx1151. hipMallocManaged gives one pointer the host AND device both
@@ -1545,43 +1157,11 @@ static const char* hipMemKindSource(const char* kindExpr) {
     return s.c_str();
 }
 
-TEST(XpuHipDispatchDeviceTests, memoryKindUnifiedZeroCopyRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(hipMemKindSource("MemoryKind.Unified"),
-                                  "test.MemKind", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] != i+1 — managed host<->device "
-                         "sharing broke)";
-}
 
 // PINNED (page-locked, device-accessible host) memory on HIP/AMD: hipHostMalloc
 // gives host memory the kernel reads directly through the unified address space.
 // Same zero-copy hostStore→inc→hostLoad shape; also exercises the kind-aware
 // free routing to hipHostFree (a Device/Unified free would be hipFree). kind 1.
-TEST(XpuHipDispatchDeviceTests, memoryKindPinnedZeroCopyRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(hipMemKindSource("MemoryKind.Pinned"),
-                                  "test.MemKind", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] != i+1 — pinned host<->device "
-                         "sharing broke)";
-}
 
 // Async copies / transfer queues (Stage B4) on HIP/AMD — the full async pipeline
 // on a REAL stream (hipStreamCreate). Three operations are queued on one stream:
@@ -1644,66 +1224,6 @@ TEST(XpuHipDispatchDeviceTests, asyncCopyPipelineRoutesToHipOnDevice) {
 // the ordering proof. A Fence then records at s2's tail and the host
 // hipEventSynchronize/Query()s it. (Without the waitFor this races; the
 // correctness of i+2 IS the cross-stream-sync correctness.)
-TEST(XpuHipDispatchDeviceTests, eventFenceSyncRoutesToHipOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.Event;\n"
-        "import cajeta.xpu.Fence;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class Sync {\n"
-        "    @Kernel\n"
-        "    public static void inc(KernelBuffer<int32> b, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { b[i] = b[i] + 1; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        int32[] h = heap int32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = (int32) i; }\n"
-        "        KernelBuffer<int32> b = heap KernelBuffer<int32>(n);\n"
-        "        KernelStream s1 = KernelStream.create();\n"
-        "        KernelStream s2 = KernelStream.create();\n"
-        "        Event e = Event.create();\n"
-        "        b.uploadAsync(h, s1);\n"
-        "        inc.launch(s1, grid: [4], block: [64])(b, n);\n"   // s1: +1
-        "        e.recordOn(s1);\n"                                 // mark s1 tail
-        "        s2.waitFor(e);\n"                                  // s2 waits s1
-        "        inc.launch(s2, grid: [4], block: [64])(b, n);\n"   // s2: +1 after
-        "        int32[] out = heap int32[n];\n"
-        "        b.downloadAsync(out, s2);\n"
-        "        Fence f = Fence.create();\n"
-        "        f.signal(s2);\n"
-        "        f.waitHost();\n"
-        "        boolean done = f.query();\n"
-        "        s1.sync();\n"
-        "        s2.sync();\n"
-        "        e.destroy();\n"
-        "        f.destroy();\n"
-        "        s1.destroy();\n"
-        "        s2.destroy();\n"
-        "        if (!done) { return 1; }\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            if (out[i] != (int32)(i + 2)) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.Sync", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1: fence not signaled; 100+i: out[i] != i+2 — "
-                         "cross-stream event ordering broke on the device)";
-}
 
 // Image2D storage RMW on the real AMD device — the writable twin of the texture
 // path. `fill` writes each texel via img.store(); `rmw` reads-modify-writes it
@@ -1788,63 +1308,6 @@ TEST(XpuHipDispatchDeviceTests, imageLoadStoreRmwRoutesToHipOnDevice) {
 // a device pointer, so the kernel can read it. Same gather kernel + values as
 // the CPU oracle (XpuCpuDispatchTests.bindlessBufferArrayOnCpu) and the Vulkan
 // device test, so all three cross-check to out[i] == 60 + 3i.
-TEST(XpuHipDispatchDeviceTests, bindlessBufferArrayOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class BindlessHip {\n"
-        "    @Kernel\n"
-        "    public static void gather(KernelBuffer<int32>[] bufs, uint32 count,\n"
-        "                              KernelBuffer<int32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            int32 s = 0;\n"
-        "            for (uint32 b = 0; b < count; b = b + 1) {\n"
-        "                s = s + bufs[b][i];\n"
-        "            }\n"
-        "            out[i] = s;\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 64;\n"
-        "        uint32 k = 3;\n"
-        "        KernelBuffer<int32>[] bufs = heap KernelBuffer<int32>[k];\n"
-        "        for (uint32 b = 0; b < k; b = b + 1) {\n"
-        "            int32[] h = heap int32[n];\n"
-        "            for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "                h[i] = (int32)((b + 1) * 10 + i);\n"
-        "            }\n"
-        "            bufs[b] = heap KernelBuffer<int32>(n);\n"
-        "            bufs[b].upload(h);\n"
-        "        }\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        gather.launch(s, grid: [1], block: [64])(bufs, k, out, n);\n"
-        "        s.sync();\n"
-        "        int32[] ho = heap int32[n];\n"
-        "        out.download(ho);\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            if (ho[i] != (int32)(60 + 3 * i)) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.BindlessHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] != 60+3i — bindless descriptor-array "
-                         "indexing wrong on HIP)";
-}
 
 // Stage 9: scoped memory fences (Barrier.deviceMemory / .workgroupMemory) run on
 // the AMD device. deviceMemory lowers to an "agent"-scope acq_rel fence,
@@ -1902,45 +1365,3 @@ TEST(XpuHipDispatchDeviceTests, memoryFenceOnDevice) {
 // device. AMD honours relaxed (Monotonic) natively — the relaxed-atomic perf
 // path. N threads each atomicAdd(0, 1, Relaxed) → out[0] == N (atomicity holds
 // regardless of ordering). Same kernel as the CPU oracle.
-TEST(XpuHipDispatchDeviceTests, relaxedAtomicCounterOnDevice) {
-    if (!HipDriver::available()) {
-        GTEST_SKIP() << "no ROCm/HIP device available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "import cajeta.xpu.MemoryOrder;\n"
-        "public class RACHip {\n"
-        "    @Kernel\n"
-        "    public static void count(KernelBuffer<int32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            out.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);\n"
-        "        int32[] z = heap int32[1];\n"
-        "        z[0] = 0;\n"
-        "        out.upload(z);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        count.launch(s, grid: [1], block: [256])(out, n);\n"
-        "        s.sync();\n"
-        "        int32[] ho = heap int32[1];\n"
-        "        out.download(ho);\n"
-        "        if (ho[0] != 256) { return ho[0]; }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
-    auto jit = CajetaJit::compile(src, "test.RACHip", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
-}

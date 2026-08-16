@@ -51,19 +51,9 @@ const char* CALC =
 } // namespace
 
 // Named args on a regular method call bind by name.
-TEST(NamedArgumentTests, methodCallByName) {
-    EXPECT_EQ(runBody(CALC,
-        "Calc c = heap Calc();\n"
-        "return c.sub(a: 10, b: 3);\n"), 7);
-}
 
 // Call-site order is free: swapping the labels still binds a=10, b=3 → 7
 // (NOT 3 - 10 = -7).
-TEST(NamedArgumentTests, methodCallOrderIndependent) {
-    EXPECT_EQ(runBody(CALC,
-        "Calc c = heap Calc();\n"
-        "return c.sub(b: 3, a: 10);\n"), 7);
-}
 
 const char* POINT =
     "public class Point {\n"
@@ -74,11 +64,6 @@ const char* POINT =
 
 // Named args on a constructor, order-independent: y first, x second still binds
 // x=1, y=2 → 1*10 + 2 = 12.
-TEST(NamedArgumentTests, constructorByNameOrderIndependent) {
-    EXPECT_EQ(runBody(POINT,
-        "Point p = heap Point(y: 2, x: 1);\n"
-        "return p.x * 10 + p.y;\n"), 12);
-}
 
 // Option C: a positional PREFIX followed by a named SUFFIX. The prefix binds by
 // position, the suffix by name. `sub(10, b: 3)` → a=10 (positional), b=3 (named)

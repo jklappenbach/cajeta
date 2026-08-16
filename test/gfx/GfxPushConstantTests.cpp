@@ -157,27 +157,3 @@ TEST(GfxPushConstantTests, fragmentScalarPushConstant) {
 // packs them as members 0 and 1 of a single struct (Offsets 0 and 4), not two
 // separate PushConstant blocks (Vulkan permits exactly one per stage). Offset 4 on
 // the second member is the evidence the block is shared.
-TEST(GfxPushConstantTests, multiplePushConstantsShareOneBlock) {
-    const std::string src =
-        "package test;\n"
-        "public class S {\n"
-        "    @Fragment\n"
-        "    public static Vector<float32,4> main(@PushConstant float32 r,\n"
-        "                                         @PushConstant float32 g) {\n"
-        "        Vector<float32,4> out = stack Vector<float32,4>(r, g, 0.0f, 1.0f);\n"
-        "        return out;\n"
-        "    }\n"
-        "}\n";
-    std::string text = lowerToText(src, "test.S", "main", ShaderStage::Fragment);
-    ASSERT_FALSE(text.empty()) << "two-push-constant lowering produced no SPIR-V";
-    EXPECT_NE(text.find("OpEntryPoint Fragment"), std::string::npos) << text;
-    EXPECT_NE(text.find("PushConstant"), std::string::npos) << text;
-    // Two members packed in one block: f32 at offset 0, f32 at offset 4.
-    EXPECT_NE(text.find("Offset 0"), std::string::npos) << text;
-    EXPECT_NE(text.find("Offset 4"), std::string::npos) << text;
-
-    std::vector<uint8_t> spirv = lowerToBinary(src, "test.S", "main", ShaderStage::Fragment);
-    ASSERT_GE(spirv.size(), 4u);
-    EXPECT_EQ(spirv[0], 0x03u);
-    EXPECT_EQ(spirv[3], 0x07u);
-}

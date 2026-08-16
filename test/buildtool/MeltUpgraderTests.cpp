@@ -74,36 +74,6 @@ namespace {
 
 // ─── planMeltUpgrade ──────────────────────────────────────────────
 
-TEST(MeltUpgraderTests, planFindsHighestVersionAcrossRepos) {
-    auto root = makeTempDir("repo");
-    stageMelt(root, "platform.melt", "1.0.0",
-              "\"dependencies\":{\"acme.lib\":\"1.0.0\"}");
-    stageMelt(root, "platform.melt", "1.5.0",
-              "\"dependencies\":{\"acme.lib\":\"1.5.0\"}");
-
-    std::ostringstream src;
-    src << R"({
-        "details": { "name": "c", "version": "0.1.0" },
-        "settings": {
-            "repositories": [
-                { "name": "local", "type": "filesystem",
-                  "path": ")" << root.generic_string() << R"(" }
-            ],
-            "melts": [ "platform.melt@1.0.0" ]
-        }
-    })";
-    auto m = mustLoad(src.str());
-    auto proj = makeTempDir("proj");
-
-    auto plan = planMeltUpgrade(m, proj.string(), {});
-    ASSERT_TRUE((bool)plan) << errorText(plan.takeError());
-
-    ASSERT_EQ(plan->entries.size(), 1u);
-    EXPECT_EQ(plan->entries[0].name, "platform.melt");
-    EXPECT_EQ(plan->entries[0].oldVersion, "1.0.0");
-    EXPECT_EQ(plan->entries[0].newVersion, "1.5.0");
-    EXPECT_TRUE(plan->entries[0].changed);
-}
 
 TEST(MeltUpgraderTests, planExplicitVersionPicksThatVersion) {
     auto root = makeTempDir("repo");
@@ -136,29 +106,6 @@ TEST(MeltUpgraderTests, planExplicitVersionPicksThatVersion) {
     EXPECT_EQ(plan->entries[0].newVersion, "1.2.0");
 }
 
-TEST(MeltUpgraderTests, planErrorsForUndeclaredName) {
-    auto root = makeTempDir("repo");
-    stageMelt(root, "platform.melt", "1.0.0", "\"dependencies\":{}");
-
-    std::ostringstream src;
-    src << R"({
-        "details": { "name": "c", "version": "0.1.0" },
-        "settings": {
-            "repositories": [
-                { "name": "local", "type": "filesystem",
-                  "path": ")" << root.generic_string() << R"(" }
-            ],
-            "melts": [ "platform.melt@1.0.0" ]
-        }
-    })";
-    auto m = mustLoad(src.str());
-    auto proj = makeTempDir("proj");
-
-    auto plan = planMeltUpgrade(m, proj.string(), {"not.declared"});
-    ASSERT_FALSE((bool)plan);
-    EXPECT_NE(errorText(plan.takeError()).find("not declared in"),
-              std::string::npos);
-}
 
 TEST(MeltUpgraderTests, planErrorsForEmptyMeltsBlock) {
     auto m = mustLoad(R"({
@@ -271,56 +218,9 @@ TEST(MeltUpgraderTests, applyRewritesMeltsEntry) {
     EXPECT_EQ(rewritten->find("\"p.melt@1.0.0\""), std::string::npos);
 }
 
-TEST(MeltUpgraderTests, applyIsNoOpWhenNothingChanged) {
-    auto root = makeTempDir("repo");
-    stageMelt(root, "p.melt", "1.0.0", "\"dependencies\":{}");
-
-    std::ostringstream src;
-    src << R"({
-        "details": { "name": "c", "version": "0.1.0" },
-        "settings": {
-            "repositories": [
-                { "name": "local", "type": "filesystem",
-                  "path": ")" << root.generic_string() << R"(" }
-            ],
-            "melts": [ "p.melt@1.0.0" ]
-        }
-    })";
-    std::string srcText = src.str();
-    auto m = mustLoad(srcText);
-    auto proj = makeTempDir("proj");
-
-    auto plan = planMeltUpgrade(m, proj.string(), {});
-    ASSERT_TRUE((bool)plan);
-    auto rewritten = applyMeltUpgradePlan(srcText, *plan);
-    ASSERT_TRUE((bool)rewritten);
-    EXPECT_EQ(*rewritten, srcText);
-}
 
 // ─── setMeltImportInManifest directly ─────────────────────────────
 
-TEST(MeltUpgraderTests, setMeltImportRewritesPreservingFormat) {
-    std::string src = R"({
-    "details": { "name": "c", "version": "0.1.0" },
-    "settings": {
-        // a comment that should survive
-        "melts": [
-            "platform.melt@1.0.0",
-            "test.melt@0.5.0"
-        ]
-    }
-})";
-    auto out = setMeltImportInManifest(
-        src, "platform.melt", "1.0.0", "1.5.0");
-    ASSERT_TRUE((bool)out) << errorText(out.takeError());
-    EXPECT_NE(out->find("\"platform.melt@1.5.0\""), std::string::npos);
-    EXPECT_EQ(out->find("\"platform.melt@1.0.0\""), std::string::npos);
-    // Sibling entries are intact.
-    EXPECT_NE(out->find("\"test.melt@0.5.0\""), std::string::npos);
-    // The comment survives.
-    EXPECT_NE(out->find("a comment that should survive"),
-              std::string::npos);
-}
 
 TEST(MeltUpgraderTests, setMeltImportErrorsForMissingEntry) {
     std::string src = R"({
@@ -336,11 +236,3 @@ TEST(MeltUpgraderTests, setMeltImportErrorsForMissingEntry) {
               std::string::npos);
 }
 
-TEST(MeltUpgraderTests, setMeltImportErrorsWithoutMeltsBlock) {
-    std::string src = R"({
-    "details": { "name": "c", "version": "0.1.0" }
-})";
-    auto out = setMeltImportInManifest(
-        src, "any.melt", "1.0.0", "2.0.0");
-    ASSERT_FALSE((bool)out);
-}

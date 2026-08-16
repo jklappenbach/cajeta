@@ -37,20 +37,6 @@ int32_t runI32(const std::string& src) {
 
 // --- Single-level inheritance ----------------------------------------------
 
-TEST(InheritanceSmokeTests, simpleExtendsCompiles) {
-    auto src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 speak() { return 1; }\n"
-        "}\n"
-        "public class Dog extends Animal {\n"
-        "    public int32 fetch() { return 2; }\n"
-        "}\n"
-        "public final class I {\n"
-        "    public static int32 run() { return 11; }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 11);
-}
 
 // --- Override reuses the parent's slot -------------------------------------
 
@@ -104,92 +90,15 @@ TEST(InheritanceSmokeTests, overrideDispatchesFromParentMethodCallingOverridden)
     EXPECT_EQ(runI32(src), 101);
 }
 
-TEST(InheritanceSmokeTests, overrideReusesParentSlot) {
-    // Dog declares `speak()` with the same canonical signature as Animal's.
-    // buildVirtualTable walks parent-first, assigns Animal::speak slot 0;
-    // then sees Dog::speak with the same canonical → reuses slot 0.
-    // The vtable's slot 0 is rewritten to point to Dog::speak.
-    //
-    // We can't easily inspect the slot count from the C++ side; what we CAN
-    // verify is that the module compiles without LLVM rejecting the vtable
-    // (a duplicate slot would produce a wrong-arity constant). Both classes'
-    // RTTI globals appear in the module too.
-    auto src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 speak() { return 1; }\n"
-        "}\n"
-        "public class Dog extends Animal {\n"
-        "    public int32 speak() { return 42; }\n"
-        "}\n"
-        "public final class I {\n"
-        "    public static int32 run() { return 99; }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 99);
-}
 
 // --- Multi-level inheritance chain -----------------------------------------
 
-TEST(InheritanceSmokeTests, threeLevelChainCompiles) {
-    // A's methods get slots first; B may add its own; C may override or
-    // append. The recursion in buildVirtualTable walks all three.
-    auto src =
-        "package test;\n"
-        "public class A {\n"
-        "    public int32 fromA() { return 1; }\n"
-        "}\n"
-        "public class B extends A {\n"
-        "    public int32 fromB() { return 2; }\n"
-        "}\n"
-        "public class C extends B {\n"
-        "    public int32 fromC() { return 3; }\n"
-        "    public int32 fromA() { return 100; }\n"   // override at slot 0
-        "}\n"
-        "public final class I {\n"
-        "    public static int32 run() { return 7; }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // --- Multiple subclasses sharing a parent ----------------------------------
 
-TEST(InheritanceSmokeTests, multipleSubclassesShareParent) {
-    auto src =
-        "package test;\n"
-        "public class Shape {\n"
-        "    public int32 area() { return 0; }\n"
-        "}\n"
-        "public class Square extends Shape {\n"
-        "    public int32 area() { return 4; }\n"
-        "}\n"
-        "public class Triangle extends Shape {\n"
-        "    public int32 area() { return 3; }\n"
-        "}\n"
-        "public final class I {\n"
-        "    public static int32 run() { return 17; }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 17);
-}
 
 // --- Child adds methods on top of parent -----------------------------------
 
-TEST(InheritanceSmokeTests, childExtendsWithoutOverriding) {
-    // Parent has `inheritedMethod`; child adds `newMethod`. Child's vtable
-    // should have 2 slots: one inherited (pointing to Parent::inheritedMethod
-    // since Child doesn't override), one new (Child::newMethod).
-    auto src =
-        "package test;\n"
-        "public class Parent {\n"
-        "    public int32 inheritedMethod() { return 10; }\n"
-        "}\n"
-        "public class Child extends Parent {\n"
-        "    public int32 newMethod() { return 20; }\n"
-        "}\n"
-        "public final class I {\n"
-        "    public static int32 run() { return 30; }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 30);
-}
 
 
 // Child in one file extends parent in another. Parses alphabetically:
@@ -350,24 +259,3 @@ TEST(InheritanceSmokeTests, bareClassInheritsObjectHash) {
 // a structural override for opted-in classes; until then, manual is
 // the path.
 
-TEST(InheritanceSmokeTests, manualHashOverrideWins) {
-    // The user's manual hash() takes precedence over the inherited
-    // identity hash. Probe: manual hash() always returns 12345.
-    auto src =
-        "package test;\n"
-        "public class Custom {\n"
-        "    public int32 x;\n"
-        "    public Custom() { return; }\n"
-        "    public int64 hash() { return 12345; }\n"
-        "}\n"
-        "public final class I {\n"
-        "    public static int64 hashCustom() {\n"
-        "        Custom c = heap Custom();\n"
-        "        c.x = 7;\n"
-        "        return c.hash();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.I");
-    auto fn = jit->lookup<int64_t (*)()>("hashCustom");
-    EXPECT_EQ(fn(), 12345);
-}

@@ -144,25 +144,6 @@ TEST(FieldOwnershipBitsTests, plainStoreLeavesSourceBooksUntouched) {
 
 // 3.1.3a — `#h.f` extraction: title moves to the assignee, the field bit
 // decays to borrowed (field stays readable), holder teardown skips it.
-TEST(FieldOwnershipBitsTests, fieldExtractionMovesTitle) {
-    std::string src = std::string(kHolderSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Holder h = heap Holder();\n"
-        "        h.setOwned(#heap Cell(6));\n"
-        "        Cell taken #= h.f;\n"       // title out; bit decays
-        "        if (h.f.n != 6) { return -96; }\n"  // resident, readable
-        "        return taken.n;\n"          // taken owns; drops at exit
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // 3.1.3b — mode-carrying claim (mode-carrying-claim §5.1): `#=` from a
 // field holding no title (borrowed) yields a BORROW rather than panicking

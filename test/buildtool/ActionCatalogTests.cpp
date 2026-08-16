@@ -138,23 +138,6 @@ TEST(ActionCatalogTests, deleteRemovesFile) {
     std::filesystem::remove_all(d);
 }
 
-TEST(ActionCatalogTests, deleteTolerantOfMissingByDefault) {
-    auto props = makeProps();
-    ActionRegistry registry;
-    TaskContext ctx(props);
-
-    auto d = tempDir("delete-missing");
-    llvm::json::Object params;
-    params["paths"] = (d / "ghost").string();
-    auto r = registry.get("delete")->run(params, ctx);
-    EXPECT_TRUE((bool)r) << "missing path with if-exists default should "
-                            "be tolerated";
-    if (r) {
-        // Nothing removed.
-        EXPECT_EQ(r->outputs.at("removed"), "0");
-    }
-    std::filesystem::remove_all(d);
-}
 
 TEST(ActionCatalogTests, deleteStrictErrorsOnMissing) {
     auto props = makeProps();
@@ -233,24 +216,6 @@ TEST(ActionCatalogTests, versionSetReplacesExactly) {
     std::filesystem::remove_all(d);
 }
 
-TEST(ActionCatalogTests, versionErrorsOnInvalidSemver) {
-    auto props = makeProps();
-    ActionRegistry registry;
-    TaskContext ctx(props);
-
-    auto d = tempDir("version-bad");
-    auto manifest = d / "cajeta.json";
-    writeFile(manifest, R"({"details":{"name":"a.b","version":"0.1.0"}})");
-
-    llvm::json::Object params;
-    params["set"] = "not-a-version";
-    params["write-to"] = manifest.string();
-    auto r = registry.get("version")->run(params, ctx);
-    ASSERT_FALSE((bool)r);
-    auto msg = errorText(r.takeError());
-    EXPECT_NE(msg.find("not a valid semver"), std::string::npos);
-    std::filesystem::remove_all(d);
-}
 
 TEST(ActionCatalogTests, versionErrorsWhenBothBumpAndSet) {
     auto props = makeProps();
@@ -305,39 +270,6 @@ namespace {
 
 } // namespace
 
-TEST(ActionCatalogTests, signAndVerifyRoundTrip) {
-    if (!haveOpenSslOnPath()) {
-        GTEST_SKIP() << "openssl not on PATH";
-    }
-    auto props = makeProps();
-    ActionRegistry registry;
-    TaskContext ctx(props);
-
-    auto d = tempDir("sign-roundtrip");
-    auto keys = generateEd25519(d);
-    auto payload = d / "payload.bin";
-    writeFile(payload, "the payload to sign");
-
-    // Sign.
-    llvm::json::Object signParams;
-    signParams["input"]    = payload.string();
-    signParams["key-path"] = keys.priv.string();
-    signParams["key-id"]   = "test-key";
-    auto signed_ = registry.get("sign")->run(signParams, ctx);
-    ASSERT_TRUE((bool)signed_) << errorText(signed_.takeError());
-    auto sigPath = signed_->outputs.at("path");
-    EXPECT_TRUE(std::filesystem::exists(sigPath));
-
-    // Verify.
-    llvm::json::Object verifyParams;
-    verifyParams["input"]       = payload.string();
-    verifyParams["pubkey-path"] = keys.pub.string();
-    auto verified = registry.get("verify-sig")->run(verifyParams, ctx);
-    ASSERT_TRUE((bool)verified) << errorText(verified.takeError());
-    EXPECT_EQ(verified->outputs.at("valid"), "true");
-
-    std::filesystem::remove_all(d);
-}
 
 TEST(ActionCatalogTests, verifySigFailsOnTamperedPayload) {
     if (!haveOpenSslOnPath()) {

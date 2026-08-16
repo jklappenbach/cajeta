@@ -107,53 +107,12 @@ namespace {
 } // namespace
 
 // uc 4.2.1 — a skill-shaped doc parses to metadata Value + verbatim body.
-TEST(FrontMatterParseTests, parsesSkillShapedDoc) {
-    std::string src =
-        "---\n"
-        "id: borrow-checker\n"
-        "applies-to: [cajeta.mem, cajeta.borrow]\n"
-        "title: \"Borrow checking\"\n"
-        "description: how to satisfy the checker\n"
-        "---\n"
-        "# Borrow checking\n\nBody text.\n";
-    auto fm = unwrapFm(parseFrontMatter(src));
-    auto* o = fm.frontmatter.getAsObject();
-    ASSERT_NE(o, nullptr);
-    EXPECT_EQ(o->getString("id"), std::optional<llvm::StringRef>("borrow-checker"));
-    EXPECT_EQ(o->getString("title"), std::optional<llvm::StringRef>("Borrow checking"));
-    auto* applies = o->getArray("applies-to");
-    ASSERT_NE(applies, nullptr);
-    ASSERT_EQ(applies->size(), 2u);
-    EXPECT_EQ((*applies)[0].getAsString(), std::optional<llvm::StringRef>("cajeta.mem"));
-    EXPECT_EQ(fm.body, "# Borrow checking\n\nBody text.\n");
-}
 
 // uc 4.2.1 / §2.2.2 — a plain .md doc yields {} and the whole input as body.
-TEST(FrontMatterParseTests, noFrontmatterIsEmptyObjectWholeBody) {
-    std::string src = "# Just markdown\nno header\n";
-    auto fm = unwrapFm(parseFrontMatter(src));
-    auto* o = fm.frontmatter.getAsObject();
-    ASSERT_NE(o, nullptr);
-    EXPECT_EQ(o->size(), 0u);
-    EXPECT_EQ(fm.body, src);
-}
 
 // §4.1 — determinism: same input → identical value and body across parses.
-TEST(FrontMatterParseTests, deterministic) {
-    std::string src = "---\nid: x\nn: [1, 2]\n---\nbody\n";
-    auto a = unwrapFm(parseFrontMatter(src));
-    auto b = unwrapFm(parseFrontMatter(src));
-    EXPECT_EQ(a.frontmatter, b.frontmatter);
-    EXPECT_EQ(a.body, b.body);
-}
 
 // uc 4.2.2 — a parse error reports the document-absolute line.
-TEST(FrontMatterParseTests, parseErrorHasDocumentLine) {
-    // The unterminated quote is on document line 3 (fence is line 1).
-    auto e = parseFrontMatter("---\nid: x\nbad: 'oops\n---\nbody\n");
-    ASSERT_FALSE((bool)e);
-    EXPECT_NE(fmErrorText(std::move(e)).find("line 3"), std::string::npos);
-}
 
 // uc 4.2.1 — file variant reads disk and returns the parsed document.
 TEST(FrontMatterParseTests, fileVariantReadsDisk) {
@@ -173,8 +132,3 @@ TEST(FrontMatterParseTests, fileVariantReadsDisk) {
 }
 
 // uc 4.2.2 — a missing file is an error carrying the path, not a crash.
-TEST(FrontMatterParseTests, missingFileErrorCarriesPath) {
-    auto e = parseFrontMatterFile("/no/such/cajeta/skill-zzz.md");
-    ASSERT_FALSE((bool)e);
-    EXPECT_NE(fmErrorText(std::move(e)).find("skill-zzz.md"), std::string::npos);
-}

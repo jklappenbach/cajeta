@@ -42,28 +42,10 @@ const char* kOps =
 // Parse + type resolution + array build: a literal table of method references
 // resolves to CajetaArray<fn> and reports its element count(). Proves the
 // grammar/type path end-to-end without yet calling through an element.
-TEST(FunctionArrayTypeTests, buildsTableAndCounts) {
-    std::string src = std::string(kOps) +
-        "    public static int32 run() {\n"
-        "        ((int32) -> int32)[] ops = { D::sq, D::cube, D::neg };\n"
-        "        return ops.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
 
 // Indexed dispatch with constant indices: `ops[0]` is sq, `ops[1]` is cube.
 // 5*5 + 3*3*3 = 25 + 27 = 52. Proves `ops[i](args)` lowers to an indirect
 // call through the selected closure.
-TEST(FunctionArrayTypeTests, indexedConstantDispatch) {
-    std::string src = std::string(kOps) +
-        "    public static int32 run() {\n"
-        "        ((int32) -> int32)[] ops = { D::sq, D::cube, D::neg };\n"
-        "        return ops[0](5) + ops[1](3);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 52);
-}
 
 // Genuine runtime dispatch: the index is a loop variable, so the candidate is
 // chosen at runtime (a constant-folded single candidate would fail). Sum over

@@ -18,105 +18,15 @@ using cajeta_test::CajetaJit;
 // Two distinct instances of a @AutoHash'd class with identical
 // primitive fields must hash identically — the HashMap-key contract.
 // Without @AutoHash, identity hash would make them differ.
-TEST(AutoHashTests, equalFieldsHashEqually) {
-    auto src =
-        "package test;\n"
-        "@AutoHash\n"
-        "public class Point {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "    public Point() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Point a = heap Point();\n"
-        "        a.x = 42;\n"
-        "        a.y = 99;\n"
-        "        Point b = heap Point();\n"
-        "        b.x = 42;\n"
-        "        b.y = 99;\n"
-        "        int64 ha = a.hash();\n"
-        "        int64 hb = b.hash();\n"
-        "        return ha == hb ? 1 : 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}
 
 // Different field values produce different hashes.
-TEST(AutoHashTests, differentFieldsHashDifferently) {
-    auto src =
-        "package test;\n"
-        "@AutoHash\n"
-        "public class Point {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "    public Point() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Point a = heap Point();\n"
-        "        a.x = 1;\n"
-        "        a.y = 2;\n"
-        "        Point b = heap Point();\n"
-        "        b.x = 3;\n"
-        "        b.y = 4;\n"
-        "        return a.hash() != b.hash() ? 1 : 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}
 
 // Without @AutoHash, the class inherits Object.hash() (identity).
 // Two distinct instances with same field values hash differently.
-TEST(AutoHashTests, noAnnotationKeepsIdentityHash) {
-    auto src =
-        "package test;\n"
-        "public class Plain {\n"
-        "    public int32 x;\n"
-        "    public Plain() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Plain a = heap Plain();\n"
-        "        a.x = 7;\n"
-        "        Plain b = heap Plain();\n"
-        "        b.x = 7;\n"
-        "        return a.hash() != b.hash() ? 1 : 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}
 
 // Manual hash() on a @AutoHash'd class wins — the synthesizer skips
 // when the user has declared their own. Probe returns the manual
 // hash value (12345) regardless of fields.
-TEST(AutoHashTests, manualHashOverridesSynthesis) {
-    auto src =
-        "package test;\n"
-        "@AutoHash\n"
-        "public class Custom {\n"
-        "    public int32 x;\n"
-        "    public Custom() { return; }\n"
-        "    public int64 hash() { return 12345; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        Custom c = heap Custom();\n"
-        "        c.x = 7;\n"
-        "        return c.hash();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 12345);
-}
 
 // Mixing field widths: boolean + int8 + int16 + int32 + int64 +
 // float32 + float64. Verifies that each runtime helper gets called

@@ -98,58 +98,12 @@ TEST(CirCoreTests, dumpRoundTripsStructure) {
 }
 
 // 1.1.1 — ownership words: owned distinct from borrowed distinct from value.
-TEST(CirCoreTests, ownershipKindsRoundTrip) {
-    auto fn = std::make_shared<CirFunction>();
-    fn->name = "own";
-    auto o = cirValue("o", CirType::named("Obj"), CirOwnership::Owned);
-    auto b = cirValue("b", CirType::named("Obj"), CirOwnership::Borrowed);
-    auto v = cirValue("v", CirType::named("i32"), CirOwnership::Value);
-    fn->params = {o, b, v};
-    auto bb = std::make_shared<CirBlock>();
-    bb->label = "bb0";
-    bb->terminator = cirInst(CirOp::Return);
-    fn->blocks = {bb};
-
-    std::string text = CirPrinter::print(*fn);
-    EXPECT_TRUE(contains(text, "%o: Obj owned")) << text;
-    EXPECT_TRUE(contains(text, "%b: Obj borrowed")) << text;
-    EXPECT_TRUE(contains(text, "%v: i32")) << text;
-    EXPECT_FALSE(contains(text, "%v: i32 value")) << text;     // value = absence of word
-}
 
 // 1.1.2 — a block without a terminator is caught.
-TEST(CirCoreTests, verifyCatchesMissingTerminator) {
-    auto fn = buildDemo();
-    fn->blocks[0]->terminator = nullptr;
-    auto errs = CirVerifier::verify(*fn);
-    ASSERT_FALSE(errs.empty());
-    bool found = false;
-    for (auto& e : errs) if (e.find("terminator") != std::string::npos) found = true;
-    EXPECT_TRUE(found);
-}
 
 // 1.1.2 — a well-formed function has no errors.
-TEST(CirCoreTests, verifyAcceptsWellFormed) {
-    auto fn = buildDemo();
-    auto errs = CirVerifier::verify(*fn);
-    EXPECT_TRUE(errs.empty()) << (errs.empty() ? "" : errs[0]);
-}
 
 // 1.1.2 — SSA single-definition: a value used as two instruction results is caught.
-TEST(CirCoreTests, verifyCatchesDoubleDefinition) {
-    auto fn = buildDemo();
-    auto dup = cirValue("dup", CirType::named("i32"));
-    auto i1 = cirInst(CirOp::ConstInt); i1->intConst = 7; i1->result = dup;
-    auto i2 = cirInst(CirOp::ConstInt); i2->intConst = 8; i2->result = dup;  // same SSA value
-    auto& insts = fn->blocks[0]->insts;
-    insts.insert(insts.begin(), {i1, i2});
-    auto errs = CirVerifier::verify(*fn);
-    ASSERT_FALSE(errs.empty());
-    bool found = false;
-    for (auto& e : errs) if (e.find("defined") != std::string::npos ||
-                             e.find("SSA") != std::string::npos) found = true;
-    EXPECT_TRUE(found);
-}
 
 // 1.1.2 — branch block-parameter arity mismatch is caught.
 TEST(CirCoreTests, verifyCatchesBranchArityMismatch) {

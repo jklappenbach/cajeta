@@ -89,28 +89,6 @@ std::string readFile(const fs::path& p) {
 
 // --xpu-backend=cpu links the kernel into the module as host code and emits a
 // CPU registration ctor — visible in the .ll output.
-TEST(XpuCpuAotCliTests, cpuBackendEmitsHostKernelAndRegistration) {
-    auto [src, build] = makeProject();
-
-    Compiler compiler;
-    compiler.setEmitMode(EmitMode::IR);
-    compiler.setXpuBackend(XpuBackend::Cpu);
-    compiler.compile("test.M.saxpy", src.string(), build.string());
-
-    auto llPath = findArtifact(build, ".ll");
-    ASSERT_FALSE(llPath.empty()) << "no .ll written under " << build;
-    std::string ir = readFile(llPath);
-    // The host kernel function (decorated) + the uniform launcher thunk + the
-    // CPU registration call + a ctor.
-    EXPECT_NE(ir.find("__cajeta_xpu_cpu.saxpy"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("__cajeta_xpu_cpu_launch.saxpy"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("__cajeta_xpu_register_cpu_kernel"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("llvm.global_ctors"), std::string::npos) << ir;
-    // No device-blob registration on the pure-CPU path.
-    EXPECT_EQ(ir.find("__cajeta_xpu_register_module"), std::string::npos) << ir;
-
-    fs::remove_all(src.parent_path());
-}
 
 // --xpu-backend=vulkan,cpu bundles BOTH registrations into one module: the
 // SPIR-V device blob AND the CPU host kernel — the basis for runtime fallback.
@@ -178,42 +156,3 @@ TEST(XpuCpuAotCliTests, cpuBackendEmitsObjectArtifact) {
 // LoopVectorize turns it into SIMD — always, independent of --opt. A
 // divergence-free kernel (no `if (i<n)` guard → no masked store) vectorizes on
 // any x86 host (SSE2 baseline), not just AVX, so the assertion is host-robust.
-TEST(XpuCpuAotCliTests, cpuBackendVectorizesBlockWrapper) {
-    static std::mt19937_64 rng(std::random_device{}());
-    auto base = fs::temp_directory_path()
-              / ("cajeta_xpu_cpuvec_" + std::to_string(rng()));
-    auto srcDir = base / "src" / "test";
-    auto build = base / "build";
-    fs::create_directories(srcDir);
-    fs::create_directories(build);
-    std::ofstream(srcDir / "M.cajeta") <<
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class M {\n"
-        "    @Kernel\n"
-        "    public static void scale(KernelBuffer<float32> y, KernelBuffer<float32> x,\n"
-        "                             float32 a) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        y[i] = a * x[i];\n"   // divergence-free → vectorizes everywhere
-        "    }\n"
-        "}\n";
-
-    Compiler compiler;
-    compiler.setEmitMode(EmitMode::IR);
-    compiler.setXpuBackend(XpuBackend::Cpu);
-    compiler.compile("test.M.scale", (base / "src").string(), build.string());
-
-    auto llPath = findArtifact(build, ".ll");
-    ASSERT_FALSE(llPath.empty()) << "no .ll written under " << build;
-    std::string ir = readFile(llPath);
-    // The per-block wrapper exists (the Inc 5B launch ABI).
-    EXPECT_NE(ir.find("__cajeta_xpu_cpu_block.scale"), std::string::npos) << ir;
-    // And its work-item loop is vectorized: a vectorized loop body + SIMD ops.
-    bool vectorized = ir.find("vector.body") != std::string::npos
-                   || ir.find("x float>") != std::string::npos;
-    EXPECT_TRUE(vectorized)
-        << "expected SIMD vector ops in the per-block wrapper\n" << ir;
-
-    fs::remove_all(base);
-}

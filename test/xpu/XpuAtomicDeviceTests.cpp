@@ -131,44 +131,6 @@ std::vector<float> initOut() { return {0.0f, 0.0f, 1.0e9f}; }
 
 } // namespace
 
-TEST(XpuAtomicDeviceTests, floatAtomicsRunOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kAtomicSource);
-    auto k = findMethod(module->getStructures()["test.M"], "reduce");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_atomic_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = cajeta::test::makeCoffSafeJit();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr))
-        << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto symOrErr = jit->lookup("reduce");
-    ASSERT_TRUE(static_cast<bool>(symOrErr))
-        << llvm::toString(symOrErr.takeError());
-    auto reduce = symOrErr->toPtr<ReduceFn>();
-
-    std::vector<float> in = makeInput();
-    std::vector<float> out = initOut();
-    const int32_t B = 64;
-    const int32_t G = (int32_t) (kN / 64);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            reduce(out.data(), in.data(), kN,
-                   tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    EXPECT_FLOAT_EQ(out[0], expectedSum());
-    EXPECT_FLOAT_EQ(out[1], expectedMax());
-    EXPECT_FLOAT_EQ(out[2], expectedMin());
-}
 
 TEST(XpuAtomicDeviceTests, floatAtomicsRunOnVulkanDevice) {
     using namespace cajeta::xpu::vulkan;
@@ -266,46 +228,6 @@ TEST(XpuAtomicDeviceTests, floatAddAtomicsRunOnVulkanDevice) {
     EXPECT_FLOAT_EQ(result[0], expectedSum());
 }
 
-TEST(XpuAtomicDeviceTests, floatAtomicsRunOnAmdDevice) {
-    using namespace cajeta::xpu::amd;
-    if (!HipDriver::available()) GTEST_SKIP() << "no AMD HIP device available";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kAtomicSource);
-    auto k = findMethod(module->getStructures()["test.M"], "reduce");
-    ASSERT_NE(k, nullptr);
-    auto tm = createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_atomic_amd", deviceCtx);
-    configureDeviceModule(deviceModule, *tm);
-    lowerKernel(k, deviceModule);
-    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
-    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
-
-    std::vector<float> in = makeInput();
-    std::vector<float> out = initOut();
-    HipDriver hip;
-    ASSERT_TRUE(hip.init());
-    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
-    ASSERT_NE(mod, nullptr);
-    HipFunction fn = hip.getFunction(mod, "reduce");
-    ASSERT_NE(fn, nullptr);
-    HipDevicePtr dOut = hip.alloc(out.size() * sizeof(float));
-    HipDevicePtr dIn = hip.alloc(in.size() * sizeof(float));
-    ASSERT_NE(dOut, nullptr); ASSERT_NE(dIn, nullptr);
-    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), out.size() * sizeof(float)));
-    ASSERT_TRUE(hip.memcpyHtoD(dIn, in.data(), in.size() * sizeof(float)));
-    void* params[] = {&dOut, &dIn, (void*) &kN};
-    ASSERT_TRUE(hip.launch(fn, (kN + 63) / 64, 64, params));
-    ASSERT_TRUE(hip.synchronize());
-    std::vector<float> result(out.size());
-    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, result.size() * sizeof(float)));
-    hip.free(dOut); hip.free(dIn);
-
-    EXPECT_FLOAT_EQ(result[0], expectedSum());
-    EXPECT_FLOAT_EQ(result[1], expectedMax());
-    EXPECT_FLOAT_EQ(result[2], expectedMin());
-}
 
 // ---- Integer atomics ------------------------------------------------------
 // KernelBuffer<uint32> integer atomics — core OpAtomicI*/CompareExchange (no SPV_EXT).

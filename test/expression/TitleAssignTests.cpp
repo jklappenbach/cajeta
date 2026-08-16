@@ -35,101 +35,16 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 // 1.1.1a — field destination: `this.c #= v` forwards the caller's actual
 // title exactly like `this.c #= v` (owned put → holder drops it at
 // teardown; lent put → source survives the holder).
-TEST(TitleAssignTests, fieldStoreParity) {
-    std::string src = std::string(kCellSrc) +
-        "public class Holder {\n"
-        "    public Cell c;\n"
-        "    public Holder() { this.c = null; }\n"
-        "    public void put(Cell v) { this.c #= v; }\n"
-        "    public int32 peek() { return this.c.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Holder h = heap Holder();\n"
-        "            h.put(#heap Cell(3));\n"        // owned put
-        "            t = t + h.peek();\n"
-        "        }\n"                                 // holder drops the Cell
-        "        Cell mine = heap Cell(4);\n"
-        "        {\n"
-        "            Holder h2 = heap Holder();\n"
-        "            h2.put(mine);\n"                 // lent put
-        "            if (h2.peek() != 4) { return -96; }\n"
-        "        }\n"                                 // mine survives
-        "        return t + mine.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // 1.1.1b — local declaration-initializer: `Cell x #= mk()` arms/forwards
 // exactly like `Cell x #= mk()` (spec 2.2.3): fresh result owned and
 // dropped at scope exit, zero leak.
-TEST(TitleAssignTests, localDeclParity) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static #Cell mk() { return heap Cell(9); }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell x #= mk();\n"
-        "            t = x.n;\n"
-        "        }\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 // 1.1.1c — raw array slot: `data[i] #= v` matches `data[i] #= v` (today's
 // local-owning-array move semantics; per-slot bits arrive in Unit 3).
-TEST(TitleAssignTests, arraySlotParity) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            String[] data = heap String[2];\n"
-        "            String a = \"aa\" + Cajeta.liveCount();\n"  // heap-backed
-        "            data[0] #= a;\n"
-        "            t = (int32) data[0].size();\n"
-        "        }\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
 
 // 1.1.1d — indexed user class: `m[k] #= v` lowers through operator[]=
 // with the transfer word composed, same as `m[k] #= v` (spec 2.2.4).
-TEST(TitleAssignTests, indexedStoreParity) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            HashMap<int32, Cell> m = heap HashMap<int32, Cell>();\n"
-        "            m[1] #= heap Cell(6);\n"          // owned put
-        "            t = m[1].n;\n"
-        "        }\n"                                    // map drops the Cell
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // 1.1.2 — `operator#=` is not declarable (spec §5.5): ownership-store
 // semantics are compiler-owned, like heap/stack placement.

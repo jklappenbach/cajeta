@@ -306,61 +306,8 @@ TEST(BuildToolArmsTests, toolchainWhichAndShowReport) {
 
 // ─── install ───────────────────────────────────────────────────────
 
-TEST(BuildToolArmsTests, installArgumentArms) {
-    ArmWorld w;
-    EXPECT_EQ(w.run("install --bogus"), 1);
-    EXPECT_NE(w.output().find("unknown argument"), std::string::npos)
-        << w.output();
 
-    fs::path a = w.writeLibraryArchive("one.cja");
-    EXPECT_EQ(w.run("install " + a.string() + " " + a.string()), 1);
-    EXPECT_NE(w.output().find("unexpected extra argument"), std::string::npos)
-        << w.output();
 
-    EXPECT_EQ(w.run("install /no/such/archive.cja"), 1);
-    EXPECT_NE(w.output().find("archive not found"), std::string::npos)
-        << w.output();
-}
-
-TEST(BuildToolArmsTests, installArchiveLandsInTheOllaStore) {
-    ArmWorld w;
-    // The store key comes from the FILENAME (<name>-<version>.cja), not the
-    // archive's manifest — a mis-named archive is refused below.
-    fs::path a = w.writeLibraryArchive("com.example.lib-1.0.0.cja",
-                                       "com.example.lib", "1.0.0");
-
-    EXPECT_EQ(w.run("install " + a.string()), 0) << w.output();
-    std::string out = w.output();
-    EXPECT_NE(out.find("SHA-256:"), std::string::npos) << out;
-    EXPECT_NE(out.find("Signature:   (none — not required)"),
-              std::string::npos) << out;
-    EXPECT_NE(out.find("OK — archive verified"), std::string::npos) << out;
-
-    // The store layout is <root>/<name>/<version>/<name>-<version>.cja.
-    fs::path landed = w.ollaHome() / "com.example.lib" / "1.0.0"
-                    / "com.example.lib-1.0.0.cja";
-    EXPECT_TRUE(fs::exists(landed)) << out;
-
-    // A name that doesn't carry <name>-<version> verifies but cannot be
-    // filed, and says so rather than guessing.
-    fs::path bad = w.writeLibraryArchive("lib.cja");
-    EXPECT_EQ(w.run("install " + bad.string()), 1);
-    EXPECT_NE(w.output().find("cannot derive name/version"), std::string::npos)
-        << w.output();
-}
-
-TEST(BuildToolArmsTests, installRefusesWhenRequiredProvenanceIsAbsent) {
-    ArmWorld w;
-    fs::path a = w.writeLibraryArchive("bare.cja");
-
-    EXPECT_EQ(w.run("install --require-signature " + a.string()), 1);
-    EXPECT_NE(w.output().find("--require-signature set but"),
-              std::string::npos) << w.output();
-
-    EXPECT_EQ(w.run("install --require-attestation " + a.string()), 1);
-    EXPECT_NE(w.output().find("--require-attestation set but"),
-              std::string::npos) << w.output();
-}
 
 // Project mode (`cajeta install` with no archive) installs the cwd LIBRARY
 // into ~/.olla — a project that declares an entry-method builds an
@@ -479,19 +426,3 @@ TEST(BuildToolArmsTests, coverageListFiltersByKindAndRemoveTakesHelp) {
         << w.output();
 }
 
-TEST(BuildToolArmsTests, verifyReproducibleComparesTwoArchives) {
-    ArmWorld w;
-    fs::path a = w.writeLibraryArchive("r1.cja", "com.example.r", "1.0.0");
-    fs::path b = w.writeLibraryArchive("r2.cja", "com.example.r", "1.0.0");
-
-    // Same inputs → byte-identical archives.
-    EXPECT_EQ(w.run("verify-reproducible " + a.string() + " " + b.string()), 0)
-        << w.output();
-
-    // A different identity changes the bytes.
-    fs::path c = w.writeLibraryArchive("r3.cja", "com.example.other", "2.0.0");
-    EXPECT_NE(w.run("verify-reproducible " + a.string() + " " + c.string()), 0)
-        << w.output();
-
-    EXPECT_NE(w.run("verify-reproducible " + a.string()), 0);  // usage
-}

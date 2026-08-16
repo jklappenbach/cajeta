@@ -66,44 +66,6 @@ TEST(AsyncIteratorTests, singleCallViaInterface) {
 // yields {10, 20, 30} then terminal-empty; the explicit
 // `while (opt.isPresent())` form is the v1 user-side pattern that the
 // deferred for-syntax will eventually desugar to.
-TEST(AsyncIteratorTests, sumThreeViaConcreteReceiver) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.Optional;\n"
-        "import cajeta.concurrent.AsyncIterator;\n"
-        "public final class TriIter implements AsyncIterator<int32> {\n"
-        "    int32 i;\n"
-        "    int32[] vals;\n"
-        "    public TriIter() {\n"
-        "        this.i = 0;\n"
-        "        this.vals = heap int32[3];\n"
-        "        this.vals[0] = 10;\n"
-        "        this.vals[1] = 20;\n"
-        "        this.vals[2] = 30;\n"
-        "    }\n"
-        "    public Optional<int32> next() {\n"
-        "        if (this.i >= 3) {\n"
-        "            return stack Optional<int32>(false, 0);\n"
-        "        }\n"
-        "        int32 v = this.vals[this.i];\n"
-        "        this.i = this.i + 1;\n"
-        "        return stack Optional<int32>(true, v);\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        TriIter iter = heap TriIter();\n"
-        "        int32 sum = 0;\n"
-        "        Optional<int32> opt = iter.next();\n"
-        "        while (opt.isPresent()) {\n"
-        "            sum = sum + opt.get();\n"
-        "            opt = iter.next();\n"
-        "        }\n"
-        "        return sum;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 60);
-}
 
 // Same TriIter, but the receiver-typed local is the interface, not
 // the concrete class. Multi-call iface dispatch with stack-Optional

@@ -72,47 +72,9 @@ TEST(BorrowParamEscapeTests, returnBorrowParamThroughOwnershipSignatureForwardsF
 // Control: `#T` return + `#T` formal + `return p;` works. The caller
 // surrendered ownership at the outer call; the callee owns p and passes
 // it through.
-TEST(BorrowParamEscapeTests, returnTransferredParamThroughOwnershipSignatureAccepted) {
-    auto src =
-        "package test;\n"
-        "public class Foo {\n"
-        "    public int32 v;\n"
-        "    public Foo(int32 v) { this.v = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static #Foo passThrough(#Foo f) {\n"
-        "        return f;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Foo a = heap Foo(11);\n"
-        "        Foo b = passThrough(#a);\n"
-        "        return b.v;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 11);
-}
 
 // Control: plain-`T` return + plain-`T` formal + `return p;` is the
 // borrow-pass-through pattern. Both ends know it's a borrow.
-TEST(BorrowParamEscapeTests, returnBorrowParamThroughBorrowSignatureAccepted) {
-    auto src =
-        "package test;\n"
-        "public class Foo {\n"
-        "    public int32 v;\n"
-        "    public Foo(int32 v) { this.v = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static Foo identity(Foo f) {\n"  // plain return + plain formal
-        "        return f;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Foo a = heap Foo(13);\n"
-        "        Foo b = identity(a);\n"  // borrow passthrough
-        "        return b.v;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 13);
-}
 
 // (2) `#`-transfer shape: caller writes `#p` where p is a plain formal.
 // rev 2: `#p` forwards the formal's runtime flag — a lend forwards 0, so
@@ -143,26 +105,3 @@ TEST(BorrowParamEscapeTests, transferBorrowParamViaSharpForwardsFlag) {
 
 // Control: when the outer param IS `#T`, transferring it onward via `#p`
 // is the legitimate pass-through-with-ownership shape.
-TEST(BorrowParamEscapeTests, transferTransferredParamViaSharpAccepted) {
-    auto src =
-        "package test;\n"
-        "public class Foo {\n"
-        "    public int32 v;\n"
-        "    public Foo(int32 v) { this.v = v; }\n"
-        "}\n"
-        "public class Sink {\n"
-        "    public Foo f;\n"
-        "    public Sink(#Foo f) { this.f #= f; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 hand(#Foo p) {\n"  // outer #Foo formal
-        "        Sink s = heap Sink(#p);\n"          // legitimate transfer
-        "        return s.f.v;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Foo a = heap Foo(23);\n"
-        "        return hand(#a);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 23);
-}

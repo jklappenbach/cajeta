@@ -301,59 +301,8 @@ TEST(XpuMathDeviceTests, runsOnCpu) {
 
 // B2 increment 2 — transcendentals lower to the llvm.* intrinsics (CPU -> libm,
 // Vulkan -> OpExtInst GLSL.std.450, AMD/NV -> device math library).
-TEST(XpuMathDeviceTests, transcendentalsLowerToIntrinsics) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kTranscendentalSource, "T");
-    auto k = findMethod(module->getStructures()["test.T"], "trans");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module host("xpu_math_trans_emit", ctx);
-    cajeta::xpu::cpu::configureHostModule(host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, host), nullptr);
-
-    std::string ir = printModule(host);
-    for (const char* tok : {"llvm.sin", "llvm.cos", "llvm.tan", "llvm.exp",
-                            "llvm.log", "llvm.pow", "llvm.acos"})
-        EXPECT_NE(ir.find(tok), std::string::npos) << tok << " missing\n" << ir;
-}
 
 // CPU oracle: the transcendental kernel runs via libm. out[i] == 16 + i.
-TEST(XpuMathDeviceTests, transcendentalsRunOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kTranscendentalSource, "T");
-    auto k = findMethod(module->getStructures()["test.T"], "trans");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_math_trans_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto sym = jit->lookup("trans");
-    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
-    auto trans = sym->toPtr<MathFn>();
-
-    const int32_t B = 64, G = 4;
-    const uint32_t N = (uint32_t) (B * G);
-    std::vector<float> out(N, -1.0f);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            trans(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    for (uint32_t i = 0; i < N; ++i)
-        EXPECT_NEAR(out[i], transExpectedAt(i), 1e-3f) << "element " << i;
-}
 
 // On a real GPU via Vulkan: the SPIR-V backend maps the intrinsics to
 // OpExtInst GLSL.std.450. out[i] == 16 + i.

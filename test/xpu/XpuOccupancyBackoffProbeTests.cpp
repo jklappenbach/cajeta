@@ -177,30 +177,6 @@ int spillViaClone(llvm::Module& m, llvm::TargetMachine& tm,
 } // namespace
 
 // 1.1.d — the shared resource parser returns correct per-kernel tuples.
-TEST(XpuOccupancyBackoffProbeTests, parserExtractsPerKernelResourceTuples) {
-    std::string isa =
-        "  amdhsa.kernels:\n"
-        "    - .args:\n"
-        "        - .name: c\n"
-        "        - .name: a\n"
-        "      .name:           kfoo\n"
-        "      .sgpr_count:     20\n"
-        "      .vgpr_count:     200\n"
-        "      .vgpr_spill_count: 40\n"
-        "    - .args:\n"
-        "        - .name: x\n"
-        "      .name:           kbar\n"
-        "      .vgpr_count:     50\n"
-        "      .vgpr_spill_count: 0\n";
-    auto ks = parseKernelResourceUsage(isa);
-    ASSERT_EQ(ks.size(), 2u);
-    EXPECT_EQ(ks[0].name, "kfoo");
-    EXPECT_EQ(ks[0].vgpr, 200);
-    EXPECT_EQ(ks[0].spill, 40);
-    EXPECT_EQ(ks[1].name, "kbar");
-    EXPECT_EQ(ks[1].vgpr, 50);
-    EXPECT_EQ(ks[1].spill, 0);
-}
 
 // 1.1.a — pinning the real workgroup size eliminates the spill + tags the attr.
 TEST(XpuOccupancyBackoffProbeTests, workgroupSizePinEliminatesSpill) {

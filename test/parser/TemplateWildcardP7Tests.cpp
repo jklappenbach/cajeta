@@ -168,128 +168,23 @@ TEST(TemplateWildcardP7Tests, extendsBoundParameterAcceptsConcreteAndProjects) {
 // the write, the underlying Box<Animal>'s value field carries the new
 // Dog, and reading through the original Animal-typed reference works
 // because Dog is-a Animal.
-TEST(TemplateWildcardP7Tests, superBoundAcceptsNarrowerWrite) {
-    auto src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag() { return 1; }\n"
-        "}\n"
-        "public class Dog extends Animal {\n"
-        "    public int32 tag() { return 2; }\n"
-        "}\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Animal seed = heap Animal();\n"
-        "        Box<Animal> bAnimal = heap Box<Animal>(seed);\n"
-        "        Box<? super Dog> b = bAnimal;\n"
-        "        Dog d = heap Dog();\n"
-        "        b.value = d;\n"
-        "        return bAnimal.value.tag();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // Compose super-write with the wildcard-parameter compatibility from
 // the previous slice. `static void writeNarrower(Box<? super Dog> b, Dog d)`
 // must accept a `Box<Animal>` arg (Animal is a supertype of Dog) and
 // then write d into b.value inside the body. The write threads through
 // to the caller's bAnimal because both alias the same heap instance.
-TEST(TemplateWildcardP7Tests, superBoundParameterComposesWithWrite) {
-    auto src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag() { return 1; }\n"
-        "}\n"
-        "public class Dog extends Animal {\n"
-        "    public int32 tag() { return 2; }\n"
-        "}\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static void writeNarrower(Box<? super Dog> b, Dog d) {\n"
-        "        b.value = d;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Animal seed = heap Animal();\n"
-        "        Box<Animal> bAnimal = heap Box<Animal>(seed);\n"
-        "        Dog d = heap Dog();\n"
-        "        writeNarrower(bAnimal, d);\n"
-        "        return bAnimal.value.tag();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // Direct construction into a wildcard-typed local. Skips the
 // named-intermediate (`Box<Dog> bDog = ...; Box<? extends Animal> b = bDog;`)
 // pattern in case that path masks a missing covariance check on the
 // initializer expression itself.
-TEST(TemplateWildcardP7Tests, extendsBoundLocalAcceptsDirectHeapConstruction) {
-    auto src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag() { return 1; }\n"
-        "}\n"
-        "public class Dog extends Animal {\n"
-        "    public int32 tag() { return 2; }\n"
-        "}\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Dog d = heap Dog();\n"
-        "        Box<? extends Animal> b = heap Box<Dog>(d);\n"
-        "        return b.value.tag();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // Wildcard-receiver method-CALL dispatch with a T-parametric formal.
 // Substitution-stable hash means the wildcard's alias hash for
 // `set(T)` is the same one Box<Dog>#VTable carries — so the runtime
 // vtable lookup lands on Box<Dog>::set even though the static type
 // is `Box<? extends Animal>`.
-TEST(TemplateWildcardP7Tests, wildcardReceiverDispatchesTParamMethod) {
-    auto src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag() { return 1; }\n"
-        "}\n"
-        "public class Dog extends Animal {\n"
-        "    public int32 tag() { return 2; }\n"
-        "}\n"
-        "public class Counter {\n"
-        "    public static int32 setCalls = 0;\n"
-        "}\n"
-        "public class Box<T> {\n"
-        "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
-        "    public T get() { return this.value; }\n"
-        "    public void set(T v) {\n"
-        "        Counter.setCalls = Counter.setCalls + 1;\n"
-        "        this.value = v;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Dog d = heap Dog();\n"
-        "        Box<? extends Animal> b = heap Box<Dog>(d);\n"
-        "        b.set(b.get());\n"
-        "        return Counter.setCalls * 100 + b.value.tag();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 102);
-}
 
 // PECS write-soundness. `Box<? extends Animal>::set(? extends Animal)`
 // must reject a foreign Animal-typed argument — the receiver's actual

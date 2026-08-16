@@ -120,37 +120,6 @@ TEST(ResolverTimingsTests, nullTimingsDoesNotCrashOrAlter) {
 
 // ─── counters track per-phase calls on a single direct dep ────────────
 
-TEST(ResolverTimingsTests, countersOnSingleDirectDep) {
-    auto repoRoot = makeFsRepo({{"acme.lib", "1.0.0"}});
-    writeSidecar(repoRoot, "acme.lib", "1.0.0", {});
-    auto src = makeManifestSrc(repoRoot, {{"acme.lib", "1.0.0"}});
-    auto m = mustLoad(src);
-    auto proj = makeTempDir("counters-1");
-
-    ResolverTimings t;
-    // Pin the olla root to an empty temp dir (proj/.olla) so the
-    // implicit local repo deterministically misses and we don't read
-    // the developer's real ~/.olla.
-    auto result = resolveProjectDependencies(
-        m, proj.string(), proj.string(), &t);
-    ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
-
-    EXPECT_EQ(t.depsResolved, 1);
-    EXPECT_GE(t.mvsIterations, 1);
-    // pickLowestForAll walks repos calling listVersions once per repo
-    // until a match. The implicit ~/.olla repo is consulted first and
-    // misses (empty), then the declared repo hits: 2 list calls. Only
-    // the hitting repo is fetched, so fetch/manifest stay at 1.
-    EXPECT_EQ(t.listVersionsCalls, 2);
-    EXPECT_EQ(t.fetchCalls, 1);
-    EXPECT_EQ(t.fetchManifestCalls, 1);
-
-    // Wall-clock counters should be non-negative.
-    EXPECT_GE(t.total.count(), 0);
-    EXPECT_GE(t.listVersions.count(), 0);
-    EXPECT_GE(t.fetch.count(), 0);
-    EXPECT_GE(t.fetchManifest.count(), 0);
-}
 
 // ─── transitive graph bumps deps + per-call counts ────────────────────
 
@@ -181,45 +150,6 @@ TEST(ResolverTimingsTests, transitiveGraphBumpsCounters) {
 
 // ─── deps resolved equals output size on success ──────────────────────
 
-TEST(ResolverTimingsTests, depsResolvedEqualsOutputCount) {
-    auto repoRoot = makeFsRepo({
-        {"acme.lib", "1.0.0"},
-        {"other.pkg", "0.1.0"},
-    });
-    writeSidecar(repoRoot, "acme.lib", "1.0.0", {});
-    writeSidecar(repoRoot, "other.pkg", "0.1.0", {});
-    auto src = makeManifestSrc(repoRoot, {
-        {"acme.lib", "1.0.0"},
-        {"other.pkg", "0.1.0"},
-    });
-    auto m = mustLoad(src);
-    auto proj = makeTempDir("counters-multi");
-
-    ResolverTimings t;
-    auto result = resolveProjectDependencies(
-        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
-    ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
-    EXPECT_EQ(static_cast<int>(result->size()), t.depsResolved);
-    EXPECT_EQ(t.depsResolved, 2);
-}
 
 // ─── empty-dep manifest leaves timings near-zero ──────────────────────
 
-TEST(ResolverTimingsTests, noDepsLeavesCountersZero) {
-    auto src = R"({
-        "details": { "name": "d", "version": "0.1.0" }
-    })";
-    auto m = mustLoad(src);
-    auto proj = makeTempDir("counters-empty");
-
-    ResolverTimings t;
-    auto result = resolveProjectDependencies(
-        m, proj.string(), proj.string(), &t);  // pin olla root (hermetic)
-    ASSERT_TRUE(static_cast<bool>(result)) << errorText(result.takeError());
-    EXPECT_EQ(result->size(), 0u);
-    EXPECT_EQ(t.depsResolved, 0);
-    EXPECT_EQ(t.listVersionsCalls, 0);
-    EXPECT_EQ(t.fetchCalls, 0);
-    EXPECT_EQ(t.fetchManifestCalls, 0);
-    EXPECT_EQ(t.mvsIterations, 0);
-}

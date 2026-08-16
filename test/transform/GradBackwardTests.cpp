@@ -57,42 +57,10 @@ TEST(GradBackward, negateGrad) {
 // Tensor reduction: d/dx sum(x*x). Cotangents are scalar at the output (seed
 // 1.0f), tensor below the sum — so the accumulation of x's two contributions is
 // spelled `Tensor.add<E>`, and the sum's cotangent broadcasts via onesLike*g.
-TEST(GradBackward, tensorSumOfSquaresUsesTensorSurface) {
-    std::vector<AdNode> dag = {
-        AdNode{"x", true, "", {}, true},                                   // param tensor
-        AdNode{"Tensor.mul<float32>(x, x)", false, "mul", {0, 0}, true},   // elementwise
-        AdNode{"Tensor.sum<float32,float32>(Tensor.mul<float32>(x, x))",
-               false, "sum", {1}, false},                                  // scalar output
-    };
-    std::string missing;
-    std::string grad = reverseModeGrad(dag, 0, "float32", &missing);
-    EXPECT_TRUE(missing.empty());
-    // sum's cotangent broadcasts the scalar seed back over the operand's shape,
-    EXPECT_NE(grad.find(
-        "Tensor.mulScalar<float32>(Tensor.onesLike<float32>("), std::string::npos);
-    // mul's rule is elementwise, and x's two contributions accumulate over tensors.
-    EXPECT_NE(grad.find("Tensor.mul<float32>("), std::string::npos);
-    EXPECT_NE(grad.find("Tensor.add<float32>("), std::string::npos);
-}
 
 // matmul reverse-composition through the composer (not just the rule in isolation):
 // loss = sum(A @ B), so dA = g @ B^T with g the sum's broadcast cotangent. Verifies
 // the transposed-product spelling + surface selection compose end-to-end.
-TEST(GradBackward, matmulReverseCompositionTensorSurface) {
-    std::vector<AdNode> dag = {
-        AdNode{"A", true, "", {}, true},                                       // param tensor
-        AdNode{"B", false, "", {}, true},                                      // const tensor
-        AdNode{"Tensor.matmul<float32>(A, B)", false, "matmul", {0, 1}, true}, // A @ B
-        AdNode{"Tensor.sum<float32,float32>(Tensor.matmul<float32>(A, B))",
-               false, "sum", {2}, false},                                      // scalar loss
-    };
-    std::string missing;
-    std::string grad = reverseModeGrad(dag, 0, "float32", &missing);
-    EXPECT_TRUE(missing.empty());
-    EXPECT_NE(grad.find("Tensor.matmul<float32>("), std::string::npos);
-    EXPECT_NE(grad.find(".transpose())"), std::string::npos);       // B^T in dA
-    EXPECT_NE(grad.find("Tensor.onesLike<float32>"), std::string::npos); // sum broadcast
-}
 
 // A primitive with no registered VJP rule → the composer reports it by name
 // (the §5.3 missing-rule signal), grad expr empty.

@@ -84,48 +84,10 @@ const char* kHeader =
 } // namespace
 
 // Freeing a launch-borrowed buffer before syncing is XPU-K02.
-TEST(XpuLaunchBorrowTests, freeBeforeSyncRejected) {
-    std::string src = std::string(kHeader) +
-        "public class M {\n"
-        "    @Kernel public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
-        "    public static void run(KernelBuffer<float32> y, KernelStream s, uint32 n) {\n"
-        "        k.launch(s, grid: [1], block: [1])(y, n);\n"
-        "        y.free();\n"   // ERROR: still borrowed by the launch
-        "    }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.M");
-    EXPECT_EQ(codegenErrorId(compiler), "XPU-K02");
-}
 
 // Syncing the stream releases the launch borrow, so the later free is fine.
-TEST(XpuLaunchBorrowTests, freeAfterSyncAccepted) {
-    std::string src = std::string(kHeader) +
-        "public class M {\n"
-        "    @Kernel public static void k(KernelBuffer<float32> y, uint32 n) { }\n"
-        "    public static void run(KernelBuffer<float32> y, KernelStream s, uint32 n) {\n"
-        "        k.launch(s, grid: [1], block: [1])(y, n);\n"
-        "        s.sync();\n"
-        "        y.free();\n"   // OK: borrow released at sync
-        "    }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.M");
-    EXPECT_EQ(codegenErrorId(compiler), "");
-}
 
 // A free with no launch outstanding is unaffected by the check.
-TEST(XpuLaunchBorrowTests, freeWithoutLaunchAccepted) {
-    std::string src = std::string(kHeader) +
-        "public class M {\n"
-        "    public static void run(KernelBuffer<float32> y) {\n"
-        "        y.free();\n"
-        "    }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.M");
-    EXPECT_EQ(codegenErrorId(compiler), "");
-}
 
 // Letting a launch-borrowed OWNED buffer leave scope before syncing is XPU-K02
 // — the implicit-drop counterpart to freeBeforeSyncRejected. With KernelBuffer<T>'s

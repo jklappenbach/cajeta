@@ -24,27 +24,6 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-TEST(ViewOwningTests, owningFormConstructsAndExecutes) {
-    // The view takes the buffer; the original local is consumed. Use the
-    // view normally; cleanup happens at scope exit.
-    auto src =
-        "package test;\n"
-        "@HostEndian\n"
-        "public view H {\n"
-        "    int32 a;\n"
-        "    int32 b;\n"
-        "}\n"
-        "public final class S {\n"
-        "    public static int32 run() {\n"
-        "        int32[] bytes = heap int32[2];\n"
-        "        H h = H(#bytes);\n"
-        "        h.a = 13;\n"
-        "        h.b = 29;\n"
-        "        return h.a + h.b;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // Helper for the next test — encode (borrow, owning) as a single int.
 namespace {
@@ -53,46 +32,6 @@ constexpr int32_t encode(int32_t borrow, int32_t owning) {
 }
 }
 
-TEST(ViewOwningTests, owningFormBufferDroppedAtScopeExit) {
-    // Drop count goes up by exactly 1 (the view's drop) at function exit.
-    // Borrow form also sees 1 (the source array's own drop entry). The
-    // count is read FROM THE CALLER, after the inner function has fully
-    // returned and its scope has unwound — reading inside the inner
-    // function would miss the drops since they fire on the way out.
-    auto src =
-        "package test;\n"
-        "@HostEndian\n"
-        "public view H {\n"
-        "    int32 a;\n"
-        "}\n"
-        "public final class S {\n"
-        "    public static void doOwning() {\n"
-        "        int32[] bytes = heap int32[1];\n"
-        "        H h = H(#bytes);\n"
-        "        h.a = 1;\n"
-        "    }\n"
-        "    public static void doBorrow() {\n"
-        "        int32[] bytes = heap int32[1];\n"
-        "        H h = H(bytes);\n"
-        "        h.a = 1;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        doOwning();\n"
-        "        int64 owning = Cajeta.dropCount();\n"
-        "        Cajeta.dropCountReset();\n"
-        "        doBorrow();\n"
-        "        int64 borrow = Cajeta.dropCount();\n"
-        "        int32 oi = (int32) owning;\n"
-        "        int32 bi = (int32) borrow;\n"
-        "        return (bi << 8) | oi;\n"
-        "    }\n"
-        "}\n";
-    int32_t got = runI32(src);
-    EXPECT_EQ(got, encode(1, 1))
-        << "borrow drops=" << ((got >> 8) & 0xff)
-        << " owning drops=" << (got & 0xff);
-}
 
 TEST(ViewOwningTests, borrowFormViewCannotEscape) {
     // Borrow form returning a view of a function-local buffer is

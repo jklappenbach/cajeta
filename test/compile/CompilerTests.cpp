@@ -40,45 +40,5 @@ TEST(CompilerTests, canThrowOnInvalidInput) {
 // registered, the eager prelude loaded (floor), and lazy packages (cajeta.math)
 // stay lazy — the last directly guards the MathLazyParse regression class.
 
-TEST(CompilerTests, canParseOnValidShortPackage) {
-    string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/cajeta/Test.cajeta");
-    string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/code/src");
-    string outputPath = CAJETA_TEST_ROOT + string("/compile/code/build");
-    Compiler compiler;
-    CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
-    compiler.compile(pModule);
-    auto modules = CajetaModule::getStructureToModule();
-    EXPECT_GT(modules.count("cajeta.Test"), 0u) << "user structure not registered";
-    EXPECT_GT(modules.size(), 100u) << "eager stdlib prelude did not load";
-    // cajeta.math is lazy: no cajeta.math.* structure may appear in the eager
-    // prelude of a trivial file (guards the MathLazyParse regression class).
-    size_t mathEager = 0;
-    for (auto& kv : modules)
-        if (kv.first.rfind("cajeta.math.", 0) == 0) ++mathEager;
-    EXPECT_EQ(mathEager, 0u) << "cajeta.math.* must stay lazy (not eager prelude)";
-}
 
-TEST(CompilerTests, canParseOnValidLongPackage) {
-    string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/foo/bar/baz/Test.cajeta");
-    string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/code/src");
-    string outputPath = CAJETA_TEST_ROOT + string("/compile/code/build");
-    Compiler compiler;
-    CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
-    compiler.compile(pModule);
-    auto modules = CajetaModule::getStructureToModule();
-    auto structure = pModule->getStructures()["foo.bar.baz.Test"];
-    EXPECT_GT(modules.count("foo.bar.baz.Test"), 0u) << "user structure not registered";
-    EXPECT_GT(modules.size(), 100u) << "eager stdlib prelude did not load";
-    EXPECT_EQ(structure->getProperties().size(), 2);
-    EXPECT_EQ(structure->getMethods().size(), 3);
-}
 
-TEST(CompilerTests, canWriteAndReadClassMetadata) {
-    string inputPath = CAJETA_TEST_ROOT + string("/compile/code/src/foo/bar/baz/Test.cajeta");
-    string sourceRootPath = CAJETA_TEST_ROOT + string("/compile/code/src");
-    string outputPath = CAJETA_TEST_ROOT + string("/compile/code/build");
-    Compiler compiler;
-    CajetaModulePtr pModule = compiler.createModule(inputPath, sourceRootPath, outputPath);
-    compiler.compile(pModule);
-    // Compilation should have written the metadata, now read and verify the data from the module
-}

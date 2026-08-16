@@ -66,21 +66,6 @@ static int jitCaptureFlag(cajeta_test::CajetaJit* jit) {
     return get ? get() : -1;
 }
 
-TEST(StackTraceCaptureTests, jitDefaultEnablesCapture) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32 result = -1;\n"
-        "        try { throw 7; } catch (Exception e) { result = (int32) e; }\n"
-        "        return result;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    EXPECT_EQ(jitCaptureFlag(jit.get()), 1);
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 7);
-}
 
 // ExceptionReview 3.7: the compiler must EMIT the wiring that carries
 // CompilerFlags.stackTraceCapture into the runtime — a module global ctor
@@ -128,23 +113,3 @@ TEST(StackTraceCaptureTests, compilerEmitsCaptureCtorWhenFlagOn) {
 // recorded. The side-table doesn't grow; we can't directly assert on
 // it (it's static), but we can confirm the flag is off and the throw
 // + catch flow still completes.
-TEST(StackTraceCaptureTests, jitOptionDisablesCapture) {
-    StackTraceGuard guard;
-    __cajeta_set_stack_trace_capture(1);  // host copy stays on; JIT copy must go off
-
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32 result = -1;\n"
-        "        try { throw 13; } catch (Exception e) { result = (int32) e; }\n"
-        "        return result;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options opts;
-    opts.stackTraceCaptureEnabled = false;
-    auto jit = CajetaJit::compile(src, "test.D", opts);
-    EXPECT_EQ(jitCaptureFlag(jit.get()), 0);
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 13);
-}

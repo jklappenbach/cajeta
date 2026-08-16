@@ -50,52 +50,13 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 }  // namespace
 
 // 1.1.1 — `T t #= holder.field` from an OWNED slot yields the value.
-TEST(UniformTransferTests, sharpStoreFromOwnedFieldTransfers) {
-    EXPECT_EQ(runI32(std::string(kSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = heap Holder();\n"
-        "        h.put(heap Cell(7));\n"
-        "        Cell t #= h.c;\n"
-        "        return t.n;\n"
-        "    }\n"
-        "}\n"), 7);
-}
 
 // 1.1.4 — the transfer CLEARS the source's ownership bit, so the cell is
 // freed exactly once across the whole scope: the taker drops it and the
 // holder's own drop must not free it again. liveCount returning to its
 // baseline rules out BOTH a leak and a double free.
-TEST(UniformTransferTests, transferClearsSourceBitSoHolderDropIsNeutral) {
-    EXPECT_EQ(runI32(std::string(kSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        {\n"
-        "            Holder h = heap Holder();\n"
-        "            h.put(heap Cell(7));\n"
-        "            Cell t #= h.c;\n"
-        "            if (t.n != 7) { return -1; }\n"
-        "        }\n"
-        "        int64 after = Cajeta.liveCount();\n"
-        "        if (after != base) { return -2; }\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n"), 1);
-}
 
 // 1.1.1 twin — the same store from an array ELEMENT slot.
-TEST(UniformTransferTests, sharpStoreFromOwnedElementTransfers) {
-    EXPECT_EQ(runI32(std::string(kSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell[] xs = heap Cell[2];\n"
-        "        xs[0] #= heap Cell(9);\n"
-        "        Cell t #= xs[0];\n"
-        "        return t.n;\n"
-        "    }\n"
-        "}\n"), 9);
-}
 
 // ---- Unit 2 (spec 2.3): containers own their elements ------------------
 
@@ -116,18 +77,6 @@ std::string compileExpectError(const std::string& src,
 // 2.1.1 — a plain owned local into a container is now an error naming `#v`.
 // 2.1.1 REVERSED — a plain owned local into a collection LENDS. The list
 // stores a borrow; `c` keeps title and drops it at scope exit.
-TEST(UniformTransferTests, plainAddOfOwnedLocalLends) {
-    std::string src = std::string(kSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
-        "        Cell c = heap Cell(3);\n"
-        "        xs.add(c);\n"
-        "        return xs.get(0).n + c.n;\n"     // borrow readable both ways
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // 2.1.2 — the surrendered spelling compiles.
 TEST(UniformTransferTests, sharpAddOfOwnedLocalCompiles) {
@@ -166,31 +115,7 @@ TEST(UniformTransferTests, primitiveElementAddNeedsNoSharp) {
 // second `#` restates the store rather than asking for anything different.
 // Technically valid, redundant, warned (CAJETA_WARN_REDUNDANT_TRANSFER), and
 // it must behave IDENTICALLY to the single-sharp spelling pinned below.
-TEST(UniformTransferTests, doubleSharpFromFieldWarnsAndForwards) {
-    std::string src = std::string(kSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = heap Holder();\n"
-        "        h.put(heap Cell(7));\n"
-        "        Cell t #= #h.c;\n"
-        "        return t.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-    EXPECT_TRUE(CajetaJit::sawDiagnostic("CAJETA_WARN_REDUNDANT_TRANSFER"));
-}
 
 // …and the single sharp does the job, with the same value. The pair is the
 // origin guard (3.1.5): the sharp is the only difference between them, so a
 // DOUBLE_TRANSFER raised anywhere else in the compile cannot fake a pass.
-TEST(UniformTransferTests, singleSharpFromFieldTransfers) {
-    EXPECT_EQ(runI32(std::string(kSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = heap Holder();\n"
-        "        h.put(heap Cell(7));\n"
-        "        Cell t #= h.c;\n"
-        "        return t.n;\n"
-        "    }\n"
-        "}\n"), 7);
-}

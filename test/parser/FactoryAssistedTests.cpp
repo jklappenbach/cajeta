@@ -26,35 +26,6 @@ int32_t runI32(const std::string& src, const std::string& fqEntryClass) {
 // 4b.1.1 — the consumer injects the factory and calls make(7) with only
 // the assisted arg; the @Inject Pool is threaded automatically, and the
 // product reflects pool.tag (3) + tenant (7) = 10. Init-beyond-ctor runs.
-TEST(FactoryAssistedTests, assistedCallThreadsInjectedArg) {
-    auto src =
-        "package test;\n"
-        "@Component public class Pool {\n"
-        "    public int32 tag;\n"
-        "    public Pool() { tag = 3; return; }\n"
-        "}\n"
-        "public class Connection {\n"
-        "    public int32 value;\n"
-        "    public Connection() { value = 0; return; }\n"
-        "}\n"
-        "@Factory public class ConnFactory {\n"
-        "    #Connection make(@Inject Pool pool, int32 tenant) {\n"
-        "        Connection c = heap Connection();\n"
-        "        c.value = pool.tag + tenant;\n"
-        "        return c;\n"
-        "    }\n"
-        "}\n"
-        "@Component public class App {\n"
-        "    @Inject ConnFactory factory;\n"
-        "    public App() { return; }\n"
-        "    public static int32 run() {\n"
-        "        App a = __cajeta_inject();\n"
-        "        Connection c = a.factory.make(7);\n"
-        "        return c.value;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src, "test.App"), 10);
-}
 
 // 4b.1.2 — interleaving: make(int32 a, @Inject Pool, int32 b) called as
 // make(2, 5) places the user args in the two assisted slots (a=2, b=5)

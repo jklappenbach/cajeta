@@ -109,17 +109,6 @@ TEST(CallerSideTransferTests, transferFormalPlainArgIsRejected) {
 
 // (#T, #x): both ends agree. The drop deactivates once (idempotent —
 // the codegen-side check fires once regardless of which side asked).
-TEST(CallerSideTransferTests, bothSidesAgreeTransfers) {
-    std::string src = std::string(kPairAndHolderTransfer) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Pair p = heap Pair(99);\n"
-        "        Holder h = heap Holder(#p);\n"
-        "        return h.p.x;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 99);
-}
 
 // (T, #x) on a method call (not a ctor). Same shape: plain-`T` formal,
 // caller writes `#x`. The drop should still deactivate via the

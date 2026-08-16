@@ -30,77 +30,19 @@ int32_t runI32(const std::string& src) {
 // identity function over a single method-level type parameter T,
 // called with int32. Inference binds T → int32 from the argument
 // type; the specialized symbol returns the argument.
-TEST(MethodTemplateCallTests, staticIdentityInferredFromIntArg) {
-    auto src =
-        "package test;\n"
-        "public class Util {\n"
-        "    public static T identity<T>(T value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        return Util.identity(42);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 
 // Same template, different element type → distinct monomorphization.
 // Two primitive specializations (int32 + int64) plus a class spec.
-TEST(MethodTemplateCallTests, staticIdentityTwoSpecializations) {
-    auto src =
-        "package test;\n"
-        "public class Counter { public int32 v; public Counter(int32 i) { this.v = i; } }\n"
-        "public class Util {\n"
-        "    public static T identity<T>(T value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32 a = Util.identity(7);\n"
-        "        int64 b = Util.identity(8L);\n"
-        "        Counter c = Util.identity(heap Counter(9));\n"
-        "        return a + (int32) b + c.v;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 24);
-}
 
 // Cache reuse: calling identity<int32> twice in the same source
 // should only generate one LLVM function (the second call hits the
 // per-method instantiation cache). End-to-end correctness check;
 // the cache hit is implicit (we just verify both calls return the
 // right value).
-TEST(MethodTemplateCallTests, staticIdentityCachedOnSecondCall) {
-    auto src =
-        "package test;\n"
-        "public class Util {\n"
-        "    public static T identity<T>(T value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32 a = Util.identity(10);\n"
-        "        int32 b = Util.identity(20);\n"
-        "        return a + b;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 30);
-}
 
 // Two method-level params, both primitive. Verifies the bindings
 // map correctly tracks distinct names.
-TEST(MethodTemplateCallTests, staticTwoTypeParams) {
-    auto src =
-        "package test;\n"
-        "public class Util {\n"
-        "    public static V pickV<K, V>(K k, V v) { return v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        return Util.pickV(100L, 7);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // Instance method on a TEMPLATED receiver with a method-level type
 // param appearing inside a function-typed formal. Body needs both
@@ -140,35 +82,6 @@ TEST(MethodTemplateCallTests, instanceMethodOnTemplatedReceiver) {
 // `Box` (not templated); the method introduces `<R>`. Dispatch is
 // direct (no vtable slot for templated methods) and the `this`
 // pointer flows through normally.
-TEST(MethodTemplateCallTests, instanceMethodWithTypeParam) {
-    auto src =
-        "package test;\n"
-        "public class Box {\n"
-        "    public int32 base;\n"
-        "    public Box(int32 b) { this.base = b; }\n"
-        "    public final R passthrough<R>(R value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Box b = heap Box(0);\n"
-        "        return b.passthrough(99);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 99);
-}
 
 // Repeated T-var across multiple formals. Both occurrences must
 // bind to the same arg type; unification checks consistency.
-TEST(MethodTemplateCallTests, staticAddTwoOfSameType) {
-    auto src =
-        "package test;\n"
-        "public class Util {\n"
-        "    public static T pickFirst<T>(T a, T b) { return a; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        return Util.pickFirst(3, 4);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}

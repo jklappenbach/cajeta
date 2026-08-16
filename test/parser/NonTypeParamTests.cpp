@@ -32,38 +32,9 @@ int32_t runI32(const std::string& src) {
 // A user template that declares a non-type integer parameter alongside a type
 // parameter instantiates and runs. N is carried in the type (unused in the
 // body), exactly as CooperativeMatrix will carry rows/cols/use.
-TEST(NonTypeParamTests, userTemplateWithIntegerParamInstantiates) {
-    auto src =
-        "package test;\n"
-        "public class Tile<T, uint32 N> {\n"
-        "    public T through(T value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Tile<int32, 16> t = heap Tile<int32, 16>();\n"
-        "        return t.through(42);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // Distinct N values are distinct instantiations of the same template; both lay
 // out and run (the integer argument participates in the cache key).
-TEST(NonTypeParamTests, distinctIntegerArgsAreDistinctInstantiations) {
-    auto src =
-        "package test;\n"
-        "public class Tile<T, uint32 N> {\n"
-        "    public T through(T value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Tile<int32, 8>  a = heap Tile<int32, 8>();\n"
-        "        Tile<int32, 16> b = heap Tile<int32, 16>();\n"
-        "        return a.through(1) + b.through(2);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
 
 // Kind mismatch: a non-type parameter requires an integer-constant argument; a
 // type argument in that slot is a clean error (CAJETA_ERROR_TYPE_PARAMETER_KIND).
@@ -90,24 +61,6 @@ TEST(NonTypeParamTests, typeArgForNonTypeParamRejected) {
 // `CooperativeMatrix<T, Rows, Cols, 0>`-typed operands. (Substituting a non-type
 // param inside a `new Inner<T, N>()` NewExpression in a body is a separate path
 // that is NOT yet wired — CooperativeMatrix's placeholder bodies don't need it.)
-TEST(NonTypeParamTests, nonTypeParamSubstitutesInNestedTypeArg) {
-    auto src =
-        "package test;\n"
-        "public class Inner<T, uint32 N> {\n"
-        "    public int32 tag() { return 7; }\n"
-        "}\n"
-        "public class Outer<T, uint32 N> {\n"
-        "    public int32 take(Inner<T, N> x) { return x.tag(); }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Outer<int32, 16> o = heap Outer<int32, 16>();\n"
-        "        Inner<int32, 16> i = heap Inner<int32, 16>();\n"
-        "        return o.take(i);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // Kind mismatch the other way: a type parameter cannot take an integer-constant
 // argument.

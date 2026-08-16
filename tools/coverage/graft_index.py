@@ -150,8 +150,12 @@ def main():
             n += 1
         print(f"absolutised {n}")
         return 0
-    if not (args.src and args.dst and args.src_root):
-        ap.error("--from, --into and --src-root are required")
+    if not (args.src and args.dst):
+        ap.error("--from and --into are required")
+    # --src-root is optional: omitting it prunes/copies without rewriting,
+    # which is what a same-clone prune wants. Requiring it forced callers to
+    # pass a bogus root, and a bogus root silently reclassifies every path as
+    # "outside" — a misleading count on an otherwise correct run.
 
     keep = tests_from_binary(args.binary) if args.binary else None
     written, dropped, outside = graft(args.src, args.dst, args.src_root, keep)

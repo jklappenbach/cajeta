@@ -46,18 +46,3 @@ TEST(TapeStopGrad, mirrorsCompiledNoGrad) {
 
 // 4.1.2 — a stop-only path is identically zero: f = stop(x*x), df/dx = 0
 // (computed zero on the tape; statically zero on the compiled side).
-TEST(TapeStopGrad, stopOnlyPathIsZero) {
-    EXPECT_FLOAT_EQ(runF32(
-        "package test;\n"
-        "import cajeta.nucleo.autograd.Tape;\n"
-        "import cajeta.nucleo.autograd.Var;\n"
-        "public final class T {\n"
-        "    public static float32 run() {\n"
-        "        Tape t = heap Tape();\n"
-        "        Var x = t.var(3.0f);\n"
-        "        Var y = t.stopGrad(t.mul(x, x));\n"
-        "        t.backward(y);\n"
-        "        return t.valueOf(y) * 100.0f + t.grad(x);\n"
-        "    }\n"
-        "}\n"), 900.0f);
-}

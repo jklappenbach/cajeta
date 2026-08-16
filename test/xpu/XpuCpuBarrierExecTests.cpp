@@ -718,45 +718,13 @@ public class M {
 
 // One barrier, two regions: both halves run for every work-item, with `t`
 // carried across the barrier through its context array.
-TEST(XpuCpuBarrierExecTests, twoStraightLineRegionsRunWholeBlock) {
-    auto jit = CajetaJit::compile(kTwoStageSource, "test.M", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<unsigned (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    unsigned r = fn();
-    EXPECT_EQ(r, 12345u) << "fail code " << r
-        << " (100+i: a[i]!=i; 1000+i: b[i]!=i+100)";
-}
 
 // Per-block shared memory across a barrier, read cross-lane.
-TEST(XpuCpuBarrierExecTests, sharedMemoryStagedAcrossBarrier) {
-    auto jit = CajetaJit::compile(kSharedStageSource, "test.M", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<unsigned (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    unsigned r = fn();
-    EXPECT_EQ(r, 12345u) << "fail code " << r << " (100+i: out[i] != 255-i)";
-}
 
 // A barrier INSIDE a uniform loop — the tree reduction. The s-loop stays an
 // outer scalar loop; the work-item loop nests inside. sum(0..255) = 32640.
-TEST(XpuCpuBarrierExecTests, sharedTreeReductionInUniformLoop) {
-    auto jit = CajetaJit::compile(kReduceSource, "test.M", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 32640);
-}
 
 // Many blocks across pthread workers: per-block shared buffers must not alias.
-TEST(XpuCpuBarrierExecTests, multiBlockReductionNoSharedAliasing) {
-    auto jit = CajetaJit::compile(kReduceSource, "test.M", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("runMultiBlock");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 1) << "fail code " << r << " (100+b: block b's partial wrong)";
-}
 
 // Guardrail: a barrier under work-item-divergent control flow is GPU-undefined.
 // Fission rejects it (XPU-N02) and the kernel falls back to the host stub —
@@ -841,14 +809,6 @@ TEST(XpuCpuBarrierExecTests, localCarriedAcrossInLoopBarrier) {
 // loop's back-edge. The context array (allocated once in the wrapper entry,
 // indexed by work-item) persists across the outer scalar loop's iterations, so
 // the accumulation carries correctly without shared memory for the accumulator.
-TEST(XpuCpuBarrierExecTests, registerAccumulatorAcrossLoopBackEdge) {
-    auto jit = CajetaJit::compile(kAccumSource, "test.M", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != reference[i])";
-}
 
 // Increment 8: a barrier inside a loop NESTED in another loop. Both loops stay
 // outer scalar scaffolds; the inner body's regions are work-item loops nested

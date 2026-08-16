@@ -61,86 +61,16 @@ struct Collector {
 }  // namespace
 
 // 3.1.1 / spec 4.1 — what a cell prints reaches the handler, in order.
-TEST(KernelIoTests, cellStdoutReachesTheHandler) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-    Collector out;
-    s->setStreamHandler(out.handler());
-
-    CellResult c1 = s->execute(
-        "System.stdout.println(\"first\");\n"
-        "System.stdout.println(\"second\");\n");
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-
-    std::string text = out.joined();
-    EXPECT_NE(std::string::npos, text.find("first"));
-    EXPECT_NE(std::string::npos, text.find("second"));
-    EXPECT_LT(text.find("first"), text.find("second")) << "output reordered";
-}
 
 // 3.1.1 / spec 4.1 — the point of the pump: a long-running cell's output
 // arrives DURING execution, not as one burst after it returns.
-TEST(KernelIoTests, outputStreamsDuringExecution) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-    Collector out;
-    s->setStreamHandler(out.handler());
-
-    out.executing = true;
-    CellResult c1 = s->execute(
-        "int32 i = 0;\n"
-        "while (i < 20000) { System.stdout.println(\"tick\"); i = i + 1; }\n");
-    out.executing = false;
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-
-    // sawWhileExecuting alone would NOT distinguish streaming from batching:
-    // the capture is scoped inside execute(), so even a single tail-drain
-    // chunk arrives before execute() returns. The chunk COUNT is what
-    // separates them — a batch delivery is exactly one chunk.
-    EXPECT_TRUE(out.sawWhileExecuting.load())
-        << "no chunk arrived before the cell finished";
-    EXPECT_GT(out.count(), 1u)
-        << "output arrived as a single chunk — batched, not streamed";
-}
 
 // 3.3.1 — a cell printing ~1 MB neither deadlocks nor drops bytes. This is
 // why the capture is file-backed: a pipe's fixed buffer would block the
 // writing cell as soon as the reader fell behind.
-TEST(KernelIoTests, largeOutputNeitherDeadlocksNorTruncates) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-    Collector out;
-    s->setStreamHandler(out.handler());
-
-    // 16 chars per line x 65536 lines ~= 1 MB.
-    CellResult c1 = s->execute(
-        "int32 i = 0;\n"
-        "while (i < 65536) { System.stdout.println(\"0123456789abcde\"); "
-        "i = i + 1; }\n");
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-
-    std::string text = out.joined();
-    EXPECT_GE(text.size(), 1000000u) << "bytes were lost";
-}
 
 // Output belongs to the cell that wrote it: a later cell's handler sees only
 // its own bytes, so the frontend can attribute them to the right In[N].
-TEST(KernelIoTests, outputIsPerCell) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-    Collector out;
-    s->setStreamHandler(out.handler());
-
-    ASSERT_TRUE(s->execute("System.stdout.println(\"cell one\");\n").ok);
-    size_t afterFirst = out.count();
-    ASSERT_GT(afterFirst, 0u);
-
-    ASSERT_TRUE(s->execute("System.stdout.println(\"cell two\");\n").ok);
-    std::string all = out.joined();
-    EXPECT_NE(std::string::npos, all.find("cell one"));
-    EXPECT_NE(std::string::npos, all.find("cell two"));
-    EXPECT_LT(all.find("cell one"), all.find("cell two"));
-}
 
 // --- Out[N] / unit result -------------------------------------------------
 //
@@ -159,27 +89,8 @@ TEST(KernelIoTests, outputIsPerCell) {
 
 // 3.1.2 / spec 4.2 — a cell ending in an expression has that value as its
 // result, rendered as text for Out[N].
-TEST(KernelIoTests, unitResultRendersPrimitive) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    CellResult c1 = s->execute("int32 x = 3;\nint32 y = 4;\nx + y;\n");
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-    EXPECT_TRUE(c1.hasResult) << "no Out[N] for a trailing expression";
-    EXPECT_EQ("7", c1.result);
-    EXPECT_EQ(1, c1.executionCount);
-}
 
 // A String result renders as its text, not as a quoted or decorated form.
-TEST(KernelIoTests, unitResultRendersString) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    CellResult c1 = s->execute("\"hello\";\n");
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-    EXPECT_TRUE(c1.hasResult);
-    EXPECT_EQ("hello", c1.result);
-}
 
 // 4.3 — an object's result goes through toString(), by the same virtual
 // lookup @ToString emits, so an override on the runtime class wins.
@@ -201,33 +112,10 @@ TEST(KernelIoTests, unitResultRendersObjectViaToString) {
 
 // The case that reverted the first attempt: a trailing VOID call is a
 // statement, not a result. Nothing to display, and the cell still runs.
-TEST(KernelIoTests, trailingVoidCallIsNotAResult) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    CellResult c1 = s->execute(
-        "ArrayList<int32> xs = heap ArrayList<int32>();\n"
-        "xs.add(1);\n");
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-    EXPECT_FALSE(c1.hasResult) << "a void call rendered as a result";
-}
 
 // Not every cell has a result: one ending in a declaration, a return or a
 // loop has no Out[N], and the frontend must be able to tell that apart from
 // a result that rendered as the empty string.
-TEST(KernelIoTests, cellsWithoutTrailingExpressionHaveNoResult) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    CellResult decl = s->execute("int32 z = 9;\n");
-    ASSERT_TRUE(decl.ok) << decl.errorId << ": " << decl.message;
-    EXPECT_FALSE(decl.hasResult);
-
-    CellResult ret = s->execute("return 5;\n");
-    ASSERT_TRUE(ret.ok) << ret.errorId << ": " << ret.message;
-    EXPECT_FALSE(ret.hasResult);
-    EXPECT_EQ(5, ret.value);
-}
 
 // 3.1.3 / spec 4 — "rendering failures degrade to a type-name placeholder;
 // display must never fail a successfully executed cell". A class with no

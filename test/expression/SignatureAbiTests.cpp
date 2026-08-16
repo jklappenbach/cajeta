@@ -87,140 +87,20 @@ TEST(SignatureAbiTests, plainArgLends) {
 
 // 5.1.2 — `#x` into an UNANNOTATED formal surrenders the title: the
 // source is demoted to a borrow; a later read is an ordinary borrow read.
-TEST(SignatureAbiTests, sharpArgDemotesSourceToBorrow) {
-    std::string src = std::string(kCellSrc) +
-        "public class Sink {\n"
-        "    public int32 seen;\n"
-        "    public void take(Cell c) { this.seen = c.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Sink s = heap Sink();\n"
-        "        Cell v = heap Cell(5);\n"
-        "        s.take(#v);\n"              // surrender at a plain edge
-        "        return v.n;\n"              // demoted to a borrow — readable
-        "    }\n"
-        "}\n";
-    // transfer-demotes-to-borrow: `#v` moves the title, not the binding, so
-    // the read COMPILES — `v` is a borrow of the same instance.
-    //
-    // Its VALUE is deliberately not asserted. `take(Cell c)` is a plain
-    // formal, so the surrender hands ownership to a formal whose scope ends
-    // at return: the Cell is freed there and `v` dangles. That is spec §1.7's
-    // accepted v1 exposure — a borrow of a demoted binding dangles once the
-    // new owner drops it, and the compiler does not diagnose it. Asserting a
-    // value here would be asserting the contents of freed memory.
-    //
-    // Contrast DemotedBindingReadTests, where the new owner OUTLIVES the read
-    // and the value is therefore well-defined and asserted.
-    compileExpectOk(src);
-}
 
 // 5.1.3a — `#v` store of a formal forwards the CALL's flag into the field
 // bit. Owned spelling at the call site → field owns → Box teardown drops.
-TEST(SignatureAbiTests, ownedSpellingStoreFieldOwns) {
-    std::string src = std::string(kCellSrc) +
-        "public class Box {\n"
-        "    public Cell c;\n"
-        "    public void put(Cell v) { this.c #= v; }\n"
-        "    public int32 peek() { return this.c.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Box b = heap Box();\n"
-        "        b.put(#heap Cell(4));\n"    // flag true → field bit owned
-        "        return b.peek();\n"
-        "    }\n"                            // Box teardown drops the Cell
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 4);
-}
 
 // 5.1.3b — same put, plain spelling: field records a borrow, Box teardown
 // skips it, the source outlives the Box with its single drop intact.
-TEST(SignatureAbiTests, plainSpellingStoreFieldBorrows) {
-    std::string src = std::string(kCellSrc) +
-        "public class Box {\n"
-        "    public Cell c;\n"
-        "    public void put(Cell v) { this.c #= v; }\n"
-        "    public int32 peek() { return this.c.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(9);\n"
-        "        {\n"
-        "            Box b = heap Box();\n"
-        "            b.put(mine);\n"         // flag false → field bit borrow
-        "            if (b.peek() != 9) { return -98; }\n"
-        "        }\n"                        // Box drops; must NOT free mine
-        "        return mine.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 // 5.1.4a — the paired return flag arms the caller's drop entry: a
 // surrendered value forwarded back out is owned by the receiving local.
 // (The container put/remove round-trip probes land with 6.1 — this pins
 // the ABI mechanism the container will ride.)
-TEST(SignatureAbiTests, flaggedReturnArmsCallerDrop) {
-    std::string src = std::string(kCellSrc) +
-        "public class Echo {\n"
-        "    public Cell pass(Cell v) { return #v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Echo e = heap Echo();\n"
-        "        Cell r = e.pass(#heap Cell(6));\n"  // flag true → r owns
-        "        return r.n;\n"
-        "    }\n"                                    // r drops here
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // 5.1.4b — flag false on the same path: the receiving local stays a
 // borrow; the original owner keeps the single drop and survives.
-TEST(SignatureAbiTests, flaggedReturnLeavesBorrowerInactive) {
-    std::string src = std::string(kCellSrc) +
-        "public class Echo {\n"
-        "    public Cell pass(Cell v) { return #v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Cell mine = heap Cell(7);\n"
-        "        Echo e = heap Echo();\n"
-        "        {\n"
-        "            Cell r = e.pass(mine);\n"  // flag false → r borrows
-        "            if (r.n != 7) { return -97; }\n"
-        "        }\n"                           // r's exit must NOT free mine
-        "        return mine.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // 5.1.5 — the `#V` opt-in must-own edge (sub-fork A): a plain borrow
 // argument is rejected at compile time.
@@ -246,69 +126,10 @@ TEST(SignatureAbiTests, mustOwnEdgeRejectsPlainArg) {
 // 5.1.6 — a two-deep forwarding chain of unannotated formals threads the
 // flag both ways: the owned path drops once at the final place, the lent
 // path leaves the source alive. The moveMask failure case, pinned.
-TEST(SignatureAbiTests, forwardChainThreadsFlag) {
-    std::string src = std::string(kCellSrc) +
-        "public class Box {\n"
-        "    public Cell c;\n"
-        "    public void inner(Cell v) { this.c #= v; }\n"
-        "    public void outer(Cell v) { this.inner(#v); }\n"
-        "    public int32 peek() { return this.c.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Box b = heap Box();\n"
-        "            b.outer(#heap Cell(3));\n"     // true threads through
-        "            t = t + b.peek();\n"
-        "        }\n"                               // owned → Box drops it
-        "        Cell mine = heap Cell(4);\n"
-        "        {\n"
-        "            Box b2 = heap Box();\n"
-        "            b2.outer(mine);\n"             // false threads through
-        "            if (b2.peek() != 4) { return -96; }\n"
-        "        }\n"                               // borrow → mine survives
-        "        return t + mine.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // 5.1.7 (drives 5.2.5) — a flag-true formal the body neither stores nor
 // forwards is CONSUMED: the callee drops it. No Cajeta.dropValue (the
 // ~HashMap idiom this retires). Red today — it leaks.
-TEST(SignatureAbiTests, consumedFormalDropsInCallee) {
-    std::string src = std::string(kCellSrc) +
-        "public class Sink {\n"
-        "    public int32 seen;\n"
-        "    public void take(Cell c) {\n"
-        "        this.seen = this.seen + c.n;\n"
-        "    }\n"                            // flag true + unconsumed → drop
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Sink s = heap Sink();\n"
-        "        s.take(#heap Cell(2));\n"
-        "        s.take(#heap Cell(3));\n"
-        "        Cell lent = heap Cell(10);\n"
-        "        s.take(lent);\n"            // flag false → callee must NOT drop
-        "        return s.seen + lent.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 25);
-}
 
 // 5.1.8 — same-name declarations differing only in transfer mode are
 // rejected at declaration (dispatch is mode-erased).
@@ -327,17 +148,6 @@ TEST(SignatureAbiTests, modeOnlyOverloadRejectedAtDeclaration) {
 // 5.1.9 — regression pin: a plain return of a statically-owned local is
 // still rejected (the local drops at exit; the caller would receive an
 // immediately-dangling borrow). Fix spelling is `return #c`.
-TEST(SignatureAbiTests, freshReturnStillNeedsTransfer) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static Cell make() {\n"
-        "        Cell c = heap Cell(1);\n"
-        "        return c;\n"                // owner returned as borrow — reject
-        "    }\n"
-        "    public static int32 run() { return make().n; }\n"
-        "}\n";
-    compileExpectError(src, "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
-}
 
 // 5.1.10a (drives 5.2.7, sub-fork B) — single-hop dangling lend, direct
 // store shape: a local object holding a lend of a dying local escapes.
@@ -362,58 +172,9 @@ TEST(SignatureAbiTests, danglingLendOnDirectStoreRejected) {
 
 // 5.1.10b — same hazard through a one-hop setter call (`m.put(k, s)`
 // shape from spec §7.4).
-TEST(SignatureAbiTests, danglingLendOnSetterLendRejected) {
-    std::string src = std::string(kCellSrc) +
-        "public class Holder {\n"
-        "    public Cell c;\n"
-        "    public void keep(Cell v) { this.c #= v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static Holder build() {\n"
-        "        Holder h = heap Holder();\n"
-        "        Cell s = heap Cell(5);\n"
-        "        h.keep(s);\n"               // lend of local s into h
-        "        return #h;\n"               // h escapes; s dies — reject
-        "    }\n"
-        "    public static int32 run() { return build().c.n; }\n"
-        "}\n";
-    compileExpectError(src, "CAJETA_ERROR_DANGLING_LEND");
-}
 
 // 5.1.10c — negative probes: the `#s` spelling suppresses the lint (the
 // entry owns), and a lend into a NON-escaping holder is fine.
-TEST(SignatureAbiTests, lendNegativeProbesCompileAndRun) {
-    std::string src = std::string(kCellSrc) +
-        "public class Holder {\n"
-        "    public Cell c;\n"
-        "    public void keep(Cell v) { this.c #= v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static Holder build() {\n"
-        "        Holder h = heap Holder();\n"
-        "        Cell s = heap Cell(5);\n"
-        "        h.keep(#s);\n"              // surrendered — h owns, no lint
-        "        return #h;\n"
-        "    }\n"
-        "    public static int32 local() {\n"
-        "        Cell s = heap Cell(6);\n"
-        "        Holder h = heap Holder();\n"
-        "        h.keep(s);\n"               // lend, but h never escapes
-        "        return h.c.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Holder got = build();\n"
-        "            t = got.c.n + local();\n"
-        "        }\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 11);
-}
 
 // ---------------------------------------------------------------------------
 // 5.2.5 — the callee-side drop of an unconsumed flag-true formal must fire on
@@ -425,30 +186,6 @@ TEST(SignatureAbiTests, lendNegativeProbesCompileAndRun) {
 
 // 5.2.5a — early return: a consumed formal drops exactly once, on the path
 // actually taken (and the lent arg on the other path still doesn't drop).
-TEST(SignatureAbiTests, consumedFormalDropsOnEarlyReturn) {
-    std::string src = std::string(kCellSrc) +
-        "public class Sink {\n"
-        "    public int32 take(Cell v, boolean early) {\n"
-        "        if (early) { return v.n; }\n"   // consumed, early exit
-        "        return v.n + 100;\n"            // consumed, late exit
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Sink s = heap Sink();\n"
-        "        int32 a = s.take(#heap Cell(1), true);\n"   // drops at early ret
-        "        int32 b = s.take(#heap Cell(2), false);\n"  // drops at late ret
-        "        return a + b;\n"                            // 1 + 102 = 103
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 103);
-}
 
 // 5.2.5b — THROW path: the callee takes the title, then throws before consuming
 // it. The value must still be reclaimed — a throw does NOT run emitOwnerDrops;
@@ -457,54 +194,10 @@ TEST(SignatureAbiTests, consumedFormalDropsOnEarlyReturn) {
 // itself leaks today (pre-existing, unrelated to titles — see plan 5.2.5), so an
 // absolute leak count would measure that bug instead of this one. Comparing the
 // owned-arg call against a throw-only control cancels it out.
-TEST(SignatureAbiTests, consumedFormalDropsWhenCalleeThrows) {
-    std::string src = std::string(kCellSrc) +
-        "public class Sink {\n"
-        "    public int32 take(Cell v) { throw heap Exception(\"boom\"); }\n"
-        "    public int32 plain() { throw heap Exception(\"boom\"); }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Sink s = heap Sink();\n"
-        "        int64 b1 = Cajeta.liveCount();\n"
-        "        try { s.plain(); } catch (Exception e) { }\n"
-        "        int64 ctrl = Cajeta.liveCount() - b1;\n"      // the Exception leak
-        "        int64 b2 = Cajeta.liveCount();\n"
-        "        try { s.take(#heap Cell(4)); } catch (Exception e) { }\n"
-        "        int64 owned = Cajeta.liveCount() - b2;\n"     // must equal ctrl
-        "        if (owned != ctrl) { return -1; }\n"          // Cell NOT reclaimed
-        "        Cell mine = heap Cell(5);\n"
-        "        try { s.take(mine); } catch (Exception e) { }\n"
-        "        return mine.n;\n"                             // lent: must survive
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // 5.2.5c — mixed flags in one call: bit i of the transfer word must select
 // per-formal, so an owned arg drops in the callee while a lent one beside it
 // survives.
-TEST(SignatureAbiTests, mixedFlagFormalsDropIndependently) {
-    std::string src = std::string(kCellSrc) +
-        "public class Pair {\n"
-        "    public int32 both(Cell a, Cell b) { return a.n + b.n; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        Pair p = heap Pair();\n"
-        "        Cell keep = heap Cell(10);\n"
-        "        int32 t = p.both(#heap Cell(3), keep);\n"  // a owned, b lent
-        "        return t + keep.n;\n"                      // 13 + 10 = 23
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 23);
-}
 
 // 5.1.11 (spec §7.1) — LAST-USE ADVISORY. A plain arg at a local's final use
 // emits a WARNING with a `#` fixit (never an error — the build stays green;
@@ -617,67 +310,12 @@ TEST(SignatureAbiTests, castReturnOfArmedPlainFormalPassesTitleThrough) {
 // authored `#T` formal in a class template into a de-facto borrow. Now the
 // authored `#` is what it says: a hard must-own edge (TRANSFER_REQUIRED),
 // on methods and constructors alike.
-TEST(SignatureAbiTests, templateSharpFormalIsHardMustOwn) {
-    std::string src = std::string(kCellSrc) +
-        "public final class Box<T> {\n"
-        "    public T v;\n"
-        "    public Box() {}\n"
-        "    public void put(#T t) { this.v #= t; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Box<Cell> b = heap Box<Cell>();\n"
-        "        Cell c = heap Cell(3);\n"
-        "        b.put(c);\n"
-        "        return c.n;\n"
-        "    }\n"
-        "}\n";
-    std::string msg = compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-    EXPECT_NE(msg.find("#c"), std::string::npos) << msg;
-}
 
-TEST(SignatureAbiTests, templateSharpCtorFormalIsHardMustOwn) {
-    std::string src = std::string(kCellSrc) +
-        "public final class Crate<T> {\n"
-        "    public T v;\n"
-        "    public Crate(#T t) { this.v #= t; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell c = heap Cell(1);\n"
-        "        Crate<Cell> k = heap Crate<Cell>(c);\n"
-        "        return k.v.n;\n"
-        "    }\n"
-        "}\n";
-    compileExpectError(src, "CAJETA_ERROR_TRANSFER_REQUIRED");
-}
 
 // Surrendering at the call site satisfies the edge, and the title flows
 // all the way into the container: formal entry armed → `#= t` moves it to
 // the field bit → teardown drops. Under dissolution this LEAKED (the
 // dissolved forward disarmed the caller but stored a borrow).
-TEST(SignatureAbiTests, templateSharpFormalSurrenderFlowsTitleLeakFree) {
-    std::string src = std::string(kCellSrc) +
-        "public final class Box<T> {\n"
-        "    public T v;\n"
-        "    public Box() {}\n"
-        "    public void put(#T t) { this.v #= t; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static void work() {\n"
-        "        Box<Cell> b = heap Box<Cell>();\n"
-        "        Cell c = heap Cell(3);\n"
-        "        b.put(#c);\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) ((leaked * 100) + 1);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // 7.2.4 — the shared-walk pins. Every statement class parks its payloads
 // in PRIVATE fields (if/while/for/try bodies, conditions, return exprs),
@@ -787,126 +425,19 @@ TEST(SignatureAbiTests, concatSharpReturnedInsideTryRoundTrips) {
 
 // Fresh-returning supplier closure: the caller's local takes the title
 // and drops it — no leak.
-TEST(SignatureAbiTests, closureFreshReturnArmsCallerLocal) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        () -> #Cell sup = () -> heap Cell(5);\n"
-        "        Cell c = sup();\n"
-        "        return c.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // Identity closure returns its borrowed param: the receiving local must
 // NOT take a title — single drop, source survives.
-TEST(SignatureAbiTests, closureBorrowReturnLeavesCallerInactive) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        (Cell) -> #Cell id = (x) -> x;\n"
-        "        Cell mine = heap Cell(7);\n"
-        "        {\n"
-        "            Cell r = id(mine);\n"
-        "            if (r.n != 7) { return -96; }\n"
-        "        }\n"
-        "        return mine.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // fold with a class accumulator: the seed's title threads through the
 // accumulator local and rides out on the return — owned once, dropped
 // once, readable throughout.
-TEST(SignatureAbiTests, foldClassAccumulatorThreadsTitle) {
-    std::string src = std::string(
-        "package test;\n"
-        "import cajeta.lang.stream.ArrayStream;\n"
-        "public class Cell {\n"
-        "    public int32 n;\n"
-        "    public Cell(int32 nn) { this.n = nn; }\n"
-        "}\n") +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32[] xs = heap int32[3];\n"
-        "        xs[0] = 1; xs[1] = 2; xs[2] = 3;\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
-        "        (Cell, int32) -> #Cell step = (acc, e) -> {\n"
-        "            acc.n = acc.n + e;\n"
-        "            return acc;\n"
-        "        };\n"
-        "        Cell total = s.fold(heap Cell(0), step);\n"
-        "        int32 junk = 0;\n"
-        "        int32 i = 0;\n"
-        "        while (i < 8) {\n"
-        "            Cell t = heap Cell(9);\n"
-        "            junk = junk + t.n;\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return total.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // The lent-seed side of the same protocol: fold(mine, step) with a PLAIN
 // seed must hand the accumulator back as a BORROW — the caller keeps the
 // single title, no double free. Requires `#= x` move-inits to forward the
 // SOURCE's runtime flag onto the destination's entry instead of arming
 // statically.
-TEST(SignatureAbiTests, foldLentSeedComesBackBorrowed) {
-    std::string src = std::string(
-        "package test;\n"
-        "import cajeta.lang.stream.ArrayStream;\n"
-        "public class Cell {\n"
-        "    public int32 n;\n"
-        "    public Cell(int32 nn) { this.n = nn; }\n"
-        "}\n") +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32[] xs = heap int32[3];\n"
-        "        xs[0] = 1; xs[1] = 2; xs[2] = 3;\n"
-        "        Cell mine = heap Cell(0);\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
-        "        (Cell, int32) -> #Cell step = (acc, e) -> {\n"
-        "            acc.n = acc.n + e;\n"
-        "            return acc;\n"
-        "        };\n"
-        "        {\n"
-        "            Cell total = s.fold(mine, step);\n"
-        "            if (total.n != 6) { return -95; }\n"
-        "        }\n"
-        "        return mine.n;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-}
 
 // 8.2.1 sweep-3 fallout (WsEntryPoint regression) — a fresh flag-true value
 // returned through a PLAIN-return tail call keeps its title: the wrapper's
@@ -1107,25 +638,6 @@ TEST(SignatureAbiTests, primitiveTemplateFieldStoreStillCompiles) {
 // for — `=` borrows, `#=` transfers, and the STORE SITE decides, independent of
 // how the caller passed the value. (field-store-title-trap §2 originally listed
 // only `#T v` + `#=` as the working owning shape, which understated this.)
-TEST(SignatureAbiTests, plainFormalSharpStoreTakesTitleFromSurrenderedRvalue) {
-    std::string src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag;\n"
-        "    public Animal(int32 t) { this.tag = t; }\n"
-        "}\n"
-        "public class BoxA {\n"
-        "    public Animal value;\n"
-        "    public BoxA(Animal v) { this.value #= v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        BoxA b = heap BoxA(heap Animal(2));\n"
-        "        return b.value.tag;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // The same `#=` store is safe when the caller LENDS rather than surrenders —
 // the pairing that would double-free if `#=` blindly claimed the title. Both
@@ -1133,23 +645,3 @@ TEST(SignatureAbiTests, plainFormalSharpStoreTakesTitleFromSurrenderedRvalue) {
 // cleanly. Pins that the store-site spelling is safe against EITHER caller
 // shape, which is what makes "`#=` when you mean transfer" a rule an author can
 // follow without reasoning about the call site.
-TEST(SignatureAbiTests, plainFormalSharpStoreIsSafeWhenCallerLends) {
-    std::string src =
-        "package test;\n"
-        "public class Animal {\n"
-        "    public int32 tag;\n"
-        "    public Animal(int32 t) { this.tag = t; }\n"
-        "}\n"
-        "public class BoxA {\n"
-        "    public Animal value;\n"
-        "    public BoxA(Animal v) { this.value #= v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Animal a = heap Animal(2);\n"
-        "        BoxA b = heap BoxA(a);\n"
-        "        return b.value.tag + a.tag;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 4);
-}

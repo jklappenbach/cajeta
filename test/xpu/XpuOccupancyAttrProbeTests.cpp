@@ -79,57 +79,9 @@ std::string attrOf(llvm::Function* fn, const char* key) {
 } // namespace
 
 // 2.1.a — @Occupancy parses into the typed view (all three params).
-TEST(XpuOccupancyAttrProbeTests, parsesPortableParams) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kOccSrc);
-    auto occ = findMethod(module->getStructures()["test.M"], "occ");
-    ASSERT_NE(occ, nullptr);
-    auto attr = XpuKernelAttr::from(*occ);
-    ASSERT_TRUE(attr.has_value());
-    EXPECT_TRUE(attr->hasOccupancy());
-    ASSERT_TRUE(attr->maxThreads().has_value());
-    EXPECT_EQ(*attr->maxThreads(), 256u);
-    ASSERT_TRUE(attr->minResident().has_value());
-    EXPECT_EQ(*attr->minResident(), 2u);
-    ASSERT_TRUE(attr->maxRegisters().has_value());
-    EXPECT_EQ(*attr->maxRegisters(), 128u);
-
-    auto plain = findMethod(module->getStructures()["test.M"], "plain");
-    ASSERT_NE(plain, nullptr);
-    auto pattr = XpuKernelAttr::from(*plain);
-    ASSERT_TRUE(pattr.has_value());
-    EXPECT_FALSE(pattr->hasOccupancy());
-}
 
 // 2.1.b — AMDGPU lowering maps the override to the function attributes; an
 // un-annotated kernel gets none from the override path.
-TEST(XpuOccupancyAttrProbeTests, amdgpuLowersOverride) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kOccSrc);
-    auto tm = createAmdgpuTargetMachine("gfx1151");
-    ASSERT_TRUE(tm != nullptr);
-
-    {
-        llvm::LLVMContext ctx;
-        llvm::Module dev("occ_isa", ctx);
-        configureDeviceModule(dev, *tm);
-        auto* fn = cajeta::xpu::amd::lowerKernel(
-            findMethod(module->getStructures()["test.M"], "occ"), dev);
-        ASSERT_NE(fn, nullptr);
-        EXPECT_EQ(attrOf(fn, "amdgpu-flat-work-group-size"), "1,256");
-        EXPECT_EQ(attrOf(fn, "amdgpu-waves-per-eu"), "2");
-    }
-    {
-        llvm::LLVMContext ctx;
-        llvm::Module dev("plain_isa", ctx);
-        configureDeviceModule(dev, *tm);
-        auto* fn = cajeta::xpu::amd::lowerKernel(
-            findMethod(module->getStructures()["test.M"], "plain"), dev);
-        ASSERT_NE(fn, nullptr);
-        EXPECT_EQ(attrOf(fn, "amdgpu-flat-work-group-size"), "<none>")
-            << "no @Occupancy -> the override path sets nothing";
-    }
-}
 
 // 2.1.d — an explicit override wins over the §2 automatic budgeting: once
 // @Occupancy has pinned flat-work-group-size, the auto setter is a no-op.

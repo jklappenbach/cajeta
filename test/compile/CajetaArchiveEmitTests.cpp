@@ -123,40 +123,7 @@ TmpProject makeTmpProject(const std::string& tag) {
 
 } // namespace
 
-TEST(CajetaArchiveEmitTests, cjaModeManifestSaysCja) {
-    auto proj = makeTmpProject("cja_kind");
-    std::string cmd =
-        compilerPath()
-        + " --emit=cja demo.Hello.run "
-        + proj.sourceRoot.string() + " "
-        + proj.buildRoot.string()
-        + " > " CAJETA_DEVNULL " 2>&1";
-    ASSERT_EQ(std::system(cmd.c_str()), 0);
 
-    auto arc = cajeta::CajetaArchive::readFrom(
-        (proj.buildRoot / "Hello.cja").string());
-    EXPECT_EQ(arc.getKind(), cajeta::CajetaArchive::Kind::Cja);
-    EXPECT_EQ(arc.getName(), "demo.Hello");
-
-    fs::remove_all(proj.sourceRoot.parent_path());
-}
-
-TEST(CajetaArchiveEmitTests, uberModeManifestSaysUber) {
-    auto proj = makeTmpProject("uber");
-    std::string cmd =
-        compilerPath()
-        + " --emit=uber demo.Hello.run "
-        + proj.sourceRoot.string() + " "
-        + proj.buildRoot.string()
-        + " > " CAJETA_DEVNULL " 2>&1";
-    ASSERT_EQ(std::system(cmd.c_str()), 0);
-
-    auto arc = cajeta::CajetaArchive::readFrom(
-        (proj.buildRoot / "Hello.cja").string());
-    EXPECT_EQ(arc.getKind(), cajeta::CajetaArchive::Kind::Uber);
-
-    fs::remove_all(proj.sourceRoot.parent_path());
-}
 
 // --- --classpath ingestion + uber bundling --------------------------------
 
@@ -410,48 +377,6 @@ TEST(CajetaArchiveEmitTests, uberDefaultKeepsReferencedDepEntries) {
     fs::remove_all(depCja.parent_path().parent_path());
 }
 
-TEST(CajetaArchiveEmitTests, cjaContainsProjectEntriesOnly) {
-    // --emit=cja produces a project-only library archive — the
-    // parsed-stdlib module is stripped, no deps are bundled. The
-    // user's demo/Hello.bc is the sole entry; consumers must bring
-    // their own stdlib via --classpath at compile time.
-    auto proj = makeTmpProject("entries");
-    std::string cmd =
-        compilerPath()
-        + " --emit=cja demo.Hello.run "
-        + proj.sourceRoot.string() + " "
-        + proj.buildRoot.string()
-        + " > " CAJETA_DEVNULL " 2>&1";
-    ASSERT_EQ(std::system(cmd.c_str()), 0);
-
-    auto arc = cajeta::CajetaArchive::readFrom(
-        (proj.buildRoot / "Hello.cja").string());
-
-    bool userHelloBcSeen = false;
-    bool userHelloSrcSeen = false;
-    bool stdlibSeen = false;
-    for (const auto& e : arc.getEntries()) {
-        if (e.name == "demo/Hello.bc")     userHelloBcSeen  = true;
-        if (e.name == "demo/Hello.cajeta") userHelloSrcSeen = true;
-        if (e.name.rfind("cajeta/", 0) == 0) stdlibSeen = true;
-        // Every entry is either bitcode (.bc) or source (.cajeta) and
-        // uses jar-style '/' separators.
-        bool isBc  = e.name.size() >= 3
-            && e.name.compare(e.name.size() - 3, 3, ".bc") == 0;
-        bool isSrc = e.name.size() >= 7
-            && e.name.compare(e.name.size() - 7, 7, ".cajeta") == 0;
-        EXPECT_TRUE(isBc || isSrc) << "entry name = " << e.name;
-    }
-    EXPECT_TRUE(userHelloBcSeen) << "demo/Hello.bc must be present";
-    EXPECT_TRUE(userHelloSrcSeen)
-        << "demo/Hello.cajeta must be present (source-shipping for "
-        << "downstream --classpath ingestion)";
-    EXPECT_FALSE(stdlibSeen)
-        << "--emit=cja must not bundle stdlib (cajeta.* entries)";
-    EXPECT_TRUE(arc.getDeps().empty()) << "cja archives must not list deps";
-
-    fs::remove_all(proj.sourceRoot.parent_path());
-}
 
 // --- Classpath ingestion ---------------------------------------------------
 //

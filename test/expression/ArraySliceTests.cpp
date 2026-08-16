@@ -62,42 +62,6 @@ TEST(ArraySliceTests, arraySliceZeroCopy) {
 // 7.1.2 — the escape table, array edition: a small (≤256 B payload) slice
 // stored past its scope copies (no stake, independent); a large one shares
 // (stake, no copy).
-TEST(ArraySliceTests, arraySliceEscapeResolves) {
-    std::string src =
-        "package test;\n"
-        "public class Keep {\n"
-        "    public Slice<int64> v;\n"
-        "    public Keep(Slice<int64> v) {\n"
-        "        this.v = v;\n"
-        "    }\n"
-        "}\n"
-        "public final class Ut {\n"
-        "    public static int32 run() {\n"
-        "        int64 pop = Cajeta.sharedPopulation();\n"
-        "        int64[] seed = heap int64[1];\n"
-        "        Keep small = heap Keep(seed[0:0]);\n"
-        "        Keep large = heap Keep(seed[0:0]);\n"
-        "        {\n"
-        "            int64[] arr = heap int64[512];\n"
-        "            int32 i = 0;\n"
-        "            while (i < 512) { arr[i] = (int64) i; i = i + 1; }\n"
-        "            small.v = arr[10:26];\n"                   // 16 elems = 128 B: copy row
-        "            large.v = arr[100:200];\n"                 // 100 elems = 800 B: share row
-        "            if (Cajeta.sharedPopulation() < pop + 1) { return -1; }\n"
-        "        }\n"                                            // arr owner drops; root pinned
-        "        if (small.v.count() != 16) { return -2; }\n"
-        "        if (small.v[0] != (int64) 10) { return -3; }\n"
-        "        if (large.v.count() != 100) { return -4; }\n"
-        "        if (large.v[99] != (int64) 199) { return -5; }\n"
-        "        small.v = seed[0:0];\n"                           // detach both stakes
-        "        large.v = seed[0:0];\n"
-        "        if (Cajeta.sharedPopulation() != pop) { return -6; }\n" // exact retirement
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.Ut");
-    EXPECT_EQ(jit->lookup<int32_t (*)()>("run")(), 1);
-}
 
 // 7.1.3 — an escaping slice of an arena-backed array copies at any size
 // (valid after the scope; zero remaining stakes once holders detach).

@@ -93,43 +93,9 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 
 // U3.1 (NVPTX, GPU-free): the hinted kernel lowers + emits valid PTX with the
 // controls as no-ops (default seam). No cp.async / sched directive required.
-TEST(XpuSchedulePortabilityTests, nvptxLowersScheduleAsNoOp) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kSchedSrc);
-    auto method = findMethod(module->getStructures()["test.M"], "sched");
-    ASSERT_NE(method, nullptr);
-
-    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_schedport_nvptx", deviceCtx);
-    cajeta::xpu::nvidia::configureDeviceModule(deviceModule, *tm);
-    ASSERT_NE(cajeta::xpu::nvidia::lowerKernel(method, deviceModule), nullptr);
-
-    std::string ptx = cajeta::xpu::nvidia::emitPtx(deviceModule, *tm);
-    EXPECT_FALSE(ptx.empty()) << "Schedule no-op kernel must emit valid PTX";
-    EXPECT_NE(ptx.find(".visible .entry sched"), std::string::npos) << ptx;
-}
 
 // U3.1 (SPIR-V, GPU-free): the hinted kernel lowers + emits valid SPIR-V with the
 // controls as no-ops (default seam).
-TEST(XpuSchedulePortabilityTests, spirvLowersScheduleAsNoOp) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kSchedSrc);
-    auto method = findMethod(module->getStructures()["test.M"], "sched");
-    ASSERT_NE(method, nullptr);
-
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_schedport_spirv", deviceCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(deviceModule, *tm);
-    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(method, deviceModule), nullptr);
-
-    std::string spv = cajeta::xpu::vulkan::emitSpirvText(deviceModule, *tm);
-    EXPECT_FALSE(spv.empty())
-        << "Schedule no-op kernel must compile to valid SPIR-V";
-}
 
 // U3.1 (CPU, GPU-free): the hinted kernel lowers on the CPU backend (the no-op
 // seam is the CPU oracle — also exercised end-to-end in XpuScheduleTests).

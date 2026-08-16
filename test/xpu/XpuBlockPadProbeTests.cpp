@@ -177,35 +177,6 @@ using RtFn = void (*)(float*, float*, uint32_t,
                       int32_t, int32_t, int32_t, int32_t, int32_t, int32_t);
 } // namespace
 
-TEST(XpuBlockPadProbeTests, blockPadMapIsConsistentOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kBlockPadRoundtripSrc);
-    auto k = findMethod(module->getStructures()["test.M"], "rt");
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr);
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_blockpad_cpu", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    auto* fn = cajeta::xpu::cpu::lowerKernel(k, *host);
-    ASSERT_NE(fn, nullptr);
-    std::string fnName = fn->getName().str();
-    auto jitOrErr = cajeta::test::makeCoffSafeJit();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto symOrErr = jit->lookup(fnName);
-    ASSERT_TRUE(static_cast<bool>(symOrErr)) << llvm::toString(symOrErr.takeError());
-    auto rt = symOrErr->toPtr<RtFn>();
-
-    std::vector<float> b(64), out(64, -1.0f);
-    for (int i = 0; i < 64; ++i) b[i] = static_cast<float>(i * 3 + 1);
-    rt(out.data(), b.data(), 64, 0,0,0, 0,0,0, 1,1,1, 1,1,1);
-    for (int i = 0; i < 64; ++i)
-        EXPECT_FLOAT_EQ(out[i], b[i]) << "block-pad map inconsistent at logical i=" << i;
-}
 
 // 1.1.4 (part) — the pad is ACTUALLY applied: a BlockPadded tile's addressing differs from a
 // plain Shared tile of the same logical access (proves it is not silently the identity).

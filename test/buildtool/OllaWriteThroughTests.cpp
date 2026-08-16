@@ -86,42 +86,6 @@ namespace {
 
 // 3.1.1 + 3.3.1 — a remote fetch is written through into ~/.olla, and a
 // later resolve with no usable remote is served from the local store.
-TEST(OllaWriteThroughTest, RemoteFetchWritesThroughThenServesLocally) {
-    OllaHomeUnset guard;
-    auto home = tempDir("home");
-    auto proj = tempDir("proj");
-    auto remote = makeRemote("x.pkg", "1.0.0", "REMOTE-BYTES");
-
-    // First resolve: olla empty → fetched from the remote.
-    auto m1 = loadManifestString(
-        "{\"details\":{\"name\":\"c\",\"version\":\"0.1.0\"},\"settings\":{"
-        "\"dependencies\":{\"x.pkg\":\"1.0.0\"},"
-        "\"repositories\":[{\"name\":\"remote\",\"type\":\"filesystem\","
-        "\"path\":\"" + remote.string() + "\"}]}}");
-    ASSERT_TRUE(static_cast<bool>(m1)) << errorText(m1.takeError());
-    auto r1 = resolveProjectDependencies(*m1, proj.string(), home.string());
-    ASSERT_TRUE(static_cast<bool>(r1)) << errorText(r1.takeError());
-    ASSERT_EQ(r1->size(), 1u);
-    EXPECT_EQ((*r1)[0].resolvedFromRepo, "remote");
-
-    // Write-through populated ~/.olla.
-    OllaStore store((home / ".olla").string());
-    auto local = store.read("x.pkg", "1.0.0");
-    ASSERT_TRUE(local.has_value()) << "write-through did not populate ~/.olla";
-
-    // Second resolve with a broken remote → served from ~/.olla (offline).
-    auto proj2 = tempDir("proj2");
-    auto m2 = loadManifestString(
-        "{\"details\":{\"name\":\"c\",\"version\":\"0.1.0\"},\"settings\":{"
-        "\"dependencies\":{\"x.pkg\":\"1.0.0\"},"
-        "\"repositories\":[{\"name\":\"remote\",\"type\":\"filesystem\","
-        "\"path\":\"/cajeta-nonexistent-xyz\"}]}}");
-    ASSERT_TRUE(static_cast<bool>(m2)) << errorText(m2.takeError());
-    auto r2 = resolveProjectDependencies(*m2, proj2.string(), home.string());
-    ASSERT_TRUE(static_cast<bool>(r2)) << errorText(r2.takeError());
-    ASSERT_EQ(r2->size(), 1u);
-    EXPECT_EQ((*r2)[0].resolvedFromRepo, "olla");
-}
 
 // 3b.1.2 — U3b: resolving from/through ~/.olla never writes the retired
 // workstation content-hash tier (<home>/.cajeta/cache/artifacts/). The

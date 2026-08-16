@@ -183,48 +183,6 @@ TEST(XpuVulkanDispatchDeviceTests, dynamicSharedOnDevice) {
 // reads the default: every element == 4242. Matches specConstantBakesDefaultOnCpu
 // (the oracle). If the spec constant didn't validate or read back, the device
 // would fault or read 0/garbage — distinguishing the feature.
-TEST(XpuVulkanDispatchDeviceTests, specConstantDefaultOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class SC {\n"
-        "    @Kernel\n"
-        "    public static void fill(KernelBuffer<int32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { out[i] = Spec.geti(0, 4242); }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 64;\n"
-        "        int32[] hout = heap int32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1; }\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(0, n);\n"
-        "        out.allocate();\n"
-        "        out.upload(hout);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        fill.launch(s, grid: [1], block: [64])(out, n);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        out.free();\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            if (hout[i] != 4242) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.SC", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != 4242)";
-}
 
 // Item 6: a grid-stride for-each. `for (uint32 i, float32 v : in.range(n))`
 // lowers to `for (i = globalId.x; i < n; i += gridSize.x) { v = in[i]; ... }`.
@@ -285,109 +243,12 @@ TEST(XpuVulkanDispatchDeviceTests, gridStrideForEachOnDevice) {
 // (spirv.VulkanBuffer), so the helper takes that handle by value (not a pointer)
 // and its bufferElementPtr routes through resource.getpointer. out[i]=in[i]*3,
 // in[i]=i ⇒ sum over [0,256) of 3i = 97920.
-TEST(XpuVulkanDispatchDeviceTests, deviceBufferParamHelperOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class DevBuf {\n"
-        "    @Device\n"
-        "    public static void scale(KernelBuffer<float32> out, KernelBuffer<float32> in,\n"
-        "                             uint32 i) {\n"
-        "        out[i] = in[i] * 3.0f;\n"
-        "    }\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<float32> out, KernelBuffer<float32> in) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        scale(out, in, i);\n"
-        "    }\n"
-        "    public static float32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        float32[] hx = heap float32[n];\n"
-        "        float32[] hy = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hx[i] = (float32)i; hy[i] = 0.0f; }\n"
-        "        KernelBuffer<float32> x = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
-        "        x.allocate();\n"
-        "        y.allocate();\n"
-        "        x.upload(hx);\n"
-        "        y.upload(hy);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        k.launch(s, grid: [4], block: [64])(y, x);\n"
-        "        s.sync();\n"
-        "        y.download(hy);\n"
-        "        x.free();\n"
-        "        y.free();\n"
-        "        float32 sum = 0.0f;\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + hy[i]; }\n"
-        "        return sum;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.DevBuf", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<float (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(), 97920.0f);   // sum 3i over [0,256)
-}
 
 // Item 7: a POD struct passed BY VALUE as a kernel arg, on the real Vulkan device
 // (Strix Halo via RADV). On SPIR-V the struct rides its own descriptor-bound
 // storage buffer (the scalar-SSBO mechanism, element type = the struct); the
 // kernel reads p.scale/p.bias via OpCompositeExtract to compute
 // out[i] = i*scale+bias. scale=2, bias=1, n=256 ⇒ Σ(2i+1) = 65536.
-TEST(XpuVulkanDispatchDeviceTests, podStructArgOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class Params {\n"
-        "    float32 scale;\n"
-        "    float32 bias;\n"
-        "    public Params(float32 scale, float32 bias)"
-        " { this.scale = scale; this.bias = bias; }\n"
-        "}\n"
-        "public class PodArg {\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<float32> out, Params p) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        out[i] = (float32)i * p.scale + p.bias;\n"
-        "    }\n"
-        "    public static float32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        float32[] hy = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hy[i] = 0.0f; }\n"
-        "        KernelBuffer<float32> y = heap KernelBuffer<float32>(0, n);\n"
-        "        y.allocate();\n"
-        "        y.upload(hy);\n"
-        "        Params p = heap Params(2.0f, 1.0f);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        k.launch(s, grid: [4], block: [64])(y, p);\n"
-        "        s.sync();\n"
-        "        y.download(hy);\n"
-        "        y.free();\n"
-        "        float32 sum = 0.0f;\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { sum = sum + hy[i]; }\n"
-        "        return sum;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.PodArg", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<float (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(), 65536.0f);   // Σ(2i+1) over [0,256)
-}
 
 // Item 8 Stage B: a Texture2D sampled through a Sampler with bilinear filtering,
 // on the real Vulkan device (RADV / Strix Halo). The Texture2D binds a native
@@ -396,77 +257,6 @@ TEST(XpuVulkanDispatchDeviceTests, podStructArgOnDevice) {
 // {0,1,2,3} sampled at the four texel centers returns the exact texels; the
 // dead-center (0.5,0.5) returns the 4-texel average 1.5 — bit-exact, so the
 // in-kernel compare uses a small epsilon only to guard GPU weight precision.
-TEST(XpuVulkanDispatchDeviceTests, textureSampleOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.gfx.Texture2D;\n"
-        "import cajeta.gfx.Sampler;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class TexSample {\n"
-        "    @Kernel\n"
-        "    public static void sample(Texture2D tex, Sampler s,\n"
-        "                              KernelBuffer<float32> us, KernelBuffer<float32> vs,\n"
-        "                              KernelBuffer<float32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { Vector<float32,4> c = tex.sample(s, us[i], vs[i]); out[i] = c.x; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 w = 2;\n"
-        "        uint32 h = 2;\n"
-        "        float32[] pixels = heap float32[4];\n"
-        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
-        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
-        "        Texture2D tex = heap Texture2D(w, h);\n"
-        "        tex.upload(pixels);\n"
-        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
-        "        uint32 n = 5;\n"
-        "        float32[] hus = heap float32[n];\n"
-        "        float32[] hvs = heap float32[n];\n"
-        "        float32[] hexp = heap float32[n];\n"
-        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
-        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
-        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
-        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
-        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
-        "        float32[] hout = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
-        "        KernelBuffer<float32> us = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> vs = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> out = heap KernelBuffer<float32>(0, n);\n"
-        "        us.allocate();\n"
-        "        vs.allocate();\n"
-        "        out.allocate();\n"
-        "        us.upload(hus);\n"
-        "        vs.upload(hvs);\n"
-        "        out.upload(hout);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        us.free();\n"
-        "        vs.free();\n"
-        "        out.free();\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            float32 d = hout[i] - hexp[i];\n"
-        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.TexSample", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
-}
 
 // Multi-channel float texture (B3): an RGBA32F Texture2D sampled on RADV returns
 // all four channels (sample() -> Vector<float32,4>). Clones the R32F device test
@@ -653,38 +443,10 @@ TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba8UnormOnDevice) {
 // binary16 stored (VK_FORMAT_R16_SFLOAT), read back as float. Texel values
 // {0,1,2,3} are all exactly representable in binary16, so the same texel-center
 // + dead-center expecteds as the R32F test hold bit-exactly.
-TEST(XpuVulkanDispatchDeviceTests, textureSampleR16fOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(kR1SampleSrc("TextureFormat.R16F"),
-                                  "test.TexR1", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R16F sample mismatch at i)";
-}
 
 // Half-float RGBA (RGBA16F): four-channel cheap HDR (VK_FORMAT_R16G16B16A16_SFLOAT).
 // Same kernel/check as the RGBA32F test; the channel values (.2t .. +.15) are
 // within the 0.02 tol of their binary16 round-trip.
-TEST(XpuVulkanDispatchDeviceTests, textureSampleRgba16fOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(kRgbaSampleSrc("TextureFormat.RGBA16F"),
-                                  "test.TexRgba", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
-}
 
 // texelFetch on device (B3): `tex.fetch(x, y)` reads the exact integer texel of
 // the sampled image with NO Sampler, lowering to OpImageFetch. One thread per
@@ -1403,38 +1165,10 @@ TEST(XpuVulkanDispatchDeviceTests, mipmapFetchAndSampleLodOnDevice) {
                       << " (100: L0 fetch; 200: L1 fetch; 300: L1 sampleLod)";
 }
 
-TEST(XpuVulkanDispatchDeviceTests, textureFetchRgba32fOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(kRgbaFetchSrc("TextureFormat.RGBA32F"),
-                                  "test.TexFetch", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F fetch mismatch at i)";
-}
 
 // B3 Step 2b: integer OpImageFetch on a real Vulkan device (RADV / Strix Halo) —
 // an RGBA32I sampled image (i32 sampled type, VK_FORMAT_R32G32B32A32_SINT) fetched
 // by integer coord; every channel reads back as the exact stored signed integer.
-TEST(XpuVulkanDispatchDeviceTests, textureFetchRgba32iOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(kRgbaIntFetchSrc("int32", "TextureFormat.RGBA32I"),
-                                  "test.TexFetchInt", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (RGBA32I device fetch mismatch)";
-}
 
 // B3 texture dims: Texture3D fetch on a real Vulkan device — VK_IMAGE_TYPE_3D
 // sampled image, OpImageFetch on a Dim=3 image, 2x2x2 volume voxel-exact.
@@ -1551,37 +1285,10 @@ TEST(XpuVulkanDispatchDeviceTests, textureCubeSampleOnDevice) {
 
 // Integer Texture3D fetch on a real Vulkan device — RGBA32I 3-D image
 // (VK_FORMAT_R32G32B32A32_SINT), integer OpImageFetch on a Dim=3 image, voxel-exact.
-TEST(XpuVulkanDispatchDeviceTests, texture3dFetchRgba32iOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(kTex3dIntFetchSrc("int32", "TextureFormat.RGBA32I"),
-                                  "test.Tex3dIntFetch", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (3D RGBA32I device fetch mismatch)";
-}
 
 // B3: two Sampler descriptors in one kernel on a real Vulkan device (RADV) — both
 // bound to distinct set-0 bindings, sampling the same image (nearest -> 3.0,
 // linear -> 1.5). Confirms multiple sampler descriptors per dispatch.
-TEST(XpuVulkanDispatchDeviceTests, twoSamplersInOneKernelOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(kTwoSamplersSrc(), "test.TwoSamp", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100: nearest=3.0; 200: linear=1.5)";
-}
 
 
 // Writable images: an Image2D bound as a STORAGE_IMAGE that a compute kernel
@@ -1592,52 +1299,6 @@ TEST(XpuVulkanDispatchDeviceTests, twoSamplersInOneKernelOnDevice) {
 // intrinsic), and StorageImageWriteWithoutFormat is auto-added for the Unknown
 // R32 format. One thread per texel writes its linear index; the readback must
 // be the exact 0..w*h-1 ramp — bit-exact (integers held in f32).
-TEST(XpuVulkanDispatchDeviceTests, imageStoreOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.Image2D;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class ImgStore {\n"
-        "    @Kernel\n"
-        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < w * h) {\n"
-        "            uint32 x = i % w;\n"
-        "            uint32 y = i / w;\n"
-        "            img.store(x, y, (float32)(y * w + x));\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 w = 4;\n"
-        "        uint32 h = 4;\n"
-        "        uint32 n = w * h;\n"
-        "        Image2D img = heap Image2D(w, h);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
-        "        s.sync();\n"
-        "        float32[] out = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
-        "        img.download(out);\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            float32 d = out[i] - (float32) i;\n"
-        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.ImgStore", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: stored texel != expected)";
-}
 
 // Image read (the read twin of imageStore): a storage image is filled by one
 // dispatch, then a SECOND dispatch does a read-modify-write — v = img.load(x, y)
@@ -1723,76 +1384,6 @@ TEST(XpuVulkanDispatchDeviceTests, bundledVulkanCpuForcedToCpu) {
 // pattern): a point inside the box reports 1 candidate, a point outside 0.
 // Gated on rayQueryAvailable() — skips on a plain compute device (the build
 // natives no-op there, so there is nothing meaningful to run).
-TEST(XpuVulkanDispatchDeviceTests, rayQuerySpatialIndexOnDevice) {
-    if (!VulkanDriver::rayQueryAvailable()) {
-        GTEST_SKIP() << "no Vulkan ray-query (acceleration-structure) device";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.AccelerationStructure;\n"
-        "import cajeta.xpu.RayQuery;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class RQ {\n"
-        "    @Kernel\n"
-        "    public static void query(AccelerationStructure scene,\n"
-        "                             KernelBuffer<float32> px, KernelBuffer<float32> py,\n"
-        "                             KernelBuffer<float32> pz, KernelBuffer<uint32> out,\n"
-        "                             uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            RayQuery rq;\n"
-        "            rq.initialize(scene, 0, 255,\n"
-        "                          px[i], py[i], pz[i], 0.0f,\n"
-        "                          0.0f, 0.0f, 1.0f, 0.001f);\n"
-        "            uint32 c = 0;\n"
-        "            while (rq.proceed()) {\n"
-        "                if (rq.candidateType() == 1) { c = c + 1; }\n"
-        "            }\n"
-        "            out[i] = c;\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        float32[] boxes = heap float32[6];\n"
-        "        boxes[0] = 0.0f; boxes[1] = 0.0f; boxes[2] = 0.0f;\n"
-        "        boxes[3] = 1.0f; boxes[4] = 1.0f; boxes[5] = 1.0f;\n"
-        "        AccelerationStructure scene = heap AccelerationStructure(boxes, 1);\n"
-        "        uint32 n = 2;\n"
-        "        float32[] hpx = heap float32[n];\n"
-        "        float32[] hpy = heap float32[n];\n"
-        "        float32[] hpz = heap float32[n];\n"
-        "        hpx[0] = 0.5f; hpy[0] = 0.5f; hpz[0] = 0.5f;\n"   // inside box
-        "        hpx[1] = 5.0f; hpy[1] = 5.0f; hpz[1] = 5.0f;\n"   // outside box
-        "        uint32[] hout = heap uint32[n];\n"
-        "        hout[0] = 99; hout[1] = 99;\n"
-        "        KernelBuffer<float32> px = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> py = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> pz = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<uint32> out = heap KernelBuffer<uint32>(0, n);\n"
-        "        px.allocate(); py.allocate(); pz.allocate(); out.allocate();\n"
-        "        px.upload(hpx); py.upload(hpy); pz.upload(hpz); out.upload(hout);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        query.launch(s, grid: [1], block: [64])(scene, px, py, pz, out, n);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        px.free(); py.free(); pz.free(); out.free();\n"
-        "        if (hout[0] != 1) { return 101; }\n"  // inside: exactly 1 candidate (one box)
-        "        if (hout[1] != 0) { return 102; }\n"  // outside: no candidate
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.RQ", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (101: inside-box query saw no candidate; "
-                         "102: outside-box query saw a candidate)";
-}
 
 // KernelBuffer.slice (Stage B4) on Vulkan — device-verify the borrowing view-slot
 // path (the CPU pointer-fold twin is XpuCpuDispatchTests.bufferSliceKernelOnCpu).
@@ -1803,53 +1394,6 @@ TEST(XpuVulkanDispatchDeviceTests, rayQuerySpatialIndexOnDevice) {
 // VkDescriptorBufferInfo.offset. Proves the descriptor offset lands the writes
 // at parent[64+i] and leaves the head untouched; the view is non-owning so only
 // the parent frees (no double-free).
-TEST(XpuVulkanDispatchDeviceTests, bufferSliceKernelOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class Slice {\n"
-        "    @Kernel\n"
-        "    public static void fill(KernelBuffer<int32> b, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { b[i] = (int32) i; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 128;\n"
-        "        uint32 half = 64;\n"
-        "        int32[] h = heap int32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }\n"
-        "        KernelBuffer<int32> all = heap KernelBuffer<int32>(n);\n"
-        "        all.upload(h);\n"
-        "        KernelBuffer<int32> tail = all.slice(half, half);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        fill.launch(s, grid: [1], block: [64])(tail, half);\n"
-        "        s.sync();\n"
-        "        all.download(h);\n"
-        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
-        "            if (h[i] != -1) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        for (uint32 i = 0; i < half; i = i + 1) {\n"
-        "            if (h[half + i] != (int32) i) { return (int32)(200 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.Slice", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1xx: head element overwritten — bad offset; "
-                         "2xx: tail element wrong — view base off)";
-}
 
 // KernelBuffer.slice upload visibility through a kernel on Vulkan: a distinct pattern
 // is uploaded INTO a mid-buffer view [32,96) of a 128-element parent (filled 5)
@@ -1857,60 +1401,6 @@ TEST(XpuVulkanDispatchDeviceTests, bufferSliceKernelOnDevice) {
 // a kernel doubles the WHOLE parent in place. Downloading the parent proves the
 // slice upload landed at the byte offset (128 B = 32*4) and the head/tail the
 // slice didn't cover keep the parent fill (5 -> 10).
-TEST(XpuVulkanDispatchDeviceTests, bufferSliceUploadDownloadOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class SliceIO {\n"
-        "    @Kernel\n"
-        "    public static void dbl(KernelBuffer<int32> b, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { b[i] = b[i] * 2; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 128;\n"
-        "        uint32 off = 32;\n"
-        "        uint32 len = 64;\n"
-        "        int32[] h = heap int32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = 5; }\n"
-        "        KernelBuffer<int32> all = heap KernelBuffer<int32>(n);\n"
-        "        all.upload(h);\n"
-        "        int32[] mid = heap int32[len];\n"
-        "        for (uint32 i = 0; i < len; i = i + 1) { mid[i] = (int32)(1000 + i); }\n"
-        "        KernelBuffer<int32> sub = all.slice(off, len);\n"
-        "        sub.upload(mid);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        dbl.launch(s, grid: [2], block: [64])(all, n);\n"
-        "        s.sync();\n"
-        "        all.download(h);\n"
-        "        for (uint32 i = 0; i < off; i = i + 1) {\n"
-        "            if (h[i] != 10) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        for (uint32 i = 0; i < len; i = i + 1) {\n"
-        "            if (h[off + i] != (int32)(2 * (1000 + i))) { return (int32)(300 + i); }\n"
-        "        }\n"
-        "        for (uint32 i = off + len; i < n; i = i + 1) {\n"
-        "            if (h[i] != 10) { return (int32)(200 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.SliceIO", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1xx: head not doubled; 3xx: mid slice-upload wrong "
-                         "offset; 2xx: tail not doubled)";
-}
 
 // Bindless / multi-buffer descriptor sets (Stage B4) on Vulkan/RADV: a kernel
 // takes an ARRAY of buffers `KernelBuffer<int32>[] bufs` bound as one descriptor array
@@ -1981,100 +1471,11 @@ TEST(XpuVulkanDispatchDeviceTests, bindlessBufferArrayOnDevice) {
 // clean by XpuVulkanEmitTests.lowersMemoryFenceToSpirv); this confirms a kernel
 // using them dispatches and computes correctly on RADV. Same write→fence→read
 // kernel as the CPU oracle → out[i] == 2i+1.
-TEST(XpuVulkanDispatchDeviceTests, memoryFenceOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "import cajeta.xpu.Barrier;\n"
-        "public class MFVk {\n"
-        "    @Kernel\n"
-        "    public static void fence(KernelBuffer<int32> data, KernelBuffer<int32> out,\n"
-        "                             uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            data[i] = (int32)(i * 2);\n"
-        "            Barrier.deviceMemory();\n"
-        "            Barrier.workgroupMemory();\n"
-        "            out[i] = data[i] + 1;\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 64;\n"
-        "        KernelBuffer<int32> data = heap KernelBuffer<int32>(n);\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        fence.launch(s, grid: [1], block: [64])(data, out, n);\n"
-        "        s.sync();\n"
-        "        int32[] ho = heap int32[n];\n"
-        "        out.download(ho);\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            if (ho[i] != (int32)(2 * i + 1)) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.MFVk", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] != 2i+1 — memory fence on device)";
-}
 
 // Stage 9: a kernel atomic with an explicit MemoryOrder.Relaxed runs on the
 // Vulkan device. Vulkan clamps relaxed→acq_rel internally (its memory model has
 // no bare-relaxed device atomic), so the count is still exact: N threads each
 // atomicAdd(0, 1, Relaxed) → out[0] == N. Same kernel as the CPU oracle.
-TEST(XpuVulkanDispatchDeviceTests, relaxedAtomicCounterOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "import cajeta.xpu.MemoryOrder;\n"
-        "public class RACVk {\n"
-        "    @Kernel\n"
-        "    public static void count(KernelBuffer<int32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            out.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);\n"
-        "        int32[] z = heap int32[1];\n"
-        "        z[0] = 0;\n"
-        "        out.upload(z);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        count.launch(s, grid: [1], block: [256])(out, n);\n"
-        "        s.sync();\n"
-        "        int32[] ho = heap int32[1];\n"
-        "        out.download(ho);\n"
-        "        if (ho[0] != 256) { return ho[0]; }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.RACVk", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
-}
 
 // Stage 11: a kernel calls a @Device helper in ANOTHER class (a shared device-
 // math library) on the Vulkan device — the strictest path (descriptor-bound, the
@@ -2205,58 +1606,3 @@ TEST(XpuVulkanDispatchDeviceTests, labeledBreakContinueOnDevice) {
 // candidate set; `ops[i % 3](i)` lowers to an if/else chain of DIRECT calls (no
 // function pointers — SPIR-V has none). i%3==0 -> i*i, ==1 -> i*i*i, ==2 -> -i.
 // The index is a runtime value, so a constant-folded single candidate fails.
-TEST(XpuVulkanDispatchDeviceTests, deviceDispatchTableOnDevice) {
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan device/driver available";
-    }
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class Ops {\n"
-        "    @Device public static int32 sq(int32 x)   { return x * x; }\n"
-        "    @Device public static int32 cube(int32 x) { return x * x * x; }\n"
-        "    @Device public static int32 neg(int32 x)  { return 0 - x; }\n"
-        "}\n"
-        "public class DispVk {\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<int32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            ((int32) -> int32)[] ops = { Ops::sq, Ops::cube, Ops::neg };\n"
-        "            uint32 sel = i % 3;\n"
-        "            out[i] = ops[sel]((int32) i);\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 192;\n"
-        "        int32[] hout = heap int32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -999; }\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(n);\n"
-        "        out.upload(hout);\n"
-        "        KernelStream s = KernelStream.current();\n"
-        "        k.launch(s, grid: [3], block: [64])(out, n);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            uint32 m = i % 3;\n"
-        "            int32 want = 0;\n"
-        "            if (m == 0) { want = (int32)(i * i); }\n"
-        "            else if (m == 1) { want = (int32)(i * i * i); }\n"
-        "            else { want = (int32)(0 - (int32) i); }\n"
-        "            if (hout[i] != want) { return (int32)(1000 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options o;
-    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
-    auto jit = CajetaJit::compile(src, "test.DispVk", o);
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1000+i: indexed device dispatch table on Vulkan)";
-}
