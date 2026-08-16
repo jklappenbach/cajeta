@@ -63,14 +63,14 @@ argv[0] = "/bin/cat";
 Command cmd = heap Command(#argv);
 cmd.pipeStdin();
 cmd.pipeStdout();
-Process p = cmd.start();              // owned handle; spawn happened
+Process p #= cmd.start();              // owned handle; spawn happened
 if (p.launched() == false) { return 100; }
-FileWriter w = p.stdin();
+FileWriter w #= p.stdin();
 w.writeString("ping\n");
 w.close();                            // EOF so cat finishes
-FileReader rd = p.stdout();
-String s = rd.readString(64);
-ProcessResult res = p.waitFor();      // owned result; reaps the child
+FileReader rd #= p.stdout();
+String s #= rd.readString(64);
+ProcessResult res #= p.waitFor();      // owned result; reaps the child
 p.close();                            // idempotent; releases the handle
 ```
 

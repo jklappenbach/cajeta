@@ -6,13 +6,13 @@ package cajeta.nucleo.frame;
  * parameters, and each `add` appends one output column, in order:
  *
  * ```cajeta
- * Table<?> r = ticks.groupBy((TickCols c, Sels s) -> { s.add(c.venue()); })
- *                   .agg((TickCols c, Aggs a) -> {
- *                       a.add(c.price().sum().alias("psum"));
- *                       Agg num = (c.price() * c.size()).sum();
- *                       Agg den = c.size().sum();
- *                       a.add((num / den).alias("vwap"));
- *                   });
+ * Table<?> r #= ticks.groupBy((TickCols c, Sels s) -> { s.add(c.venue()); })
+ *                    .agg((TickCols c, Aggs a) -> {
+ *                        a.add(c.price().sum().alias("psum"));
+ *                        Agg num #= (c.price() * c.size()).sum();
+ *                        Agg den #= c.size().sum();
+ *                        a.add((num / den).alias("vwap"));
+ *                    });
  * ```
  *
  * Every aggregate must be `.alias("...")`-named: a reduction has no name of

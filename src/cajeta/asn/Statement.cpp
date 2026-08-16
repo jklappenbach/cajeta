@@ -1733,9 +1733,13 @@ namespace cajeta {
         // flagged return's runtime bit: 1 when we owned it (the caller now
         // does), 0 when we only ever held a borrow (so does the caller).
         //
-        // Distinct from `return #x`, which forces ownership and is a contract
-        // violation with none, and from `return x`, which lends and leaves our
-        // title armed. Needed because a collection slot may now hold either an
+        // Distinct from `return #x`, which declares the transfer contract but
+        // itself forwards the mode the frame holds (MOVE_OF_BORROW rejects it
+        // where the frame provably holds none), and from `return x`, which is
+        // transparent carry — a formal forwards the caller's mode and hands
+        // its entry over, while a named local with a drop entry is rejected
+        // by FRESH_RETURN_NEEDS_TRANSFER. Needed because a collection slot
+        // may now hold either an
         // owned value or a borrow (collections no longer own by default), so a
         // remove-shaped return cannot decide statically.
         if (modeCarrying && expression) {
@@ -2089,10 +2093,11 @@ namespace cajeta {
         // Memory-model § Function signatures: returning a fresh
         // allocation (`return heap X(...)`, `return new X(...)`,
         // `return heap X { ... }`) requires the enclosing method's
-        // return type to be marked `#` for ownership transfer. A
-        // non-`#` return is a borrow tied to the caller's lifetime
-        // for this expression — but a heap allocation has no caller-
-        // owned source to borrow from, so the allocation would either
+        // return type to be marked `#` for ownership transfer. A plain
+        // return carries whatever the RETURN EXPRESSION holds (spec §2.8,
+        // §4.8) — a formal, a call result, or `#= local`. A fresh
+        // allocation is none of those: its title is held only by this
+        // frame's drop chain, so the allocation would either
         // leak (caller doesn't drop) or get freed by the function's
         // scope-exit drop chain and hand back a dangling pointer.
         //

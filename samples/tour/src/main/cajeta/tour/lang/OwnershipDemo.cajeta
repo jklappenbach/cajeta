@@ -3,8 +3,14 @@ package tour.lang;
 import tour.DemoClass;
 import tour.Point;
 
-// Plain `=` is a borrow; `#name` transfers ownership and marks the
-// source moved at compile time. The borrow checker also catches
+// Ownership is decided per POSITION, not by one spelling. Between NAMES,
+// plain `=` lends and `#=` transfers. At a CALL the caller chooses:
+// `f(x)` lends, `f(#x)` transfers — and `#x` on a binding whose title has
+// already moved is CAJETA_ERROR_MOVE_OF_BORROW, since `#` forwards the mode
+// it was handed rather than minting a title. At a RESULT the callee decides:
+// a `#T` return hands you a title and must be received with `#=` (a plain `=`
+// is CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER), while a plain `T` return
+// carries whatever the callee's frame held. The borrow checker also catches
 // escape-on-return, alias-mutation, and definite-assignment violations.
 public class OwnershipDemo extends DemoClass {
     public void execute() {

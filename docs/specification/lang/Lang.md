@@ -55,7 +55,7 @@ and pinned by `test/expression/StringMethodsTests.cpp`:
 ```cajeta
 public class String {
     public String();                              // empty, owned
-    public String(#int8[] bytes, int32 byteLength); // view-mode
+    public String(#int8[] bytes, int32 byteLength); // adopts the buffer
 
     // Sizing — count() / size(), NOT length()/size-by-chars.
     public int64 count();         // code-point count (cached)

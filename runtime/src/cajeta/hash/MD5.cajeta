@@ -32,8 +32,8 @@ import cajeta.lang.String;
  *
  * One-shot statics:
  * ```cajeta
- * int8[] digest = MD5.hash(bytes, bytes.count());
- * String etag = MD5.hashHex(bytes, bytes.count());
+ * int8[] digest #= MD5.hash(bytes, bytes.count());
+ * String etag #= MD5.hashHex(bytes, bytes.count());
  * ```
  *
  * Streaming `Hasher`:
@@ -143,7 +143,7 @@ public final class MD5 implements Hasher {
      * `int8[16]` and transfers ownership to the caller.
      *
      * ```cajeta
-     * int8[] digest = MD5.hash(bytes, bytes.count());
+     * int8[] digest #= MD5.hash(bytes, bytes.count());
      * ```
      *
      * @EntryPoint
@@ -160,7 +160,7 @@ public final class MD5 implements Hasher {
      * asset fingerprints.
      *
      * ```cajeta
-     * String etag = MD5.hashHex(bytes, bytes.count());
+     * String etag #= MD5.hashHex(bytes, bytes.count());
      * ```
      *
      * @EntryPoint
@@ -175,7 +175,7 @@ public final class MD5 implements Hasher {
      * One-shot 16-byte digest of a `String`'s UTF-8 bytes.
      *
      * ```cajeta
-     * int8[] d = MD5.hashString(name);
+     * int8[] d #= MD5.hashString(name);
      * ```
      */
     public static #int8[] hashString(String s) {
@@ -190,7 +190,7 @@ public final class MD5 implements Hasher {
      * One-shot lowercase hex digest of a `String`'s UTF-8 bytes.
      *
      * ```cajeta
-     * String key = MD5.hashStringHex(payload);
+     * String key #= MD5.hashStringHex(payload);
      * ```
      */
     public static #String hashStringHex(String s) {

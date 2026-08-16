@@ -24,7 +24,7 @@ import cajeta.error.RecoverableException;
  *
  * ```cajeta
  * # parse the lines that are valid ints, silently skip the rest
- * #Stream<i32> ints = heap MapOrSkipStream<string, i32>(#lines, (s) -> #i32.parse(s));
+ * Stream<i32> ints = heap MapOrSkipStream<string, i32>(#lines, (s) -> #i32.parse(s));
  * Optional<i32> first = ints.next();
  * ```
  */
@@ -38,7 +38,7 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
      * ownership of `source`.
      *
      * ```cajeta
-     * #Stream<i32> safe = heap MapOrSkipStream<Record, i32>(#records, (r) -> #r.score());
+     * Stream<i32> safe = heap MapOrSkipStream<Record, i32>(#records, (r) -> #r.score());
      * ```
      */
     public MapOrSkipStream(#Stream<T> source, (T) -> #R fn) {

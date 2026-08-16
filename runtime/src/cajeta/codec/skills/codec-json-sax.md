@@ -91,7 +91,7 @@ class SumHandler extends JsonHandler {
     public int64 numbers;
     public SumHandler() { this.keys = 0; this.numbers = 0; }
     public void onKey(JsonReader r) {
-        #String k = r.currentString();   // owned copy; safe to keep
+        String k #= r.currentString();   // owned copy; safe to keep
         this.keys = this.keys + 1;
     }
     public void onNumber(JsonReader r) {
@@ -100,7 +100,7 @@ class SumHandler extends JsonHandler {
     }
 }
 
-int8[] b = File.readAllBytes("/tmp/data.json");  // caller owns b
+int8[] b #= File.readAllBytes("/tmp/data.json");  // caller owns b
 int64 n = (int64) b.count();
 SumHandler h = heap SumHandler();
 JsonSax.parse(b, n, h);                           // b borrowed, not freed

@@ -85,9 +85,9 @@ import cajeta.math.Tensor;
 int64[] shp = heap int64[2];
 shp[0] = 2;
 shp[1] = 3;
-Tensor<float32> a = Tensor.zeros<float32>(shp);   // owned #Tensor<float32>
+Tensor<float32> a #= Tensor.zeros<float32>(shp);   // owned #Tensor<float32>
 a.set2(0, 1, 4.5f);                                // 2-D write
-Tensor<float32> v = a.transpose();                 // 3x2 VIEW — shares a's Storage
+Tensor<float32> v #= a.transpose();                 // 3x2 VIEW — shares a's Storage
 // a and v drop at scope exit; the shared buffer frees exactly once (live-set).
 ```
 

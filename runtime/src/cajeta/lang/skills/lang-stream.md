@@ -106,7 +106,7 @@ public class TapStream<T> extends Stream<T> {
 
 // drive it from a real source:
 int32[] nums = { 1, 2, 3, 4 };
-#Stream<int32> s = heap TapStream<int32>(heap ArrayStream<int32>(nums, 4), (x) -> print(x));
+Stream<int32> s = heap TapStream<int32>(heap ArrayStream<int32>(nums, 4), (x) -> print(x));
 int32 n = s.count();   // terminal pulls next() to exhaustion
 ```
 

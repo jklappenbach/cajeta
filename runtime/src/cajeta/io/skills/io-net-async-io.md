@@ -106,7 +106,7 @@ AsyncReader r = heap AsyncReader(t, 64);
 int8[] src = heap int8[5];
 src[0]=(int8)65; src[1]=(int8)66; src[2]=(int8)67; src[3]=(int8)13; src[4]=(int8)10;
 r.stage(src, 5);                           // pre-stage "ABC\r\n" ahead of the socket
-int8[] line = r.readUntil((int8) 10, 0);   // fresh owned array, LF included -> len 5
+int8[] line #= r.readUntil((int8) 10, 0);   // fresh owned array, LF included -> len 5
 
 AsyncWriter w = heap AsyncWriter(t, 64);
 w.writeString(line == null ? "" : "ok\r\n");

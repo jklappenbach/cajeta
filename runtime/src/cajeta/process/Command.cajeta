@@ -20,7 +20,7 @@ import cajeta.lang.String;
  * argv[1] = "hello";
  * Command cmd = heap Command(#argv);
  * cmd.captureStdout();
- * ProcessResult r = cmd.run();
+ * ProcessResult r #= cmd.run();
  * ```
  */
 public class Command {

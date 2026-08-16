@@ -60,7 +60,7 @@ import cajeta.io.net.ByteBuffer;
 BufferPool p = heap BufferPool(256, 4);    // 256-byte slabs, keep <=4 idle
 int32 i = 0;
 while (i < 100) {
-    ByteBuffer b = p.acquire();            // #-returned: b is now sole owner
+    ByteBuffer b #= p.acquire();            // #-returned: b is now sole owner
     b.advanceWrite(10);                     // pretend a 10-byte socket read landed
     // ... parse out of b's readable region, advanceRead past consumed ...
     p.release(#b);                          // # MANDATORY — transfers ownership back

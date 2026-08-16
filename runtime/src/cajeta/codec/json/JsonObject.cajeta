@@ -27,7 +27,7 @@ import cajeta.lang.String;
  * if (name.isPresent()) {
  *     String n = name.get();
  * }
- * #ArrayList<String> ks = cfg.keys();
+ * ArrayList<String> ks #= cfg.keys();
  * ```
  */
 public final class JsonObject {

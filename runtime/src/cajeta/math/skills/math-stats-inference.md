@@ -18,7 +18,7 @@ or `lambda`) throw `StatsException` naming the parameter — never NaN.
 float64 p = Binomial.pmf(2, 6, 0.5);            // 15/64
 float64 c = Poisson.cdf(5, 3.0);
 Generator g = heap Generator(42);
-Tensor<int64> draws = Binomial.sample(6, 0.5, 10000, g);  // reproducible
+Tensor<int64> draws #= Binomial.sample(6, 0.5, 10000, g);  // reproducible
 ```
 
 ## Hypothesis tests — `Hypothesis`, `TestResult`, `Alternative`
@@ -34,7 +34,7 @@ scipy defaults to pooled). Pass `equalVar = true` for the pooled form.
 Chi-square independence applies **no Yates correction**.
 
 ```cajeta
-TestResult r = Hypothesis.tTest2(a, b, Alternative.TWO_SIDED);  // Welch
+TestResult r #= Hypothesis.tTest2(a, b, Alternative.TWO_SIDED);  // Welch
 if (r.warnings != 0) { /* report, don't trust blindly */ }
 ```
 

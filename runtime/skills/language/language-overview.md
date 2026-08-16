@@ -2,17 +2,21 @@
 id: language-overview
 applies-to: [cajeta.language, cajeta/language]
 title: The cajeta language — delta map from Java/C++, routing, and traps
-description: What cajeta is (Java surface, compile-time ownership, no GC), what it is not, and which language skill to read before writing each kind of code.
+description: What cajeta is (Java surface, per-position ownership, no GC), what it is not, and which language skill to read before writing each kind of code.
 ---
 
 # The cajeta language — orientation
 
 Cajeta reads like Java but is not garbage-collected: every heap value has
-exactly one owner, plain `=` borrows, `#` transfers, and values are reclaimed
-deterministically at scope exit — all checked at compile time. Write Java-shaped
-code, but read `cajeta/language/ownership` before any code that stores, returns,
-or passes a heap value, or your first crash will be the compiler stopping you
-(good) or memory misuse you shipped (bad).
+exactly one owner and is reclaimed deterministically at scope exit. Ownership
+is decided per POSITION and is runtime-conditional on both sides of a call —
+between names the spelling decides (`=` lends, `#=` transfers), at an argument
+the CALLER decides (`f(x)` lends, `f(#x)` transfers), and at a result the
+CALLEE does, on the return flag: a `#T` result is a forced transfer and must be
+received with `#=`, not `=`. Write Java-shaped code, but read
+`cajeta/language/ownership` before any code that stores, returns, or passes a
+heap value, or your first crash will be the compiler stopping you (good) or
+memory misuse you shipped (bad).
 
 ## Task → skill routing
 

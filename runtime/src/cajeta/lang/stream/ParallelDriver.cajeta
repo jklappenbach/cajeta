@@ -460,7 +460,7 @@ public class ParallelDriver {
      * `MapStream` / `FlatMapStream` fall back to sequential here.
      *
      * ```cajeta
-     * int32 total = ParallelDriver.reduceParallelChain<int32>(stream, 0, (a, b) -> a + b);
+     * int32 total #= ParallelDriver.reduceParallelChain<int32>(stream, 0, (a, b) -> a + b);
      * ```
      *
      * **Ownership (stdlib-ownership-convention 8.4.2).** The `#T` return is
@@ -587,7 +587,7 @@ public class ParallelDriver {
      *
      * ```cajeta
      * // Fold int32 elements into a wider int64 accumulator:
-     * int64 total = ParallelDriver.foldParallelChain<int32, int64>(
+     * int64 total #= ParallelDriver.foldParallelChain<int32, int64>(
      *     stream, 0L, (acc, x) -> acc + (int64) x, (a, b) -> a + b);
      * ```
      *
@@ -713,7 +713,7 @@ public class ParallelDriver {
      * ```cajeta
      * // Each worker gets its own `ArrayList` via the supplier, so
      * // there's no aliasing/race on a shared mutable container:
-     * ArrayList<int32> out = ParallelDriver.collectParallelChain<int32, ArrayList<int32>>(
+     * ArrayList<int32> out #= ParallelDriver.collectParallelChain<int32, ArrayList<int32>>(
      *     stream,
      *     () -> heap ArrayList<int32>(),
      *     (list, x) -> list.add(x),

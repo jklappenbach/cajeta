@@ -89,15 +89,15 @@ CsvReader r = heap CsvReader(buf, (int64) text.byteLength);
 CsvWriter w = heap CsvWriter();
 r.nextRow();                                        // consume the header row
 while (r.nextRow()) {
-    int8[] sym = r.field(0);                        // owned copy, e.g. "AAPL"
-    int8[] qty = r.field(1);
+    int8[] sym #= r.field(0);                        // owned copy, e.g. "AAPL"
+    int8[] qty #= r.field(1);
     int64 q = CsvReader.parseI64(qty);              // permissive int parse
     w.writeField(sym);                              // borrows sym
     w.writeField(qty);
     w.endRow();
     // free sym, qty here when done with them
 }
-int8[] out = w.toBytes();                           // owned CSV bytes
+int8[] out #= w.toBytes();                           // owned CSV bytes
 ```
 
 For raw delimiter offsets without a reader, call `CsvIndex.build` directly:

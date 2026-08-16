@@ -33,7 +33,7 @@ package cajeta.collection;
  * String hit = index.get(42);            // "answer"
  * boolean known = index.containsKey(7);  // false, miss -> zero value
  * int32 lo = index.min();                // smallest key, 42 here
- * #ArrayList<int32> keys = index.keysInOrder();  // ascending, owned
+ * ArrayList<int32> keys #= index.keysInOrder();  // ascending, owned
  * ```
  *
  * @See cajeta.collection.BPlusTreeNode

@@ -99,18 +99,18 @@ import cajeta.lang.String;
 
 // Custom pattern
 LocalDateTime t = LocalDateTime.ofFull(2026, 6, 5, 14, 3, 9, 0);
-#DateTimeFormatter f = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
-#String s = f.formatDateTime(t);          // "2026-06-05 14:03:09"
+DateTimeFormatter f #= DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+String s #= f.formatDateTime(t);          // "2026-06-05 14:03:09"
 
 // Standard style, reusing the immutable formatter
-#DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
-#String a = iso.formatDateTime(t);        // "2026-06-05T14:03:09"
+DateTimeFormatter iso #= DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+String a #= iso.formatDateTime(t);        // "2026-06-05T14:03:09"
 
 // Offset codes need a ZonedDateTime
 Instant i = Instant.ofEpochSecond(0);
 ZoneOffset z = ZoneOffset.ofHoursMinutes(5, 30);
 ZonedDateTime zdt = ZonedDateTime.ofInstant(i, z);
-#String o = DateTimeFormatter.ofPattern("%H:%M %z %Z").formatZoned(zdt);  // "05:30 +0530 +05:30"
+String o #= DateTimeFormatter.ofPattern("%H:%M %z %Z").formatZoned(zdt);  // "05:30 +0530 +05:30"
 ```
 
 ## Related

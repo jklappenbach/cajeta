@@ -16,8 +16,8 @@ import cajeta.io.net.dns.ResolutionFailedException;
  * endpoints it maps to (plan item **NET-2.2**).
  *
  * ```cajeta
- * SocketAddress[] addrs = Dns.resolve("example.test", 443);
- * SocketAddress[] v6    = Dns.resolve("example.test", 443, ResolveFamily.V6_ONLY);
+ * SocketAddress[] addrs #= Dns.resolve("example.test", 443);
+ * SocketAddress[] v6    #= Dns.resolve("example.test", 443, ResolveFamily.V6_ONLY);
  * ```
  *
  * ## What this is (and is not)

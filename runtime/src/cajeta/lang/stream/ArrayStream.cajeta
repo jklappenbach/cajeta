@@ -23,7 +23,7 @@ package cajeta.lang.stream;
  *
  * // O(1) length and splitting for parallel terminals:
  * int64 remaining = s.estimateSize();
- * #Stream<int32> half = s.trySplit();   // null if < 2 elements remain
+ * Stream<int32> half #= s.trySplit();   // null if < 2 elements remain
  * ```
  */
 public final class ArrayStream<T> extends Stream<T> implements Splittable<T> {

@@ -125,7 +125,7 @@ int64 wide = xs.stream().fold<int64>(0L,
     (int64 acc, int32 e) -> { return acc + (int64) e; });          // 15
 
 // collect into an owned ArrayList via a Collector
-#ArrayList<int32> all = xs.stream().collect(Collectors.toList<int32>());
+ArrayList<int32> all = xs.stream().collect(Collectors.toList<int32>());
 ```
 
 Pinned by `test/parser/StreamTerminalTests.cpp` (13 tests) and

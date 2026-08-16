@@ -13,9 +13,9 @@ import cajeta.time.DateTimeFormatter;
 import cajeta.time.FormatStyle;
 import cajeta.time.LocalDate;
 
-#DateTimeFormatter fmt = DateTimeFormatter.ofStandard(FormatStyle.US_DATE);
+DateTimeFormatter fmt #= DateTimeFormatter.ofStandard(FormatStyle.US_DATE);
 stack LocalDate d = LocalDate.of(2026, 6, 5);
-#String text = fmt.formatDate(d);     // "06/05/2026"  — you own `text` and `fmt`
+String text #= fmt.formatDate(d);     // "06/05/2026"  — you own `text` and `fmt`
 ```
 
 You do **not** build a `DateTimeFields` by hand for the common path; the `format*`
@@ -79,9 +79,9 @@ import cajeta.time.DateTimeFormatter;
 import cajeta.time.DateTimeFields;
 import cajeta.time.ZonedDateTime;
 
-#DateTimeFields f = DateTimeFields.ofZoned(z);   // heap bag — you own it
-#DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z");
-#String out = fmt.format(f);                      // borrows f; returns owned #String
+DateTimeFields f #= DateTimeFields.ofZoned(z);   // heap bag — you own it
+DateTimeFormatter fmt #= DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z");
+String out #= fmt.format(f);                      // borrows f; returns owned #String
 // f drops at scope end; out and fmt are yours to drop too
 ```
 

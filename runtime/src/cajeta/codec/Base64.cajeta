@@ -17,13 +17,13 @@ import cajeta.lang.String;
  *
  * One-shot encode (allocates the result `String`):
  * ```cajeta
- * String b = Base64.encode(bytes, bytes.count());      // standard, padded
- * String u = Base64.encodeUrlSafe(bytes, bytes.count()); // -/_, no padding
+ * String b #= Base64.encode(bytes, bytes.count());      // standard, padded
+ * String u #= Base64.encodeUrlSafe(bytes, bytes.count()); // -/_, no padding
  * ```
  *
  * One-shot decode (allocates the result `int8[]`):
  * ```cajeta
- * int8[] raw = Base64.decode(text);   // throws Base64Exception on garbage
+ * int8[] raw #= Base64.decode(text);   // throws Base64Exception on garbage
  * ```
  *
  * ## Design notes

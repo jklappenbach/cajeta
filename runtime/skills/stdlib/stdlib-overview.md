@@ -61,6 +61,10 @@ patterns worth knowing before you start:
 - **Failures throw; there is no `Result` type.** Resource cleanup rides the
   drop chain — no try-with-resources (`cajeta/language/errors`).
 
-**Collections do not own their elements** — an `ArrayList<T>` of heap values
-does not free them for you; the owning-collection story is per-container, so
-check the container's skill before assuming.
+**Collections own exactly what you hand them** — element ownership is the
+CALLER's choice, made per call and recorded per slot: `xs.add(v)` lends and
+`xs.add(#v)` transfers, and teardown drops exactly the slots whose title was
+tendered (spec §2.3). Once you hand a collection the title, the collection
+frees it — never plan to outlive a `#`-transferred element. Non-collection
+containers can differ deliberately (`Channel` always lends its slots), so check
+those.

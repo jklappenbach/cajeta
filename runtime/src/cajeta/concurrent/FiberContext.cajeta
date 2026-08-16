@@ -16,7 +16,7 @@ package cajeta.concurrent;
  * ## Usage
  * ```cajeta
  * // producer (on the request's fiber):
- * FiberContext ctx = FiberContext.capture();
+ * FiberContext ctx #= FiberContext.capture();
  * channel.send(Job(payload, #ctx));
  *
  * // worker fiber:

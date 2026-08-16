@@ -25,7 +25,7 @@ import cajeta.reflect.Class;
 User u = heap User();
 Class<?> c = Class.of(u);
 int32 n = c.getFieldCount();      // 5 for the User above
-String name = c.getName();        // "test.User"  (owned #String, you free it)
+String name #= c.getName();        // "test.User"  (owned #String, you free it)
 ```
 
 `Class.forName` returns an `Optional` (decision D3 — no throwing/null pair); empty
@@ -109,8 +109,8 @@ Static enumeration over the process-wide class registry (built at startup): ever
 returned array element is a borrow.
 
 ```cajeta
-#Class<?>[] svc = Class.classesAnnotated("code.Service");   // exact canonical name
-#Class<?>[] kinds = Class.subtypes<Shape>();                // closed-world subtypes
+Class<?>[] svc #= Class.classesAnnotated("code.Service");   // exact canonical name
+Class<?>[] kinds #= Class.subtypes<Shape>();                // closed-world subtypes
 ```
 
 Plus `Class.allClasses()` and `Class.classesInPackage("test")`. Annotation/package

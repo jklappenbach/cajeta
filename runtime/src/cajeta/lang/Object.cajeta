@@ -16,7 +16,7 @@ package cajeta.lang;
  * |-------------|------------------------------------------------------------|
  * | `hash()`    | **pointer-identity**, mixed with the per-process seed     |
  * | `toString()`| `null` placeholder until the `String` surface stabilizes  |
- * | `clone()`   | `null` placeholder until ownership semantics stabilize    |
+ * | `clone()`   | shallow RTTI field-walk copy, returned OWNED (`#Object`)  |
  *
  * **Identity, not structural.** `Object.hash()` returns the object's
  * heap address mixed through SplitMix64 with the per-process seed —

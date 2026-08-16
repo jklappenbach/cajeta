@@ -96,7 +96,7 @@ BackendRegistry registry = BackendRegistry.instance();
 WindowBackend window = registry.selectWindow(true);
 
 // What actually got bound this launch? describe() never throws (headless-tolerant).
-IfxInfo info = IfxInfo.describe();      // #IfxInfo — caller owns
+IfxInfo info #= IfxInfo.describe();      // #IfxInfo — caller owns
 String bound = info.windowBackendName();      // "win32" | "wayland" | ... | "null"
 
 // Program to the floor; feature-detect the rest against the *bound* stack.

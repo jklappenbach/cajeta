@@ -37,8 +37,11 @@ One type, three storage shapes underneath:
   buffer would dangle, so those materialize a copy.
 
 Transforming methods are declared `#String` (they transfer ownership,
-[chapter 11](11-ownership.md)), so bind the result to a plain local and the
-drop chain reclaims it at scope exit. Windows follow the slice rules from
+[chapter 11](11-ownership.md)), so receive the result with `#=` —
+`String trimmed #= s.trim();` — and the drop chain reclaims it at scope exit.
+The `#` goes on the store, never on the local's type; a plain `=` on a
+`#String` result is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`. Windows follow
+the slice rules from
 chapter 11: a window that escapes its scope keeps the root buffer alive —
 the root is promoted to the `shared` state and freed when the last view
 drops. You never free a string in any of the three shapes.

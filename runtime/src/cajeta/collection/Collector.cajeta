@@ -30,7 +30,7 @@ package cajeta.collection;
  * ## Usage
  *
  * ```cajeta
- * #ArrayList<int32> xs = heap ArrayList<int32>();
+ * ArrayList<int32> xs = heap ArrayList<int32>();
  * xs.add(1);
  * xs.add(2);
  * xs.add(3);
@@ -41,10 +41,10 @@ package cajeta.collection;
  *     (acc, x) -> { acc.add(x); return acc; },           // accumulator: per-element
  *     (left, right) -> { left.appendAll(right); return left; }); // combiner: merge partials
  *
- * #ArrayList<int32> out = xs.stream().collect<ArrayList<int32>>(toList);
+ * ArrayList<int32> out #= xs.stream().collect<ArrayList<int32>>(toList);
  *
  * // Or reuse the ready-made factory from `Collectors`:
- * #ArrayList<int32> same = xs.stream().collect(Collectors.toList<int32>());
+ * ArrayList<int32> same #= xs.stream().collect(Collectors.toList<int32>());
  * ```
  */
 public class Collector<T, R> {
@@ -66,7 +66,7 @@ public class Collector<T, R> {
      *     (acc, x) -> { acc.add(x); return acc; },      // accumulator: per-element
      *     (left, right) -> { left.appendAll(right); return left; }); // combiner: merge partials
      *
-     * #ArrayList<int32> result = stream.collect<ArrayList<int32>>(toList);
+     * ArrayList<int32> result = stream.collect<ArrayList<int32>>(toList);
      * ```
      */
     public Collector(() -> #R supplier, (R, T) -> #R accumulator, (R, R) -> #R combiner) {

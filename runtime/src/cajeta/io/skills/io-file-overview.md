@@ -102,14 +102,14 @@ import cajeta.io.file.FileWriter;
 import cajeta.io.file.OpenMode;
 
 // Write incrementally (WRITE truncates-or-creates).
-FileWriter w = File.openWrite("/tmp/app.log", OpenMode.WRITE);
+FileWriter w #= File.openWrite("/tmp/app.log", OpenMode.WRITE);
 w.writeString("first line\n");
 w.writeString("second line\n");
 w.flush();
 w.close();                       // required: no drop-close on the streaming handles
 
 // Stream it back in fixed chunks until EOF (read == 0).
-FileReader r = File.openRead("/tmp/app.log");
+FileReader r #= File.openRead("/tmp/app.log");
 int8[] buf = heap int8[64];
 int32 n = r.read(buf, 64);
 while (n != 0) {
@@ -124,9 +124,9 @@ For pure path manipulation with no I/O:
 ```cajeta
 import cajeta.io.file.Path;
 
-#Path p = Path.of("/foo/bar/baz.txt");
-String ext = p.extension();              // "txt"
-#Path child = p.parent().resolve("note.md");  // "/foo/bar/note.md"
+Path p #= Path.of("/foo/bar/baz.txt");
+String ext #= p.extension();              // "txt"
+Path child #= p.parent().resolve("note.md");  // "/foo/bar/note.md"
 ```
 
 ## Pointers

@@ -11,7 +11,7 @@ package cajeta.lang.stream;
  * runs dry, whichever comes first).
  *
  * ```cajeta
- * #Stream<int32> firstThree = source.take(3);
+ * Stream<int32> firstThree #= source.take(3);
  * Optional<int32> head = firstThree.next();
  * ```
  *
@@ -29,7 +29,7 @@ public final class TakeStream<T> extends Stream<T> {
      * Wraps `source`, taking ownership (`#`), and caps the element count at `n`.
      *
      * ```cajeta
-     * #TakeStream<int32> limited = heap TakeStream<int32>(source, 5);
+     * TakeStream<int32> limited = heap TakeStream<int32>(source, 5);
      * ```
      */
     public TakeStream(#Stream<T> source, int32 n) {
@@ -44,7 +44,7 @@ public final class TakeStream<T> extends Stream<T> {
      * pull.
      *
      * ```cajeta
-     * #Stream<int32> firstThree = source.take(3);
+     * Stream<int32> firstThree #= source.take(3);
      * Optional<int32> head = firstThree.next();
      * if (head.isPresent()) {
      *     int32 first = head.get();

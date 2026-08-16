@@ -96,16 +96,16 @@ import cajeta.io.net.dns.ResolveFamily;
 import cajeta.io.net.dns.UnknownHostException;
 
 // One-shot blocking lookup (owned, non-empty).
-SocketAddress[] addrs = Dns.resolve("example.test", 443, ResolveFamily.BOTH);
+SocketAddress[] addrs #= Dns.resolve("example.test", 443, ResolveFamily.BOTH);
 
 // Memoized: the second call inside the TTL returns a fresh port-baked
 // copy without a second getaddrinfo.
-DnsCache cache = DnsCache.create();                 // default size + TTL + SystemResolver
-SocketAddress[] a = cache.resolve("example.test", 443, ResolveFamily.BOTH);
-SocketAddress[] b = cache.resolve("example.test", 443, ResolveFamily.BOTH);
+DnsCache cache #= DnsCache.create();                 // default size + TTL + SystemResolver
+SocketAddress[] a #= cache.resolve("example.test", 443, ResolveFamily.BOTH);
+SocketAddress[] b #= cache.resolve("example.test", 443, ResolveFamily.BOTH);
 
 try {
-    SocketAddress[] dead = Dns.resolve("no.such.host.test", 80);
+    SocketAddress[] dead #= Dns.resolve("no.such.host.test", 80);
 } catch (UnknownHostException e) {
     // name definitively does not resolve (NONAME/NODATA); e.resolveErrno has the ordinal
 }
@@ -115,7 +115,7 @@ Test injecting a fake backend (mirrors `DnsCacheTests`):
 
 ```cajeta
 // A Resolver fake; DnsCache.withResolver takes ownership of it.
-DnsCache cache = DnsCache.withResolver(heap CountingResolver());
+DnsCache cache #= DnsCache.withResolver(heap CountingResolver());
 ```
 
 ## Down a level

@@ -25,8 +25,8 @@ import cajeta.lang.stream.Stream;
  * int32 first = xs.get(0);     // 10
  * xs.set(1, 25);               // [10, 25, 30]
  * xs.insert(1, 15);            // [10, 15, 25, 30]
- * int32 gone = xs.removeAt(0); // 10 -> [15, 25, 30]
- * #ArrayStream<int32> s = xs.stream();
+ * int32 gone #= xs.removeAt(0); // 10 -> [15, 25, 30]
+ * ArrayStream<int32> s #= xs.stream();
  * ```
  *
  * ## Surface
@@ -185,7 +185,7 @@ public final class ArrayList<T> {
 
     /**
      * Remove the element at `i`, shifting `(i, count)` left by one, and
-     * hand it back OWNED — bind it (`String s = xs.removeAt(0)`) to keep
+     * hand it back OWNED — bind it (`String s #= xs.removeAt(0)`) to keep
      * it, or discard the call and the drop fires at the statement end.
      * O(n - i). Throws when out of range; panics TITLE_MISS if the slot's
      * title was already `#[]`-extracted (extraction decays the slot, and
@@ -333,7 +333,7 @@ public final class ArrayList<T> {
      * ArrayList<int32> xs = heap ArrayList<int32>();
      * xs.add(1);
      * xs.add(2);
-     * #ArrayStream<int32> s = xs.stream();
+     * ArrayStream<int32> s #= xs.stream();
      * ```
      *
      * A stack-allocated variant follows once `stack ArrayStream<T>`

@@ -69,7 +69,7 @@ import cajeta.wire.Encoder;
 Encoder<Order> codec = JsonEncoder<Order>();
 
 #int8[] bytes = codec.encode(order);   // T -> fresh, caller-owned bytes
-#Order  back  = codec.decode(bytes);   // owned bytes -> caller-owned T
+Order  back  #= codec.decode(bytes);   // owned bytes -> caller-owned T
 ```
 
 Untagged format — pair the codec with the `Schema` it was produced under:
@@ -82,7 +82,7 @@ Schema schema = heap Schema(#schemaBytes);   // ctor takes ownership of the desc
 SchemaEncoder<Order> codec = AvroEncoder<Order>();
 
 #int8[] bytes = codec.encode(order, schema);
-#Order  back  = codec.decode(bytes, schema); // same schema required to decode
+Order  back  #= codec.decode(bytes, schema); // same schema required to decode
 ```
 
 Block compression (format-agnostic, no `T`):

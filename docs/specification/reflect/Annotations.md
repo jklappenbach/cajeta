@@ -232,7 +232,7 @@ public class Request {
     String method;
 }
 
-Request r = Request.builder()
+Request r #= Request.builder()
     .url("https://example.com")
     .timeoutMs(5000)
     .method("GET")

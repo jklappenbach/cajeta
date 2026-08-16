@@ -21,7 +21,7 @@ import cajeta.error.RecoverableException;
  * ## Usage
  * ```cajeta
  * // Parse each line, substituting -1 for any line that fails to parse.
- * #Stream<i32> ints = heap MapOrFallbackStream<string, i32>(
+ * Stream<i32> ints = heap MapOrFallbackStream<string, i32>(
  *     #lines, (s) -> Integer.parse(s), -1);
  * Optional<i32> first = ints.next();
  * ```
@@ -38,7 +38,7 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
      * `fallback` whenever `fn` raises `RecoverableException`. Ownership
      * of `source` and `fallback` transfers into the new stream.
      * ```cajeta
-     * #Stream<i32> safe = heap MapOrFallbackStream<string, i32>(
+     * Stream<i32> safe = heap MapOrFallbackStream<string, i32>(
      *     #words, (w) -> Integer.parse(w), 0);
      * ```
      */

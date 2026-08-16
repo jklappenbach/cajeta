@@ -68,7 +68,7 @@ CsvReader r = heap CsvReader(buf, (int64) buf.count());
 int32 rows = 0;
 while (r.nextRow()) {            // false at EOF; no phantom trailing row
     int32 fc = r.fieldCount();   // valid only after nextRow() returns true
-    int8[] f0 = r.field(0);      // #int8[] — caller owns this value buffer
+    int8[] f0 #= r.field(0);      // #int8[] — caller owns this value buffer
     rows = rows + 1;
 }
 ```
@@ -83,7 +83,7 @@ Trade[] trades = Csv.parse<Trade[]>(bytes, (int64) bytes.count());
 
 CsvWriter w = heap CsvWriter();
 w.writeField(fa); w.writeField(fb); w.endRow();   // ',' between fields, '\n' ends row
-int8[] out = w.toBytes();        // #int8[] — caller-owned
+int8[] out #= w.toBytes();        // #int8[] — caller-owned
 ```
 
 ## Package invariants / gotchas

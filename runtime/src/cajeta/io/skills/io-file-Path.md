@@ -20,7 +20,7 @@ the join op `resolve`. **Phase B is string math only: it touches no filesystem.*
 import cajeta.lang.String;
 import cajeta.io.file.Path;
 
-#Path p = Path.of("/foo/bar/baz.txt");   // owned by caller
+Path p #= Path.of("/foo/bar/baz.txt");   // owned by caller
 ```
 
 - `static #Path of(String s)` — **the entry point.** **Copies** `s`'s bytes into a
@@ -53,11 +53,11 @@ are nullable in Phase B.
   isn't available yet.
 
 ```cajeta
-#Path src = Path.of("src");
-#Path f   = src.resolve("lang").resolve("Type.cajeta");   // "src/lang/Type.cajeta"
-String leaf = f.name();        // "Type.cajeta"
-String ext  = f.extension();   // "cajeta"
-#Path dir   = f.parent();      // "src/lang"
+Path src #= Path.of("src");
+Path f   #= src.resolve("lang").resolve("Type.cajeta");   // "src/lang/Type.cajeta"
+String leaf #= f.name();        // "Type.cajeta"
+String ext  #= f.extension();   // "cajeta"
+Path dir   #= f.parent();      // "src/lang"
 ```
 
 ## Lifecycle, state & concurrency

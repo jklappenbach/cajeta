@@ -29,7 +29,7 @@ import cajeta.reflect.Constructor;
 
 User seed = heap User();
 Class<?> c = Class.of(seed);
-Constructor ctor = c.getConstructor(0);   // declared ctor at index 0 — owned (#Constructor)
+Constructor ctor #= c.getConstructor(0);   // declared ctor at index 0 — owned (#Constructor)
 ```
 
 `getConstructor` returns an **owned** `#Constructor` (drops on scope). It is a thin
@@ -46,7 +46,7 @@ No-arg constructor:
 
 ```cajeta
 Constructor ctor = c.getConstructor(0);
-Object o = ctor.heapInstance();           // allocates, installs vtable, runs the ctor
+Object o #= ctor.heapInstance();           // allocates, installs vtable, runs the ctor
 ```
 
 With arguments — pack **one `int64` per user-visible parameter, in declared order**, into
@@ -60,7 +60,7 @@ while (i < c.getConstructorCount()) {
     if (ctor.getParameterCount() == 1) {
         int64[] args = heap int64[1];     // owned; one slot per user parameter
         args[0] = (int64) 99;             // widen each arg to int64, declared order
-        Object o = ctor.heapInstance(args);
+        Object o #= ctor.heapInstance(args);
         // ... use o ...
     }
     i = i + 1;
@@ -83,7 +83,7 @@ import cajeta.reflect.IllegalAccessException;
 
 Constructor ctor = c.getConstructor(noArg);   // a private ctor of a @Sealed class
 try {
-    Object o = ctor.heapInstance();
+    Object o #= ctor.heapInstance();
 } catch (IllegalAccessException e) {
     // denied: sealed + private
 }

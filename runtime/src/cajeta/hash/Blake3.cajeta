@@ -19,8 +19,8 @@ import cajeta.lang.String;
  *
  * One-shot:
  * ```cajeta
- * int8[] digest = Blake3.hash(bytes, bytes.count());
- * String hex = Blake3.hashHex(bytes, bytes.count());
+ * int8[] digest #= Blake3.hash(bytes, bytes.count());
+ * String hex #= Blake3.hashHex(bytes, bytes.count());
  * int8[] wide = heap int8[64];
  * Blake3.hashXof(bytes, bytes.count(), wide);   // 64 bytes of XOF output
  * ```
@@ -30,7 +30,7 @@ import cajeta.lang.String;
  * Blake3 h = heap Blake3();
  * h.writeString(record.title);
  * h.writeInt64(record.id);
- * int8[] digest = h.digest();
+ * int8[] digest #= h.digest();
  * ```
  *
  * @See cajeta.hash.Hasher
@@ -103,7 +103,7 @@ public final class Blake3 implements Hasher {
      * One-shot 32-byte BLAKE3 digest of `data[0..len)`.
      *
      * ```cajeta
-     * int8[] digest = Blake3.hash(bytes, bytes.count());
+     * int8[] digest #= Blake3.hash(bytes, bytes.count());
      * ```
      *
      * @EntryPoint
@@ -131,7 +131,7 @@ public final class Blake3 implements Hasher {
      * One-shot lowercase 64-char hex digest of `data[0..len)`.
      *
      * ```cajeta
-     * String h = Blake3.hashHex(bytes, bytes.count());
+     * String h #= Blake3.hashHex(bytes, bytes.count());
      * ```
      *
      * @EntryPoint

@@ -11,7 +11,7 @@ package cajeta.lang;
  * StringBuilder sb = stack StringBuilder();
  * sb.append("Hello, ");
  * sb.append("world");
- * String s = sb.toString();        // "Hello, world"
+ * String s #= sb.toString();        // "Hello, world"
  * ```
  *
  * Small-string optimization (SSO): the first 64 bytes live in an inline buffer

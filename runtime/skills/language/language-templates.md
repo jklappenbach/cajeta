@@ -23,16 +23,19 @@ public class Box<T> {
 }
 ```
 
-**Hazard (silent UAF, tracked:** `specs/field-store-title-trap-spec.md`**)**:
-the plain shape `Box(T v) { this.value = v; }` compiles without diagnostic and
-**dangles when the caller passes a fresh value** —
-`heap Box<Dog>(heap Dog())` surrenders the title to a formal that never
-consumes it, so it is freed at constructor exit and the field points at freed
-memory. (Passing a *named local* instead lends, and the field aliases
-correctly.) This is **not** template-specific — a concrete `Dog value;` field
-behaves identically — and it is the transfer ABI working as specified, not a
-missing check. Default to the owning ctor (`#T` + `#=`) whenever the field
-should outlive the call.
+**Hazard (now a compile error; history in**
+`specs/archive/field-store-title-trap-spec.md`**)**: the plain shape
+`Box(T v) { this.value = v; }` is rejected with
+`CAJETA_ERROR_CAPTURED_BORROW_PARAM` (ownership spec §4.2), because it *would*
+dangle: `heap Box<Dog>(heap Dog())` surrenders the title to a formal that never
+consumes it, so the object would be freed at constructor exit and the field
+would point at freed memory. The rejection lands on the CONSTRUCTOR, so it
+fires whatever the call site does — passing a named local does not make the
+shape legal. This is **not** template-specific: a concrete `Dog value;` field is
+rejected identically. Two legal spellings, and the choice is an API decision:
+`Box(#T v) { this.value #= v; }` forces every caller to surrender, while
+`Box(T v) { this.value #= v; }` is the sink model (§2.3) where `#=` records the
+source's mode and the caller chooses per call.
 
 ## Method templates
 

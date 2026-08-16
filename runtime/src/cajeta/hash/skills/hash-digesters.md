@@ -70,7 +70,7 @@ One-shot, the common case:
 import cajeta.hash.MD5;
 import cajeta.lang.String;
 
-String etag = MD5.hashHex(bytes, bytes.count());   // owned 32-char hex String
+String etag #= MD5.hashHex(bytes, bytes.count());   // owned 32-char hex String
 ```
 
 Streaming integrity over chunks (the download-checksum path), mirroring `Sha256Tests`:
@@ -82,7 +82,7 @@ import cajeta.lang.String;
 Sha256 sum = heap Sha256();           // native state allocated; freed on scope exit
 sum.update(chunk1, chunk1.count());   // chunks borrowed, not retained
 sum.update(chunk2, chunk2.count());
-String hex = sum.hex();               // terminal: finalize → owned 64-char hex
+String hex #= sum.hex();               // terminal: finalize → owned 64-char hex
 // string-compare hex against the manifest's published checksum
 ```
 

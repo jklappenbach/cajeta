@@ -13,8 +13,8 @@ package cajeta.lang.stream;
  * `Stream``.map(fn)`. Wrap an `ArrayStream` source, then map it:
  *
  * ```cajeta
- * #Stream<int> ids = heap ArrayStream<int>(rows, rows.length);
- * #Stream<string> names = ids.map((id) -> #lookupName(id));
+ * Stream<int> ids = heap ArrayStream<int>(rows, rows.length);
+ * Stream<string> names = ids.map((id) -> #lookupName(id));
  * names.forEach((n) -> print(n));
  * ```
  */
@@ -28,7 +28,7 @@ public final class MapStream<T, R> extends Stream<R> {
      * `Stream``.map(fn)` rather than called directly.
      *
      * ```cajeta
-     * #Stream<int> lens = words.map((w) -> #w.length());
+     * Stream<int> lens #= words.map((w) -> #w.length());
      * ```
      */
     public MapStream(#Stream<T> source, (T) -> #R fn) {

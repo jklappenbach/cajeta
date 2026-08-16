@@ -383,9 +383,16 @@ namespace cajeta {
               modeCarrying(modeCarrying) { }
 
         // `return #= x` (argument-title-carry): release WHATEVER title this
-        // frame holds. `return x` lends; `return #x` forces ownership and is a
-        // contract violation with none. A collection slot may now hold either,
-        // so remove-shaped returns cannot decide statically.
+        // frame holds, as a runtime bit. Distinct from `return x`, which is
+        // transparent carry (spec §2.8) — a formal forwards the caller's mode
+        // and hands its entry over, while a named local with a drop entry,
+        // owned OR merely borrowed, is rejected by
+        // FRESH_RETURN_NEEDS_TRANSFER (§4.8). And distinct from `return #x`,
+        // which does not itself assert a title — it forwards the mode the
+        // frame holds — but declares the transfer contract, so a frame that
+        // provably holds none is rejected by MOVE_OF_BORROW. A collection slot
+        // may now hold either, so remove-shaped returns cannot decide
+        // statically.
         bool isModeCarrying() const { return modeCarrying; }
 
         // Like ExpressionStatement, the returned expression isn't in `children`.

@@ -27,7 +27,7 @@ public final class PeekStream<T> extends Stream<T> {
      * ``Stream`.peek(fn)` factory over calling this directly.
      *
      * ```cajeta
-     * #Stream<string> traced =
+     * Stream<string> traced =
      *     heap PeekStream<string>(#source, (string s) -> printValue(s));
      * ```
      */

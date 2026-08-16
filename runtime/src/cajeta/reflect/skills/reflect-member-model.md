@@ -59,9 +59,9 @@ Class<?> c = Class.of(u);                  // borrow — not freed
 int32 count = c.getMethodCount();
 int32 i = 0;
 while (i < count) {
-    Method m = c.getMethod(i);             // owned #Method, dropped each iteration
+    Method m #= c.getMethod(i);             // owned #Method, dropped each iteration
     if (m.getParameterCount() == 1) {
-        Parameter p = m.getParameter(0);   // owned #Parameter, dropped at scope end
+        Parameter p #= m.getParameter(0);   // owned #Parameter, dropped at scope end
         if (p.getName() == "delta" && p.getTypeName() == "int32") {
             return 1;
         }

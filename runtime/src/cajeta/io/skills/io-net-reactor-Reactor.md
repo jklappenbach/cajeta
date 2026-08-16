@@ -40,7 +40,7 @@ import cajeta.io.net.IpAddress;
 import cajeta.concurrent.Tasks;
 
 // Runs on a fiber. No mention of Reactor anywhere — the *Async ops own it.
-#TcpStream conn = TcpStream.connectAsync(#SocketAddress(IpAddress.loopback(), 8080));
+TcpStream conn #= TcpStream.connectAsync(#SocketAddress(IpAddress.loopback(), 8080));
 
 int8[] buf = heap int8[4096];
 // readAsync parks this fiber on the reactor on a WouldBlock; the carrier runs

@@ -15,7 +15,7 @@ package cajeta.lang.stream;
  * Splittable<int32> src = heap ArrayStream<int32>(data, 8);
  *
  * if (src.estimateSize() >= 2) {
- *     #Stream<int32> share = src.trySplit();   // null if it won't split
+ *     Stream<int32> share #= src.trySplit();   // null if it won't split
  *     if (share != null) {
  *         // hand `share` to a worker fiber; it owns the upper half,
  *         // `src` keeps the lower half — the two ranges are disjoint.
@@ -51,7 +51,7 @@ public interface Splittable<T> extends Stream<T> {
      * ownership (`#`) — the caller is the new owner.
      *
      * ```cajeta
-     * #Stream<T> share = src.trySplit();
+     * Stream<T> share #= src.trySplit();
      * if (share != null) {
      *     // `share` owns one half, `src` retains the other
      * }

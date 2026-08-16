@@ -25,7 +25,7 @@ argv[0] = "/bin/echo";   // argv[0] is the program, resolved against PATH
 argv[1] = "hello";
 Command cmd = heap Command(#argv);   // ownership of argv moves into the Command
 cmd.captureStdout();
-ProcessResult r = cmd.run();
+ProcessResult r #= cmd.run();
 if (r.launched() && r.code() == 0) {
     int8[] out = r.stdout();
 }

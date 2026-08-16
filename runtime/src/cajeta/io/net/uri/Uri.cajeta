@@ -954,7 +954,7 @@ public class Uri {
      * chain; `build()` returns the assembled `Uri`.
      *
      * ```cajeta
-     * Uri u = Uri.builder()
+     * Uri u #= Uri.builder()
      *     .scheme("https").host("h.test").port(8443)
      *     .path("/a/b").query("x=1").fragment("frag")
      *     .build();

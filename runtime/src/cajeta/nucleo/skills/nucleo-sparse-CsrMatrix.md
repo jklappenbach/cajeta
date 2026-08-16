@@ -18,8 +18,8 @@ sparse fit is bit-identical to its dense fit).
 ```cajeta
 import cajeta.nucleo.sparse.CsrMatrix;
 
-CsrMatrix a = CsrMatrix.fromDense(dm);              // Tensor<float64> (n,p); nonzeros only
-CsrMatrix b = CsrMatrix.fromCoo(rows, cols, vals,   // int64[]/int64[]/float64[]
+CsrMatrix a #= CsrMatrix.fromDense(dm);              // Tensor<float64> (n,p); nonzeros only
+CsrMatrix b #= CsrMatrix.fromCoo(rows, cols, vals,   // int64[]/int64[]/float64[]
                                 nnz, n, p);         // any order; DUPLICATES SUM (scipy's rule)
 ```
 

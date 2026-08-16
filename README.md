@@ -743,7 +743,7 @@ public class Connection {
 ```
 
 ```cajeta
-Connection c = Connection.builder()
+Connection c #= Connection.builder()
     .host("api.example.com")
     .port(443)
     .build();   // timeoutMs and retries get their declared defaults
@@ -797,7 +797,7 @@ A runnable walk through `async` / `await` / `spawn` / `scope` / `detach` — inc
 <!-- snippet: skip -->
 ```cajeta
 try {
-    Connection c = Connection.builder().host(null).build();
+    Connection c #= Connection.builder().host(null).build();
 } catch (NullPointerException e) {
     log.warn("bad config: {}", e.getMessage());
 }

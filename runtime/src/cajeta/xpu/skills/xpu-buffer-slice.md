@@ -72,7 +72,7 @@ static void run() {
     KernelBuffer<int32> all = heap KernelBuffer<int32>(n);   // owns the VRAM
     all.upload(h);
 
-    KernelBuffer<int32> tail = all.slice(half, half);     // non-owning second-half view
+    KernelBuffer<int32> tail #= all.slice(half, half);     // non-owning second-half view
     GpuStream s = GpuStream.current();
     sliceFill.launch(s, grid: [1], block: [64])(tail, half);
     s.sync();                                          // ends the launch borrow

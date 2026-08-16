@@ -33,10 +33,10 @@ import cajeta.lang.String;
  * User u = heap User();
  * u.id = 7;
  * u.name = "alice";
- * int8[] bytes = Json.toBytes<User>(u);        // {"id":7,"name":"alice"}
- * User v = Json.parse<User>(bytes, (int64) bytes.count());
+ * int8[] bytes #= Json.toBytes<User>(u);        // {"id":7,"name":"alice"}
+ * User v #= Json.parse<User>(bytes, (int64) bytes.count());
  * // Or directly from a String:
- * User w = Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
+ * User w #= Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
  * ```
  *
  * ### Supported field types (Tier 1, v1)
@@ -103,7 +103,7 @@ import cajeta.lang.String;
  * mutation:
  *
  * ```cajeta
- * JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
+ * JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");
  * int64 id = v.asObject().get("id").asInt64();         // 1
  * String name = v.asObject().get("name").asString();   // "alice"
  * ```
@@ -128,7 +128,7 @@ public final class Json {
      *
      * ```cajeta
      * int8[] buf = ...;                              // raw UTF-8 JSON
-     * JsonValue v = Json.parse(buf, (int64) buf.count());
+     * JsonValue v #= Json.parse(buf, (int64) buf.count());
      * int64 id = v.asObject().get("id").asInt64();
      * ```
      *
@@ -148,7 +148,7 @@ public final class Json {
      * the bytes the parser wants.
      *
      * ```cajeta
-     * JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
+     * JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");
      * ```
      *
      * @EntryPoint
@@ -166,8 +166,8 @@ public final class Json {
      * JSON byte buffer. Symmetric counterpart of `Json.parse`.
      *
      * ```cajeta
-     * JsonValue v = Json.parse("{\"id\":1}");
-     * int8[] out = Json.toBytes(v);                 // {"id":1}
+     * JsonValue v #= Json.parse("{\"id\":1}");
+     * int8[] out #= Json.toBytes(v);                 // {"id":1}
      * ```
      *
      * @EntryPoint
@@ -192,8 +192,8 @@ public final class Json {
      * against JsonReader.
      *
      * ```cajeta
-     * int8[] buf = Json.toBytes<User>(u);
-     * User v = Json.parse<User>(buf, (int64) buf.count());
+     * int8[] buf #= Json.toBytes<User>(u);
+     * User v #= Json.parse<User>(buf, (int64) buf.count());
      * ```
      *
      * Throws `JsonParseException` if the synthesizer fails to engage.
@@ -221,7 +221,7 @@ public final class Json {
      * the user gets `Json.parse<T>(jsonString)` as a clean API.
      *
      * ```cajeta
-     * User u = Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
+     * User u #= Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
      * ```
      *
      * @EntryPoint
@@ -294,7 +294,7 @@ public final class Json {
      * ```cajeta
      * User u = heap User();
      * u.id = 7;
-     * int8[] bytes = Json.toBytes<User>(u);         // {"id":7,...}
+     * int8[] bytes #= Json.toBytes<User>(u);         // {"id":7,...}
      * ```
      *
      * @EntryPoint

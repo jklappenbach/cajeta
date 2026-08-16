@@ -16,7 +16,7 @@ import cajeta.lang.String;
  * yet (planned; see `docs/specification/io/file/FileWriter.md`).
  *
  * ```cajeta
- * stack w = File.openWrite(path, mode);
+ * stack w #= File.openWrite(path, mode);
  * w.writeString("hello\n");
  * w.write(bytes, len);
  * w.flush();

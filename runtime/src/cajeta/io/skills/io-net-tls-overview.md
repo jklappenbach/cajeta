@@ -99,7 +99,7 @@ import cajeta.concurrent.Tasks;
 // server fiber: TLS-wrap the accepted socket, handshake, echo one record
 public static async int32 runServer(#TcpStream sock, int8[] cert, int32 certLen,
                                     int8[] key, int32 keyLen) {
-    TlsStream st = TlsStream.server(#sock, cert, certLen, key, keyLen); // consumes sock
+    TlsStream st #= TlsStream.server(#sock, cert, certLen, key, keyLen); // consumes sock
     st.handshake();                                  // throws Tls/CertificateInvalid on failure
     int8[] inbuf = heap int8[256];
     int32 n = st.read(inbuf, 256);                   // 0 == clean peer close_notify (EOF)
@@ -108,13 +108,13 @@ public static async int32 runServer(#TcpStream sock, int8[] cert, int32 certLen,
 }
 
 // driver (cert/key are PEM bytes; host is "localhost" as int8[9])
-TcpListener listener = TcpListener.bind(bindAddr);
+TcpListener listener #= TcpListener.bind(bindAddr);
 int32 port = listener.boundPort();                   // resolves a 0-bind to the OS port
-TcpStream client = TcpStream.connect(#connAddr);
-TcpStream server = listener.accept();
+TcpStream client #= TcpStream.connect(#connAddr);
+TcpStream server #= listener.accept();
 Task<int32> t = spawn runServer(#server, cert, cl, key, kl);
 
-TlsStream ct = TlsStream.client(#client, host, 9, cert, cl); // verifying client, anchor=cert
+TlsStream ct #= TlsStream.client(#client, host, 9, cert, cl); // verifying client, anchor=cert
 ct.handshake();
 ct.write(ping, 4);
 int8[] echo = heap int8[256];

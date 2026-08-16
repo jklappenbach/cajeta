@@ -21,7 +21,7 @@ package cajeta.collection;
  * ```cajeta
  * // Stream → collect → owned list:
  * int32[] data = [ 3, 1, 2 ];
- * #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
+ * ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
  *     .collect(Collectors.toList<int32>());
  * ```
  */
@@ -39,11 +39,11 @@ public class Collectors {
      * ```cajeta
      * // Drain a `Stream` into an owned list:
      * int32[] data = [ 3, 1, 2 ];
-     * #ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
+     * ArrayList<int32> xs = (heap ArrayStream<int32>(data, 3))
      *     .collect(Collectors.toList<int32>());
      *
      * // Safe under .parallel() — the combiner merges per-worker partials:
-     * #ArrayList<int64> wide = (heap ArrayStream<int32>(data, 3))
+     * ArrayList<int64> wide = (heap ArrayStream<int32>(data, 3))
      *     .parallel()
      *     .map<int64>((x) -> x * 2L)
      *     .collect(Collectors.toList<int64>());

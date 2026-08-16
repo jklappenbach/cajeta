@@ -78,18 +78,18 @@ Command cmd = heap Command(#argv);   // argv ownership moves into cmd
 cmd.pipeStdin();                      // wire stdin + stdout pipes (NOT capture*)
 cmd.pipeStdout();
 
-Process p = cmd.start();              // spawn, do not wait; #Process owned by you
+Process p #= cmd.start();              // spawn, do not wait; #Process owned by you
 if (p.launched() == false) { return 100; }
 
-FileWriter w = p.stdin();            // owned writer over the child's stdin pipe
+FileWriter w #= p.stdin();            // owned writer over the child's stdin pipe
 w.writeString("ping\n");
 w.close();                            // closes stdin -> sends EOF so cat finishes
 
-FileReader rd = p.stdout();          // owned reader over the child's stdout pipe
-String s = rd.readString(64);        // owned String; survives rd.close()
+FileReader rd #= p.stdout();          // owned reader over the child's stdout pipe
+String s #= rd.readString(64);        // owned String; survives rd.close()
 rd.close();
 
-ProcessResult res = p.waitFor();     // owned result; blocks for exit
+ProcessResult res #= p.waitFor();     // owned result; blocks for exit
 p.close();                            // always reap + release the handle (idempotent)
 
 if (res.code() != 0) { return 1; }

@@ -42,13 +42,13 @@ public final class M {
         if (!c.isTemplateInstantiation()) { return 1; }
 
         // Declaration side: the <T>.
-        TemplateParameter p = c.getTemplateParameter(0);   // #-owned, see below
+        TemplateParameter p #= c.getTemplateParameter(0);   // #-owned, see below
         if (!p.getName().equals("T")) { return 2; }
         if (p.isNonType()) { return 3; }
         if (p.getBoundCount() != 0) { return 4; }
 
         // Instantiation side: the concrete int32.
-        TemplateArgument a = c.getTemplateArgument(0);      // #-owned
+        TemplateArgument a #= c.getTemplateArgument(0);      // #-owned
         if (!a.getTypeName().equals("int32")) { return 5; }
         return 0;
     }

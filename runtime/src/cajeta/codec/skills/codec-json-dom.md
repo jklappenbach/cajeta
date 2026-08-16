@@ -49,7 +49,7 @@ import cajeta.codec.json.JsonObject;
 import cajeta.lang.Optional;
 import cajeta.lang.String;
 
-JsonValue root = Json.parse("{\"name\":\"alice\",\"tags\":[\"a\",\"b\"]}");   // owned — the factory returns `#JsonValue`
+JsonValue root #= Json.parse("{\"name\":\"alice\",\"tags\":[\"a\",\"b\"]}");   // owned — the factory returns `#JsonValue`
 if (root.kind() == JsonValue.OBJECT) {
     JsonObject obj = root.asObject();          // borrowed, owned by root
 

@@ -37,8 +37,8 @@ public final class DateTimeFormatter {
      * they return an owned `#DateTimeFormatter`:
      *
      * ```cajeta
-     * DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
-     * DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+     * DateTimeFormatter fmt #= DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+     * DateTimeFormatter iso #= DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
      * ```
      */
     public DateTimeFormatter(String pattern) {
@@ -49,8 +49,8 @@ public final class DateTimeFormatter {
      * A formatter for a strftime-style pattern (see class docs for codes).
      *
      * ```cajeta
-     * DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%a, %d %b %Y %H:%M");
-     * String out = fmt.formatDateTime(dt);   // "Fri, 05 Jun 2026 13:07"
+     * DateTimeFormatter fmt #= DateTimeFormatter.ofPattern("%a, %d %b %Y %H:%M");
+     * String out #= fmt.formatDateTime(dt);   // "Fri, 05 Jun 2026 13:07"
      * ```
      *
      * @EntryPoint
@@ -63,8 +63,8 @@ public final class DateTimeFormatter {
      * A formatter for a standard `FormatStyle`.
      *
      * ```cajeta
-     * DateTimeFormatter iso = DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
-     * String out = iso.formatDateTime(dt);    // "2026-06-05T13:07:00"
+     * DateTimeFormatter iso #= DateTimeFormatter.ofStandard(FormatStyle.ISO_LOCAL_DATE_TIME);
+     * String out #= iso.formatDateTime(dt);    // "2026-06-05T13:07:00"
      * ```
      *
      * @EntryPoint
@@ -104,8 +104,8 @@ public final class DateTimeFormatter {
      * than throwing.
      *
      * ```cajeta
-     * DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d");
-     * String out = fmt.format(DateTimeFields.ofDate(d));
+     * DateTimeFormatter fmt #= DateTimeFormatter.ofPattern("%Y-%m-%d");
+     * String out #= fmt.format(DateTimeFields.ofDate(d));
      * ```
      */
     public #String format(DateTimeFields f) {
@@ -135,7 +135,7 @@ public final class DateTimeFormatter {
      * Format a `LocalDate` (date fields only).
      *
      * ```cajeta
-     * String out = DateTimeFormatter.ofStandard(FormatStyle.US_DATE).formatDate(d);
+     * String out #= DateTimeFormatter.ofStandard(FormatStyle.US_DATE).formatDate(d);
      * ```
      */
     @Inline
@@ -148,7 +148,7 @@ public final class DateTimeFormatter {
      * Format a `LocalTime` (time-of-day fields only).
      *
      * ```cajeta
-     * String out = DateTimeFormatter.ofPattern("%H:%M:%S").formatTime(t);
+     * String out #= DateTimeFormatter.ofPattern("%H:%M:%S").formatTime(t);
      * ```
      */
     @Inline
@@ -161,7 +161,7 @@ public final class DateTimeFormatter {
      * Format a zone-naive `LocalDateTime` (date and time fields, no offset).
      *
      * ```cajeta
-     * String out = DateTimeFormatter.ofStandard(FormatStyle.SQL_TIMESTAMP).formatDateTime(t);
+     * String out #= DateTimeFormatter.ofStandard(FormatStyle.SQL_TIMESTAMP).formatDateTime(t);
      * ```
      */
     @Inline
@@ -174,7 +174,7 @@ public final class DateTimeFormatter {
      * Format a `ZonedDateTime` — the offset codes `%z` / `%Z` become available.
      *
      * ```cajeta
-     * String out = DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z").formatZoned(z);
+     * String out #= DateTimeFormatter.ofPattern("%Y-%m-%dT%H:%M:%S%Z").formatZoned(z);
      * ```
      */
     @Inline

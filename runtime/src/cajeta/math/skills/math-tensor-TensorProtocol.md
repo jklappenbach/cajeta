@@ -45,15 +45,15 @@ float32[] data = { 0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f };
 int64[] shp = heap int64[2];
 shp[0] = 2;
 shp[1] = 3;
-Tensor<float32> t = Tensor.of<float32>(data, shp);
+Tensor<float32> t #= Tensor.of<float32>(data, shp);
 
-TensorProtocol p = t.protocol();              // export — borrows t's Storage
+TensorProtocol p #= t.protocol();              // export — borrows t's Storage
 if (p.ndim() != 2) { /* ... */ }
 DType pd = p.dtype();                          // runtime dtype, not a static T
 if (!pd.isFloating() || pd.bits() != 32) { /* ... */ }
 if (p.device() != 0) { /* ... */ }             // 0 = host (CPU)
 
-Tensor<?> w = Tensor.fromProtocol(p);          // import → Tensor<?> airlock
+Tensor<?> w #= Tensor.fromProtocol(p);          // import → Tensor<?> airlock
 if (!(w instanceof Tensor<float32>)) { /* unsupported/wrong dtype */ }
 Tensor<float32> back = (Tensor<float32>) w;    // reified-capture to concrete type
 

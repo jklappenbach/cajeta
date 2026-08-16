@@ -43,7 +43,7 @@ import cajeta.lang.stream.ArrayStream;
  * frozen.indexOf(30);    // 2
  * frozen.contains(40);   // false
  *
- * #ArrayStream<int32> s = frozen.stream();
+ * ArrayStream<int32> s #= frozen.stream();
  * ```
  *
  * @See cajeta.collection.ArrayList
@@ -164,7 +164,7 @@ public final class ImmutableList<T> {
      * Heap-allocated `ArrayStream` walking all elements in order.
      *
      * ```cajeta
-     * #ArrayStream<int32> s = frozen.stream();
+     * ArrayStream<int32> s #= frozen.stream();
      * ```
      */
     public #ArrayStream<T> stream() {

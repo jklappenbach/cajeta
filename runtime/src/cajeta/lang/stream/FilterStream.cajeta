@@ -10,7 +10,7 @@ package cajeta.lang.stream;
  * protocol, with each `next()` returning an `Optional`.
  *
  * ```cajeta
- * #Stream<int> evens = source.filter((int n) -> n % 2 == 0);
+ * Stream<int> evens #= source.filter((int n) -> n % 2 == 0);
  * Optional<int> first = evens.next();   // first matching element, or empty
  * ```
  *
@@ -27,7 +27,7 @@ public final class FilterStream<T> extends Stream<T> {
      * ``Stream`.filter(pred)` factory over calling this directly.
      *
      * ```cajeta
-     * #Stream<string> nonEmpty =
+     * Stream<string> nonEmpty =
      *     heap FilterStream<string>(#source, (string s) -> s.length() > 0);
      * ```
      */

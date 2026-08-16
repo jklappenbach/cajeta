@@ -77,8 +77,8 @@ Class<?> c = Class.of(u);              // borrow; never freed
 int32 n = c.getFieldCount();
 int32 i = 0;
 while (i < n) {
-    Field f = c.getField(i);          // owned; dropped at loop-iteration end
-    String name = f.getName();        // owned #String
+    Field f #= c.getField(i);          // owned; dropped at loop-iteration end
+    String name #= f.getName();        // owned #String
     if (name.equals("id")) {
         f.setInt32(u, 99);            // mutates u directly
     }

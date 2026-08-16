@@ -79,7 +79,7 @@ Negative rows (capabilities **not** here — don't hunt for them):
 import cajeta.io.net.SocketAddress;
 import cajeta.io.net.TcpStream;
 
-TcpStream conn = TcpStream.connect(SocketAddress.parse("127.0.0.1:7000"));  // resolves, connects (fiber-parking)
+TcpStream conn #= TcpStream.connect(SocketAddress.parse("127.0.0.1:7000"));  // resolves, connects (fiber-parking)
 int8[] msg = heap int8[5];
 conn.write(msg, (int64) 0, (int64) 5);
 int64 n = conn.read(msg, (int64) 0, (int64) 5);
@@ -97,12 +97,12 @@ import cajeta.io.file.FileWriter;
 import cajeta.io.file.FileReader;
 import cajeta.io.file.OpenMode;
 
-FileWriter w = File.openWrite("/tmp/out.txt", OpenMode.WRITE);
+FileWriter w #= File.openWrite("/tmp/out.txt", OpenMode.WRITE);
 w.writeString("hello\n");
 w.flush();
 w.close();
 
-FileReader r = File.openRead("/tmp/out.txt");
+FileReader r #= File.openRead("/tmp/out.txt");
 int8[] buf = heap int8[64];
 int32 n = r.read(buf, 64);   // loop until read returns < max (EOF)
 r.close();

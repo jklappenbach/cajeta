@@ -60,7 +60,7 @@ argv[0] = "/bin/echo";
 argv[1] = "hello";
 Command cmd = heap Command(#argv);
 cmd.captureStdout();                 // required, or stdout() is null
-ProcessResult r = cmd.run();
+ProcessResult r #= cmd.run();
 if (r.launched() == false) {         // launch failure, code() == -1
     return 100;
 }

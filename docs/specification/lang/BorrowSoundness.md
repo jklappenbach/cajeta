@@ -18,10 +18,17 @@ ownership, and the compiler enforces matched declarations through
 Phase 2 (mismatch rejection) and Phase 3a (borrow params can't escape
 via `return` or via `#x` to another call).
 
-Two body-side checks were deliberately deferred:
+One of the two body-side checks has since shipped; the other is still deferred:
 
 - **Field-store of borrow** — `this.f = param;` where `param` is a
-  plain-`T` (borrow) formal and `f` is a class-typed field.
+  plain-`T` formal and `f` is a class-typed field. **Now rejected** by
+  `CAJETA_ERROR_CAPTURED_BORROW_PARAM` (spec §4.2, `Scope.cpp:203`): spell the
+  formal `#T` so the call site must surrender, store with `#=` if the type is a
+  sink whose caller chooses (the `ArrayList` model, §2.3), or copy. The check
+  covers a DIRECT `this.f = p` store and `this.arr[i] = p` only — a nested path
+  (`this.head.prev = p`) and a forward into a container call
+  (`this.entries.put(k, v)`) are deliberately still allowed (§7.2), so the
+  shapes discussed below remain unlinted.
 - **Closure-capture of borrow** — a closure captures a class-typed
   local or borrow param into its environment, and the closure value
   itself outlives the captured source.

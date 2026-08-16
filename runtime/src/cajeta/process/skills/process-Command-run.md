@@ -62,7 +62,7 @@ argv[0] = "/bin/echo";
 argv[1] = "hello";
 Command cmd = heap Command(#argv);   // ownership of argv moves into cmd
 cmd.captureStdout();                  // MUST precede run()
-ProcessResult r = cmd.run();          // spawn + wait; r is owned by us
+ProcessResult r #= cmd.run();          // spawn + wait; r is owned by us
 if (r.launched() == false) { return 100; }
 if (r.code() != 0) { return 1; }
 int8[] out = r.stdout();              // non-null only because we captured

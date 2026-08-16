@@ -10,7 +10,7 @@ import cajeta.error.RecoverableException;
  *
  * ```cajeta
  * try {
- *     Guid g = Guid.parse(userInput);
+ *     Guid g #= Guid.parse(userInput);
  * } catch (GuidFormatException e) {
  *     // userInput was not a well-formed GUID
  * }

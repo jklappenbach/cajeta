@@ -59,13 +59,13 @@ import cajeta.math.Tensor;
 
 // 1. Marker bound: ranges over the PRIMITIVE int32 (no box involved).
 public class Histogram<T extends Integral> { /* monomorphized per int type */ }
-Tensor<float32> a = Tensor.zeros<float32>(shape);   // float32 ⊨ Floating ⊨ Numeric
+Tensor<float32> a #= Tensor.zeros<float32>(shape);   // float32 ⊨ Floating ⊨ Numeric
 // Tensor<bool> b;                                   // compile error: bool ⊭ Numeric
 
 // 2. Box tower: carry an int32 through an Object slot, then recover it.
-#Int32 boxed = Int32.of(42);          // owned heap box; boxed is Number is Object
+Int32 boxed #= Int32.of(42);          // owned heap box; boxed is Number is Object
 int32  prim  = boxed.value();          // unbox back to a Numeric-satisfying primitive
-#String text = boxed.toString();       // owned "42" (via Number.formatSigned)
+String text #= boxed.toString();       // owned "42" (via Number.formatSigned)
 ```
 
 ## What this does NOT do

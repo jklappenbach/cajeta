@@ -1271,8 +1271,13 @@ namespace cajeta {
                             // and so never reaches this cast, which makes
                             // arriving here with an owning callee exactly the
                             // population §4.6 would require to change.
-                            // Counted, not rejected: the rule is unwritten
-                            // until the number is known (3.3.3).
+                            // Counted AND rejected as of 8.2.7: the sizing
+                            // record below still feeds the migration harvest
+                            // when the audit is on, and rejectPlainOwnedBind
+                            // then applies §4.6 — plain `=` on a `#T` result
+                            // throws CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER,
+                            // demoted to a note under CAJETA_OWNED_BIND=warn
+                            // (§5.5).
                             if (rm->isReturnsOwnership()) {
                                 auto holder = module->getCurrentMethod();
                                 std::string in = holder

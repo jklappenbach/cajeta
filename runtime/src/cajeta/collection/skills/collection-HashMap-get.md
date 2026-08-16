@@ -20,7 +20,7 @@ class-`V` `get` is a possibly-null `V` pointer — treat it as one.
 ```cajeta
 import cajeta.collection.HashMap;
 
-#HashMap<SessionId, Session> sessions = heap HashMap<SessionId, Session>(64);
+HashMap<SessionId, Session> sessions = heap HashMap<SessionId, Session>(64);
 sessions.put(id, session);
 
 Session s = sessions.get(id);   // raw Session, or null on miss

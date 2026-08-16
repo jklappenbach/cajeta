@@ -53,7 +53,7 @@ void handle(#TcpStream conn) {
     conn.close();
 }
 
-Server s = Server.builder()
+Server s #= Server.builder()
     .bind("0.0.0.0:8080")
     .model(ServerModel.sharedPool(8))   // or .fiberPerConnection() (default)
     .handler((conn) -> handle(conn))

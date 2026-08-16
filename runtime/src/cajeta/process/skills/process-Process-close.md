@@ -65,16 +65,16 @@ Command cmd = heap Command(#argv);   // argv moves into cmd
 cmd.pipeStdin();
 cmd.pipeStdout();
 
-Process p = cmd.start();             // you own p; you MUST close it
+Process p #= cmd.start();             // you own p; you MUST close it
 if (p.launched() == false) { return 100; }
 
-FileWriter w = p.stdin();
+FileWriter w #= p.stdin();
 w.writeString("ping\n");
 w.close();                           // close the writer yourself; p.close() won't
 
-FileReader r = p.stdout();
-String line = r.readString(64);
-ProcessResult res = p.waitFor();     // reaps + gives exit status
+FileReader r #= p.stdout();
+String line #= r.readString(64);
+ProcessResult res #= p.waitFor();     // reaps + gives exit status
 p.close();                           // idempotent here; releases the handle
 ```
 

@@ -86,15 +86,15 @@ import cajeta.io.net.SocketAddress;
 import cajeta.io.net.TcpStream;
 import cajeta.io.net.TcpListener;
 
-IpAddress la = IpAddress.loopbackV4();
-SocketAddress bindAddr = SocketAddress.of(#la, 0);   // :0 → ephemeral port
-TcpListener listener = TcpListener.bind(bindAddr);    // bindAddr is borrowed
+IpAddress la #= IpAddress.loopbackV4();
+SocketAddress bindAddr #= SocketAddress.of(#la, 0);   // :0 → ephemeral port
+TcpListener listener #= TcpListener.bind(bindAddr);    // bindAddr is borrowed
 int32 port = listener.boundPort();                    // resolve the kernel-assigned port
 
-IpAddress ca = IpAddress.loopbackV4();
-SocketAddress connAddr = SocketAddress.of(#ca, port);
-TcpStream client = TcpStream.connect(#connAddr);      // # transfers connAddr
-TcpStream server = listener.accept();                 // owned #TcpStream
+IpAddress ca #= IpAddress.loopbackV4();
+SocketAddress connAddr #= SocketAddress.of(#ca, port);
+TcpStream client #= TcpStream.connect(#connAddr);      // # transfers connAddr
+TcpStream server #= listener.accept();                 // owned #TcpStream
 
 int8[] ping = heap int8[4];
 ping[0] = (int8) 112; ping[1] = (int8) 105;

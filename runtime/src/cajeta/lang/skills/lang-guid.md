@@ -66,24 +66,24 @@ import cajeta.lang.GuidFormatException;
 import cajeta.lang.String;
 
 // Parse → toString round-trips on canonical lowercase text.
-Guid g = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
-String text = g.toString();   // owned #String: "01234567-89ab-cdef-fedc-ba9876543210"
+Guid g #= Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+String text #= g.toString();   // owned #String: "01234567-89ab-cdef-fedc-ba9876543210"
 
 // Raw halves round-trip; high half is most-significant.
-Guid h = Guid.fromHalves((uint64) 255L, (uint64) 1L);
+Guid h #= Guid.fromHalves((uint64) 255L, (uint64) 1L);
 // h.high() == 255, h.low() == 1, h.toString() == "00000000-0000-00ff-0000-000000000001"
 
 // equals() is exact (use it, not ==/hash, when correctness matters).
-Guid a = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
-Guid b = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+Guid a #= Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+Guid b #= Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
 boolean same = a.equals(b);   // true
 
 // Reject malformed input at the boundary.
 try {
-    Guid bad = Guid.parse(userInput);
+    Guid bad #= Guid.parse(userInput);
 } catch (GuidFormatException e) {
     // userInput was not a well-formed GUID
 }
 
-Guid id = Guid.random();      // fresh v4
+Guid id #= Guid.random();      // fresh v4
 ```

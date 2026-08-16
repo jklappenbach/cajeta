@@ -22,8 +22,8 @@ region's offset is **not** fixed.
 ```cajeta
 import cajeta.time.ZoneId;
 
-#ZoneId la = ZoneId.of("America/Los_Angeles");   // owned: caller frees at scope exit
-#ZoneId z  = ZoneId.utc();                        // convenience for "UTC"
+ZoneId la #= ZoneId.of("America/Los_Angeles");   // owned: caller frees at scope exit
+ZoneId z  #= ZoneId.utc();                        // convenience for "UTC"
 ```
 
 - `static #ZoneId of(String id)` / `static #ZoneId utc()` — both **return
@@ -53,7 +53,7 @@ import cajeta.time.Instant;
 import cajeta.time.Clock;
 
 stack Instant now = Clock.now();                  // current moment
-#ZoneId paris = ZoneId.of("Europe/Paris");
+ZoneId paris #= ZoneId.of("Europe/Paris");
 ZoneOffset off = paris.offsetAt(now);             // +01:00 or +02:00 per DST
 ZonedDateTime here = paris.resolve(now);          // same instant, Paris wall clock
 ```

@@ -23,7 +23,7 @@ import cajeta.lang.String;
  * Drain a file through the streaming `read` loop:
  *
  * ```cajeta
- * FileReader r = File.openRead("data.bin");
+ * FileReader r #= File.openRead("data.bin");
  * int8[] buf = heap int8[4096];
  * int32 n = r.read(buf, 4096);
  * while (n != 0) {
@@ -37,8 +37,8 @@ import cajeta.lang.String;
  * via `Encoding` if the file isn't UTF-8):
  *
  * ```cajeta
- * FileReader r = File.openRead("notes.txt");
- * String text = r.readString(65536);
+ * FileReader r #= File.openRead("notes.txt");
+ * String text #= r.readString(65536);
  * r.close();
  * ```
  */
@@ -106,8 +106,8 @@ public class FileReader {
      * caller's responsibility.
      *
      * ```cajeta
-     * FileReader r = File.openRead("notes.txt");
-     * String head = r.readString(1024);
+     * FileReader r #= File.openRead("notes.txt");
+     * String head #= r.readString(1024);
      * r.close();
      * ```
      *

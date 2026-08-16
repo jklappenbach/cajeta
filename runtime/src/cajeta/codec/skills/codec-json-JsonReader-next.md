@@ -27,13 +27,13 @@ stack reader = JsonReader(src.bytes, (int64) src.byteLength);
 JsonToken t = reader.next();
 while (t != JsonToken.END) {
     if (t == JsonToken.KEY) {
-        #String key = reader.currentString();   // owned copy — see below
+        String key #= reader.currentString();   // owned copy — see below
     } else if (t == JsonToken.NUMBER) {
         int64 n = reader.currentNumberAsInt64();
     } else if (t == JsonToken.BOOLEAN) {
         boolean b = reader.currentBoolean();    // BOOLEAN is one token
     } else if (t == JsonToken.STRING) {
-        #String s = reader.currentString();
+        String s #= reader.currentString();
     }
     t = reader.next();
 }

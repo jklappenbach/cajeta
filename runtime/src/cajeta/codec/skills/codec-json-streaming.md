@@ -53,12 +53,12 @@ JsonReader r = heap JsonReader(buf, buf.count());   // buf is an int8[]
 JsonToken t = r.next();
 while (t != JsonToken.END) {
     if (t == JsonToken.KEY) {
-        #String key = r.currentString();     // owned copy — see ownership
+        String key #= r.currentString();     // owned copy — see ownership
         JsonToken vt = r.next();             // this key's value
         if (vt == JsonToken.NUMBER) {
             int64 n = r.currentNumberAsInt64();
         } else if (vt == JsonToken.STRING) {
-            #String s = r.currentString();
+            String s #= r.currentString();
         }
     } else if (t == JsonToken.BOOLEAN) {
         boolean b = r.currentBoolean();      // BOOLEAN token carries no value itself

@@ -12,7 +12,7 @@ package cajeta.lang.stream;
  *
  * ```cajeta
  * // elements 3..5 of the source: drop 2, then keep 3
- * #Stream<int32> sliced = nums.skip(2).take(3);
+ * Stream<int32> sliced #= nums.skip(2).take(3);
  * int32 kept = sliced.count();   // 3
  * ```
  *

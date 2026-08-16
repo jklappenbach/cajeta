@@ -112,15 +112,15 @@ import cajeta.io.net.SocketAddress;
 import cajeta.io.net.TcpStream;
 import cajeta.io.net.TcpListener;
 
-IpAddress la = IpAddress.loopbackV4();
-SocketAddress bindAddr = SocketAddress.of(#la, 0);     // # transfers the address
-TcpListener listener = TcpListener.bind(bindAddr);
+IpAddress la #= IpAddress.loopbackV4();
+SocketAddress bindAddr #= SocketAddress.of(#la, 0);     // # transfers the address
+TcpListener listener #= TcpListener.bind(bindAddr);
 int32 port = listener.boundPort();                     // 0 → kernel-assigned
 
-IpAddress ca = IpAddress.loopbackV4();
-SocketAddress connAddr = SocketAddress.of(#ca, port);
-TcpStream client = TcpStream.connect(#connAddr);       // owned; caller closes
-TcpStream server = listener.accept();                  // owned; caller closes
+IpAddress ca #= IpAddress.loopbackV4();
+SocketAddress connAddr #= SocketAddress.of(#ca, port);
+TcpStream client #= TcpStream.connect(#connAddr);       // owned; caller closes
+TcpStream server #= listener.accept();                  // owned; caller closes
 
 int8[] ping = heap int8[4]; /* fill 'p','i','n','g' */
 client.writeAsync(ping, (int64) 0, (int64) 4);

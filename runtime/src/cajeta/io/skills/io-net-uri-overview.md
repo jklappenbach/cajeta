@@ -92,20 +92,20 @@ import cajeta.io.net.uri.UriComponent;
 import cajeta.io.net.uri.MalformedUriException;
 
 // Parse, read components, decode the query (raw until you ask).
-Uri u = Uri.parse("https://h.test/a/b?x=1&y=2&x=3");
+Uri u #= Uri.parse("https://h.test/a/b?x=1&y=2&x=3");
 String host = u.getHost();          // "h.test"
 int32 port = u.getPort();           // 443 (scheme default; hasExplicitPort == false)
-QueryParams q = u.queryParams();    // form-decoded multi-map
-String first = q.getFirst("x");     // "1" (first wins); null if absent
-String[] xs = q.getAll("x");        // ["1","3"] in order; length 0 if absent
+QueryParams q #= u.queryParams();    // form-decoded multi-map
+String first #= q.getFirst("x");     // "1" (first wins); null if absent
+String[] xs #= q.getAll("x");        // ["1","3"] in order; length 0 if absent
 
 // Build, encoding one untrusted value for its component.
-String safe = Uri.percentEncode("a&b=c", UriComponent.QUERY_PARAM);  // "a%26b%3Dc"
-Uri built = Uri.builder()
+String safe #= Uri.percentEncode("a&b=c", UriComponent.QUERY_PARAM);  // "a%26b%3Dc"
+Uri built #= Uri.builder()
     .scheme("https").host("h.test").port(8443)
     .path("/a/b").query("x=1").fragment("frag")
     .build();
-String s = built.toString();        // "https://h.test:8443/a/b?x=1#frag"
+String s #= built.toString();        // "https://h.test:8443/a/b?x=1#frag"
 ```
 
 ## Pointers

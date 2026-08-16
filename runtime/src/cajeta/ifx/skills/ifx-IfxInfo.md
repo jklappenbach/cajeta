@@ -26,7 +26,7 @@ You do **not** construct `IfxInfo` — the constructor is private. Receive one f
 ```cajeta
 import cajeta.ifx.IfxInfo;
 
-#IfxInfo info = IfxInfo.describe();   // owned heap value, transferred to you
+IfxInfo info #= IfxInfo.describe();   // owned heap value, transferred to you
 ```
 
 `describe()` returns `#IfxInfo` — an **owned** heap value the caller owns and drops on
@@ -85,7 +85,7 @@ public final class D {
         if (IfxInfo.supportsWindow(Feature.MultiWindow)) { /* desktop path */ }
 
         // Snapshot the active bind (headless-tolerant: never throws).
-        #IfxInfo info = IfxInfo.describe();
+        IfxInfo info #= IfxInfo.describe();
         if (info.windowBackendName().equals("null")) {
             // running on the floor — no OS ifx backend linked
         }

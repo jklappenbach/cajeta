@@ -76,9 +76,9 @@ stack ZoneOffset off = ZoneOffset.ofHours(-5);         // throws if |hours| > 18
 stack ZonedDateTime zdt = ZonedDateTime.ofInstant(now, off);
 int32 wallHour = zdt.getHour();                        // hour at -05:00
 
-#DateTimeFormatter fmt =
+DateTimeFormatter fmt #=
     DateTimeFormatter.ofStandard(FormatStyle.ISO_OFFSET_DATE_TIME);
-#String text = fmt.formatZoned(zdt);   // owned; e.g. "2026-06-20T08:30:00-05:00"
+String text #= fmt.formatZoned(zdt);   // owned; e.g. "2026-06-20T08:30:00-05:00"
 ```
 
 For a one-off ISO string, skip the formatter entirely: `zdt.iso()` returns the

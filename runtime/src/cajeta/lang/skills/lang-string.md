@@ -69,12 +69,12 @@ Transforms (return owned `#String`, allocate a fresh buffer):
 import cajeta.lang.String;
 
 String s = "  Hello, Cajeta!  ";            // a literal is a static view
-#String trimmed = s.trim();                 // owned: "Hello, Cajeta!"
+String trimmed #= s.trim();                 // owned: "Hello, Cajeta!"
 if (trimmed.contains("Cajeta")) {
-    #String sub  = trimmed.substring(7, 13);     // "Cajeta" (byte-indexed)
-    #String loud = sub.toUpperCase();            // "CAJETA" (ASCII only)
+    String sub  #= trimmed.substring(7, 13);     // "Cajeta" (byte-indexed)
+    String loud #= sub.toUpperCase();            // "CAJETA" (ASCII only)
     int64 cps    = trimmed.count();              // codepoints, not bytes
     int64 at     = trimmed.indexOf("Cajeta");    // 7, or -1 if absent
-    #String swapped = trimmed.replace("Cajeta", "World");
+    String swapped #= trimmed.replace("Cajeta", "World");
 }
 ```

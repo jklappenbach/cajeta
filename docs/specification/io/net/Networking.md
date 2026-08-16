@@ -81,15 +81,15 @@ Optional<int64> r = Tasks.withTimeout(Duration.ofSeconds(5), spawn conn.readAsyn
 ## Sockets
 
 ```cajeta
-#TcpStream s = TcpStream.connectAsync(SocketAddress.parse("93.184.216.34:443"));
+TcpStream s #= TcpStream.connectAsync(SocketAddress.parse("93.184.216.34:443"));
 s.setNoDelay(true); s.writeAllAsync(b, 0, b.count()); int64 n = s.readAsync(buf, 0, buf.count());
 
-#TcpListener l = TcpListener.bind(SocketAddress.parse("0.0.0.0:8080"));
-#TcpStream conn = l.acceptAsync();
+TcpListener l #= TcpListener.bind(SocketAddress.parse("0.0.0.0:8080"));
+TcpStream conn #= l.acceptAsync();
 
-#UdpSocket u = UdpSocket.bind(SocketAddress.parse("0.0.0.0:0"));
+UdpSocket u #= UdpSocket.bind(SocketAddress.parse("0.0.0.0:0"));
 u.sendTo(dg, 0, dg.count(), SocketAddress.parse("239.0.0.1:5000"));
-#RecvResult rr = u.recvFrom(buf, 0, buf.count());   // rr.count, rr.from
+RecvResult rr #= u.recvFrom(buf, 0, buf.count());   // rr.count, rr.from
 ```
 
 **Socket options** are typed methods (`setNoDelay`, `setKeepAlive`,
@@ -105,11 +105,11 @@ extension of the datagram socket. IPv4 ASM (`224.0.0.0/4`) and IPv6 (`ff00::/8`)
 use the same methods; source-specific multicast (SSM) is a v1.x add-on.
 
 ```cajeta
-#UdpSocket u = UdpSocket.bind(SocketAddress.parse("0.0.0.0:5000"));
+UdpSocket u #= UdpSocket.bind(SocketAddress.parse("0.0.0.0:5000"));
 u.joinGroup(IpAddress.parse("239.0.0.1"));
 u.setMulticastTtl(1); u.setMulticastLoopback(false);
 u.sendTo(msg, 0, msg.count(), SocketAddress.parse("239.0.0.1:5000"));
-#RecvResult rr = u.recvFrom(buf, 0, buf.count());
+RecvResult rr #= u.recvFrom(buf, 0, buf.count());
 u.leaveGroup(IpAddress.parse("239.0.0.1"));
 ```
 
@@ -148,8 +148,8 @@ the same data plane HTTP/WS frame parsing uses (`Views.md`).
 ## Addresses & name resolution
 
 ```cajeta
-#SocketAddress a = SocketAddress.parse("[::1]:8080");   // bracketed v6; round-trips
-#SocketAddress[] addrs = Dns.resolve("example.test", 443);     // synchronous (built)
+SocketAddress a #= SocketAddress.parse("[::1]:8080");   // bracketed v6; round-trips
+SocketAddress[] addrs #= Dns.resolve("example.test", 443);     // synchronous (built)
 Task<SocketAddress[]> t = Dns.resolveAsync("example.test");    // planned — runs getaddrinfo
                                                                // on a carrier-pool worker
 ```
@@ -232,7 +232,7 @@ ownership; the Cajeta layer pumps ciphertext). An internal `TlsBackend` keeps an
 mbedTLS swap mechanical.
 
 ```cajeta
-#TlsStream tls = TlsStream.clientSystemTrust(#sock, host.bytes, host.byteLength);
+TlsStream tls #= TlsStream.clientSystemTrust(#sock, host.bytes, host.byteLength);
 tls.offerAlpn(alpn, alpnLen); tls.handshake();   // parks the fiber; validates chain
 tls.write(plaintext, len); int32 n = tls.read(buf, buf.count());
 int32 pl = tls.negotiatedAlpn(out, max);

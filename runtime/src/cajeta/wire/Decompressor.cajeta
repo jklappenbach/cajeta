@@ -14,7 +14,7 @@ package cajeta.wire;
  *
  * ```cajeta
  * Decompressor d = Snappy();
- * int8[] plain = d.decompress(block, expandedLen);
+ * int8[] plain #= d.decompress(block, expandedLen);
  * ```
  */
 public interface Decompressor {

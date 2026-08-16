@@ -64,7 +64,7 @@ frozen.get(99);      // 0   — zero value, no throw (see below)
 frozen.indexOf(30);  // 2
 frozen.contains(40); // false
 
-ArrayStream<int32> s = frozen.stream();  // owned, see "Ownership"
+ArrayStream<int32> s #= frozen.stream();  // owned, see "Ownership"
 ```
 
 `ImmutableSet<T>` takes the same `ArrayList<T>`, dropping `==`-equal duplicates

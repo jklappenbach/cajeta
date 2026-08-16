@@ -17,7 +17,7 @@ package cajeta.xpu;
  *     // auto (native if the device has it, else software):
  *     AccelerationStructure scene = heap AccelerationStructure(boxes, n);
  *     // force the software BVH on whatever device is active:
- *     AccelerationStructure soft = AccelerationStructure.of(boxes, n, AsImpl.Software);
+ *     AccelerationStructure soft #= AccelerationStructure.of(boxes, n, AsImpl.Software);
  *
  * A global `CAJETA_GPU_AS_IMPL=software|native` environment variable overrides this
  * per process (env wins), mirroring `CAJETA_XPU_BACKEND`.
@@ -33,7 +33,7 @@ package cajeta.xpu;
  * native, or any device that falls back to the software BVH as its only rep).
  *
  *     // OptiX RT cores only, no software floor (all consumers are supported shapes):
- *     AccelerationStructure rt = AccelerationStructure.of(boxes, n, AsImpl.NativeNoFloor);
+ *     AccelerationStructure rt #= AccelerationStructure.of(boxes, n, AsImpl.NativeNoFloor);
  *
  * The ordinal is the **stable native contract** — it MUST match `CajetaAsPref` in
  * runtime/native/cajeta_noun_impl.h (the runtime resolver switches on it). Do not

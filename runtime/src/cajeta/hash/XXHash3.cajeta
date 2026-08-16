@@ -232,7 +232,7 @@ public final class XXHash3 implements Hasher {
      * owned 16-byte array (low64 LE, then high64 LE).
      *
      * ```cajeta
-     * int8[] digest = XXHash3.hash128(bytes, bytes.count());
+     * int8[] digest #= XXHash3.hash128(bytes, bytes.count());
      * ```
      */
     public static #int8[] hash128(int8[] data, int64 len) {
@@ -260,7 +260,7 @@ public final class XXHash3 implements Hasher {
      * (big-endian high64 then low64 — matches `XXH128_canonicalFromHash`).
      *
      * ```cajeta
-     * String etag = XXHash3.hash128Hex(bytes, bytes.count());
+     * String etag #= XXHash3.hash128Hex(bytes, bytes.count());
      * ```
      *
      * @EntryPoint

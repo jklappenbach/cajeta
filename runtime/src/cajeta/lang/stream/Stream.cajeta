@@ -38,7 +38,7 @@ import cajeta.error.Exception;
  *
  * ```cajeta
  * Stream<int32> s = ArrayStream.from(nums);
- * int32 evens = s.filter((x) -> x % 2 == 0).count();
+ * int32 evens #= s.filter((x) -> x % 2 == 0).count();
  *
  * // cross-type fold into a wider accumulator
  * int64 sum = ArrayStream.from(nums)
@@ -418,7 +418,7 @@ public class Stream<T> {
      * independent of T.
      *
      * ```cajeta
-     * #List<int32> out = s.collect(Collectors.toList<int32>());
+     * List<int32> out = s.collect(Collectors.toList<int32>());
      * ```
      *
      * Under `.parallel()` each worker calls `c.supplier()` for its
@@ -444,7 +444,7 @@ public class Stream<T> {
      * the rest. No pull happens until a terminal runs.
      *
      * ```cajeta
-     * #Stream<int32> evens = s.filter((x) -> x % 2 == 0);
+     * Stream<int32> evens #= s.filter((x) -> x % 2 == 0);
      * ```
      */
     public #Stream<T> filter((T) -> boolean pred) {
@@ -484,7 +484,7 @@ public class Stream<T> {
      * unchanged. Stream contents and length are untouched.
      *
      * ```cajeta
-     * int32 n = s.peek((x) -> print(x)).count();
+     * int32 n #= s.peek((x) -> print(x)).count();
      * ```
      */
     public #Stream<T> peek((T) -> void fn) {
@@ -496,7 +496,7 @@ public class Stream<T> {
      * yielding Stream<R>.
      *
      * ```cajeta
-     * #Stream<int64> wide = s.map<int64>((x) -> x * 2L);
+     * Stream<int64> wide #= s.map<int64>((x) -> x * 2L);
      * ```
      */
     public final #Stream<R> map<R>((T) -> #R fn) {

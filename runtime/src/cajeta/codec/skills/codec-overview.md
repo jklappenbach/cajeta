@@ -88,10 +88,10 @@ User u = heap User();
 u.id = 7;
 u.name = "alice";
 
-int8[] bytes = Json.toBytes<User>(u);                  // {"id":7,"name":"alice"}, caller-owned
-User v = Json.parse<User>(bytes, (int64) bytes.count());
+int8[] bytes #= Json.toBytes<User>(u);                  // {"id":7,"name":"alice"}, caller-owned
+User v #= Json.parse<User>(bytes, (int64) bytes.count());
 // or straight from text:
-User w = Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
+User w #= Json.parse<User>("{\"id\":7,\"name\":\"alice\"}");
 ```
 
 Base64 in two lines:
@@ -99,8 +99,8 @@ Base64 in two lines:
 ```cajeta
 import cajeta.codec.Base64;
 
-String text = Base64.encode(raw, (int64) raw.count());   // standard, padded; caller owns
-int8[] back = Base64.decode(text);                       // throws Base64Exception on garbage
+String text #= Base64.encode(raw, (int64) raw.count());   // standard, padded; caller owns
+int8[] back #= Base64.decode(text);                       // throws Base64Exception on garbage
 ```
 
 ## Disambiguation — which JSON tier

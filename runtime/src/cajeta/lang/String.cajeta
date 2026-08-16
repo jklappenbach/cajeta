@@ -15,9 +15,9 @@ package cajeta.lang;
  *
  * ```cajeta
  * String s = "  Hello, World  ";         // a literal is a static view
- * String clean = s.trim();               // "Hello, World"
+ * String clean #= s.trim();               // "Hello, World"
  * if (clean.startsWith("Hello") && clean.contains("World")) {
- *     String loud = clean.toUpperCase(); // "HELLO, WORLD"
+ *     String loud #= clean.toUpperCase(); // "HELLO, WORLD"
  *     int64 codepoints = clean.count();   // 12 (codepoints, not bytes)
  *     int64 firstComma = clean.indexOf(","); // 5
  * }
@@ -378,14 +378,19 @@ public final class String {
     }
 
     // Native replace core: NULL result = "no change" (no match, empty or
-    // null pattern) so this side can hand back the receiver unchanged.
+    // null pattern) so this side can answer with a zero-copy borrow WINDOW
+    // over the receiver's bytes — never `this` itself, which under a `#`
+    // return would hand the receiver's title to the caller's temp (see
+    // replace's fast path below).
     @Native("__cajeta_string_replace")
     private #String replaceNative(String from, String repl);
 
     /**
      * Returns a new String with every non-overlapping occurrence of
-     * `from` replaced by `repl`. No match (or empty/null `from`)
-     * returns this String unchanged.
+     * `from` replaced by `repl`. No match (or empty/null `from`) still
+     * hands back a fresh String — a zero-copy window over this String's
+     * bytes, equal in text but never `this` itself — so the result must
+     * not outlive this String.
      */
     public #String replace(String from, String repl) {
         String out #= this.replaceNative(from, repl);
@@ -416,8 +421,11 @@ public final class String {
     @Native("__cajeta_ucd_utf8_valid")
     private int32 ucdValid();
 
-    // NULL result = already normalized, so this side hands back `this` —
-    // §7.4's no-copy fast path (same convention as replaceNative).
+    // NULL result = already normalized, so this side hands back a zero-copy
+    // borrow WINDOW over the receiver's bytes, never `this` itself (a
+    // `return this` under a `#` return is
+    // CAJETA_ERROR_OWNED_RETURN_OF_BORROWED_THIS) — §7.4's no-copy fast
+    // path (same convention as replaceNative).
     @Native("__cajeta_ucd_normalize")
     private #String normalizeNative(int32 form);
 
@@ -453,7 +461,10 @@ public final class String {
      * Canonical composition (Unicode NFC). Composed and decomposed
      * spellings of the same text normalize to the same bytes, so
      * `a.nfc().equals(b.nfc())` is the correct cross-source comparison
-     * (§7.2). Already-normalized input returns `this` — no copy (§7.4).
+     * (§7.2). Already-normalized input copies no bytes — it hands back a
+     * zero-copy borrow window over this string's bytes, never `this`
+     * itself, since returning the receiver from a `#`-returning method
+     * would give the caller's temp title to the receiver's wrapper (§7.4).
      * Malformed UTF-8 throws {@link EncodingException} (§7.1.7-adjacent;
      * a silent replacement would hide the corruption).
      */
@@ -491,7 +502,8 @@ public final class String {
      * caseless matching, and deliberately distinct from {@link #toLowerCase}
      * (§7.3): folding maps German ß to "ss" and dotted capital İ to
      * "i" + combining dot, which no locale-free lowercasing does. Identity
-     * input returns `this`.
+     * input copies no bytes — the result is a zero-copy window over this
+     * string's bytes, never `this` itself, and must not outlive it.
      */
     public #String caseFold() {
         if (this.ucdValid() == 0) {
@@ -512,7 +524,8 @@ public final class String {
      * Strips Default_Ignorable_Code_Point characters (soft hyphens,
      * zero-width joiners, ...) — separable from normalization (§7.5):
      * normalizing does NOT strip them, and stripping does NOT normalize.
-     * Nothing-to-strip returns `this`.
+     * Nothing to strip copies no bytes — the result is a zero-copy window
+     * over this string's bytes, never `this` itself, and must not outlive it.
      */
     public #String stripDefaultIgnorables() {
         if (this.ucdValid() == 0) {

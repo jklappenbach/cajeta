@@ -66,14 +66,20 @@ use it for exactly that.
 - **Return type**: `#Point make()` — the callee hands ownership out; a fresh
   `heap T(...)` promotes implicitly.
 
-The rule: **a store uses `#=`; everything else uses `#v`.** `#` never goes on
-the receiving local's declaration — `Point q = this.make();` is plain, and the
-title (if one is tendered) arrives on the return flag and arms `q`'s drop
-entry. Note the parenthetical: whether a title IS tendered is the callee's
-runtime decision, not something the return spelling guarantees — see
-correction 1. Treat `#T` on a return as the PRODUCER/VIEW contract it is
-meant to be, and verify rather than assume when it matters. (Legacy
-`dst = #v` still compiles with a deprecation warning; write `dst #= v`.)
+The rule: **a store uses `#=`; everything else uses `#v`.** `#` never goes in
+the receiving local's TYPE — `#Point q = …` is
+`CAJETA_ERROR_TYPE_TRANSFER_RETIRED`. It DOES go on the BINDING when the callee
+declares a transfer: a `#T` result must be received with `#=` —
+`Point q #= this.make();` — and a plain `=` there is
+`CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` (spec §4.6), because a reader
+otherwise cannot tell an acquisition from a borrow-returning call without
+opening the callee. `#T` is not advisory: its flag is a constant 1 (§2.8), the
+callee must establish a title at every return (§4.5), and the receiving `#=`
+registers a drop unconditionally. A plain-`T` result still binds with a plain
+`=`; there the title, *if one is tendered*, arrives on the return flag and arms
+`q`'s drop entry — and whether one is tendered really is the callee's runtime
+decision (correction 1). (Legacy `dst = #v` still compiles with a deprecation
+warning; write `dst #= v`.)
 
 **Never both.** `x #= #y` is `CAJETA_ERROR_DOUBLE_TRANSFER` whatever `y` is —
 identifier, field, element, or call result. The store carries the transfer, so
@@ -95,6 +101,10 @@ double free is structurally impossible, and the binding stays readable. There is
   readable borrow of the same live instance.
 - `CAJETA_ERROR_TRANSFER_REQUIRED` — passing plain `a` where the parameter is
   `#T`: write `#a`, or pass a fresh `heap T(...)` construction.
+- `CAJETA_ERROR_CAPTURED_BORROW_PARAM` — keeping a plain parameter in a field
+  or element beyond the call: store with `#=`, or spell the formal `#T`.
+- `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` — receiving a `#T` result with a
+  plain `=`: spell the binding `x #= f()`.
 - `CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER` — returning an owned local
   through a non-`#` return type (would silently leak): mark the return `#T`.
 - **Borrow escape** — returning/storing a borrow that outlives its source.
@@ -122,7 +132,7 @@ public class OwnershipDemo {
         int32 borrowed = b.distSq();    // 625
         Point c #= a;                   // transfer store — c owns; a is moved
         int32 moved = d.consume(#c);    // move expression at the call site
-        Point q = d.make();             // plain declaration receives ownership
+        Point q #= d.make();            // `#Point make()` — the title moves here
         return borrowed + moved + q.distSq();   // 1275
     }
 }
@@ -145,17 +155,20 @@ placement keyword).
   `CAJETA_ERROR_STACK_RETURN_ESCAPES`, for both `return stack X(...)` and
   `Cell c = stack Cell(); return #c;`. Anything that escapes a frame must be
   `heap`. (This was silent UB before 2026-07-31.)
-- **Storing a fresh value into a field with a plain `=` dangles.**
-  `Box(T v) { this.value = v; }` called as `heap Box(heap Cell(1))` reads freed
-  memory. Two rules compose, and both are working as designed: `heap X(...)` at
-  a CALL SITE surrenders, so the formal `v` becomes the owner; and `=` is a
-  borrow that never inherits that contract. The formal still owns at return, so
-  its drop fires and the field is left pointing at freed memory. The program
-  asked to borrow from a value whose owner dies at the end of the call.
 
-  **The fix is `#=` at the store — the formal stays plain:**
+  `#=` consumes the formal's title, so its drop is deactivated. It is safe
+  whichever way the caller passed the value — surrendering
+  (`heap Box(heap Cell(1))`) and lending (`Cell c = heap Cell(1); heap Box(c);`)
+  both work — so you can apply this at the store site without reasoning about
+  callers.
 
-  ```cajeta
+  Declaring `#T` is a *different*, stronger choice: it is API-visible and forces
+  every caller to surrender. Reach for it when you want to REQUIRE ownership,
+  not to fix this — changing the store is enough.
+
+  Passing a named local with a plain `=` store also stays correct: that lends,
+  and the field aliases a value the caller still owns.
+  (`specs/field-store-title-trap-spec.md`.)```cajeta
   public Box(T v) { this.value #= v; }   // field takes the title
   ```
 
@@ -175,11 +188,15 @@ placement keyword).
 - Ownership at a call site is directional: a plain `T` parameter can *accept*
   an offered `#x` (the value then drops in the callee) — but a `#T` parameter
   never accepts a plain borrow.
-- **Containers OWN their elements, and the rule is enforced, not conventional.**
-  Every stdlib container declares its element parameters `#T`, so lending one a
-  plain local is `CAJETA_ERROR_TRANSFER_REQUIRED` at the call site, naming the
-  fix. There is no borrowed-element mode: `list.add(g)` does not compile, and a
-  container never holds something it will not reclaim.
+- **Containers do NOT own their elements by default — the CALLER chooses, per
+  call.** A collection sink takes a plain `T` and stores it with `#=`, so
+  `list.add(g)` LENDS and `list.add(#g)` transfers, with the arriving mode
+  recorded per slot (`ArrayList.add(T v)`, `LinkedList.add`, `HashSet.add`,
+  `Heap.push`, `HashMap.put`). Teardown drops exactly the slots whose title was
+  tendered, so a lent element is never freed by the container and a surrendered
+  one always is. Owning aggregates are a different genre: `Pair(#K, #V)` and
+  `HashMap.operator[]=(#K, #V)` really do force transfer, and passing a plain
+  owned local there is `CAJETA_ERROR_TRANSFER_REQUIRED`.
 
   ```cajeta
   list.add(#g);          // the list takes g's title
@@ -191,11 +208,9 @@ placement keyword).
   is alive. What you must not do is read it *after the list tears down* — the
   list freed the element, and nothing diagnoses that yet (MemoryModel §1.7).
 
-- **String is a normal owned class here.** `list.add(s)` on a `String` is the
-  same error as any other element, which is the single largest source of
-  migration churn. Two fixes, and they mean different things:
 
-  ```cajeta
+  Reach for the copy when the caller genuinely needs to keep an owner past the
+  container's life; otherwise surrender and read `s` as a borrow.```cajeta
   list.add(#s);                          // surrender the one String
   list.add(s.substring(0, s.count()));   // give the list its own copy; s stays owner
   ```

@@ -6,7 +6,7 @@ package cajeta.nucleo.frame;
  * parameters, and each `add` appends one output column, in order:
  *
  * ```cajeta
- * Table<?> r = ticks.select((TickCols c, Sels s) -> {
+ * Table<?> r #= ticks.select((TickCols c, Sels s) -> {
  *     s.add(c.price());                                // passthrough
  *     s.add((c.price() * c.size()).alias("notional")); // computed, named
  * });

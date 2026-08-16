@@ -7,7 +7,7 @@ package cajeta.collection;
  * ## Usage
  *
  * ```cajeta
- * #HashMap<Tag, int32> counts = heap HashMap<Tag, int32>(16);
+ * HashMap<Tag, int32> counts = heap HashMap<Tag, int32>(16);
  * counts.put(tag, 1);
  * counts[tag] = counts[tag] + 1;       // subscript sugar over get / put
  * if (counts.containsKey(tag)) {

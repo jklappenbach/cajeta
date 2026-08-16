@@ -46,7 +46,7 @@ WindowBackend wb = BackendRegistry.instance().selectWindow(false); // false = in
 Window w = wb.createWindow("game", 1280, 720);
 
 // Per-frame: drain lifecycle BEFORE rendering so a lost surface is honored this frame.
-#LifecyclePhase[] phases = wb.pollLifecycle(w);   // owned by us; dropped at scope end
+LifecyclePhase[] phases #= wb.pollLifecycle(w);   // owned by us; dropped at scope end
 if (phases != null) {
     int32 i = 0;
     while (i < phases.count()) {

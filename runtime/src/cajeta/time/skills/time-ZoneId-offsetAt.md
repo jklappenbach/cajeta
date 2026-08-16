@@ -78,7 +78,7 @@ import cajeta.time.DateTimeException;
 
 public final class Zit {
     public static int64 run() {
-        #ZoneId ny = ZoneId.of("America/New_York");
+        ZoneId ny #= ZoneId.of("America/New_York");
         // 2021-07-01T12:00Z -> EDT = -4h ; 2021-01-01T12:00Z -> EST = -5h
         ZoneOffset summer = ny.offsetAt(Instant.ofEpochSecond(1625140800));
         ZoneOffset winter = ny.offsetAt(Instant.ofEpochSecond(1609502400));

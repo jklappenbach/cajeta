@@ -107,7 +107,7 @@ void handle(int64 id) {
 
 // Unstructured handoff across a Channel to a worker pool:
 //   producer (on the request's fiber):
-FiberContext ctx = FiberContext.capture();
+FiberContext ctx #= FiberContext.capture();
 channel.send(Job(payload, #ctx));      // # transfers ownership of the snapshot
 //   worker fiber:
 Optional<Job> j = channel.receive();

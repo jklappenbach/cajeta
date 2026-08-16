@@ -22,13 +22,13 @@ import cajeta.io.file.FileWriter;
  * Command cmd = heap Command(#argv);
  * cmd.pipeStdin();
  * cmd.pipeStdout();
- * Process p = cmd.start();
- * FileWriter w = p.stdin();
+ * Process p #= cmd.start();
+ * FileWriter w #= p.stdin();
  * w.writeString("ping\n");
  * w.close();
- * FileReader r = p.stdout();
- * String line = r.readString(64);
- * ProcessResult res = p.waitFor();
+ * FileReader r #= p.stdout();
+ * String line #= r.readString(64);
+ * ProcessResult res #= p.waitFor();
  * p.close();
  * ```
  */

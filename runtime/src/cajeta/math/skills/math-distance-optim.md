@@ -22,9 +22,9 @@ Ecosystem rule (spec §9.1): no second distance implementation anywhere —
 libraries consume this one.
 
 ```cajeta
-Tensor<float64> m = Distance.pdist(points, heap Euclidean());  // matmul path
+Tensor<float64> m #= Distance.pdist(points, heap Euclidean());  // matmul path
 Metric custom = heap MyMetric();                               // your own
-Tensor<float64> c = Distance.cdist(a, b, custom);
+Tensor<float64> c #= Distance.cdist(a, b, custom);
 ```
 
 ## `cajeta.math.optim` — L-BFGS and Nelder-Mead

@@ -39,7 +39,7 @@ Do **not** `heap File(...)` — the only public ctor is internal plumbing wired 
 import cajeta.io.file.File;
 import cajeta.io.file.OpenMode;
 
-#File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+File f #= File.open("/tmp/db.bin", OpenMode.READ_WRITE);
 f.seek(4096);                       // absolute byte offset
 int8[] page = heap int8[512];
 int64 n = f.read(page, 0, 512);     // -> bytes filled (0 == EOF)

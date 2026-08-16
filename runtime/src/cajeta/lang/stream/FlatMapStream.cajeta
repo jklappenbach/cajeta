@@ -23,9 +23,9 @@ package cajeta.lang.stream;
  * ```cajeta
  * // Flatten an array-of-rows into a single stream of ints:
  * int32[][] rows = [ [ 1, 2 ], [ ], [ 3 ] ];
- * #Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
+ * Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
  *
- * #Stream<int32> flat = outer.flatMap<int32>(
+ * Stream<int32> flat #= outer.flatMap<int32>(
  *     (int32[] row) -> heap ArrayStream<int32>(row, row.length));
  *
  * // empty inner rows are skipped transparently → 1, 2, 3
@@ -47,8 +47,8 @@ public class FlatMapStream<T, R> extends Stream<R> {
      * `flatMap` factory on `Stream` over calling this directly.
      *
      * ```cajeta
-     * #Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
-     * #Stream<int32> flat = heap FlatMapStream<int32[], int32>(
+     * Stream<int32[]> outer = heap ArrayStream<int32[]>(rows, 3);
+     * Stream<int32> flat = heap FlatMapStream<int32[], int32>(
      *     outer, (int32[] row) -> heap ArrayStream<int32>(row, row.length));
      * ```
      */

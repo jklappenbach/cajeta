@@ -219,7 +219,7 @@ public final class Class<T> {
      * token; overloads the by-index `heapInstance(int32)` primitive below.
      *
      * ```cajeta
-     * Optional<Shape> s = Class.heapInstance<Shape>(name);
+     * Optional<Shape> s #= Class.heapInstance<Shape>(name);
      * if (s.isPresent()) { s.get().draw(); }
      * ```
      *
@@ -702,7 +702,7 @@ public final class Class<T> {
      * Two-pass over the registry.
      *
      * ```cajeta
-     * #Class<?>[] suites = Class.classesWithMethodAnnotated("code.Test");
+     * Class<?>[] suites #= Class.classesWithMethodAnnotated("code.Test");
      * ```
      */
     // The registry is heterogeneous by construction — registryAt is @Native
@@ -749,7 +749,7 @@ public final class Class<T> {
      * over the registry, reusing {@link #isSubtype}.
      *
      * ```cajeta
-     * #Class<?>[] kinds = Class.subtypes<Shape>();
+     * Class<?>[] kinds #= Class.subtypes<Shape>();
      * ```
      */
     // The registry is heterogeneous by construction — registryAt is @Native

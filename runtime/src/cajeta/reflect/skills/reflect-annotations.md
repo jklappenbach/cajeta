@@ -91,7 +91,7 @@ public final class M {
         Class<?> c = Class.of(heap Widget());   // borrowed Class
         if (!c.hasAnnotation("code.Component")) { return 1; }
 
-        Annotation a = c.getAnnotation(0);      // owned #Annotation
+        Annotation a #= c.getAnnotation(0);      // owned #Annotation
         if (a.getArgCount() != 1) { return 2; }
         if (!a.getString("name").equals("disk")) { return 3; }
 
@@ -112,7 +112,7 @@ int32 idx = a.getArgIndex("value");     // unnamed list arg -> "value"
 if (idx < 0) { return 10; }
 if (a.getArgKind(idx) != 5) { return 11; }   // 5 = string-list
 int32 n = a.getArgListCount(idx);
-String first = a.getArgListString(idx, 0);   // "a"
+String first #= a.getArgListString(idx, 0);   // "a"
 ```
 
 For everything else about the owners (how to obtain `Field`/`Method`/`Constructor`/

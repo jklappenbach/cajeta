@@ -121,7 +121,7 @@ public class DType {
      * recovers `f32()`. Folds to a constant `codeOf<T>()` then decodes it.
      *
      * ```cajeta
-     * DType dt = DType.of<float32>();   // == DType.f32()
+     * DType dt #= DType.of<float32>();   // == DType.f32()
      * ```
      *
      * @EntryPoint

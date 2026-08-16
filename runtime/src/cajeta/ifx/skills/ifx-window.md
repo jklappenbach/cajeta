@@ -45,8 +45,8 @@ WindowBackend wb = BackendRegistry.instance().selectWindow(false);  // borrowed;
 Window  w = wb.createWindow(title, width, height);  // backend owns the OS window
 Surface s = wb.surfaceOf(w);                         // hand s to the gfx swapchain
 // frame loop:
-#WindowEvent[]   events = wb.poll(w);          // owned by you — drop after draining
-#LifecyclePhase[] phases = wb.pollLifecycle(w); // owned by you — drop after draining
+WindowEvent[]   events #= wb.poll(w);          // owned by you — drop after draining
+LifecyclePhase[] phases #= wb.pollLifecycle(w); // owned by you — drop after draining
 // ...
 wb.destroy(w);   // release the OS window when done
 ```
@@ -100,7 +100,7 @@ Window  w = wb.createWindow("demo", 1280u, 720u);
 Surface s = wb.surfaceOf(w);
 boolean running = true;
 while (running) {
-    #WindowEvent[] events = wb.poll(w);          // OWNED — null means no events
+    WindowEvent[] events #= wb.poll(w);          // OWNED — null means no events
     if (events != null) {
         int32 i = 0;
         while (i < events.length) {
@@ -109,7 +109,7 @@ while (running) {
         }
     }                                            // events dropped here
 
-    #LifecyclePhase[] phases = wb.pollLifecycle(w);   // OWNED — rebuild swapchain on SurfaceRecreated
+    LifecyclePhase[] phases #= wb.pollLifecycle(w);   // OWNED — rebuild swapchain on SurfaceRecreated
     // ... hand `phases` to the gfx swapchain ...
 }
 wb.destroy(w);

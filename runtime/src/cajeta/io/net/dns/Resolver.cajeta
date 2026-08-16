@@ -35,10 +35,11 @@ import cajeta.io.net.dns.ResolveFamily;
  *     result — see [`DnsCache.resolve`](DnsCache.cajeta).
  *
  * The returned array's ownership transfers to the cache, which holds it
- * for the TTL window and hands **the same backing array** back to every
- * hit inside that window (callers must not mutate it — it is the
- * cached value, shared by reference, the standard `Cache<K,V>` value
- * posture).
+ * as the canonical **port-0** value for the TTL window. That array is
+ * never handed out: [`DnsCache.resolve`](DnsCache.cajeta) returns a
+ * freshly built, port-baked `#SocketAddress[]` on every hit and miss
+ * alike (see `bakePort`), so each result is the caller's own to keep,
+ * mutate and free — received with `#=`, per the forced-transfer stance.
  */
 public interface Resolver {
 

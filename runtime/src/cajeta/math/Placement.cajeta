@@ -134,14 +134,13 @@ public final class Placement {
         if (Placement.tiered.contains(k)) {
             return;
         }
-        // `#k` — `HashSet.add` takes a plain `T` and forwards it to
-        // `map.put` PLAIN, so the `#` does NOT hand the set title: it moves
-        // the title onto `add`'s formal, which releases it when `add`
-        // returns. `k` is a fresh heap `String` (`toString` copies the
-        // builder's bytes out), so this leaves `tiered` — a static that
-        // outlives every call — keyed on storage nobody holds. The set is a
-        // note-suppression cache and a stale key at worst re-emits or eats a
-        // note, but it is a lifetime error and nothing diagnoses it.
+        // `#k` — `HashSet.add` takes a plain `T` and forwards it as
+        // `map.put(#value, 1)`; `HashMap.put` stores with `#=`, which records
+        // the mode the argument arrived in (spec §2.3 — a sink takes plain
+        // `T`, stores with `#=`, so `add(v)` lends and `add(#v)` transfers).
+        // So `#k` DOES hand the set the title: `k` is a fresh heap `String`
+        // (`toString` copies the builder's bytes out) and it stays live for as
+        // long as `tiered` — a static that outlives every call — holds it.
         Placement.tiered.add(#k);
         StringBuilder sb = stack StringBuilder();
         sb.append("note: [op-tiering] ");

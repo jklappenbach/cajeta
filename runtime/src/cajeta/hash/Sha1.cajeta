@@ -30,8 +30,8 @@ import cajeta.lang.String;
  *
  * One-shot statics:
  * ```cajeta
- * int8[] digest = Sha1.hash(bytes, bytes.count());   // 20 bytes
- * String hex    = Sha1.hashHex(bytes, bytes.count()); // 40 hex chars
+ * int8[] digest #= Sha1.hash(bytes, bytes.count());   // 20 bytes
+ * String hex    #= Sha1.hashHex(bytes, bytes.count()); // 40 hex chars
  * ```
  *
  * Streaming `Hasher`:
@@ -39,7 +39,7 @@ import cajeta.lang.String;
  * Sha1 h = heap Sha1();
  * h.update(keyBytes, keyBytes.count());
  * h.update(guidBytes, guidBytes.count());
- * int8[] accept = h.digest();   // 20-byte digest, then base64 it
+ * int8[] accept #= h.digest();   // 20-byte digest, then base64 it
  * ```
  *
  * `finish()` projects the 160-bit digest to 64 bits (first 8 bytes,

@@ -53,7 +53,7 @@ stack ZonedDateTime a = ZonedDateTime.ofInstant(Instant.ofEpochSecond(1780000000
 stack ZonedDateTime b =
     ZonedDateTime.ofLocal(LocalDateTime.of(2026, 6, 5, 9, 30),
                           ZoneOffset.ofHoursMinutes(5, 30));
-#String text = b.iso();   // owned: "2026-06-05T09:30+05:30"
+String text #= b.iso();   // owned: "2026-06-05T09:30+05:30"
 ```
 
 `ofInstant(instant, offset)` shifts the UTC instant by the offset to expose wall-clock
@@ -72,7 +72,7 @@ import cajeta.time.ZoneId;
 import cajeta.time.ZoneOffset;
 import cajeta.time.ZonedDateTime;
 
-#ZoneId ny = ZoneId.of("America/New_York");
+ZoneId ny #= ZoneId.of("America/New_York");
 ZoneOffset summer = ny.offsetAt(Instant.ofEpochSecond(1625140800)); // EDT -14400
 ZonedDateTime zdt = ny.resolve(Instant.ofEpochSecond(0));           // local 1969-12-31T19:00
 ```

@@ -89,7 +89,7 @@ f.setInt32(u, 77);
 int32 id = f.getInt32(u);            // 77
 
 // Type-erased read of an unknown-type primitive field.
-Object boxed = f.getBoxed(u);        // owned #Object (an Int32 here)
+Object boxed #= f.getBoxed(u);        // owned #Object (an Int32 here)
 
 // A private field of a @Sealed class is barred.
 try {

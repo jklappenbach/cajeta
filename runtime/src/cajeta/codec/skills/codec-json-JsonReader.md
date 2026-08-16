@@ -50,7 +50,7 @@ while (t != JsonToken.END) {
     if (t == JsonToken.NUMBER) {
         int64 n = reader.currentNumberAsInt64();
     } else if (t == JsonToken.STRING) {
-        #String s = reader.currentString();
+        String s #= reader.currentString();
     } else if (t == JsonToken.BOOLEAN) {
         boolean b = reader.currentBoolean();   // BOOLEAN is one token; this disambiguates
     }
@@ -106,7 +106,7 @@ float fidelity.
 
 ```cajeta
 stack reader = JsonReader(buf, buf.count());
-#JsonValue root = reader.readValue();   // recursively expands objects/arrays; #owned tree
+JsonValue root #= reader.readValue();   // recursively expands objects/arrays; #owned tree
 ```
 
 `readValue() -> #JsonValue` pulls one token and builds the value subtree; ownership

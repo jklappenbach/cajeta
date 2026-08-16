@@ -341,7 +341,7 @@ Only `toList<T>()` ships today (`toSet` / `toMap` / `counting` /
 `joining` are not built). Used at the terminal end of a chain:
 
 ```cajeta
-#ArrayList<int32> evens = xs.stream()
+ArrayList<int32> evens #= xs.stream()
     .filter(isEven)
     .collect(Collectors.toList<int32>());
 ```

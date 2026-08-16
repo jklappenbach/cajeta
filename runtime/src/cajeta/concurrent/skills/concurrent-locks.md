@@ -48,7 +48,7 @@ public class Counter {
         Lock gate = heap Lock();
 
         // RAII path: held until the guard drops.
-        #LockGuard g = gate.acquire();
+        LockGuard g #= gate.acquire();
         // ... critical section runs while g is alive ...
         // g drops on method return -> lock released, THEN gate is destroyed.
 

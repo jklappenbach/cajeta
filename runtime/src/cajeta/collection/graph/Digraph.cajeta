@@ -34,7 +34,7 @@ import cajeta.lang.String;
  * int32 a = g.intern("a");
  * int32 b = g.intern("b");
  * g.addEdge(a, b);
- * int8[] seen = g.reachableFrom(roots);   // roots: int32[] of ids
+ * int8[] seen #= g.reachableFrom(roots);   // roots: int32[] of ids
  * ```
  */
 public class Digraph<N> {

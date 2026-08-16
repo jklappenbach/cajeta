@@ -105,16 +105,19 @@ namespace cajeta {
         map<string, set<string>> lendEdges;
 
         // stdlib-ownership-convention U2 — call-result provenance. Maps a
-        // local to the BORROW-returning call it was initialised from
-        // ("o.keyAt(j)"), i.e. a callee whose return type is NOT `#`-owned.
+        // local to the call it was initialised from when that callee's BODY
+        // PROVES the result is an interior view ("o.keyAt(j)": every return a
+        // `this.field` read, and at least one — Method::returnsInteriorView).
         // Such a local holds no title, so `#local` would surrender one it
         // does not have and mint a second owner — the JsonObject.keyAt bug
         // that produced garbage keys in cajeta-llama U13.
         //
-        // This closes the gap the MOVE_OF_BORROW check documents as
-        // deliberately open ("a call-result local stays unchecked"): the
-        // callee's DECLARED return spelling is static, intra-procedural
-        // truth, so no runtime-owner ABI is needed to read it.
+        // NOT keyed on the declared return spelling. A plain (non-`#`) return
+        // is not statically a borrow: it carries a RUNTIME flag, so a
+        // plain-return wrapper rides an inner `#` call's title through
+        // (spec §1.2, §4.1). The proven-view shape is the narrower question
+        // that IS decidable; anything unproven is allowed (§7.2), so the
+        // check never blocks valid code.
         map<string, string> callBorrowOrigins;
 
         void putField(FieldPtr field, string propertyPath);
@@ -198,10 +201,14 @@ namespace cajeta {
         vector<MoveMark> snapshotMovesSince(size_t mark) const;
         void reapplyMoves(const vector<MoveMark>& moves);
 
-        // U2 — record that `name` was initialised from the borrow-returning
-        // call `origin` (a callee declared without `#` on its return type).
+        // U2 — record that `name` was initialised from a call whose BODY
+        // PROVES an interior view: every return a `this.field` read (or an
+        // index into one), and at least one — see Method::returnsInteriorView.
+        // The criterion is the BODY, not the return spelling: a plain
+        // (non-`#`) return is not statically a borrow (spec §1.2, §4.1), so
+        // anything unproven stays unrecorded and is allowed (§7.2).
         void recordCallBorrow(const string& name, const string& origin);
-        // The borrow-returning call `name` came from, or "".
+        // The proven-view call `name` came from, or "".
         string callBorrowOriginOf(const string& name);
 
         // U2 (plan 2.2.3) — the transfer-of-a-borrow rejection, shared by

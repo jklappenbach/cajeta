@@ -134,15 +134,16 @@ public final class JsonValue {
     }
 
     /**
-     * Materialize this STRING value as a `cajeta.lang.String`
-     * view-mode instance over the borrowed byte slice. Preferred
+     * Materialize this STRING value as an OWNED `cajeta.lang.String`
+     * over a fresh copy of the payload bytes — the returned String owns
+     * them and outlives this JsonValue. Preferred
      * over the raw `asBytes()` / `asBytesLength()` pair when the
      * caller wants String ergonomics (equality, hashing,
      * concatenation). Returns null for non-STRING kinds — caller
      * gates on `kind()` first if that matters.
      *
      * ```cajeta
-     * String s = v.asString();
+     * String s #= v.asString();
      * if (s != null) {
      *     // owns the materialized `String`
      * }

@@ -13,8 +13,8 @@ package cajeta.wire;
  *
  * ```cajeta
  * SchemaEncoder<Order> codec = AvroEncoder<Order>();
- * int8[] bytes = codec.encode(order, schema);
- * Order  back  = codec.decode(bytes, schema);
+ * int8[] bytes #= codec.encode(order, schema);
+ * Order  back  #= codec.decode(bytes, schema);
  * ```
  */
 public interface SchemaEncoder<T> {

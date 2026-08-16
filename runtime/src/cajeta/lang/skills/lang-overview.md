@@ -72,14 +72,14 @@ import cajeta.lang.stream.ArrayStream;
 import cajeta.lang.stream.Stream;
 
 String greeting = "  Hello, World  ";        // a literal is a static view
-#String clean = greeting.trim();              // owned: "Hello, World"
+String clean #= greeting.trim();              // owned: "Hello, World"
 if (clean.contains("World")) {
     int64 cps = clean.count();                // 12 codepoints (not bytes)
 }
 
 int32[] nums = { 1, 2, 3, 4, 5 };
 Stream<int32> s = heap ArrayStream<int32>(nums, 5);
-int64 sumEven = s.filter((x) -> x % 2 == 0)
+int64 sumEven #= s.filter((x) -> x % 2 == 0)
                  .fold<int64>(0L, (acc, e) -> acc + e);   // 6
 
 Optional<int32> first = (heap ArrayStream<int32>(nums, 5))

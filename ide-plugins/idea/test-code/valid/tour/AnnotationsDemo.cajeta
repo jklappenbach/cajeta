@@ -8,7 +8,7 @@ public class AnnotationsDemo extends DemoClass {
         System.stdout.println("");
         System.stdout.println("-- Annotations --");
         // Build a Book via the synthesized builder. All fields set.
-        Book b = Book.builder()
+        Book b #= Book.builder()
             .title("The Mythical Man-Month")
             .pages(322)
             .build();
@@ -16,7 +16,7 @@ public class AnnotationsDemo extends DemoClass {
         System.stdout.println("  Book.pages    = " + b.pages);
         // Defaults case — only title set; `pages` falls back to 100
         // because of @Builder.Default on the field.
-        Book d = Book.builder().title("Untitled").build();
+        Book d #= Book.builder().title("Untitled").build();
         System.stdout.println("  default pages = " + d.pages);
     }
 }

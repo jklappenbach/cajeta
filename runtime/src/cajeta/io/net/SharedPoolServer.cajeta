@@ -56,7 +56,7 @@ import cajeta.time.Duration;
  * ## Shape
  *
  * ```cajeta
- * SharedPoolServer s = SharedPoolServer.bind(
+ * SharedPoolServer s #= SharedPoolServer.bind(
  *     SocketAddress.parse("0.0.0.0:8080"),
  *     8,                                  // 8 worker fibers
  *     (conn) -> handle(conn));

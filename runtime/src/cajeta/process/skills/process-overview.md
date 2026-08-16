@@ -71,7 +71,7 @@ argv[0] = "/bin/echo";
 argv[1] = "hello";
 Command cmd = heap Command(#argv);   // argv ownership moves into cmd
 cmd.captureStdout();                  // request stdout capture
-ProcessResult r = cmd.run();          // blocks until exit
+ProcessResult r #= cmd.run();          // blocks until exit
 if (r.launched() == false) { return 100; }  // launch failure, not a throw
 int8[] out = r.stdout();             // borrowed bytes (null if not captured)
 int32 status = r.code();             // exit code, or 128+signal, or -1

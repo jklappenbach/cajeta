@@ -21,9 +21,9 @@ import cajeta.io.net.dns.DnsCacheEntry;
  * [`Resolver`](Resolver.cajeta) backend.
  *
  * ```cajeta
- * DnsCache cache = DnsCache.create();              // default size + TTL
- * SocketAddress[] a = cache.resolve("example.test", 443, ResolveFamily.BOTH);
- * SocketAddress[] b = cache.resolve("example.test", 443, ResolveFamily.BOTH);
+ * DnsCache cache #= DnsCache.create();              // default size + TTL
+ * SocketAddress[] a #= cache.resolve("example.test", 443, ResolveFamily.BOTH);
+ * SocketAddress[] b #= cache.resolve("example.test", 443, ResolveFamily.BOTH);
  * // `b` came from the cache — no second getaddrinfo.
  * ```
  *

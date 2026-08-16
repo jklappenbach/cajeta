@@ -26,7 +26,7 @@ import cajeta.io.file.FileWriter;
  *  .key("age").writeNumber((int64) 36)
  *  .key("admin").writeBoolean(true)
  *  .endObject();
- * int8[] json = w.toBytes();      // {"name":"Ada","age":36,"admin":true}
+ * int8[] json #= w.toBytes();      // {"name":"Ada","age":36,"admin":true}
  * ```
  */
 public final class JsonWriter {
@@ -45,7 +45,7 @@ public final class JsonWriter {
      * ```cajeta
      * JsonWriter w = heap JsonWriter();
      * w.beginArray().writeNumber((int64) 1).writeNumber((int64) 2).endArray();
-     * int8[] json = w.toBytes();   // [1,2]
+     * int8[] json #= w.toBytes();   // [1,2]
      * ```
      */
     public JsonWriter() {
@@ -365,7 +365,7 @@ public final class JsonWriter {
      * ```cajeta
      * JsonWriter w = heap JsonWriter();
      * w.writeValue(parsed);            // re-emits the tree as JSON
-     * int8[] json = w.toBytes();
+     * int8[] json #= w.toBytes();
      * ```
      */
     public JsonWriter writeValue(JsonValue v) {
@@ -421,7 +421,7 @@ public final class JsonWriter {
      * ```cajeta
      * JsonWriter w = heap JsonWriter();
      * w.beginArray().writeBoolean(true).endArray();
-     * int8[] json = w.toBytes();   // [true]  — w is now empty again
+     * int8[] json #= w.toBytes();   // [true]  — w is now empty again
      * ```
      */
     public #int8[] toBytes() {

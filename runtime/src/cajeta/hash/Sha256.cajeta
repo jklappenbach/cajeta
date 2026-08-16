@@ -30,8 +30,8 @@ import cajeta.lang.String;
  *
  * One-shot statics:
  * ```cajeta
- * int8[] digest = Sha256.hash(bytes, bytes.count());   // 32 raw bytes
- * String hex    = Sha256.hashHex(bytes, bytes.count()); // 64 lowercase hex chars
+ * int8[] digest #= Sha256.hash(bytes, bytes.count());   // 32 raw bytes
+ * String hex    #= Sha256.hashHex(bytes, bytes.count()); // 64 lowercase hex chars
  * ```
  *
  * Streaming (the download path):
@@ -39,7 +39,7 @@ import cajeta.lang.String;
  * Sha256 sum = heap Sha256();
  * sum.update(chunk1, chunk1.count());
  * sum.update(chunk2, chunk2.count());
- * String hex = sum.hex();      // finalize → 64-char lowercase hex
+ * String hex #= sum.hex();      // finalize → 64-char lowercase hex
  * // compare hex against the manifest's published checksum
  * ```
  *

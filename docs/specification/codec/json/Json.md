@@ -572,7 +572,7 @@ document into a tree, walk it with `.asObject().get("k").asArray()...`
 chains, mutate, then serialize:
 
 ```cajeta
-#JsonValue v = Json.parse(input, (int64) input.count());
+JsonValue v #= Json.parse(input, (int64) input.count());
 JsonObject root = v.asObject();
 int32 id = root.get("id").asInt32();
 root.put(#keyBytes, keyLen, heap JsonValue().setBoolean(true));
@@ -619,7 +619,7 @@ What the compiler synthesizes for the call above:
 // Conceptual equivalent of the synthesized Json.parse<UserMessage> body:
 public static #UserMessage parse_UserMessage(int8[] bytes, int64 length) {
     JsonReader r = heap JsonReader(bytes, length);
-    #UserMessage out = heap UserMessage();
+    UserMessage out = heap UserMessage();
     if (r.next() != JsonToken.START_OBJECT) { throw heap JsonParseException(...); }
     while (true) {
         JsonToken t = r.next();

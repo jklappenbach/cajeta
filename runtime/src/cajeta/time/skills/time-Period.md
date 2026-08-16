@@ -69,7 +69,7 @@ the caller** — bind it with `#String` and the caller is responsible for it.
 ```cajeta
 import cajeta.time.Period;
 
-#String text = Period.of(1, 2, 3).iso();      // "P1Y2M3D"
+String text #= Period.of(1, 2, 3).iso();      // "P1Y2M3D"
 ```
 
 ## Consumed by LocalDate

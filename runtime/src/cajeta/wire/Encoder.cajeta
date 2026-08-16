@@ -16,8 +16,8 @@ package cajeta.wire;
  * ```cajeta
  * Encoder<Order> codec = JsonEncoder<Order>();
  *
- * int8[] bytes = codec.encode(order);   // T -> owned bytes
- * Order  back  = codec.decode(bytes);   // owned bytes -> T
+ * int8[] bytes #= codec.encode(order);   // T -> owned bytes
+ * Order  back  #= codec.decode(bytes);   // owned bytes -> T
  * ```
  */
 public interface Encoder<T> {
@@ -25,7 +25,7 @@ public interface Encoder<T> {
      * Serializes `value` into a freshly allocated, caller-owned byte buffer.
      *
      * ```cajeta
-     * int8[] bytes = codec.encode(order);
+     * int8[] bytes #= codec.encode(order);
      * ```
      *
      * @EntryPoint
@@ -37,7 +37,7 @@ public interface Encoder<T> {
      * heap instance. Inverse of `encode`.
      *
      * ```cajeta
-     * Order order = codec.decode(bytes);
+     * Order order #= codec.decode(bytes);
      * ```
      *
      * @EntryPoint

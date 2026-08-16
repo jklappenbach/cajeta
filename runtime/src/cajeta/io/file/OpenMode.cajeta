@@ -21,8 +21,8 @@ package cajeta.io.file;
  * intent up front; the matching `O_*` flags are applied for you:
  *
  * ```cajeta
- * File db = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
- * FileWriter log = File.openWrite("/var/log/app.log", OpenMode.APPEND);
+ * File db #= File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+ * FileWriter log #= File.openWrite("/var/log/app.log", OpenMode.APPEND);
  * ```
  *
  * `FileReader` is always read-only, so `File`.openRead takes no

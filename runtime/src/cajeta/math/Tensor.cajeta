@@ -25,8 +25,8 @@ import cajeta.lang.String;
  * int64[] shape = heap int64[2];
  * shape[0] = 2;
  * shape[1] = 3;
- * Tensor<float32> a = Tensor.zeros<float32>(shape);   // 2x3, C-order
- * Tensor<int32>   r = Tensor.arange<int32>(6);        // [0,1,2,3,4,5]
+ * Tensor<float32> a #= Tensor.zeros<float32>(shape);   // 2x3, C-order
+ * Tensor<int32>   r #= Tensor.arange<int32>(6);        // [0,1,2,3,4,5]
  * ```
  *
  * ## Ownership (RAII)

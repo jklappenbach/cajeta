@@ -83,10 +83,10 @@ import cajeta.math.Tensor;
 int64[] shp = heap int64[2];
 shp[0] = 2;
 shp[1] = 3;
-Tensor<float32> z = Tensor.zeros<float32>(shp);      // owned #Tensor, C-order, strides [3,1]
-Tensor<int32>   r = Tensor.arange<int32>(5);         // 1-D [0,1,2,3,4]
+Tensor<float32> z #= Tensor.zeros<float32>(shp);      // owned #Tensor, C-order, strides [3,1]
+Tensor<int32>   r #= Tensor.arange<int32>(5);         // 1-D [0,1,2,3,4]
 z.set2(1, 2, 9.0f);                                  // in-place write
-Tensor<float32> v = z.transpose();                   // view: v.isView()==true, shares z's Storage
+Tensor<float32> v #= z.transpose();                   // view: v.isView()==true, shares z's Storage
 ```
 Factories are **method-templated statics** — pass the element type explicitly:
 `Tensor.zeros<float32>(shp)`, `Tensor.full<int32>(shp, 7)`, `Tensor.of<int32>(data, shp)`,
@@ -97,8 +97,8 @@ int64[]` built by hand. `of<E>` copies the input data into a fresh `Storage`.
 ```cajeta
 import cajeta.math.DType;
 
-#DType dt = DType.of<float32>();          // == DType.f32(); reified from T
-#DType rt = DType.promote(DType.i32(), DType.f32());  // NEP-50: float32 (int absorbed by float, width kept)
+DType dt #= DType.of<float32>();          // == DType.f32(); reified from T
+DType rt #= DType.promote(DType.i32(), DType.f32());  // NEP-50: float32 (int absorbed by float, width kept)
 ```
 `DType.of<T>()` is a codegen intrinsic folded from `T`. Named factories use short names
 (`i32`/`f32`/`u8`/`bf16`/`f8e4m3`…) because the real primitive names are reserved
@@ -110,7 +110,7 @@ import cajeta.math.Tensor;
 import cajeta.math.TensorProtocol;
 
 TensorProtocol p = t.protocol();          // export: borrows t's Storage + metadata
-Tensor<?> w = Tensor.fromProtocol(p);     // rebuild a Tensor<X> sharing the SAME Storage, widened to Tensor<?>
+Tensor<?> w #= Tensor.fromProtocol(p);     // rebuild a Tensor<X> sharing the SAME Storage, widened to Tensor<?>
 if (w instanceof Tensor<float32>) {       // reified dtype guard
     Tensor<float32> back = (Tensor<float32>) w;   // reified-capture to the concrete type
     back.set2(0, 0, 9.0f);                // write shows through t (zero-copy)

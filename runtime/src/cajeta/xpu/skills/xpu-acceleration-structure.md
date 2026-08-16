@@ -34,7 +34,7 @@ AccelerationStructure scene = heap AccelerationStructure(boxes, n);
 AccelerationStructure mesh = heap AccelerationStructure(verts, nTris, 3u);
 
 // of(...): force the impl, overriding the Auto heuristic. AABB geometry ONLY.
-AccelerationStructure soft = AccelerationStructure.of(boxes, n, AsImpl.Software);
+AccelerationStructure soft #= AccelerationStructure.of(boxes, n, AsImpl.Software);
 ```
 
 `of` is a **static factory, not a constructor**, because a 3-arg AABB+impl ctor would

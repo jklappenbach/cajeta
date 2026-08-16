@@ -415,11 +415,12 @@ public class AsyncReader implements AsyncIterator<int8[]> {
         int8[] chunk = heap int8[sz];
         int32 n = this.read(chunk, 0, sz);
         if (n == 0) {
-            // `stack` (not `heap`) Optional: the AsyncIterator.next() contract
-            // returns a *borrow* (no `#` on the interface signature), exactly
-            // as ArrayStream/Channel do — a `heap` allocation here would need a
-            // `#`-marked return the interface doesn't have
-            // (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
+            // `stack` (not `heap`) Optional: AsyncIterator.next() is a plain-`T`
+            // return — transparent carry (spec §2.8), NOT a static borrow; the
+            // present path below hands out a title, exactly as Channel.receive
+            // does. What the un-`#`ed signature does forbid is returning a fresh
+            // allocation: `heap` here would need a `#`-marked return the
+            // interface doesn't have (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
             return stack Optional<int8[]>(false);   // terminal: stream exhausted
         }
         int8[] piece #= AsyncReader.copyExact(chunk, n);

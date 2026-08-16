@@ -27,10 +27,10 @@ concrete instantiation. This is the inverse of {@link Tensor#protocol}.
 import cajeta.math.Tensor;
 import cajeta.math.TensorProtocol;
 
-Tensor<float32> t = Tensor.of<float32>(data, shp);   // [[0,1,2],[3,4,5]]
-TensorProtocol p = t.protocol();                     // export: borrow + metadata
+Tensor<float32> t #= Tensor.of<float32>(data, shp);   // [[0,1,2],[3,4,5]]
+TensorProtocol p #= t.protocol();                     // export: borrow + metadata
 
-Tensor<?> w = Tensor.fromProtocol(p);                // import → erased Tensor<?>
+Tensor<?> w #= Tensor.fromProtocol(p);                // import → erased Tensor<?>
 if (!(w instanceof Tensor<float32>)) { /* wrong/unsupported dtype */ }
 Tensor<float32> back = (Tensor<float32>) w;          // reified-capture
 

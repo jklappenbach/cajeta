@@ -15,7 +15,7 @@ statically-typed `T` with **no unchecked downcast**. It resolves the name, check
 import cajeta.reflect.Class;
 import cajeta.lang.Optional;
 
-Optional<Shape> s = Class.heapInstance<Shape>("test.Circle");
+Optional<Shape> s #= Class.heapInstance<Shape>("test.Circle");
 if (s.isPresent()) {
     s.get().draw();   // s.get() is a Shape — virtual dispatch lands on Circle
 }

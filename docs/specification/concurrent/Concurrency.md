@@ -162,7 +162,7 @@ When the section to gate is *not* tied to a single piece of data — sequencing 
 Lock gate = heap Lock();
 
 public void doWork() {
-    #LockGuard g = gate.acquire();   // holds the lock; drop releases
+    LockGuard g #= gate.acquire();   // holds the lock; drop releases
     sharedThing.step1();
     log.write("step1 done");
     sharedThing.step2();

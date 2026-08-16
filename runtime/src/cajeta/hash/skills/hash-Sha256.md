@@ -30,10 +30,10 @@ import cajeta.hash.Sha256;
 import cajeta.lang.String;
 
 // 32 raw digest bytes — caller owns the returned array.
-int8[] digest = Sha256.hash(bytes, bytes.count());
+int8[] digest #= Sha256.hash(bytes, bytes.count());
 
 // 64 lowercase hex chars — the checksum-comparison shape.
-String hex = Sha256.hashHex(bytes, bytes.count());
+String hex #= Sha256.hashHex(bytes, bytes.count());
 ```
 
 `hashString(String)` / `hashStringHex(String)` are the same over a String's UTF-8 bytes.
@@ -47,7 +47,7 @@ import cajeta.lang.String;
 Sha256 sum = heap Sha256();
 sum.update(chunk1, chunk1.count());   // len is int64; pass an int64 literal (e.g. 7L)
 sum.update(chunk2, chunk2.count());
-String hex = sum.hex();               // finalize → 64-char lowercase hex
+String hex #= sum.hex();               // finalize → 64-char lowercase hex
 // string-compare hex against the manifest's published checksum
 ```
 

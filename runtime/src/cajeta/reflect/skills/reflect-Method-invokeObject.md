@@ -22,7 +22,7 @@ public class Factory { public Factory() { return; } public #Cell make() { return
 
 Factory f = heap Factory();
 Method m = Class.of(f).getMethod(0);   // make()
-Object o = m.invokeObject(f);          // o is OWNED — drop-tracked by this scope
+Object o #= m.invokeObject(f);          // o is OWNED — drop-tracked by this scope
 int32 v = Class.of(o).getInt32(o, 0);  // 42, read reflectively (no downcast needed)
 ```
 

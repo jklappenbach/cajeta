@@ -8,8 +8,8 @@ package cajeta.nucleo.frame;
  * expression:
  *
  * ```cajeta
- * Agg num = (c.price() * c.size()).sum();   // fused elementwise -> reduce
- * Agg den = c.size().sum();
+ * Agg num #= (c.price() * c.size()).sum();  // fused elementwise -> reduce
+ * Agg den #= c.size().sum();
  * ag.add((num / den).alias("vwap"));
  * ```
  *

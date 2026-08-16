@@ -76,7 +76,7 @@ import cajeta.reflect.Class;
 import cajeta.reflect.Constructor;
 
 Constructor ctor = Class.of(seed).getConstructor(0);
-Object o = ctor.heapInstance();             // owned #Object; drops on scope
+Object o #= ctor.heapInstance();             // owned #Object; drops on scope
 ```
 
 With args — find the 1-arg ctor `User(int32 startId)`, build with `startId = 99`:
@@ -86,11 +86,11 @@ User seed = heap User();
 Class<?> c = Class.of(seed);
 int32 i = 0;
 while (i < c.getConstructorCount()) {
-    Constructor ctor = c.getConstructor(i);
+    Constructor ctor #= c.getConstructor(i);
     if (ctor.getParameterCount() == 1) {
         int64[] args = heap int64[1];       // owned; length == getParameterCount()
         args[0] = (int64) 99;               // widen each arg, declared order
-        Object o = ctor.heapInstance(args); // owned new instance; id field == 99
+        Object o #= ctor.heapInstance(args); // owned new instance; id field == 99
     }
     i = i + 1;
 }

@@ -117,7 +117,7 @@ public class Worker {
 
 public class AnnotationsDemo {
     public static int32 run() {
-        Book d = Book.builder().title("Untitled").build();
+        Book d #= Book.builder().title("Untitled").build();
         int32 pages = d.pages;              // 100 — @Builder.Default fallback
         Rgb c = stack Rgb(230, 126, 34);
         int32 red = c.r();                  // @Value getter

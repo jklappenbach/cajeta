@@ -81,7 +81,7 @@ public final class AccelerationStructure {
      * overrides this per process (env wins). AABB geometry only (triangle-software
      * is a follow-up).
      *
-     *     AccelerationStructure soft = AccelerationStructure.of(boxes, n, AsImpl.Software);
+     *     AccelerationStructure soft #= AccelerationStructure.of(boxes, n, AsImpl.Software);
      */
     public static #AccelerationStructure of(float32[] aabbs, uint32 count,
                                             AsImpl impl) {

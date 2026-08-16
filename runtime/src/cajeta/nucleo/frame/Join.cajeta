@@ -6,7 +6,7 @@ package cajeta.nucleo.frame;
  * as `Join.LEFT`, not `2`:
  *
  * ```cajeta
- * Table<?> filled = orders.join(accounts, (OrdCols c, Sels s) -> {
+ * Table<?> filled #= orders.join(accounts, (OrdCols c, Sels s) -> {
  *     s.add(c.acct());
  * }, Join.INNER);
  * ```

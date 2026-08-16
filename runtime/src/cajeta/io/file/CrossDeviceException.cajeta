@@ -17,7 +17,7 @@ import cajeta.lang.String;
  * in a `Path` via `Path.of(...)` before calling it.
  *
  * ```cajeta
- * int8[] data = File.readAllBytes("/mnt/usb/report.pdf");
+ * int8[] data #= File.readAllBytes("/mnt/usb/report.pdf");
  * File.writeAllBytes("/home/julian/report.pdf", data, (int32) data.count());
  * Path.of("/mnt/usb/report.pdf").delete();   // unlink the original
  * ```

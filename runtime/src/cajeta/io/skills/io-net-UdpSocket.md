@@ -24,18 +24,18 @@ import cajeta.io.net.SocketAddress;
 import cajeta.io.net.RecvResult;
 
 // Bind to an ephemeral port on the IPv4 wildcard ("0.0.0.0:0" → kernel picks).
-#UdpSocket sock = UdpSocket.bind(SocketAddress.parse("0.0.0.0:0"));
+UdpSocket sock #= UdpSocket.bind(SocketAddress.parse("0.0.0.0:0"));
 
 // Learn the kernel-assigned local endpoint.
-#SocketAddress local = sock.localAddress();        // owned, you free it
+SocketAddress local #= sock.localAddress();        // owned, you free it
 
 // --- unconnected path: each datagram names its destination ---
 int8[] msg = ...;                                   // your payload
-SocketAddress dest = SocketAddress.parse("127.0.0.1:9000");
+SocketAddress dest #= SocketAddress.parse("127.0.0.1:9000");
 int32 sent = sock.sendTo(msg, 0, msg.length, dest); // bytes handed to kernel
 
 int8[] buf = heap int8[2048];
-#RecvResult r = sock.recvFrom(buf, 0, buf.length);  // owned result
+RecvResult r #= sock.recvFrom(buf, 0, buf.length);  // owned result
 int32 n = r.getCount();                             // payload bytes in buf[0..n)
 SocketAddress who = r.getFrom();                    // sender — reply target
 

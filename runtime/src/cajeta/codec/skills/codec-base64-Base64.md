@@ -59,7 +59,7 @@ public static #String toB64(int8[] bytes) {
 // signature AND be returned with the transfer operator, or the
 // borrow checker rejects it (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).
 public static #int8[] fromB64(String text) {
-    int8[] raw = Base64.decode(text);   // may throw Base64Exception
+    int8[] raw #= Base64.decode(text);   // may throw Base64Exception
     return #raw;
 }
 ```

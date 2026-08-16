@@ -410,7 +410,7 @@ trace (gated by `--stack-trace-capture`).
 
 ```cajeta
 try {
-    Connection c = Connection.builder().host(null).build();
+    Connection c #= Connection.builder().host(null).build();
 } catch (NullPointerException e) {
     log.warn("bad config: {}", e.getMessage());
 }

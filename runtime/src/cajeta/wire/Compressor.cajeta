@@ -10,7 +10,7 @@ package cajeta.wire;
  *
  * ```cajeta
  * Compressor c = Snappy();
- * int8[] block = c.compress(plain);
+ * int8[] block #= c.compress(plain);
  * ```
  */
 public interface Compressor {

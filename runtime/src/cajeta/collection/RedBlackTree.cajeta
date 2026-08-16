@@ -33,7 +33,7 @@ package cajeta.collection;
  * ## Example
  *
  * ```cajeta
- * #RedBlackTree<int32, string> idx = heap RedBlackTree<int32, string>();
+ * RedBlackTree<int32, string> idx = heap RedBlackTree<int32, string>();
  * idx.put(42, "answer");
  * idx.put(7, "lucky");
  *
@@ -43,7 +43,7 @@ package cajeta.collection;
  * int32 hi = idx.max();              // 42
  *
  * // Ascending key walk, ownership transfers to the caller.
- * #ArrayList<int32> keys = idx.keysInOrder();
+ * ArrayList<int32> keys #= idx.keysInOrder();
  * ```
  *
  * Each node is a `RedBlackNode`; ordering follows the same `<` / `>`
@@ -69,7 +69,7 @@ public final class RedBlackTree<K, V> {
      * Create an empty ordered map.
      *
      * ```cajeta
-     * #RedBlackTree<string, int32> counts = heap RedBlackTree<string, int32>();
+     * RedBlackTree<string, int32> counts = heap RedBlackTree<string, int32>();
      * counts.put("hits", 1);
      * ```
      *

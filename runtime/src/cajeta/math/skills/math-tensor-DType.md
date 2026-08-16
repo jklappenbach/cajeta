@@ -95,17 +95,17 @@ import cajeta.math.DType;
 
 public final class D {
     public static int32 run() {
-        #DType f32 = DType.f32();
+        DType f32 #= DType.f32();
         if (!f32.isFloating()) { return -1; }
         if (f32.isIntegral())  { return -2; }
         if (!f32.isSigned())   { return -3; }   // float is signed-by-sign-bit
         if (f32.bytes() != 4)  { return -4; }
 
-        #DType b = DType.boolType();
+        DType b #= DType.boolType();
         if (b.isNumeric())     { return -5; }    // bool stands alone
 
         // NEP-50: int + float keeps the float's width (not float64).
-        #DType r = DType.promote(DType.f16(), DType.i64());
+        DType r #= DType.promote(DType.f16(), DType.i64());
         if (!(r.kind() == 3 && r.bits() == 16)) { return -6; }   // float16
 
         // Reified type → descriptor; round-trips against the factory.

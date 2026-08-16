@@ -67,7 +67,7 @@ int8[] def = avroSchemaBytes();
 Schema s = heap Schema(#def);            // # transfers def into the Schema
 
 #int8[] bytes = codec.encode(order, s);  // T  -> owned bytes  (same schema...)
-#Order  back  = codec.decode(bytes, s);  // bytes -> owned T    (...both ways)
+Order  back  #= codec.decode(bytes, s);  // bytes -> owned T    (...both ways)
 ```
 
 Tagged is identical minus the `Schema` argument:
@@ -76,7 +76,7 @@ Tagged is identical minus the `Schema` argument:
 import cajeta.wire.Encoder;
 
 #int8[] bytes = codec.encode(order);     // Encoder<Order>, no schema
-#Order  back  = codec.decode(bytes);
+Order  back  #= codec.decode(bytes);
 ```
 
 To author a codec, `implements Encoder<T>` (or `SchemaEncoder<T>`) and return `heap`

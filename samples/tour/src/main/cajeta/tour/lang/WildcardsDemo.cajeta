@@ -145,7 +145,11 @@ public class WildcardsDemo extends DemoClass {
         // WildBox ctor borrow-stores its argument (`this.value = v`), so an
         // inline `heap Dog()` temporary would be dropped at ctor exit and
         // leave `value` dangling — the deferred-soundness trap
-        // (borrow field-stores are accepted until reference types land).
+        // (spec §4.2: keeping a plain parameter in a field is
+        // CAJETA_ERROR_CAPTURED_BORROW_PARAM — the fix is a `#T` formal so
+        // the call site must surrender, or a `#=` store for a genuine sink.
+        // The `WildBox(T v) { this.value = v; }` ctor above needs that same
+        // migration; it does not compile as written.)
         Dog wd = heap Dog();
         Cat wc = heap Cat();
         WildBox<Dog> bDog = heap WildBox<Dog>(wd);

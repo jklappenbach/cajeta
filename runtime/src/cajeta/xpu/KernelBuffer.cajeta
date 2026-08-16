@@ -290,7 +290,7 @@ public final class KernelBuffer<T> {
      *
      *     KernelBuffer<float32> all = heap KernelBuffer<float32>(n);
      *     all.upload(host);
-     *     KernelBuffer<float32> tail = all.slice(n / 2, n / 2);   // second half
+     *     KernelBuffer<float32> tail #= all.slice(n / 2, n / 2);   // second half
      *     kernel.launch(s, n / 2)(tail, ...);               // touches the tail
      *     s.sync();
      *

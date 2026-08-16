@@ -56,7 +56,7 @@ return 0. Loop until the return is 0:
 import cajeta.io.file.File;
 import cajeta.io.file.FileReader;
 
-#FileReader r = File.openRead("/var/log/app.log");
+FileReader r #= File.openRead("/var/log/app.log");
 int8[] buf = heap int8[4096];
 int32 n = r.read(buf, 4096);
 while (n != 0) {
@@ -78,7 +78,7 @@ import cajeta.io.file.File;
 import cajeta.io.file.FileWriter;
 import cajeta.io.file.OpenMode;
 
-#FileWriter w = File.openWrite("/tmp/out.txt", OpenMode.WRITE);   // truncate-or-create
+FileWriter w #= File.openWrite("/tmp/out.txt", OpenMode.WRITE);   // truncate-or-create
 w.writeString("first line\n");
 w.writeString("second line\n");
 w.flush();

@@ -58,7 +58,7 @@ String hit = index.get(42);             // value, or K/V zero value on miss
 boolean known = index.containsKey(7);   // disambiguate miss from present-and-zero
 int32 lo = index.min();                 // smallest key
 
-#ArrayList<int32> keys = index.keysInOrder();  // owned, see below
+ArrayList<int32> keys #= index.keysInOrder();  // owned, see below
 ```
 
 `RedBlackTree<K, V>` is interchangeable for this and adds `max()`:

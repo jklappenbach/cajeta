@@ -120,7 +120,7 @@ stack LocalDate rolled = next.toLocalDate();             // 2026-06-06 (decompos
 // Cross into the machine timeline by supplying a zone offset.
 stack Instant at = next.toInstant(ZoneOffset.utc());
 
-#String text = next.iso();                               // owned "2026-06-06T00:30"; caller frees
+String text #= next.iso();                               // owned "2026-06-06T00:30"; caller frees
 ```
 
 Note the contrast: `tod.plusHours(1)` alone would wrap to `00:30` on the *same*

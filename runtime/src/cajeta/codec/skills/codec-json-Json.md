@@ -85,12 +85,12 @@ a.id = 99;
 a.score = 123456789L;
 a.active = true;
 
-int8[] bytes = Json.toBytes<JsonNum>(a);             // {"id":99,...}
-JsonNum b = Json.parse<JsonNum>(bytes, (int64) bytes.count());
+int8[] bytes #= Json.toBytes<JsonNum>(a);             // {"id":99,...}
+JsonNum b #= Json.parse<JsonNum>(bytes, (int64) bytes.count());
 // b.id == 99, b.score == 123456789, b.active == true
 
 // Parse straight from a String literal (no DOM alloc):
-JsonNum c = Json.parse<JsonNum>("{\"id\":7,\"score\":99,\"active\":false}");
+JsonNum c #= Json.parse<JsonNum>("{\"id\":7,\"score\":99,\"active\":false}");
 ```
 
 ## Example — Tier-3 dynamic DOM
@@ -99,9 +99,9 @@ JsonNum c = Json.parse<JsonNum>("{\"id\":7,\"score\":99,\"active\":false}");
 import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 
-JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");   // owned DOM
+JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");   // owned DOM
 int64 id = v.asObject().get("id").asInt64();                  // 1
-#String name = v.asObject().get("name").asString();           // owned String view
+String name #= v.asObject().get("name").asString();           // owned String view
 // v drops at scope exit, freeing the whole tree.
 ```
 

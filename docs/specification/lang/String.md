@@ -69,13 +69,16 @@ encoding interchange, locale-aware case folding, graphemes) is still
 - **Immutable.** Once constructed, a String's bytes never change.
   `StringBuilder` (see below) is the companion for incremental
   construction.
-- **Strings are never dropped.** Cajeta-allocated String instances
-  (and their UTF-8 payloads) persist for the process's lifetime once
-  created. The drop chain does NOT register String allocations; no
-  per-string reclamation runs at scope exit. This makes view-mode
-  Strings (substring slices, literal views, JSON token spans)
-  unconditionally safe — the parent's bytes are guaranteed live for
-  as long as any code can reach the view.
+- **Owned Strings are dropped; borrowed and static forms are not.** The
+  tag decides what scope exit reclaims: an **owned sole root** (no bits)
+  frees through the array owner-drop seam, an **rc-staked** window
+  (bit31) releases its stake, and a **static** root (bit29, literals) or
+  **stakeless borrow** (bit30) reclaims nothing; in every case the
+  wrapper itself is freed (`__cajeta_string_drop`, claim-gated). A
+  stakeless view is therefore NOT unconditionally safe — it must not
+  outlive its parent; copy it, or take a window that holds an rc stake.
+  This is also why a `#String` result must be received with `#=` (spec
+  §4.6): the receiving local's drop is what frees it.
 - **The tagged core (6.2.2).** The length word IS the discriminator:
   - **Inline** (`len <= 12`, no tag bits) — the text lives in the
     wrapper itself; self-contained, no buffer, no rc. Every
@@ -272,8 +275,10 @@ Status: **planned.** None of the static factories below
 (`fromUtf8`, `fromBytes`, `repeat`, `join`, `fromCodepoint(s)`,
 `of(...)`) exist in `String.cajeta` today. What ships is two
 instance constructors: the no-arg `String()` (empty, owned) and the
-view-mode `String(#int8[] bytes, int32 byteLength)` (`mode = 1`,
-pinned by `test/parser/StringViewCtorTests.cpp`). String literals
+ownership-transfer `String(#int8[] bytes, int32 byteLength)`, which
+ADOPTS the caller's buffer (`<= 12 B` copies Inline and frees it
+immediately; longer payloads become this String's owned root), pinned
+by `test/parser/StringViewCtorTests.cpp`. String literals
 are lowered directly to view-mode instances by the compiler. The
 factory surface below is the design target:
 
@@ -654,16 +659,27 @@ Grapheme-aware reverse needs Unicode tables; see v2 plan below.
 
 ## Memory model
 
-> **Implementation status.** The owned/view drop distinction this
-> section describes is **not yet wired**. Because the type system
-> currently collapses owned and borrowed `String` into one type, the
-> drop chain can't safely free String locals, so helper-produced
-> Strings (`concat`/`substring`/`toUpperCase`/…) presently leak at
-> scope exit (`test/parser/OwnedStringDropTests.cpp`). The
-> source's drop chain is *designed* to reclaim owned bytes once an
-> `OwnedString` marker lands; `String.empty()` (the empty-string
-> singleton) and the `transfer-on-view-string` lint are likewise
-> planned. Read the rules below as the design target.
+> **Implementation status — SUPERSEDED; the rules below are history.**
+> The owned/view distinction IS wired, and the never-drop policy this
+> section states was retired by the tagged-core re-core (see the banner
+> at the top of this file). `lenTag` carries the discriminator: owned
+> sole root (no bits), rc stake (bit31), stakeless borrow (bit30),
+> static root (bit29). An owned `String` local registers
+> `__cajeta_string_drop` at scope exit (`LocalVariableDeclaration.cpp`),
+> which tag-dispatches in `__cajeta_string_drop_claimed`
+> (`runtime/native/cajeta_rt_core.c`): SHARED releases this wrapper's
+> stake, OWNED frees the sole root, BORROW and STATIC are no-ops.
+> Non-escaping concat results are bump-allocated and reclaimed by the
+> frame-arena reset. Nothing here leaks, and the proposed `OwnedString`
+> marker was abandoned rather than deferred.
+>
+> Two consequences that invert what is written below: a bit30 view holds
+> no stake, so a view outliving its parent reads freed memory; and
+> `#`-transfer DOES change reclamation, since it deactivates the local's
+> drop entry. `#String`-returning helpers (`substring`, `trim`,
+> `toUpperCase`, `toLowerCase`, `replace`) must be received with `#=` —
+> a plain `=` is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER` (spec §4.6).
+> Still planned: `String.empty()` (the empty-string singleton).
 
 - **Strings are never dropped.** This is the global lifetime rule:
   Cajeta-allocated String instances and their UTF-8 payloads persist

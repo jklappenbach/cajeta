@@ -23,7 +23,7 @@ import cajeta.error.RecoverableException;
  * println / stderr writer:
  *
  * ```cajeta
- * #Stream<R> s = heap MapOrLogStream<T, R>(
+ * Stream<R> s = heap MapOrLogStream<T, R>(
  *     #xs.stream(),
  *     (x) -> risky(x),
  *     (x, e) -> println("warn[" + x + "]: " + e.message));
@@ -43,7 +43,7 @@ public class MapOrLogStream<T, R> extends Stream<R> {
      * `RecoverableException` to `logger` before dropping that element.
      *
      * ```cajeta
-     * #Stream<R> s = heap MapOrLogStream<T, R>(
+     * Stream<R> s = heap MapOrLogStream<T, R>(
      *     #source,
      *     (x) -> risky(x),
      *     (x, e) -> println(e.message));

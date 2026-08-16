@@ -29,12 +29,12 @@ import cajeta.math.Tensor;
 int64[] shp = heap int64[2];
 shp[0] = 2;
 shp[1] = 3;
-Tensor<float32> z = Tensor.zeros<float32>(shp);   // 2x3, strides [3,1]
-Tensor<int32>   o = Tensor.ones<int32>(shp);
-Tensor<int32>   f = Tensor.full<int32>(shp, 7);   // value arg typed E
-Tensor<int32>   r = Tensor.arange<int32>(6);      // 1-D [0,1,2,3,4,5]
+Tensor<float32> z #= Tensor.zeros<float32>(shp);   // 2x3, strides [3,1]
+Tensor<int32>   o #= Tensor.ones<int32>(shp);
+Tensor<int32>   f #= Tensor.full<int32>(shp, 7);   // value arg typed E
+Tensor<int32>   r #= Tensor.arange<int32>(6);      // 1-D [0,1,2,3,4,5]
 int32[] data = { 10, 20, 30, 40, 50, 60 };
-Tensor<int32>   t = Tensor.of<int32>(data, shp);  // copies data into fresh Storage
+Tensor<int32>   t #= Tensor.of<int32>(data, shp);  // copies data into fresh Storage
 ```
 
 The factory set: `zeros<E>(shape)`, `ones<E>(shape)`, `full<E>(shape, value)`,
@@ -58,14 +58,14 @@ any number of aliases all fall out of scope together — no leak, no double-free
 ```cajeta
 import cajeta.math.Tensor;
 
-Tensor<int32> a = Tensor.arange<int32>(4);   // [0,1,2,3]; a owns the Storage
-Tensor<int32> b = a.alias();                 // #Tensor — non-owning whole-array view
+Tensor<int32> a #= Tensor.arange<int32>(4);   // [0,1,2,3]; a owns the Storage
+Tensor<int32> b #= a.alias();                 // #Tensor — non-owning whole-array view
 // b.isView() == true,  a.isView() == false
 // b.base()   == a,     a.base()   == null
 a.set1(2, 99);                               // write through a ...
 int32 x = b.get1(2);                         // ... shows through b: 99
-Tensor<int32> c = a.alias();
-Tensor<int32> d = b.alias();                 // base() of an alias-of-alias is the owning root
+Tensor<int32> c #= a.alias();
+Tensor<int32> d #= b.alias();                 // base() of an alias-of-alias is the owning root
 // a, b, c, d all drop here — buffer freed once
 ```
 

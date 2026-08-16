@@ -20,9 +20,15 @@
 // and opposite facts about who frees `w`; `#=` on the first is what tells them
 // apart.
 //
-// It lands as a WARNING under spec §5.5 (`CAJETA_OWNED_BIND=warn`) because 148
-// is not a number an error can ship against — that is 3.3.3's lesson, paid for
-// once already by Unit 3's gate.
+// It ships as an ERROR by default, exactly as §4.6 states the rule. Spec §5.5's
+// migration instrument is available for the sweep: `CAJETA_OWNED_BIND=warn`
+// demotes it to a reported warning so ONE build enumerates every site instead
+// of one build per site — off by default, closed by flipping back, not a
+// permanent severity knob. Sized before landing (3.3.3's lesson, paid for once
+// by Unit 3's gate): the real population is 1791 declaration sites across 550
+// callees. The 148 above was a 12x undercount — two of the three harvested
+// builds stopped early on CAPTURED_BORROW_PARAM, and two libraries were never
+// harvested at all.
 
 #include <string>
 

@@ -31,7 +31,7 @@ import cajeta.time.Duration;
  * ## Shape
  *
  * ```cajeta
- * Server s = Server.bind(SocketAddress.parse("0.0.0.0:8080"),
+ * Server s #= Server.bind(SocketAddress.parse("0.0.0.0:8080"),
  *                        (conn) -> handle(conn));
  * scope {
  *     spawn s.runAsync();                 // accept loop runs on a fiber

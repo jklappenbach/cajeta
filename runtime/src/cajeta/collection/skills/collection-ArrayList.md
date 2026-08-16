@@ -31,7 +31,7 @@ xs.add(20);
 xs.add(30);                       // count() == 3
 int32 first = xs.get(0);          // 10
 xs.set(1, 25);                    // [10, 25, 30]
-int32 sum = xs.stream().reduce(0, (a, b) -> a + b);   // 55
+int32 sum #= xs.stream().reduce(0, (a, b) -> a + b);   // 55
 ```
 
 `T` may be primitive (`ArrayList<int32>`) or class-typed (`ArrayList<Point>` holding

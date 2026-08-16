@@ -17,7 +17,7 @@ package cajeta.process;
  * ```cajeta
  * Command cmd = heap Command(#argv);
  * cmd.captureStdout();
- * ProcessResult r = cmd.run();
+ * ProcessResult r #= cmd.run();
  * if (r.launched() && r.code() == 0) {
  *     int8[] out = r.stdout();
  * }

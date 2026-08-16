@@ -19,7 +19,7 @@ package cajeta.lang.stream;
  * time as an `Optional`; an empty `Optional` marks exhaustion.
  *
  * ```cajeta
- * #Stream<K> keys = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
+ * Stream<K> keys = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
  * Optional<K> head = keys.next();
  * while (head.isPresent()) {
  *     process(head.get());
@@ -41,7 +41,7 @@ public class HashMapKeyStream<K, V> extends Stream<K> implements Splittable<K> {
      * internal arrays rather than constructed directly.
      *
      * ```cajeta
-     * #Stream<K> s = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
+     * Stream<K> s = heap HashMapKeyStream<K, V>(map.keys, map.state, map.cap);
      * ```
      */
     public HashMapKeyStream(MapEntry<K, V>[] slots, int8[] ctrl, int64 cap) {

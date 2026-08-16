@@ -112,7 +112,7 @@ public final class Launch {
         }
 
         // Snapshot what got bound (headless-tolerant, never throws).
-        #IfxInfo info = IfxInfo.describe();
+        IfxInfo info #= IfxInfo.describe();
         String boundName = info.windowBackendName();             // e.g. "win32" | "null"
         return IfxInfo.version();
     }

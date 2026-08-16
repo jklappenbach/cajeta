@@ -378,9 +378,12 @@ move is always **rc-neutral** (§6.2).
 - **`#` is the zero-cost escape path.** At an escape site the compiler's resolution costs a copy
   or a count (§4.2); `list.add(#s)` costs **neither** — the stake transfers. The implicit
   machinery makes naive code *sound*; `#` remains how deliberate code makes it *free*.
-- **Signatures generalize cleanly:** `#T f()` = the caller receives a stake (unique or shared);
-  `T f()` = the caller receives a borrow (must not outlive the receiver/argument — rules
-  unchanged). `#T` formals still mean "callee takes the stake."
+- **Signatures generalize cleanly:** `#T f()` = **forced transfer** — the caller receives a
+  stake (unique or shared) and must receive it with `#=`
+  (`stdlib-ownership-convention-spec` §4.6); `T f()` = **transparent carry** — the caller
+  receives whatever ownership state the callee's FRAME held, decided at run time by the
+  return flag, so it is a borrow exactly where the body returns nothing but interior reads
+  (§2.2/§2.8). `#T` formals still mean "callee takes the stake."
 - **The explicit trichotomy:** **borrow** is the default (`=`); **`#`** is the explicit move;
   **`clone()`** is the explicit copy/detach; **share has no spelling** — it is exclusively a
   compiler-inserted resolution, preserving the no-annotation identity (§0).

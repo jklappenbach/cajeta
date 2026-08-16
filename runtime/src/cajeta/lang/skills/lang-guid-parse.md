@@ -53,12 +53,12 @@ import cajeta.lang.GuidFormatException;
 import cajeta.lang.String;
 
 // Happy path: parse → toString is identity on canonical lowercase text.
-Guid g = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+Guid g #= Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
 // g is owned here; uppercase input would normalize to lowercase on toString().
 
 // Untrusted input: reject at the boundary instead of crashing.
 try {
-    Guid id = Guid.parse(userInput);   // userInput: #String, consumed
+    Guid id #= Guid.parse(userInput);   // userInput: #String, consumed
     use(#id);
 } catch (GuidFormatException e) {
     // wrong length, misplaced '-', or non-hex digit — reject userInput

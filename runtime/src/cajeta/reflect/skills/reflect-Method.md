@@ -87,7 +87,7 @@ Class<?> c = Class.of(u);
 int32 result = -1;
 int32 i = 0;
 while (i < c.getMethodCount()) {
-    Method m = c.getMethod(i);
+    Method m #= c.getMethod(i);
     if (m.getParameterCount() == 1) {       // addId(delta) -> id + delta
         result = m.invokeInt32(u, (int64) 5);   // 15; no heap int64[]
     }
@@ -99,7 +99,7 @@ Reference-returning, with the owned result read back reflectively:
 
 ```cajeta
 Method m = Class.of(f).getMethod(0);   // #Cell make()
-Object cell = m.invokeObject(f);       // owned; ownership from `heap Cell`
+Object cell #= m.invokeObject(f);       // owned; ownership from `heap Cell`
 int32 v = (cell == null) ? -1 : Class.of(cell).getInt32(cell, 0);
 ```
 

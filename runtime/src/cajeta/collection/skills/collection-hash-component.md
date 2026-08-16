@@ -114,7 +114,7 @@ m.put(1, 100);
 m.put(2, 200);
 
 // Terminal: count / forEach drain the stream by pulling next() to exhaustion.
-int32 n = m.keys().count();                 // 2
+int32 n #= m.keys().count();                 // 2
 m.values().forEach((int32 v) -> total = total + v);
 
 // Manual pull: next() returns Optional<Pair<K,V>>, present until exhausted.

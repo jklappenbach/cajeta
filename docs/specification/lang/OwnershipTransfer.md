@@ -13,9 +13,10 @@
 > and the body-side return/re-transfer escape check) are **shipped**:
 > `CAJETA_ERROR_TRANSFER_REQUIRED` and `CAJETA_ERROR_BORROW_PARAM_ESCAPES`
 > are thrown from `MethodCallExpression.cpp`, `CreatorRest.cpp`, and
-> `Statement.cpp`. The two remaining body-side shapes — **field-store of a
-> borrow** and **closure-capture of a borrow** — are deliberately deferred
-> (see the end of this doc and [`BorrowSoundness`](BorrowSoundness.md)).
+> `Statement.cpp`. Field-store of a borrow is no longer deferred: it is
+> rejected by `CAJETA_ERROR_CAPTURED_BORROW_PARAM` (spec §4.2). One body-side
+> shape remains deliberately deferred — **closure-capture of a borrow** (see
+> the end of this doc and [`BorrowSoundness`](BorrowSoundness.md)).
 
 ## Motivation
 
@@ -249,7 +250,7 @@ future phase pending the reference / lifetime feature that would let
 the language reason about whether the storing object's lifetime is
 bounded by the borrow's lifetime.
 
-### Field-store of borrow: deliberately unchecked (deferred)
+### Field-store of borrow: rejected (`CAJETA_ERROR_CAPTURED_BORROW_PARAM`)
 
 > **Partly addressed in rev 2.** The field store itself is still allowed — and the
 > reasoning below (index / cache collections legitimately hold values owned
@@ -259,9 +260,14 @@ bounded by the borrow's lifetime.
 > leaves the method holding a lend of a dying local, that is
 > `CAJETA_ERROR_DANGLING_LEND`. The general cross-procedure case remains deferred.
 >
-> **Further addressed by title-stores.** The store is still not *rejected*, but it
-> is no longer silent: `this.f = param`, where `param` is a formal some callers
-> surrender, warns (`CAJETA_WARN_PLAIN_RETAIN_STORE`). That case is not the
+> **Superseded by Unit 3's capture check.** For the common shape the store is
+> now *rejected*, not merely loud: `this.f = param`, where `param` is a plain
+> (non-`#`) class-typed formal and the destination is a direct `this.`-field or
+> `this.`-element slot, is the hard error `CAJETA_ERROR_CAPTURED_BORROW_PARAM`
+> (spec §4.2). `CAJETA_WARN_PLAIN_RETAIN_STORE` remains for the wider
+> runtime-conditional-owner shapes that check does not reach — a non-`this`
+> receiver, a nested path such as `this.head.prev = param`, or a flagged local
+> rather than a formal as the source. That case is not the
 > legitimate indexing pattern below — it is a store that borrows while the armed
 > drop entry frees `param` at callee exit, leaving the field dangling on exactly
 > the calls that transferred. It was the most recurring use-after-free family in
@@ -275,9 +281,17 @@ bounded by the borrow's lifetime.
 > particular is still the caller's burden until reference types land.
 
 Field-store of a plain-`T` parameter — `this.f = param;` inside a
-ctor or setter — is **not** rejected. It stays legal for user classes,
-where parking a value whose lifetime lives elsewhere is a legitimate
-design the compiler cannot second-guess.
+ctor or setter — is **rejected**: `CAJETA_ERROR_CAPTURED_BORROW_PARAM`
+(spec §2.4, §4.2), thrown from `Scope::rejectCapturedBorrowParam`. Three
+spellings are correct instead: store with `#=`, which records whichever mode
+the caller sent so one body serves a lend and a transfer (the sink model
+§2.3 — how `Optional` and `ArrayStream` are written); declare the formal `#T`
+to demand ownership outright (§2.4); or copy with `this.f = param.clone()`.
+The check is deliberately narrow (§7.2): it fires only when the source is a
+plain formal of a title-bearing class type — directly, or through a
+straight-line local — stored by a direct `this.field = p` or
+`this.slots[i] = p`. A nested path such as `this.head.prev = p` writes into
+another object's field and stays legal.
 
 > **How the stdlib collections spell it.** Collection key and element
 > parameters are plain `K`/`V`: `HashMap.put`, `HashSet.add`, `Cache.put`,
@@ -394,14 +408,17 @@ keep a borrow). Both halves earn their place.
    rather than an owned slot is the `owned-array-element-move`
    defect, and the title tracking for that shape is still open.
 
-2. **`#T` on the return position.** The grammar already supports `#T`
-   on returns (ownership transfer from callee to caller). Symmetrically,
-   should there be a caller-side annotation at the receiving end? E.g.
-   `#Foo x = somefn();` to acknowledge "I'm taking ownership of what
-   somefn returned." Currently the receiving local just registers a
-   fresh drop entry. Adding caller-side acknowledgement would be
-   symmetric but probably not load-bearing unless a future feature
-   benefits from it.
+2. **`#T` on the return position — CLOSED (spec §4.6, 2026-08-15).** The
+   caller-side acknowledgement exists and is required: a `#T` result must be
+   received with `#=` (`Foo x #= somefn();`); a plain `=` is
+   `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`
+   (`src/cajeta/ownership/OwnedBindCheck.cpp`), enforced today at the
+   DECLARATION position — the assignment position (`x = f()`, `this.f = f()`)
+   is covered by the rule as stated but not yet rejected (plan 8.2.12). It is
+   load-bearing exactly because it makes an acquisition legible without
+   opening the callee: `int8[] w #= s.toBytes()` frees, `int8[] w = s.trimView()`
+   does not. Note the marker goes on the BINDING, not the type —
+   `#Foo x = somefn();` is `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`.
 
 3. **`#T` and templates.** When the formal is `#T` where T is a
    template parameter, the requirement should apply only when the

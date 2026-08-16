@@ -60,10 +60,14 @@ Point r #= p;     // ERROR — CAJETA_ERROR_MOVE_OF_BORROW
 The first two split by position, and the split is the whole rule: **a store
 uses `#=`; everything else uses `#v`.**
 
-It **never** goes on the receiving local's *declaration*. The receiver is
-declared plainly — `Point q = this.make();` — because the transfer is already
-expressed by the signature, the move expression, or the `#=` operator itself.
-One transfer marker per hand-off.
+It **never** goes in the receiving local's *type* — `#Point q = …` is
+`CAJETA_ERROR_TYPE_TRANSFER_RETIRED` ("a local's role comes from its
+initializer"). The **binding** does carry a marker when the callee declares a
+transfer: a `#T` result must be received with `#=` — `Point q #= this.make();`
+— because that is what makes the acquisition visible without opening the
+callee. A plain `=` there is `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`
+(spec §4.6). A plain-`T` result still binds with a plain `=`, since it carries
+whatever mode the callee's frame held.
 
 > **Deprecated:** stores were once spelled `dst = #v`. That still compiles and
 > still transfers, but warns and becomes an error in a later release. Write
@@ -82,7 +86,7 @@ public class Owners {
     public void run() {
         Point a = heap Point(7, 24);
         int32 d = this.consume(#a);   // a is moved from this line on
-        Point q = this.make();        // plain declaration receives ownership
+        Point q #= this.make();       // `#Point` result — `#=` records the acquisition
         int32 e = q.distSq();
     }
 }

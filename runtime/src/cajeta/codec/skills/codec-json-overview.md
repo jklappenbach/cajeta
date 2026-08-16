@@ -94,7 +94,7 @@ import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 import cajeta.lang.String;
 
-JsonValue v = Json.parse("{\"id\":1,\"name\":\"alice\"}");
+JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");
 int64 id = v.asObject().get("id").asInt64();       // 1
 String name = v.asObject().getString("name").get();
 ```
@@ -119,8 +119,8 @@ class docs):
 ```cajeta
 import cajeta.codec.json.Json;
 
-int8[] bytes = Json.toBytes<User>(u);              // {"id":7,"name":"alice"}
-User v = Json.parse<User>(bytes, (int64) bytes.count());
+int8[] bytes #= Json.toBytes<User>(u);              // {"id":7,"name":"alice"}
+User v #= Json.parse<User>(bytes, (int64) bytes.count());
 ```
 
 ## Deeper

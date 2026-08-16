@@ -46,11 +46,11 @@ public class Book {
 skips that setter:
 
 ```cajeta
-Book b = Book.builder()
+Book b #= Book.builder()
     .title("The Mythical Man-Month")
     .pages(322)
     .build();
-Book d = Book.builder().title("Untitled").build();
+Book d #= Book.builder().title("Untitled").build();
 System.stdout.println("default pages = " + d.pages);
 ```
 

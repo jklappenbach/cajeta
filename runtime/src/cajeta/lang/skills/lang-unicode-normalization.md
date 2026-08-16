@@ -14,7 +14,7 @@ normalize both before comparing (§7.2):
 ```cajeta
 String a = "café";           // composed é
 String b = "café";     // e + combining acute (conceptually)
-boolean same = a.nfc().equals(b.nfc());   // true
+boolean same #= a.nfc().equals(b.nfc());   // true
 ```
 
 `isNfc()` / `isNfd()` answer EXACTLY (quick-check fast path, transform

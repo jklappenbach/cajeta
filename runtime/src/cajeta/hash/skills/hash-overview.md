@@ -99,7 +99,7 @@ import cajeta.hash.Sha256;
 Sha256 sum = heap Sha256();
 sum.update(chunk1, chunk1.count());
 sum.update(chunk2, chunk2.count());
-String hex = sum.hex();             // #String, owned; terminal — state consumed
+String hex #= sum.hex();             // #String, owned; terminal — state consumed
 // string-compare hex against the published checksum
 ```
 
