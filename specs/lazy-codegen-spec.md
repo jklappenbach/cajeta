@@ -66,6 +66,18 @@ reached without a lookup have no interception point.
   `__cajeta_register_class`; nothing looks that up, so a lazy `#ClassObject`
   would simply never register and reflection would fail silently at runtime —
   a worse failure than "Symbols not found", because it is quiet.
+- **2.2.1** The eagerly registered set is the **existing reflection keep-set**,
+  not every class. `Class.heapInstance<T>(name)` is documented as the "primary
+  bounded-reflection entry point + DCE keep token": the compiler injects the
+  bound from the `<T>` token, so the families reachable by reflection are
+  already statically derivable. Lazy codegen reuses that keep-set rather than
+  defining a second rule — the question "what must survive because reflection
+  might want it" is the same question AOT dead-code elimination already answers,
+  and the two must not answer it differently.
+- **2.2.2** Unbounded `Class.forName(name)` returns `Class<?>` and consults the
+  runtime registry directly, so it can only find what was registered. Its
+  behaviour under lazy codegen is whatever it already is under AOT DCE; this
+  capability does not change it, and does not make it stronger.
 - **2.3** When a class's static initialisers run at dylib init, they are emitted
   eagerly, for the same reason.
 - **2.4** Reflective thunks (`__cajeta_<canonical>_reflect_invoke` / `_new`) are
