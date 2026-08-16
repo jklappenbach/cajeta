@@ -16,14 +16,28 @@ public class MxColumn {
     int32 blockSize;        // MX block size (metadata)
     int64 byteLen;
 
-    /** Logical mxfp4 view over packed bytes. Consumes the column. */
+    /**
+     * Logical mxfp4 view over packed bytes. `packed` is stored with `#=`, so
+     * the wrapper carries the CALLER's mode (spec §2.3): `heap MxColumn(
+     * #packed, ...)` hands it the title and the wrapper's drop reclaims the
+     * column, while a plain argument only LENDS — the caller keeps the title
+     * and must outlive the view. Both are live here: {@link #importArrow}
+     * builds a fresh column and surrenders it, {@link #mxfp4} forwards
+     * whatever mode its own caller supplied. Internal — use the factories.
+     */
     public MxColumn(Column<uint8> packed, int32 blockSize, int64 byteLen) {
         this.packed #= packed;
         this.blockSize = blockSize;
         this.byteLen = byteLen;
     }
 
-    /** Wrap packed mxfp4 bytes (a view — no re-encode). */
+    /**
+     * Wrap packed mxfp4 bytes — no re-encode. A mode-FORWARDING wrapper:
+     * `#packed` hands on whatever mode arrived here, so `mxfp4(col, n)` yields
+     * a borrowing view over a column the caller still owns, and
+     * `mxfp4(#col, n)` yields one that owns it. The plain formal is what makes
+     * that choice the caller's.
+     */
     public static #MxColumn mxfp4(Column<uint8> packed, int32 blockSize) {
         int64 n = packed.size();
         return heap MxColumn(#packed, blockSize, n);
