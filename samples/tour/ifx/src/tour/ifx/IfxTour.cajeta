@@ -84,9 +84,9 @@ public final class IfxTour {
         WindowBackend wb = BackendRegistry.instance().selectWindow(true);
         Window w = wb.createWindow("ifx tour", 640, 480);
         IfxTour.check(w == null, "window: Null createWindow yields no window");
-        WindowEvent[] events = wb.poll(w);
+        WindowEvent[] events #= wb.poll(w);
         IfxTour.check(events == null, "window: Null poll yields no events");
-        LifecyclePhase[] phases = wb.pollLifecycle(w);
+        LifecyclePhase[] phases #= wb.pollLifecycle(w);
         IfxTour.check(phases == null, "window: Null pollLifecycle yields no phases");
         Surface s = wb.surfaceOf(w);
         IfxTour.check(s == null, "window: Null surfaceOf yields no surface");
@@ -106,7 +106,7 @@ public final class IfxTour {
     static void runInfo() {
         System.stdout.println("");
         System.stdout.println("-- IfxInfo: facade snapshot --");
-        IfxInfo info = IfxInfo.describe();
+        IfxInfo info #= IfxInfo.describe();
         System.stdout.println("  version=" + IfxInfo.version()
                             + " window='" + info.windowBackendName()
                             + "' input='" + info.inputBackendName()

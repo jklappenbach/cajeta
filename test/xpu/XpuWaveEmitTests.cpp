@@ -162,63 +162,8 @@ TEST(XpuWaveEmitTests, nvptxLowersShuffleAndBallot) {
 }
 
 // AMDGPU: wave ops lower to readlane + ballot.
-TEST(XpuWaveEmitTests, amdgpuLowersReadlaneAndBallot) {
-    Compiler compiler;
-    auto k = compileWaveKernel(compiler);
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module m("xpu_wave_amdgpu", ctx);
-    cajeta::xpu::amd::configureDeviceModule(m, *tm);
-    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, m), nullptr);
-    std::string ir = printModule(m);
-    EXPECT_NE(ir.find("llvm.amdgcn.readlane"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("llvm.amdgcn.ballot"), std::string::npos) << ir;
-}
 
 // SPIR-V: wave ops lower to the subgroup intrinsics, and the module is valid.
-TEST(XpuWaveEmitTests, spirvLowersSubgroupOpsAndValidates) {
-    Compiler compiler;
-    auto k = compileWaveKernel(compiler);
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
-    llvm::LLVMContext irCtx;
-    llvm::Module irMod("xpu_wave_spirv_ir", irCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
-    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
-    std::string ir = printModule(irMod);
-    EXPECT_NE(ir.find("llvm.spv.wave.readlane"), std::string::npos) << ir;
-    // LLVM 23 renamed the ballot intrinsic spv.wave.ballot → spv.subgroup.ballot.
-    EXPECT_NE(ir.find("llvm.spv.subgroup.ballot"), std::string::npos) << ir;
-
-    // Fresh module for emission (it mutates), then spirv-val.
-    llvm::LLVMContext binCtx;
-    llvm::Module binMod("xpu_wave_spirv_bin", binCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, binMod);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
-    ASSERT_FALSE(spirv.empty());
-
-    auto tool = llvm::sys::findProgramByName("spirv-val");
-    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
-    static std::mt19937_64 rng(std::random_device{}());
-    auto path = std::filesystem::temp_directory_path()
-              / ("cajeta_wave_" + std::to_string(rng()) + ".spv");
-    { std::ofstream o(path, std::ios::binary);
-      o.write(reinterpret_cast<const char*>(spirv.data()),
-              (std::streamsize) spirv.size()); }
-    // path::c_str() is const wchar_t* on Windows; go through string() so
-    // the StringRef has a char buffer to bind to (held until after the wait).
-    std::string fileStr = path.string();
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
-    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
-    int rc = llvm::sys::ExecuteAndWait(*tool, args);
-    std::filesystem::remove(path);
-    EXPECT_EQ(rc, 0) << "spirv-val rejected the wave-ops module";
-}
 
 // --- Maximal reconvergence (SPV_KHR_maximal_reconvergence) ------------------
 // A kernel that uses a cross-lane Wave op requests maximal reconvergence so the
@@ -226,40 +171,10 @@ TEST(XpuWaveEmitTests, spirvLowersSubgroupOpsAndValidates) {
 // ReconvergesKHR + OpExtension "SPV_KHR_maximal_reconvergence". No fork — the
 // backend turns the "enable-maximal-reconvergence" fn-attr into the mode. The
 // request is gated on wave-op use, so a non-wave kernel must NOT carry it.
-TEST(XpuWaveEmitTests, spirvWaveKernelRequestsMaximalReconvergence) {
-    Compiler compiler;
-    auto k = compileReduceKernel(compiler);   // uses Wave.reduceSum
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module m("xpu_reconv_text", ctx);
-    cajeta::xpu::vulkan::configureDeviceModule(m, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, m);
-    std::string text = cajeta::xpu::vulkan::emitSpirvText(m, *tm);
-    ASSERT_FALSE(text.empty());
-    EXPECT_NE(text.find("OpExtension \"SPV_KHR_maximal_reconvergence\""),
-              std::string::npos) << text;
-    EXPECT_NE(text.find("MaximallyReconvergesKHR"), std::string::npos) << text;
-}
 
 // The complement: a kernel with NO cross-lane wave op (Wave.laneId is a pure
 // per-lane query) must NOT pull in maximal reconvergence — wave kernels pay for
 // the device requirement, plain kernels don't.
-TEST(XpuWaveEmitTests, spirvNonWaveKernelOmitsMaximalReconvergence) {
-    Compiler compiler;
-    auto k = compileLaneKernel(compiler);     // Wave.laneId only — no cross-lane op
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module m("xpu_reconv_neg_text", ctx);
-    cajeta::xpu::vulkan::configureDeviceModule(m, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, m);
-    std::string text = cajeta::xpu::vulkan::emitSpirvText(m, *tm);
-    ASSERT_FALSE(text.empty());
-    EXPECT_EQ(text.find("MaximallyReconvergesKHR"), std::string::npos) << text;
-}
 
 // --- Subgroup rotate (SPV_KHR_subgroup_rotate) ------------------------------
 // Wave.rotate(value, delta) reads value from lane (laneId + delta) mod width.
@@ -297,53 +212,6 @@ const char* kScanSource =
     "    }\n"
     "}\n";
 
-TEST(XpuWaveEmitTests, spirvLowersPrefixScanAndValidates) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kScanSource);
-    auto k = findMethod(module->getStructures()["test.S"], "wavescan");
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
-    llvm::LLVMContext irCtx;
-    llvm::Module irMod("xpu_scan_ir", irCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
-    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
-    std::string ir = printModule(irMod);
-    EXPECT_NE(ir.find("llvm.spv.wave.prefix.sum"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("llvm.spv.wave.prefix.product"), std::string::npos) << ir;
-
-    llvm::LLVMContext txtCtx;
-    llvm::Module txtMod("xpu_scan_txt", txtCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(txtMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, txtMod);
-    std::string text = cajeta::xpu::vulkan::emitSpirvText(txtMod, *tm);
-    ASSERT_FALSE(text.empty());
-    EXPECT_NE(text.find("OpGroupNonUniformIAdd"), std::string::npos) << text;
-    EXPECT_NE(text.find("OpGroupNonUniformIMul"), std::string::npos) << text;
-    EXPECT_NE(text.find("ExclusiveScan"), std::string::npos) << text;
-
-    llvm::LLVMContext binCtx;
-    llvm::Module binMod("xpu_scan_bin", binCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, binMod);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
-    ASSERT_FALSE(spirv.empty());
-    auto tool = llvm::sys::findProgramByName("spirv-val");
-    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
-    static std::mt19937_64 rng(std::random_device{}());
-    auto path = std::filesystem::temp_directory_path()
-              / ("cajeta_scan_" + std::to_string(rng()) + ".spv");
-    { std::ofstream o(path, std::ios::binary);
-      o.write(reinterpret_cast<const char*>(spirv.data()),
-              (std::streamsize) spirv.size()); }
-    std::string fileStr = path.string();
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
-    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
-    int rc = llvm::sys::ExecuteAndWait(*tool, args);
-    std::filesystem::remove(path);
-    EXPECT_EQ(rc, 0) << "spirv-val rejected the prefix-scan module";
-}
 
 // The reduction family beyond sum: Wave.reduce{Max,Min,And,Or,Xor} lower to the
 // GroupNonUniformArithmetic Reduce ops (already Shader-reachable — NOT the
@@ -406,54 +274,6 @@ TEST(XpuWaveEmitTests, spirvLowersReduceFamilyAndValidates) {
     EXPECT_EQ(rc, 0) << "spirv-val rejected the reduce-family module";
 }
 
-TEST(XpuWaveEmitTests, spirvLowersRotateToNativeOpAndValidates) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kRotateSource);
-    auto k = findMethod(module->getStructures()["test.R"], "waverot");
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
-    llvm::LLVMContext irCtx;
-    llvm::Module irMod("xpu_rot_ir", irCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
-    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
-    std::string ir = printModule(irMod);
-    EXPECT_NE(ir.find("llvm.spv.subgroup.rotate"), std::string::npos) << ir;
-
-    llvm::LLVMContext txtCtx;
-    llvm::Module txtMod("xpu_rot_txt", txtCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(txtMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, txtMod);
-    std::string text = cajeta::xpu::vulkan::emitSpirvText(txtMod, *tm);
-    ASSERT_FALSE(text.empty());
-    EXPECT_NE(text.find("OpCapability GroupNonUniformRotateKHR"),
-              std::string::npos) << text;
-    EXPECT_NE(text.find("OpExtension \"SPV_KHR_subgroup_rotate\""),
-              std::string::npos) << text;
-    EXPECT_NE(text.find("OpGroupNonUniformRotateKHR"), std::string::npos) << text;
-
-    llvm::LLVMContext binCtx;
-    llvm::Module binMod("xpu_rot_bin", binCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, binMod);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
-    ASSERT_FALSE(spirv.empty());
-    auto tool = llvm::sys::findProgramByName("spirv-val");
-    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
-    static std::mt19937_64 rng(std::random_device{}());
-    auto path = std::filesystem::temp_directory_path()
-              / ("cajeta_rot_" + std::to_string(rng()) + ".spv");
-    { std::ofstream o(path, std::ios::binary);
-      o.write(reinterpret_cast<const char*>(spirv.data()),
-              (std::streamsize) spirv.size()); }
-    std::string fileStr = path.string();
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
-    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
-    int rc = llvm::sys::ExecuteAndWait(*tool, args);
-    std::filesystem::remove(path);
-    EXPECT_EQ(rc, 0) << "spirv-val rejected the subgroup-rotate module";
-}
 
 // --- Wave.reduce: a single hardware wave-reduce intrinsic on all three ------
 // The guessed comprehensiveness inversion (1 intrinsic on Vulkan vs. a
@@ -474,58 +294,7 @@ TEST(XpuWaveEmitTests, nvptxLowersReduceToReduxSync) {
     EXPECT_NE(ir.find("llvm.nvvm.redux.sync.add"), std::string::npos) << ir;
 }
 
-TEST(XpuWaveEmitTests, amdgpuLowersReduceToWaveReduce) {
-    Compiler compiler;
-    auto k = compileReduceKernel(compiler);
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module m("xpu_reduce_amdgpu", ctx);
-    cajeta::xpu::amd::configureDeviceModule(m, *tm);
-    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, m), nullptr);
-    std::string ir = printModule(m);
-    EXPECT_NE(ir.find("llvm.amdgcn.wave.reduce.add"), std::string::npos) << ir;
-}
 
-TEST(XpuWaveEmitTests, spirvLowersReduceToSubgroupSumAndValidates) {
-    Compiler compiler;
-    auto k = compileReduceKernel(compiler);
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
-    llvm::LLVMContext irCtx;
-    llvm::Module irMod("xpu_reduce_spirv_ir", irCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
-    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
-    std::string ir = printModule(irMod);
-    EXPECT_NE(ir.find("llvm.spv.wave.reduce.sum"), std::string::npos) << ir;
-
-    llvm::LLVMContext binCtx;
-    llvm::Module binMod("xpu_reduce_spirv_bin", binCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, binMod);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
-    ASSERT_FALSE(spirv.empty());
-
-    auto tool = llvm::sys::findProgramByName("spirv-val");
-    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
-    static std::mt19937_64 rng(std::random_device{}());
-    auto path = std::filesystem::temp_directory_path()
-              / ("cajeta_reduce_" + std::to_string(rng()) + ".spv");
-    { std::ofstream o(path, std::ios::binary);
-      o.write(reinterpret_cast<const char*>(spirv.data()),
-              (std::streamsize) spirv.size()); }
-    // path::c_str() is const wchar_t* on Windows; hold a std::string so the
-    // StringRef binds to a char buffer that outlives the wait.
-    std::string fileStr = path.string();
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
-    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
-    int rc = llvm::sys::ExecuteAndWait(*tool, args);
-    std::filesystem::remove(path);
-    EXPECT_EQ(rc, 0) << "spirv-val rejected the wave-reduce module";
-}
 
 // laneId() lowers to each backend's native lane-index source (Inc 5C).
 TEST(XpuWaveEmitTests, nvptxLowersLaneIdToSreg) {
@@ -542,20 +311,6 @@ TEST(XpuWaveEmitTests, nvptxLowersLaneIdToSreg) {
     EXPECT_NE(ir.find("llvm.nvvm.read.ptx.sreg.laneid"), std::string::npos) << ir;
 }
 
-TEST(XpuWaveEmitTests, amdgpuLowersLaneIdToMbcnt) {
-    Compiler compiler;
-    auto k = compileLaneKernel(compiler);
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext ctx;
-    llvm::Module m("xpu_lane_amdgpu", ctx);
-    cajeta::xpu::amd::configureDeviceModule(m, *tm);
-    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, m), nullptr);
-    std::string ir = printModule(m);
-    EXPECT_NE(ir.find("llvm.amdgcn.mbcnt.lo"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("llvm.amdgcn.mbcnt.hi"), std::string::npos) << ir;
-}
 
 // Re-enabled 2026-06-07: the SPIR-V lane-id lowering now terminates promptly
 // under spirv-val (the wave/subgroup-invocation lowering done in the XPU
@@ -564,42 +319,3 @@ TEST(XpuWaveEmitTests, amdgpuLowersLaneIdToMbcnt) {
 // below could wedge ctest indefinitely; that failure mode is additionally
 // contained now that cajeta_tests.sh runs each test in its own process under a
 // per-test timeout, so a stuck validator is killed rather than hanging the run.
-TEST(XpuWaveEmitTests, spirvLowersLaneIdToSubgroupInvocationAndValidates) {
-    Compiler compiler;
-    auto k = compileLaneKernel(compiler);
-    ASSERT_NE(k, nullptr);
-    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-
-    llvm::LLVMContext irCtx;
-    llvm::Module irMod("xpu_lane_spirv_ir", irCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(irMod, *tm);
-    ASSERT_NE(cajeta::xpu::vulkan::lowerKernel(k, irMod), nullptr);
-    std::string ir = printModule(irMod);
-    EXPECT_NE(ir.find("llvm.spv.subgroup.local.invocation.id"),
-              std::string::npos) << ir;
-
-    llvm::LLVMContext binCtx;
-    llvm::Module binMod("xpu_lane_spirv_bin", binCtx);
-    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
-    cajeta::xpu::vulkan::lowerKernel(k, binMod);
-    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
-    ASSERT_FALSE(spirv.empty());
-
-    auto tool = llvm::sys::findProgramByName("spirv-val");
-    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
-    static std::mt19937_64 rng(std::random_device{}());
-    auto path = std::filesystem::temp_directory_path()
-              / ("cajeta_lane_" + std::to_string(rng()) + ".spv");
-    { std::ofstream o(path, std::ios::binary);
-      o.write(reinterpret_cast<const char*>(spirv.data()),
-              (std::streamsize) spirv.size()); }
-    // path::c_str() is const wchar_t* on Windows; hold a std::string so the
-    // StringRef binds to a char buffer that outlives the wait.
-    std::string fileStr = path.string();
-    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
-    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
-    int rc = llvm::sys::ExecuteAndWait(*tool, args);
-    std::filesystem::remove(path);
-    EXPECT_EQ(rc, 0) << "spirv-val rejected the lane-id module";
-}

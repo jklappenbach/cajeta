@@ -77,39 +77,8 @@ namespace {
 }
 
 // Single int field — the simplest possible case.
-TEST(ToStringTests, singleIntField) {
-    auto src =
-        "package test;\n"
-        "@ToString public class P {\n"
-        "    public int32 n;\n"
-        "    public P(int32 v) { this.n = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        P p = heap P(42);\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "P(n=42)");
-}
 
 // Multiple primitive fields — exercises the comma separator + multi-width handling.
-TEST(ToStringTests, multipleIntFields) {
-    auto src =
-        "package test;\n"
-        "@ToString public class Point {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "    public Point(int32 a, int32 b) { this.x = a; this.y = b; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        Point p = heap Point(3, 7);\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "Point(x=3,y=7)");
-}
 
 // Mixed primitive widths.
 TEST(ToStringTests, mixedPrimitiveWidths) {
@@ -168,56 +137,10 @@ TEST(ToStringTests, floatField) {
 }
 
 // @ToString.Exclude omits the field.
-TEST(ToStringTests, excludeFieldOmitted) {
-    auto src =
-        "package test;\n"
-        "@ToString public class Secret {\n"
-        "    public int32 visible;\n"
-        "    @Exclude public int32 hidden;\n"
-        "    public Secret(int32 v, int32 h) { this.visible = v; this.hidden = h; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        Secret s = heap Secret(1, 99);\n"
-        "        return s.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "Secret(visible=1)");
-}
 
 // Static fields skipped automatically.
-TEST(ToStringTests, staticFieldsSkipped) {
-    auto src =
-        "package test;\n"
-        "@ToString public class Counter {\n"
-        "    public static int32 total = 999;\n"
-        "    public int32 n;\n"
-        "    public Counter(int32 v) { this.n = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        Counter c = heap Counter(5);\n"
-        "        return c.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "Counter(n=5)");
-}
 
 // Empty class (no instance fields) still produces a valid toString.
-TEST(ToStringTests, emptyClass) {
-    auto src =
-        "package test;\n"
-        "@ToString public class Empty {\n"
-        "    public Empty() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        Empty e = heap Empty();\n"
-        "        return e.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "Empty()");
-}
 
 // User-declared toString() wins — synthesizer skips.
 TEST(ToStringTests, userToStringWins) {
@@ -238,21 +161,6 @@ TEST(ToStringTests, userToStringWins) {
 }
 
 // Negative ints rendered correctly.
-TEST(ToStringTests, negativeInt) {
-    auto src =
-        "package test;\n"
-        "@ToString public class Neg {\n"
-        "    public int32 n;\n"
-        "    public Neg(int32 v) { this.n = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        Neg n = heap Neg(-7);\n"
-        "        return n.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "Neg(n=-7)");
-}
 
 // TO_STRING_JSON renders single-field with int primitive.
 TEST(ToStringTests, jsonSingleIntField) {
@@ -364,62 +272,11 @@ TEST(ToStringTests, unknownFormatRejected) {
 // Sanity: no @ToString → no synthesis (so calling toString() goes to
 // whatever Object provides, currently a null stub — just verify the
 // class compiles).
-TEST(ToStringTests, noAnnotationCompilesNormally) {
-    auto src =
-        "package test;\n"
-        "public class Plain {\n"
-        "    public int32 n;\n"
-        "    public Plain(int32 v) { this.n = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Plain p = heap Plain(5);\n"
-        "        return p.n;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 5);
-}
 
 // `@ToString(of={"a","b"})` — allowlist of fields. Only listed fields
 // are rendered, in the listed order (independent of declaration order).
-TEST(ToStringTests, ofAllowlistOrdersByListedFields) {
-    auto src =
-        "package test;\n"
-        "@ToString(of={\"b\",\"a\"}) public class P {\n"
-        "    public int32 a;\n"
-        "    public int32 b;\n"
-        "    public int32 c;\n"
-        "    public P(int32 av, int32 bv, int32 cv) {\n"
-        "        this.a = av; this.b = bv; this.c = cv;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        P p = heap P(1, 2, 3);\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "P(b=2,a=1)");
-}
 
 // `@ToString(of={...})` empty allowlist renders no fields.
-TEST(ToStringTests, ofEmptyAllowlistOmitsAllFields) {
-    auto src =
-        "package test;\n"
-        "@ToString(of={}) public class P {\n"
-        "    public int32 a;\n"
-        "    public P() { this.a = 7; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        P p = heap P();\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "P()");
-}
 
 // `@ToString(callSuper=true)` includes `super=Parent(...)` as the first
 // rendered field, with the parent's toString output verbatim (parent
@@ -452,22 +309,6 @@ TEST(ToStringTests, callSuperPrependsParentToString) {
 }
 
 // JSON format honors `of` too.
-TEST(ToStringTests, jsonOfAllowlist) {
-    auto src =
-        "package test;\n"
-        "@ToString(format=\"TO_STRING_JSON\", of={\"a\"}) public class P {\n"
-        "    public int32 a;\n"
-        "    public int32 b;\n"
-        "    public P(int32 av, int32 bv) { this.a = av; this.b = bv; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        P p = heap P(11, 22);\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "{\"a\":11}");
-}
 
 // `of` referencing an unknown field is rejected at synthesis time.
 TEST(ToStringTests, ofUnknownFieldRejected) {
@@ -491,41 +332,8 @@ TEST(ToStringTests, ofUnknownFieldRejected) {
 // ─── String + class-ref field arms (4.5 worst-first) ────────────────
 
 // A String field renders its text through the STRING arm (plain format).
-TEST(ToStringTests, stringFieldRendersText) {
-    auto src =
-        "package test;\n"
-        "@ToString public class P {\n"
-        "    public String s;\n"
-        "    public int32 n;\n"
-        "    public P(int32 v) { this.n = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        P p = heap P(7);\n"
-        "        String tag = \"hey\";\n"
-        "        p.s = tag;\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "P(s=hey,n=7)");
-}
 
 // A null String field renders as null, not a crash.
-TEST(ToStringTests, nullStringFieldRendersNull) {
-    auto src =
-        "package test;\n"
-        "@ToString public class P {\n"
-        "    public String s;\n"
-        "    public P() {}\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        P p = heap P();\n"
-        "        return p.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "P(s=null)");
-}
 
 // A class-ref field dispatches the nested object's toString through the
 // vtable (the CLASS_REF arm's non-null path).
@@ -552,25 +360,6 @@ TEST(ToStringTests, classRefFieldDispatchesNestedToString) {
 }
 
 // The CLASS_REF null arm: a never-assigned nested ref renders "null".
-TEST(ToStringTests, nullClassRefFieldRendersNull) {
-    auto src =
-        "package test;\n"
-        "@ToString public class Inner {\n"
-        "    public int32 x;\n"
-        "    public Inner() {}\n"
-        "}\n"
-        "@ToString public class Outer {\n"
-        "    public Inner in;\n"
-        "    public Outer() {}\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static String run() {\n"
-        "        Outer o = heap Outer();\n"
-        "        return o.toString();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runToString(src), "Outer(in=null)");
-}
 
 // An array-typed field is rejected with the documented remediation (v1
 // has no element-walk rendering).

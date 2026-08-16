@@ -152,7 +152,7 @@ public class Grams {
         int32 len = (int32) lower.count();
         int32 i = 0;
         while (i + n <= len) {
-            String g = lower.substring(i, i + n);
+            String g #= lower.substring(i, i + n);
             out.add(#g);                  // transfer — g escapes into the list
             i = i + 1;
         }

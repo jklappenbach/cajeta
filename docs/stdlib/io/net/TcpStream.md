@@ -12,8 +12,8 @@ and the destructor closes the socket if `close()` wasn't called, so a dropped
 `TcpStream` never leaks a descriptor.
 
 ```cajeta
-SocketAddress addr = SocketAddress.parse("127.0.0.1:7000");
-TcpStream s = TcpStream.connect(#addr);
+SocketAddress addr #= SocketAddress.parse("127.0.0.1:7000");
+TcpStream s #= TcpStream.connect(#addr);
 int8[] buf = heap int8[4];
 s.write(buf, (int64) 0, (int64) 4);
 int64 got = s.read(buf, (int64) 0, (int64) 4);

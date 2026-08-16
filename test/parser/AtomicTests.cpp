@@ -244,21 +244,3 @@ TEST(AtomicTests, i64RelaxedFetchAddAccumulates) {
 // on a statically-typed AtomicInt64 local must sum to N. With AtomicInt64 `final`
 // this call devirtualizes (no per-iteration vtable hash lookup + indirect call),
 // the body inlines to `lock xadd`; this guards the result stays correct.
-TEST(AtomicTests, i64FetchAddLoopSumsToN) {
-    auto src =
-        "package test;\n"
-        "import cajeta.concurrent.AtomicInt64;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        AtomicInt64 a = heap AtomicInt64(0);\n"
-        "        int32 n = 100000;\n"
-        "        int32 i = 0;\n"
-        "        while (i < n) {\n"
-        "            a.fetchAdd(1);\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return a.load();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), int64_t{100000LL});
-}

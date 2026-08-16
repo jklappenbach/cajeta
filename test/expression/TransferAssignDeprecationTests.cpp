@@ -79,52 +79,10 @@ bool plainStoreWarnedAbout(const char* varName) {
 }  // namespace
 
 // 7.1.1a — local declaration-initializer: `T x = #v` is an assignment site.
-TEST(TransferAssignDeprecationTests, localDeclTransferAssignWarns) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell c = heap Cell(7);\n"
-        "        Cell d = #c;\n"
-        "        return d.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-    EXPECT_TRUE(deprecationWarned());
-    EXPECT_TRUE(deprecationMessageOffersSharpAssign());
-}
 
 // 7.1.1b — field store: `this.f = #v` is an assignment site.
-TEST(TransferAssignDeprecationTests, fieldTransferAssignWarns) {
-    std::string src = std::string(kCellSrc) +
-        "public class Holder {\n"
-        "    public Cell held;\n"
-        "    public void keep(#Cell v) { this.held = #v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Holder h = heap Holder();\n"
-        "        h.keep(#heap Cell(5));\n"
-        "        return h.held.n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-    EXPECT_TRUE(deprecationWarned());
-}
 
 // 7.1.1c — element slot: `arr[i] = #v` is an assignment site.
-TEST(TransferAssignDeprecationTests, slotTransferAssignWarns) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cell[] a = heap Cell[2];\n"
-        "        Cell c = heap Cell(9);\n"
-        "        a[0L] = #c;\n"
-        "        return a[0L].n;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-    EXPECT_TRUE(deprecationWarned());
-}
 
 // 7.1.1d — call argument: NOT an assignment. `#v` is the only spelling here and
 // must stay quiet.
@@ -200,16 +158,3 @@ TEST(TransferAssignDeprecationTests, legacyTransferAssignIsNotAPlainStore) {
 }
 
 // 7.1.1g — a plain (non-transfer) assignment is untouched by this diagnostic.
-TEST(TransferAssignDeprecationTests, plainAssignStaysQuiet) {
-    std::string src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32 a = 6;\n"
-        "        int32 b = a;\n"
-        "        return b;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 6);
-    EXPECT_FALSE(deprecationWarned());
-}

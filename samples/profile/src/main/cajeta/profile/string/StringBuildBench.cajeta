@@ -51,7 +51,7 @@ public class StringBuildBench extends Benchmark {
             sb.append("abcdefgh");
             i = i + 1;
         }
-        String s = sb.toString();
+        String s #= sb.toString();
         // size() is the O(1) byte length (== n*8). Use it, not count(), which
         // does an O(N) UTF-8 codepoint walk the competitor builders don't do
         // (Go Len() / Rust len() / Java length() are all O(1)) — measuring count()
@@ -72,7 +72,7 @@ public class StringBuildBench extends Benchmark {
             naive = naive + "abcdefgh";
             i = i + 1;
         }
-        String built = sb.toString();
+        String built #= sb.toString();
         return built.equals(naive);
     }
 }

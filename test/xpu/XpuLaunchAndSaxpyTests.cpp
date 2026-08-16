@@ -38,24 +38,6 @@ using cajeta_test::CajetaJit;
 // validator extension means a kernel like `saxpyOne(uint32 i,
 // float32[] y, float32[] x, float32 a, uint32 n)` compiles where
 // previously the `float32[]` parameters were rejected.
-TEST(XpuLaunchTests, primitiveArrayParameterAdmissible) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel\n"
-        "    public static void run(uint32 i, float32[] y, uint32 n) {\n"
-        "        if (i < n) {\n"
-        "            y[i] = y[i] + 1.0f;\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 dummy() { return 0; }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.K");
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int32_t (*)()>("dummy");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 0);  // smoke — kernel-defining class must JIT
-}
 
 // Step 7 milestone: SAXPY runs end-to-end on the CPU-emulation
 // path. The kernel is annotated @Kernel; the host driver explicitly

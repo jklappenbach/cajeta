@@ -65,8 +65,8 @@ public class JsonTiersDemo extends DemoClass {
          .key("p95").writeNumber((int64) 44)
          .key("healthy").writeBoolean(true)
          .endObject();
-        int8[] wire = w.toBytes();
-        LatencySummary s = Json.parse<LatencySummary>(wire,
+        int8[] wire #= w.toBytes();
+        LatencySummary s #= Json.parse<LatencySummary>(wire,
             (int64) wire.count());
         System.stdout.println("  Tier-2 write -> Tier-1 parse: p50=" + s.p50
             + " p95=" + s.p95 + " healthy=" + s.healthy);
@@ -80,7 +80,7 @@ public class JsonTiersDemo extends DemoClass {
             + "\"burst\":250},\"tags\":[\"edge\",\"beta\"]}";
         JsonReader cr = heap JsonReader(cfg.toBytes(),
             (int64) cfg.byteLength());
-        JsonValue root = cr.readValue();
+        JsonValue root #= cr.readValue();
         JsonObject obj = root.asObject();
         JsonValue limits = obj.get("limits");
         int32 rps = limits.asObject().get("rps").asInt32();

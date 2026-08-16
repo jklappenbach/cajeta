@@ -19,10 +19,10 @@ public final class Demo {
     public static void run() {
         int64[] shp = heap int64[1];
         shp[0] = 16;                            // 8 complex samples, interleaved
-        Tensor<float32> x = Tensor.zeros<float32>(shp);
+        Tensor<float32> x #= Tensor.zeros<float32>(shp);
         x.set1(0, 1.0f);                        // impulse
-        Tensor<float32> spec = Fft.fft(x);
-        Tensor<float32> back = Fft.ifft(spec);  // ≈ x
+        Tensor<float32> spec #= Fft.fft(x);
+        Tensor<float32> back #= Fft.ifft(spec);  // ≈ x
         return;
     }
 }

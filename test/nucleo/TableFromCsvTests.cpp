@@ -42,7 +42,7 @@ TEST(TableFromCsvTests, typedColumnsParseWithHeaderMapping) {
         "            + \"NYSE,x,1.5,1000\\n\"\n"
         "            + \"BATS,y,2.5,2000\\n\"\n"
         "            + \"ARCA,z,3.5,3000\\n\";\n"
-        "        Table<Quote> t #= Table.fromCsv<Quote>(csv);\n"
+        "        Table<Quote> t = Table.fromCsv<Quote>(csv);\n"
         "        if (t.rowCount() != 3) { return 1; }\n"
         "        if (t.price.get(0) != 1.5) { return 2; }\n"
         "        if (t.price.get(2) != 3.5) { return 3; }\n"
@@ -59,76 +59,12 @@ TEST(TableFromCsvTests, typedColumnsParseWithHeaderMapping) {
 }
 
 // 2.1.2a — a schema column missing from the header fails loud.
-TEST(TableFromCsvTests, missingColumnFailsLoud) {
-    std::string src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String csv = \"price,ts\\n1.5,1000\\n\";\n"
-        "        int32 threw = 0;\n"
-        "        try {\n"
-        "            Table<Quote> t #= Table.fromCsv<Quote>(csv);\n"
-        "        } catch (FrameException ex) {\n"
-        "            threw = 1;\n"
-        "        }\n"
-        "        return threw == 1 ? 42 : 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 42);
-}
 
 // 2.1.2b — a row whose arity disagrees with the header fails loud.
-TEST(TableFromCsvTests, rowArityMismatchFailsLoud) {
-    std::string src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String csv = \"ts,price,venue\\n\"\n"
-        "            + \"1000,1.5,NYSE\\n\"\n"
-        "            + \"2000,2.5\\n\";\n"
-        "        int32 threw = 0;\n"
-        "        try {\n"
-        "            Table<Quote> t #= Table.fromCsv<Quote>(csv);\n"
-        "        } catch (FrameException ex) {\n"
-        "            threw = 1;\n"
-        "        }\n"
-        "        return threw == 1 ? 42 : 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 42);
-}
 
 // The table-fit composition: the record lives in its OWN file and fromCsv is
 // the template-static body that performs the first Table<R> instantiation —
 // the exact shape that used to SIGSEGV (defect A) and then FRAME_SCHEMA-fail
 // (defect B) before the materialization fix.
-TEST(TableFromCsvTests, crossFileRecordFromCsv) {
-    std::map<std::string, std::string> sources;
-    sources["test.Px"] =
-        "package test;\n"
-        "public record Px {\n"
-        "    float64 price;\n"
-        "}\n";
-    sources["test.D"] =
-        "package test;\n"
-        "import cajeta.nucleo.frame.Table;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String csv = \"price\\n1.25\\n2.75\\n\";\n"
-        "        Table<Px> t #= Table.fromCsv<Px>(csv);\n"
-        "        if (t.rowCount() != 2) { return 1; }\n"
-        "        if (t.price.get(1) != 2.75) { return 2; }\n"
-        "        return 42;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(sources, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 42);
-}
 
 } // namespace

@@ -17,12 +17,12 @@ public final class Demo {
     public static void run() {
         int64[] shp = heap int64[1];
         shp[0] = 3;
-        Tensor<float32> c = Tensor.zeros<float32>(shp);
+        Tensor<float32> c #= Tensor.zeros<float32>(shp);
         c.set1(0, 1.0f);                                // x^2 + 2x + 3
         c.set1(1, 2.0f);
         c.set1(2, 3.0f);
         float32 y = Poly.polyval<float32>(c, 2.0f);     // 11
-        Tensor<float32> sq = Poly.polymul<float32>(c, c);
+        Tensor<float32> sq #= Poly.polymul<float32>(c, c);
         return;
     }
 }

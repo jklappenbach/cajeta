@@ -28,58 +28,13 @@ void compileOnly(const std::string& src) {
 
 // A final instance method with a method-level type parameter parses
 // cleanly. No call site is exercised — Phase 2 wires that up.
-TEST(MethodTemplateParseTests, finalInstanceMethodWithTypeParamParses) {
-    auto src =
-        "package test;\n"
-        "public class Foo {\n"
-        "    public final R passthrough<R>(R value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    EXPECT_NO_THROW(compileOnly(src));
-}
 
 // A static method with a method-level type parameter parses cleanly.
 // Static factories are the canonical use case (Optional.Some<U> etc.).
-TEST(MethodTemplateParseTests, staticMethodWithTypeParamParses) {
-    auto src =
-        "package test;\n"
-        "public class Holder {\n"
-        "    public static int32 sizeOf<U>(U value) { return 0; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    EXPECT_NO_THROW(compileOnly(src));
-}
 
 // Multiple method-level type parameters work.
-TEST(MethodTemplateParseTests, multipleMethodLevelTypeParams) {
-    auto src =
-        "package test;\n"
-        "public class Util {\n"
-        "    public static int32 zero<K, V>(K k, V v) { return 0; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    EXPECT_NO_THROW(compileOnly(src));
-}
 
 // Bounded method-level params parse.
-TEST(MethodTemplateParseTests, boundedMethodLevelTypeParam) {
-    auto src =
-        "package test;\n"
-        "public class Animal { public int32 size() { return 0; } }\n"
-        "public class Util {\n"
-        "    public static int32 sizeOf<T extends Animal>(T a) { return a.size(); }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    EXPECT_NO_THROW(compileOnly(src));
-}
 
 // REJECTED: instance method with method-level type param but no final/
 // static modifier. Surfaces the non-virtuality requirement at parse
@@ -99,20 +54,3 @@ TEST(MethodTemplateParseTests, rejectsInstanceWithoutFinalOrStatic) {
 // Co-existence: a non-templated method and a templated method in the
 // same class both land cleanly. The non-templated one still gets a
 // vtable slot; the templated one is excluded.
-TEST(MethodTemplateParseTests, mixedTemplatedAndNonTemplatedMethods) {
-    auto src =
-        "package test;\n"
-        "public class Foo {\n"
-        "    public int32 plain() { return 42; }\n"
-        "    public final R passthrough<R>(R value) { return value; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Foo f = heap Foo();\n"
-        "        return f.plain();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
-}

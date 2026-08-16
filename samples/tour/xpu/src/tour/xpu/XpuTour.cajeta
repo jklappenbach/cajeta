@@ -735,7 +735,7 @@ public final class XpuTour {
         KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
         x.upload(hx);
         y.upload(hy);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         saxpy.launch(s, grid: [(n + 63) / 64], block: [64])(y, x, 2.0f, n);
         s.sync();
         y.download(hy);
@@ -772,7 +772,7 @@ public final class XpuTour {
         a.upload(ha);
         b.upload(hb);
         c.upload(hc);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         vecAdd.launch(s, grid: [(n + 63) / 64], block: [64])(c, a, b, n);
         s.sync();
         c.download(hc);
@@ -812,7 +812,7 @@ public final class XpuTour {
         // The matrix is a value: stack-constructed, then passed BY VALUE to the
         // kernel launch alongside the buffers and the translation scalars.
         Matrix<float32,2,2> m = stack Matrix<float32,2,2>(0.0f, -1.0f, 1.0f, 0.0f);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         transform.launch(s, grid: [(n + 63) / 64], block: [64])(
             outx, outy, px, py, m, 100.0f, 200.0f, n);
         s.sync();
@@ -838,7 +838,7 @@ public final class XpuTour {
         KernelBuffer<float32> prune = stack KernelBuffer<float32>(n);
         relu.upload(hrelu);
         prune.upload(hprune);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         // ReLU: v=(i-2,-1,3,-4) -> (max(i-2,0),0,3,0); sum = max(i-2,0)+3.
         reluReg.launch(s, grid: [(n + 63) / 64], block: [64])(relu, n);
         // Prune: keep w>1 -> i kept only when i>1; sum = (i>1 ? i : 0).
@@ -863,7 +863,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<int32> out = stack KernelBuffer<int32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         dp4aReg.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -887,7 +887,7 @@ public final class XpuTour {
         KernelBuffer<float32> out = stack KernelBuffer<float32>(3);
         in.upload(hin);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         reduceAtomic.launch(s, grid: [(n + 63) / 64], block: [64])(out, in, n);
         s.sync();
         out.download(hout);
@@ -913,7 +913,7 @@ public final class XpuTour {
         KernelBuffer<uint32> bins = stack KernelBuffer<uint32>(nb);
         data.upload(hdata);
         bins.upload(hbins);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         histogram.launch(s, grid: [(n + 63) / 64], block: [64])(bins, data, n);
         s.sync();
         bins.download(hbins);
@@ -936,7 +936,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint64> out = stack KernelBuffer<uint64>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         clockProbe.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -955,7 +955,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         bitOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -986,7 +986,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0.0f; }
         KernelBuffer<float32> out = stack KernelBuffer<float32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         texSample.launch(s, grid: [1], block: [64])(tex, samp, out, n);
         s.sync();
         out.download(hout);
@@ -1018,7 +1018,7 @@ public final class XpuTour {
         int32[] iout = heap int32[n];
         KernelBuffer<int32> ib = heap KernelBuffer<int32>(n);
         ib.upload(iout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         texFetch.launch(s, grid: [1], block: [64])(ftex, fb, w, n);
         texFetchInt.launch(s, grid: [1], block: [64])(itex, ib, w, n);
         s.sync();
@@ -1044,7 +1044,7 @@ public final class XpuTour {
         float32[] hout = heap float32[3];
         KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         tex1d.launch(s, grid: [1], block: [64])(row, lin, out);
         s.sync();
         out.download(hout);
@@ -1069,7 +1069,7 @@ public final class XpuTour {
         float32[] hout = heap float32[3];
         KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         tex3d.launch(s, grid: [1], block: [64])(vol, lin, out);
         s.sync();
         out.download(hout);
@@ -1094,7 +1094,7 @@ public final class XpuTour {
         float32[] hout = heap float32[3];
         KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         texArray.launch(s, grid: [1], block: [64])(arr, lin, out);
         s.sync();
         out.download(hout);
@@ -1122,7 +1122,7 @@ public final class XpuTour {
         float32[] hout = heap float32[6];
         KernelBuffer<float32> out = heap KernelBuffer<float32>(6);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         texCube.launch(s, grid: [1], block: [64])(cube, near, out);
         s.sync();
         out.download(hout);
@@ -1150,7 +1150,7 @@ public final class XpuTour {
         float32[] hout = heap float32[3];
         KernelBuffer<float32> out = heap KernelBuffer<float32>(3);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         texMip.launch(s, grid: [1], block: [64])(tex, lin, out);
         s.sync();
         out.download(hout);
@@ -1176,7 +1176,7 @@ public final class XpuTour {
         float32[] hout = heap float32[2];
         KernelBuffer<float32> out = heap KernelBuffer<float32>(2);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         texTwoSamplers.launch(s, grid: [1], block: [64])(tex, near, lin, out);
         s.sync();
         out.download(hout);
@@ -1196,8 +1196,8 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { h[i] = -1; }
         KernelBuffer<int32> all = heap KernelBuffer<int32>(n);
         all.upload(h);
-        KernelBuffer<int32> tail = all.slice(half, half);   // second-half view
-        KernelStream s = KernelStream.current();
+        KernelBuffer<int32> tail #= all.slice(half, half);   // second-half view
+        KernelStream s #= KernelStream.current();
         sliceFill.launch(s, grid: [1], block: [64])(tail, half);
         s.sync();
         all.download(h);
@@ -1220,7 +1220,7 @@ public final class XpuTour {
         KernelBuffer<float32> l = stack KernelBuffer<float32>(n);
         q.upload(hq);
         l.upload(hl);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         quatk.launch(s, grid: [(n + 63) / 64], block: [64])(q, n);
         linalgk.launch(s, grid: [(n + 63) / 64], block: [64])(l, n);
         s.sync();
@@ -1248,7 +1248,7 @@ public final class XpuTour {
         f.upload(hf);
         v.upload(hv);
         d.upload(hd);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         fastMath.launch(s, grid: [(n + 63) / 64], block: [64])(f, n);
         vecMath.launch(s, grid: [(n + 63) / 64], block: [64])(v, n);
         floatTypes.launch(s, grid: [(n + 63) / 64], block: [64])(d, n);
@@ -1286,7 +1286,7 @@ public final class XpuTour {
         a.upload(ha);
         b.upload(hb);
         c.upload(hc);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         // One workgroup owns the single output tile (block 64 = the subgroup that
         // cooperates on it natively; the software path computes it per-invocation).
         coopGemm.launch(s, grid: [1], block: [64])(a, b, c);
@@ -1322,7 +1322,7 @@ public final class XpuTour {
         KernelBuffer<uint32> sums = stack KernelBuffer<uint32>(n);
         in.upload(hin);
         sums.upload(hsums);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         waveReduce.launch(s, grid: [(n + 63) / 64], block: [64])(sums, in, n);
         s.sync();
         sums.download(hsums);
@@ -1345,7 +1345,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         waveRotate.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1365,7 +1365,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < 5 * n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint32> out = stack KernelBuffer<uint32>(5 * n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         waveReduceOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1388,7 +1388,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         wavePrefix.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1411,7 +1411,7 @@ public final class XpuTour {
         for (uint32 i = 0; i < n; i = i + 1) { hout[i] = 0; }
         KernelBuffer<uint32> out = stack KernelBuffer<uint32>(n);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         quadOps.launch(s, grid: [(n + 63) / 64], block: [64])(out, n);
         s.sync();
         out.download(hout);
@@ -1456,7 +1456,7 @@ public final class XpuTour {
         qy.upload(hqy);
         qz.upload(hqz);
         out.upload(hout);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
         rayCountHits.launch(s, grid: [1], block: [64])(scene, qx, qy, qz, out, n);
         s.sync();
         out.download(hout);
@@ -1528,14 +1528,14 @@ public final class XpuTour {
         idx[18] = 4; idx[19] = 5; idx[20] = 8;
         idx[21] = 4; idx[22] = 8; idx[23] = 7;
         // Target already met -> no-op: all 8 triangles survive untouched.
-        int32[] keep = MeshSimplifier.simplify(pos, idx, 9, 100);
+        int32[] keep #= MeshSimplifier.simplify(pos, idx, 9, 100);
         int32 kept = (int32) (keep.count() / 3);
         System.stdout.println("  no-op   (target 100): " + kept
                             + " of 8 triangles survive  (expect 8)");
         XpuTour.check(kept == 8, "meshSimplify: no-op keeps all triangles");
         // Simplify 8 -> 2: collapse reduces the count; survivors stay planar
         // (positions is mutated in place to the error-minimizing collapses).
-        int32[] out = MeshSimplifier.simplify(pos, idx, 9, 2);
+        int32[] out #= MeshSimplifier.simplify(pos, idx, 9, 2);
         int32 rc = (int32) (out.count() / 3);
         System.stdout.println("  simplify (target 2):  8 -> " + rc
                             + " triangles  (expect 1..2)");

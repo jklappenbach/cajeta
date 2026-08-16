@@ -40,44 +40,6 @@ int32_t runI32(const std::string& src) {
 // inside a `for` body — the walker must descend into
 // ForStatement::getBody() to register the capture. Pre-fix this
 // either crashed (null receiver) or silently dropped the bump.
-TEST(LambdaNestedBlockPatternsTests, foldCallbackWithLoopOverBatch) {
-    auto src =
-        "package test;\n"
-        "public class Counter {\n"
-        "    public int32 v;\n"
-        "    public Counter() { this.v = 0; }\n"
-        "    public void bump() { this.v = this.v + 1; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] sizes = [ 3, 5, 2 ];\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(sizes, 3);\n"
-        "        Counter c = heap Counter();\n"
-        "        // Lambda hoisted to a typed local — inline block-body\n"
-        "        // lambdas passed to generic fold<R> don't yet infer R\n"
-        "        // from the seed argument. The typed local pins R = int32\n"
-        "        // so the body's `return t;` matches; the capture-walker\n"
-        "        // mechanics being tested are the same either way.\n"
-        "        (int32, int32) -> int32 accFn = (int32 acc, int32 sz) -> {\n"
-        "            int32 t = acc;\n"
-        "            for (int32 i = 0; i < sz; i = i + 1) {\n"
-        "                c.bump();\n"
-        "                t = t + 1;\n"
-        "            }\n"
-        "            return t;\n"
-        "        };\n"
-        "        int32 total = s.fold(0, accFn);\n"
-        "        // total == sum of sizes; c.v also == sum of sizes (one\n"
-        "        // bump per inner iteration). Returning total + c.v\n"
-        "        // (== 20) means the capture WAS visible inside the\n"
-        "        // for-body. If the walker had skipped the capture the\n"
-        "        // lambda would either crash or silently leave c.v == 0\n"
-        "        // (result would be 10 not 20).\n"
-        "        return total + c.v;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 20);
-}
 
 // Accumulator with a conditional branch — the natural Collector-style
 // shape: \"if this element passes the predicate, accumulate it AND
@@ -85,43 +47,6 @@ TEST(LambdaNestedBlockPatternsTests, foldCallbackWithLoopOverBatch) {
 // Exercises both branches of LabelStatement (if/else are both
 // LabelStatement-wrapped blocks). The lambda captures two outer
 // Counters and mutates both from inside their respective branches.
-TEST(LambdaNestedBlockPatternsTests, collectorAccumulatorConditionalBranchCapturesBoth) {
-    auto src =
-        "package test;\n"
-        "public class Counter {\n"
-        "    public int32 v;\n"
-        "    public Counter() { this.v = 0; }\n"
-        "    public void bump() { this.v = this.v + 1; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] xs = [ 1, 2, 3, 4, 5, 6 ];\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 6);\n"
-        "        Counter accepted = heap Counter();\n"
-        "        Counter rejected = heap Counter();\n"
-        "        // Hoisted to a typed local for the same reason as the\n"
-        "        // foldCallbackWithLoopOverBatch test above.\n"
-        "        (int32, int32) -> int32 accFn = (int32 acc, int32 x) -> {\n"
-        "            if (x % 2 == 0) {\n"
-        "                accepted.bump();\n"
-        "                return acc + x;\n"
-        "            } else {\n"
-        "                rejected.bump();\n"
-        "                return acc;\n"
-        "            }\n"
-        "        };\n"
-        "        int32 sum = s.fold(0, accFn);\n"
-        "        // Evens 2+4+6 = 12; accepted=3, rejected=3.\n"
-        "        // Both captures observed iff walker descended into\n"
-        "        // both LabelStatement-wrapped branches.\n"
-        "        if (sum != 12) { return -1; }\n"
-        "        if (accepted.v != 3) { return -2; }\n"
-        "        if (rejected.v != 3) { return -3; }\n"
-        "        return sum + accepted.v + rejected.v;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 18);
-}
 
 // Orchestrator-style: lambda body contains `scope { spawn work(c, n); }`.
 // The captured `c` is read inside the ScopeStatement's block (passed

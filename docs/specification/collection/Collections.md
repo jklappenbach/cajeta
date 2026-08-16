@@ -112,7 +112,7 @@ int32 first = list.get(0);                    // 10
 list.set(1, 200);
 
 // Stream pipeline over the live elements.
-int32 sum = list.stream().reduce(0,
+int32 sum #= list.stream().reduce(0,
     (int32 a, int32 b) -> { return a + b; });
 ```
 
@@ -189,7 +189,7 @@ counts[#kiwis] = 2;
 int32 kiwiCount = counts[kiwis];              // `kiwis` is demoted, still looks up
 
 // Iterate via a stream view (keys / values / entries):
-int64 distinct = counts.keys().count();
+int64 distinct #= counts.keys().count();
 ```
 
 Pinned by `test/collections/HashMapTests.cpp`,

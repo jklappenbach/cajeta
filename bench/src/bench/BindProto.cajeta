@@ -135,7 +135,7 @@ public final class BindProto {
     }
 
     public static int32 run() {
-        int8[] b = File.readAllBytes("/tmp/jsonbench/bind.json");
+        int8[] b #= File.readAllBytes("/tmp/jsonbench/bind.json");
         int64 n = (int64) b.count();
         int32[] idx = heap int32[n + 16];
         EmitState sc = heap EmitState();

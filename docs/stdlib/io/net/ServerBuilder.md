@@ -10,11 +10,11 @@ the platform listen backlog (`UNSET_BACKLOG`). The builder is a pure value
 until `build()` is called — no I/O happens while recording choices.
 
 ```cajeta
-ServerBuilder b = Server.builder()
+ServerBuilder b #= Server.builder()
     .bind("127.0.0.1:0")
     .model(ServerModel.fiberPerConnection())
     .handler((TcpStream conn) -> { conn.close(); });
-Server s = b.build();
+Server s #= b.build();
 ```
 
 ## Methods

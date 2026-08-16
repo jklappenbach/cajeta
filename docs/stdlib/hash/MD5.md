@@ -9,11 +9,11 @@ cryptographic digest use [Sha256](Sha256.md) or [Blake3](Blake3.md).
 
 ```cajeta
 int8[] data = heap int8[16];
-String etag = MD5.hashHex(data, 16);   // 32 lowercase hex chars
+String etag #= MD5.hashHex(data, 16);   // 32 lowercase hex chars
 
 MD5 m = heap MD5();
 m.writeString("record");
-int8[] digest = m.digest();            // 16 bytes
+int8[] digest #= m.digest();            // 16 bytes
 ```
 
 ## Methods

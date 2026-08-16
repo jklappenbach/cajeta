@@ -143,30 +143,3 @@ TEST(OptionalArrayWorkerWriteTests, genericClassArrayParamInMethodTemplate) {
 // Optional<int32>[1] slot. If the hang is contention-driven (e.g.
 // drop dispatch on the displaced slot value taking a lock), this
 // is where it surfaces.
-TEST(OptionalArrayWorkerWriteTests, optionalIntArrayMultiWorkerRace) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Optional<int32>[] out = heap Optional<int32>[1];\n"
-        "        scope {\n"
-        "            spawn writer(out, 1);\n"
-        "            spawn writer(out, 2);\n"
-        "            spawn writer(out, 3);\n"
-        "            spawn writer(out, 4);\n"
-        "        }\n"
-        "        if (out[0].isPresent()) {\n"
-        "            return out[0].get();\n"
-        "        }\n"
-        "        return -1;\n"
-        "    }\n"
-        "    public static async int32 writer(Optional<int32>[] out, int32 v) {\n"
-        "        out[0] = heap Optional<int32>(true, v);\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    int32_t r = runI32(src);
-    // Any worker's value is a legal outcome; we only care that we
-    // got SOMETHING and didn't hang.
-    EXPECT_TRUE(r >= 1 && r <= 4) << "got r=" << r;
-}

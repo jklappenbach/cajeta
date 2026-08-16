@@ -18,12 +18,12 @@ import cajeta.time.Clock;
 public final class JsonBench {
 
     static int64 readOnly(String path) {
-        int8[] bytes = File.readAllBytes(path);
+        int8[] bytes #= File.readAllBytes(path);
         return (int64) bytes.count();
     }
 
     static int64 tokenizeFile(String path) {
-        int8[] bytes = File.readAllBytes(path);
+        int8[] bytes #= File.readAllBytes(path);
         int64 len = (int64) bytes.count();
         JsonReader r = heap JsonReader(bytes, len);
         int64 n = 0;

@@ -17,9 +17,9 @@ import cajeta.math.DType;
 
 public final class Demo {
     public static void run() {
-        DType f = DType.of<float32>();     // type → DType bridge
-        DType i = DType.i32();
-        DType r = DType.promote(f, i);     // NEP-50: float32
+        DType f #= DType.of<float32>();     // type → DType bridge
+        DType i #= DType.i32();
+        DType r #= DType.promote(f, i);     // NEP-50: float32
         boolean fl = r.isFloating();       // true
         int32 width = r.bits();            // 32
         return;

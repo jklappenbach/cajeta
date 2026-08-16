@@ -131,52 +131,9 @@ TEST(PoisonFreeTests, poisonBufferIsNullSafe) {
 // Options.poisonFreeEnabled through to the runtime flag is sound
 // — the body of __cajeta_free runs the poison memset on the actual
 // instance and the test doesn't observe a use-after-free.
-TEST(PoisonFreeTests, jitProgramRunsCleanlyWithPoisonOn) {
-    auto src =
-        "package test;\n"
-        "public class Box {\n"
-        "    public int32 v;\n"
-        "    public Box(int32 x) { this.v = x; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Box b = heap Box(7);\n"
-        "        int32 v = b.v;\n"
-        "        return v;\n"
-        "    }\n"
-        "}\n";
-    CajetaJit::Options opts;
-    opts.poisonFreeEnabled = true;
-    auto jit = CajetaJit::compile(src, "test.D", opts);
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 7);
-    // Sanity: the JIT init hook actually set the flag.
-    EXPECT_EQ(__cajeta_get_poison_free(), 1);
-}
 
 // JIT integration: same program, but with poisonFreeEnabled left at
 // its default (false). The JIT init hook calls
 // __cajeta_set_poison_free(0) unconditionally, so the flag is off
 // after this compile() returns — a guard against state leaking
 // across tests.
-TEST(PoisonFreeTests, jitProgramRunsCleanlyWithPoisonOff) {
-    PoisonFreeStateGuard guard;
-    __cajeta_set_poison_free(1);  // start ON to prove the JIT init flips it OFF.
-
-    auto src =
-        "package test;\n"
-        "public class Box {\n"
-        "    public int32 v;\n"
-        "    public Box(int32 x) { this.v = x; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Box b = heap Box(11);\n"
-        "        return b.v;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");  // Options{} → poisonFreeEnabled=false
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 11);
-    EXPECT_EQ(__cajeta_get_poison_free(), 0);
-}

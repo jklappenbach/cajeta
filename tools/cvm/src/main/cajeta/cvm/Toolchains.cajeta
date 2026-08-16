@@ -30,8 +30,8 @@ public final class Toolchains {
         if (!Path.of(path).exists()) {
             return null;
         }
-        FileReader reader = File.openRead(path);
-        String contents = reader.readString(4096);
+        FileReader reader #= File.openRead(path);
+        String contents #= reader.readString(4096);
         reader.close();
         return parseDefault(contents);
     }
@@ -40,7 +40,7 @@ public final class Toolchains {
     // write). The home directory is created if missing. Returns true.
     public static boolean writeDefault(String home, String version) {
         Path.of(home).mkdirs();
-        FileWriter writer = File.openWrite(Home.settingsFile(home), OpenMode.WRITE);
+        FileWriter writer #= File.openWrite(Home.settingsFile(home), OpenMode.WRITE);
         writer.writeString("default = " + version + "\n");
         writer.close();
         return true;
@@ -52,8 +52,8 @@ public final class Toolchains {
     // failed — e.g. Windows v0.1, which has no elevation-free symlink).
     public static boolean repointShim(String home, String version) {
         Path.of(Home.binDir(home)).mkdirs();
-        Path shim   = Path.of(Home.shimFile(home));
-        Path target = Path.of(Home.versionBin(home, version));
+        Path shim   #= Path.of(Home.shimFile(home));
+        Path target #= Path.of(Home.versionBin(home, version));
         return shim.symlinkTo(target);
     }
 
@@ -75,7 +75,7 @@ public final class Toolchains {
         } else {
             end = (int32) contents.size();
         }
-        String value = contents.substring(begin, end);
+        String value #= contents.substring(begin, end);
         return value.trim();
     }
 }

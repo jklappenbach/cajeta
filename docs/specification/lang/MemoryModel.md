@@ -316,8 +316,8 @@ The replacement pattern is "just declare the resource":
 
 ```cajeta
 {
-    FileReader r = File.openRead(in);
-    FileWriter w = File.openWrite(out, OpenMode.WRITE);
+    FileReader r #= File.openRead(in);
+    FileWriter w #= File.openWrite(out, OpenMode.WRITE);
     int32 n = r.read(buf, 4096);
     while (n > 0) {
         w.write(buf, n);
@@ -333,7 +333,7 @@ The replacement pattern is "just declare the resource":
 
 ```cajeta
 try {
-    FileReader r = File.openRead(p);
+    FileReader r #= File.openRead(p);
     process(r);
     // r drops here on the normal path.
 } catch (IoException e) {

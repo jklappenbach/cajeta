@@ -16,7 +16,7 @@ index.put(7, "lucky");
 String hit = index.get(42);            // "answer"
 boolean known = index.containsKey(9);  // false, miss -> zero value
 int32 lo = index.min();                // 7
-ArrayList<int32> keys = index.keysInOrder();  // ascending
+ArrayList<int32> keys #= index.keysInOrder();  // ascending
 ```
 
 ## Methods

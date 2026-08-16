@@ -321,20 +321,12 @@ if [ ${#patterns[@]} -gt 0 ]; then
     list_filter_args=("--gtest_filter=$lf")
 fi
 tests=()
-# Routine gate (test-battery-restructure 2.5): with no explicit patterns, no
-# injected list, and no FULL=1, the everyday sweep is the coverage-derived
-# routine set (test/routine_filter.txt — regenerate with
-# tools/coverage/build_routine.py after a per-test coverage measure). The
-# full battery remains one flag away: FULL=1 ./cajeta_tests.sh
-ROUTINE_FILE="${CAJETA_ROUTINE_FILTER:-$SCRIPT_DIR/test/routine_filter.txt}"
-if [ ${#patterns[@]} -eq 0 ] && [ -z "${CAJETA_TESTS_FILE:-}" ] \
-        && [ "${FULL:-0}" != "1" ] && [ -s "$ROUTINE_FILE" ]; then
-    while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in ''|'#'*) continue;; esac
-        tests+=("$line")
-    done < "$ROUTINE_FILE"
-    echo ">> Routine gate: ${#tests[@]} tests from ${ROUTINE_FILE#$SCRIPT_DIR/} (FULL=1 runs the whole battery)"
-elif [ -n "${CAJETA_TESTS_FILE:-}" ]; then
+# THE CORPUS IS THE GATE (spec 8.4). No routine filter, no FULL=1: with no
+# explicit patterns the sweep runs every test the binary has, less the
+# hand-curated stress battery. The old routine filter was DERIVED from the
+# coverage index, so refreshing the index without regenerating it left newer
+# tests outside the gate and unrun.
+if [ -n "${CAJETA_TESTS_FILE:-}" ]; then
     # Injected list (test seam): one fully-qualified Suite.test per line, in the
     # order the suites should group. No binary invoked.
     while IFS= read -r line || [ -n "$line" ]; do
@@ -517,6 +509,57 @@ else
     for ((i=0; i<num_chunks; i++)); do chunk_weight[$i]=$(( chunk_count[$i] * DEFAULT_TEST_MS )); done
 fi
 
+# Weight-aware re-split. Chunking above is by COUNT and weights are only known
+# now, so a chunk of slow tests can want far more wall-clock than BATCH_CAP
+# allows. Split it rather than clamp its deadline: budget per chunk is
+# BATCH_CAP/BATCH_SLACK seconds. A single test over that budget cannot be split
+# and keeps its measured deadline.
+if [ "$BATCH" = "1" ] && [ "${WEIGHTED:-1}" != "0" ] && [ "$BATCH_SLACK" -gt 0 ]; then
+    _budget_ms=$(( BATCH_CAP * 1000 / BATCH_SLACK ))
+    declare -a _nn _nl _nc _nw
+    _n=0
+    for ((i=0; i<num_chunks; i++)); do
+        if [ "${chunk_weight[$i]}" -le "$_budget_ms" ] || [ "${chunk_count[$i]}" -le 1 ]; then
+            _nn[$_n]="${chunk_name[$i]}"; _nl[$_n]="${chunk_list[$i]}"
+            _nc[$_n]="${chunk_count[$i]}"; _nw[$_n]="${chunk_weight[$i]}"
+            _n=$(( _n + 1 )); continue
+        fi
+        # Greedy fill: accumulate tests until one more would blow the budget.
+        # Per-test weights come from the same TSV the packer used.
+        _base="${chunk_name[$i]%%[*}"; _part=0; _acc=0; _slice=""; _cnt=0
+        while IFS= read -r _t; do
+            [ -z "$_t" ] && continue
+            _tw=$(awk -F'\t' -v k="$_t" -v def="$DEFAULT_TEST_MS" \
+                  '$1==k { print $2; found=1; exit } END { if (!found) print def }' \
+                  "$DURATIONS_READ")
+            if [ "$_cnt" -gt 0 ] && [ $(( _acc + _tw )) -gt "$_budget_ms" ]; then
+                _part=$(( _part + 1 ))
+                _nn[$_n]="${_base}<${_part}>"; _nl[$_n]="$_slice"
+                _nc[$_n]="$_cnt"; _nw[$_n]="$_acc"
+                _n=$(( _n + 1 )); _slice=""; _cnt=0; _acc=0
+            fi
+            _slice+="${_t}"$'\n'; _cnt=$(( _cnt + 1 )); _acc=$(( _acc + _tw ))
+        done <<< "${chunk_list[$i]}"
+        if [ "$_cnt" -gt 0 ]; then
+            _part=$(( _part + 1 ))
+            _nn[$_n]="${_base}<${_part}>"; _nl[$_n]="$_slice"
+            _nc[$_n]="$_cnt"; _nw[$_n]="$_acc"
+            _n=$(( _n + 1 ))
+        fi
+    done
+    if [ "$_n" -ne "$num_chunks" ]; then
+        for ((i=0; i<_n; i++)); do
+            chunk_name[$i]="${_nn[$i]}"; chunk_list[$i]="${_nl[$i]}"
+            chunk_count[$i]="${_nc[$i]}"; chunk_weight[$i]="${_nw[$i]}"
+        done
+        for ((i=_n; i<num_chunks; i++)); do
+            unset 'chunk_name[i]' 'chunk_list[i]' 'chunk_count[i]' 'chunk_weight[i]'
+        done
+        num_chunks=$_n
+        if [ "$shards" -gt "$num_chunks" ]; then shards=$num_chunks; fi
+    fi
+fi
+
 # Distribute work into per-shard buckets. shard_weight is the packing load
 # (summed ms) the LPT balances; shard_total tracks TEST COUNT (the live-display
 # denominator) alongside it.
@@ -543,12 +586,35 @@ while IFS=$'\t' read -r wt idx; do
     shard_total[$min_s]=$(( shard_total[$min_s] + chunk_count[$idx] ))
 done <<< "$sorted_chunks"
 
+# Deadline for one chunk, in seconds. One definition shared by run_suite_batch
+# and PLAN_ONLY, so the plan reports what the run enforces.
+#
+# BATCH_CAP bounds a GUESSED cost (count * TEST_TIMEOUT). It must not clamp a
+# deadline derived from MEASURED durations below that measurement — that kills a
+# chunk we already know needs longer, then re-runs it serially anyway.
+chunk_deadline() {
+    local idx="$1" n="${chunk_count[$1]}" deadline wsec
+    deadline=$(( n * TEST_TIMEOUT ))
+    wsec=0
+    if [ "${WEIGHTED:-1}" != "0" ]; then
+        wsec=$(( ${chunk_weight[$idx]:-0} / 1000 * BATCH_SLACK ))
+        [ "$wsec" -gt "$deadline" ] && deadline=$wsec
+    fi
+    if [ "$deadline" -gt "$BATCH_CAP" ]; then
+        # Never below the evidence. Split chunks are already under the cap, so
+        # this only fires for a single test measuring longer than it.
+        if [ "$wsec" -gt "$BATCH_CAP" ]; then deadline=$wsec; else deadline=$BATCH_CAP; fi
+    fi
+    [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
+    printf '%s' "$deadline"
+}
+
 # PLAN_ONLY: emit the chunk->shard assignment and exit before spawning anything.
 # Used by test/harness/suite_split_test.sh to assert the scheduling math without
 # building or running the binary. Longest-processing-time-first over chunks, the
 # same heuristic the executor uses. Output contract (stdout):
 #   PLAN shards=<S> batch=<0|1> batch_max=<N> chunks=<C> tests=<T>
-#   CHUNK <idx> shard=<s> count=<k> name=<display> tests=<t1,t2,...>
+#   CHUNK <idx> shard=<s> count=<k> weight=<ms> deadline=<s> name=<display> tests=<...>
 if [ -n "${PLAN_ONLY:-}" ]; then
     printf 'PLAN shards=%s batch=%s batch_max=%s chunks=%s tests=%s\n' \
         "$shards" "$BATCH" "$BATCH_MAX" "$num_chunks" "$num_tests"
@@ -557,8 +623,9 @@ if [ -n "${PLAN_ONLY:-}" ]; then
         while IFS= read -r ci; do
             [ -z "$ci" ] && continue
             _csv=$(printf '%s' "${chunk_list[$ci]}" | grep -v '^$' | paste -sd, -)
-            printf 'CHUNK %s shard=%s count=%s weight=%s name=%s tests=%s\n' \
-                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_weight[$ci]}" "${chunk_name[$ci]}" "$_csv"
+            printf 'CHUNK %s shard=%s count=%s weight=%s deadline=%s name=%s tests=%s\n' \
+                "$ci" "$s" "${chunk_count[$ci]}" "${chunk_weight[$ci]}" \
+                "$(chunk_deadline "$ci")" "${chunk_name[$ci]}" "$_csv"
         done <<< "${shard_list[$s]}"
     done
     exit 0
@@ -669,21 +736,7 @@ run_suite_batch() {
     sname="${chunk_name[$idx]}"
     n="${chunk_count[$idx]}"
     list="${chunk_list[$idx]}"
-    deadline=$(( n * TEST_TIMEOUT ))
-    # Duration-aware floor. The count-based deadline assumes every test fits in
-    # TEST_TIMEOUT; a chunk holding a genuinely slow test (ConcurrentCompileTests
-    # measures ~150s) blows it, gets treated as HUNG, and drops to the per-test
-    # fallback — where the flat TEST_TIMEOUT kills the slow test outright and
-    # reports a timeout that is really just a too-tight budget. chunk_weight is
-    # the summed MEASURED ms the packer already computed, so spend it here too:
-    # take whichever of count-based / measured*SLACK is larger. BATCH_CAP still
-    # bounds a truly stuck chunk.
-    if [ "${WEIGHTED:-1}" != "0" ]; then
-        local wsec=$(( ${chunk_weight[$idx]:-0} / 1000 * BATCH_SLACK ))
-        [ "$wsec" -gt "$deadline" ] && deadline=$wsec
-    fi
-    [ "$deadline" -gt "$BATCH_CAP" ] && deadline=$BATCH_CAP
-    [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT
+    deadline="$(chunk_deadline "$idx")"
     filter="${list//$'\n'/:}"; filter="${filter%:}"
     tf="${out_file}.b"
     if [ -n "$TIMEOUT_CMD" ]; then

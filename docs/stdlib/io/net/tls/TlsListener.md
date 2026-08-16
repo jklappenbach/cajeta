@@ -9,12 +9,12 @@ caller must keep them alive for the listener's lifetime. Dropping the
 `TlsListener` closes the underlying listening socket.
 
 ```cajeta
-int8[] cert = File.readAllBytes("/etc/ssl/server-cert.pem");
-int8[] key = File.readAllBytes("/etc/ssl/server-key.pem");
-SocketAddress addr = SocketAddress.parse("127.0.0.1:0");
-TlsListener listener = TlsListener.bind(addr, cert, (int32) cert.count(),
+int8[] cert #= File.readAllBytes("/etc/ssl/server-cert.pem");
+int8[] key #= File.readAllBytes("/etc/ssl/server-key.pem");
+SocketAddress addr #= SocketAddress.parse("127.0.0.1:0");
+TlsListener listener #= TlsListener.bind(addr, cert, (int32) cert.count(),
                                         key, (int32) key.count());
-TlsStream conn = listener.accept();   // handshake already complete
+TlsStream conn #= listener.accept();   // handshake already complete
 listener.close();
 ```
 

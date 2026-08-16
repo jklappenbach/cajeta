@@ -13,7 +13,7 @@ Period p = Period.of(1, 2, 10);
 Period w = Period.ofWeeks(2);
 Period q = p.plus(w);
 int64 months = q.toTotalMonths();   // 14
-String text = q.iso();              // "P1Y2M24D"
+String text #= q.iso();              // "P1Y2M24D"
 ```
 
 ## Methods

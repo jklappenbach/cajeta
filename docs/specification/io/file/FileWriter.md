@@ -46,7 +46,7 @@ public class FileWriter {
 ## Idiomatic write
 
 ```cajeta
-FileWriter w = File.openWrite(path, OpenMode.WRITE);
+FileWriter w #= File.openWrite(path, OpenMode.WRITE);
 w.write(payload, payloadLen);
 w.close();   // explicit close (auto-close on drop is planned)
 ```

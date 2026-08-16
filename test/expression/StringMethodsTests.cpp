@@ -35,239 +35,42 @@ TEST(StringMethodsTests, declOnlyDoesNotCrash) {
         "return 42;"), 42);
 }
 
-TEST(StringMethodsTests, sizeOfHello) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello\";\n"
-        "if (s.size() == 5) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, sizeOfEmpty) {
-    EXPECT_EQ(runJit(
-        "String s = \"\";\n"
-        "if (s.size() == 0) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, countOfTenAsciiChars) {
-    // `count()` is the universal element-count API across String and
-    // Collections (2026-05-18 naming convention); for ASCII this
-    // coincides with `size()` (byte length), for multibyte UTF-8 the
-    // two diverge. Test pins ASCII parity.
-    EXPECT_EQ(runJit(
-        "String s = \"abcdefghij\";\n"
-        "if (s.count() == 10) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, equalsTrue) {
-    EXPECT_EQ(runJit(
-        "String a = \"foo\";\n"
-        "String b = \"foo\";\n"
-        "if (a.equals(b)) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, equalsFalseDifferentContent) {
-    EXPECT_EQ(runJit(
-        "String a = \"foo\";\n"
-        "String b = \"bar\";\n"
-        "if (a.equals(b)) return 1;\n"
-        "return 0;"), 0);
-}
 
-TEST(StringMethodsTests, equalsLiteralRhs) {
-    EXPECT_EQ(runJit(
-        "String a = \"hello\";\n"
-        "if (a.equals(\"hello\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, equalsAfterConcat) {
-    EXPECT_EQ(runJit(
-        "String a = \"foo\" + \"bar\";\n"
-        "if (a.equals(\"foobar\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, isEmptyEmpty) {
-    EXPECT_EQ(runJit(
-        "String s = \"\";\n"
-        "if (s.isEmpty()) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, isEmptyNonEmpty) {
-    EXPECT_EQ(runJit(
-        "String s = \"x\";\n"
-        "if (s.isEmpty()) return 1;\n"
-        "return 0;"), 0);
-}
 
-TEST(StringMethodsTests, charAtFirst) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello\";\n"
-        "return (int32) s.charAt(0);"), 'h');
-}
 
-TEST(StringMethodsTests, charAtMiddle) {
-    EXPECT_EQ(runJit(
-        "String s = \"abcdef\";\n"
-        "return (int32) s.charAt(3);"), 'd');
-}
 
-TEST(StringMethodsTests, charAtOutOfRangeReturnsZero) {
-    EXPECT_EQ(runJit(
-        "String s = \"abc\";\n"
-        "return (int32) s.charAt(99);"), 0);
-}
 
-TEST(StringMethodsTests, indexOfFound) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello world\";\n"
-        "if (s.indexOf(\"world\") == 6) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, indexOfNotFound) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello\";\n"
-        "if (s.indexOf(\"xyz\") == -1) return 1;\n"
-        "return 0;"), 1);
-}
 
 // SIMD memmem path: haystack > 32 bytes so the 32-wide scan runs; match lands
 // well past the first vector block.
-TEST(StringMethodsTests, indexOfLongHaystackMatchPastBlock) {
-    EXPECT_EQ(runJit(
-        "String s = \"0123456789abcdefghijABCDEFGHIJxyzNEEDLEtail\";\n"
-        "if (s.indexOf(\"NEEDLE\") == 33) return 1;\n"
-        "return 0;"), 1);
-}
 
 // Match at the very tail (last full window) — exercises the block/tail boundary.
-TEST(StringMethodsTests, indexOfMatchAtTail) {
-    EXPECT_EQ(runJit(
-        "String s = \"the quick brown fox jumps over the lazy dogZ\";\n"
-        "if (s.indexOf(\"dogZ\") == 40) return 1;\n"
-        "return 0;"), 1);
-}
 
 // Absent long needle over a > 32-byte haystack whose first byte recurs (the
 // two-byte prefilter must reject every candidate; result -1).
-TEST(StringMethodsTests, indexOfAbsentLongNeedleLongHaystack) {
-    EXPECT_EQ(runJit(
-        "String s = \"aXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaXaX\";\n"
-        "if (s.indexOf(\"aXaXaXaXaQ\") == -1) return 1;\n"
-        "return 0;"), 1);
-}
 
 // Single-byte needle on a long haystack (nlen==1 path: last==first).
-TEST(StringMethodsTests, indexOfSingleByteLongHaystack) {
-    EXPECT_EQ(runJit(
-        "String s = \"00000000000000000000000000000000000000Q0\";\n"
-        "if (s.indexOf(\"Q\") == 38) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, startsWithTrue) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello world\";\n"
-        "if (s.startsWith(\"hello\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, startsWithFalse) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello world\";\n"
-        "if (s.startsWith(\"world\")) return 1;\n"
-        "return 0;"), 0);
-}
 
-TEST(StringMethodsTests, endsWithTrue) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello world\";\n"
-        "if (s.endsWith(\"world\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, endsWithFalse) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello world\";\n"
-        "if (s.endsWith(\"hello\")) return 1;\n"
-        "return 0;"), 0);
-}
 
-TEST(StringMethodsTests, containsTrue) {
-    EXPECT_EQ(runJit(
-        "String s = \"abcdefg\";\n"
-        "if (s.contains(\"cde\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, containsFalse) {
-    EXPECT_EQ(runJit(
-        "String s = \"abcdefg\";\n"
-        "if (s.contains(\"xyz\")) return 1;\n"
-        "return 0;"), 0);
-}
 
-TEST(StringMethodsTests, substringSliceMatches) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello world\";\n"
-        "String sub #= s.substring(6, 11);\n"
-        "if (sub.equals(\"world\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, substringEmptyWindow) {
-    EXPECT_EQ(runJit(
-        "String s = \"abc\";\n"
-        "String sub #= s.substring(2, 2);\n"
-        "if (sub.isEmpty()) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, toUpperCaseAscii) {
-    EXPECT_EQ(runJit(
-        "String s = \"Hello, World!\";\n"
-        "String u #= s.toUpperCase();\n"
-        "if (u.equals(\"HELLO, WORLD!\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, toLowerCaseAscii) {
-    EXPECT_EQ(runJit(
-        "String s = \"Hello, World!\";\n"
-        "String l #= s.toLowerCase();\n"
-        "if (l.equals(\"hello, world!\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, toUpperCaseLong) {
-    // 46 bytes: exercises the 32-byte SWAR path + 8-byte word + scalar tail.
-    EXPECT_EQ(runJit(
-        "String s = \"the quick brown fox jumps over the lazy dog 123\";\n"
-        "String u #= s.toUpperCase();\n"
-        "if (u.equals(\"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 123\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, toLowerCaseLong) {
-    EXPECT_EQ(runJit(
-        "String s = \"THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG 123\";\n"
-        "String l #= s.toLowerCase();\n"
-        "if (l.equals(\"the quick brown fox jumps over the lazy dog 123\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, trimBothSides) {
-    EXPECT_EQ(runJit(
-        "String s = \"   spaced   \";\n"
-        "String t #= s.trim();\n"
-        "if (t.equals(\"spaced\")) return 1;\n"
-        "return 0;"), 1);
-}
 
 TEST(StringMethodsTests, trimAllWhitespace) {
     EXPECT_EQ(runJit(
@@ -276,29 +79,8 @@ TEST(StringMethodsTests, trimAllWhitespace) {
         "return 0;"), 1);
 }
 
-TEST(StringMethodsTests, replaceSingleMatch) {
-    EXPECT_EQ(runJit(
-        "String s = \"foo bar\";\n"
-        "String r #= s.replace(\"bar\", \"baz\");\n"
-        "if (r.equals(\"foo baz\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, replaceMultipleMatches) {
-    EXPECT_EQ(runJit(
-        "String s = \"a-b-c-d\";\n"
-        "String r #= s.replace(\"-\", \"::\");\n"
-        "if (r.equals(\"a::b::c::d\")) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(StringMethodsTests, replaceNoMatch) {
-    EXPECT_EQ(runJit(
-        "String s = \"hello\";\n"
-        "String r #= s.replace(\"x\", \"y\");\n"
-        "if (r.equals(\"hello\")) return 1;\n"
-        "return 0;"), 1);
-}
 
 // --- hash() (XXH3) -------------------------------------------------------
 

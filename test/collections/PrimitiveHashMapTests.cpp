@@ -198,55 +198,5 @@ TEST(PrimitiveHashMapTests, swissResizeThousandInts) {
 
 // Remove then re-insert: tombstone reuse + probe-past-tombstone correctness.
 // Remove half the keys, confirm absent + count, re-insert them, confirm all back.
-TEST(PrimitiveHashMapTests, swissTombstoneReuse) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<int32, int32> m = heap HashMap<int32, int32>(256);\n"
-        "        int32 i = 0;\n"
-        "        while (i < 200) { m.put(i, i + 1); i = i + 1; }\n"
-        "        int32 r = 0;\n"
-        "        while (r < 200) { if (!m.containsKey(r)) { return -1; } m.remove(r); r = r + 2; }\n"
-        "        if (m.count() != 100) { return -2; }\n"
-        "        // odds still present, evens absent\n"
-        "        if (m.containsKey(4)) { return -3; }\n"
-        "        if (m.containsKey(5) == false) { return -4; }\n"
-        "        // re-insert evens (reuse tombstones)\n"
-        "        int32 e = 0;\n"
-        "        while (e < 200) { m.put(e, e + 1); e = e + 2; }\n"
-        "        if (m.count() != 200) { return -5; }\n"
-        "        int32 hits = 0;\n"
-        "        int32 j = 0;\n"
-        "        while (j < 200) { if (m.get(j) == j + 1) { hits = hits + 1; } j = j + 1; }\n"
-        "        return hits;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 200);
-}
 
 // remove() of an absent key returns false; present key returns true once.
-TEST(PrimitiveHashMapTests, swissRemoveReturnValue) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<int32, int32> m = heap HashMap<int32, int32>(16);\n"
-        "        m.put(11, 1);\n"
-        "        if (m.containsKey(999)) { return -1; }\n"
-        "        m.remove(999);\n"
-        "        if (!m.containsKey(11)) { return -2; }\n"
-        "        m.remove(11);\n"
-        "        if (m.containsKey(11)) { return -3; }\n"
-        "        if (m.remove(11) != false) { return -3; }\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}

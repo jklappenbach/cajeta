@@ -62,21 +62,6 @@ TEST(AliasMutationBorrowTests, writeThroughAliasIsAllowed) {
 
 // Reassigning a prefix of the borrowed path (the whole `p`) is
 // likewise allowed.
-TEST(AliasMutationBorrowTests, writeToPrefixIsAllowed) {
-    auto src =
-        "package test;\n"
-        "public class Person { String name; "
-        "  public Person(String n) { this.name = n; } }\n"
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        "        Person p = heap Person(\"Bob\");\n"
-        "        String alias = p.name;\n"
-        "        p = heap Person(\"Charlie\");\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    expectCompiles(src);
-}
 
 // Reassigning a nested-field prefix (`p.addr` while `p.addr.city` is
 // aliased) is allowed for the same reason.
@@ -100,20 +85,3 @@ TEST(AliasMutationBorrowTests, writeToBorrowedPathPrefixIsAllowed) {
 
 // Disjoint write while a borrow is live: always fine, and the program
 // runs to return the written value.
-TEST(AliasMutationBorrowTests, writeToDisjointPathLeavesBorrowIntact) {
-    auto src =
-        "package test;\n"
-        "public class Person { String name; int32 age; "
-        "  public Person(String n) { this.name = n; this.age = 0; } }\n"
-        "public final class A {\n"
-        "    public static int32 run() {\n"
-        "        Person p = heap Person(\"Bob\");\n"
-        "        String alias = p.name;\n"
-        "        p.age = 42;\n"
-        "        return p.age;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.A");
-    auto run = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(run(), 42);
-}

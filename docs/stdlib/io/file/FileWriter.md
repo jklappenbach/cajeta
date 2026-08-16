@@ -8,7 +8,7 @@ but there is no user-space buffer — bytes go straight to the syscall. Write
 when done.
 
 ```cajeta
-FileWriter w = File.openWrite("/tmp/out.txt", OpenMode.APPEND);
+FileWriter w #= File.openWrite("/tmp/out.txt", OpenMode.APPEND);
 w.writeString("first line\n");
 int8[] bytes = heap int8[2];
 w.write(bytes, 2);

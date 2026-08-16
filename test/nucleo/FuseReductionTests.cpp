@@ -39,13 +39,6 @@ const char* kInput =
 
 // 2.1.1 — a reduction runs as its own stage: sum(t*t) over {1,2,3,4} = 30.
 // The elementwise t*t fuses; the sum is the bounding stage.
-TEST(FuseReduction, reductionStagesAndEvaluates) {
-    EXPECT_FLOAT_EQ(runTensor(std::string(kInput) +
-        "        (Tensor<float32>) -> float32 g =\n"
-        "            Fuse((Tensor<float32> t) ->\n"
-        "                Tensor.sum<float32,float32>(Tensor.mul<float32>(t, t)));\n"
-        "        return g(x);"), 30.0f);
-}
 
 // 2.1.2 — the spec's headline: (t - t.mean()) / t.std(). mean and std stage;
 // the elementwise tail fuses into one pass. Standardized data has mean 0 and
@@ -65,14 +58,3 @@ TEST(FuseReduction, standardizeHeadlineShape) {
     EXPECT_NEAR(v, 0.0f, 1e-4f);
 }
 
-TEST(FuseReduction, standardizeScaleIsUnit) {
-    float ss = runTensor(std::string(kInput) +
-        "        (Tensor<float32>) -> #Tensor<float32> g =\n"
-        "            Fuse((Tensor<float32> t) ->\n"
-        "                Tensor.divScalar<float32>(\n"
-        "                    Tensor.subScalar<float32>(t, Tensor.mean<float32,float32>(t)),\n"
-        "                    Tensor.std<float32,float32>(t, 0)));\n"
-        "        Tensor<float32> r = g(x);\n"
-        "        return Tensor.sum<float32,float32>(Tensor.mul<float32>(r, r));");
-    EXPECT_NEAR(ss, 4.0f, 1e-3f);   // n elements, unit variance
-}

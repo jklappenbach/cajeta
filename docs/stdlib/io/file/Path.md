@@ -8,12 +8,12 @@
 with the static factory `Path.of(...)`.
 
 ```cajeta
-Path p = Path.of("/foo/bar/baz.txt");
-String leaf = p.name();          // "baz.txt"
-String base = p.stem();          // "baz"
-String ext = p.extension();      // "txt"
-Path dir = p.parent();           // "/foo/bar"
-Path child = dir.resolve("note.md");
+Path p #= Path.of("/foo/bar/baz.txt");
+String leaf #= p.name();          // "baz.txt"
+String base #= p.stem();          // "baz"
+String ext #= p.extension();      // "txt"
+Path dir #= p.parent();           // "/foo/bar"
+Path child #= dir.resolve("note.md");
 ```
 
 ## Methods

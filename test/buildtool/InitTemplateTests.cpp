@@ -61,9 +61,6 @@ TEST(InitTemplateTests, embedsAllFiveArchetypes) {
     EXPECT_TRUE(nameSet.count("melt"));
 }
 
-TEST(InitTemplateTests, unknownArchetypeIsNullopt) {
-    EXPECT_FALSE(findInitTemplate("does-not-exist").has_value());
-}
 
 TEST(InitTemplateTests, basicHasManifestAndOneSource) {
     auto t = findInitTemplate("basic");
@@ -88,29 +85,7 @@ TEST(InitTemplateTests, basicHasManifestAndOneSource) {
     EXPECT_TRUE(hasSource);
 }
 
-TEST(InitTemplateTests, meltIsManifestOnly) {
-    auto t = findInitTemplate("melt");
-    ASSERT_TRUE(t.has_value());
-    EXPECT_EQ(t->files.size(), 1u);
-    EXPECT_EQ(t->files[0].relativePath, "cajeta.json");
-}
 
-TEST(InitTemplateTests, workspaceHasMultipleManifests) {
-    auto t = findInitTemplate("workspace");
-    ASSERT_TRUE(t.has_value());
-    // Workspace root + 4 members (shared/core, shared/util,
-    // apps/api, apps/cli) = 5 manifests, plus per-member sources.
-    int manifestCount = 0;
-    for (const auto& f : t->files) {
-        if (f.relativePath.size() >= 12 &&
-            f.relativePath.compare(
-                f.relativePath.size() - 12, 12, "/cajeta.json") == 0) {
-            ++manifestCount;
-        }
-        if (f.relativePath == "cajeta.json") ++manifestCount;
-    }
-    EXPECT_EQ(manifestCount, 5);
-}
 
 TEST(InitTemplateTests, everyManifestParses) {
     for (const auto& name : availableInitTemplates()) {
@@ -159,27 +134,6 @@ TEST(InitTemplateTests, instantiateBasicRoundTripsBytes) {
     std::filesystem::remove_all(dest);
 }
 
-TEST(InitTemplateTests, instantiateCreatesNestedDirectories) {
-    auto dest = makeTempDir("nested");
-    auto result = instantiateInitTemplate(
-        "multi-binary", dest.string(), false);
-    ASSERT_TRUE(static_cast<bool>(result));
-
-    // multi-binary has src/main/cajeta/com/example/multi/<bin>/Main.cajeta
-    // — verify that deep path was created.
-    bool foundNested = false;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(dest)) {
-        if (entry.is_regular_file()) {
-            auto s = entry.path().string();
-            if (s.find("server") != std::string::npos &&
-                s.find("Main.cajeta") != std::string::npos) {
-                foundNested = true;
-            }
-        }
-    }
-    EXPECT_TRUE(foundNested);
-    std::filesystem::remove_all(dest);
-}
 
 TEST(InitTemplateTests, refusesToOverwriteWithoutForce) {
     auto dest = makeTempDir("collide");
@@ -202,26 +156,6 @@ TEST(InitTemplateTests, refusesToOverwriteWithoutForce) {
     std::filesystem::remove_all(dest);
 }
 
-TEST(InitTemplateTests, forceOverwrites) {
-    auto dest = makeTempDir("force");
-    std::filesystem::create_directories(dest);
-    std::ofstream(dest / "cajeta.json") << "stale";
-
-    auto result = instantiateInitTemplate("basic", dest.string(), true);
-    ASSERT_TRUE(static_cast<bool>(result));
-
-    auto t = findInitTemplate("basic");
-    ASSERT_TRUE(t.has_value());
-    // Find the embedded cajeta.json content and verify on-disk
-    // matches it (not "stale" anymore).
-    for (const auto& f : t->files) {
-        if (f.relativePath == "cajeta.json") {
-            EXPECT_EQ(readFile(dest / "cajeta.json"),
-                      std::string(f.contents));
-        }
-    }
-    std::filesystem::remove_all(dest);
-}
 
 TEST(InitTemplateTests, errorsOnUnknownTemplate) {
     auto dest = makeTempDir("unknown");

@@ -12,7 +12,7 @@ xs.add(20);
 xs.add(30);
 int32 n = xs.count();        // 3
 xs.set(1, 25);               // [10, 25, 30]
-ArrayStream<int32> s = xs.stream();
+ArrayStream<int32> s #= xs.stream();
 ```
 
 ## Methods

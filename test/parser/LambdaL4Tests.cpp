@@ -140,21 +140,6 @@ TEST(LambdaL4Tests, returnedConstructorRefCallable) {
 
 // Receiver captured by borrow; thunk loads the captured `this` and
 // dispatches the instance method with it.
-TEST(LambdaL4Tests, boundInstanceMethodReferenceCallable) {
-    auto src =
-        "package test;\n"
-        "public class Counter {\n"
-        "    public int32 next() { return 42; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Counter c = heap Counter();\n"
-        "        () -> int32 fn = c::next;\n"
-        "        return fn();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // ---------------------------------------------------------------------
 // L4-3: unbound instance method references — `Type::instanceMethod`

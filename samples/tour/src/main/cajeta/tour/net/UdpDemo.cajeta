@@ -29,16 +29,16 @@ public class UdpDemo extends DemoClass {
 
         // Bind two sockets on 127.0.0.1:0 — the kernel assigns each an
         // ephemeral port, read back through localAddress().
-        IpAddress aIp = IpAddress.loopbackV4();
-        SocketAddress aBind = SocketAddress.of(#aIp, 0);
-        UdpSocket a = UdpSocket.bind(aBind);
-        SocketAddress aLocal = a.localAddress();
+        IpAddress aIp #= IpAddress.loopbackV4();
+        SocketAddress aBind #= SocketAddress.of(#aIp, 0);
+        UdpSocket a #= UdpSocket.bind(aBind);
+        SocketAddress aLocal #= a.localAddress();
         int32 aPort = aLocal.getPort();
 
-        IpAddress bIp = IpAddress.loopbackV4();
-        SocketAddress bBind = SocketAddress.of(#bIp, 0);
-        UdpSocket b = UdpSocket.bind(bBind);
-        SocketAddress bLocal = b.localAddress();
+        IpAddress bIp #= IpAddress.loopbackV4();
+        SocketAddress bBind #= SocketAddress.of(#bIp, 0);
+        UdpSocket b #= UdpSocket.bind(bBind);
+        SocketAddress bLocal #= b.localAddress();
         int32 bPort = bLocal.getPort();
 
         this.check(aPort > 0 && bPort > 0,
@@ -53,8 +53,8 @@ public class UdpDemo extends DemoClass {
         ping[1] = (int8) 105;   // 'i'
         ping[2] = (int8) 110;   // 'n'
         ping[3] = (int8) 103;   // 'g'
-        IpAddress destIp = IpAddress.loopbackV4();
-        SocketAddress dest = SocketAddress.of(#destIp, bPort);
+        IpAddress destIp #= IpAddress.loopbackV4();
+        SocketAddress dest #= SocketAddress.of(#destIp, bPort);
         int32 sent = a.sendTo(ping, 0, 4, dest);
         this.check(sent == 4, "sendTo hands 4 bytes to the kernel");
 
@@ -62,7 +62,7 @@ public class UdpDemo extends DemoClass {
         // sender's address — that's how a UDP server knows where to
         // reply, since every datagram can come from a different peer.
         int8[] rbuf = heap int8[16];
-        RecvResult rr = b.recvFrom(rbuf, 0, 16);
+        RecvResult rr #= b.recvFrom(rbuf, 0, 16);
         this.check(rr.getCount() == 4, "recvFrom reports the datagram size");
         boolean payloadOk = rbuf[0] == (int8) 112 && rbuf[1] == (int8) 105
             && rbuf[2] == (int8) 110 && rbuf[3] == (int8) 103;
@@ -76,8 +76,8 @@ public class UdpDemo extends DemoClass {
         // Connected path: B stores A as its default peer (connect on
         // UDP sends nothing — it just records the address), then replies
         // with the address-less send().
-        IpAddress peerIp = IpAddress.loopbackV4();
-        SocketAddress peer = SocketAddress.of(#peerIp, aPort);
+        IpAddress peerIp #= IpAddress.loopbackV4();
+        SocketAddress peer #= SocketAddress.of(#peerIp, aPort);
         b.connect(peer);
         int8[] pong = heap int8[4];
         pong[0] = (int8) 112;   // 'p'

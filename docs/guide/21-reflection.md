@@ -66,9 +66,9 @@ public class Cloner {
     public int32 cloneWidget() {
         Widget seed = heap Widget();
         Class<?> c = Class.of(seed);
-        Constructor ctor = c.getConstructor(0);
-        Object obj = ctor.heapInstance();
-        Field f = c.getField(0);
+        Constructor ctor #= c.getConstructor(0);
+        Object obj #= ctor.heapInstance();
+        Field f #= c.getField(0);
         f.setInt32(obj, 42);
         return f.getInt32(obj);
     }

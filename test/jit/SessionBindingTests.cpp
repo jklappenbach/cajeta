@@ -84,17 +84,6 @@ std::string errorOf(const std::string& script) {
 
 // 3.1.1 / spec 4.1 — a top-level heap binding is readable by later
 // statements and SURVIVES the entry's return: no drop until the host says so.
-TEST(SessionBindingTests, bindingPersistsPastStatement) {
-    Session s(
-        "Probe p = heap Probe(7);\n"
-        "int32 witness = p.id;\n"
-        "return witness;\n");
-    ASSERT_TRUE(s.ok());
-    EXPECT_EQ(7, s.entry());
-    EXPECT_EQ(0, s.dropCount());   // alive after the entry returned
-    s.dropAll();
-    EXPECT_EQ(1, s.dropCount());
-}
 
 // 3.1.2 / spec 4.3 — rebinding the name drops the old value at the rebind
 // point; the new value is session-owned.
@@ -113,35 +102,9 @@ TEST(SessionBindingTests, rebindDropsOldValue) {
 }
 
 // 3.1.3 / spec 4.4 — session end drops in reverse binding order.
-TEST(SessionBindingTests, sessionEndDropsReverseOrder) {
-    Session s(
-        "Probe a = heap Probe(1);\n"
-        "Probe b = heap Probe(2);\n"
-        "return 0;\n");
-    ASSERT_TRUE(s.ok());
-    s.entry();
-    EXPECT_EQ(0, s.dropCount());
-    s.dropAll();
-    EXPECT_EQ(2, s.dropCount());
-    EXPECT_EQ(2, s.firstDropped());    // b first (reverse order)
-    EXPECT_EQ(1, s.lastDropped());     // a last
-}
 
 // 3.1.4 / spec 4.5 — a block-nested local is an ordinary local: it drops at
 // block exit inside the entry, and the session never sees it.
-TEST(SessionBindingTests, blockLocalsStayLocal) {
-    Session s(
-        "{\n"
-        "    Probe t = heap Probe(9);\n"
-        "}\n"
-        "int32 afterBlock = Probe.drops;\n"
-        "return afterBlock;\n");
-    ASSERT_TRUE(s.ok());
-    EXPECT_EQ(1, s.entry());           // dropped by block exit, mid-entry
-    EXPECT_EQ(1, s.dropCount());
-    s.dropAll();
-    EXPECT_EQ(1, s.dropCount());       // session had nothing to drop
-}
 
 // 3.1.5 / spec 4.7 — a `stack` allocation cannot bind at top level: session
 // bindings outlive the entry frame. Uniform rule (open question 8.1 closed

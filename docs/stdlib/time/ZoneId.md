@@ -11,7 +11,7 @@ zone makes `offsetAt` throw `DateTimeException`. Unlike the package's value
 types it is a reference object, created with `ZoneId.of(...)`.
 
 ```cajeta
-ZoneId utc = ZoneId.of("UTC");
+ZoneId utc #= ZoneId.of("UTC");
 Instant t0 = Instant.ofEpochSecond(1000L);
 ZoneOffset off = utc.offsetAt(t0);   // +00:00
 ZonedDateTime zdt = utc.resolve(t0);

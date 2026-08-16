@@ -44,7 +44,7 @@ public class Sha256Bench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        int8[] d = Sha256.hash(this.data, this.len);
+        int8[] d #= Sha256.hash(this.data, this.len);
         this.digestLen = (int64) d.count();
     }
 

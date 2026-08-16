@@ -46,7 +46,7 @@ public class Base64EncodeBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        String enc = Base64.encode(this.data, this.len);
+        String enc #= Base64.encode(this.data, this.len);
         this.outLen = (int64) enc.count();
     }
 

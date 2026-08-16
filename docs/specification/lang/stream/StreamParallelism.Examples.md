@@ -149,7 +149,7 @@ Setting the flag twice is a no-op. No allocation, no warning.
 
 ```cajeta
 HashMap<String, int32> scores = ...;
-int64 total = scores.values()
+int64 total #= scores.values()
                     .parallel()
                     .map<int64>((v) -> (int64) v)
                     .reduce(0L, (a, b) -> a + b);

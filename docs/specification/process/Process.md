@@ -51,7 +51,7 @@ argv[0] = "/bin/echo";
 argv[1] = "hello";
 Command cmd = heap Command(#argv);
 cmd.captureStdout();
-ProcessResult r = cmd.run();
+ProcessResult r #= cmd.run();
 if (r.launched() && r.code() == 0) {
     int8[] out = r.stdout();   // "hello\n"
 }
@@ -83,13 +83,13 @@ argv[0] = "/bin/cat";
 Command cmd = heap Command(#argv);
 cmd.pipeStdin();
 cmd.pipeStdout();
-Process p = cmd.start();
-FileWriter w = p.stdin();
+Process p #= cmd.start();
+FileWriter w #= p.stdin();
 w.writeString("ping\n");
 w.close();                          // EOF to the child
-FileReader rd = p.stdout();
-String echoed = rd.readString(64);  // "ping\n"
-ProcessResult res = p.waitFor();
+FileReader rd #= p.stdout();
+String echoed #= rd.readString(64);  // "ping\n"
+ProcessResult res #= p.waitFor();
 p.close();
 ```
 

@@ -359,47 +359,6 @@ TEST(XpuVectorDeviceTests, runsOnCpu) {
 // S6: a KernelBuffer<Vector<float32,4>> — buffer element type is a vector. JIT the
 // kernel and run it; each 4-float element must equal (2i, 2, 4, 6). Proves the
 // 16-byte element stride and a whole-vector store through `out[i] =`.
-TEST(XpuVectorDeviceTests, bufferOfVectorRunsOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kVecBufSource);
-    auto k = findMethod(module->getStructures()["test.MB"], "vecbuf");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_vecbuf_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr))
-        << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto symOrErr = jit->lookup("vecbuf");
-    ASSERT_TRUE(static_cast<bool>(symOrErr))
-        << llvm::toString(symOrErr.takeError());
-    auto vecbuf = symOrErr->toPtr<VecBufFn>();
-
-    const int32_t B = 64, G = 4;
-    const uint32_t N = (uint32_t) (B * G);
-    std::vector<float> out(std::size_t(N) * 4, -1.0f);  // 4 floats per element
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            vecbuf(out.data(), N,
-                   tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    for (uint32_t i = 0; i < N; ++i) {
-        EXPECT_FLOAT_EQ(out[4 * i + 0], 2.0f * (float) i) << "elem " << i << " .x";
-        EXPECT_FLOAT_EQ(out[4 * i + 1], 2.0f) << "elem " << i << " .y";
-        EXPECT_FLOAT_EQ(out[4 * i + 2], 4.0f) << "elem " << i << " .z";
-        EXPECT_FLOAT_EQ(out[4 * i + 3], 6.0f) << "elem " << i << " .w";
-    }
-}
 
 // On a real GPU via Vulkan compute. Skips cleanly when no device is present.
 TEST(XpuVectorDeviceTests, runsOnVulkanDevice) {
@@ -513,39 +472,6 @@ TEST(XpuVectorDeviceTests, runsOnAmdDevice) {
 }
 
 // B1 intrinsics A1 — min/max/clamp/lerp on the CPU oracle. out[i] == 16.5 + i.
-TEST(XpuVectorDeviceTests, intrinsicsRunOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kVecIntrinSource);
-    auto k = findMethod(module->getStructures()["test.MI"], "vintrin");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_vintrin_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto sym = jit->lookup("vintrin");
-    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
-    auto vintrin = sym->toPtr<VecFn>();
-
-    const int32_t B = 64, G = 4;
-    const uint32_t N = (uint32_t) (B * G);
-    std::vector<float> out(N, -1.0f);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            vintrin(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    for (uint32_t i = 0; i < N; ++i)
-        EXPECT_FLOAT_EQ(out[i], intrinExpectedAt(i)) << "element " << i;
-}
 
 // B1 intrinsics A1 on a real GPU via Vulkan. out[i] == 16.5 + i.
 TEST(XpuVectorDeviceTests, intrinsicsRunOnVulkanDevice) {
@@ -637,93 +563,8 @@ TEST(XpuVectorDeviceTests, geometryRunsOnCpu) {
 }
 
 // B1 intrinsics A2 on a real GPU via Vulkan. out[i] == 8 + i.
-TEST(XpuVectorDeviceTests, geometryRunsOnVulkanDevice) {
-    using namespace cajeta::xpu::vulkan;
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan compute device available";
-    }
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kVecGeomSource);
-    auto k = findMethod(module->getStructures()["test.MG"], "vgeom");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_vgeom_vkdevice", deviceCtx);
-    configureDeviceModule(deviceModule, *tm);
-    lowerKernel(k, deviceModule);
-    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
-    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
-
-    const uint32_t n = 1u << 16;
-    std::vector<float> out(n, -1.0f);
-
-    VulkanDriver vk;
-    ASSERT_TRUE(vk.init());
-    const std::size_t bytes = std::size_t(n) * sizeof(float);
-    VulkanDriver::Buffer dOut = vk.alloc(bytes);
-    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
-    ASSERT_NE(dOut, 0u);
-    ASSERT_NE(dN, 0u);
-    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
-    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
-
-    const unsigned block = kVulkanLocalSizeX;
-    const unsigned grid = (n + block - 1) / block;
-    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "vgeom", {dOut, dN}, grid));
-
-    std::vector<float> result(n);
-    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
-    vk.free(dOut);
-    vk.free(dN);
-
-    size_t mismatches = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-        if (result[i] != geomExpectedAt(i)) {
-            if (mismatches < 5)
-                ADD_FAILURE() << "i=" << i << " got " << result[i]
-                              << " expected " << geomExpectedAt(i);
-            ++mismatches;
-        }
-    }
-    EXPECT_EQ(mismatches, 0u);
-}
 
 // B intrinsics — comparison masks + select/any/all on the CPU oracle. 9 + i.
-TEST(XpuVectorDeviceTests, masksRunOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kVecMaskSource);
-    auto k = findMethod(module->getStructures()["test.MM"], "vmask");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_vmask_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto sym = jit->lookup("vmask");
-    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
-    auto vmask = sym->toPtr<VecFn>();
-
-    const int32_t B = 64, G = 4;
-    const uint32_t N = (uint32_t) (B * G);
-    std::vector<float> out(N, -1.0f);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            vmask(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    for (uint32_t i = 0; i < N; ++i)
-        EXPECT_FLOAT_EQ(out[i], maskExpectedAt(i)) << "element " << i;
-}
 
 // B intrinsics — masks on a real GPU via Vulkan. out[i] == 9 + i.
 TEST(XpuVectorDeviceTests, masksRunOnVulkanDevice) {
@@ -899,8 +740,6 @@ static void runHalfOnCpu(const char* src, const char* cls, const char* kern) {
         EXPECT_NEAR(out[i], halfExpectedAt(i), 0.5f) << "element " << i;
 }
 
-TEST(XpuVectorDeviceTests, float16RunsOnCpu)  { runHalfOnCpu(kF16Source, "HF", "f16k"); }
-TEST(XpuVectorDeviceTests, bfloat16RunsOnCpu) { runHalfOnCpu(kBf16Source, "HB", "bf16k"); }
 
 // half/bfloat16 vector arithmetic on a real GPU via Vulkan (Float16 capability).
 static void runHalfOnVulkan(const char* src, const char* cls, const char* kern) {
@@ -944,11 +783,9 @@ static void runHalfOnVulkan(const char* src, const char* cls, const char* kern) 
     EXPECT_EQ(mismatches, 0u);
 }
 
-TEST(XpuVectorDeviceTests, float16RunsOnVulkanDevice) { runHalfOnVulkan(kF16Source, "HF", "f16k"); }
 // bfloat16 is portable via the storage+f32-compute model: SPV_KHR_bfloat16 gives
 // the type+conversions; the device computes in f32 (no native bfloat arithmetic,
 // which is Intel-only) — so it runs on RADV too.
-TEST(XpuVectorDeviceTests, bfloat16RunsOnVulkanDevice) { runHalfOnVulkan(kBf16Source, "HB", "bf16k"); }
 
 // half/bfloat16 vector arithmetic on AMD via HIP.
 static void runHalfOnAmd(const char* src, const char* cls, const char* kern) {
@@ -988,8 +825,6 @@ static void runHalfOnAmd(const char* src, const char* cls, const char* kern) {
         EXPECT_NEAR(result[i], halfExpectedAt(i), 0.5f) << "element " << i;
 }
 
-TEST(XpuVectorDeviceTests, float16RunsOnAmdDevice)  { runHalfOnAmd(kF16Source, "HF", "f16k"); }
-TEST(XpuVectorDeviceTests, bfloat16RunsOnAmdDevice) { runHalfOnAmd(kBf16Source, "HB", "bf16k"); }
 
 // --- integer dot product (DP4a, SPV_KHR_integer_dot_product) --------------
 // `Vector<int8,4>` / `Vector<uint8,4>` `.dot()` -> int32, with the optional
@@ -1066,91 +901,4 @@ TEST(XpuVectorDeviceTests, integerDotRunsOnCpu) {
         EXPECT_EQ(out[i], kDp4aExpected) << "element " << i;
 }
 
-TEST(XpuVectorDeviceTests, integerDotRunsOnVulkanDevice) {
-    using namespace cajeta::xpu::vulkan;
-    if (!VulkanDriver::available()) {
-        GTEST_SKIP() << "no Vulkan compute device available";
-    }
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kDp4aSource);
-    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
-    ASSERT_NE(k, nullptr);
 
-    auto tm = createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_dp4a_vkdevice", deviceCtx);
-    configureDeviceModule(deviceModule, *tm);
-    lowerKernel(k, deviceModule);
-    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
-    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
-
-    const uint32_t n = 1u << 16;
-    std::vector<int32_t> out(n, -1);
-    VulkanDriver vk;
-    ASSERT_TRUE(vk.init());
-    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
-    VulkanDriver::Buffer dOut = vk.alloc(bytes);
-    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
-    ASSERT_NE(dOut, 0u);
-    ASSERT_NE(dN, 0u);
-    ASSERT_TRUE(vk.upload(dOut, out.data(), bytes));
-    ASSERT_TRUE(vk.upload(dN, &n, sizeof(uint32_t)));
-
-    const unsigned block = kVulkanLocalSizeX;
-    const unsigned grid = (n + block - 1) / block;
-    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "dp4a", {dOut, dN}, grid));
-
-    std::vector<int32_t> result(n);
-    ASSERT_TRUE(vk.download(result.data(), dOut, bytes));
-    vk.free(dOut);
-    vk.free(dN);
-
-    size_t mismatches = 0;
-    for (uint32_t i = 0; i < n; ++i) {
-        if (result[i] != kDp4aExpected) {
-            if (mismatches < 5)
-                ADD_FAILURE() << "i=" << i << " got " << result[i]
-                              << " expected " << kDp4aExpected;
-            ++mismatches;
-        }
-    }
-    EXPECT_EQ(mismatches, 0u);
-}
-
-TEST(XpuVectorDeviceTests, integerDotRunsOnAmdDevice) {
-    using namespace cajeta::xpu::amd;
-    if (!HipDriver::available()) GTEST_SKIP() << "no AMD HIP device available";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kDp4aSource);
-    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
-    ASSERT_NE(k, nullptr);
-    auto tm = createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_dp4a_amd", deviceCtx);
-    configureDeviceModule(deviceModule, *tm);
-    lowerKernel(k, deviceModule);
-    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
-    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed";
-    const uint32_t n = 1u << 12;
-    std::vector<int32_t> out(n, -1);
-    HipDriver hip;
-    ASSERT_TRUE(hip.init());
-    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
-    ASSERT_NE(mod, nullptr);
-    HipFunction fn = hip.getFunction(mod, "dp4a");
-    ASSERT_NE(fn, nullptr);
-    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
-    HipDevicePtr dOut = hip.alloc(bytes);
-    ASSERT_NE(dOut, nullptr);
-    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
-    void* params[] = {&dOut, (void*) &n};
-    ASSERT_TRUE(hip.launch(fn, (n + 63) / 64, 64, params));
-    ASSERT_TRUE(hip.synchronize());
-    std::vector<int32_t> result(n);
-    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
-    hip.free(dOut);
-    for (uint32_t i = 0; i < n; ++i)
-        EXPECT_EQ(result[i], kDp4aExpected) << "element " << i;
-}

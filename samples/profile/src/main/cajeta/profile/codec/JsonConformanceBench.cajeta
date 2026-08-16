@@ -63,7 +63,7 @@ public class JsonConformanceBench extends Benchmark {
     // True if `s` parses (accepted); false if it throws (rejected).
     public boolean accepts(String s) {
         try {
-            JsonValue v = Json.parse(s);
+            JsonValue v #= Json.parse(s);
             return true;
         } catch (Exception e) {
             return false;

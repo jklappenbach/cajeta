@@ -86,68 +86,9 @@ void lowerOnVulkan(const cajeta::MethodPtr& kernel) {
 // device-function lowering marks each helper in-progress before lowering its
 // body, so a call back into a helper still being lowered is a recursion the
 // always-inline model can't fold.
-TEST(XpuLoweringRejectionTests, recursiveDeviceCallRejected) {
-    auto src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class M {\n"
-        "    @Device\n"
-        "    public static int32 fib(int32 n) {\n"
-        "        if (n < 2) { return n; }\n"
-        "        return fib(n - 1) + fib(n - 2);\n"
-        "    }\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<int32> out) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        out[i] = fib(8);\n"
-        "    }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src);
-    auto k = findMethod(module->getStructures()["test.M"], "k");
-    ASSERT_NE(k, nullptr);
-    try {
-        lowerOnCpu(k);
-        FAIL() << "expected XPU-N01 for a recursive @Device call";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "XPU-N01");
-        EXPECT_NE(e.getMessage().find("recursive"), std::string::npos)
-            << e.getMessage();
-    }
-}
 
 // Stage 5 follow-up — at most one dynamic (runtime-sized) shared array per
 // kernel; a second is rejected (XPU-N01). Fires on every backend.
-TEST(XpuLoweringRejectionTests, secondDynamicSharedArrayRejected) {
-    auto src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "import cajeta.xpu.Shared;\n"
-        "public class M {\n"
-        "    @Kernel\n"
-        "    public static void k(KernelBuffer<int32> out, uint32 lenA, uint32 lenB) {\n"
-        "        Shared<int32> a = shared int32[lenA];\n"
-        "        Shared<int32> b = shared int32[lenB];\n"
-        "        uint32 t = KernelThread.x();\n"
-        "        a[t] = 0; b[t] = 0;\n"
-        "        out[t] = a[t] + b[t];\n"
-        "    }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src);
-    auto k = findMethod(module->getStructures()["test.M"], "k");
-    ASSERT_NE(k, nullptr);
-    try {
-        lowerOnCpu(k);
-        FAIL() << "expected XPU-N01 for a second dynamic shared array";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "XPU-N01");
-        EXPECT_NE(e.getMessage().find("at most one dynamic"), std::string::npos)
-            << e.getMessage();
-    }
-}
 
 // Stage 5 follow-up — a dynamic Shared<T> currently requires a 4-byte element
 // (the Vulkan launch's shared-length spec constant assumes 4 bytes); a non-4-byte

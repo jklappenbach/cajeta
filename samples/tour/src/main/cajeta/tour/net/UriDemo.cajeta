@@ -29,7 +29,7 @@ public class UriDemo extends DemoClass {
 
         // 1. Parse a full URI. The scheme is written in caps to show
         // the parse-time lowercasing; the rest survives byte-for-byte.
-        Uri u = Uri.parse("HTTPS://user@example.test:8443/a/b?x=1&y=two#frag");
+        Uri u #= Uri.parse("HTTPS://user@example.test:8443/a/b?x=1&y=two#frag");
         this.check(u.getScheme().equals("https")
             && u.getHost().equals("example.test"),
             "parse: scheme lowercased, host extracted");
@@ -45,14 +45,14 @@ public class UriDemo extends DemoClass {
 
         // 2. The raw query string decodes into an order-preserving
         // multi-map on demand (getQuery() keeps the raw slice).
-        QueryParams qp = u.queryParams();
-        String y = qp.getFirst("y");
+        QueryParams qp #= u.queryParams();
+        String y #= qp.getFirst("y");
         this.check(qp.size() == 2 && y != null && y.equals("two"),
             "queryParams(): 2 pairs, y = \"two\"");
 
         // 3. No explicit port -> the scheme default applies (http=80,
         // https=443, ws=80, wss=443, ftp=21), flagged as non-explicit.
-        Uri d = Uri.parse("http://example.test/docs");
+        Uri d #= Uri.parse("http://example.test/docs");
         boolean dExplicit = d.hasExplicitPort;
         this.check(d.getPort() == 80 && !dExplicit,
             "no explicit port -> scheme default 80, hasExplicitPort false");
@@ -61,21 +61,21 @@ public class UriDemo extends DemoClass {
         // PATH so it passes through, while the space must escape.
         // Decoding is component-independent and inverts exactly.
         String raw = "a b/c";
-        String enc = Uri.percentEncode(raw, UriComponent.PATH);
+        String enc #= Uri.percentEncode(raw, UriComponent.PATH);
         this.check(enc.equals("a%20b/c"),
             "percentEncode(PATH): space -> %20, '/' stays raw");
-        String dec = Uri.percentDecode(enc);
+        String dec #= Uri.percentDecode(enc);
         this.check(dec.equals(raw), "percentDecode inverts the encoding");
         System.stdout.println("  \"" + raw + "\" -> \"" + enc
             + "\" -> \"" + dec + "\"");
 
         // 5. The builder is parse's complement: accumulate components,
         // build(), and toString() recomposes per RFC 3986 section 5.3.
-        Uri built = Uri.builder()
+        Uri built #= Uri.builder()
             .scheme("https").host("h.test").port(8443)
             .path("/a/b").query("x=1").fragment("frag")
             .build();
-        String s = built.toString();
+        String s #= built.toString();
         this.check(s.equals("https://h.test:8443/a/b?x=1#frag"),
             "builder -> toString round-trips the components");
         System.stdout.println("  builder -> " + s);

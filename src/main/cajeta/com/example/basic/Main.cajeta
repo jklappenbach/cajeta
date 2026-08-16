@@ -1,0 +1,11 @@
+package com.example.basic;
+
+import cajeta.lang.System;
+
+public class Main {
+    // Program entry point. `--emit=exe` accepts a static no-arg `main()` or a
+    // static `main(String[] args)` that receives the command-line arguments.
+    public static void main(String[] args) {
+        System.stdout.println("hello from com.example.basic");
+    }
+}

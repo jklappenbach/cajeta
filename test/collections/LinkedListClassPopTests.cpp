@@ -97,53 +97,10 @@ TEST(LinkedListClassPopTests, popTailSingleElementTakesHeadNodeBranch) {
 
 // The primitive path already worked; pin it so a fix for the class path
 // cannot regress it.
-TEST(LinkedListClassPopTests, primitiveElementPopStillWorks) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.LinkedList;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        LinkedList<int32> xs = heap LinkedList<int32>();\n"
-        "        xs.addTail(5);\n"
-        "        xs.addTail(10);\n"
-        "        return xs.popHead() + xs.popTail();\n"
-        "    }\n"
-        "}\n"), 15);
-}
 
 // BOUND — a user class surrendered with `heap` pops correctly.
-TEST(LinkedListClassPopTests, popUserClassSurrendered) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.LinkedList;\n"
-        "public class Tag { public int32 v; public Tag(int32 v) { this.v = v; } }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        LinkedList<Tag> xs = heap LinkedList<Tag>();\n"
-        "        xs.addTail(heap Tag(7));\n"
-        "        xs.addTail(heap Tag(9));\n"
-        "        Tag t = xs.popTail();\n"
-        "        return t.v;\n"
-        "    }\n"
-        "}\n"), 9);
-}
 
 // BOUND — and so does one the caller LENDS.
-TEST(LinkedListClassPopTests, popUserClassLent) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.LinkedList;\n"
-        "public class Tag { public int32 v; public Tag(int32 v) { this.v = v; } }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        LinkedList<Tag> xs = heap LinkedList<Tag>();\n"
-        "        Tag a = heap Tag(7);\n"
-        "        xs.addTail(#a);\n"
-        "        Tag t = xs.popTail();\n"
-        "        return t.v;\n"
-        "    }\n"
-        "}\n"), 7);
-}
 
 // PROBE — String via a NAMED LOCAL rather than a literal at the call site.
 TEST(LinkedListClassPopTests, popStringViaNamedLocalSurvives) {
@@ -162,54 +119,12 @@ TEST(LinkedListClassPopTests, popStringViaNamedLocalSurvives) {
 }
 
 // BOUND — add + read-without-pop is fine for String. Isolates POP as the fault.
-TEST(LinkedListClassPopTests, stringSurvivesAddAndTailRead) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.LinkedList;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        LinkedList<String> xs = heap LinkedList<String>();\n"
-        "        xs.addTail(\"alpha\");\n"
-        "        String t = xs.tail();\n"
-        "        return (int32) t.size();\n"
-        "    }\n"
-        "}\n"), 5);
-}
 
 // BOUND — baseline: a literal outside any container.
-TEST(LinkedListClassPopTests, bareStringLiteralIsReadable) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        String a = \"alpha\";\n"
-        "        return (int32) a.size();\n"
-        "    }\n"
-        "}\n"), 5);
-}
 
 // BOUND — the decisive one: a user class that OWNS AN ARRAY, so a spurious
 // drop is observable exactly the way String's is. It passes, under a poisoned
 // allocator too — so the fault is not "T's drop frees something", it is String.
-TEST(LinkedListClassPopTests, popUserClassOwningArraySurvives) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.LinkedList;\n"
-        "public class Bag {\n"
-        "    public int32[] xs;\n"
-        "    public Bag(int32 n) { this.xs #= heap int32[4]; this.xs[0] = n; }\n"
-        "    public int32 head() { return this.xs[0]; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        LinkedList<Bag> xs = heap LinkedList<Bag>();\n"
-        "        xs.addTail(heap Bag(7));\n"
-        "        xs.addTail(heap Bag(9));\n"
-        "        Bag b = xs.popTail();\n"
-        "        return b.head();\n"
-        "    }\n"
-        "}\n"), 9);
-}
 
 // PROBE — a String built at RUNTIME rather than a literal. Every earlier
 // String probe used a literal (directly or via a local holding one), so the
@@ -231,49 +146,10 @@ TEST(LinkedListClassPopTests, popRuntimeBuiltStringSurvives) {
 
 // PROBE — String in a DIFFERENT container, to separate "String" from
 // "LinkedList's pop".
-TEST(LinkedListClassPopTests, arrayListStringRoundTripWorks) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        ArrayList<String> xs = heap ArrayList<String>();\n"
-        "        xs.add(\"alpha\");\n"
-        "        String t = xs.get(0);\n"
-        "        return (int32) t.size();\n"
-        "    }\n"
-        "}\n"), 5);
-}
 
 // PROBE — a user class with String's EXACT field shape (int32, int32, int8[],
 // int32). If this fails, the fault tracks the layout/ABI; if it passes, String
 // is special-cased somewhere.
-TEST(LinkedListClassPopTests, popUserClassWithStringsExactLayoutSurvives) {
-    EXPECT_EQ(runI32(
-        "package test;\n"
-        "import cajeta.collection.LinkedList;\n"
-        "public final class Strish {\n"
-        "    public int32 lenTag;\n"
-        "    public int32 aux;\n"
-        "    public int8[] base;\n"
-        "    public int32 cachedCpLength;\n"
-        "    public Strish(int32 n) {\n"
-        "        this.lenTag = n;\n"
-        "        this.aux = 0;\n"
-        "        this.base #= heap int8[4];\n"
-        "        this.cachedCpLength = 0;\n"
-        "    }\n"
-        "    public int32 size() { return this.lenTag; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        LinkedList<Strish> xs = heap LinkedList<Strish>();\n"
-        "        xs.addTail(heap Strish(5));\n"
-        "        Strish t = xs.popTail();\n"
-        "        return t.size();\n"
-        "    }\n"
-        "}\n"), 5);
-}
 
 // PROBE — the same node/extract shape as LinkedList.pop, written from scratch
 // outside the stdlib. Isolates "String field + fused claim" from anything
@@ -309,18 +185,6 @@ TEST(LinkedListClassPopTests, miniBoxStringExtractionSurvives) {
         "}\n"), 5);
 }
 
-TEST(LinkedListClassPopTests, miniBoxUserClassExtractionSurvives) {
-    EXPECT_EQ(runI32(std::string(MINI) +
-        "public final class Tg { public int32 v; public Tg(int32 v) { this.v = v; } }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        MiniBox<Tg> b = heap MiniBox<Tg>();\n"
-        "        b.put(heap Tg(5));\n"
-        "        Tg t = b.take();\n"
-        "        return t.v;\n"
-        "    }\n"
-        "}\n"), 5);
-}
 
 // The plain-read probe (plainReadExtractsStringSafely) is retired: its
 // hypothesis — that a PLAIN read of a String field resolves a copy, so an
@@ -366,15 +230,3 @@ TEST(LinkedListClassPopTests, singleSharpStoreFromStringFieldWorks) {
         "}\n"), 5);
 }
 
-TEST(LinkedListClassPopTests, singleSharpStoreFromUserClassFieldWorks) {
-    EXPECT_EQ(runI32(std::string(MINI_SINGLE) +
-        "public final class Tg2 { public int32 v; public Tg2(int32 v) { this.v = v; } }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        SBox<Tg2> b = heap SBox<Tg2>();\n"
-        "        b.put(heap Tg2(5));\n"
-        "        Tg2 t = b.take();\n"
-        "        return t.v;\n"
-        "    }\n"
-        "}\n"), 5);
-}

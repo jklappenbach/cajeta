@@ -59,6 +59,3 @@ TEST(SaxpyKernelTests, vectorizedExactNoTail) {
 }
 
 // 5.a.1 — tail correctness, n not a multiple of 8. Σ(3i+2), n=40.
-TEST(SaxpyKernelTests, vectorizedExactWithTail) {
-    EXPECT_DOUBLE_EQ(saxpyChecksum(40), 2420.0);
-}

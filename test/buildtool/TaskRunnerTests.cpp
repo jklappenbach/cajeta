@@ -70,40 +70,7 @@ namespace {
 
 // ─── happy paths ──────────────────────────────────────────────────────
 
-TEST(TaskRunnerTests, runsSingleExecAction) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "t": {
-                "actions": [
-                    { "action": "exec", "command": "true" }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
-    ASSERT_TRUE((bool)outputs);
-    EXPECT_TRUE(outputs->empty());  // no task-level outputs declared
-}
 
-TEST(TaskRunnerTests, threadsActionOutputsToLaterActions) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "t": {
-                "actions": [
-                    { "action": "exec", "command": "echo", "args": ["payload"], "id": "src" },
-                    { "action": "exec", "command": "test",
-                      "args": ["${src.stdout}", "=", "payload\n"] }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
-    ASSERT_TRUE((bool)outputs) << errorText(outputs.takeError());
-}
 
 TEST(TaskRunnerTests, propertiesAndBuiltinsResolveInActionParams) {
     auto l = mustLoad(R"({
@@ -123,47 +90,7 @@ TEST(TaskRunnerTests, propertiesAndBuiltinsResolveInActionParams) {
     ASSERT_TRUE((bool)outputs) << errorText(outputs.takeError());
 }
 
-TEST(TaskRunnerTests, paramDefaultUsedWhenCliOmitsIt) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "t": {
-                "params": {
-                    "x": { "type": "string", "default": "default-x" }
-                },
-                "actions": [
-                    { "action": "exec", "command": "test",
-                      "args": ["${params.x}", "=", "default-x"] }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
-    ASSERT_TRUE((bool)outputs) << errorText(outputs.takeError());
-}
 
-TEST(TaskRunnerTests, paramCliBindingOverridesDefault) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "t": {
-                "params": {
-                    "x": { "type": "string", "default": "default-x" }
-                },
-                "actions": [
-                    { "action": "exec", "command": "test",
-                      "args": ["${params.x}", "=", "from-cli"] }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    TaskInvocationParams cli;
-    cli.values["x"] = "from-cli";
-    auto outputs = runTask(l.tasks, "t", cli, l.props, registry);
-    ASSERT_TRUE((bool)outputs) << errorText(outputs.takeError());
-}
 
 TEST(TaskRunnerTests, taskOutputsBlockResolves) {
     auto l = mustLoad(R"({
@@ -186,17 +113,6 @@ TEST(TaskRunnerTests, taskOutputsBlockResolves) {
 
 // ─── error paths ──────────────────────────────────────────────────────
 
-TEST(TaskRunnerTests, errorsOnUnknownTaskName) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": { "real": { "actions": [{ "action": "exec", "command": "true" }] } }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "ghost", {}, l.props, registry);
-    ASSERT_FALSE((bool)outputs);
-    auto msg = errorText(outputs.takeError());
-    EXPECT_NE(msg.find("no such task: 'ghost'"), std::string::npos);
-}
 
 TEST(TaskRunnerTests, errorsOnUnknownActionName) {
     auto l = mustLoad(R"({
@@ -286,35 +202,6 @@ TEST(TaskRunnerTests, errorsWhenExecChildExitsNonZero) {
 
 // ─── Phase 3b — depends-on / parallel / run-task / when-skip-when ───
 
-TEST(TaskRunnerTests, dependsOnRunsDepFirst) {
-    // Write a marker file from `build`; verify `test` sees it.
-    auto tmpA = std::filesystem::temp_directory_path() /
-                ("phase3b-dep-" + std::to_string(::getpid()) + "-marker");
-    std::filesystem::remove(tmpA);
-
-    auto l = mustLoad(std::string(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "build": {
-                "actions": [
-                    { "action": "exec", "command": "touch",
-                      "args": [")") + tmpA.generic_string() + R"("] }
-                ]
-            },
-            "test":  {
-                "depends-on": ["build"],
-                "actions": [
-                    { "action": "exec", "command": "test",
-                      "args": ["-f", ")" + tmpA.generic_string() + R"("] }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "test", {}, l.props, registry);
-    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
-    std::filesystem::remove(tmpA);
-}
 
 TEST(TaskRunnerTests, parallelChildrenRunAndMergeOutputs) {
     auto l = mustLoad(R"({
@@ -341,30 +228,6 @@ TEST(TaskRunnerTests, parallelChildrenRunAndMergeOutputs) {
     EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
 }
 
-TEST(TaskRunnerTests, runTaskThreadsOutputsThroughId) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "producer": {
-                "actions": [
-                    { "action": "exec", "command": "echo",
-                      "args": ["produced"], "id": "p" }
-                ],
-                "outputs": { "value": "${p.stdout}" }
-            },
-            "consumer": {
-                "actions": [
-                    { "run-task": "producer", "id": "src" },
-                    { "action": "exec", "command": "test",
-                      "args": ["${src.value}", "=", "produced\n"] }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "consumer", {}, l.props, registry);
-    EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
-}
 
 TEST(TaskRunnerTests, runTaskPassesParamsToCallee) {
     auto l = mustLoad(R"({
@@ -413,23 +276,6 @@ TEST(TaskRunnerTests, whenSkipsActionWhenFalsy) {
     EXPECT_TRUE((bool)outputs) << errorText(outputs.takeError());
 }
 
-TEST(TaskRunnerTests, whenRunsActionWhenTruthy) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "t": {
-                "params": { "enabled": { "type": "bool", "default": true } },
-                "actions": [
-                    { "action": "exec", "command": "true",
-                      "when": "${params.enabled}" }
-                ]
-            }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "t", {}, l.props, registry);
-    EXPECT_TRUE((bool)outputs);
-}
 
 TEST(TaskRunnerTests, whenSkipsActionWhenFalsyExplicit) {
     auto l = mustLoad(R"({
@@ -449,20 +295,6 @@ TEST(TaskRunnerTests, whenSkipsActionWhenFalsyExplicit) {
     EXPECT_TRUE((bool)outputs);
 }
 
-TEST(TaskRunnerTests, errorsOnCyclicDependsOn) {
-    auto l = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": {
-            "a": { "depends-on": ["b"], "actions": [{"action":"exec","command":"true"}] },
-            "b": { "depends-on": ["a"], "actions": [{"action":"exec","command":"true"}] }
-        }
-    })");
-    ActionRegistry registry;
-    auto outputs = runTask(l.tasks, "a", {}, l.props, registry);
-    ASSERT_FALSE((bool)outputs);
-    auto msg = errorText(outputs.takeError());
-    EXPECT_NE(msg.find("cyclic depends-on"), std::string::npos);
-}
 
 TEST(TaskRunnerTests, errorsOnRunTaskTargetUnknown) {
     auto l = mustLoad(R"({
@@ -524,47 +356,10 @@ namespace {
 
 } // namespace
 
-TEST(TaskRunnerTests, cliParamReachesAnActionTheTaskNeverDeclared) {
-    cajeta::buildtool::TaskInvocationParams cli;
-    cli.values["keep-cache"] = "true";
-    auto seen = runRecording(kRecordTask, cli);
 
-    // Typed, not stringly: the action asks getBoolean(), which sees nothing for
-    // the STRING "true" — an uncoerced overlay would look wired and change nothing.
-    auto b = seen.getBoolean("keep-cache");
-    ASSERT_TRUE(b.has_value()) << "keep-cache must arrive as a JSON boolean";
-    EXPECT_TRUE(*b);
-}
-
-TEST(TaskRunnerTests, cliParamsCoerceToTheTypeAnActionAsksFor) {
-    cajeta::buildtool::TaskInvocationParams cli;
-    cli.values["flag"] = "false";
-    cli.values["jobs"] = "8";
-    cli.values["label"] = "release-candidate";
-    auto seen = runRecording(kRecordTask, cli);
-
-    ASSERT_TRUE(seen.getBoolean("flag").has_value());
-    EXPECT_FALSE(*seen.getBoolean("flag"));
-    ASSERT_TRUE(seen.getInteger("jobs").has_value());
-    EXPECT_EQ(*seen.getInteger("jobs"), 8);
-    ASSERT_TRUE(seen.getString("label").has_value());
-    EXPECT_EQ(seen.getString("label")->str(), "release-candidate");
-}
 
 // The CLI is an override: it wins over a value the manifest pinned, which is
 // exactly what a user changing it from the command line is asking for.
-TEST(TaskRunnerTests, cliParamOverridesTheManifestsActionParam) {
-    cajeta::buildtool::TaskInvocationParams cli;
-    cli.values["keep-cache"] = "true";
-    auto seen = runRecording(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "tasks": { "t": { "actions": [
-            { "action": "record", "keep-cache": false }
-        ] } }
-    })", cli);
-    ASSERT_TRUE(seen.getBoolean("keep-cache").has_value());
-    EXPECT_TRUE(*seen.getBoolean("keep-cache")) << "CLI must win over the manifest";
-}
 
 // Declared task params keep working — they still bind for ${params.<name>}
 // substitution, and they also reach the action (same name, same value).

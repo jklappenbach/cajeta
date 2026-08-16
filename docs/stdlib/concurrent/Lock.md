@@ -10,7 +10,7 @@ piece of data to fuse the lock with.
 
 ```cajeta
 Lock gate = heap Lock();
-LockGuard g = gate.acquire();   // held while g is alive; auto-release on drop
+LockGuard g #= gate.acquire();   // held while g is alive; auto-release on drop
 
 Lock gate2 = heap Lock();
 if (gate2.tryAcquire() == 1) {  // non-blocking attempt

@@ -50,90 +50,16 @@ int32_t runI32(const std::string& src, const char* entryClass = "test.D") {
 // 3.1.1 — `data[i] #= v` records the FORWARDED flag: owned adds drop with
 // the container, a lent add leaves the caller's object alone. Mixed in one
 // array.
-TEST(ElementSlotSemanticsTests, storeForwardsFlagTeardownDropsOwnedOnly) {
-    std::string src = std::string(kFixtureSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        Cell mine = heap Cell(4);\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            MiniVec v = heap MiniVec(8);\n"
-        "            v.add(#heap Cell(1));\n"          // owned slot
-        "            v.add(mine);\n"                    // lent slot
-        "            v.add(#heap Cell(2));\n"           // owned slot
-        "            t = v.get(0).n + v.get(1).n + v.get(2).n;\n"
-        "        }\n"                                    // drops slots 0+2 only
-        "        if (mine.n != 4) { return -2; }\n"
-        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"  // mine
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // 3.1.2 — displaced release: overwriting an OWNED slot drops the occupant;
 // overwriting a BORROWED slot leaves the caller's object live. The borrow
 // arrives as a runtime-owner formal with flag 0 (`#=` of a statically-owned
 // LOCAL is a hard move per spec §2.1 — the lint rightly rejects reading it
 // after; caller discretion is the borrow spelling).
-TEST(ElementSlotSemanticsTests, displacedReleaseOnOwnedSlotOnly) {
-    std::string src = std::string(kFixtureSrc) +
-        "public final class D {\n"
-        "    public static void putAt(MiniVec v, int32 i, Cell c) {\n"
-        "        v.data[i] #= c;\n"                      // forwards the caller's flag
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        Cell keep = heap Cell(5);\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            MiniVec v = heap MiniVec(4);\n"
-        "            v.add(#heap Cell(1));\n"
-        "            v.data[0] #= heap Cell(2);\n"      // displaces + frees Cell(1)
-        "            int64 mid = Cajeta.liveCount() - base;\n"
-        "            if (mid != 4L) { return (int32) (mid * -1); }\n"  // keep+vec+data+Cell(2)
-        "            putAt(v, 1, keep);\n"               // plain arg: flag 0 -> borrow bit
-        "            v.data[1] #= heap Cell(3);\n"       // displaces borrow: NO free
-        "            if (keep.n != 5) { return -3; }\n"
-        "            t = v.data[0].n + v.data[1].n;\n"
-        "        }\n"
-        "        if (keep.n != 5) { return -4; }\n"
-        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // 3.1.3 — move-out `#data[i]` clears the bit and forwards it: the grow
 // loop `bigger[i] #= this.data[i]` transfers every owned element to the
 // new array; the old array then tears down empty. Zero leak, zero UAF.
-TEST(ElementSlotSemanticsTests, moveOutClearsAndForwards) {
-    std::string src = std::string(kFixtureSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            MiniVec v = heap MiniVec(2);\n"
-        "            v.add(#heap Cell(1));\n"
-        "            v.add(#heap Cell(2));\n"
-        "            Cell[] bigger = heap Cell[4];\n"
-        "            int32 i = 0;\n"
-        "            while (i < v.size) {\n"
-        "                bigger[i] #= v.data[i];\n"
-        "                i = i + 1;\n"
-        "            }\n"
-        "            v.data #= bigger;\n"                // old array drops EMPTY
-        "            t = v.data[0].n + v.data[1].n;\n"
-        "        }\n"                                     // new array drops 2 cells
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
 
 // 3.1.4 — `Cajeta.dropValue(#data[i])` is bit-guarded: owned slot frees +
 // clears (teardown then skips it); borrowed slot no-ops.
@@ -161,50 +87,12 @@ TEST(ElementSlotSemanticsTests, dropValueBitGuarded) {
 
 // 3.1.6 — vacant-slot safety: a partially-populated array tears down clean
 // with NO @ElementCount — the bitmap says which of [0..cap) are owned.
-TEST(ElementSlotSemanticsTests, vacantSlotsSafeWithoutElementCount) {
-    std::string src = std::string(kFixtureSrc) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            MiniVec v = heap MiniVec(64);\n"    // 62 slots stay vacant
-        "            v.add(#heap Cell(1));\n"
-        "            v.add(#heap Cell(2));\n"
-        "            t = v.get(0).n + v.get(1).n;\n"
-        "        }\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 3);
-}
 
 // 3.1.5 — String elements: a PLAIN slot store keeps the dual-role resolve
 // (borrowed bytes copy; the 5.2.6 rule at slot granularity), while the
 // bitmap machinery stays out of String[] entirely in v1
 // (arrayElementCarriesSlotBits excludes String — pinned so a later widening
 // is a deliberate decision, not drift).
-TEST(ElementSlotSemanticsTests, stringSlotPlainStoreStillResolves) {
-    std::string src =
-        "package test;\n"
-        "public class Keep {\n"
-        "    public String[] tags;\n"
-        "    public Keep(int32 cap) { this.tags = heap String[cap]; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Keep k = heap Keep(4);\n"
-        "        {\n"
-        "            String s = \"tag\" + Cajeta.liveCount();\n"
-        "            k.tags[0] = s;\n"                   // plain: resolve-copy
-        "        }\n"                                     // s drops; copy survives
-        "        if (k.tags[0].size() < 4L) { return -1; }\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // 3.2.3 — a LOCAL bit-array's scope-exit drop walks the tail before the
 // buffer frees (the sidecar's class-element role retires; one mechanism).

@@ -30,11 +30,11 @@ public class HttpTransport {
     /** Bind 127.0.0.1:PORT and serve `POST /mcp` until the process is killed. */
     public static void serve(int32 port) {
         String addrStr = Server.concat(Server.dup("127.0.0.1:"), Server.intToStr((int64) port));
-        SocketAddress addr = SocketAddress.parse(addrStr);
-        TcpListener listener = TcpListener.bind(addr);
+        SocketAddress addr #= SocketAddress.parse(addrStr);
+        TcpListener listener #= TcpListener.bind(addr);
         boolean running = true;
         while (running) {
-            TcpStream conn = listener.accept();
+            TcpStream conn #= listener.accept();
             HttpTransport.serveConn(conn);
             conn.close();
         }
@@ -255,7 +255,7 @@ public class HttpTransport {
             // request's Accept-Encoding gates it; the body is DEFLATE-backed
             // gzip via the cajeta-codec Gzip codec.
             Headers h = req.getHeaders();
-            String ae = h.get("Accept-Encoding");
+            String ae #= h.get("Accept-Encoding");
             if (HttpTransport.hasGzipToken(ae)) {
                 int8[] gz = Gzip.compress(rb, (int64) rl);
                 int32 gzlen = (int32) gz.count();

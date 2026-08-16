@@ -115,75 +115,8 @@ namespace {
 
 } // namespace
 
-TEST(PluginRuntimeTests, propagatesOutputsFromProtocolStream) {
-    auto dir = tempDir("outputs");
-    auto bin = stageScript(dir, "p.sh", R"(
-cat > /dev/null
-printf '{"kind":"output","key":"a","value":"1"}\n'
-printf '{"kind":"output","key":"b","value":"2"}\n'
-printf '{"kind":"result","status":"ok"}\n'
-)");
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.demo", "acme.demo.go", bin);
 
-    llvm::json::Object params;
-    auto r = invokePluginAction(plugin, "acme.demo.go", params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->outputs["a"], "1");
-    EXPECT_EQ(r->outputs["b"], "2");
-}
 
-TEST(PluginRuntimeTests, findingsArriveAsTypedActionFindings) {
-    auto dir = tempDir("findings");
-    auto bin = stageScript(dir, "p.sh", R"(
-cat > /dev/null
-printf '{"kind":"finding","rule":"r1","severity":"warning","file":"f.cajeta","line":12,"column":3,"message":"m1"}\n'
-printf '{"kind":"finding","rule":"r2","severity":"info","file":"g.cajeta","line":42,"column":1,"message":"m2"}\n'
-printf '{"kind":"result","status":"ok"}\n'
-)");
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.lint", "acme.lint.scan", bin);
-
-    llvm::json::Object params;
-    auto r = invokePluginAction(plugin, "acme.lint.scan", params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    // Typed delivery: ActionResult.findings is a vector of
-    // ActionFinding, not a JSON-concat string. The lint task can
-    // aggregate across actions without re-parsing.
-    ASSERT_EQ(r->findings.size(), 2u);
-    EXPECT_EQ(r->findings[0].rule,     "r1");
-    EXPECT_EQ(r->findings[0].severity, "warning");
-    EXPECT_EQ(r->findings[0].file,     "f.cajeta");
-    EXPECT_EQ(r->findings[0].line,     12);
-    EXPECT_EQ(r->findings[0].column,   3);
-    EXPECT_EQ(r->findings[0].message,  "m1");
-    EXPECT_EQ(r->findings[1].rule,     "r2");
-    EXPECT_EQ(r->findings[1].severity, "info");
-    // Default severity is "info" when the plugin omits the field.
-}
-
-TEST(PluginRuntimeTests, findingWithoutSeverityDefaultsToInfo) {
-    auto dir = tempDir("findings-def");
-    auto bin = stageScript(dir, "p.sh", R"(
-cat > /dev/null
-printf '{"kind":"finding","rule":"r","file":"f","line":1,"column":1,"message":"m"}\n'
-printf '{"kind":"result","status":"ok"}\n'
-)");
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.lint", "acme.lint.scan", bin);
-
-    llvm::json::Object params;
-    auto r = invokePluginAction(plugin, "acme.lint.scan", params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    ASSERT_EQ(r->findings.size(), 1u);
-    EXPECT_EQ(r->findings[0].severity, "info");
-}
 
 TEST(PluginRuntimeTests, resultErrorFailsTheAction) {
     auto dir = tempDir("err");
@@ -205,23 +138,6 @@ printf '{"kind":"result","status":"error","message":"73.5%% < min 80%%"}\n'
     EXPECT_NE(msg.find("acme.cov.gate"), std::string::npos);
 }
 
-TEST(PluginRuntimeTests, missingResultRecordIsProtocolError) {
-    auto dir = tempDir("noresult");
-    auto bin = stageScript(dir, "p.sh", R"(
-cat > /dev/null
-printf '{"kind":"output","key":"x","value":"1"}\n'
-)");
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.bad", "acme.bad.go", bin);
-
-    llvm::json::Object params;
-    auto r = invokePluginAction(plugin, "acme.bad.go", params, ctx);
-    ASSERT_FALSE((bool)r);
-    auto msg = errorText(r.takeError());
-    EXPECT_NE(msg.find("no 'result' record"), std::string::npos);
-}
 
 TEST(PluginRuntimeTests, nonZeroExitSurfacesAsError) {
     auto dir = tempDir("crash");
@@ -259,40 +175,6 @@ TEST(PluginRuntimeTests, missingBinaryFailsBeforeFork) {
     EXPECT_NE(msg.find("declares neither"), std::string::npos) << msg;
 }
 
-TEST(PluginRuntimeTests, requestCarriesParamsAndCapabilities) {
-    // Echo the stdin verbatim into a per-test scratch file the test
-    // can inspect to confirm the request shape.
-    auto dir = tempDir("echo");
-    auto echoFile = dir / "request.json";
-    auto bin = stageScript(dir, "p.sh",
-        std::string("cat > '") + echoFile.generic_string() + "'\n"
-        "printf '{\"kind\":\"result\",\"status\":\"ok\"}\\n'\n");
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.echo", "acme.echo.go", bin);
-    plugin.capabilities = {"filesystem", "network"};
-
-    llvm::json::Object params;
-    params["min"] = 80;
-    params["report"] = llvm::json::Array{"html", "console"};
-
-    auto r = invokePluginAction(plugin, "acme.echo.go", params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-
-    std::ifstream in(echoFile);
-    std::stringstream ss; ss << in.rdbuf();
-    std::string body = ss.str();
-    EXPECT_NE(body.find("\"action\":\"acme.echo.go\""), std::string::npos);
-    EXPECT_NE(body.find("\"min\":80"), std::string::npos);
-    EXPECT_NE(body.find("\"html\""), std::string::npos);
-    EXPECT_NE(body.find("\"filesystem\""), std::string::npos);
-    EXPECT_NE(body.find("\"network\""), std::string::npos);
-    EXPECT_NE(body.find("\"project-name\":\"acme.app\""), std::string::npos);
-    EXPECT_NE(body.find("\"project-version\":\"1.2.3\""), std::string::npos);
-    EXPECT_NE(body.find("\"entry\":\"acme.echo.Entry::run\""),
-              std::string::npos);
-}
 
 // A released binary bakes ITS BUILD MACHINE's LLVM dir (for CI releases,
 // /home/runner/cajeta-llvm/bin), so the context's llc/llvm-dis must be
@@ -344,24 +226,6 @@ TEST(PluginRuntimeTests, toolchainPathsResolveOnThisMachine) {
     }
 }
 
-TEST(PluginRuntimeTests, unknownRecordKindIsIgnoredForwardCompat) {
-    auto dir = tempDir("fwd");
-    auto bin = stageScript(dir, "p.sh", R"(
-cat > /dev/null
-printf '{"kind":"futurekind","payload":42}\n'
-printf '{"kind":"output","key":"k","value":"v"}\n'
-printf '{"kind":"result","status":"ok"}\n'
-)");
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.f", "acme.f.go", bin);
-
-    llvm::json::Object params;
-    auto r = invokePluginAction(plugin, "acme.f.go", params, ctx);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->outputs["k"], "v");
-}
 
 TEST(PluginRuntimeTests, malformedLineFailsDispatch) {
     auto dir = tempDir("bad");

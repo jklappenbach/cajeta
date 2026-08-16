@@ -97,7 +97,7 @@ public class FrameDemo extends DemoClass {
         //    is checked against the record.
         //    (Inside a lambda body, compose predicates with Pred.and /
         //    Pred.or — the `&`/`|` overloads don't resolve there yet.)
-        Table<Tick> big = t.lazy().filter((TickCols c) -> {
+        Table<Tick> big #= t.lazy().filter((TickCols c) -> {
             Pred a = c.price() >= 30.0;
             Pred b = c.size() >= 200.0;
             return Pred.and(#a, #b);
@@ -114,7 +114,7 @@ public class FrameDemo extends DemoClass {
 
         // 3. select + computed columns. Anything computed must be
         //    .alias()-named — an unnamed expression is refused loudly.
-        Table<?> proj = t.lazy().select((TickCols c, Sels s) -> {
+        Table<?> proj #= t.lazy().select((TickCols c, Sels s) -> {
             s.add(c.venue());
             s.add((c.price() * c.size()).alias("notional"));
         });
@@ -126,7 +126,7 @@ public class FrameDemo extends DemoClass {
 
         // 4. groupBy + agg — VWAP per venue, the whole point of the tape.
         //    The result is erased (Table<?>); .as<R>() names it again.
-        Table<VenueVwap> vwapPlan = t.lazy()
+        Table<VenueVwap> vwapPlan #= t.lazy()
             .groupBy((TickCols c, Sels s) -> {
                 s.add(c.venue());
             })
@@ -157,7 +157,7 @@ public class FrameDemo extends DemoClass {
         // 5. The planner PUSHED the work down: the scan counters prove the
         //    filter and projection reached the scan instead of running
         //    after a full materialization.
-        Table<Tick> pushed = t.lazy()
+        Table<Tick> pushed #= t.lazy()
             .filter((TickCols c) -> c.venue() == "ARCA")
             .select((TickCols c, Sels s) -> {
                 s.add(c.price());
@@ -190,7 +190,7 @@ public class FrameDemo extends DemoClass {
             "rowAt(i) is random access into the typed rows");
 
         // 7. head(n) — the "show me the top" terminal (there is no limit()).
-        Table<Tick> topPlan = t.lazy().sort((TickCols c, Sorts s) -> {
+        Table<Tick> topPlan #= t.lazy().sort((TickCols c, Sorts s) -> {
             s.add(c.price().desc());
         });
         Table<Tick> sorted = topPlan.collect();
@@ -224,11 +224,11 @@ public class FrameDemo extends DemoClass {
         // 10. Handles are LINEAR — the rule that surprises people. A
         //     chained handle is spent; reusing it throws instead of
         //     silently re-running the plan.
-        Table<Tick> once = t.lazy();
-        Table<Tick> chained = once.filter((TickCols c) -> c.price() > 10.0);
+        Table<Tick> once #= t.lazy();
+        Table<Tick> chained #= once.filter((TickCols c) -> c.price() > 10.0);
         boolean reuseRefused = false;
         try {
-            Table<Tick> again = once.filter((TickCols c) -> c.price() > 20.0);
+            Table<Tick> again #= once.filter((TickCols c) -> c.price() > 20.0);
         } catch (FrameException fe) {
             reuseRefused = true;
         }

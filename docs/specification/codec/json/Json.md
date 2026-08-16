@@ -603,7 +603,7 @@ public class UserMessage {
     String email;
 }
 
-UserMessage u = Json.parse<UserMessage>(jsonBytes, (int64) jsonBytes.count());
+UserMessage u #= Json.parse<UserMessage>(jsonBytes, (int64) jsonBytes.count());
 #int8[] out  = Json.toBytes<UserMessage>(u);
 ```
 
@@ -625,7 +625,7 @@ public static #UserMessage parse_UserMessage(int8[] bytes, int64 length) {
         JsonToken t = r.next();
         if (t == JsonToken.END_OBJECT) { break; }
         if (t != JsonToken.KEY) { throw heap JsonParseException(...); }
-        String k = r.currentString();              // KEY token bytes
+        String k #= r.currentString();              // KEY token bytes
         if (k == "id")         { r.next(); out.id    = r.currentNumberAsInt32(); }
         else if (k == "name")  { r.next(); out.name  = r.currentString(); }
         else if (k == "email") { r.next(); out.email = r.currentString(); }

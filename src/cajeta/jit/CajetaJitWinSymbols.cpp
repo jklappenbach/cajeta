@@ -46,12 +46,42 @@ extern "C" void sincosf(float, float*, float*);
 // the libm family below, they're statically linked and absent from the host PE
 // export table, so the JIT's process generator can't see them — every bf16
 // kernel then fails to materialize ("Symbols not found: [ __truncsfbf2 ]").
-// Only the address is taken (never called from C++), so the placeholder
-// unsigned-short bf16 representation here is ABI-irrelevant. POSIX hosts export
-// these from libgcc, so this is Windows-only.
+// The unsigned-short return here is NOT a placeholder: it is mingw's actual
+// ABI, and binding these directly was silently wrong.
+//
+// LLVM lowers `fptrunc float to bfloat` to `call __truncsfbf2` followed by
+// `pextrw $0, %xmm0` — it reads the bf16 back out of XMM0. mingw's libgcc
+// returns it in AX instead (every return path in truncsfbf2.o ends
+// `mov %edx,%eax; shl $0xf,%eax; ret`), and never touches XMM0. Linux libgcc
+// ends the same paths with `movd %ebx,%xmm0`, which is why this only bites on
+// Windows.
+//
+// The consequence is silent wrong data, not a crash: XMM0 still holds the
+// INPUT float, so pextrw takes that value's low 16 bits. Every float with a
+// zero low half — 1.0f, 2.0f, 10.0f, every constant in a typical kernel —
+// converts to bf16 0x0000, i.e. 0.0. XpuVectorDeviceTests.bfloat16RunsOnCpu
+// computes (1,2,3,4)+(10,20,30,40) and read back all zeroes.
+//
+// So bind wrappers that call libgcc for the arithmetic (its rounding is
+// correct) and move the result into XMM0 the way LLVM expects, by returning a
+// float whose low 16 bits carry the bf16 pattern.
 extern "C" unsigned short __truncsfbf2(float);
 extern "C" unsigned short __truncdfbf2(double);
 extern "C" float          __extendbfsf2(unsigned short);
+
+static float cajetaTruncSfBf2(float x) {
+    unsigned int bits = __truncsfbf2(x);   // mingw hands this back in AX
+    float out;
+    __builtin_memcpy(&out, &bits, sizeof out);
+    return out;                            // ...and this puts it in XMM0
+}
+
+static float cajetaTruncDfBf2(double x) {
+    unsigned int bits = __truncdfbf2(x);
+    float out;
+    __builtin_memcpy(&out, &bits, sizeof out);
+    return out;
+}
 
 // libm math functions the stdlib's Math intrinsics + float ops lower to. These
 // are statically linked from libm/libmingwex but absent from the host PE export
@@ -110,8 +140,12 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
     // bf16 conversion builtins — see the extern "C" block above.
-    CJ_SYM("__truncsfbf2",     &__truncsfbf2),
-    CJ_SYM("__truncdfbf2",     &__truncdfbf2),
+    // The two truncations go through the XMM0 wrappers, NOT libgcc directly.
+    // __extendbfsf2 is bound as-is: LLVM expands `fpext bfloat to float`
+    // inline as a 16-bit shift and never emits the call, so there is no
+    // observed ABI to correct here.
+    CJ_SYM("__truncsfbf2",     &cajetaTruncSfBf2),
+    CJ_SYM("__truncdfbf2",     &cajetaTruncDfBf2),
     CJ_SYM("__extendbfsf2",    &__extendbfsf2),
     // libm — see the extern "C" block above for why these need binding.
     CJ_SYM("fabsf",  &fabsf),   CJ_SYM("fabs",   &fabs),

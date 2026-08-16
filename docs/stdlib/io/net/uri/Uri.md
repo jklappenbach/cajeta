@@ -13,11 +13,11 @@ present-but-empty; the stored scheme is lowercased, and no percent-decoding
 happens at parse time.
 
 ```cajeta
-Uri u = Uri.parse("https://example.test/a/b?x=1#top");
+Uri u #= Uri.parse("https://example.test/a/b?x=1#top");
 String host = u.getHost();       // "example.test"
 int32 port = u.getPort();        // 443 (scheme default)
 String query = u.getQuery();     // "x=1"
-String text = u.toString();
+String text #= u.toString();
 ```
 
 ## Methods

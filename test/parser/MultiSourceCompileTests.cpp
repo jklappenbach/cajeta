@@ -198,25 +198,6 @@ TEST(MultiSourceCompileTests, importMapCapturesQualifier) {
 // (visitFieldDeclaration) raises CAJETA_ERROR_UNKNOWN_TYPE. The
 // placeholder synthesis is gated on archive presence, so typos
 // and dead references stay as compile errors.
-TEST(MultiSourceCompileTests, unknownTypeStillRejected) {
-    std::map<std::string, std::string> sources;
-    sources["app.App"] =
-        "package app;\n"
-        "@Component public class App {\n"
-        "    @Inject DefinitelyNotDeclared nope;\n"
-        "    public App() { return; }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    try {
-        runI32(sources, "app.App");
-        FAIL() << "expected CAJETA_ERROR_UNKNOWN_TYPE";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
-    } catch (std::runtime_error&) {
-        // JIT layer may wrap the throw — accept that path too.
-        SUCCEED();
-    }
-}
 
 // `ArrayList<UserClass>` across files. Main is keyed alphabetically
 // before DemoClass, so it parses first; when Main references

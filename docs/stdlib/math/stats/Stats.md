@@ -14,8 +14,8 @@ import cajeta.math.stats.Stats;
 
 public final class Demo {
     public static void run() {
-        Tensor<float32> t = Tensor.arange<float32>(100);
-        Tensor<int64> counts = Stats.histogram<float32>(t, 10, 0.0f, 100.0f);
+        Tensor<float32> t #= Tensor.arange<float32>(100);
+        Tensor<int64> counts #= Stats.histogram<float32>(t, 10, 0.0f, 100.0f);
         float32 med = Stats.median<float32>(t);
         float32 p90 = Stats.percentile<float32>(t, 90.0f);
         return;

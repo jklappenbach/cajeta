@@ -56,15 +56,15 @@ public class JsonSerializeBench extends Benchmark {
         }
         this.path = dir + "/" + variant + ".json";
 
-        int8[] probe = File.readAllBytes(this.path);
+        int8[] probe #= File.readAllBytes(this.path);
         this.fileBytes = (int64) probe.count();
 
         // Baseline = read + parse (subtracted to isolate serialize).
         int64 r0 = Clock.nanoTime();
         int32 k = 0;
         while (k < 3) {
-            int8[] b2 = File.readAllBytes(this.path);
-            JsonValue v2 = Json.parse(b2, (int64) b2.count());
+            int8[] b2 #= File.readAllBytes(this.path);
+            JsonValue v2 #= Json.parse(b2, (int64) b2.count());
             k = k + 1;
         }
         this.baseNs = (Clock.nanoTime() - r0) / 3;
@@ -79,10 +79,10 @@ public class JsonSerializeBench extends Benchmark {
     }
 
     public void runVariant(String variant, int32 iterations) {
-        int8[] bytes = File.readAllBytes(this.path);
+        int8[] bytes #= File.readAllBytes(this.path);
         int64 len = (int64) bytes.count();
-        JsonValue v = Json.parse(bytes, len);
-        int8[] out = Json.toBytes(v);
+        JsonValue v #= Json.parse(bytes, len);
+        int8[] out #= Json.toBytes(v);
         this.outLen = (int64) out.count();
     }
 

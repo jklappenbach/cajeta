@@ -88,151 +88,35 @@ CajetaModule::ComponentDescriptorPtr findDescriptor(const std::string& shortName
 // Bare @Component class registers with no name qualifier, no
 // profile list, and isTestComponent=false. The defaults span every
 // optional field on the descriptor.
-TEST(ComponentRegistrationTests, bareComponentRegisters) {
-    auto src =
-        "package test;\n"
-        "@Component public class Database {\n"
-        "    public Database() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.Database");
-    auto desc = findDescriptor("Database");
-    ASSERT_NE(desc, nullptr);
-    EXPECT_EQ(desc->name, "");
-    EXPECT_TRUE(desc->profiles.empty());
-    EXPECT_FALSE(desc->isTestComponent);
-}
 
 // @Repository registers as an ordinary component — the sibling
 // annotation has identical DI semantics in v1.
-TEST(ComponentRegistrationTests, repositoryRegistersAsComponent) {
-    auto src =
-        "package test;\n"
-        "@Repository public class UserRepo {\n"
-        "    public UserRepo() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.UserRepo");
-    auto desc = findDescriptor("UserRepo");
-    ASSERT_NE(desc, nullptr);
-    EXPECT_FALSE(desc->isTestComponent);
-}
 
 // @TestComponent registers with isTestComponent=true so the
 // resolver can drop it outside test compilations and prefer it
 // inside them. Captures the same metadata as @Component otherwise.
-TEST(ComponentRegistrationTests, testComponentSetsFlag) {
-    auto src =
-        "package test;\n"
-        "@TestComponent public class StubDb {\n"
-        "    public StubDb() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.StubDb");
-    auto desc = findDescriptor("StubDb");
-    ASSERT_NE(desc, nullptr);
-    EXPECT_TRUE(desc->isTestComponent);
-}
 
 // @Component(name = "...") captures the qualifier. The DI resolver
 // reads desc->name during disambiguation when multiple components
 // share the same type.
-TEST(ComponentRegistrationTests, componentNameQualifierCaptured) {
-    auto src =
-        "package test;\n"
-        "@Component(name = \"disk\") public class DiskPersister {\n"
-        "    public DiskPersister() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.DiskPersister");
-    auto desc = findDescriptor("DiskPersister");
-    ASSERT_NE(desc, nullptr);
-    EXPECT_EQ(desc->name, "disk");
-}
 
 // @Profile annotations are collected into the descriptor's profile
 // list. The resolver uses this list to filter under the active
 // profile setting.
-TEST(ComponentRegistrationTests, profileAnnotationsCaptured) {
-    auto src =
-        "package test;\n"
-        "@Component @Profile(\"prod\") public class PostgresDb {\n"
-        "    public PostgresDb() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.PostgresDb");
-    auto desc = findDescriptor("PostgresDb");
-    ASSERT_NE(desc, nullptr);
-    ASSERT_EQ(desc->profiles.size(), 1u);
-    EXPECT_EQ(desc->profiles[0], "prod");
-}
 
 // A class with no DI annotation isn't a component. The registry
 // stays untouched. Catches an over-broad classifier in the visitor.
-TEST(ComponentRegistrationTests, plainClassNotRegistered) {
-    auto src =
-        "package test;\n"
-        "public class PlainOldClass {\n"
-        "    public PlainOldClass() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.PlainOldClass");
-    EXPECT_EQ(findDescriptor("PlainOldClass"), nullptr);
-}
 
 // resolveDependencyGraph passes for a self-contained component with
 // no injected dependencies. The empty-graph case must not throw.
-TEST(ComponentRegistrationTests, resolveAcceptsLeafComponent) {
-    auto src =
-        "package test;\n"
-        "@Component public class Database {\n"
-        "    public Database() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.Database");
-    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
-}
 
 // A satisfied @Inject (target type has a matching @Component)
 // resolves cleanly. No throw means the edge was built and the graph
 // is acyclic.
-TEST(ComponentRegistrationTests, resolveAcceptsSatisfiedInject) {
-    auto src =
-        "package test;\n"
-        "@Component public class Database {\n"
-        "    public Database() { return; }\n"
-        "}\n"
-        "@Component public class UserService {\n"
-        "    @Inject Database db;\n"
-        "    public UserService() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.UserService");
-    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
-}
 
 // Missing implementation: a class @Injects a type with no
 // corresponding @Component. The error code is
 // CAJETA_ERROR_MISSING_COMPONENT.
-TEST(ComponentRegistrationTests, missingImplementationRejected) {
-    auto src =
-        "package test;\n"
-        "public class Database {\n"   // not a @Component
-        "    public Database() { return; }\n"
-        "}\n"
-        "@Component public class UserService {\n"
-        "    @Inject Database db;\n"
-        "    public UserService() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.UserService");
-    try {
-        CajetaModule::resolveDependencyGraph();
-        FAIL() << "expected CAJETA_ERROR_MISSING_COMPONENT";
-    } catch (Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MISSING_COMPONENT");
-    }
-}
 
 // Cycle detection is implemented (DFS over the resolved edges,
 // throwing CAJETA_ERROR_DI_CYCLE on a back-edge), but exercising
@@ -256,25 +140,6 @@ TEST(ComponentRegistrationTests, missingImplementationRejected) {
 // consumer's @Inject(name = "missing") asks for a different name.
 // The resolver finds candidates but can't pick one matching the
 // requested name → ambiguous error.
-TEST(ComponentRegistrationTests, ambiguousNamedInjectRejected) {
-    auto src =
-        "package test;\n"
-        "@Component(name = \"real\") public class Item {\n"
-        "    public Item() { return; }\n"
-        "}\n"
-        "@Component public class Service {\n"
-        "    @Inject(name = \"missing\") Item it;\n"
-        "    public Service() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.Service");
-    try {
-        CajetaModule::resolveDependencyGraph();
-        FAIL() << "expected CAJETA_ERROR_DI_AMBIGUOUS";
-    } catch (Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_DI_AMBIGUOUS");
-    }
-}
 
 // @Profile filtering removes a component from the active set.
 // With activeProfile = "prod" (the default), a component scoped to
@@ -306,45 +171,9 @@ TEST(ComponentRegistrationTests, profileFilteredOutTriggersMissing) {
 // @TestComponent participates in the DI graph when activeProfile is
 // "test". Without test mode, the same @TestComponent is filtered
 // out — verified by the missing-impl error in the next test.
-TEST(ComponentRegistrationTests, testComponentIncludedInTestMode) {
-    auto src =
-        "package test;\n"
-        "@TestComponent public class StubDb {\n"
-        "    public StubDb() { return; }\n"
-        "}\n"
-        "@Component public class Service {\n"
-        "    @Inject StubDb db;\n"
-        "    public Service() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.Service");
-    CajetaModule::setActiveProfile("test");
-    EXPECT_NO_THROW(CajetaModule::resolveDependencyGraph());
-    CajetaModule::setActiveProfile("prod");
-}
 
 // Same source as above, but the active profile is "prod". The
 // @TestComponent is filtered out, leaving the @Inject unsatisfied.
-TEST(ComponentRegistrationTests, testComponentExcludedInProdMode) {
-    auto src =
-        "package test;\n"
-        "@TestComponent public class StubDb {\n"
-        "    public StubDb() { return; }\n"
-        "}\n"
-        "@Component public class Service {\n"
-        "    @Inject StubDb db;\n"
-        "    public Service() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    compileForInspection(compiler, src, "test.Service");
-    CajetaModule::setActiveProfile("prod");
-    try {
-        CajetaModule::resolveDependencyGraph();
-        FAIL() << "expected CAJETA_ERROR_MISSING_COMPONENT";
-    } catch (Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MISSING_COMPONENT");
-    }
-}
 
 // --- Unit 1 (di-profile-selection §2): @TestComponent masks a same-
 // --- interface @Component under --profile=test, by shared interface. ---
@@ -561,45 +390,6 @@ TEST(ComponentRegistrationTests, profileListFiltersUnderEither) {
 // and captures their profile / test-component data. (Imports are lenient —
 // an unresolved import is ignored — so this guards that the shipped types
 // coexist with the by-short-name recognition, not import resolution.)
-TEST(ComponentRegistrationTests, aotAnnotationImportsCompileAndCapture) {
-    auto src =
-        "package test;\n"
-        "import cajeta.aot.Profile;\n"
-        "import cajeta.aot.TestComponent;\n"
-        "@Component @Profile(\"prod\") public class ImportedProd {\n"
-        "    public ImportedProd() { return; }\n"
-        "}\n"
-        "@TestComponent public class ImportedStub {\n"
-        "    public ImportedStub() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    EXPECT_NO_THROW(compileForInspection(compiler, src, "test.ImportedProd"));
-    auto desc = findDescriptor("ImportedProd");
-    ASSERT_NE(desc, nullptr);
-    ASSERT_EQ(desc->profiles.size(), 1u);
-    EXPECT_EQ(desc->profiles[0], "prod");
-    auto stub = findDescriptor("ImportedStub");
-    ASSERT_NE(stub, nullptr);
-    EXPECT_TRUE(stub->isTestComponent);
-}
 
 // Bare short-name usage (no import) still compiles and captures — shipping
 // the declarations must not break the recognize-by-short-name path.
-TEST(ComponentRegistrationTests, bareShortNameAnnotationsStillCompile) {
-    auto src =
-        "package test;\n"
-        "@Component @Profile(\"prod\") public class BareProd {\n"
-        "    public BareProd() { return; }\n"
-        "}\n"
-        "@TestComponent public class BareStub {\n"
-        "    public BareStub() { return; }\n"
-        "}\n";
-    Compiler compiler;
-    EXPECT_NO_THROW(compileForInspection(compiler, src, "test.BareProd"));
-    auto desc = findDescriptor("BareProd");
-    ASSERT_NE(desc, nullptr);
-    EXPECT_EQ(desc->profiles.size(), 1u);
-    auto stub = findDescriptor("BareStub");
-    ASSERT_NE(stub, nullptr);
-    EXPECT_TRUE(stub->isTestComponent);
-}

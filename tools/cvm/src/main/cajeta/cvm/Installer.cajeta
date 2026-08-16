@@ -55,7 +55,7 @@ public final class Installer {
         // ── 2. parse + resolve the asset for this host ──────────────
         int8[] mbody = mresp.body;
         JsonReader reader = heap JsonReader(mbody, mbody.count());
-        JsonValue root = reader.readValue();
+        JsonValue root #= reader.readValue();
         JsonObject obj = root.asObject();
 
         Optional<int32> schema = obj.getInt("schemaVersion");
@@ -110,7 +110,7 @@ public final class Installer {
         int64 binaryLen = binary.count();
 
         // ── 4. verify the checksum ──────────────────────────────────
-        String actualSha = Sha256.hashHex(binary, binaryLen);
+        String actualSha #= Sha256.hashHex(binary, binaryLen);
         if (!actualSha.equals(expectedSha)) {
             System.stderr.println("cvm: checksum mismatch for " + version
                 + " — refusing to install.");

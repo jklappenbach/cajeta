@@ -25,9 +25,9 @@ public class JsonExample {
         User u = heap User();
         u.id = 7;
         u.active = true;
-        int8[] bytes = Json.toBytes<User>(u);                     // {"id":7,"active":true}
-        User v = Json.parse<User>(bytes, (int64) bytes.count());
-        User w = Json.parse<User>("{\"id\":7,\"active\":true}");
+        int8[] bytes #= Json.toBytes<User>(u);                     // {"id":7,"active":true}
+        User v #= Json.parse<User>(bytes, (int64) bytes.count());
+        User w #= Json.parse<User>("{\"id\":7,\"active\":true}");
     }
 }
 ```

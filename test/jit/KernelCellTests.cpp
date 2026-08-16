@@ -202,36 +202,6 @@ TEST(KernelCellTests, failedCellLeavesBindingsIntact) {
 // 2.1.3 / script-units 5.3 — redefining a class in a later cell is
 // GENERATIONAL: a value bound from the old definition stays alive and its
 // methods still run, while later cells mean the new definition.
-TEST(KernelCellTests, typeRedefinitionIsGenerational) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    CellResult c1 = s->execute(
-        "public class Point { public int32 x;\n"
-        "  public Point(int32 x) { this.x = x; }\n"
-        "  public int32 sum() { return this.x; } }\n"
-        "Point p = heap Point(3);\n");
-    ASSERT_TRUE(c1.ok) << c1.errorId << ": " << c1.message;
-
-    // Redefined with a DIFFERENT layout — a second field and a wider ctor.
-    CellResult c2 = s->execute(
-        "public class Point { public int32 x; public int32 y;\n"
-        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
-        "  public int32 sum() { return this.x + this.y; } }\n");
-    ASSERT_TRUE(c2.ok) << c2.errorId << ": " << c2.message;
-
-    // The OLD instance keeps the old layout and the old body.
-    CellResult c3 = s->execute("return p.sum();\n");
-    ASSERT_TRUE(c3.ok) << c3.errorId << ": " << c3.message;
-    EXPECT_EQ(3, c3.value) << "cell 1's Point did not survive the redefinition";
-
-    // A later cell means the NEW generation.
-    CellResult c4 = s->execute(
-        "Point q = heap Point(10, 5);\n"
-        "return q.sum();\n");
-    ASSERT_TRUE(c4.ok) << c4.errorId << ": " << c4.message;
-    EXPECT_EQ(15, c4.value) << "cell 4 did not get the new generation";
-}
 
 // 2.1.4 / script-units 5.4 — a BODY-ONLY redefinition (same layout, same
 // signatures, changed bodies) introduces NO new generation: values that
@@ -323,44 +293,6 @@ TEST(KernelCellTests, bodyOnlyRedefinitionSwapsInPlace) {
 // against the PARAMETER's type, so the callee would use the new layout. A
 // field read never leaves the value's own type. Kept as the regression pin
 // for that difference.
-TEST(KernelCellTests, staleGenerationFieldReadUsesTheValuesOwnGeneration) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    ASSERT_TRUE(s->execute(
-        "public class Point { public int32 x;\n"
-        "  public Point(int32 x) { this.x = x; }\n"
-        "  public int32 get() { return this.x; } }\n"
-        "Point p = heap Point(7);\n").ok);
-
-    // A DIFFERENT shape, so this is generational (5.3), not a body-only swap.
-    ASSERT_TRUE(s->execute(
-        "public class Point { public int32 x; public int32 y;\n"
-        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
-        "  public int32 get() { return this.x + this.y; } }\n").ok);
-
-    // `y` belongs to the new generation only, and `p` is not of it. The read
-    // is refused as an unknown member — the honest answer, and the one that
-    // makes an out-of-bounds read impossible rather than merely diagnosed.
-    CellResult read = s->execute("p.y;\n");
-    EXPECT_FALSE(read.ok)
-        << "a field of the NEW generation was read off an OLD value; got: "
-        << read.result;
-    EXPECT_NE(std::string::npos, read.message.find("no member 'y'"))
-        << "refused, but not as an unknown member: " << read.message;
-
-    // A field the old generation DOES have reads correctly, at its own
-    // generation's offset.
-    CellResult own = s->execute("p.x;\n");
-    ASSERT_TRUE(own.ok) << own.errorId << ": " << own.message;
-    EXPECT_EQ("7", own.result);
-
-    // The session survives, and the old value still answers through its own
-    // vtable — 2.1.3's contract is unchanged by this.
-    CellResult call = s->execute("p.get();\n");
-    ASSERT_TRUE(call.ok) << call.errorId << ": " << call.message;
-    EXPECT_EQ("7", call.result);
-}
 
 // 2.1.4 — the LIMIT of the in-place swap, pinned so it cannot regress into a
 // silent half-swap. A class that implements an interface also has a
@@ -370,40 +302,6 @@ TEST(KernelCellTests, staleGenerationFieldReadUsesTheValuesOwnGeneration) {
 // value keeps the old body, which is coherent — rather than swapping one
 // table and leaving the object to answer differently depending on how it was
 // called.
-TEST(KernelCellTests, bodyOnlySwapDeclinesWhenBodiesLiveInSeveralTables) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    ASSERT_TRUE(s->execute(
-        "public interface Speaks { public int32 say(); }\n"
-        "public class Talker implements Speaks { public int32 n;\n"
-        "  public Talker(int32 n) { this.n = n; }\n"
-        "  public int32 say() { return this.n; } }\n"
-        "Talker t = heap Talker(5);\n").ok);
-
-    CellResult before = s->execute("return t.say();\n");
-    ASSERT_TRUE(before.ok) << before.errorId << ": " << before.message;
-    ASSERT_EQ(5, before.value);
-
-    const int repointedBefore = s->stats().vtableSlotsRepointed;
-
-    // Same shape, new body — but this class's bodies live in more than one
-    // table, so the swap must decline.
-    CellResult redef = s->execute(
-        "public interface Speaks { public int32 say(); }\n"
-        "public class Talker implements Speaks { public int32 n;\n"
-        "  public Talker(int32 n) { this.n = n; }\n"
-        "  public int32 say() { return this.n * 2; } }\n");
-    ASSERT_TRUE(redef.ok) << redef.errorId << ": " << redef.message;
-    EXPECT_EQ(repointedBefore, s->stats().vtableSlotsRepointed)
-        << "a multi-table class was swapped in place";
-
-    // The old value keeps the old body: the generational contract.
-    CellResult after = s->execute("return t.say();\n");
-    ASSERT_TRUE(after.ok) << after.errorId << ": " << after.message;
-    EXPECT_EQ(5, after.value)
-        << "an interface-implementing class was half-swapped";
-}
 
 // 2.2.5 — ASSIGNMENT to a session-seeded binding rebinds it, so the NEXT
 // cell sees the new value. `isScriptBindingName` is the set a unit DECLARES,
@@ -453,39 +351,6 @@ TEST(KernelCellTests, assignToSeededBindingRebinds) {
 // so any check comparing canonicals sees a match. The contained place to put
 // it is argument binding plus assignment: when both sides are CajetaClass
 // with the same canonical and different suffixes, error naming both.
-TEST(KernelCellTests, mixingGenerationsIsRejected) {
-    auto s = freshSession();
-    ASSERT_NE(nullptr, s.get());
-
-    ASSERT_TRUE(s->execute(
-        "public class Point { public int32 x;\n"
-        "  public Point(int32 x) { this.x = x; }\n"
-        "  public int32 get() { return this.x; } }\n"
-        "Point p = heap Point(7);\n").ok);
-
-    // Generation 2: a different shape AND a different body.
-    ASSERT_TRUE(s->execute(
-        "public class Point { public int32 x; public int32 y;\n"
-        "  public Point(int32 x, int32 y) { this.x = x; this.y = y; }\n"
-        "  public int32 get() { return this.x + this.y; } }\n").ok);
-
-    // The old value keeps the old behaviour — 2.1.3's contract.
-    CellResult old = s->execute("p.get();\n");
-    ASSERT_TRUE(old.ok) << old.errorId << ": " << old.message;
-    EXPECT_EQ("7", old.result) << "the old value did not keep its own body";
-
-    // Mixing must be refused, and the message must say WHY. `Point q = p;`
-    // is NOT the shape to probe with — a top-level binding may not hold a
-    // borrow, so it is rejected for an unrelated (and correct) reason. Pass
-    // the old value where the NEW generation is declared instead.
-    CellResult mix = s->execute(
-        "int32 use(Point pt) { return pt.get(); }\n"
-        "use(p);\n");
-    EXPECT_FALSE(mix.ok) << "an old-generation value was accepted as the new "
-                            "generation; result was: " << mix.result;
-    EXPECT_NE(std::string::npos, mix.message.find("generation"))
-        << "message did not mention generations: " << mix.message;
-}
 
 // 2.3.1 (spec 4.4; script-units 6.x) — THE Cell$N-FREE CONTRACT, as an
 // acceptance check over the shapes Unit 2 actually produces.

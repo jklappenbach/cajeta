@@ -10,11 +10,11 @@ SHA-1's correctness, not its security. For real cryptographic hashing use
 
 ```cajeta
 int8[] data = heap int8[8];
-String hex = Sha1.hashHex(data, 8);   // 40 lowercase hex chars
+String hex #= Sha1.hashHex(data, 8);   // 40 lowercase hex chars
 
 Sha1 h = heap Sha1();
 h.update(data, 8);
-int8[] digest = h.digest();           // 20 bytes
+int8[] digest #= h.digest();           // 20 bytes
 ```
 
 ## Methods

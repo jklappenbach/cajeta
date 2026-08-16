@@ -20,7 +20,7 @@ try {
     Throwable t = e;
     String msg = t.getMessage();
     StackFrame[] frames = t.getStackTrace();
-    String json = t.toJson();
+    String json #= t.toJson();
 }
 ```
 

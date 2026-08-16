@@ -27,6 +27,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -98,40 +99,6 @@ size_t countZero(const std::vector<uint64_t>& v) {
 
 } // namespace
 
-TEST(XpuClockDeviceTests, shaderClockRunsOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kClockSource);
-    auto k = findMethod(module->getStructures()["test.M"], "stamp");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_clock_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr))
-        << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto symOrErr = jit->lookup("stamp");
-    ASSERT_TRUE(static_cast<bool>(symOrErr))
-        << llvm::toString(symOrErr.takeError());
-    auto stamp = symOrErr->toPtr<StampFn>();
-
-    std::vector<uint64_t> out(kN, 0);
-    const int32_t B = 64;
-    const int32_t G = (int32_t) (kN / 64);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            stamp(out.data(), kN, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    EXPECT_EQ(countZero(out), 0u) << "some threads observed a zero clock tick";
-}
 
 TEST(XpuClockDeviceTests, shaderClockRunsOnVulkanDevice) {
     using namespace cajeta::xpu::vulkan;

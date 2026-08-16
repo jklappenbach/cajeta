@@ -10,12 +10,12 @@ address-less `send` / `recv` forms. The destructor closes the socket if
 `close()` wasn't called.
 
 ```cajeta
-SocketAddress local = SocketAddress.parse("0.0.0.0:0");
-UdpSocket sock = UdpSocket.bind(local);
-SocketAddress dest = SocketAddress.parse("127.0.0.1:9999");
+SocketAddress local #= SocketAddress.parse("0.0.0.0:0");
+UdpSocket sock #= UdpSocket.bind(local);
+SocketAddress dest #= SocketAddress.parse("127.0.0.1:9999");
 int8[] payload = heap int8[3];
 sock.sendTo(payload, 0, 3, dest);
-RecvResult in = sock.recvFrom(payload, 0, 3);
+RecvResult in #= sock.recvFrom(payload, 0, 3);
 sock.close();
 ```
 

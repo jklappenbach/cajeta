@@ -9,11 +9,11 @@ comparison; `==` and hash-keyed collections route through `hash()`, which
 folds 128 bits into 64 and carries the standard ~2⁻⁶⁴ collision caveat.
 
 ```cajeta
-Guid a = Guid.random();                 // fresh version-4 UUID
-Guid b = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
-Guid c = Guid.fromHalves((uint64) 255L, (uint64) 1L);
+Guid a #= Guid.random();                 // fresh version-4 UUID
+Guid b #= Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+Guid c #= Guid.fromHalves((uint64) 255L, (uint64) 1L);
 boolean same = a.equals(b);             // exact 128-bit compare — false
-String text = b.toString();             // canonical lowercase 8-4-4-4-12
+String text #= b.toString();             // canonical lowercase 8-4-4-4-12
 ```
 
 ## Methods

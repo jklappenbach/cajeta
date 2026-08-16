@@ -11,9 +11,9 @@ formatter is immutable — it holds only its pattern string and parses it on eac
 `formatZoned`; output is an owned `#String`, text is English.
 
 ```cajeta
-DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+DateTimeFormatter fmt #= DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
 LocalDateTime dt = LocalDateTime.of(2026, 6, 8, 14, 30);
-String text = fmt.formatDateTime(dt);   // "2026-06-08 14:30:00"
+String text #= fmt.formatDateTime(dt);   // "2026-06-08 14:30:00"
 ```
 
 ## Methods

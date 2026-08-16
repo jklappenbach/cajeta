@@ -104,7 +104,7 @@ public final class IdxBuild {
     }
 
     static void check(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         int32[] idx = heap int32[n + 16];   // reused scratch (allocated once)
         EmitState sc = heap EmitState();

@@ -48,12 +48,12 @@ public class SearchDemo extends DemoClass {
         Index<int32> idx = heap Index<int32>();
         idx.add("apple", 1);
         idx.add("zebra", 2);
-        ArrayList<int32> cands = idx.candidates("aple");
+        ArrayList<int32> cands #= idx.candidates("aple");
         System.stdout.println("  trigram candidates for aple = " + cands.count()
             + " (apple survives, zebra is pruned)");
         this.check(cands.count() == 1 && cands.get(0) == 1,
             "aple shares a trigram with apple only");
-        ArrayList<int32> none = idx.candidates("qqqq");
+        ArrayList<int32> none #= idx.candidates("qqqq");
         this.check(none.count() == 0, "no shared gram means no candidates");
 
         // 3. End-to-end typo-tolerant lookup. Matcher prefilters with

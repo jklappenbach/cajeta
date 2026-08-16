@@ -90,7 +90,7 @@ public class CsvDemo extends DemoClass {
         cw.writeField(f2.toBytes());
         cw.writeField(f3.toBytes());
         cw.endRow();
-        int8[] out = cw.toBytes();
+        int8[] out #= cw.toBytes();
         CsvTrade[] back = Csv.parse<CsvTrade[]>(out, (int64) out.count());
         System.stdout.println("  CsvWriter round-trip     = id " + back[0].id
             + ", symbol '" + back[0].symbol + "'");

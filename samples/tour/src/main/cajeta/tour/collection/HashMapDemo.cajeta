@@ -37,7 +37,7 @@ public class HashMapDemo extends DemoClass {
         this.check(!freq.containsKey("dog"), "absent key is absent, not 0");
 
         // values() streams the tallies: their sum must equal the input size.
-        int32 total = freq.values().reduce(0, (a, b) -> a + b);
+        int32 total #= freq.values().reduce(0, (a, b) -> a + b);
         this.check(total == 8, "values() stream sums back to 8 words");
 
         // remove returns the evicted value and shrinks the live count.

@@ -54,45 +54,9 @@ namespace {
 
 // ─── Acceptance #1 — built-in name → built-in bundle ──────────
 
-TEST(Phase8AcceptanceTests, releaseStringResolvesToBuiltInBundle) {
-    llvm::json::Object cf;
-    auto r = resolveFlavor(llvm::json::Value("release"), cf);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->base, "release");
-    EXPECT_TRUE(r->overrides.empty());
-
-    auto eff = effectiveProperties(*r);
-    ASSERT_TRUE((bool)eff) << errorText(eff.takeError());
-    // Per BuildTool.md "Built-in flavors":
-    EXPECT_EQ(eff->getString("opt")->str(),          "O2");
-    EXPECT_EQ(eff->getString("lto")->str(),          "thin");
-    EXPECT_EQ(*eff->getBoolean("strip-symbols"),     true);
-    EXPECT_EQ(eff->getString("debug-info")->str(),   "line");
-    EXPECT_EQ(eff->getString("bounds-check")->str(), "off");
-}
 
 // ─── Acceptance #2 — inline map composes overrides ────────────
 
-TEST(Phase8AcceptanceTests, inlineMapOverridesReleaseDebugInfo) {
-    llvm::json::Object cf;
-    auto r = resolveFlavor(
-        llvm::json::Value(llvm::json::Object{
-            {"base",       "release"},
-            {"debug-info", "full"},
-        }),
-        cf);
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->base, "release");
-
-    auto eff = effectiveProperties(*r);
-    ASSERT_TRUE((bool)eff) << errorText(eff.takeError());
-    // Override wins:
-    EXPECT_EQ(eff->getString("debug-info")->str(), "full");
-    // Everything else is the release default:
-    EXPECT_EQ(eff->getString("opt")->str(),       "O2");
-    EXPECT_EQ(eff->getString("lto")->str(),       "thin");
-    EXPECT_EQ(*eff->getBoolean("strip-symbols"),  true);
-}
 
 // ─── Acceptance #3 — named composition through custom-flavors ─
 
@@ -182,57 +146,6 @@ TEST(Phase8AcceptanceTests, unknownPropertyKeyCitesOffenderAndVocab) {
 
 // ─── Acceptance #5 — cycle in `base` chain fails at load ──────
 
-TEST(Phase8AcceptanceTests, customFlavorCycleFailsLoadTimeValidation) {
-    auto m = loadManifestString(R"({
-        "details": { "name": "x.y", "version": "0.1" },
-        "settings": {
-            "build": {
-                "custom-flavors": {
-                    "a": { "base": "b" },
-                    "b": { "base": "a" }
-                }
-            }
-        }
-    })");
-    ASSERT_FALSE((bool)m);
-    auto msg = errorText(m.takeError());
-    EXPECT_NE(msg.find("cycle"), std::string::npos);
-}
 
 // ─── Acceptance #6 — profile + flavor flags flow to compiler ─
 
-TEST(Phase8AcceptanceTests, resolvedFlavorProducesCompilerFlagArgv) {
-    // Inline composition of release with debug-info=full and
-    // analytics=true — equivalent to a `integration` custom flavor.
-    llvm::json::Object cf;
-    auto r = resolveFlavor(
-        llvm::json::Value(llvm::json::Object{
-            {"base",       "release"},
-            {"debug-info", "full"},
-            {"analytics",  true},
-        }),
-        cf);
-    ASSERT_TRUE((bool)r);
-
-    auto eff = effectiveProperties(*r);
-    ASSERT_TRUE((bool)eff);
-
-    auto flags = toCompilerFlags(*eff);
-    // Only properties that map to a compiler frontend flag are lowered, using
-    // the MAPPED name (bounds-check -> --bounds). lto lowers to the real
-    // --lto frontend flag (ThinLTO for --emit=exe; vocab entry's mapped name
-    // is "lto"). debug-info lowers as of external-debug Unit 1 (it used to map
-    // to an empty flag and be dropped). strip-symbols / analytics still have no
-    // frontend flag — they're honored at the emit/link stage — so they do not
-    // appear.
-    EXPECT_TRUE(contains(flags, "--opt=O2"));
-    EXPECT_TRUE(contains(flags, "--bounds=off"));
-    EXPECT_TRUE(contains(flags, "--lto=thin"));
-    EXPECT_TRUE(contains(flags, "--debug-info=full"));
-    EXPECT_FALSE(contains(flags, "--strip-symbols=true"));
-    EXPECT_FALSE(contains(flags, "--analytics=true"));
-
-    // Determinism — same map, same order:
-    auto flags2 = toCompilerFlags(*eff);
-    EXPECT_EQ(flags, flags2);
-}

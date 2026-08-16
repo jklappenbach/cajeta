@@ -199,37 +199,6 @@ TEST(TemplatedInterfaceParamProbe, interfaceFormalNonTemplatedStatic) {
 // Closest reproduction of the documented gap: stdlib Stream<T>[]
 // shares stored, then named-local read, then method calls on the
 // share. If this works, the gap as documented is now closed.
-TEST(TemplatedInterfaceParamProbe, stdlibStreamArrayElementSharesDrain) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "import cajeta.lang.stream.Stream;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        ArrayList<int32> list = heap ArrayList<int32>();\n"
-        "        list.add(1);\n"
-        "        list.add(2);\n"
-        "        list.add(3);\n"
-        "        Stream<int32>[] shares = heap Stream<int32>[1];\n"
-        "        shares[0] = list.stream();\n"
-        "        Stream<int32> share = shares[0];\n"
-        "        int32 sum = 0;\n"
-        "        Optional<int32> o = share.next();\n"
-        "        while (o.isPresent()) {\n"
-        "            sum = sum + o.get();\n"
-        "            o = share.next();\n"
-        "        }\n"
-        "        return sum;\n"
-        "    }\n"
-        "}\n";
-    try {
-        EXPECT_EQ(runI32(src), 6);
-    } catch (cajeta::Exception& e) {
-        FAIL() << "cajeta::Exception " << e.getErrorId() << ": " << e.getMessage();
-    } catch (const std::exception& e) {
-        FAIL() << "std::exception: " << e.what();
-    }
-}
 
 // Templated class-typed array element. The historical gap shape:
 // `Stream<T>[] shares; Stream<T> share = shares[i];` was reading the

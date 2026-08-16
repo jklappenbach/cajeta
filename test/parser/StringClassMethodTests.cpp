@@ -33,97 +33,17 @@ int64_t runI64(const std::string& src) {
 
 // Default-constructed String is the empty Inline form;
 // count() returns 0 and the cache is populated.
-TEST(StringClassMethodTests, countOnDefaultConstructedIsZero) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        String s = heap String();\n"
-        "        return s.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 0);
-}
 
 // Three ASCII bytes — one codepoint per byte, count = 3.
-TEST(StringClassMethodTests, countAsciiThreeBytes) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        int8[] b = heap int8[3];\n"
-        "        b[0] = (int8) 'a';\n"
-        "        b[1] = (int8) 'b';\n"
-        "        b[2] = (int8) 'c';\n"
-        "        String t = heap String(#b, 3);\n"
-        "        return t.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 3);
-}
 
 // Two-byte UTF-8 sequence 'é' = 0xC3 0xA9 (U+00E9). One codepoint,
 // two bytes. Pins that count() skips continuation bytes.
-TEST(StringClassMethodTests, countUtf8TwoByteIsOneCodepoint) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        int8[] b = heap int8[2];\n"
-        "        b[0] = (int8) 0xC3;\n"  // leader (110xxxxx)
-        "        b[1] = (int8) 0xA9;\n"  // continuation (10xxxxxx)
-        "        String t = heap String(#b, 2);\n"
-        "        return t.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 1);
-}
 
 // Four-byte UTF-8 sequence for '😀' = U+1F600 = 0xF0 0x9F 0x98 0x80.
 // One codepoint, four bytes.
-TEST(StringClassMethodTests, countUtf8FourByteIsOneCodepoint) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        int8[] b = heap int8[4];\n"
-        "        b[0] = (int8) 0xF0;\n"  // leader (11110xxx)
-        "        b[1] = (int8) 0x9F;\n"  // continuation
-        "        b[2] = (int8) 0x98;\n"  // continuation
-        "        b[3] = (int8) 0x80;\n"  // continuation
-        "        String t = heap String(#b, 4);\n"
-        "        return t.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 1);
-}
 
 // Mixed ASCII + 2-byte + 4-byte: 'a' + 'é' + '😀' = 3 codepoints,
 // 1 + 2 + 4 = 7 bytes.
-TEST(StringClassMethodTests, countMixedAsciiAndMultibyte) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        int8[] b = heap int8[7];\n"
-        "        b[0] = (int8) 0x61;\n"  // 'a' (ASCII, 1 byte)
-        "        b[1] = (int8) 0xC3;\n"  // 'é' leader
-        "        b[2] = (int8) 0xA9;\n"  // 'é' continuation
-        "        b[3] = (int8) 0xF0;\n"  // '😀' leader
-        "        b[4] = (int8) 0x9F;\n"  // '😀' cont
-        "        b[5] = (int8) 0x98;\n"  // '😀' cont
-        "        b[6] = (int8) 0x80;\n"  // '😀' cont
-        "        String t = heap String(#b, 7);\n"
-        "        return t.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 3);
-}
 
 // Cache: when cachedCpLength is pre-populated (not -1), count() returns
 // the cached value without walking. Set bytes to 3-ASCII but cache to

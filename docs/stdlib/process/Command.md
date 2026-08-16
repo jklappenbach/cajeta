@@ -14,7 +14,7 @@ argv[0] = "/bin/echo";
 argv[1] = "hello";
 Command cmd = heap Command(#argv);   // ownership of argv moves in
 cmd.captureStdout();
-ProcessResult r = cmd.run();
+ProcessResult r #= cmd.run();
 ```
 
 ## Methods

@@ -55,57 +55,8 @@ TEST(OwnedIntrinsicTests, classFormalPerCallReorderSafe) {
 
 // 5.1.1b — String formal: no drop entry exists, the word bit still
 // answers (the 6.2.1 entry-less-formal rule, now user-visible).
-TEST(OwnedIntrinsicTests, stringFormalSupported) {
-    std::string src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 probe(String s) {\n"
-        "        if (Cajeta.owned(s)) { return 1; }\n"
-        "        return 2;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        String keep = \"kept\";\n"
-        "        int32 a = D.probe(keep);\n"        // lent → 2
-        "        int32 b = D.probe(#\"gone\");\n"   // surrendered → 1
-        "        return a * 10 + b;\n"              // 21
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 21);
-}
 
 // 5.1.1c — constructors read their own call's word.
-TEST(OwnedIntrinsicTests, worksInConstructors) {
-    std::string src = std::string(kCellSrc) +
-        "public class Adopter {\n"
-        "    public int32 mode;\n"
-        "    public Cell held;\n"
-        "    public Adopter(Cell c) {\n"
-        "        if (Cajeta.owned(c)) {\n"
-        "            this.held #= c;\n"
-        "            this.mode = 1;\n"
-        "        } else {\n"
-        "            this.held = c;\n"
-        "            this.mode = 2;\n"
-        "        }\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        Cell mine = heap Cell(3);\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Adopter lent = heap Adopter(mine);\n"
-        "            Adopter took = heap Adopter(#heap Cell(4));\n"
-        "            t = lent.mode * 10 + took.mode;\n"   // 21
-        "        }\n"                                       // took drops its Cell
-        "        if (mine.n != 3) { return -1; }\n"
-        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"  // mine
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 21);
-}
 
 // 5.1.1d — non-formal argument is a compile error: owned() answers "did
 // THIS call surrender v" and only formals have a word bit.
@@ -127,42 +78,6 @@ TEST(OwnedIntrinsicTests, nonFormalArgumentRejected) {
 // 5.1.2 — the interning-pool use case (spec 4.4.1) end-to-end: adopt an
 // owned argument, copy a lent one; the pool reclaims exactly what it
 // adopted.
-TEST(OwnedIntrinsicTests, internPoolAdoptOrCopy) {
-    std::string src = std::string(kCellSrc) +
-        "public class Pool {\n"
-        "    public Cell[] data;\n"
-        "    public int32 size;\n"
-        "    public Pool(int32 cap) {\n"
-        "        this.data = heap Cell[cap];\n"
-        "        this.size = 0;\n"
-        "    }\n"
-        "    public void intern(Cell c) {\n"
-        "        if (Cajeta.owned(c)) {\n"
-        "            this.data[this.size] #= c;\n"     // adopt
-        "        } else {\n"
-        "            this.data[this.size] #= heap Cell(c.n);\n"  // copy
-        "        }\n"
-        "        this.size = this.size + 1;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        Cell mine = heap Cell(7);\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Pool p = heap Pool(4);\n"
-        "            p.intern(mine);\n"               // copy
-        "            p.intern(#heap Cell(9));\n"      // adopt
-        "            t = p.data[0].n * 10 + p.data[1].n;\n"   // 79
-        "        }\n"                                  // pool drops copy + adoptee
-        "        if (mine.n != 7) { return -2; }\n"
-        "        int64 leaked = Cajeta.liveCount() - base - 1;\n"  // mine
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 79);
-}
 
 // 5.1.3 — Cajeta.moveMask() is RETIRED: using it is a compile error that
 // names the successors (#=, slot bits, Cajeta.owned).

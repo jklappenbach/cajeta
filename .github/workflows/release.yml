@@ -361,7 +361,7 @@ jobs:
           # Bump when re-cutting the toolchain (new pinned base or new SPIR-V
           # patches). r6 adds Int64Atomics to the Vulkan/Shader flavor (64-bit
           # OpAtomic*); r4 was the first with all four targets.
-          LLVM_RELEASE_TAG: cajeta-llvm-23-r6
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r9
         run: |
           set -euo pipefail
           # The fork names assets by host (asset_os), NOT by cajeta's target triple:

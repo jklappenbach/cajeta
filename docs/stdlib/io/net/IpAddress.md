@@ -10,11 +10,11 @@ dotted-quad, IPv6 per RFC 5952, so `parse(s).toString()` round-trips a
 canonical input byte-identically.
 
 ```cajeta
-IpAddress a = IpAddress.parse("192.168.1.10");
-IpAddress b = IpAddress.fromV4(192, 168, 1, 10);
+IpAddress a #= IpAddress.parse("192.168.1.10");
+IpAddress b #= IpAddress.fromV4(192, 168, 1, 10);
 boolean same = a.equals(b);          // true
-IpAddress lo = IpAddress.loopbackV4();
-String text = lo.toString();         // "127.0.0.1"
+IpAddress lo #= IpAddress.loopbackV4();
+String text #= lo.toString();         // "127.0.0.1"
 ```
 
 ## Methods

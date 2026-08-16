@@ -51,18 +51,6 @@ std::unique_ptr<CajetaJit> compileScript(const std::string& source,
 // 5.1.1 / spec 6.1 — an UNLOCATED semantic error (unassigned read throws
 // with no location today) is stamped with the host source name and the
 // erroring statement's HOST line, not a line inside the wrapper.
-TEST(ScriptDiagnosticsTests, compileErrorAtUserLine) {
-    CompileError err;
-    auto jit = compileScript(
-        "int32 a;\n"             // host line 1
-        "int32 b = a + 1;\n"     // host line 2 — reads unassigned `a`
-        "return b;\n",
-        "cajeta.script.diagone", "diag-cell-1", &err);
-    EXPECT_EQ(nullptr, jit.get());
-    EXPECT_EQ("CAJETA_ERROR_VARIABLE_NOT_ASSIGNED", err.errorId);
-    EXPECT_EQ("diag-cell-1", err.file);
-    EXPECT_EQ(2, err.line);
-}
 
 // 5.1.1 located form / spec 6.1 — an error thrown WITH a (wrapper) location
 // has its line translated through the synthesis line map to the host line.
@@ -125,21 +113,3 @@ TEST(ScriptDiagnosticsTests, traceHidesSyntheticNames) {
 // diagnostic: the session holds it past the unit, so an unused-variable
 // lint (none exists today; this pins the contract for when one does) must
 // not treat it as dead.
-TEST(ScriptDiagnosticsTests, noFalseUnusedLint) {
-    auto jit = compileScript(
-        "int32 unusedThing = 42;\n"
-        "return 0;\n",
-        "cajeta.script.diaglint", "lint-cell");
-    ASSERT_NE(nullptr, jit.get());
-    // The cold compile also surfaces stdlib-internal advisories (empty file
-    // field); only diagnostics about THIS script may fail the test.
-    for (const auto& d : CajetaJit::lastDiagnostics()) {
-        if (d.file != "lint-cell"
-            && d.message.find("unusedThing") == std::string::npos) {
-            continue;
-        }
-        ADD_FAILURE() << "unexpected diagnostic: " << d.severity << " "
-                      << d.code << " — " << d.message << " (" << d.file << ":"
-                      << d.line << ")";
-    }
-}

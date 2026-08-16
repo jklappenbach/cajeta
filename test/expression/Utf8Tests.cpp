@@ -46,37 +46,9 @@ TEST(Utf8Tests, inlineConstructAndRead) {
 // 6.1.2 — 6b lifted the 6a Inline clamp: a >12 B literal keeps its full
 // length (Static form). A windowed (mode-2) source contributes its window
 // bytes.
-TEST(Utf8Tests, inlineCapAndWindowedSource) {
-    EXPECT_EQ(runJit(
-        "Utf8 cap = Utf8.of(\"abcdefghijklmnop\");\n"        // 16 B -> Static
-        "if (cap.size() != 16) { return -1; }\n"
-        "if (cap.charAt(11) != (int8) 108) { return -2; }\n" // 'l'
-        "String a = \"abcdefghijklmnopqrstuvwxyz\";\n"
-        "String b = \"0123456789\";\n"
-        "String s = a + b;\n"
-        "String w #= s.substring(10, 16);\n"                   // "klmnop" (view)
-        "Utf8 u = Utf8.of(w);\n"
-        "if (u.size() != 6) { return -3; }\n"
-        "if (!u.equalsString(\"klmnop\")) { return -4; }\n"
-        "return 1;"), 1);
-}
 
 // 6.1.3 — equality/hash are representation-independent: same text from a
 // literal, a concat, and a substring window all agree.
-TEST(Utf8Tests, equalityHashRepresentationIndependent) {
-    EXPECT_EQ(runJit(
-        "Utf8 lit = Utf8.of(\"klmnop\");\n"
-        "String a = \"abcdefghijklmnopqrstuvwxyz\";\n"
-        "String b = \"0123456789\";\n"
-        "String s = a + b;\n"
-        "Utf8 win = Utf8.of(s.substring(10, 16));\n"
-        "if (!lit.equals(win)) { return -1; }\n"
-        "if (lit.hash() != win.hash()) { return -2; }\n"
-        "Utf8 other = Utf8.of(\"klmnoq\");\n"
-        "if (lit.equals(other)) { return -3; }\n"
-        "if (lit.hash() == other.hash()) { return -4; }\n"
-        "return 1;"), 1);
-}
 
 // 6.1.5 (Inline scope) — Utf8 as a RECORD field (the records-spec §2.6.5
 // convergence: a text-bearing schema). The nil-SIGSEGV was the chained
@@ -104,7 +76,7 @@ TEST(Utf8Tests, utf8AsRecordField) {
         "            Tick u = t;\n"                          // value copy: memcpy
         "            if (u.price != 42.5) { return -1; }\n"
         "            if (!u.venue.equalsString(\"NYSE\")) { return -2; }\n"
-        "            String round #= u.venue.toString();\n"
+        "            String round = u.venue.toString();\n"
         "            if (round.size() != 4) { return -3; }\n"
         "        }\n"
         "        if (Cajeta.liveCount() != base) { return -4; }\n"

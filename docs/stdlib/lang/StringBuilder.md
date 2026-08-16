@@ -13,7 +13,7 @@ and continues with byte-identical output.
 StringBuilder sb = stack StringBuilder();
 sb.append("Hello, ");
 sb.append("world");
-String s = sb.toString();   // "Hello, world"
+String s #= sb.toString();   // "Hello, world"
 ```
 
 ## Methods

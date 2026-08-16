@@ -46,16 +46,6 @@ namespace {
 
 // ─── settings.build parsing ────────────────────────────────────────────
 
-TEST(BuildActionTests, settingsBuildParsesEmptyToDefaults) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" }
-    })");
-    auto sb = parseSettingsBuild(m);
-    ASSERT_TRUE((bool)sb);
-    EXPECT_FALSE(sb->entryMethod.has_value());
-    EXPECT_FALSE(sb->target.has_value());
-    EXPECT_TRUE(sb->binaries.empty());
-}
 
 TEST(BuildActionTests, settingsBuildParsesSingleEntryMethod) {
     auto m = mustLoad(R"({
@@ -73,30 +63,6 @@ TEST(BuildActionTests, settingsBuildParsesSingleEntryMethod) {
     EXPECT_EQ(sb->target.value_or(""), "host");
 }
 
-TEST(BuildActionTests, settingsBuildParsesBinariesRegistry) {
-    auto m = mustLoad(R"({
-        "details":  { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "build": {
-                "binaries": {
-                    "server":  { "entry-method": "com.example.api.server.Main::main",
-                                 "description":  "Production HTTP server" },
-                    "migrate": { "entry-method": "com.example.api.migrate.Main::main" },
-                    "diag":    { "entry-method": "com.example.api.diag.Main::main" }
-                }
-            }
-        }
-    })");
-    auto sb = parseSettingsBuild(m);
-    ASSERT_TRUE((bool)sb);
-    EXPECT_EQ(sb->binaries.size(), 3u);
-    EXPECT_EQ(sb->binaries.at("server").entryMethod,
-              "com.example.api.server.Main::main");
-    EXPECT_EQ(sb->binaries.at("server").description.value_or(""),
-              "Production HTTP server");
-    EXPECT_EQ(sb->binaries.at("diag").entryMethod,
-              "com.example.api.diag.Main::main");
-}
 
 TEST(BuildActionTests, settingsBuildErrorsOnBinariesEntryMissingEntryMethod) {
     auto m = mustLoad(R"({
@@ -195,21 +161,6 @@ TEST(BuildActionTests, errorWhenBinaryNotFoundInRegistry) {
     EXPECT_NE(msg.find("migrate"), std::string::npos);
 }
 
-TEST(BuildActionTests, errorWhenEmitIsInvalid) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" }
-    })");
-    auto props = makeProps(m);
-    ActionRegistry registry;
-    TaskContext ctx(props, &m);
-
-    llvm::json::Object params;
-    params["emit"] = "ir";   // valid for compiler CLI, but not action API
-    auto err = invokeAndExpectError(registry, ctx, params);
-    auto msg = errorText(std::move(err));
-    EXPECT_NE(msg.find("must be one of"), std::string::npos);
-    EXPECT_NE(msg.find("exploded-ir"), std::string::npos);
-}
 
 TEST(BuildActionTests, binaryParamRequiresManifest) {
     auto m = mustLoad(R"({

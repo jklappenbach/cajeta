@@ -27,7 +27,7 @@ public class LtmBPlusTreeDemo extends DemoClass {
         String path = "/tmp/cajeta_tour_ltm_bplus.idx";
 
         // A previous failed run must not poison this one: start clean.
-        Path stale = Path.of(path);
+        Path stale #= Path.of(path);
         stale.delete();
 
         Encoder<int32> ke = heap Int32Encoder();
@@ -57,7 +57,7 @@ public class LtmBPlusTreeDemo extends DemoClass {
         t2.close();
 
         // The tour leaves no droppings.
-        Path p = Path.of(path);
+        Path p #= Path.of(path);
         p.delete();
         this.check(!p.exists(), "index file deleted");
     }

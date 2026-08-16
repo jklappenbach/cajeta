@@ -24,14 +24,14 @@ public final class BindBench {
     }
 
     static void bench(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         int64 sink = 0;
         // warmup
         int32 w = 0;
         while (w < 20) {
             int8[] cb = freshCopy(b, n);
-            BBEmpty e = Json.parse<BBEmpty>(cb, n);
+            BBEmpty e #= Json.parse<BBEmpty>(cb, n);
             if (e != null) { sink = sink + 1; }
             w = w + 1;
         }
@@ -45,7 +45,7 @@ public final class BindBench {
         int32 i = 0;
         while (i < 200) {
             int8[] cb = freshCopy(b, n);
-            BBEmpty e = Json.parse<BBEmpty>(cb, n);
+            BBEmpty e #= Json.parse<BBEmpty>(cb, n);
             if (e != null) { sink = sink + 1; }
             i = i + 1;
         }

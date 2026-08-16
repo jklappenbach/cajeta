@@ -170,8 +170,9 @@ LambdaL2Tests.blockBodyReturnTypeInferredFromBodyUnderCtorArg
 LambdaL2Tests.compoundAssignToValueCaptureInsideForIsCompileError
 LambdaL2Tests.writingValueCaptureInsideIfIsCompileError
 LambdaL2Tests.writingValueCaptureInsideWhileIsCompileError
-LambdaL3Tests.transferInsideForBodyOfLambdaMovesOuter
-LambdaL3Tests.transferInsideIfBranchOfLambdaMovesOuter
+# was LambdaL3Tests.transferInsideForBodyOfLambdaMovesOuter
+#   8def4528 retired USE_AFTER_MOVE: a transfer now DEMOTES TO BORROW, so the old pin asserted an error that is no longer an error
+LambdaL3Tests.outerReadAfterTransferIsLegal
 LambdaL3Tests.transferInsideIfBranchOfLambdaRunsWhenNoOuterUse
 LambdaL4Tests.returnBoundInstanceRefIsBorrowEscape
 LambdaNestedBlockPatternsTests.scopeSpawnInsideLambdaSeesCapture
@@ -513,8 +514,8 @@ ViewSafeConsumerTests.toStringViewField
 VqSortInt64Tests.ascendingFastPath
 
 # --- xpu — GPU/accelerator lowering and device execution ----------
-CarameloSpatialIndexDeviceTests.implOverrideRecordingMatrixOnDevice
-CarameloSpatialIndexDeviceTests.forcedOptixUnsupportedShapeFallsBackToSoftware
+XpuRayQueryDeviceTests.implOverrideRecordingMatrixOnDevice
+XpuRayQueryDeviceTests.forcedOptixUnsupportedShapeFallsBackToSoftware
 XpuAsyncCopyAmdDeviceTests.gfx1151FallsBackToSyncStaging
 XpuAsyncCopyPortabilityTests.swizzledAsyncWmmaCompilesOnAllBackends
 XpuBlockPadProbeTests.blockPadIsNotIdentity
@@ -586,7 +587,9 @@ OptionalBorrowOwnership.primitiveOptionalUnchanged
 OwnedProbe.answerSurvivesInterveningTransferCall
 OwnedProbe.ctorReadsItsOwnWord
 OwnedProbe.plainVsTransferredArgVisibleToCallee
-OwnershipLeakProbe.arrayListStringLendIsRejected
+# was OwnershipLeakProbe.arrayListStringLendIsRejected
+#   8ba0d4d2 inverted the pin: the lend is accepted and stores a borrow
+OwnershipLeakProbe.arrayListStringLendStoresABorrow
 OwnershipLeakProbe.borrowAliasNotDoubleFreed
 OwnershipLeakProbe.ownedElementsBalanceAtScale
 OwnershipLeakProbe.loopConcatFreed
@@ -677,4 +680,6 @@ FuseLaziness.reductionOperandStagesAndBroadcasts
 FiberArenaIsolation.parkedFiberArenaBlockSurvivesCoHostedReset
 
 # --- synth — source synthesizers ----------------------------------
-TableCoreTests.accessorTypoFailsCompileAndSetIsDeterministic
+# was TableCoreTests.accessorTypoFailsCompileAndSetIsDeterministic
+#   e15d3279 (this plan, unit 2.3) folded the suite and renamed the pin without updating this manifest
+TableCoreTests.accessorTypoFailsCompileNamingTheTypo

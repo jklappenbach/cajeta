@@ -106,7 +106,7 @@ import cajeta.concurrent.FiberContext;
 
 // Producer (on the request's fiber): snapshot the live bindings, send them along.
 void enqueue(Channel<Job> q, Payload p) {
-    FiberContext ctx = FiberContext.capture();   // immutable snapshot
+    FiberContext ctx #= FiberContext.capture();   // immutable snapshot
     q.send(Job(p, #ctx));                         // # moves it across the boundary
 }
 

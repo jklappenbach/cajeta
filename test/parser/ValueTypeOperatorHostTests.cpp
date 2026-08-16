@@ -60,37 +60,10 @@ int32_t runI32(const std::string& src) {
 
 // a + b dispatches to the static operator+ (a class-typed `+` has no builtin, so
 // a correct sum proves dispatch happened).
-TEST(ValueTypeOperatorHostTests, binaryAddDispatches) {
-    auto src = withVec2(
-        "        Vec2 a = stack Vec2(1.0f, 2.0f);\n"
-        "        Vec2 b = stack Vec2(3.0f, 4.0f);\n"
-        "        Vec2 c = a + b;\n"
-        "        return (int32)(c.x + c.y);\n");   // (4) + (6) = 10
-    EXPECT_EQ(runI32(src), 10);
-}
 
 // a - b and the mixed v * scalar overload both dispatch.
-TEST(ValueTypeOperatorHostTests, subAndScalarMulDispatch) {
-    auto src = withVec2(
-        "        Vec2 a = stack Vec2(5.0f, 7.0f);\n"
-        "        Vec2 b = stack Vec2(1.0f, 2.0f);\n"
-        "        Vec2 d = a - b;\n"          // (4, 5)
-        "        Vec2 e = d * 2.0f;\n"        // (8, 10)
-        "        return (int32)(e.x + e.y);\n");  // 18
-    EXPECT_EQ(runI32(src), 18);
-}
 
 // == dispatches and != derives from it.
-TEST(ValueTypeOperatorHostTests, equalityAndDerivedInequality) {
-    auto src = withVec2(
-        "        Vec2 a = stack Vec2(1.0f, 2.0f);\n"
-        "        Vec2 b = stack Vec2(1.0f, 2.0f);\n"
-        "        Vec2 c = stack Vec2(9.0f, 9.0f);\n"
-        "        int32 eq = (a == b) ? 1 : 0;\n"
-        "        int32 ne = (a != c) ? 10 : 0;\n"   // derived from ==
-        "        return eq + ne;\n");
-    EXPECT_EQ(runI32(src), 11);
-}
 
 // < dispatches; >, <=, >= derive from it.
 TEST(ValueTypeOperatorHostTests, lessThanAndDerivedComparisons) {

@@ -160,8 +160,8 @@ the resource and close it":
 
 ```cajeta
 {
-    FileReader r = File.openRead(in);
-    FileWriter w = File.openWrite(out, OpenMode.WRITE);
+    FileReader r #= File.openRead(in);
+    FileWriter w #= File.openWrite(out, OpenMode.WRITE);
     int32 n = r.read(buf, 4096);
     while (n > 0) {
         w.write(buf, n);
@@ -187,7 +187,7 @@ closing brace:
 public static void process() {
     setup();
     {
-        FileReader r = File.openRead(in);
+        FileReader r #= File.openRead(in);
         consume(r);
         r.close();   // explicit today; planned: drops at the `}` below
     }  // r drops here, BEFORE the rest of process().

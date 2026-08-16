@@ -71,7 +71,7 @@ Caller:
 ```cajeta
 ArrayList<int32> xs = heap ArrayList<int32>();
 xs.add(1); xs.add(2); xs.add(3);
-ArrayStream<int32> s = xs.stream();
+ArrayStream<int32> s #= xs.stream();
 while (s.next().isPresent()) { ... }
 // Both `s` and `xs` drop at scope exit.
 ```

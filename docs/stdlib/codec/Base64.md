@@ -14,9 +14,9 @@ int8[] data = heap int8[3];
 data[0] = (int8) 77;
 data[1] = (int8) 97;
 data[2] = (int8) 110;
-String b = Base64.encode(data, (int64) data.count());        // "TWFu"
-String u = Base64.encodeUrlSafe(data, (int64) data.count()); // "TWFu" (no '=')
-int8[] raw = Base64.decode(b);       // either alphabet, padded or not
+String b #= Base64.encode(data, (int64) data.count());        // "TWFu"
+String u #= Base64.encodeUrlSafe(data, (int64) data.count()); // "TWFu" (no '=')
+int8[] raw #= Base64.decode(b);       // either alphabet, padded or not
 ```
 
 ## Methods

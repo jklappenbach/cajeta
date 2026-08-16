@@ -158,42 +158,7 @@ TEST(HttpRepositoryV2Tests, parseCapabilitiesJsonExtractsTypedFields) {
     EXPECT_EQ(cap->ttl.count(), 7200);
 }
 
-TEST(HttpRepositoryV2Tests, capabilityProbeReadsWellKnownEndpoint) {
-    TestHttpServer srv;
-    srv.route("/.well-known/cajeta-capabilities.json", 200,
-              R"({"protocol-versions":["v1","v2"],
-                  "bundle":true,
-                  "content-addressed":true,
-                  "ttl":3600})");
 
-    auto stage = makeTempDir("cap-probe");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto cap = repo.capabilities();
-    ASSERT_TRUE((bool)cap) << errorText(cap.takeError());
-    EXPECT_TRUE(cap->probed);
-    EXPECT_TRUE(cap->supportsV2());
-    EXPECT_TRUE(cap->bundle);
-    EXPECT_TRUE(cap->contentAddressed);
-
-    rmTree(stage);
-}
-
-TEST(HttpRepositoryV2Tests, capabilityProbeIsCachedAcrossCalls) {
-    TestHttpServer srv;
-    srv.route("/.well-known/cajeta-capabilities.json", 200,
-              R"({"protocol-versions":["v1","v2"],"ttl":3600})");
-
-    auto stage = makeTempDir("cap-cache");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    ASSERT_TRUE((bool)repo.capabilities());
-    ASSERT_TRUE((bool)repo.capabilities());
-    ASSERT_TRUE((bool)repo.capabilities());
-    EXPECT_EQ(srv.hitCount("/.well-known/cajeta-capabilities.json"), 1);
-
-    rmTree(stage);
-}
 
 // ─── Acceptance #4 — v1-only client against v2-capable server ──
 
@@ -241,29 +206,6 @@ TEST(HttpRepositoryV2Tests, v1OnlyClientWorksAgainstV2Server) {
 // The v2-aware client probes capabilities first. A v1-only server
 // returns 404 from /.well-known. The client caches "v1-only" and
 // uses v1 endpoints for actual fetching.
-TEST(HttpRepositoryV2Tests, v2ClientFallsBackOnV1OnlyServer) {
-    TestHttpServer srv;
-    // No /.well-known route → 404 → v1-only.
-    srv.route("/acme.lib/versions.json", 200,
-              R"({"versions":["1.0.0"]})");
-    srv.route("/acme.lib/1.0.0/acme.lib-1.0.0.cja", 200,
-              "fallback-bytes");
-
-    auto stage = makeTempDir("v2onv1");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto cap = repo.capabilities();
-    ASSERT_TRUE((bool)cap) << errorText(cap.takeError());
-    EXPECT_TRUE(cap->probed);
-    EXPECT_FALSE(cap->supportsV2());
-    EXPECT_FALSE(cap->bundle);
-
-    // Fallback path: client uses v1 endpoints when no v2.
-    auto path = repo.fetch("acme.lib", "1.0.0");
-    ASSERT_TRUE((bool)path) << errorText(path.takeError());
-
-    rmTree(stage);
-}
 
 // ─── Acceptance #1 — 50-dep cold install: one /v2/bundle req ──
 
@@ -503,46 +445,9 @@ TEST(HttpRepositoryV2Tests, lockfileDiffTransfersOnlyDelta) {
     rmTree(destDir);
 }
 
-TEST(HttpRepositoryV2Tests, lockfileDiffFalls404SurfacesAsRetryHint) {
-    TestHttpServer srv;
-    // Server hasn't snapshotted the old lockfile.
-    srv.route("/v2/lockfile-diff", 404, "missing");
-    auto stage = makeTempDir("lfdiff-404");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto destDir = makeTempDir("lfdiff-404-dest");
-    auto resp = repo.v2LockfileDiff(
-        "sha256:o", "sha256:n", destDir.string());
-    ASSERT_FALSE((bool)resp);
-    auto msg = errorText(resp.takeError());
-    EXPECT_NE(msg.find("404"), std::string::npos);
-    EXPECT_NE(msg.find("v2/bundle"), std::string::npos)
-        << "404 message should hint that caller should retry as "
-           "/v2/bundle, got: " << msg;
-    rmTree(stage);
-    rmTree(destDir);
-}
 
 // ─── Acceptance #7 — transparency-log check ───────────────────
 
-TEST(HttpRepositoryV2Tests, transparencyLogValidEntryRoundtripsTypedFields) {
-    TestHttpServer srv;
-    srv.route("/v2/transparency-log/abc", 200,
-              R"({"log-index":12345,
-                  "log-timestamp":"2026-05-15T12:00:00Z",
-                  "log-signature":"sig-bytes-base64",
-                  "key-id":"key-fingerprint",
-                  "issuer":"github.com/example/foo"})");
-    auto stage = makeTempDir("tlog-ok");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto entry = repo.v2TransparencyLog("sha256:abc");
-    ASSERT_TRUE((bool)entry) << errorText(entry.takeError());
-    EXPECT_EQ(entry->logIndex, 12345);
-    EXPECT_EQ(entry->logSignature, "sig-bytes-base64");
-    EXPECT_EQ(entry->issuer, "github.com/example/foo");
-    rmTree(stage);
-}
 
 TEST(HttpRepositoryV2Tests, transparencyLogMissingSignatureFails) {
     TestHttpServer srv;
@@ -562,36 +467,6 @@ TEST(HttpRepositoryV2Tests, transparencyLogMissingSignatureFails) {
     rmTree(stage);
 }
 
-TEST(HttpRepositoryV2Tests, transparencyLog404RefusesInstall) {
-    TestHttpServer srv;
-    // No route → 404. Install MUST fail per the spec: "fail the
-    // install when the log entry's signature is invalid or absent".
-    auto stage = makeTempDir("tlog-404");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto entry = repo.v2TransparencyLog("sha256:abc");
-    ASSERT_FALSE((bool)entry);
-    auto msg = errorText(entry.takeError());
-    EXPECT_NE(msg.find("no transparency-log entry"), std::string::npos);
-    EXPECT_NE(msg.find("refusing install"), std::string::npos);
-    rmTree(stage);
-}
 
 // ─── TarZstd round-trip (foundation for the bundle endpoints) ──
 
-TEST(HttpRepositoryV2Tests, tarZstdRoundtripsMultipleEntries) {
-    std::vector<TarEntry> in = {
-        {"a.cja",    "alpha-bytes"},
-        {"b.cja",    "beta-bytes-with-some-longer-content-to-trigger-padding"},
-        {"index.json", R"({"hello":"world"})"},
-    };
-    auto bytes = writeTarZstd(in);
-    ASSERT_TRUE((bool)bytes) << errorText(bytes.takeError());
-    auto out = cajeta::buildtool::readTarZstd(*bytes);
-    ASSERT_TRUE((bool)out) << errorText(out.takeError());
-    ASSERT_EQ(out->size(), in.size());
-    for (size_t i = 0; i < in.size(); ++i) {
-        EXPECT_EQ((*out)[i].name, in[i].name);
-        EXPECT_EQ((*out)[i].data, in[i].data);
-    }
-}

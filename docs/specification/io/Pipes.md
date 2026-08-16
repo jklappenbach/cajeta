@@ -84,7 +84,7 @@ Process p = stack ProcessBuilder("wc")
 
 p.stdin().writeString("a\nb\nc\n");
 p.stdin().close();                 // child sees EOF
-String out = p.stdout().readString();
+String out #= p.stdout().readString();
 p.waitFor();
 ```
 
@@ -116,9 +116,9 @@ ordinary file API** — no new stream type:
 Fifo.create(Path.of("/tmp/cajeta.fifo"));
 
 // reader process:
-FileReader r = File.openRead(Path.of("/tmp/cajeta.fifo"));   // blocks until a writer opens
+FileReader r #= File.openRead(Path.of("/tmp/cajeta.fifo"));   // blocks until a writer opens
 // writer process:
-FileWriter w = File.openWrite(Path.of("/tmp/cajeta.fifo"), OpenMode.WRITE);
+FileWriter w #= File.openWrite(Path.of("/tmp/cajeta.fifo"), OpenMode.WRITE);
 ```
 
 Opening a FIFO for read blocks (or parks) until a writer opens it, and vice

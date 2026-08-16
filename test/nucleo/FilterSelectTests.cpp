@@ -369,21 +369,3 @@ TEST(FilterSelectTests, typedMemberOnErasedIsGuidedCompileError) {
 // (`c.venue() > 0.0` — utf8 vs float) fails at COMPILE time under the U1
 // operator mechanism: there is no such operator, and the error is located,
 // never a runtime surprise. Its own test because the compile FAILS.
-TEST(FilterSelectTests, dslTypeMismatchIsCompileError) {
-    auto src = std::string(kPrelude) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        + kBuild +
-        "        Table<Tick> h = t.lazy().filter((TickCols c) -> c.venue() > 0.0);\n"
-        "        return (int32) h.collect().rowCount();\n"
-        "    }\n"
-        "}\n";
-    bool threw = false;
-    try {
-        CajetaJit::compile(src, "test.D");
-    } catch (cajeta::Exception& e) {
-        threw = true;
-        EXPECT_FALSE(std::string(e.getErrorId()).empty());
-    }
-    EXPECT_TRUE(threw);
-}

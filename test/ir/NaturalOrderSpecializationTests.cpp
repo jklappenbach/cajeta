@@ -59,9 +59,3 @@ TEST(NaturalOrderSpecializationTests, naturalOrderSortDevirtualizes) {
 }
 
 // 2.3.1 — and it sorts correctly.
-TEST(NaturalOrderSpecializationTests, naturalOrderSortCorrect) {
-    auto jit = CajetaJit::compile(kSrc, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 109);
-}

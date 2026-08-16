@@ -36,7 +36,7 @@ public class BPlusTreeDemo extends DemoClass {
 
         // Top-of-book depth: quantity resting within 20 cents of the best
         // ask, via the ordered key walk (ascending by contract — checked).
-        ArrayList<int32> prices = asks.keysInOrder();
+        ArrayList<int32> prices #= asks.keysInOrder();
         boolean ascending = true;
         int32 depth = 0;
         int32 k = 0;

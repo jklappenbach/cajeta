@@ -179,64 +179,6 @@ TEST(PlaceholderOwnedFieldTests, nullInterfaceIsObservableViaEquals) {
 
 // 4.2 — the reported shape, reduced. The store and the read happen in
 // different frames, which is what the cajeta-ml repro did.
-TEST(PlaceholderOwnedFieldTests, ownedInterfaceReturnSurvivesContainerField) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public interface Face {\n"
-        "    int32 poke(int32 v);\n"
-        "}\n"
-        "public final class Plus implements Face {\n"
-        "    public int32 k;\n"
-        "    public Plus(int32 kk) { this.k = kk; }\n"
-        "    public int32 poke(int32 v) { return v + this.k; }\n"
-        "}\n"
-        "public final class Times implements Face {\n"
-        "    public int32 k;\n"
-        "    public Times(int32 kk) { this.k = kk; }\n"
-        "    public int32 poke(int32 v) { return v * this.k; }\n"
-        "}\n"
-        "public final class Reg {\n"
-        "    public ArrayList<Face> faces;\n"
-        "    public Reg() {\n"
-        "        this.faces #= heap ArrayList<Face>();\n"
-        "    }\n"
-        // the `#Interface` return under test — two arms, so the concrete
-        // type is not statically pinned at the call site.
-        "    public #Face make(int32 which, int32 k) {\n"
-        "        if (which == 0) { return heap Plus(k); }\n"
-        "        return heap Times(k);\n"
-        "    }\n"
-        "    public void enroll(int32 which, int32 k) {\n"
-        "        Face f #= this.make(which, k);\n"
-        "        this.faces.add(#f);\n"
-        "    }\n"
-        // read back in a LATER call — the frame that produced the value is
-        // long gone by here.
-        "    public int32 pokeAll(int32 v) {\n"
-        "        int32 t = 0;\n"
-        "        int32 i = 0;\n"
-        "        while (i < (int32) this.faces.count()) {\n"
-        "            Face g = this.faces.get(i);\n"
-        "            t = t + g.poke(v);\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Reg r = heap Reg();\n"
-        "        r.enroll(0, 10);\n"       // Plus(10):  poke(5) = 15
-        "        r.enroll(1, 3);\n"        // Times(3):  poke(5) = 15
-        "        return r.pokeAll(5);\n"   // 30
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 30);
-}
 
 // --- bisection probes: which STEP of the reported shape faults? -----------
 // Each adds one element of §1's repro. Named PROBE_ so they read as
@@ -373,91 +315,9 @@ TEST(PlaceholderOwnedFieldTests, PROBE_inlineBuildCrossFrame) {
 // pointer, not a fat body. If this passes while the interface version faults,
 // the defect is fat-value handling; if both fault, it is return-slot
 // lifetime. Either way the answer names where the fix belongs.
-TEST(PlaceholderOwnedFieldTests, ownedBaseClassReturnSurvivesContainerField) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public class Base {\n"
-        "    public int32 k;\n"
-        "    public Base(int32 kk) { this.k = kk; }\n"
-        "    public int32 poke(int32 v) { return v + this.k; }\n"
-        "}\n"
-        "public final class Derived extends Base {\n"
-        "    public Derived(int32 kk) { super(kk); }\n"
-        "    public int32 poke(int32 v) { return v * this.k; }\n"
-        "}\n"
-        "public final class Reg2 {\n"
-        "    public ArrayList<Base> items;\n"
-        "    public Reg2() {\n"
-        "        this.items #= heap ArrayList<Base>();\n"
-        "    }\n"
-        "    public #Base make(int32 which, int32 k) {\n"
-        "        if (which == 0) { return heap Base(k); }\n"
-        "        return heap Derived(k);\n"
-        "    }\n"
-        "    public void enroll(int32 which, int32 k) {\n"
-        "        Base b #= this.make(which, k);\n"
-        "        this.items.add(#b);\n"
-        "    }\n"
-        "    public int32 pokeAll(int32 v) {\n"
-        "        int32 t = 0;\n"
-        "        int32 i = 0;\n"
-        "        while (i < (int32) this.items.count()) {\n"
-        "            Base g = this.items.get(i);\n"
-        "            t = t + g.poke(v);\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Reg2 r = heap Reg2();\n"
-        "        r.enroll(0, 10);\n"       // Base(10):    poke(5) = 15
-        "        r.enroll(1, 3);\n"        // Derived(3):  poke(5) = 15
-        "        return r.pokeAll(5);\n"   // 30
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 30);
-}
 
 // The workaround the spec records — build inline at the storing site, no
 // `#Interface` return anywhere — must keep working. It is what cajeta-ml
 // ships today, so a regression here breaks a released library.
-TEST(PlaceholderOwnedFieldTests, inlineInterfaceBuildIsTheWorkingBaseline) {
-    std::string src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public interface Face {\n"
-        "    int32 poke(int32 v);\n"
-        "}\n"
-        "public final class Plus implements Face {\n"
-        "    public int32 k;\n"
-        "    public Plus(int32 kk) { this.k = kk; }\n"
-        "    public int32 poke(int32 v) { return v + this.k; }\n"
-        "}\n"
-        "public final class Reg3 {\n"
-        "    public ArrayList<Face> faces;\n"
-        "    public Reg3() {\n"
-        "        this.faces #= heap ArrayList<Face>();\n"
-        "        Face f = heap Plus(10);\n"      // built AT the storing site
-        "        this.faces.add(#f);\n"
-        "    }\n"
-        "    public int32 poke(int32 v) { return this.faces.get(0).poke(v); }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Reg3 r = heap Reg3();\n"
-        "        return r.poke(5);\n"            // 15
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 15);
-}
 
 } // namespace

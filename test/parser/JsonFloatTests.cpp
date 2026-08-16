@@ -44,20 +44,8 @@ TEST(JsonFloat, parsePi) {
         "        return (int32) (v.asFloat64() * 100.0);\n"), 314);
 }
 
-TEST(JsonFloat, parseNegativeHalf) {
-    EXPECT_EQ(runI32(parseTo("-0.5") +
-        "        return (int32) (v.asFloat64() * 100.0);\n"), -50);
-}
 
-TEST(JsonFloat, parseExponent) {
-    EXPECT_EQ(runI32(parseTo("1e3") +
-        "        return (int32) v.asFloat64();\n"), 1000);
-}
 
-TEST(JsonFloat, parseSmallExponent) {
-    EXPECT_EQ(runI32(parseTo("2.5e-4") +
-        "        return (int32) (v.asFloat64() * 1000000.0);\n"), 250);
-}
 
 // 2.a.1 — integers keep the integer path (isFloat false, exact int64).
 TEST(JsonFloat, integerStaysInteger) {

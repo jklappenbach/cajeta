@@ -8,10 +8,10 @@ public class StringDemo extends DemoClass {
         System.stdout.println("");
         System.stdout.println("-- Strings --");
         String s = "  Hello, Cajeta!  ";
-        String trimmed = s.trim();
+        String trimmed #= s.trim();
         boolean hasCajeta = trimmed.contains("Cajeta");
-        String sub = trimmed.substring(7, 13);          // "Cajeta"
-        String swapped = trimmed.replace("Cajeta", "World");
+        String sub #= trimmed.substring(7, 13);          // "Cajeta"
+        String swapped #= trimmed.replace("Cajeta", "World");
 
         System.stdout.println("  original   = '" + s + "'");
         System.stdout.println("  trim()     = '" + trimmed + "'");

@@ -13,7 +13,7 @@ access. A pure stack value type; an out-of-range field throws
 LocalTime start = LocalTime.ofHms(23, 30, 0);
 LocalTime end = start.plusMinutes(45L);
 int32 h = end.getHour();          // 0 — wrapped past midnight
-String text = end.iso();          // "00:15"
+String text #= end.iso();          // "00:15"
 ```
 
 ## Methods

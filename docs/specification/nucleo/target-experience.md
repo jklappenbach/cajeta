@@ -107,7 +107,7 @@ var vwap = ticks
 var spread = ticks.price.max() - ticks.price.min();
 
 // Time-series resample (the one genuinely-worth-porting pandas feature).               ✅
-var minuteBars = ticks.resample(col.ts, every: 1.minutes).agg(col.price.last());
+var minuteBars #= ticks.resample(col.ts, every: 1.minutes).agg(col.price.last());
 ```
 
 Gone, deliberately: the `Index`/`MultiIndex`, `inplace=`, `object` dtype, NaN-as-missing

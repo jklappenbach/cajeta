@@ -22,11 +22,11 @@ public final class Demo {
         int64[] shape = heap int64[2];
         shape[0] = 2;
         shape[1] = 3;
-        Tensor<float32> a = Tensor.zeros<float32>(shape);   // 2x3, C-order
+        Tensor<float32> a #= Tensor.zeros<float32>(shape);   // 2x3, C-order
         a.set2(0, 2, 7.0f);
-        Tensor<float32> b = Tensor.ones<float32>(shape);
-        Tensor<float32> sum = Tensor.add<float32>(a, b);    // elementwise
-        Tensor<float32> t = sum.transpose();                // 3x2 view
+        Tensor<float32> b #= Tensor.ones<float32>(shape);
+        Tensor<float32> sum #= Tensor.add<float32>(a, b);    // elementwise
+        Tensor<float32> t #= sum.transpose();                // 3x2 view
         float32 total = Tensor.sum<float32, float32>(sum);
         return;
     }

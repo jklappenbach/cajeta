@@ -18,9 +18,9 @@ import cajeta.math.npio.Npy;
 
 public final class Demo {
     public static void run() {
-        Tensor<float32> t = Tensor.arange<float32>(6);
+        Tensor<float32> t #= Tensor.arange<float32>(6);
         Npy.saveF32("data.npy", t);
-        Tensor<float32> back = Npy.loadF32("data.npy");
+        Tensor<float32> back #= Npy.loadF32("data.npy");
         return;
     }
 }

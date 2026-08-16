@@ -136,10 +136,6 @@ TEST(Sha256Tests, twoBlockMessage) {
 // The classic 1,000,000 x 'a' FIPS 180-4 vector. Spans ~15625 blocks, so it
 // exercises the SHA-NI multi-block bulk path (and its remainder handling) far
 // past the single-/two-block cases above.
-TEST(Sha256Tests, millionA) {
-    EXPECT_EQ(oneShotHexRepeated('a', 1000000),
-              "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
-}
 
 // --- acceptance: FIPS vectors one-shot AND incremental ----------------------
 

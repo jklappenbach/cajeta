@@ -58,14 +58,14 @@ public class LinAlgDemo extends DemoClass {
         int64[] s22 = heap int64[2];
         s22[0] = 2;
         s22[1] = 2;
-        Tensor<float32> a = Tensor.of<float32>(ad, s22);
+        Tensor<float32> a #= Tensor.of<float32>(ad, s22);
 
         // solve: 3x + y = 9, x + 2y = 8  ->  x = 2, y = 3.
         float32[] bd = [9.0f, 8.0f];
         int64[] s2 = heap int64[1];
         s2[0] = 2;
-        Tensor<float32> b = Tensor.of<float32>(bd, s2);
-        Tensor<float32> x = LinAlg.solve<float32>(a, b);
+        Tensor<float32> b #= Tensor.of<float32>(bd, s2);
+        Tensor<float32> x #= LinAlg.solve<float32>(a, b);
         System.stdout.println("  solve([[3,1],[1,2]], [9,8]) = ("
             + (int32)(x.get1(0) + 0.5f) + ", " + (int32)(x.get1(1) + 0.5f)
             + ")   (expect (2, 3))");
@@ -75,58 +75,58 @@ public class LinAlgDemo extends DemoClass {
         this.check(close(det, 5.0f), "det(A) == 5");
 
         // LU with partial pivoting: reconstruct A = P.L.U.
-        Tensor<float32>[] plu = LinAlg.lu<float32>(a);
-        Tensor<float32> pl = Tensor.matmul<float32>(plu[0], plu[1]);
-        Tensor<float32> luRec = Tensor.matmul<float32>(pl, plu[2]);
+        Tensor<float32>[] plu #= LinAlg.lu<float32>(a);
+        Tensor<float32> pl #= Tensor.matmul<float32>(plu[0], plu[1]);
+        Tensor<float32> luRec #= Tensor.matmul<float32>(pl, plu[2]);
         this.check(sameMatrix(luRec, a), "LU: P.L.U reconstructs A");
         this.check(close(plu[1].get2(0, 0), 1.0f) && close(plu[1].get2(1, 1), 1.0f)
             && close(plu[1].get2(0, 1), 0.0f), "LU: L is unit lower-triangular");
         this.check(close(plu[2].get2(1, 0), 0.0f), "LU: U is upper-triangular");
 
         // QR (modified Gram-Schmidt): reconstruct A = Q.R, and Qt.Q == I.
-        Tensor<float32>[] qr = LinAlg.qr<float32>(a);
-        Tensor<float32> qrRec = Tensor.matmul<float32>(qr[0], qr[1]);
+        Tensor<float32>[] qr #= LinAlg.qr<float32>(a);
+        Tensor<float32> qrRec #= Tensor.matmul<float32>(qr[0], qr[1]);
         this.check(sameMatrix(qrRec, a), "QR: Q.R reconstructs A");
         Tensor<float32> qtView = qr[0].transpose();
-        Tensor<float32> qt = qtView.copy();
-        Tensor<float32> qtq = Tensor.matmul<float32>(qt, qr[0]);
-        Tensor<float32> eye = Tensor.eye<float32>(2);
+        Tensor<float32> qt #= qtView.copy();
+        Tensor<float32> qtq #= Tensor.matmul<float32>(qt, qr[0]);
+        Tensor<float32> eye #= Tensor.eye<float32>(2);
         this.check(sameMatrix(qtq, eye), "QR: Qt.Q == I (orthonormal columns)");
 
         // inv: A.inv(A) == I closes the loop through the same machinery.
-        Tensor<float32> ai = LinAlg.inv<float32>(a);
-        Tensor<float32> aai = Tensor.matmul<float32>(a, ai);
+        Tensor<float32> ai #= LinAlg.inv<float32>(a);
+        Tensor<float32> aai #= Tensor.matmul<float32>(a, ai);
         this.check(sameMatrix(aai, eye), "inv: A.inv(A) == I");
 
         // Cholesky: for a symmetric positive-definite A (every covariance
         // and normal-equations matrix), L.Lt == A at HALF the cost of LU —
         // and choSolve reuses the factor: factor once, solve many.
         float32[] spdD = [4.0f, 2.0f, 2.0f, 3.0f];
-        Tensor<float32> spd = Tensor.of<float32>(spdD, s22);
-        Tensor<float32> l = LinAlg.cholesky<float32>(spd);
-        Tensor<float32> ltV = l.transpose();
-        Tensor<float32> lt = ltV.copy();
+        Tensor<float32> spd #= Tensor.of<float32>(spdD, s22);
+        Tensor<float32> l #= LinAlg.cholesky<float32>(spd);
+        Tensor<float32> ltV #= l.transpose();
+        Tensor<float32> lt #= ltV.copy();
         this.check(sameMatrix(Tensor.matmul<float32>(l, lt), spd),
             "cholesky: L.Lt reconstructs SPD A");
         this.check(close(l.get2(0, 1), 0.0f), "cholesky: L is lower-triangular");
-        Tensor<float32> xc = LinAlg.choSolve<float32>(l, b);
-        Tensor<float32> xg = LinAlg.solve<float32>(spd, b);
+        Tensor<float32> xc #= LinAlg.choSolve<float32>(l, b);
+        Tensor<float32> xg #= LinAlg.solve<float32>(spd, b);
         this.check(close(xc.get1(0), xg.get1(0)) && close(xc.get1(1), xg.get1(1)),
             "choSolve(L, b) == solve(A, b)");
 
         // luSolve: same reuse story for a general A — the [P, L, U] bag from
         // lu() solves fresh right-hand sides without re-factoring.
-        Tensor<float32> xl = LinAlg.luSolve<float32>(plu[0], plu[1], plu[2], b);
+        Tensor<float32> xl #= LinAlg.luSolve<float32>(plu[0], plu[1], plu[2], b);
         this.check(close(xl.get1(0), 2.0f) && close(xl.get1(1), 3.0f),
             "luSolve(P,L,U, b) == solve(A, b)");
 
         // solveTriangular: the substitution primitive itself. Forward-solve
         // [[2,0],[1,3]]·x = [4, 11]: x0 = 2, then x1 = (11 - 1·2)/3 = 3.
         float32[] ltriD = [2.0f, 0.0f, 1.0f, 3.0f];
-        Tensor<float32> ltri = Tensor.of<float32>(ltriD, s22);
+        Tensor<float32> ltri #= Tensor.of<float32>(ltriD, s22);
         float32[] tb = [4.0f, 11.0f];
-        Tensor<float32> tbT = Tensor.of<float32>(tb, s2);
-        Tensor<float32> xt = LinAlg.solveTriangular<float32>(ltri, tbT, true, false, false);
+        Tensor<float32> tbT #= Tensor.of<float32>(tb, s2);
+        Tensor<float32> xt #= LinAlg.solveTriangular<float32>(ltri, tbT, true, false, false);
         this.check(close(xt.get1(0), 2.0f) && close(xt.get1(1), 3.0f),
             "solveTriangular forward-substitutes");
 
@@ -138,10 +138,10 @@ public class LinAlgDemo extends DemoClass {
         int64[] s52 = heap int64[2];
         s52[0] = 5;
         s52[1] = 2;
-        Tensor<float32> design = Tensor.zeros<float32>(s52);
+        Tensor<float32> design #= Tensor.zeros<float32>(s52);
         int64[] s5v = heap int64[1];
         s5v[0] = 5;
-        Tensor<float32> ys = Tensor.zeros<float32>(s5v);
+        Tensor<float32> ys #= Tensor.zeros<float32>(s5v);
         int64 ri = 0;
         while (ri < 5) {
             design.set2(ri, 0, 1.0f);                    // intercept column
@@ -149,11 +149,11 @@ public class LinAlgDemo extends DemoClass {
             ys.set1(ri, 1.0f + 2.0f * (float32) ri);     // exact line
             ri = ri + 1;
         }
-        Tensor<float32> coefExact = LinAlg.lstsq<float32>(design, ys);
+        Tensor<float32> coefExact #= LinAlg.lstsq<float32>(design, ys);
         this.check(close(coefExact.get1(0), 1.0f) && close(coefExact.get1(1), 2.0f),
             "lstsq recovers the exact line");
         ys.set1(4, 9.5f);                                // one drifted reading
-        Tensor<float32> coefNoisy = LinAlg.lstsq<float32>(design, ys);
+        Tensor<float32> coefNoisy #= LinAlg.lstsq<float32>(design, ys);
         System.stdout.println("  lstsq with one +0.5 outlier: intercept "
             + coefNoisy.get1(0) + ", slope " + coefNoisy.get1(1)
             + "   (expect 0.9, 2.1)");
@@ -163,14 +163,14 @@ public class LinAlgDemo extends DemoClass {
         // svd: A == U.diag(S).Vt with S descending. [[3,0],[4,5]] has
         // AtA eigenvalues {45, 5}, so the singular values are their roots.
         float32[] svdD = [3.0f, 0.0f, 4.0f, 5.0f];
-        Tensor<float32> sm = Tensor.of<float32>(svdD, s22);
-        Tensor<float32>[] usv = LinAlg.svd<float32>(sm);
+        Tensor<float32> sm #= Tensor.of<float32>(svdD, s22);
+        Tensor<float32>[] usv #= LinAlg.svd<float32>(sm);
         this.check(close(usv[1].get1(0), 6.7082f) && close(usv[1].get1(1), 2.2361f),
             "svd: singular values sqrt(45), sqrt(5), descending");
-        Tensor<float32> sdiag = Tensor.zeros<float32>(s22);
+        Tensor<float32> sdiag #= Tensor.zeros<float32>(s22);
         sdiag.set2(0, 0, usv[1].get1(0));
         sdiag.set2(1, 1, usv[1].get1(1));
-        Tensor<float32> us = Tensor.matmul<float32>(usv[0], sdiag);
+        Tensor<float32> us #= Tensor.matmul<float32>(usv[0], sdiag);
         this.check(sameMatrix(Tensor.matmul<float32>(us, usv[2]), sm),
             "svd: U.diag(S).Vt reconstructs A");
 
@@ -179,28 +179,28 @@ public class LinAlgDemo extends DemoClass {
         // Moore-Penrose property that survives singularity.
         this.check(LinAlg.matrixRank<float32>(sm) == 2, "full rank == 2");
         float32[] defD = [1.0f, 2.0f, 2.0f, 4.0f];
-        Tensor<float32> def = Tensor.of<float32>(defD, s22);
+        Tensor<float32> def #= Tensor.of<float32>(defD, s22);
         this.check(LinAlg.matrixRank<float32>(def) == 1,
             "matrixRank sees the dependent row");
-        Tensor<float32> dp = LinAlg.pinv<float32>(def);
-        Tensor<float32> ada = Tensor.matmul<float32>(
+        Tensor<float32> dp #= LinAlg.pinv<float32>(def);
+        Tensor<float32> ada #= Tensor.matmul<float32>(
             Tensor.matmul<float32>(def, dp), def);
         this.check(sameMatrix(ada, def), "pinv: A.A+.A == A despite rank 1");
         this.check(close(LinAlg.cond<float32>(eye), 1.0f),
             "cond(I) == 1 (perfectly conditioned)");
         float32[] illD = [1.0f, 0.0f, 0.0f, 0.001f];
-        Tensor<float32> ill = Tensor.of<float32>(illD, s22);
+        Tensor<float32> ill #= Tensor.of<float32>(illD, s22);
         this.check(Math.abs(LinAlg.cond<float32>(ill) - 1000.0f) < 1.0f,
             "cond(diag(1, 0.001)) == 1000 (ill-conditioned)");
 
         // eigh: symmetric eigendecomposition, ascending eigenvalues.
         // [[2,1],[1,2]] -> w = [1, 3]; check the definition A.v_k == w_k.v_k.
         float32[] symD = [2.0f, 1.0f, 1.0f, 2.0f];
-        Tensor<float32> sym = Tensor.of<float32>(symD, s22);
-        Tensor<float32>[] wv = LinAlg.eigh<float32>(sym);
+        Tensor<float32> sym #= Tensor.of<float32>(symD, s22);
+        Tensor<float32>[] wv #= LinAlg.eigh<float32>(sym);
         this.check(close(wv[0].get1(0), 1.0f) && close(wv[0].get1(1), 3.0f),
             "eigh: eigenvalues [1, 3], ascending");
-        Tensor<float32> av = Tensor.matmul<float32>(sym, wv[1]);
+        Tensor<float32> av #= Tensor.matmul<float32>(sym, wv[1]);
         boolean eigOk = true;
         int64 kk = 0;
         while (kk < 2) {
@@ -222,8 +222,8 @@ public class LinAlgDemo extends DemoClass {
         int64[] s22d = heap int64[2];
         s22d[0] = 2;
         s22d[1] = 2;
-        Tensor<float64> rot = Tensor.of<float64>(rotD, s22d);
-        Tensor<float64> ev = LinAlg.eigvals(rot);
+        Tensor<float64> rot #= Tensor.of<float64>(rotD, s22d);
+        Tensor<float64> ev #= LinAlg.eigvals(rot);
         boolean realsZero = Math.abs(ev.get1(0)) < 0.000001
             && Math.abs(ev.get1(2)) < 0.000001;
         float64 imSum = ev.get1(1) + ev.get1(3);
@@ -236,8 +236,8 @@ public class LinAlgDemo extends DemoClass {
         // overflows float32 to inf, but sign + log|det| stay exact —
         // the form every log-likelihood actually needs.
         float32[] bigD = [1.0e20f, 0.0f, 0.0f, 1.0e20f];
-        Tensor<float32> big = Tensor.of<float32>(bigD, s22);
-        Tensor<float32> sld = LinAlg.slogdet<float32>(big);
+        Tensor<float32> big #= Tensor.of<float32>(bigD, s22);
+        Tensor<float32> sld #= LinAlg.slogdet<float32>(big);
         System.stdout.println("  det(diag(1e20,1e20)) overflows to "
             + LinAlg.det<float32>(big) + "; slogdet = [" + sld.get1(0)
             + ", " + sld.get1(1) + "]");
@@ -248,14 +248,14 @@ public class LinAlgDemo extends DemoClass {
         // Norms: Frobenius (all elements), 1-norm (max column sum),
         // inf-norm (max row sum); vector p-norms on a 3-4-5 triangle.
         float32[] nmD = [3.0f, 4.0f, 0.0f, 0.0f];
-        Tensor<float32> nm = Tensor.of<float32>(nmD, s22);
+        Tensor<float32> nm #= Tensor.of<float32>(nmD, s22);
         this.check(close(LinAlg.normFro<float32>(nm), 5.0f), "normFro == 5");
         this.check(close(LinAlg.norm1<float32>(nm), 4.0f),
             "norm1 == max column abs sum");
         this.check(close(LinAlg.normInf<float32>(nm), 7.0f),
             "normInf == max row abs sum");
         float32[] vD = [3.0f, -4.0f];
-        Tensor<float32> vec = Tensor.of<float32>(vD, s2);
+        Tensor<float32> vec #= Tensor.of<float32>(vD, s2);
         this.check(close(LinAlg.normVec<float32>(vec, 2.0f), 5.0f)
             && close(LinAlg.normVec<float32>(vec, 1.0f), 7.0f)
             && close(LinAlg.normInfVec<float32>(vec), 4.0f),

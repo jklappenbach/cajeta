@@ -95,9 +95,32 @@ extern void sincosf(float, float*, float*);
 // unsigned-short bf16 representation is ABI-irrelevant. Mirrors the
 // production host's table (src/cajeta/jit/CajetaJitWinSymbols.cpp), which
 // got these in the v0.16.0 fix while this test-side twin drifted.
+//
+// The unsigned-short return is mingw's ACTUAL ABI, and binding these directly
+// was silently wrong. LLVM lowers `fptrunc float to bfloat` to
+// `call __truncsfbf2` + `pextrw $0, %xmm0` — it reads the result from XMM0.
+// mingw's libgcc returns it in AX and never writes XMM0; Linux libgcc ends the
+// same paths with `movd %ebx,%xmm0`, which is why only Windows breaks. XMM0
+// still holds the INPUT float, so pextrw takes that float's low 16 bits, and
+// every constant with a zero low half (1.0f, 2.0f, 10.0f, ...) becomes bf16
+// 0.0. See CajetaJitWinSymbols.cpp for the full note; keep the two in step.
 extern unsigned short __truncsfbf2(float);
 extern unsigned short __truncdfbf2(double);
 extern float          __extendbfsf2(unsigned short);
+
+static float cajeta_truncsfbf2(float x) {
+    unsigned int bits = __truncsfbf2(x);   /* mingw hands this back in AX */
+    float out;
+    __builtin_memcpy(&out, &bits, sizeof out);
+    return out;                            /* ...and this puts it in XMM0 */
+}
+
+static float cajeta_truncdfbf2(double x) {
+    unsigned int bits = __truncdfbf2(x);
+    float out;
+    __builtin_memcpy(&out, &bits, sizeof out);
+    return out;
+}
 
 // libm math functions the stdlib's Math intrinsics + float ops lower to. They
 // are statically linked from libm/libmingwex but absent from the host PE export
@@ -152,8 +175,11 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
-    CJ_SYM("__truncsfbf2",     &__truncsfbf2),
-    CJ_SYM("__truncdfbf2",     &__truncdfbf2),
+    /* Truncations go through the XMM0 wrappers, not libgcc directly.
+       __extendbfsf2 stays direct: LLVM expands `fpext bfloat to float` inline
+       as a 16-bit shift and never emits the call. */
+    CJ_SYM("__truncsfbf2",     &cajeta_truncsfbf2),
+    CJ_SYM("__truncdfbf2",     &cajeta_truncdfbf2),
     CJ_SYM("__extendbfsf2",    &__extendbfsf2),
     // libm — see the extern block above for why these need binding.
     CJ_SYM("fabsf",  &fabsf),   CJ_SYM("fabs",   &fabs),

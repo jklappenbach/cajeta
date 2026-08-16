@@ -14,7 +14,7 @@ Build one with the `of`/`ofEpochDay` factories; calendar arithmetic accepts a
 LocalDate d = LocalDate.of(2026, 6, 5);
 LocalDate due = d.plusDays(40L);
 boolean later = due.isAfter(d);   // true
-String text = due.iso();          // "2026-07-15"
+String text #= due.iso();          // "2026-07-15"
 ```
 
 ## Methods

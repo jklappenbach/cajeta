@@ -11,10 +11,10 @@ read/write. Open modes are selected with `OpenMode` (`READ`, `WRITE`, `APPEND`,
 
 ```cajeta
 // Whole-file one-shot.
-int8[] all = File.readAllBytes("/etc/hostname");
+int8[] all #= File.readAllBytes("/etc/hostname");
 
 // Seekable random-access handle.
-File f = File.open("/tmp/db.bin", OpenMode.READ_WRITE);
+File f #= File.open("/tmp/db.bin", OpenMode.READ_WRITE);
 f.seek((int64) 4096);
 int8[] page = heap int8[512];
 int64 got = f.read(page, (int64) 0, (int64) 512);

@@ -46,7 +46,7 @@ public class Base64DecodeBench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        int8[] dec = Base64.decode(this.encoded);
+        int8[] dec #= Base64.decode(this.encoded);
         this.decLen = (int64) dec.count();
     }
 

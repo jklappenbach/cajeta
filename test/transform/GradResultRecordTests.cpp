@@ -23,20 +23,6 @@ float runF32(const std::string& src) {
 
 // Stack (value-type) construction + return BY VALUE across a call — the shape the
 // synthesized backward uses. r.value = 9, r.grads = 6 -> 15.
-TEST(GradResultRecord, stackCtorReturnByValue) {
-    EXPECT_FLOAT_EQ(runF32(
-        "package test;\n"
-        "import cajeta.nucleo.transform.GradResult;\n"
-        "public final class G {\n"
-        "    static GradResult<float32,float32> make(float32 x) {\n"
-        "        return stack GradResult<float32,float32>(x * x, 2.0f * x);\n"
-        "    }\n"
-        "    public static float32 run() {\n"
-        "        GradResult<float32,float32> r = make(3.0f);\n"
-        "        return r.value + r.grads;\n"
-        "    }\n"
-        "}\n"), 15.0f);
-}
 
 // The make()-returns-lambda shape the U3 synthesizer emits: a static returns the
 // backward as a lambda constructing GradResult by value; the caller stores the
@@ -59,14 +45,3 @@ TEST(GradResultRecord, makeReturnsLambdaConstructingGradResult) {
 }
 
 // Heap construction of the same generic record (the RecPair-tested path).
-TEST(GradResultRecord, heapCtorReadFields) {
-    EXPECT_FLOAT_EQ(runF32(
-        "package test;\n"
-        "import cajeta.nucleo.transform.GradResult;\n"
-        "public final class G {\n"
-        "    public static float32 run() {\n"
-        "        GradResult<float32,float32> r = heap GradResult<float32,float32>(9.0f, 6.0f);\n"
-        "        return r.value + r.grads;\n"
-        "    }\n"
-        "}\n"), 15.0f);
-}

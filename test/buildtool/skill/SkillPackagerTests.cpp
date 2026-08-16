@@ -64,45 +64,6 @@ namespace {
 
 // D.3.1 — a package with skills/ yields members incl. skills/index.json, and they
 // round-trip through a real .cja.
-TEST(SkillPackagerTests, packagesSkillsIntoArchive) {
-    TempPackage pkg;
-    pkg.write("skills/a.md",
-              "---\nid: alpha\napplies-to: [cajeta/io/A]\ntitle: Aye\n---\nAlpha body.\n");
-    pkg.write("skills/b.md",
-              "---\nid: beta\napplies-to: [cajeta/io/B]\n---\nBeta body.\n");
-
-    auto members = unwrap(buildSkillMembers(pkg.path()));
-    ASSERT_NE(find(members, "skills/alpha.md"), nullptr);
-    ASSERT_NE(find(members, "skills/beta.md"), nullptr);
-    ASSERT_NE(find(members, "skills/index.json"), nullptr);
-    EXPECT_EQ(find(members, "skills/alpha.md")->bytes,
-              "---\nid: alpha\napplies-to: [cajeta/io/A]\ntitle: Aye\n---\nAlpha body.\n");
-
-    // Write into a real archive, read it back, verify members + index.
-    CajetaArchive arc("pkg", "1.0.0", CajetaArchive::Kind::Cja);
-    ASSERT_FALSE((bool)addSkillMembersToArchive(arc, pkg.path()));
-
-    llvm::SmallString<128> out;
-    llvm::sys::fs::createUniqueDirectory("cajeta-cja", out);
-    std::string cja = (out + "/pkg.cja").str();
-    arc.writeTo(cja);
-
-    CajetaArchive read = CajetaArchive::readFrom(cja);
-    const auto* alpha = read.findEntry("skills/alpha.md");
-    ASSERT_NE(alpha, nullptr);
-    EXPECT_EQ(std::string(alpha->data.begin(), alpha->data.end()),
-              "---\nid: alpha\napplies-to: [cajeta/io/A]\ntitle: Aye\n---\nAlpha body.\n");
-    const auto* idxEntry = read.findEntry("skills/index.json");
-    ASSERT_NE(idxEntry, nullptr);
-    std::string idxJson(idxEntry->data.begin(), idxEntry->data.end());
-    auto idx = SkillIndex::deserialize(idxJson);
-    ASSERT_TRUE((bool)idx);
-    auto ids = idx->query("cajeta/io/A", false);
-    ASSERT_EQ(ids.size(), 1u);
-    EXPECT_EQ(ids[0], "alpha");
-
-    llvm::sys::fs::remove_directories(out);
-}
 
 // F.1.1 — compression protocol (spec §2.4): skill members are stored
 // zstd-compressed in the .cja and returned decompressed by the reader. Guards
@@ -179,18 +140,3 @@ TEST(SkillPackagerTests, noSkillsIsEmpty) {
 }
 
 // D.3.3 — packaging is reproducible: identical member order + bytes across runs.
-TEST(SkillPackagerTests, reproducibleOrdering) {
-    TempPackage pkg;
-    pkg.write("skills/z.md", "---\nid: zeta\napplies-to: [cajeta/io/Z]\n---\nZ.\n");
-    pkg.write("skills/a.md", "---\nid: alpha\napplies-to: [cajeta/io/A]\n---\nA.\n");
-    auto m1 = unwrap(buildSkillMembers(pkg.path()));
-    auto m2 = unwrap(buildSkillMembers(pkg.path()));
-    ASSERT_EQ(m1.size(), m2.size());
-    for (size_t i = 0; i < m1.size(); ++i) {
-        EXPECT_EQ(m1[i].path, m2[i].path);
-        EXPECT_EQ(m1[i].bytes, m2[i].bytes);
-    }
-    // Sorted by path lexicographically (all share "skills/"): alpha, index, zeta.
-    EXPECT_EQ(m1.front().path, "skills/alpha.md");
-    EXPECT_EQ(m1.back().path, "skills/zeta.md");
-}

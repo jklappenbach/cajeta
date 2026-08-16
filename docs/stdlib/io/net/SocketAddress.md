@@ -9,11 +9,11 @@ bare host with no `:port` is not accepted by `parse`; use `of` to build one
 programmatically.
 
 ```cajeta
-SocketAddress addr = SocketAddress.parse("127.0.0.1:8080");
+SocketAddress addr #= SocketAddress.parse("127.0.0.1:8080");
 int32 port = addr.getPort();         // 8080
-IpAddress lo = IpAddress.loopbackV6();
-SocketAddress v6 = SocketAddress.of(#lo, 443);
-String text = v6.toString();         // "[::1]:443"
+IpAddress lo #= IpAddress.loopbackV6();
+SocketAddress v6 #= SocketAddress.of(#lo, 443);
+String text #= v6.toString();         // "[::1]:443"
 ```
 
 ## Methods

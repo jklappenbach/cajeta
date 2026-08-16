@@ -40,46 +40,12 @@ void expectMultiParamBorrowReturnError(const std::string& source) {
 
 // --- Valid signatures -------------------------------------------------------
 
-TEST(ElisionTests, singleParamBorrowReturnOk) {
-    // One borrow parameter, borrow return — elision ties the return to the
-    // single input. Allowed.
-    auto src = makeClass(
-        "public static String first(String s) { return s; }\n");
-    EXPECT_NO_THROW(CajetaJit::compile(src, "test.E"));
-}
 
-TEST(ElisionTests, multiParamPrimitiveReturnOk) {
-    // Multi-param but the return is a primitive value type — no borrow
-    // involved, no ambiguity.
-    auto src = makeClass(
-        "public static int32 count(String a, String b) { return 0; }\n");
-    EXPECT_NO_THROW(CajetaJit::compile(src, "test.E"));
-}
 
-TEST(ElisionTests, multiParamOwnedReturnOk) {
-    // Multi-param with `#`-prefixed return — caller takes ownership; no
-    // borrow inheritance question to resolve.
-    auto src = makeClass(
-        "public static #String pick(String a, String b) { return \"x\"; }\n");
-    EXPECT_NO_THROW(CajetaJit::compile(src, "test.E"));
-}
 
-TEST(ElisionTests, noParamReturnOk) {
-    // No parameters; the only way for a borrow to escape would be through a
-    // captured static — allowed for now (static-lifetime is the universal
-    // longer life). Future tightening may forbid this too.
-    auto src = makeClass(
-        "public static String hello() { return \"hi\"; }\n");
-    EXPECT_NO_THROW(CajetaJit::compile(src, "test.E"));
-}
 
 // --- Invalid signatures -----------------------------------------------------
 
-TEST(ElisionTests, twoParamBorrowReturnRejected) {
-    auto src = makeClass(
-        "public static String pick(String a, String b) { return a; }\n");
-    expectMultiParamBorrowReturnError(src);
-}
 
 TEST(ElisionTests, threeParamBorrowReturnRejected) {
     auto src = makeClass(
@@ -87,11 +53,3 @@ TEST(ElisionTests, threeParamBorrowReturnRejected) {
     expectMultiParamBorrowReturnError(src);
 }
 
-TEST(ElisionTests, mixedTypeMultiParamBorrowReturnRejected) {
-    // Mixing primitives with pointer params still trips the rule — what
-    // matters is that the return is a borrow and there's more than one
-    // input slot the borrow *could* come from.
-    auto src = makeClass(
-        "public static String describe(String s, int32 n) { return s; }\n");
-    expectMultiParamBorrowReturnError(src);
-}

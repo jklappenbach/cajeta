@@ -10,11 +10,11 @@ SHA-256 but much faster. The 256-bit (32-byte) digest is the default;
 
 ```cajeta
 int8[] data = heap int8[16];
-String hex = Blake3.hashHex(data, 16);   // 64 lowercase hex chars
+String hex #= Blake3.hashHex(data, 16);   // 64 lowercase hex chars
 
 Blake3 h = heap Blake3();
 h.writeString("hello");
-int8[] digest = h.digest();              // 32 bytes
+int8[] digest #= h.digest();              // 32 bytes
 ```
 
 ## Methods

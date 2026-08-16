@@ -13,8 +13,8 @@ build on — Model A (fiber-per-connection, the default) ships here; Model B
 [ServerBuilder](ServerBuilder.md).
 
 ```cajeta
-SocketAddress addr = SocketAddress.parse("127.0.0.1:0");
-Server s = Server.bind(addr, (TcpStream conn) -> { conn.close(); });
+SocketAddress addr #= SocketAddress.parse("127.0.0.1:0");
+Server s #= Server.bind(addr, (TcpStream conn) -> { conn.close(); });
 s.serve();                                   // accept loop, until shutdown
 boolean drained = s.shutdown(Duration.ofSeconds(30L));
 ```

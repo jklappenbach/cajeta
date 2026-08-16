@@ -13,7 +13,7 @@ visits only the postings of the query's grams (sub-linear in the key count).
 Index<int32> idx = heap Index<int32>();           // trigrams (n = 3)
 idx.add("apple", 1);
 idx.add("zebra", 2);
-ArrayList<int32> hits = idx.candidates("aple");   // [1] — shares "ple"
+ArrayList<int32> hits #= idx.candidates("aple");   // [1] — shares "ple"
 ```
 
 ## Methods

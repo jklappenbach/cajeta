@@ -62,13 +62,13 @@ public class JsonDomBench extends Benchmark {
         }
         this.path = dir + "/" + variant + ".json";
 
-        int8[] probe = File.readAllBytes(this.path);
+        int8[] probe #= File.readAllBytes(this.path);
         this.fileBytes = (int64) probe.count();
 
         int64 r0 = Clock.nanoTime();
         int32 k = 0;
         while (k < 5) {
-            int8[] b2 = File.readAllBytes(this.path);
+            int8[] b2 #= File.readAllBytes(this.path);
             k = k + 1;
         }
         this.baseNs = (Clock.nanoTime() - r0) / 5;
@@ -83,9 +83,9 @@ public class JsonDomBench extends Benchmark {
     }
 
     public void runVariant(String variant, int32 iterations) {
-        int8[] bytes = File.readAllBytes(this.path);
+        int8[] bytes #= File.readAllBytes(this.path);
         int64 len = (int64) bytes.count();
-        JsonValue v = Json.parse(bytes, len);
+        JsonValue v #= Json.parse(bytes, len);
         this.lastKind = v.kind();
     }
 

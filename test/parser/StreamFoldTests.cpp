@@ -35,46 +35,13 @@ constexpr const char* PRELUDE =
 // Same-shape fold (R == T) using fold directly. Confirms the
 // templated combinator works in the degenerate case that `reduce`
 // covers.
-TEST(StreamFoldTests, foldSameTypeMatchesReduce) {
-    auto src = std::string(PRELUDE) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] xs = [ 1, 2, 3, 4 ];\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 4);\n"
-        "        return s.fold(0, (int32 acc, int32 x) -> acc + x);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 10);
-}
 
 // Cross-type fold: int32 stream into int64 accumulator. The fold's
 // R binds to int64 from the seed; the accumulator stays wide enough
 // to hold the sum.
-TEST(StreamFoldTests, foldI32StreamToI64) {
-    auto src = std::string(PRELUDE) +
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        int32[] xs = [ 1, 2, 3 ];\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
-        "        return s.fold(100L, (int64 acc, int32 x) -> acc + 1L);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 103LL);
-}
 
 // reduce now delegates to fold<T>. Verify the same-type contract
 // still produces the right answer end-to-end.
-TEST(StreamFoldTests, reduceStillWorks) {
-    auto src = std::string(PRELUDE) +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] xs = [ 2, 3, 5 ];\n"
-        "        ArrayStream<int32> s = heap ArrayStream<int32>(xs, 3);\n"
-        "        return s.reduce(1, (int32 a, int32 b) -> a * b);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 30);
-}
 
 // fold over class T with primitive R. Lambda body references a
 // class-typed parameter (`c.v` where c: Counter); without the

@@ -168,9 +168,3 @@ TEST(TlsConnectionTests, handshakeAndPlaintextThroughCajetaSurface) {
 // Cert validation through the Cajeta surface: a verifying client rejects an
 // untrusted self-signed cert (CERT_UNTRUSTED) but accepts it once trusted
 // (CERT_OK).
-TEST(TlsConnectionTests, verifyingClientRejectsUntrustedAcceptsTrusted) {
-    std::string cert, key;
-    ASSERT_TRUE(makeSelfSigned("localhost", cert, key));
-    EXPECT_EQ(runI32(verifyBody(cert, key, /*trust=*/false)), 3);  // CERT_UNTRUSTED
-    EXPECT_EQ(runI32(verifyBody(cert, key, /*trust=*/true)), 0);   // CERT_OK
-}

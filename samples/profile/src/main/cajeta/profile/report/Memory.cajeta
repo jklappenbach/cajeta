@@ -28,11 +28,11 @@ public class Memory {
     // Read `path` as text and return the first run of decimal digits after the
     // first occurrence of `key`. -1 if the file or key is absent / no digits.
     public static int64 parseIntAfterFile(String path, String key) {
-        FileReader r = File.openRead(path);
+        FileReader r #= File.openRead(path);
         if (r == null) {
             return (int64) -1;
         }
-        String text = r.readString(16384);
+        String text #= r.readString(16384);
         r.close();
         if (text == null) {
             return (int64) -1;

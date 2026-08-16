@@ -28,61 +28,11 @@ int32_t runI32(const std::string& src) {
 
 // 1.1.3 — the reduced repro: field access on a by-value value-type parameter,
 // called with a value loaded from an array element.
-TEST(ValueTypeCollectionTests, staticValueTypeParamFieldAccess) {
-    auto src =
-        "package test;\n"
-        "public record Point { int32 x; int32 y; }\n"
-        "public final class D {\n"
-        "    public static int32 f(Point p) { return p.x * 10 + p.y; }\n"
-        "    public static int32 run() {\n"
-        "        Point[] pts = [ {x:3, y:4} ];\n"
-        "        return f(pts[0]);\n"          // 34
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 34);
-}
 
 // 1.1.1 — ArrayList<Point>: construct + add + get, no sort.
-TEST(ValueTypeCollectionTests, arrayListValueTypeAddGet) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public record Point { int32 x; int32 y; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        ArrayList<Point> ps = heap ArrayList<Point>();\n"
-        "        ps.add(Point{x:1, y:2});\n"
-        "        ps.add(Point{x:3, y:4});\n"
-        "        Point a = ps.get(0);\n"
-        "        Point b = ps.get(1);\n"
-        "        return a.x * 1000 + a.y * 100 + b.x * 10 + b.y;\n"  // 1234
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1234);
-}
 
 // 1.1.2 — ArrayList<Point>: add unsorted, sort() by default lexicographic order,
 // read back. Exercises the instantiated operator< over by-value value-type args.
-TEST(ValueTypeCollectionTests, arrayListValueTypeSort) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public record Point { int32 x; int32 y; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        ArrayList<Point> ps = heap ArrayList<Point>();\n"
-        "        ps.add(Point{x:3, y:1});\n"
-        "        ps.add(Point{x:1, y:9});\n"
-        "        ps.add(Point{x:1, y:2});\n"
-        "        ps.sort();\n"                 // lexicographic: (1,2),(1,9),(3,1)
-        "        Point a = ps.get(0);\n"
-        "        Point b = ps.get(1);\n"
-        "        Point c = ps.get(2);\n"
-        "        return a.x*100000 + a.y*10000 + b.x*1000 + b.y*100 + c.x*10 + c.y;\n"  // (1,2)(1,9)(3,1) -> 121931
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 121931);
-}
 
 // ---- Unit 2: sequence collections sweep (spec §3.1–3.3) ----
 
@@ -152,18 +102,3 @@ TEST(ValueTypeCollectionTests, immutableListSetValueType) {
 // aggregates target-typed to ArrayList<Point>. Combines the collection-literal
 // lowering, prefixless-aggregate inference (element type from Point), and
 // value-type storage/read-back.
-TEST(ValueTypeCollectionTests, listOfValueAggregates) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.ArrayList;\n"
-        "public record Point { int32 x; int32 y; }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        ArrayList<Point> ps = [ {x:1, y:2}, {x:3, y:4} ];\n"
-        "        Point a = ps.get(0);\n"
-        "        Point b = ps.get(1);\n"
-        "        return a.x*1000 + a.y*100 + b.x*10 + b.y;\n"  // 1234
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1234);
-}

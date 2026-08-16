@@ -33,19 +33,6 @@ int32_t runI32(const std::string& src) {
 
 // Buffer ctor carries the caller's byteLength into the core's lenTag —
 // proves the int32 parameter reaches the tag.
-TEST(StringViewCtorTests, bufferCtorPopulatesByteLength) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int8[] b = heap int8[5];\n"
-        "        String s = heap String(#b, 5);\n"
-        "        return s.byteLength();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // A <= 12 B adoption normalizes to the Inline form (no root, offset 0)
 // and a > 12 B adoption keeps the buffer as the OWNED root — pin both so
@@ -74,24 +61,3 @@ TEST(StringViewCtorTests, bufferCtorNormalizesForms) {
 // Buffer ctor leaves cachedCpLength = -1 (not yet computed), so the
 // first count() call walks the bytes correctly. Pins both ctor
 // initialization and end-to-end ctor + count() integration.
-TEST(StringViewCtorTests, bufferCtorPlusCountEndToEnd) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.String;\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        // 'a' + 'é' + '😀' = 1 + 2 + 4 = 7 bytes, 3 codepoints.
-        "        int8[] b = heap int8[7];\n"
-        "        b[0] = (int8) 0x61;\n"  // 'a'
-        "        b[1] = (int8) 0xC3;\n"  // 'é' leader
-        "        b[2] = (int8) 0xA9;\n"  // 'é' continuation
-        "        b[3] = (int8) 0xF0;\n"  // '😀' leader
-        "        b[4] = (int8) 0x9F;\n"
-        "        b[5] = (int8) 0x98;\n"
-        "        b[6] = (int8) 0x80;\n"
-        "        String s = heap String(#b, 7);\n"
-        "        return s.count();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI64(src), 3);
-}

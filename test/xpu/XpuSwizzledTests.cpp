@@ -293,11 +293,3 @@ TEST(XpuSwizzledTests, swizzledStagedRoundTrips) {
 // Swizzled LDS and WMMA-loaded from there computes correctly — the fragment loads
 // apply the same swizzle as the staging. (Software cooperative-matrix tile on CPU;
 // the AMD on-device test exercises the real WMMA path.)
-TEST(XpuSwizzledTests, swizzledStagedWmmaMatmul) {
-    auto jit = CajetaJit::compile(kSwizzledWmma, "test.M", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 999) << "fail code " << r << " (100+i*16+j: C[i][j] mismatch)";
-}

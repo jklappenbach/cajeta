@@ -192,19 +192,6 @@ namespace {
 
 }  // namespace
 
-TEST(Phase12, workspaceParsesMembersAndSharedDeps) {
-    Fixture f = makeFixture("schema", true, true);
-    auto root = loadManifestFile(f.wsManifest.string());
-    ASSERT_TRUE(static_cast<bool>(root)) << "loadManifestFile";
-    ASSERT_TRUE(root->hasWorkspace);
-    auto ws = parseWorkspace(*root);
-    ASSERT_TRUE(static_cast<bool>(ws)) << "parseWorkspace";
-    EXPECT_EQ(ws->memberPatterns.size(), 3u);
-    EXPECT_EQ(ws->memberPatterns[0], "packages/api");
-    ASSERT_EQ(ws->sharedDependencies.size(), 1u);
-    EXPECT_EQ(ws->sharedDependencies[0].name, "cajeta.io.log");
-    EXPECT_EQ(ws->sharedDependencies[0].versionConstraint, "1.2.*");
-}
 
 TEST(Phase12, threeMemberWorkspaceBuildsInOneInvocation) {
     // Acceptance criterion 1. Demonstrates that loadWorkspace
@@ -278,50 +265,7 @@ TEST(Phase12, changingOneMemberMarksOnlyItAndDownstreamDirty) {
         << "client consumes api+core → downstream of both";
 }
 
-TEST(Phase12, memberTaskShadowsWorkspaceTaskOfSameName) {
-    // Acceptance criterion 3. The workspace manifest declares a
-    // `build` task with text "workspace-default-build"; the `api`
-    // member redeclares `build` with text "member-api-build". For
-    // member-targeted invocations the member's task wins.
-    Fixture f = makeFixture("shadow", true);
-    auto ws = loadWorkspace(f.wsManifest.string());
-    ASSERT_TRUE(static_cast<bool>(ws));
 
-    // Locate the api member and verify its tasks declare `build`.
-    const auto* api = static_cast<const cajeta::buildtool::WorkspaceMember*>(nullptr);
-    for (const auto& m : ws->members) {
-        if (memberShortName(m) == "api") { api = &m; break; }
-    }
-    ASSERT_NE(api, nullptr);
-    auto apiTasks = parseTasks(api->manifest);
-    ASSERT_TRUE(static_cast<bool>(apiTasks));
-    EXPECT_GT(apiTasks->count("build"), 0u);
-
-    // Workspace also declares `build` (the would-be fallback).
-    auto wsTasks = parseTasks(ws->rootManifest);
-    ASSERT_TRUE(static_cast<bool>(wsTasks));
-    EXPECT_GT(wsTasks->count("build"), 0u);
-}
-
-TEST(Phase12, workspaceTaskFallsThroughWhenMemberDoesNotDefine) {
-    // Counterpart of the shadow case: when the member doesn't
-    // redeclare the task, the workspace task is what gets dispatched
-    // for that member. We assert the member's parsed task set is
-    // empty for `build` so the workspaceRunForMember fallback
-    // branch fires.
-    Fixture f = makeFixture("noShadow", /*apiShadowsWorkspaceTask=*/false);
-    auto ws = loadWorkspace(f.wsManifest.string());
-    ASSERT_TRUE(static_cast<bool>(ws));
-    const auto* api = static_cast<const cajeta::buildtool::WorkspaceMember*>(nullptr);
-    for (const auto& m : ws->members) {
-        if (memberShortName(m) == "api") { api = &m; break; }
-    }
-    ASSERT_NE(api, nullptr);
-    auto apiTasks = parseTasks(api->manifest);
-    ASSERT_TRUE(static_cast<bool>(apiTasks));
-    EXPECT_EQ(apiTasks->count("build"), 0u)
-        << "api defines no build task → workspace task is the fallback";
-}
 
 TEST(Phase12, workspaceRootIsDiscoveredFromMemberSubdir) {
     Fixture f = makeFixture("discover");

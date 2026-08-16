@@ -9,12 +9,12 @@ class Empty { public int32 z; public Empty() { this.z = 0; } }
 
 public final class SkipBench {
     static void check(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         int64 warm = 0; int64 k = 0; while (k < n) { warm = warm + (int64) b[k]; k = k + 1; }
         // parse into a struct that maps nothing -> every value skipValue'd (no decode)
         int64 t0 = Clock.nanoTime();
-        Empty e = Json.parse<Empty>(b, n);
+        Empty e #= Json.parse<Empty>(b, n);
         int64 t1 = Clock.nanoTime();
         float64 mb = ((float64) n)/1000000.0/(((float64)(t1-t0))/1000000000.0);
         System.stdout.println(name + ": parse<Empty> (skip-all) " + mb + " MB/s  (z=" + e.z + " w=" + (warm&255) + ")");

@@ -24,7 +24,7 @@ public class ArrayListDemo extends DemoClass {
         ints.add(10);
         ints.add(20);
         ints.add(30);
-        int32 total = ints.stream().reduce(0, (a, b) -> a + b);
+        int32 total #= ints.stream().reduce(0, (a, b) -> a + b);
         System.stdout.println("  ArrayList<int32> count = " + ints.count());
         System.stdout.println("  ArrayList<int32> sum   = " + total);
         this.check(ints.count() == 3 && total == 60,
@@ -41,7 +41,7 @@ public class ArrayListDemo extends DemoClass {
         pts.add(heap Point(1, 2));
         pts.add(heap Point(3, 4));
         pts.add(heap Point(5, 6));
-        int32 xSum = pts.stream().fold<int32>(0,
+        int32 xSum #= pts.stream().fold<int32>(0,
             (acc, p) -> acc + p.x);
         System.stdout.println("  ArrayList<Point> count = " + pts.count());
         System.stdout.println("  ArrayList<Point> xSum  = " + xSum);

@@ -7,13 +7,13 @@ presence flags as each is supplied, then `build()` materializes a fresh owned
 contains `:` is auto-flagged as an IPv6 literal so `toString` re-brackets it.
 
 ```cajeta
-Uri u = Uri.builder()
+Uri u #= Uri.builder()
     .scheme("https")
     .host("example.test")
     .port(8443)
     .path("/index.html")
     .build();
-String text = u.toString();    // "https://example.test:8443/index.html"
+String text #= u.toString();    // "https://example.test:8443/index.html"
 ```
 
 ## Methods

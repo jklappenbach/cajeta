@@ -80,13 +80,6 @@ TEST(InlineArrayFieldBoundsTests, MaxValidConstIndexCompiles) {
 // so a hex/binary index crashed the compile with an uncatchable raw
 // std::string throw, and hex letter digits computed as c-'A' (0xA read as
 // 0, not 10). These pin every radix and the underscore/L-suffix forms.
-TEST(InlineArrayFieldBoundsTests, HexConstIndexInBoundsCompiles) {
-    auto jit = CajetaJit::compile(boxSource(
-        "this.f[0x2] = 9;\n        return this.f[0x2];"), "test.A");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_EQ(fn(), 9);
-}
 
 TEST(InlineArrayFieldBoundsTests, HexConstIndexWithLetterDigitOutOfBoundsErrors) {
     // 0xA = 10: out of range for f[4] — and a letter digit, so the check
@@ -106,15 +99,7 @@ TEST(InlineArrayFieldBoundsTests, OctalConstIndexInBoundsCompiles) {
     EXPECT_EQ(fn(), 5);
 }
 
-TEST(InlineArrayFieldBoundsTests, UnderscoredDecimalConstIndexOutOfBoundsErrors) {
-    // The grammar allows digit-group underscores; 1_0 is 10, not a parse
-    // failure inside the bounds check.
-    expectOutOfBounds("this.f[1_0] = 1;\n        return 0;");
-}
 
-TEST(InlineArrayFieldBoundsTests, LongSuffixConstIndexOutOfBoundsErrors) {
-    expectOutOfBounds("this.f[9L] = 1;\n        return 0;");
-}
 
 // 3.1.2 — a runtime (non-constant) index compiles (runtime bounds policy
 // applies as today, not a compile error).

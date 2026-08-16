@@ -25,6 +25,7 @@
 #include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/Support/Error.h"
 
 #include <memory>
@@ -36,7 +37,7 @@ namespace test {
 // Build an LLJIT ready to execute CPU-lowered XPU kernels (process symbols +
 // the Windows symbol bridge). Returns the JIT or the first error encountered.
 inline llvm::Expected<std::unique_ptr<llvm::orc::LLJIT>> makeCpuKernelJit() {
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::coffSafeJitBuilder().create();
     if (!jitOrErr)
         return jitOrErr.takeError();
     auto jit = std::move(*jitOrErr);

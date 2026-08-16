@@ -9,8 +9,8 @@ or zero addresses) raises a `NetException` carrying the resolve ordinal in its
 `kind`.
 
 ```cajeta
-SocketAddress[] addrs = Dns.resolve("localhost", 443);
-SocketAddress[] v6 = Dns.resolve("localhost", 443, ResolveFamily.V6_ONLY);
+SocketAddress[] addrs #= Dns.resolve("localhost", 443);
+SocketAddress[] v6 #= Dns.resolve("localhost", 443, ResolveFamily.V6_ONLY);
 int64 n = addrs.count();
 ```
 

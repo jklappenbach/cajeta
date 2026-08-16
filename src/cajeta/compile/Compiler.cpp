@@ -3,6 +3,9 @@
 //
 
 #include "Compiler.h"
+
+#include <chrono>
+#include <cstdio>
 #include "CajetaArchive.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
@@ -524,21 +527,151 @@ namespace cajeta {
     // the default ConsoleErrorListener is removed so the prescan pass doesn't
     // leak "line L:col msg" text into the machine-readable stream — the
     // authoritative parseSource pass re-reports the same syntax errors as NDJSON.
+    // ---- Two-stage parsing (SLL, then full LL on failure) ---------------
+    //
+    // ANTLR's recommended strategy, and measured here as the single largest
+    // cold-start win in the compiler: the stdlib prime is 99% adaptive
+    // prediction (lex 85 ms / parse 14329 ms / visit 43 ms over 350 files),
+    // and SLL takes the prime from 36.4 s to 4.9 s.
+    //
+    // Stage 1 runs SLL with BailErrorStrategy and NO listeners. SLL is much
+    // faster but strictly weaker — it can fail on input that full LL accepts —
+    // so its failure has to be silent and recoverable, which is what the bail
+    // strategy plus suppressed listeners buys. Stage 2 rewinds and re-parses
+    // under full LL with the caller's real listeners and error strategy: byte
+    // for byte what this compiler did before two-stage existed. A fallback
+    // therefore costs one wasted SLL attempt and changes NOTHING about the
+    // result or the diagnostics.
+    //
+    // Because BailErrorStrategy throws on the first error, a successful SLL
+    // parse implies a clean parse — so any input with a syntax error always
+    // reaches stage 2 and gets the proper diagnostics from it.
+    //
+    // The fallback is COUNTED because the economics turn on it: if it fired
+    // often the SLL attempt would be pure overhead. Reported under
+    // CAJETA_PRIME_TIMING=1.
+    struct TwoStageStats {
+        long long sll = 0;
+        long long fallback = 0;
+        ~TwoStageStats() {
+            if (!std::getenv("CAJETA_PRIME_TIMING") || (sll + fallback) == 0) {
+                return;
+            }
+            std::fprintf(stderr,
+                "[two-stage] %lld parses: %lld SLL, %lld fell back to LL\n",
+                sll + fallback, sll, fallback);
+        }
+    };
+    static TwoStageStats g_twoStage;
+
+    // ON by default since 2026-08-15. Validated on the routine gate (the
+    // coverage-derived set that IS this project's gate): 1435 passed, 0
+    // failed, and 700/700 stdlib parses resolved under SLL with zero
+    // fallbacks. `CAJETA_TWO_STAGE_PARSE=0` is the kill switch — it restores
+    // full-LL-only parsing, which is what stage 2 already does, so the switch
+    // costs nothing to keep and answers "is it the parser?" in one run.
+    static bool twoStageParseEnabled() {
+        static const bool on = [] {
+            const char* v = std::getenv("CAJETA_TWO_STAGE_PARSE");
+            return !(v && std::string(v) == "0");
+        }();
+        return on;
+    }
+
+    static antlr4::tree::ParseTree* parseCompilationUnitTwoStage(
+            CajetaParser& parser, antlr4::CommonTokenStream& tokens,
+            const std::function<void()>& installListeners,
+            const std::string& what = std::string()) {
+        if (!twoStageParseEnabled()) {
+            installListeners();
+            return parser.compilationUnit();
+        }
+        parser.removeErrorListeners();
+        parser.setErrorHandler(std::make_shared<antlr4::BailErrorStrategy>());
+        parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
+            ->setPredictionMode(antlr4::atn::PredictionMode::SLL);
+        try {
+            antlr4::tree::ParseTree* tree = parser.compilationUnit();
+            ++g_twoStage.sll;
+            return tree;
+        } catch (const antlr4::ParseCancellationException&) {
+            // expected: SLL could not decide, or the input is malformed
+        } catch (const antlr4::RecognitionException&) {
+        }
+        ++g_twoStage.fallback;
+        // Reported HERE rather than only in the aggregate, because the
+        // aggregate is a static destructor and the test binary exits without
+        // running those — so a battery run would show nothing at all. A
+        // fallback names its input, which is what makes the line useful:
+        // "which source is not SLL-clean" is the question.
+        //
+        // NOTE for reading a battery log: an expected-syntax-error test falls
+        // back BY DESIGN. Bail throws on the first error, so malformed input
+        // always reaches stage 2 — that is how it gets its diagnostics. A
+        // fallback on VALID input is the interesting signal.
+        if (std::getenv("CAJETA_PRIME_TIMING")) {
+            std::fprintf(stderr, "[two-stage] fell back to LL: %s\n",
+                         what.empty() ? "<unnamed>" : what.c_str());
+        }
+        tokens.seek(0);
+        parser.reset();
+        parser.setErrorHandler(std::make_shared<antlr4::DefaultErrorStrategy>());
+        parser.getInterpreter<antlr4::atn::ParserATNSimulator>()
+            ->setPredictionMode(antlr4::atn::PredictionMode::LL);
+        installListeners();
+        return parser.compilationUnit();
+    }
+
+    // CAJETA_PRIME_TIMING=1 aggregates these across every prescan in the
+    // process. Which of the three dominates decides the lever: lexing is a
+    // lexer problem, `compilationUnit()` is ANTLR's adaptive prediction (a
+    // grammar / prediction-mode problem), and the visit is ours.
+    struct PrescanCost {
+        long long lexNs = 0, parseNs = 0, visitNs = 0;
+        int files = 0;
+        ~PrescanCost() {
+            if (!std::getenv("CAJETA_PRIME_TIMING") || files == 0) return;
+            std::fprintf(stderr,
+                "[prescan] %d files: lex %lld ms, parse %lld ms, visit %lld ms\n",
+                files, lexNs / 1000000, parseNs / 1000000, visitNs / 1000000);
+        }
+    };
+    static PrescanCost g_prescanCost;
+
     static void prescanSource(antlr4::ANTLRInputStream& input,
                               bool suppressConsole = false,
                               const std::string& sourcePath = std::string()) {
+        using PClock = std::chrono::steady_clock;
+        auto t0 = PClock::now();
         CajetaLexer lexer(&input);
         CommonTokenStream tokens(&lexer);
         tokens.fill();
+        auto t1 = PClock::now();
         CajetaParser parser(&tokens);
         if (suppressConsole) {
             lexer.removeErrorListeners();
             parser.removeErrorListeners();
         }
-        antlr4::tree::ParseTree* tree = parser.compilationUnit();
+        antlr4::tree::ParseTree* tree = parseCompilationUnitTwoStage(
+            parser, tokens, [&] {
+                if (suppressConsole) {
+                    parser.removeErrorListeners();
+                } else {
+                    parser.removeErrorListeners();
+                    parser.addErrorListener(
+                        &antlr4::ConsoleErrorListener::INSTANCE);
+                }
+            }, sourcePath);
+        auto t2 = PClock::now();
         ArchivePrescanVisitor v;
         v.sourcePath = sourcePath;
         tree->accept(&v);
+        auto t3 = PClock::now();
+        using NS = std::chrono::nanoseconds;
+        g_prescanCost.lexNs   += std::chrono::duration_cast<NS>(t1 - t0).count();
+        g_prescanCost.parseNs += std::chrono::duration_cast<NS>(t2 - t1).count();
+        g_prescanCost.visitNs += std::chrono::duration_cast<NS>(t3 - t2).count();
+        ++g_prescanCost.files;
     }
 
     // Pre-scan every source file under a root, building the
@@ -657,6 +790,18 @@ namespace cajeta {
         // Else, --diag-format=json (user source only): swap ANTLR's default
         // console listener for one that emits structured NDJSON diagnostics.
         std::unique_ptr<JsonSyntaxErrorListener> jsonSyntax;
+        // Hoisted into a lambda so the two-stage parse can install it on the
+        // LL retry ONLY: stage 1 runs silent, because an SLL failure is not a
+        // diagnostic — it is a signal to re-parse. Emitting from stage 1 would
+        // report syntax errors the compiler does not actually have.
+        std::function<void()> installListeners = [&] {
+            parser.removeErrorListeners();
+            if (!quiet && !jsonSyntax) {
+                parser.addErrorListener(&antlr4::ConsoleErrorListener::INSTANCE);
+            } else if (jsonSyntax) {
+                parser.addErrorListener(jsonSyntax.get());
+            }
+        };
         if (quiet) {
             lexer.removeErrorListeners();
             parser.removeErrorListeners();
@@ -678,7 +823,8 @@ namespace cajeta {
             lexer.addErrorListener(jsonSyntax.get());
             parser.addErrorListener(jsonSyntax.get());
         }
-        antlr4::tree::ParseTree* parseTree = parser.compilationUnit();
+        antlr4::tree::ParseTree* parseTree = parseCompilationUnitTwoStage(
+            parser, tokens, installListeners, module->currentSourceFile());
         // A syntax error leaves ANTLR's error-recovery tree malformed; handing
         // it to the semantic visitor segfaults on some inputs. Abort before
         // visiting whenever the parse had syntax errors (diagnostics already
@@ -964,6 +1110,17 @@ namespace cajeta {
         CajetaModule::setActiveModule(stdlib);
         QualifiedNamePtr originalQName = stdlib->getQName();
         bool parsedAny = false;
+        // CAJETA_PRIME_TIMING=1. The drain is the largest single line in a
+        // dependency cold start and it barely moved under SLL, so the
+        // question is what it is doing that is NOT parsing.
+        using DClock = std::chrono::steady_clock;
+        const bool dTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        long long dPrescanNs = 0, dParseNs = 0, dProtoNs = 0;
+        int dPkgs = 0, dFiles = 0;
+        auto dAdd = [](long long& acc, DClock::time_point a) {
+            acc += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                DClock::now() - a).count();
+        };
         while (!g_lazyQueue.empty()) {
             std::string pkg = g_lazyQueue.back();
             g_lazyQueue.pop_back();
@@ -986,7 +1143,10 @@ namespace cajeta {
             // Matrix.transpose returns Matrix<T,C,R>) re-fires the import hook;
             // the guard above then dedupes rather than re-enqueueing mid-parse.
             g_lazyParsed.insert(pkg);
+            auto dT = DClock::now();
             prescanStdlibPackage(pkg);   // whole-package archive (idempotent)
+            dAdd(dPrescanNs, dT);
+            ++dPkgs;
             auto it = stdlibPackageIndex().find(pkg);
             if (it == stdlibPackageIndex().end()) continue;
             for (size_t idx : it->second) {
@@ -1001,7 +1161,10 @@ namespace cajeta {
                 stdlib->setCurrentSourceFile(rel);   // see parseStdlibInto
                 antlr4::ANTLRInputStream in(
                     std::string(f.content, f.contentBytes));
+                auto dP = DClock::now();
                 parseSource(stdlib, in, /*label=*/"");
+                dAdd(dParseNs, dP);
+                ++dFiles;
             }
             g_stdlibParsedPackages.insert(pkg);
             parsedAny = true;
@@ -1009,7 +1172,16 @@ namespace cajeta {
         stdlib->setCurrentSourceFile("");
         stdlib->setQName(originalQName);
         if (parsedAny) {
+            auto dB = DClock::now();
             CajetaModule::buildPendingPrototypes();
+            dAdd(dProtoNs, dB);
+        }
+        if (dTiming) {
+            std::fprintf(stderr,
+                "[drain] %d packages / %d files: prescan %lld ms, "
+                "parse %lld ms, buildPendingPrototypes %lld ms\n",
+                dPkgs, dFiles, dPrescanNs / 1000000, dParseNs / 1000000,
+                dProtoNs / 1000000);
         }
         CajetaModule::setActiveModule(prevActive);
     }
@@ -1080,13 +1252,47 @@ namespace cajeta {
             return pkg;
         };
 
+        // CAJETA_PRIME_TIMING=1 — per-file, per-loop. The stdlib is walked
+        // TWICE by ANTLR (prescan, then parse), so "which loop" is the first
+        // question and "uniform or concentrated" is the second: a flat
+        // distribution means the parser's own cost and needs caching, while a
+        // few dominating files would mean a pathology worth fixing outright.
+        const bool primeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        using PrimeClock = std::chrono::steady_clock;
+        std::vector<std::pair<long long, std::string>> prescanMs, parseMs;
+        auto stamp = [&](PrimeClock::time_point t0,
+                         std::vector<std::pair<long long, std::string>>& into,
+                         const char* path) {
+            if (!primeTiming) return;
+            into.emplace_back(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    PrimeClock::now() - t0).count(), path);
+        };
+        auto report = [&](const char* label,
+                          std::vector<std::pair<long long, std::string>>& v) {
+            if (!primeTiming) return;
+            long long total = 0;
+            for (auto& e : v) total += e.first;
+            std::sort(v.begin(), v.end(),
+                      [](auto& a, auto& b) { return a.first > b.first; });
+            std::fprintf(stderr, "[prime] %s: %lld ms over %zu files\n",
+                         label, total, v.size());
+            for (size_t i = 0; i < v.size() && i < 10; ++i) {
+                std::fprintf(stderr, "[prime]     %6lld ms  %s\n",
+                             v[i].first, v[i].second.c_str());
+            }
+        };
+
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
             if (isLazyStdlibPackage(packageOf(i))) continue;  // on-demand only
             const auto& f = cajeta::stdlib::g_files[i];
+            auto t0 = PrimeClock::now();
             antlr4::ANTLRInputStream prescanIn(
                 std::string(f.content, f.contentBytes));
             prescanSource(prescanIn);
+            stamp(t0, prescanMs, f.relativePath);
         }
+        report("prescan loop", prescanMs);
 
         QualifiedNamePtr originalQName = module->getQName();
         for (size_t i = 0; i < cajeta::stdlib::g_fileCount; ++i) {
@@ -1108,11 +1314,14 @@ namespace cajeta {
             // module — so without this every stdlib frame renders as `(:268)`.
             // relativePath is already build-root independent.
             module->setCurrentSourceFile(relPath);
+            auto t0 = PrimeClock::now();
             antlr4::ANTLRInputStream stdlibInput(
                 std::string(f.content, f.contentBytes));
             parseSource(module, stdlibInput, /*label=*/"");
+            stamp(t0, parseMs, f.relativePath);
             g_stdlibParsedPackages.insert(pkg);
         }
+        report("parse loop", parseMs);
         module->setCurrentSourceFile("");
         module->setQName(originalQName);
 
@@ -1281,6 +1490,27 @@ namespace cajeta {
     //     dep's own bitcode.
     void Compiler::ingestClasspath() {
         if (classpath.empty()) return;
+        // CAJETA_PRIME_TIMING=1 — the dependency half of a cold start. The
+        // question this answers is which of the two costs a `.cja` makes the
+        // consumer pay: re-deriving the dep's DECLARATIONS (prescan + parse,
+        // for which the archive ships no substitute) or re-deriving its
+        // DEFINITIONS (codegen, which the archive already ships as
+        // class_bitcode). Only the second is recoverable by reading the .bc.
+        const bool cpTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        auto cpStart = std::chrono::steady_clock::now();
+        auto cpMark = cpStart;
+        auto cpPhase = [&](const char* name) {
+            if (!cpTiming) return;
+            auto now = std::chrono::steady_clock::now();
+            auto ms = [](auto d) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(d)
+                    .count();
+            };
+            std::fprintf(stderr, "[ingest] %-26s %7lld ms   (cumulative %lld ms)\n",
+                         name, (long long) ms(now - cpMark),
+                         (long long) ms(now - cpStart));
+            cpMark = now;
+        };
 
         // Phase 1 — prescan. Pre-register every classpath class's
         // canonical name in the archive registry so forward refs from
@@ -1356,7 +1586,9 @@ namespace cajeta {
         // `ArrayList<Tensor<E>>` (cajeta-ml's GradTape) instantiates
         // cajeta.math.Tensor while that signature is read, and nothing in the
         // consuming project need ever import cajeta.math itself.
+        cpPhase("prescan dep sources");
         drainPrescannedLazyStdlib();
+        cpPhase("drain lazy stdlib");
 
         // Phase 2 — full parse. Each ClassSource entry becomes a
         // standalone CajetaModule. The module's qName is derived from
@@ -1432,7 +1664,9 @@ namespace cajeta {
         // null llvm::Value at codegen time and the return gets
         // silently lowered to null. Mirrors the stdlib's own
         // ensureStdlibModule → buildPendingPrototypes flow.
+        cpPhase("parse dep sources");
         CajetaModule::buildPendingPrototypes();
+        cpPhase("buildPendingPrototypes");
     }
 
     CajetaModulePtr Compiler::ensureStdlibModule() {
@@ -1457,6 +1691,32 @@ namespace cajeta {
         auto existing = CajetaModule::getStdlibModule();
         if (existing) return existing;
 
+        // compile-cache 1.2.1, SECOND VANTAGE — `CAJETA_PRIME_TIMING=1`.
+        //
+        // The original phase instrumentation went into test/jit/JitTestHelper,
+        // which is why the number the SHIPPED compiler pays was never known:
+        // the harness primes once per process and amortizes it over thousands
+        // of tests, so nothing there resembles a user's `cajeta build`. The
+        // probes belong where the prime is, not where the tests are.
+        //
+        // Off unless the variable is set, and one steady_clock read per phase
+        // when it is.
+        const bool primeTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+        auto primeClock = std::chrono::steady_clock::now();
+        auto primeStart = primeClock;
+        auto primePhase = [&](const char* name) {
+            if (!primeTiming) return;
+            auto now = std::chrono::steady_clock::now();
+            auto ms = [](auto d) {
+                return std::chrono::duration_cast<std::chrono::milliseconds>(d)
+                    .count();
+            };
+            std::fprintf(stderr, "[prime] %-28s %7lld ms   (cumulative %lld ms)\n",
+                         name, (long long) ms(now - primeClock),
+                         (long long) ms(now - primeStart));
+            primeClock = now;
+        };
+
         auto stdlibQName = QualifiedName::getOrInsert(
             "__stdlib__", "cajeta.runtime");
         auto stdlib = make_shared<CajetaModule>(
@@ -1467,13 +1727,16 @@ namespace cajeta {
 
         auto prevActive = CajetaModule::getActiveModule();
         CajetaModule::setActiveModule(stdlib);
+        primePhase("setup");
         parseStdlibInto(stdlib);
+        primePhase("parse (444 sources)");
         CajetaModule::setActiveModule(prevActive);
 
         // Lay out every parsed stdlib class so its vtable / RTTI
         // globals live in this module — user modules will reach
         // them via extern decls and never need to re-prototype.
         CajetaModule::buildPendingPrototypes();
+        primePhase("buildPendingPrototypes");
 
         // REFL-1.7: cajeta.reflect.Class is a template Class<T>. Force-build the
         // canonical Class<?> instantiation HERE, as part of the stdlib build and
@@ -1488,6 +1751,7 @@ namespace cajeta {
         CajetaModule::setActiveModule(stdlib);
         CajetaClass::ensureClassWildcardInstantiated();
         CajetaModule::buildPendingPrototypes();
+        primePhase("Class<?> instantiation");
         CajetaModule::setActiveModule(prevActive);
 
         // An EAGER stdlib class (e.g. cajeta.xpu.Qem / CooperativeMatrix) can
@@ -1502,8 +1766,10 @@ namespace cajeta {
         // so the non-reuse path is unaffected. (compile-cache 0.1, ported
         // from feature/compile-cache 03764c17.)
         drainLazyStdlib();
+        primePhase("drainLazyStdlib");
 
         emitUnrecoverableMarker(stdlib);
+        primePhase("emitUnrecoverableMarker");
         return stdlib;
     }
 

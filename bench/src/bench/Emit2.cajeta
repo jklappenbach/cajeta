@@ -162,7 +162,7 @@ public final class Emit2 {
     }
 
     static void check(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         EmitState sc = heap EmitState(); scalarRange(b, 0, n, sc);
         EmitState sm = heap EmitState(); simdEmit(b, n, sm);

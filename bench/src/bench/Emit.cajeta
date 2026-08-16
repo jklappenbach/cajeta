@@ -56,7 +56,7 @@ public final class Emit {
         }
     }
     static void check(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         int64[] e = heap int64[9]; int64[] r = heap int64[9];
         scalarEmit(b, n, e); readerCounts(b, n, r);

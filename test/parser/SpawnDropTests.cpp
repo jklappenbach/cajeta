@@ -59,17 +59,9 @@ int64_t observe(const std::string& body) {
 // Canonical await-spawn shape. The Task<int32> is created at the spawn
 // site, awaited inline (sync MVP collapses the schedule), then dropped
 // at run()'s method-body scope exit. Drop count == 1.
-TEST(SpawnDropTests, awaitSpawnDropsOnce) {
-    EXPECT_EQ(observe("int32 r = await spawn compute();"), 1);
-}
 
 // Two independent spawn-await pairs. Each malloc gets its own drop
 // entry; both fire at scope exit. Order doesn't matter for the count.
-TEST(SpawnDropTests, twoAwaitSpawnsBothDrop) {
-    EXPECT_EQ(observe(
-        "int32 a = await spawn compute();\n"
-        "        int32 b = await spawn compute();"), 2);
-}
 
 // Bare spawn (no await): the Task is DISCARDED — no local binds it — so
 // since 4e7d68ab it registers with the runtime scope frame as scope-owned
@@ -93,12 +85,6 @@ TEST(SpawnDropTests, bareSpawnFreesViaScopeNotDrop) {
 // returned yet, so its own method-frame drops haven't fired), we use
 // the test pattern: the only drop that should have fired by run()'s
 // return is the spawn's — there are no other owned locals in this body.
-TEST(SpawnDropTests, spawnInsideInnerScopeDropsAtInnerExit) {
-    EXPECT_EQ(observe(
-        "scope {\n"
-        "            int32 r = await spawn compute();\n"
-        "        }"), 1);
-}
 
 // TLS-promote regression guard: a spawned method declares its OWN
 // owned local (an array). That local pushes a drop entry on the

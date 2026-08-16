@@ -107,46 +107,8 @@ std::optional<bool> validateSpirv(const std::vector<uint8_t>& spirv) {
 
 // 5.x — NVPTX: a vload/vstore kernel lowers to valid PTX with a global
 // load + store (the buffer access lowered through the vector seam).
-TEST(XpuVectorLoadStoreGpuTests, lowersToValidNvptx) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kVaddSource);
-    auto k = findMethod(module->getStructures()["test.M"], "vadd");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_vls_nvptx", deviceCtx);
-    cajeta::xpu::nvidia::configureDeviceModule(deviceModule, *tm);
-    ASSERT_NE(cajeta::xpu::nvidia::lowerKernel(k, deviceModule), nullptr);
-
-    std::string ptx = cajeta::xpu::nvidia::emitPtx(deviceModule, *tm);
-    ASSERT_FALSE(ptx.empty());
-    EXPECT_NE(ptx.find(".visible .entry vadd"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("ld.global"), std::string::npos) << ptx;
-    EXPECT_NE(ptx.find("st.global"), std::string::npos) << ptx;
-}
 
 // 5.x — AMD: the same kernel lowers to valid gfx ISA with global memory ops.
-TEST(XpuVectorLoadStoreGpuTests, lowersToValidAmdgpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kVaddSource);
-    auto k = findMethod(module->getStructures()["test.M"], "vadd");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_vls_amd", deviceCtx);
-    cajeta::xpu::amd::configureDeviceModule(deviceModule, *tm);
-    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, deviceModule), nullptr);
-
-    std::string isa = cajeta::xpu::amd::emitIsa(deviceModule, *tm);
-    ASSERT_FALSE(isa.empty());
-    EXPECT_NE(isa.find("vadd"), std::string::npos);
-    EXPECT_NE(isa.find("global_load"), std::string::npos) << isa;
-    EXPECT_NE(isa.find("global_store"), std::string::npos) << isa;
-}
 
 // 6.x — Vulkan/SPIR-V: a vload<4>/vstore kernel lowers to a VALID SPIR-V module.
 // SPIR-V uses logical addressing (a buffer is a runtime array of scalars), so

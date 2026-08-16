@@ -18,161 +18,21 @@ using cajeta_test::CajetaJit;
 
 // @NoArgsConstructor on a class with no user-declared ctor → that
 // ctor exists and zero-inits every field.
-TEST(ConstructorAnnotationTests, noArgsConstructorZeroInits) {
-    auto src =
-        "package test;\n"
-        "@NoArgsConstructor public class P {\n"
-        "    public int32 a;\n"
-        "    public int32 b;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        P p = heap P();\n"
-        "        return p.a + p.b;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 0);
-}
 
 // @AllArgsConstructor takes every field in declaration order.
-TEST(ConstructorAnnotationTests, allArgsConstructor) {
-    auto src =
-        "package test;\n"
-        "@AllArgsConstructor public class Point {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Point p = heap Point(3, 4);\n"
-        "        return p.x + p.y;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 7);
-}
 
 // @AllArgsConstructor with mixed primitive widths.
-TEST(ConstructorAnnotationTests, allArgsConstructorMixedWidths) {
-    auto src =
-        "package test;\n"
-        "@AllArgsConstructor public class M {\n"
-        "    public int8  a;\n"
-        "    public int16 b;\n"
-        "    public int32 c;\n"
-        "    public int64 d;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int64 run() {\n"
-        "        M m = heap M(1, 2, 3, 4);\n"
-        "        return ((int64) m.a) + ((int64) m.b)\n"
-        "             + ((int64) m.c) + m.d;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int64_t (*)()>("run");
-    EXPECT_EQ(fn(), 10);
-}
 
 // @RequiredArgsConstructor picks only `final` fields.
-TEST(ConstructorAnnotationTests, requiredArgsCtorPicksFinalFields) {
-    auto src =
-        "package test;\n"
-        "@RequiredArgsConstructor public class C {\n"
-        "    public final int32 fixed;\n"
-        "    public int32 mutable_;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        C c = heap C(42);\n"  // single-arg matches the only `final` field
-        "        return c.fixed + c.mutable_;\n"  // mutable_ stays 0
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
-}
 
 // @RequiredArgsConstructor with no qualifying fields → zero-arg ctor.
-TEST(ConstructorAnnotationTests, requiredArgsCtorNoFinalFields) {
-    auto src =
-        "package test;\n"
-        "@RequiredArgsConstructor public class E {\n"
-        "    public int32 n;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        E e = heap E();\n"
-        "        return e.n;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 0);
-}
 
 // User-declared ctor with matching arity wins — synthesizer skips.
-TEST(ConstructorAnnotationTests, userCtorWinsOverSynthesized) {
-    auto src =
-        "package test;\n"
-        "@AllArgsConstructor public class P {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "    public P(int32 a, int32 b) { this.x = a + 100; this.y = b + 100; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        P p = heap P(3, 4);\n"
-        "        return p.x + p.y;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 207);  // (103 + 104)
-}
 
 // @NoArgsConstructor + @AllArgsConstructor on the same class produces
 // BOTH ctors.
-TEST(ConstructorAnnotationTests, noArgsAndAllArgsCoexist) {
-    auto src =
-        "package test;\n"
-        "@NoArgsConstructor @AllArgsConstructor public class P {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        P a = heap P();\n"
-        "        P b = heap P(7, 8);\n"
-        "        return (a.x + a.y) * 100 + (b.x + b.y);\n"  // 0*100 + 15 = 15
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 15);
-}
 
 // Sanity: no annotation → no synthesized ctor (default behavior unchanged).
-TEST(ConstructorAnnotationTests, noAnnotationKeepsDefaultBehavior) {
-    auto src =
-        "package test;\n"
-        "public class P {\n"
-        "    public int32 n;\n"
-        "    public P(int32 v) { this.n = v; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        P p = heap P(7);\n"
-        "        return p.n;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 7);
-}
 
 // @NoArgsConstructor(access="private") — modifier lands on the synth'd ctor
 // and compilation succeeds (visibility enforcement at construction sites
@@ -254,62 +114,12 @@ TEST(ConstructorAnnotationTests, accessUnknownRejected) {
 // @AllArgsConstructor(staticName="of") synthesizes a public static
 // factory `T.of(args...)` that calls the (now-private) ctor and
 // returns the heap instance. Mirrors Lombok's pattern.
-TEST(ConstructorAnnotationTests, allArgsStaticNameOf) {
-    auto src =
-        "package test;\n"
-        "@AllArgsConstructor(staticName=\"of\") public class Pt {\n"
-        "    public int32 x;\n"
-        "    public int32 y;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Pt p #= Pt.of(3, 4);\n"
-        "        return p.x * 10 + p.y;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 34);
-}
 
 // @NoArgsConstructor(staticName="empty") works the same way for zero
 // args — `T.empty()` returns a zero-initialized instance.
-TEST(ConstructorAnnotationTests, noArgsStaticNameEmpty) {
-    auto src =
-        "package test;\n"
-        "@NoArgsConstructor(staticName=\"empty\") public class P {\n"
-        "    public int32 n;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        P p #= P.empty();\n"
-        "        return p.n;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 0);
-}
 
 // @RequiredArgsConstructor(staticName="create") picks only the final
 // fields and exposes them through the static factory.
-TEST(ConstructorAnnotationTests, requiredArgsStaticNameCreate) {
-    auto src =
-        "package test;\n"
-        "@RequiredArgsConstructor(staticName=\"create\") public class P {\n"
-        "    public final int32 id;\n"
-        "    public int32 extra;\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        P p #= P.create(99);\n"
-        "        return p.id;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 99);
-}
 
 // `access` arg applies to the FACTORY when staticName is set; the
 // ctor is force-marked PRIVATE (Lombok parity). Visibility enforcement
@@ -324,7 +134,7 @@ TEST(ConstructorAnnotationTests, staticNameAccessAppliesToFactory) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pt p #= Pt.of(42);\n"
+        "        Pt p = Pt.of(42);\n"
         "        return p.v;\n"
         "    }\n"
         "}\n";

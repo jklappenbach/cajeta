@@ -58,8 +58,8 @@ public final class TlsTour {
         System.stdout.println("  TlsListener/TlsStream: handshake + echo over 127.0.0.1,");
         System.stdout.println("  self-signed cert as the client's trust anchor.");
         System.stdout.println("");
-        int8[] cert = File.readAllBytes("build/certs/cert.pem");
-        int8[] key = File.readAllBytes("build/certs/key.pem");
+        int8[] cert #= File.readAllBytes("build/certs/cert.pem");
+        int8[] key #= File.readAllBytes("build/certs/key.pem");
         if (cert == null || key == null
                 || (int32) cert.count() == 0 || (int32) key.count() == 0) {
             System.stdout.println("skip: no certificate at build/certs/{cert,key}.pem");
@@ -78,9 +78,9 @@ public final class TlsTour {
             host[6] = (int8) 111; host[7] = (int8) 115; host[8] = (int8) 116;
 
             // Server: bind loopback on an OS-assigned port, cert+key held.
-            IpAddress la = IpAddress.loopbackV4();
-            SocketAddress bindAddr = SocketAddress.of(#la, 0);
-            TlsListener listener = TlsListener.bind(bindAddr, cert, cl, key, kl);
+            IpAddress la #= IpAddress.loopbackV4();
+            SocketAddress bindAddr #= SocketAddress.of(#la, 0);
+            TlsListener listener #= TlsListener.bind(bindAddr, cert, cl, key, kl);
             int32 port = listener.boundPort();
             System.stdout.println("");
             System.stdout.println("-- listener bound on 127.0.0.1:" + port + " (OS-assigned) --");
@@ -88,13 +88,13 @@ public final class TlsTour {
 
             // Client TCP connect first, THEN spawn the accept fiber, so the
             // two handshake ends overlap deadlock-free.
-            IpAddress ca = IpAddress.loopbackV4();
-            SocketAddress connAddr = SocketAddress.of(#ca, port);
-            TcpStream client = TcpStream.connect(#connAddr);
+            IpAddress ca #= IpAddress.loopbackV4();
+            SocketAddress connAddr #= SocketAddress.of(#ca, port);
+            TcpStream client #= TcpStream.connect(#connAddr);
             Task<int32> serverTask = spawn serveOne(#listener);
 
             // Client handshake: the self-signed cert IS the trust anchor.
-            TlsStream ct = TlsStream.client(#client, host, 9, cert, cl);
+            TlsStream ct #= TlsStream.client(#client, host, 9, cert, cl);
             ct.handshake();
             System.stdout.println("-- handshake complete (TLS 1.2+; hostname 'localhost' verified) --");
 

@@ -81,12 +81,12 @@ public final class Stage1 {
         return cnt;
     }
     static void check(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         System.stdout.println(name + ": scalar=" + scalarStruct(b, n) + " simd=" + simdStruct(b, n));
     }
     static void bench(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         int32 w = 0; int64 sink = 0;
         while (w < 20) { sink = sink + simdStruct(b, n); w = w + 1; }

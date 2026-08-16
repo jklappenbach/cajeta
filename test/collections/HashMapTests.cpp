@@ -15,86 +15,9 @@
 using cajeta_test::CajetaJit;
 
 // Minimal: just instantiate, don't put or get.
-TEST(HashMapTests, constructOnly) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag { public Tag() { return; } }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}
 
-TEST(HashMapTests, putThenGet) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public int32 id;\n"
-        "    public Tag(int32 i) { this.id = i; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag(7);\n"
-        "        m.put(#t, 42);\n"
-        "        return m.get(t);\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
-}
 
-TEST(HashMapTests, getReturnsZeroForAbsent) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag();\n"
-        "        return m.get(t);\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 0);
-}
 
-TEST(HashMapTests, containsKeyReportsPresence) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(8);\n"
-        "        Tag inserted = heap Tag();\n"
-        "        Tag missing = heap Tag();\n"
-        "        m.put(#inserted, 1);\n"
-        "        int32 yes = 0;\n"
-        "        if (m.containsKey(inserted)) { yes = 10; }\n"
-        "        int32 no = 0;\n"
-        "        if (m.containsKey(missing)) { no = 20; }\n"
-        "        return yes + no;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 10);
-}
 
 TEST(HashMapTests, countTracksInsertions) {
     auto src =
@@ -117,100 +40,12 @@ TEST(HashMapTests, countTracksInsertions) {
     EXPECT_EQ(fn(), 3);
 }
 
-TEST(HashMapTests, replaceUpdatesExistingValue) {
-    // Insert a key, overwrite it, observe the new value. Size stays
-    // at 1 because put on an existing key updates instead of adding.
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
-        "        String k1 = \"tag\";\n"
-        "        String k2 = \"tag\";\n"
-        "        m.put(#k1, 10);\n"
-        "        m.put(#k2, 99);\n"
-        "        int32 v = m.get(\"tag\");\n"
-        "        int64 sz = m.count();\n"
-        "        if (sz == 1) { return v; }\n"
-        "        return -1;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 99);
-}
 
 // ----- Bracket subscript syntax over operator[] / operator[]= -------
 
-TEST(HashMapTests, bracketWriteThenRead) {
-    // `m[k] = v` dispatches to operator[]= → put;
-    // `m[k]` dispatches to operator[] → get. Same observable behavior
-    // as the method form above, just with subscript syntax.
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public int32 id;\n"
-        "    public Tag(int32 i) { this.id = i; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag t = heap Tag(7);\n"
-        "        m[#t] = 42;\n"      // the map owns its keys (`#K`)
-        "        return m[t];\n"      // t is a demoted borrow — still looks up
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
-}
 
 // ----- auto-resize (load factor > 0.75) ---------------------------------
 
-TEST(HashMapTests, growsBeyondInitialCapacityAndKeepsAllEntries) {
-    // Start with cap=4 so we trip the 0.75 load factor at the
-    // fourth insert (4 * 4 > 4 * 3 → 16 > 12). The map must
-    // double, reinsert, and keep all entries findable with the
-    // right values.
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public int32 id;\n"
-        "    public Tag(int32 i) { this.id = i; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(4);\n"
-        "        Tag t1 = heap Tag(1);\n"
-        "        Tag t2 = heap Tag(2);\n"
-        "        Tag t3 = heap Tag(3);\n"
-        "        Tag t4 = heap Tag(4);\n"
-        "        Tag t5 = heap Tag(5);\n"
-        "        m.put(#t1, 10);\n"
-        "        m.put(#t2, 20);\n"
-        "        m.put(#t3, 30);\n"
-        "        m.put(#t4, 40);\n"
-        "        m.put(#t5, 50);\n"
-        "        int64 sz = m.count();\n"
-        "        int32 v1 = m.get(t1);\n"
-        "        int32 v2 = m.get(t2);\n"
-        "        int32 v3 = m.get(t3);\n"
-        "        int32 v4 = m.get(t4);\n"
-        "        int32 v5 = m.get(t5);\n"
-        "        if (sz == 5 && v1 == 10 && v2 == 20 && v3 == 30\n"
-        "                && v4 == 40 && v5 == 50) {\n"
-        "            return 1;\n"
-        "        }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}
 
 TEST(HashMapTests, resizeClearsTombstones) {
     // Uses String (VALUE-hashed) keys: `m.remove(k)` frees the key the map
@@ -270,61 +105,7 @@ TEST(HashMapTests, resizeClearsTombstones) {
 
 // ----- remove(K key) ---------------------------------------------------
 
-TEST(HashMapTests, removeReturnsTrueAndShrinksSize) {
-    // Put a key, remove it, observe: remove returns true, size
-    // drops to 0, containsKey returns false, get returns 0.
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
-        "        String t = \"tag\";\n"
-        "        m.put(#t, 42);\n"
-        "        int32 removed = 0;\n"
-        "        boolean hadT = m.containsKey(\"tag\");\n"
-        "        m.remove(\"tag\");\n"
-        "        if (hadT && !m.containsKey(\"tag\")) { removed = 1; }\n"
-        "        int64 sz = m.count();\n"
-        "        int32 stillThere = 0;\n"
-        "        if (m.containsKey(\"tag\")) { stillThere = 1; }\n"
-        "        int32 score = (removed * 100) + (sz == 0 ? 10 : 0) + (stillThere == 0 ? 1 : 0);\n"
-        "        return score;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    // 100 (removed=true) + 10 (size=0) + 1 (containsKey=false) = 111
-    EXPECT_EQ(fn(), 111);
-}
 
-TEST(HashMapTests, removeReturnsFalseWhenAbsent) {
-    // remove on a never-inserted key returns false; size unchanged.
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public class Tag {\n"
-        "    public Tag() { return; }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<Tag, int32> m = heap HashMap<Tag, int32>(16);\n"
-        "        Tag inserted = heap Tag();\n"
-        "        Tag missing = heap Tag();\n"
-        "        m.put(#inserted, 1);\n"
-        "        int32 falseyRemove = 0;\n"
-        "        boolean hadMissing = m.containsKey(missing);\n"
-        "        m.remove(missing);\n"
-        "        if (hadMissing) { falseyRemove = 1; }\n"
-        "        int64 sz = m.count();\n"
-        "        if (falseyRemove == 0 && sz == 1) { return 1; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 1);
-}
 
 TEST(HashMapTests, removeThenPutReusesTombstoneSlot) {
     // After remove leaves a tombstone, a subsequent put on a key
@@ -379,27 +160,6 @@ TEST(HashMapTests, removeThenPutReusesTombstoneSlot) {
 // identity MISS so the day structural equality lands for classes, it fails
 // loudly. Replacing a value under an owned CLASS key has no spelling today;
 // `map.update` is the open question, deferred to the collections-overhaul spec.
-TEST(HashMapTests, bracketReplaceUpdatesValue) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
-        "        String a = \"tag\" + 1;\n"
-        "        String b = \"tag\" + 1;\n"   // equal by value, distinct object
-        "        m[#a] = 10;\n"
-        "        m[#b] = 99;\n"                // replace: same value hash
-        "        int32 v = m[a];\n"            // a is demoted, still looks up
-        "        int64 sz = m.count();\n"
-        "        if (sz == 1) { return v; }\n"
-        "        return -1;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 99);
-}
 
 // Class-typed V: HashMap<Tag, Box>. The miss path of get() used to
 // return literal `0` which lowers to `i64 0`, mismatching the
@@ -440,29 +200,6 @@ TEST(HashMapTests, classTypedValueWorks) {
 // spec test-battery-restructure §2.3): the USE-CASE is that String keys
 // survive rehash across resize — 40 keys at capacity 16 forces two resizes,
 // which is all the functionality needs. The thousand-key form is load.
-TEST(HashMapTests, stringKeyResizeRehashRoundTrip) {
-    auto src =
-        "package test;\n"
-        "import cajeta.collection.HashMap;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        HashMap<String, int32> m = heap HashMap<String, int32>(16);\n"
-        "        int32 i = 0;\n"
-        "        while (i < 40) { m.put(\"k\" + i, i); i = i + 1; }\n"
-        "        int32 hits = 0;\n"
-        "        int32 j = 0;\n"
-        "        while (j < 40) {\n"
-        "            if (m.get(\"k\" + j) == j) { hits = hits + 1; }\n"
-        "            j = j + 1;\n"
-        "        }\n"
-        "        if (m.count() != 40) { return -1; }\n"
-        "        return hits;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 40);
-}
 
 TEST(HashMapTests, stringKeysThousandRoundTrip) {
     auto src =

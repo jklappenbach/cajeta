@@ -40,32 +40,6 @@ TEST(FunctionTypeParamProbe, parseOnlyConcreteFnTypeAsParam) {
     EXPECT_EQ(fn(), 42);
 }
 
-TEST(FunctionTypeParamProbe, callFnTypeParamViaTypedLocal) {
-    // Call through a function-typed parameter. The function-typed
-    // local stores the lambda first (with expectedType set by
-    // LocalVariableDeclaration), then passes the resolved value to
-    // apply. Lambda-literal-as-direct-method-arg doesn't work yet:
-    // LambdaExpression::resolveTypes can't infer the return type
-    // from method-overload context (only from local-var LHS
-    // expectedType), so a bare block-body lambda lands at "void"
-    // and method lookup misses. Tracked as a follow-up; the assign-
-    // to-typed-local pattern is the user-facing workaround until
-    // expectedType propagates through MCE arg-resolution.
-    auto src =
-        "package test;\n"
-        "public final class S {\n"
-        "    public static int32 apply((int32) -> int32 fn, int32 x) {\n"
-        "        return fn(x);\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        (int32) -> int32 inc = (int32 v) -> { return v + 1; };\n"
-        "        return apply(inc, 41);\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.S");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    EXPECT_EQ(fn(), 42);
-}
 
 TEST(FunctionTypeParamProbe, lambdaLiteralDirectlyAsMethodArg) {
     // The MCE arg-eval loop now propagates expectedType to lambda

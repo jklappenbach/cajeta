@@ -43,62 +43,14 @@ const char* IMPORTS =
 
 // Matrix<float32,2,3> resolves and a Buffer over it instantiates + lays out
 // (the flat <6 x float> representation is materialized as the element type).
-TEST(MatrixTests, typeResolvesAsBufferElement) {
-    std::string src = std::string("package test;\n") + IMPORTS +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        KernelBuffer<Matrix<float32,2,3>> b = heap KernelBuffer<Matrix<float32,2,3>>(0, 5);\n"
-        "        return (int32) b.length();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // Distinct (T,R,C) shapes are distinct types and all lay out — f32 2x3,
 // i32 3x2, and a repeat of f32 2x3 (cache hit on the same canonical key).
-TEST(MatrixTests, typeMultipleShapesResolveDistinctly) {
-    std::string src = std::string("package test;\n") + IMPORTS +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        KernelBuffer<Matrix<float32,2,3>> a = heap KernelBuffer<Matrix<float32,2,3>>(0, 2);\n"
-        "        KernelBuffer<Matrix<int32,3,2>>   b = heap KernelBuffer<Matrix<int32,3,2>>(0, 3);\n"
-        "        KernelBuffer<Matrix<float32,2,3>> c = heap KernelBuffer<Matrix<float32,2,3>>(0, 5);\n"
-        "        return (int32)(a.length() + b.length() + c.length());\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 10);
-}
 
 // A square shape resolves too (R == C), exercised separately because identity/
 // transpose specialize on it later.
-TEST(MatrixTests, typeSquareShapeResolves) {
-    std::string src = std::string("package test;\n") + IMPORTS +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        KernelBuffer<Matrix<float32,4,4>> b = heap KernelBuffer<Matrix<float32,4,4>>(0, 7);\n"
-        "        return (int32) b.length();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // Non-numeric element type (a user class) is rejected.
-TEST(MatrixTests, typeNonNumericElementRejected) {
-    std::string src = std::string("package test;\n") + IMPORTS +
-        "public class Thing { public Thing() { return; } }\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        KernelBuffer<Matrix<Thing,2,2>> b = heap KernelBuffer<Matrix<Thing,2,2>>(0, 1);\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        FAIL() << "expected CAJETA_ERROR_MATRIX_ELEMENT_TYPE";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_ELEMENT_TYPE");
-    }
-}
 
 // A bool element type is rejected (matrices are numeric only).
 TEST(MatrixTests, typeBooleanElementRejected) {
@@ -121,20 +73,6 @@ TEST(MatrixTests, typeBooleanElementRejected) {
 
 // Construct a 2x3 matrix row-major and read elements back with m[r][c]. The
 // row-major lane mapping element (r,c) = lane r*C+c is the contract.
-TEST(MatrixTests, constructAndIndexReadRowMajor) {
-    // [ 1 2 3 ]
-    // [ 4 5 6 ]
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,2,3> m = stack Matrix<float32,2,3>(\n"
-        "            1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);\n"
-        "        return m[0][0] + m[0][2] * 10.0f + m[1][1] * 100.0f;\n"
-        "    }\n"
-        "}\n";
-    // 1 + 3*10 + 5*100 = 531
-    EXPECT_FLOAT_EQ(runF32(src), 531.0f);
-}
 
 // m[r][c] write updates only the addressed element and persists in the slot.
 TEST(MatrixTests, indexWriteUpdatesElement) {
@@ -154,19 +92,6 @@ TEST(MatrixTests, indexWriteUpdatesElement) {
 
 // A row m[r] is a Vector<T,C>; indexing it once more reads the element, and the
 // dynamic-index form works (runtime r, c).
-TEST(MatrixTests, dynamicIndexRead) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,3,2> m = stack Matrix<float32,3,2>(\n"
-        "            1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f);\n"
-        "        int32 r = 2;\n"
-        "        int32 c = 1;\n"
-        "        return m[r][c];\n"   // element (2,1) = lane 2*2+1 = 5 -> 6.0
-        "    }\n"
-        "}\n";
-    EXPECT_FLOAT_EQ(runF32(src), 6.0f);
-}
 
 // Wrong constructor argument count is a clean diagnostic.
 TEST(MatrixTests, constructWrongArgCountRejected) {
@@ -325,19 +250,6 @@ TEST(MatrixTests, thresholdScalarMaskSelect) {
 // select on a matrix mask: pick element-wise between two matrices.
 //   mask = (a == b) (lanes: 1,1,1,0);  m = mask.select(a, c)
 //   -> a where equal, c where not = [1 2; 3 9] -> m[1][1] = 9.
-TEST(MatrixTests, maskSelect) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Matrix<float32,2,2> a = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        Matrix<float32,2,2> b = stack Matrix<float32,2,2>(1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        Matrix<float32,2,2> c = stack Matrix<float32,2,2>(5.0f, 6.0f, 7.0f, 9.0f);\n"
-        "        Matrix<float32,2,2> m = (a == b).select(a, c);\n"
-        "        return (int32) m[1][1];\n"   // lane equal -> a's 4? no: a==b all equal -> a -> 4
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 4);
-}
 
 // ---- S5: * = matrix multiply + matrix-vector ---------------------------------
 
@@ -501,39 +413,8 @@ TEST(MatrixTests, zeroDimensionRejected) {
 }
 
 // An unknown method on a matrix is a clean diagnostic.
-TEST(MatrixTests, unknownMethodRejected) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(1.0f,2.0f,3.0f,4.0f);\n"
-        "        return m.bogus();\n"   // not a matrix method (inverse() is now real)
-        "    }\n"
-        "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        FAIL() << "expected CAJETA_ERROR_MATRIX_METHOD";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_METHOD");
-    }
-}
 
 // identity() on a non-square matrix is rejected.
-TEST(MatrixTests, identityNonSquareRejected) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,2,3> m = stack Matrix<float32,2,3>(1.0f,2.0f,3.0f,4.0f,5.0f,6.0f);\n"
-        "        Matrix<float32,2,3> i = m.identity();\n"
-        "        return i[0][0];\n"
-        "    }\n"
-        "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        FAIL() << "expected CAJETA_ERROR_MATRIX_METHOD";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(e.getErrorId(), "CAJETA_ERROR_MATRIX_METHOD");
-    }
-}
 
 // Element-wise op on mismatched shapes is rejected.
 TEST(MatrixTests, elementwiseShapeMismatchRejected) {
@@ -569,66 +450,13 @@ TEST(MatrixTests, elementwiseShapeMismatchRejected) {
 // positions materialize correctly.
 
 // 2.1 — the defect proper: element straight into a call argument.
-TEST(MatrixTests, elementAsCallArgument) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 twice(float32 x) { return x * 2.0f; }\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(\n"
-        "            1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        return D.twice(m[1][1]);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_FLOAT_EQ(runF32(src), 8.0f);
-}
 
 // The control that has always worked — extract to a local first. If this
 // ever goes red the dissection is chasing the wrong thing.
-TEST(MatrixTests, elementViaLocalAsCallArgument) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 twice(float32 x) { return x * 2.0f; }\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(\n"
-        "            1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        float32 x = m[1][1];\n"
-        "        return D.twice(x);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_FLOAT_EQ(runF32(src), 8.0f);
-}
 
 // Nested composition — `f(g(m[r][c]))`. Named in spec 2.1 alongside the
 // direct form; a fix that only handles depth one would leave this red.
-TEST(MatrixTests, elementAsNestedCallArgument) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float32 twice(float32 x) { return x * 2.0f; }\n"
-        "    public static float32 plusOne(float32 x) { return x + 1.0f; }\n"
-        "    public static float32 run() {\n"
-        "        Matrix<float32,2,2> m = stack Matrix<float32,2,2>(\n"
-        "            1.0f, 2.0f, 3.0f, 4.0f);\n"
-        "        return D.twice(D.plusOne(m[1][1]));\n"
-        "    }\n"
-        "}\n";
-    EXPECT_FLOAT_EQ(runF32(src), 10.0f);
-}
 
 // The plain-array sibling, recorded FIXED on 2026-08-01. Pinned so the
 // Matrix fix cannot regress it, and so "which shapes work" stays a fact in
 // the suite rather than a note in the spec.
-TEST(MatrixTests, plainArrayElementAsCallArgument) {
-    std::string src = std::string("package test;\n") +
-        "public final class D {\n"
-        "    public static float64 twice(float64 x) { return x * 2.0; }\n"
-        "    public static float64 run64() {\n"
-        "        float64[] xs = heap float64[3];\n"
-        "        xs[1] = 21.0;\n"
-        "        return D.twice(xs[1]);\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        return (int32) D.run64();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}

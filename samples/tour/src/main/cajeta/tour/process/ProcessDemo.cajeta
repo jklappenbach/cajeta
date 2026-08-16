@@ -51,7 +51,7 @@ public class ProcessDemo extends DemoClass {
         argv[1] = "hello, tour";
         Command cmd = heap Command(#argv);
         cmd.captureStdout();
-        ProcessResult r = cmd.run();
+        ProcessResult r #= cmd.run();
         this.check(r.launched(), "echo launched");
         this.check(r.exited() && r.code() == 0, "echo exited with code 0");
         String out = ProcessDemo.text(r.stdout());
@@ -64,7 +64,7 @@ public class ProcessDemo extends DemoClass {
         String[] argvFalse = heap String[1];
         argvFalse[0] = "/bin/false";
         Command failing = heap Command(#argvFalse);
-        ProcessResult rf = failing.run();
+        ProcessResult rf #= failing.run();
         System.stdout.println("  /bin/false -> launched = " + rf.launched()
             + ", code = " + rf.code());
         this.check(rf.launched() && rf.code() == 1, "/bin/false is a normal result with code 1");
@@ -74,7 +74,7 @@ public class ProcessDemo extends DemoClass {
         String[] argvMissing = heap String[1];
         argvMissing[0] = "/no/such/prog_tour";
         Command missing = heap Command(#argvMissing);
-        ProcessResult rm = missing.run();
+        ProcessResult rm #= missing.run();
         System.stdout.println("  missing program -> launched = " + rm.launched()
             + ", code = " + rm.code());
         this.check(rm.launched() == false && rm.code() == -1,
@@ -89,15 +89,15 @@ public class ProcessDemo extends DemoClass {
         Command catCmd = heap Command(#argvCat);
         catCmd.pipeStdin();
         catCmd.pipeStdout();
-        Process p = catCmd.start();
+        Process p #= catCmd.start();
         this.check(p.launched(), "cat started via start()");
         this.check(p.pid() > 0, "live child has a positive pid");
-        FileWriter w = p.stdin();
+        FileWriter w #= p.stdin();
         w.writeString("ping\n");
         w.close();
-        FileReader rd = p.stdout();
-        String echoed = rd.readString(64);
-        ProcessResult res = p.waitFor();
+        FileReader rd #= p.stdout();
+        String echoed #= rd.readString(64);
+        ProcessResult res #= p.waitFor();
         p.close();
         System.stdout.println("  /bin/cat echoed " + echoed.trim()
             + " back through the pipes, exit " + res.code());

@@ -90,7 +90,7 @@ public class ConcurrentDemo extends DemoClass {
 
         // Lock + LockGuard — the RAII guard releases when this method returns.
         Lock gate = heap Lock();
-        LockGuard guard = gate.acquire();
+        LockGuard guard #= gate.acquire();
         System.stdout.println("  Lock acquired (RAII LockGuard held to scope end)");
 
         // A separate Lock for the manual tryAcquire / releaseLock pairing.

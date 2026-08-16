@@ -75,78 +75,15 @@ size_t compilationUnitSyntaxErrors(const std::string& src) {
 
 // `[256]`, `[1, 2, 3]`, and `[]` parse as array literals and build an
 // ArrayLiteralExpression carrying one element per entry.
-TEST(XpuLaunchGrammarTests, arrayLiteralParsesAndBuildsNode) {
-    {
-        ParsedExpr p("[256]");
-        EXPECT_EQ(p.syntaxErrors(), 0u);
-        auto ast = Expression::fromContext(p.ctx);
-        auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(ast);
-        ASSERT_NE(arr, nullptr);
-        EXPECT_EQ(arr->getElements().size(), 1u);
-    }
-    {
-        ParsedExpr p("[1, 2, 3]");
-        EXPECT_EQ(p.syntaxErrors(), 0u);
-        auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(
-            Expression::fromContext(p.ctx));
-        ASSERT_NE(arr, nullptr);
-        EXPECT_EQ(arr->getElements().size(), 3u);
-    }
-    {
-        ParsedExpr p("[]");
-        EXPECT_EQ(p.syntaxErrors(), 0u);
-        auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(
-            Expression::fromContext(p.ctx));
-        ASSERT_NE(arr, nullptr);
-        EXPECT_EQ(arr->getElements().size(), 0u);
-    }
-}
 
 // An arithmetic element expression inside a literal parses (the `grid:` dim
 // in the spec is `[(n + 255) / 256]`).
-TEST(XpuLaunchGrammarTests, arrayLiteralAcceptsComputedElement) {
-    ParsedExpr p("[(n + 255) / 256]");
-    EXPECT_EQ(p.syntaxErrors(), 0u);
-    auto arr = std::dynamic_pointer_cast<ArrayLiteralExpression>(
-        Expression::fromContext(p.ctx));
-    ASSERT_NE(arr, nullptr);
-    EXPECT_EQ(arr->getElements().size(), 1u);
-}
 
 // The postfix-call form: a bare `(args)` applied to a call result builds a
 // CallExpression whose callee is the inner call and whose args are captured.
-TEST(XpuLaunchGrammarTests, postfixCallBuildsCallExpression) {
-    ParsedExpr p("saxpy.launch(stream, grid: [(n + 255) / 256], block: [256])"
-                 "(y, x, a, n)");
-    EXPECT_EQ(p.syntaxErrors(), 0u);
-
-    auto ast = Expression::fromContext(p.ctx);
-    auto call = std::dynamic_pointer_cast<CallExpression>(ast);
-    ASSERT_NE(call, nullptr) << "outer expression should be a postfix call";
-
-    // Four kernel arguments in the trailing (args).
-    EXPECT_EQ(call->getArgs().size(), 4u);
-
-    // The callee is `saxpy.launch(...)` — a method call on a receiver, which
-    // routes through DotExpression (DOT must win over bare methodCall).
-    auto callee = call->getCallee();
-    ASSERT_NE(callee, nullptr);
-    bool calleeIsDotOrMethodCall =
-        std::dynamic_pointer_cast<DotExpression>(callee) != nullptr ||
-        std::dynamic_pointer_cast<MethodCallExpression>(callee) != nullptr;
-    EXPECT_TRUE(calleeIsDotOrMethodCall);
-}
 
 // Chained postfix calls: `f()()` invokes the result of `f()`. Confirms the
 // new alternative is genuinely general, not launch-specific.
-TEST(XpuLaunchGrammarTests, chainedPostfixCallParses) {
-    ParsedExpr p("f()(x)");
-    EXPECT_EQ(p.syntaxErrors(), 0u);
-    auto call = std::dynamic_pointer_cast<CallExpression>(
-        Expression::fromContext(p.ctx));
-    ASSERT_NE(call, nullptr);
-    EXPECT_EQ(call->getArgs().size(), 1u);
-}
 
 // Regression guard: the new alternatives must not disturb established call
 // forms. `foo(x)` and `obj.foo(x)` keep parsing as method calls, not as

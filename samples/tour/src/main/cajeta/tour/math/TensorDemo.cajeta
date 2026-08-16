@@ -23,12 +23,12 @@ public class TensorDemo extends DemoClass {
         int64[] shape = heap int64[2];
         shape[0] = 2;
         shape[1] = 3;
-        Tensor<float32> a = Tensor.zeros<float32>(shape);
+        Tensor<float32> a #= Tensor.zeros<float32>(shape);
         this.check(a.ndim() == 2 && a.size() == 6, "zeros((2,3)): ndim 2, size 6");
         this.check(a.shapeAt(0) == 2 && a.shapeAt(1) == 3, "shapeAt reports (2,3)");
 
         // The dtype lives in the reified T: Tensor<float32> knows it is f32.
-        DType dt = a.dtype();
+        DType dt #= a.dtype();
         this.check(dt.isFloating() && dt.bits() == 32,
             "dtype() of a Tensor<float32> is a 32-bit float");
         System.stdout.println("  zeros((2,3)): size=" + a.size()
@@ -41,19 +41,19 @@ public class TensorDemo extends DemoClass {
             "set2/get2 element access");
 
         // arange + a whole-tensor reduction: sum(0..4) accumulated in int64.
-        Tensor<int32> r = Tensor.arange<int32>(5);
+        Tensor<int32> r #= Tensor.arange<int32>(5);
         int64 total = Tensor.sum<int32, int64>(r);
         System.stdout.println("  sum(arange(5)) = " + total + "   (expect 10)");
         this.check(total == 10, "sum(arange(5)) == 10");
 
         // Elementwise op: ones + a, fresh C-contiguous result.
-        Tensor<float32> b = Tensor.ones<float32>(shape);
-        Tensor<float32> s = Tensor.add<float32>(a, b);
+        Tensor<float32> b #= Tensor.ones<float32>(shape);
+        Tensor<float32> s #= Tensor.add<float32>(a, b);
         this.check(s.get2(0, 2) == 8.0f && s.get2(0, 0) == 1.0f,
             "elementwise add over (2,3)");
 
         // transpose() is a VIEW — axes reversed, storage shared, no copy.
-        Tensor<float32> t = s.transpose();
+        Tensor<float32> t #= s.transpose();
         this.check(t.shapeAt(0) == 3 && t.shapeAt(1) == 2 && t.isView(),
             "transpose(): a (3,2) view");
         this.check(t.get2(2, 0) == 8.0f, "transposed [2][0] == original [0][2]");
@@ -61,9 +61,9 @@ public class TensorDemo extends DemoClass {
         // NEP-50 promotion is over TYPES, never values — and float32 canNOT
         // hold int32's 31 bits of precision, so f32 + i32 widens to float64
         // (numpy agrees: np.result_type(np.float32, np.int32) is float64).
-        DType f = DType.f32();
-        DType i = DType.i32();
-        DType p = DType.promote(f, i);
+        DType f #= DType.f32();
+        DType i #= DType.i32();
+        DType p #= DType.promote(f, i);
         this.check(p.isFloating() && p.bits() == 64,
             "DType.promote(f32, i32) -> float64 (NEP-50)");
     }

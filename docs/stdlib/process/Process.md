@@ -14,9 +14,9 @@ argv[0] = "/bin/cat";
 Command cmd = heap Command(#argv);
 cmd.pipeStdin();
 cmd.pipeStdout();
-Process p = cmd.start();
+Process p #= cmd.start();
 boolean ok = p.launched();
-ProcessResult res = p.waitFor();
+ProcessResult res #= p.waitFor();
 p.close();
 ```
 

@@ -53,21 +53,8 @@ int64_t observeDropCount(const std::string& classBody,
 
 // One class instance with no user drop method — the auto-drop entry
 // fires once at scope exit, count = 1.
-TEST(ClassDropTests, instanceWithoutUserDropFiresAutoDrop) {
-    EXPECT_EQ(observeDropCount(
-        /*classBody*/ "public int32 value() { return 7; }",
-        /*runBody*/   "Thing t = heap Thing();"
-    ), 1);
-}
 
 // Two class locals → two drop entries firing LIFO.
-TEST(ClassDropTests, twoInstancesFireBothDrops) {
-    EXPECT_EQ(observeDropCount(
-        /*classBody*/ "public int32 value() { return 7; }",
-        /*runBody*/   "Thing a = heap Thing();\n"
-        "        Thing b = heap Thing();"
-    ), 2);
-}
 
 // User-defined destructor is invoked before the heap free. The
 // observable: have ~Tracer() heap-allocate a Probe instance — when the

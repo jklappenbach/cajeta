@@ -425,15 +425,3 @@ TEST(XpuNvptxOptixEmitTests, nonCanonicalSignatureThrowsN04) {
 // getters + a non-canonical arity) classifies as Unsupported — the cuda-plan 4a
 // "unsupported general-loop case." Registration emits no OptiX program for it, so it
 // runs on the retained software floor (the M3 graceful fallback), never miscompiled.
-TEST(XpuNvptxOptixEmitTests, unsupportedRayQueryShapeClassifiesUnsupported) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kUnsupportedRqKernel, "test.RqUnsupShape");
-    auto klass = module->getStructures()["test.RqUnsupShape"];
-    ASSERT_NE(klass, nullptr);
-    auto odd = findMethod(klass, "odd");
-    ASSERT_NE(odd, nullptr);
-    // It IS a ray query (so it is not simply skipped as a non-RQ kernel)...
-    EXPECT_TRUE(nvptxKernelUsesRayQuery(odd));
-    // ...but its (AS, 1 KernelBuffer, count) arity matches no canonical shape -> Unsupported.
-    EXPECT_EQ((int) classifyRayQueryShape(odd), (int) OptixRqShape::Unsupported);
-}

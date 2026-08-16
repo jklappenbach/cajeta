@@ -54,7 +54,7 @@ public class JsonRoundtripBench extends Benchmark {
             dir = "datasets/cache";
         }
         this.path = dir + "/" + variant + ".json";
-        int8[] probe = File.readAllBytes(this.path);
+        int8[] probe #= File.readAllBytes(this.path);
         this.fileBytes = (int64) probe.count();
     }
 
@@ -63,11 +63,11 @@ public class JsonRoundtripBench extends Benchmark {
     }
 
     public void runVariant(String variant, int32 iterations) {
-        int8[] bytes = File.readAllBytes(this.path);
-        JsonValue v1 = Json.parse(bytes, (int64) bytes.count());
+        int8[] bytes #= File.readAllBytes(this.path);
+        JsonValue v1 #= Json.parse(bytes, (int64) bytes.count());
         this.k1 = v1.kind();
-        int8[] out = Json.toBytes(v1);
-        JsonValue v2 = Json.parse(out, (int64) out.count());
+        int8[] out #= Json.toBytes(v1);
+        JsonValue v2 #= Json.parse(out, (int64) out.count());
         this.k2 = v2.kind();
     }
 

@@ -73,7 +73,7 @@ public class JsonDemo extends DemoClass {
     // and .byteLength() — Json.parse<T> consumes (int8[], int64).
     public void parseSingleObject() {
         String src = "{\"id\":42,\"score\":1000000,\"active\":true,\"name\":\"alice\"}";
-        JsonMix m = Json.parse<JsonMix>(src.toBytes(), (int64) src.byteLength());
+        JsonMix m #= Json.parse<JsonMix>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parse single object:");
         System.stdout.println("    id     = " + m.id);
         System.stdout.println("    score  = " + m.score);
@@ -90,7 +90,7 @@ public class JsonDemo extends DemoClass {
     // with @JsonStrict on the class.
     public void parseMixedPrimitives() {
         String src = "{\"id\":7,\"score\":99,\"active\":false}";
-        JsonMix m = Json.parse<JsonMix>(src.toBytes(), (int64) src.byteLength());
+        JsonMix m #= Json.parse<JsonMix>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parse with missing-key field:");
         System.stdout.println("    id (set)        = " + m.id);
         System.stdout.println("    score (set)     = " + m.score);
@@ -117,9 +117,9 @@ public class JsonDemo extends DemoClass {
         a.score = 123456789L;
         a.active = true;
 
-        int8[] bytes = Json.toBytes<JsonNum>(a);
+        int8[] bytes #= Json.toBytes<JsonNum>(a);
         int64 len = (int64) bytes.count();
-        JsonNum b = Json.parse<JsonNum>(bytes, len);
+        JsonNum b #= Json.parse<JsonNum>(bytes, len);
 
         System.stdout.println("  round-trip primitives:");
         System.stdout.println("    serialized length = " + len);
@@ -136,7 +136,7 @@ public class JsonDemo extends DemoClass {
     // the same JsonReader. No tree materialization.
     public void parseNested() {
         String src = "{\"id\":1,\"point\":{\"x\":10,\"y\":20}}";
-        JsonOuter o = Json.parse<JsonOuter>(src.toBytes(), (int64) src.byteLength());
+        JsonOuter o #= Json.parse<JsonOuter>(src.toBytes(), (int64) src.byteLength());
         System.stdout.println("  parse nested object:");
         System.stdout.println("    id      = " + o.id);
         System.stdout.println("    point.x = " + o.point.x);
@@ -157,9 +157,9 @@ public class JsonDemo extends DemoClass {
         p.y = 200;
         o.point = p;
 
-        int8[] bytes = Json.toBytes<JsonOuter>(o);
+        int8[] bytes #= Json.toBytes<JsonOuter>(o);
         int64 len = (int64) bytes.count();
-        JsonOuter parsed = Json.parse<JsonOuter>(bytes, len);
+        JsonOuter parsed #= Json.parse<JsonOuter>(bytes, len);
 
         System.stdout.println("  round-trip nested:");
         System.stdout.println("    serialized length = " + len);

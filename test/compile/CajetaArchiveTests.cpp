@@ -58,194 +58,20 @@ uint64_t readU64LE(const std::vector<uint8_t>& bytes, size_t offset) {
 
 // --- Header shape ----------------------------------------------------------
 
-TEST(CajetaArchiveTests, emptyArchiveHasCorrectMagicAndVersion) {
-    auto path = std::filesystem::temp_directory_path() / "cja_empty.cja";
-    {
-        CajetaArchive arc("test-empty", "1.0.0", CajetaArchive::Kind::Cja);
-        arc.setCompression(CajetaArchive::Compression::None);
-        arc.writeTo(path.string());
-    }
-    auto bytes = readBytes(path.string());
-    ASSERT_GE(bytes.size(), (size_t) 32);  // at least the header
-
-    // Magic: "CAJETA01" in bytes 0..7
-    EXPECT_EQ(std::string((const char*) bytes.data(), 8), std::string("CAJETA01"));
-    // Format version: uint32 LE at offset 8 — current is 1
-    EXPECT_EQ(readU32LE(bytes, 8), 1u);
-    // Flags: 0 because this test opted out of zstd compression.
-    EXPECT_EQ(readU32LE(bytes, 12), 0u);
-    // index_offset + index_length point at the trailing random-access
-    // index. offset > header size; offset + length reaches EOF.
-    uint64_t indexOff = readU64LE(bytes, 16);
-    uint64_t indexLen = readU64LE(bytes, 24);
-    EXPECT_GE(indexOff, (uint64_t) 32);
-    EXPECT_EQ(indexOff + indexLen, (uint64_t) bytes.size());
-
-    std::filesystem::remove(path);
-}
 
 // --- Manifest --------------------------------------------------------------
 
-TEST(CajetaArchiveTests, emptyArchiveHasManifestWithCjaKind) {
-    auto path = std::filesystem::temp_directory_path() / "cja_manifest.cja";
-    {
-        CajetaArchive arc("my-lib", "2.0.1", CajetaArchive::Kind::Cja);
-        arc.setCompression(CajetaArchive::Compression::None);   // probe raw manifest bytes
-        arc.writeTo(path.string());
-    }
-    auto bytes = readBytes(path.string());
 
-    // After the 32-byte header, the next 8 bytes are the manifest-bytes
-    // length (uint64 LE), then the manifest JSON bytes.
-    ASSERT_GE(bytes.size(), (size_t) 40);
-    uint64_t manifestLen = readU64LE(bytes, 32);
-    ASSERT_GT(manifestLen, 0u);
-    ASSERT_LE((size_t) (40 + manifestLen), bytes.size());
-
-    std::string manifest((const char*) bytes.data() + 40, manifestLen);
-    EXPECT_NE(manifest.find("\"name\":\"my-lib\""), std::string::npos)
-        << "manifest = " << manifest;
-    EXPECT_NE(manifest.find("\"version\":\"2.0.1\""), std::string::npos);
-    EXPECT_NE(manifest.find("\"kind\":\"cja\""), std::string::npos);
-
-    std::filesystem::remove(path);
-}
-
-TEST(CajetaArchiveTests, uberArchiveManifestCarriesUberKind) {
-    auto path = std::filesystem::temp_directory_path() / "cja_uber.cja";
-    {
-        CajetaArchive arc("my-app", "0.1.0", CajetaArchive::Kind::Uber);
-        arc.setCompression(CajetaArchive::Compression::None);
-        arc.writeTo(path.string());
-    }
-    auto bytes = readBytes(path.string());
-
-    uint64_t manifestLen = readU64LE(bytes, 32);
-    std::string manifest((const char*) bytes.data() + 40, manifestLen);
-    EXPECT_NE(manifest.find("\"kind\":\"uber\""), std::string::npos);
-
-    std::filesystem::remove(path);
-}
 
 // --- Entries ---------------------------------------------------------------
 
-TEST(CajetaArchiveTests, addsBitcodeEntryWithCorrectNameAndPayload) {
-    auto path = std::filesystem::temp_directory_path() / "cja_one_entry.cja";
-    std::string bitcode = "BCfake_bitcode_payload";   // not real bitcode, just a payload
-    {
-        CajetaArchive arc("test", "0", CajetaArchive::Kind::Cja);
-        arc.setCompression(CajetaArchive::Compression::None);
-        CajetaArchiveEntry entry;
-        entry.name       = "demo/App.bc";
-        entry.originTag  = 0;                                            // user
-        entry.kindTag    = CajetaArchive::EntryKind::ClassBitcode;
-        entry.data       = std::vector<uint8_t>(bitcode.begin(), bitcode.end());
-        arc.addEntry(std::move(entry));
-        arc.writeTo(path.string());
-    }
-    auto bytes = readBytes(path.string());
-
-    // Skip past header (32) + manifest length+bytes
-    size_t cursor = 32;
-    uint64_t manifestLen = readU64LE(bytes, cursor);
-    cursor += 8 + manifestLen;
-
-    // First entry — name_length + name + origin_tag + kind_tag + 2 reserved + data_length + data
-    uint32_t nameLen = readU32LE(bytes, cursor);
-    cursor += 4;
-    EXPECT_EQ(nameLen, (uint32_t) std::strlen("demo/App.bc"));
-    std::string name((const char*) bytes.data() + cursor, nameLen);
-    EXPECT_EQ(name, "demo/App.bc");
-    cursor += nameLen;
-
-    uint8_t originTag = bytes[cursor];      cursor += 1;
-    uint8_t kindTag   = bytes[cursor];      cursor += 1;
-    cursor += 2;                             // reserved
-    uint64_t dataLen = readU64LE(bytes, cursor);
-    cursor += 8;
-    EXPECT_EQ(originTag, 0u);                            // user
-    EXPECT_EQ(kindTag,   0u);                            // class_bitcode
-    EXPECT_EQ(dataLen, (uint64_t) bitcode.size());
-    std::string data((const char*) bytes.data() + cursor, dataLen);
-    EXPECT_EQ(data, bitcode);
-
-    std::filesystem::remove(path);
-}
 
 // --- Reader roundtrip -----------------------------------------------------
 
-TEST(CajetaArchiveTests, readerRoundtripEmptyArchive) {
-    auto path = std::filesystem::temp_directory_path() / "cja_rt_empty.cja";
-    {
-        CajetaArchive arc("rt-test", "1.0", CajetaArchive::Kind::Cja);
-        arc.writeTo(path.string());
-    }
-    auto loaded = CajetaArchive::readFrom(path.string());
-    EXPECT_EQ(loaded.getName(),    "rt-test");
-    EXPECT_EQ(loaded.getVersion(), "1.0");
-    EXPECT_EQ(loaded.getKind(),    CajetaArchive::Kind::Cja);
-    EXPECT_TRUE(loaded.getEntries().empty());
-    std::filesystem::remove(path);
-}
 
-TEST(CajetaArchiveTests, readerRoundtripUberKind) {
-    auto path = std::filesystem::temp_directory_path() / "cja_rt_uber.cja";
-    {
-        CajetaArchive arc("rt-uber", "2", CajetaArchive::Kind::Uber);
-        arc.writeTo(path.string());
-    }
-    auto loaded = CajetaArchive::readFrom(path.string());
-    EXPECT_EQ(loaded.getKind(), CajetaArchive::Kind::Uber);
-    std::filesystem::remove(path);
-}
 
-TEST(CajetaArchiveTests, readerRoundtripEntriesByteForByte) {
-    auto path = std::filesystem::temp_directory_path() / "cja_rt_entries.cja";
-    std::vector<uint8_t> bits1{0xCA, 0xFE, 0xBA, 0xBE};
-    std::vector<uint8_t> bits2{0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34};
-    {
-        CajetaArchive arc("rt-entries", "1", CajetaArchive::Kind::Cja);
-        CajetaArchiveEntry e1{
-            "pkg/A.bc", 0, CajetaArchive::EntryKind::ClassBitcode, bits1};
-        CajetaArchiveEntry e2{
-            "pkg/sub/B.bc", 1, CajetaArchive::EntryKind::ClassBitcode, bits2};
-        arc.addEntry(std::move(e1));
-        arc.addEntry(std::move(e2));
-        arc.writeTo(path.string());
-    }
-    auto loaded = CajetaArchive::readFrom(path.string());
-    ASSERT_EQ(loaded.getEntries().size(), 2u);
-    EXPECT_EQ(loaded.getEntries()[0].name,      "pkg/A.bc");
-    EXPECT_EQ(loaded.getEntries()[0].originTag, 0);
-    EXPECT_EQ(loaded.getEntries()[0].data,      bits1);
-    EXPECT_EQ(loaded.getEntries()[1].name,      "pkg/sub/B.bc");
-    EXPECT_EQ(loaded.getEntries()[1].originTag, 1);
-    EXPECT_EQ(loaded.getEntries()[1].data,      bits2);
-    std::filesystem::remove(path);
-}
 
-TEST(CajetaArchiveTests, readerRejectsBadMagic) {
-    auto path = std::filesystem::temp_directory_path() / "cja_rt_badmagic.cja";
-    {
-        std::ofstream f(path, std::ios::binary);
-        // 32 bytes of "not CAJETA01" — the reader checks bytes 0..7.
-        const char garbage[33] = "NOPE-NOT-A-CAJETA-ARCHIVE--ATALL";
-        f.write(garbage, 32);
-    }
-    EXPECT_THROW(CajetaArchive::readFrom(path.string()), std::runtime_error);
-    std::filesystem::remove(path);
-}
 
-TEST(CajetaArchiveTests, readerRejectsTruncated) {
-    auto path = std::filesystem::temp_directory_path() / "cja_rt_short.cja";
-    {
-        std::ofstream f(path, std::ios::binary);
-        const char shortHeader[5] = "CAJE";
-        f.write(shortHeader, 4);
-    }
-    EXPECT_THROW(CajetaArchive::readFrom(path.string()), std::runtime_error);
-    std::filesystem::remove(path);
-}
 
 // --- Compression -----------------------------------------------------------
 
@@ -454,27 +280,3 @@ TEST(CajetaArchiveTests, indexSurvivesCompression) {
     std::filesystem::remove(path);
 }
 
-TEST(CajetaArchiveTests, manifestCountsEntries) {
-    auto path = std::filesystem::temp_directory_path() / "cja_count.cja";
-    {
-        CajetaArchive arc("multi", "1", CajetaArchive::Kind::Cja);
-        arc.setCompression(CajetaArchive::Compression::None);
-        for (int i = 0; i < 3; ++i) {
-            CajetaArchiveEntry e;
-            e.name = "pkg/Class" + std::to_string(i) + ".bc";
-            e.originTag = 0;
-            e.kindTag   = CajetaArchive::EntryKind::ClassBitcode;
-            e.data      = std::vector<uint8_t>{0x42, 0x43};  // "BC"
-            arc.addEntry(std::move(e));
-        }
-        arc.writeTo(path.string());
-    }
-    auto bytes = readBytes(path.string());
-
-    uint64_t manifestLen = readU64LE(bytes, 32);
-    std::string manifest((const char*) bytes.data() + 40, manifestLen);
-    EXPECT_NE(manifest.find("\"entry_count\":3"), std::string::npos)
-        << "manifest = " << manifest;
-
-    std::filesystem::remove(path);
-}

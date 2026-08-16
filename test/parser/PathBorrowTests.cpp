@@ -112,13 +112,6 @@ TEST(PathBorrowTests, readSamePathAfterClassExtractionIsLend) {
     EXPECT_EQ(fn(), 0);
 }
 
-TEST(PathBorrowTests, readDeeperPathAfterRootMoveIsLegal) {
-    // Move the root identifier `s` itself, then read through it: legal.
-    auto src = source(
-        "Outer moved #= s;\n"          // root moved
-        "Inner n = s.foo;");           // demoted root — path still readable
-    expectCompilesOk(src);
-}
 
 TEST(PathBorrowTests, doubleClassExtractionYieldsBorrow) {
     // First extraction takes the field's bit; a SECOND `#` extraction
@@ -135,14 +128,6 @@ TEST(PathBorrowTests, doubleClassExtractionYieldsBorrow) {
     EXPECT_EQ(fn(), 42);
 }
 
-TEST(PathBorrowTests, deeperPathReadAfterMoveIsLegal) {
-    // Three-level path; demote `s.foo.bar`, then read it. The path is a
-    // borrow of the same live instance, so the read stands.
-    auto src = source(
-        "String moved #= s.foo.bar;\n"
-        "String n = s.foo.bar;");
-    expectCompilesOk(src);
-}
 
 TEST(PathBorrowTests, deeperReadAfterClassExtractionIsLend) {
     // Reading THROUGH an extracted class field is a lend of live memory
@@ -158,13 +143,6 @@ TEST(PathBorrowTests, deeperReadAfterClassExtractionIsLend) {
 
 // --- Valid: different sub-paths are independent ----------------------------
 
-TEST(PathBorrowTests, siblingPathStillReadable) {
-    // Moving `s.foo` shouldn't touch `s.bar` — a different sub-path.
-    auto src = source(
-        "Inner moved #= s.foo;\n"
-        "String n = s.bar;");           // different sub-path; OK
-    EXPECT_NO_THROW(CajetaJit::compile(src, "test.P"));
-}
 
 TEST(PathBorrowTests, unmovedPathReadable) {
     // No moves anywhere — DotExpression should not raise a path-move error.

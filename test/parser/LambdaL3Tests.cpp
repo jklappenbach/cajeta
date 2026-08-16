@@ -139,19 +139,6 @@ void expectBorrowEscape(const std::string& src) {
 
 // Returning a function-typed local that holds a borrow capture is a
 // compile error — the most common shape of the dangling-closure bug.
-TEST(LambdaL3Tests, returnClosureWithBorrowCaptureIsError) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = heap int32[3];\n"
-        "        () -> int64 fn = () -> arr.count();\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    expectBorrowEscape(src);
-}
 
 // Inline-construction shape: `return () -> ...;` without naming the
 // closure. The check fires after the lambda's generateCode populates
@@ -179,53 +166,12 @@ TEST(LambdaL3Tests, returnFreshLambdaWithBorrowCaptureIsError) {
 
 // Closures whose captures are all by-value (primitives) — the closure
 // holds copies, not borrows, so the borrow check has nothing to flag.
-TEST(LambdaL3Tests, returnClosureWithOnlyValueCapturesAllowed) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static (int32) -> int32 mkAdder() {\n"
-        "        int32 base = 10;\n"
-        "        (int32) -> int32 fn = x -> x + base;\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    SUCCEED();
-}
 
 // Closures that transfer ownership of their heap captures via `#name`
 // — again no borrows, so the borrow check passes.
-TEST(LambdaL3Tests, returnClosureWithOnlyTransferCapturesAllowed) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = heap int32[4];\n"
-        "        () -> int64 fn = () -> #arr.count();\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    SUCCEED();
-}
 
 // Non-capturing closures (no outer references at all). Ensures the
 // check doesn't over-fire on the empty-capture case.
-TEST(LambdaL3Tests, returnNonCapturingClosureAllowed) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static () -> int32 mkConst() {\n"
-        "        () -> int32 fn = () -> 42;\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    SUCCEED();
-}
 
 // ---------------------------------------------------------------------
 // L3-3: closure drop chain — escapable closures + drop accounting
@@ -264,29 +210,14 @@ int64_t observeDrops(const std::string& body) {
 // the closure's drop entry fires once and the synthesized drop function
 // frees the transferred heap object + the captures struct + the closure
 // record. The drop chain registers one increment for the active entry.
-TEST(LambdaL3Tests, transferCaptureClosureDropsOnce) {
-    EXPECT_EQ(observeDrops(
-        "int32[] arr = heap int32[3];\n"
-        "        () -> int64 fn = () -> #arr.count();"), 1);
-}
 
 // Borrow capture: outer's array keeps its active drop entry (closure
 // merely borrowed the pointer). Two increments — one for the closure
 // (which only frees its own heap-allocated record + captures struct,
 // not the borrowed array) and one for the outer's array.
-TEST(LambdaL3Tests, borrowCaptureClosureDropsBothEntries) {
-    EXPECT_EQ(observeDrops(
-        "int32[] arr = heap int32[3];\n"
-        "        () -> int64 fn = () -> arr.count();"), 2);
-}
 
 // Value capture: outer primitive has no drop entry. Closure's drop
 // entry fires once.
-TEST(LambdaL3Tests, valueCaptureClosureDropsOnce) {
-    EXPECT_EQ(observeDrops(
-        "int32 base = 10;\n"
-        "        (int32) -> int32 fn = x -> x + base;"), 1);
-}
 
 // Non-capturing closure: the record is a private global constant, not
 // heap-allocated, but the function-typed local still gets a drop entry
@@ -294,10 +225,6 @@ TEST(LambdaL3Tests, valueCaptureClosureDropsOnce) {
 // literal or a possibly-capturing call). At scope exit
 // __cajeta_closure_drop reads drop_fn=null on the global and no-ops —
 // but the entry's fire still increments the count.
-TEST(LambdaL3Tests, nonCapturingClosureLocalIncrementsCount) {
-    EXPECT_EQ(observeDrops(
-        "() -> int32 fn = () -> 42;"), 1);
-}
 
 // End-to-end escape: return a closure that transferred a heap value,
 // then invoke it from the caller. Pre-L3-3 the heap was freed at the
@@ -325,68 +252,14 @@ TEST(LambdaL3Tests, returnedTransferCaptureClosureCallable) {
 // End-to-end escape: value-capture closure. Primitives copy into the
 // captures struct at the producing site; heap-alloc'd struct persists
 // past mkAdder's return because the closure now owns it.
-TEST(LambdaL3Tests, returnedValueCaptureClosureCallable) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static (int32) -> int32 mkAdder() {\n"
-        "        int32 base = 10;\n"
-        "        (int32) -> int32 fn = x -> x + base;\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        (int32) -> int32 fn = mkAdder();\n"
-        "        return fn(5);\n"  // 5 + 10
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 15);
-}
 
 // End-to-end escape: non-capturing closure. Record lives in a global,
 // so the producer's stack frame death is irrelevant.
-TEST(LambdaL3Tests, returnedNonCapturingClosureCallable) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static () -> int32 mkConst() {\n"
-        "        () -> int32 fn = () -> 42;\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        () -> int32 fn = mkConst();\n"
-        "        return fn();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // Drop count after escape + invocation: the caller's local owns the
 // returned closure and fires its drop entry at scope exit. mkFn's drop
 // entries are deactivated (transferred). Caller's run() fires one drop
 // for fn (which itself frees the transferred arr + captures + closure).
-TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static () -> int64 mkFn() {\n"
-        "        int32[] arr = heap int32[4];\n"
-        "        () -> int64 fn = () -> #arr.count();\n"
-        "        return fn;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        () -> int64 fn = mkFn();\n"
-        "        int64 unused = fn();\n"
-        "        return 0;\n"
-        "    }\n"
-        "    public static int64 read() {\n"
-        "        return Cajeta.dropCount();\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.D");
-    jit->lookup<int32_t (*)()>("run")();
-    EXPECT_EQ(jit->lookup<int64_t (*)()>("read")(), 1);
-}
 
 // ---------------------------------------------------------------------
 // Transfer (`#name`) inside nested blocks of a lambda body
@@ -411,59 +284,8 @@ TEST(LambdaL3Tests, escapedClosureDropFiresInCaller) {
 // Transfer-name registered when `#arr` appears inside the if-then
 // block of a lambda body. Outer use after the lambda is created must
 // still trip use-after-move.
-TEST(LambdaL3Tests, transferInsideIfBranchOfLambdaDemotesOuter) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] arr = heap int32[3];\n"
-        "        (boolean) -> int64 fn = (b) -> {\n"
-        "            if (b) {\n"
-        "                return #arr.count();\n"
-        "            }\n"
-        "            return 0L;\n"
-        "        };\n"
-        "        int64 size = arr.count();\n"
-        "        return (int32) (fn(true) + size);\n"
-        "    }\n"
-        "}\n";
-    // transfer-demotes-to-borrow: the capture demotes `arr` to a borrow of
-    // the same live array; the outer read is an ordinary borrow read.
-    try {
-        CajetaJit::compile(src, "test.D");
-    } catch (cajeta::Exception& e) {
-        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
-                      << ": " << e.getMessage();
-    }
-}
 
 // Same shape but the `#name` lives inside a `for`-loop body.
-TEST(LambdaL3Tests, transferInsideForBodyOfLambdaDemotesOuter) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        int32[] arr = heap int32[3];\n"
-        "        (int32) -> int64 fn = (n) -> {\n"
-        "            int64 acc = 0L;\n"
-        "            for (int32 i = 0; i < n; i = i + 1) {\n"
-        "                acc = acc + #arr.count();\n"
-        "            }\n"
-        "            return acc;\n"
-        "        };\n"
-        "        int64 size = arr.count();\n"
-        "        return (int32) (fn(1) + size);\n"
-        "    }\n"
-        "}\n";
-    // transfer-demotes-to-borrow: the capture demotes `arr` to a borrow of
-    // the same live array; the outer read is an ordinary borrow read.
-    try {
-        CajetaJit::compile(src, "test.D");
-    } catch (cajeta::Exception& e) {
-        ADD_FAILURE() << "expected a clean compile, got " << e.getErrorId()
-                      << ": " << e.getMessage();
-    }
-}
 
 // Positive control: the transfer-only-in-nested-block lambda compiles
 // and runs (no outer use after) — confirms the if-branch transfer

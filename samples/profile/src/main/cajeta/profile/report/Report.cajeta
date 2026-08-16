@@ -16,7 +16,7 @@ import profile.report.Result;
 public class Report {
 
     public static void writeResults(String path, ArrayList<Result> rows) {
-        FileWriter w = File.openWrite(path, OpenMode.WRITE);
+        FileWriter w #= File.openWrite(path, OpenMode.WRITE);
         w.writeString(Result.header());
         w.writeString("\n");
         int32 i = 0;
@@ -32,7 +32,7 @@ public class Report {
     }
 
     public static void writeEnv(String path, String runId) {
-        FileWriter w = File.openWrite(path, OpenMode.WRITE);
+        FileWriter w #= File.openWrite(path, OpenMode.WRITE);
         w.writeString("key,value\n");
         w.writeString("run_id," + Csv.field(runId) + "\n");
 

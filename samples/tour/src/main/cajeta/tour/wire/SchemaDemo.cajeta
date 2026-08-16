@@ -140,7 +140,7 @@ public class SchemaDemo extends DemoClass {
         //    Compressor, reader a Decompressor; virtual dispatch lands
         //    TourRle's implementations.
         String text = "aaaaaaaabbbbcc";
-        int8[] plain = text.toBytes();
+        int8[] plain #= text.toBytes();
         Compressor c = heap TourRle();
         Decompressor d = heap TourRle();
 
@@ -148,7 +148,7 @@ public class SchemaDemo extends DemoClass {
         // block does not carry it (a container writes it in the block
         // header next to the bytes).
         int64 expandedLen = plain.count();
-        int8[] block = c.compress(plain);
+        int8[] block #= c.compress(plain);
         System.stdout.println("  RLE " + expandedLen + " bytes -> "
             + block.count() + " (3 runs, 2 bytes each)");
         this.check(block.count() == 6L, "aaaaaaaabbbbcc packs to 3 (count,byte) pairs");
@@ -156,7 +156,7 @@ public class SchemaDemo extends DemoClass {
 
         // Reader side: the recorded length comes back as expandedLen,
         // sizing the output buffer in one allocation.
-        int8[] restored = d.decompress(block, expandedLen);
+        int8[] restored #= d.decompress(block, expandedLen);
         this.check(restored.count() == plain.count(),
             "decompress returns exactly expandedLen bytes");
         this.check(this.sameBytes(restored, plain),
@@ -186,8 +186,8 @@ public class SchemaDemo extends DemoClass {
         WirePoint p = heap WirePoint();
         p.x = 7;
         p.y = -40;
-        int8[] bytes = codec.encode(p, schema);
-        WirePoint back = codec.decode(bytes, schema);
+        int8[] bytes #= codec.encode(p, schema);
+        WirePoint back #= codec.decode(bytes, schema);
         System.stdout.println("  point (" + p.x + "," + p.y + ") -> "
             + bytes.count() + " bytes -> (" + back.x + "," + back.y + ")");
         this.check(bytes.count() == 8L, "WirePoint encodes to 8 bytes");

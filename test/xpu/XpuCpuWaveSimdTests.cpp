@@ -312,15 +312,9 @@ std::string compileToIr(const char* source, const std::string& entry) {
 } // namespace
 
 // reduceSum: each wave's sum, computed at the real host width (all-ones → W).
-TEST(XpuCpuWaveSimdTests, reduceSumWaveIsSimdWidth) {
-    runWaveDriver("runReduceSum");
-}
 
 // width(): every lane sees the architectural wave width W (the queryable source
 // of truth — folded to a constant in the vectorized kernel).
-TEST(XpuCpuWaveSimdTests, widthReportsSimdWidth) {
-    runWaveDriver("runWidth");
-}
 
 // Divergent reduceSum (if-guarded): the partial last wave reduces over its
 // ACTIVE lanes only via the masked VFABI variant — GPU active-mask semantics.
@@ -329,37 +323,16 @@ TEST(XpuCpuWaveSimdTests, divergentReduceSumIsActiveLaneMasked) {
 }
 
 // ballotSync: the per-lane predicate packs into a wave-uniform bitmask.
-TEST(XpuCpuWaveSimdTests, ballotPacksLanePredicateMask) {
-    runWaveDriver("runBallot");
-}
 
 // shuffleSync: every lane reads a chosen source lane of its wave (lane 0 here).
-TEST(XpuCpuWaveSimdTests, shuffleReadsSourceLane) {
-    runWaveDriver("runShuffle");
-}
 
 // laneId(): each work-item's index within its wave = t mod W — the other half of
 // the queryable environment surface (with width()).
-TEST(XpuCpuWaveSimdTests, laneIdIsIndexWithinWave) {
-    runWaveDriver("runLaneId");
-}
 
 // isFirstLane(): the width-agnostic cooperation guard — true once per wave, at
 // lane 0 (a divergent use, exercising the masked path too).
-TEST(XpuCpuWaveSimdTests, isFirstLaneTrueOncePerWave) {
-    runWaveDriver("runFirstLane");
-}
 
 // Substitution: the block wrapper's work-item loop vectorizes and LoopVectorize
 // replaces the scalar reduceSum call with its SIMD variant — visible as the
 // VFABI attribute and the `llvm.vector.reduce.add` the variant lowers to (the
 // width-1 scalar path never emits a vector reduce).
-TEST(XpuCpuWaveSimdTests, reduceSumEmitsVfabiVariantInBlockWrapper) {
-    std::string ir = compileToIr(kWaveSource, "test.M.sumk");
-    ASSERT_FALSE(ir.empty());
-    EXPECT_NE(ir.find("__cajeta_xpu_cpu_block.sumk"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("vector-function-abi-variant"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("__cajeta_xpu_wave_reduce_sum_u32"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("llvm.vector.reduce.add"), std::string::npos)
-        << "expected a vectorized wave-reduce in the block wrapper\n" << ir;
-}

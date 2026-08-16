@@ -57,7 +57,7 @@ public class ServerDemo extends DemoClass {
         // 1. The builder records configuration; nothing binds until
         // build(). Unset, the model is fiber-per-connection (Model A)
         // and the backlog is the platform default.
-        ServerBuilder b = Server.builder();
+        ServerBuilder b #= Server.builder();
         b.bind("127.0.0.1:0");
         b.handler((conn) -> ServerDemo.echoOnce(conn));
         this.check(b.serverModel.isFiberPerConnection(),
@@ -77,9 +77,9 @@ public class ServerDemo extends DemoClass {
         // scope, and the server borrows them — the core starts in
         // ServerState.NEW with nothing in flight.
         (TcpStream) -> void h = (conn) -> ServerDemo.echoOnce(conn);
-        IpAddress lip = IpAddress.loopbackV4();
-        SocketAddress bindAddr = SocketAddress.of(#lip, 0);
-        TcpListener listener = TcpListener.bind(bindAddr);
+        IpAddress lip #= IpAddress.loopbackV4();
+        SocketAddress bindAddr #= SocketAddress.of(#lip, 0);
+        TcpListener listener #= TcpListener.bind(bindAddr);
         int32 port = listener.boundPort();
         Server s = heap Server(listener, h);
         this.check(s.currentState() == ServerState.NEW,
@@ -93,9 +93,9 @@ public class ServerDemo extends DemoClass {
             // connection. The client connects and writes first (the
             // kernel completes the connect into the listen backlog),
             // so every step below returns without waiting.
-            IpAddress ip = IpAddress.loopbackV4();
-            SocketAddress addr = SocketAddress.of(#ip, port);
-            TcpStream client = TcpStream.connect(#addr);
+            IpAddress ip #= IpAddress.loopbackV4();
+            SocketAddress addr #= SocketAddress.of(#ip, port);
+            TcpStream client #= TcpStream.connect(#addr);
             int8[] msg = heap int8[4];
             msg[0] = (int8) 101;   // 'e'
             msg[1] = (int8) 99;    // 'c'
@@ -106,7 +106,7 @@ public class ServerDemo extends DemoClass {
             // acceptNext() pulls the pending connection; dispatch()
             // bumps the in-flight count and spawns the handler on its
             // own fiber (the connection moves in — the handler owns it).
-            TcpStream conn = s.acceptNext();
+            TcpStream conn #= s.acceptNext();
             s.dispatch(#conn);
 
             // The handler fiber echoes; readAsync parks this fiber

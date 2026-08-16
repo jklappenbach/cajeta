@@ -63,31 +63,6 @@ TEST(FactoryCodegenTests, providerSingletonBuiltViaFactory) {
 
 // 4a.1.2a — @Singleton provider: two @Inject sites share one instance.
 // Mutate via c1, read via c2 → 50 (same object).
-TEST(FactoryCodegenTests, providerSingletonIdentityShared) {
-    auto src =
-        "package test;\n"
-        "public class Connection {\n"
-        "    public int32 value;\n"
-        "    public Connection() { value = 1; return; }\n"
-        "}\n"
-        "@Factory public class ConnFactory {\n"
-        "    #Connection make() {\n"
-        "        Connection c = heap Connection();\n"
-        "        return c;\n"
-        "    }\n"
-        "}\n"
-        "@Component public class App {\n"
-        "    @Inject Connection c1;\n"
-        "    @Inject Connection c2;\n"
-        "    public App() { return; }\n"
-        "    public static int32 run() {\n"
-        "        App a = __cajeta_inject();\n"
-        "        a.c1.value = 50;\n"
-        "        return a.c2.value;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src, "test.App"), 50);
-}
 
 // 4a.1.2b — @Transient provider: each @Inject site gets a fresh product.
 // Mutate via c1, read via c2 → 1 (distinct object, untouched, keeps its

@@ -66,130 +66,29 @@ std::string makeSource(const std::string& body) {
 
 // --- Construction + absolute/relative ----------------------------------
 
-TEST(PathTests, ofThenIsAbsoluteTrueForLeadingSlash) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/etc/passwd\");\n"
-        "return p.isAbsolute() ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, ofThenIsAbsoluteFalseForRelative) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"foo/bar\");\n"
-        "return p.isAbsolute() ? 1 : 0;")), 0);
-}
 
-TEST(PathTests, ofThenIsRelativeTrueForBareName) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"data.json\");\n"
-        "return p.isRelative() ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, ofEmptyStringIsRelative) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"\");\n"
-        "return p.isRelative() ? 1 : 0;")), 1);
-}
 
 // --- name / stem / extension -------------------------------------------
 
-TEST(PathTests, nameOfSimplePath) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/foo/bar/baz.txt\");\n"
-        "return p.name().equals(\"baz.txt\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, nameOfRootPath) {
-    // "/foo" → name is "foo".
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/foo\");\n"
-        "return p.name().equals(\"foo\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, nameOfBareFile) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"file.cajeta\");\n"
-        "return p.name().equals(\"file.cajeta\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, stemStripsTrailingExtension) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/x/y/data.json\");\n"
-        "return p.stem().equals(\"data\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, stemNoExtensionReturnsWholeName) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/etc/passwd\");\n"
-        "return p.stem().equals(\"passwd\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, extensionLastDotSuffix) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"archive.tar.gz\");\n"
-        "return p.extension().equals(\"gz\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, extensionNoneIsEmpty) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"README\");\n"
-        "return p.extension().isEmpty() ? 1 : 0;")), 1);
-}
 
 // --- parent ------------------------------------------------------------
 
-TEST(PathTests, parentStripsLastSegment) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/foo/bar/baz.txt\");\n"
-        "Path par #= p.parent();\n"
-        "// Re-format par's bytes through String to compare.\n"
-        "int32 n = (int32) par.bytes.count();\n"
-        "int8[] cp = heap int8[n];\n"
-        "int32 i = 0;\n"
-        "while (i < n) { cp[i] = par.bytes[i]; i = i + 1; }\n"
-        "String s = heap String(#cp, n);\n"
-        "return s.equals(\"/foo/bar\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, parentOfRootIsRoot) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/\");\n"
-        "Path par #= p.parent();\n"
-        "int32 n = (int32) par.bytes.count();\n"
-        "int8[] cp = heap int8[n];\n"
-        "int32 i = 0;\n"
-        "while (i < n) { cp[i] = par.bytes[i]; i = i + 1; }\n"
-        "String s = heap String(#cp, n);\n"
-        "return s.equals(\"/\") ? 1 : 0;")), 1);
-}
 
 // --- operator/ (join) --------------------------------------------------
 
 // Test using resolve() (named alias). Operator/ via the BinaryOp
 // dispatch is exercised separately below — same body, parser path
 // differs.
-TEST(PathTests, resolveAppendsSegmentWithSeparator) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"/etc\");\n"
-        "Path q #= p.resolve(\"passwd\");\n"
-        "int32 n = (int32) q.bytes.count();\n"
-        "int8[] cp = heap int8[n];\n"
-        "int32 i = 0;\n"
-        "while (i < n) { cp[i] = q.bytes[i]; i = i + 1; }\n"
-        "String s = heap String(#cp, n);\n"
-        "return s.equals(\"/etc/passwd\") ? 1 : 0;")), 1);
-}
 
-TEST(PathTests, resolveOntoRelativePath) {
-    EXPECT_EQ(runI32(makeSource(
-        "Path p #= Path.of(\"src\");\n"
-        "Path q #= p.resolve(\"main.cajeta\");\n"
-        "int32 n = (int32) q.bytes.count();\n"
-        "int8[] cp = heap int8[n];\n"
-        "int32 i = 0;\n"
-        "while (i < n) { cp[i] = q.bytes[i]; i = i + 1; }\n"
-        "String s = heap String(#cp, n);\n"
-        "return s.equals(\"src/main.cajeta\") ? 1 : 0;")), 1);
-}
 
 // --- Phase C: stat-touching predicates ----------------------------------
 

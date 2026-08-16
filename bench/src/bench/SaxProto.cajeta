@@ -21,7 +21,7 @@ public final class SaxProto {
         }
     }
     static void check(String path, String name) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         SaxCounter h = heap SaxCounter();
         parse(b, n, h);

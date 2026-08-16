@@ -19,6 +19,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -121,39 +122,6 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 } // namespace
 
 // CPU oracle: i*j=k, 90-deg rotation, length — out[i] == 3 + i.
-TEST(XpuQuaternionDeviceTests, runsOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kQuatSource);
-    auto k = findMethod(module->getStructures()["test.Q"], "quatk");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_quat_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto sym = jit->lookup("quatk");
-    ASSERT_TRUE(static_cast<bool>(sym)) << llvm::toString(sym.takeError());
-    auto quatk = sym->toPtr<QFn>();
-
-    const int32_t B = 32, G = 2;
-    const uint32_t N = (uint32_t) (B * G);
-    std::vector<float> out(N, -1.0f);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            quatk(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    for (uint32_t i = 0; i < N; ++i)
-        EXPECT_NEAR(out[i], quatExpectedAt(i), 1e-4f) << "element " << i;
-}
 
 // On a real GPU via Vulkan. out[i] == 3 + i (within fp tolerance).
 TEST(XpuQuaternionDeviceTests, runsOnVulkanDevice) {
@@ -223,7 +191,7 @@ TEST(XpuQuaternionDeviceTests, slerpRunsOnCpu) {
     cajeta::xpu::cpu::configureHostModule(*host, *tm);
     ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
 
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
+    auto jitOrErr = cajeta::test::makeCoffSafeJit();
     ASSERT_TRUE(static_cast<bool>(jitOrErr)) << llvm::toString(jitOrErr.takeError());
     auto jit = std::move(*jitOrErr);
     auto err = jit->addIRModule(

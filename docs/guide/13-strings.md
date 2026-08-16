@@ -8,12 +8,12 @@ byte length.
 
 ```cajeta
 String s = "  Hello, Cajeta!  ";
-String trimmed = s.trim();
+String trimmed #= s.trim();
 boolean has = trimmed.contains("Cajeta");
 boolean hello = trimmed.startsWith("Hello");
-String sub = trimmed.substring(7, 13);            // "Cajeta"
-String swapped = trimmed.replace("Cajeta", "World");
-String loud = trimmed.toUpperCase();
+String sub #= trimmed.substring(7, 13);            // "Cajeta"
+String swapped #= trimmed.replace("Cajeta", "World");
+String loud #= trimmed.toUpperCase();
 int64 codepoints = trimmed.count();
 int64 bytes = trimmed.size();
 boolean eq = trimmed.equals("Hello, Cajeta!");    // byte-for-byte
@@ -71,7 +71,7 @@ StringBuilder sb = stack StringBuilder();
 sb.append("Hello, ");
 sb.append("world");
 int32 soFar = sb.count();          // bytes accumulated
-String built = sb.toString();      // owned #String
+String built #= sb.toString();      // owned #String
 ```
 
 ## Format templates in println

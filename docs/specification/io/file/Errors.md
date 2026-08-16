@@ -58,7 +58,7 @@ IO-using call site:
 
 ```cajeta
 try {
-    FileReader r = File.openRead("/etc/config.toml");
+    FileReader r #= File.openRead("/etc/config.toml");
     // ... read it
     r.close();
 } catch (NotFoundException e) {

@@ -14,7 +14,7 @@ ZoneOffset off = ZoneOffset.ofHours(-5);
 LocalDateTime ldt = LocalDateTime.of(2026, 6, 5, 9, 30);
 ZonedDateTime zdt = ZonedDateTime.ofLocal(ldt, off);
 int32 hour = zdt.getHour();   // 9 — wall-clock, at -05:00
-String text = zdt.iso();      // "2026-06-05T09:30-05:00"
+String text #= zdt.iso();      // "2026-06-05T09:30-05:00"
 ```
 
 ## Methods

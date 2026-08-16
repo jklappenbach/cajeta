@@ -11,8 +11,8 @@ launch, released at the next `sync()` ordered after it. (The spec's
 keyword.)
 
 ```cajeta
-KernelStream s = KernelStream.current();   // per-thread default stream
-KernelStream fresh = KernelStream.create();
+KernelStream s #= KernelStream.current();   // per-thread default stream
+KernelStream fresh #= KernelStream.create();
 // enqueue async copies and launches on `fresh` ...
 fresh.sync();      // block until everything submitted has completed
 fresh.destroy();

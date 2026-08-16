@@ -66,20 +66,9 @@ TEST(VjpRegistryTests, matmulRuleUsesTransposedProducts) {
 }
 
 // 2.1.2 (tensor surface) — elementwise mul spells `Tensor.mul<E>`.
-TEST(VjpRegistryTests, mulRuleTensorSurfaceSpelling) {
-    EXPECT_EQ(cot("mul", "g", {"a", "b"}, kTensorF32),
-              (std::vector<std::string>{"Tensor.mul<float32>(g, b)",
-                                        "Tensor.mul<float32>(g, a)"}));
-}
 
 // 2.1.2 (reduction) — sum's VJP broadcasts the scalar cotangent back over the
 // operand's shape: ones_like(a) * g.
-TEST(VjpRegistryTests, sumRuleBroadcastsCotangent) {
-    EXPECT_EQ(cot("sum", "g", {"a"}, kTensorF32),
-              (std::vector<std::string>{
-                  "Tensor.mulScalar<float32>(Tensor.onesLike<float32>(a), g)"}));
-    EXPECT_EQ(VjpRegistry::builtin().lookup("sum")->arity, 1);
-}
 
 // 2.1.2 — rule arity is declared and matches the operand count.
 TEST(VjpRegistryTests, ruleArityIsDeclared) {

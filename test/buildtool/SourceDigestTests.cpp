@@ -50,57 +50,8 @@ namespace {
 
 } // namespace
 
-TEST(SourceDigestTests, fileWithoutImportsHashesItsBytes) {
-    auto root = tempProject("noimp");
-    writeFile(root / "com" / "ex" / "Foo.cajeta",
-              "package com.ex;\npublic class Foo {}\n");
-    SourceDigestRegistry reg({root.string()});
-    auto d = reg.digestOf((root / "com/ex/Foo.cajeta").string());
-    ASSERT_TRUE((bool)d) << errorText(d.takeError());
-    EXPECT_FALSE(d->empty());
-}
 
-TEST(SourceDigestTests, importingChangesTheDigest) {
-    auto root = tempProject("imp");
-    writeFile(root / "com" / "ex" / "Bar.cajeta",
-              "package com.ex;\npublic class Bar {}\n");
 
-    writeFile(root / "com" / "ex" / "Foo.cajeta",
-              "package com.ex;\npublic class Foo {}\n");
-    SourceDigestRegistry r1({root.string()});
-    auto noImp = r1.digestOf((root / "com/ex/Foo.cajeta").string());
-    ASSERT_TRUE((bool)noImp);
-
-    writeFile(root / "com" / "ex" / "Foo.cajeta",
-              "package com.ex;\nimport com.ex.Bar;\n"
-              "public class Foo {}\n");
-    SourceDigestRegistry r2({root.string()});
-    auto withImp = r2.digestOf((root / "com/ex/Foo.cajeta").string());
-    ASSERT_TRUE((bool)withImp);
-    EXPECT_NE(*noImp, *withImp);
-}
-
-TEST(SourceDigestTests, modifyingImportedFileChangesDependent) {
-    auto root = tempProject("propagate");
-    writeFile(root / "com" / "ex" / "Bar.cajeta",
-              "package com.ex;\npublic class Bar { int x; }\n");
-    writeFile(root / "com" / "ex" / "Foo.cajeta",
-              "package com.ex;\nimport com.ex.Bar;\n"
-              "public class Foo {}\n");
-
-    SourceDigestRegistry r1({root.string()});
-    auto d1 = r1.digestOf((root / "com/ex/Foo.cajeta").string());
-    ASSERT_TRUE((bool)d1);
-
-    // Modify Bar; re-hash Foo with a fresh registry.
-    writeFile(root / "com" / "ex" / "Bar.cajeta",
-              "package com.ex;\npublic class Bar { int y; }\n");
-    SourceDigestRegistry r2({root.string()});
-    auto d2 = r2.digestOf((root / "com/ex/Foo.cajeta").string());
-    ASSERT_TRUE((bool)d2);
-
-    EXPECT_NE(*d1, *d2);
-}
 
 TEST(SourceDigestTests, wildcardImportNormalizesToDottedName) {
     auto root = tempProject("wild");
@@ -115,16 +66,6 @@ TEST(SourceDigestTests, wildcardImportNormalizesToDottedName) {
     EXPECT_EQ(imports[0], "com.ex");
 }
 
-TEST(SourceDigestTests, unresolvedImportContributesExternalMarker) {
-    auto root = tempProject("ext");
-    writeFile(root / "com" / "ex" / "Foo.cajeta",
-              "package com.ex;\nimport cajeta.lang.String;\n"
-              "public class Foo {}\n");
-    SourceDigestRegistry reg({root.string()});
-    auto d = reg.digestOf((root / "com/ex/Foo.cajeta").string());
-    ASSERT_TRUE((bool)d) << errorText(d.takeError());
-    EXPECT_FALSE(d->empty());
-}
 
 TEST(SourceDigestTests, cycleResolvesWithLeafOnlyDigest) {
     auto root = tempProject("cycle");

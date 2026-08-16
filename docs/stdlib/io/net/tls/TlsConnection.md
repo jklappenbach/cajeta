@@ -12,7 +12,7 @@ verification verdicts are `CERT_OK` / `CERT_EXPIRED` / `CERT_HOSTNAME` /
 `CERT_UNTRUSTED` / `CERT_OTHER`.
 
 ```cajeta
-TlsConnection tls = TlsConnection.verifyingClient();
+TlsConnection tls #= TlsConnection.verifyingClient();
 tls.useSystemTrust();
 int32 step = tls.handshakeStep();     // OK, WANT_IO, or FAILED
 int8[] out = heap int8[4096];

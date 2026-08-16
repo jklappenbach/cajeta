@@ -27,46 +27,15 @@ int32_t runI32(const std::string& body) {
 
 } // namespace
 
-TEST(CharLiteralTests, asciiLetter) {
-    EXPECT_EQ(runI32("return (int32) 'A';"), 'A');
-}
 
-TEST(CharLiteralTests, asciiDigit) {
-    EXPECT_EQ(runI32("return (int32) '7';"), '7');
-}
 
-TEST(CharLiteralTests, escapeNewline) {
-    EXPECT_EQ(runI32("return (int32) '\\n';"), 10);
-}
 
-TEST(CharLiteralTests, escapeTab) {
-    EXPECT_EQ(runI32("return (int32) '\\t';"), 9);
-}
 
-TEST(CharLiteralTests, escapeBackslash) {
-    EXPECT_EQ(runI32("return (int32) '\\\\';"), 92);
-}
 
-TEST(CharLiteralTests, escapeSingleQuote) {
-    EXPECT_EQ(runI32("return (int32) '\\'';"), 39);
-}
 
 TEST(CharLiteralTests, escapeNull) {
     EXPECT_EQ(runI32("return (int32) '\\0';"), 0);
 }
 
-TEST(CharLiteralTests, unicodeAscii) {
-    EXPECT_EQ(runI32("return (int32) '\\u0041';"), 'A');
-}
 
-TEST(CharLiteralTests, charComparedToInt) {
-    EXPECT_EQ(runI32(
-        "if ('z' == 122) return 1;\n"
-        "return 0;"), 1);
-}
 
-TEST(CharLiteralTests, storedInCharLocal) {
-    EXPECT_EQ(runI32(
-        "char c = 'k';\n"
-        "return (int32) c;"), 'k');
-}

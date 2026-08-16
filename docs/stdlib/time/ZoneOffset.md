@@ -12,7 +12,7 @@ lookups live in [ZoneId](ZoneId.md).
 ZoneOffset ist = ZoneOffset.ofHoursMinutes(5, 30);
 ZoneOffset pst = ZoneOffset.ofHours(-8);
 boolean east = ist.compareTo(pst) > 0;   // true
-String id = ist.iso();                   // "+05:30"
+String id #= ist.iso();                   // "+05:30"
 ```
 
 ## Methods

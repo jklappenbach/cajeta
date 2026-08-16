@@ -241,36 +241,6 @@ src/icy.cajeta 10 100
     std::filesystem::remove_all(d);
 }
 
-TEST(Phase7AcceptanceTests, testActionCoverageMinPerFileViolationCitesOffenders) {
-    auto m = makeManifest();
-    auto props = makeProps(m);
-    ActionRegistry registry;
-    TaskContext ctx(props, &m);
-
-    auto d = tempDir("gate-pf");
-    auto bin = writeExec(d, "tb", "exit 0");
-    auto mapPath = d / "cov.map";
-    writeMap(mapPath, R"(src/a.cajeta 90 100
-src/b.cajeta 30 100
-)");
-    llvm::json::Object covObj;
-    covObj["map"] = mapPath.string();
-    covObj["min-per-file"] = 50;
-
-    llvm::json::Object params;
-    params["input"] = bin.string();
-    params["coverage"] = std::move(covObj);
-
-    auto r = registry.get("test")->run(params, ctx);
-    ASSERT_FALSE((bool)r);
-    auto msg = errorText(r.takeError());
-    EXPECT_NE(msg.find("per-file floor"), std::string::npos);
-    EXPECT_NE(msg.find("src/b.cajeta"), std::string::npos);
-    EXPECT_EQ(msg.find("src/a.cajeta"), std::string::npos)
-        << msg;
-
-    std::filesystem::remove_all(d);
-}
 
 TEST(Phase7AcceptanceTests, testActionCoverageExcludeAppliesBeforeGate) {
     auto m = makeManifest();

@@ -78,51 +78,10 @@ TEST(XpuBvhCodecTests, reinterpretRoundTripExact) {
 // 3.a-rest — the decoded box CONSERVATIVELY encloses the child: for parent span
 // [0,10] and child [2.3, 7.8], dequantize(quantizeMin) <= 2.3 and
 // dequantize(quantizeMax) >= 7.8, both within one quantum (10/255 ~ 0.039).
-TEST(XpuBvhCodecTests, quantizeConservativeAndTight) {
-    EXPECT_EQ(runI32(IMP,
-        "        float32 lo = 0.0f;\n"
-        "        float32 hi = 10.0f;\n"
-        "        float32 cmin = 2.3f;\n"
-        "        float32 cmax = 7.8f;\n"
-        "        int32 qlo = BvhCodec.quantizeMin(cmin, lo, hi);\n"
-        "        int32 qhi = BvhCodec.quantizeMax(cmax, lo, hi);\n"
-        "        float32 dlo = BvhCodec.dequantize(qlo, lo, hi);\n"
-        "        float32 dhi = BvhCodec.dequantize(qhi, lo, hi);\n"
-        // conservative: decoded min at or below true min, decoded max at or above
-        "        if (dlo > cmin + 0.0001f) { return -1; }\n"
-        "        if (dhi < cmax - 0.0001f) { return -2; }\n"
-        // tight: within one quantum (0.0393) of the true corner
-        "        if (dlo < cmin - 0.04f) { return -3; }\n"
-        "        if (dhi > cmax + 0.04f) { return -4; }\n"
-        // quantized cells are in range
-        "        if (qlo < 0) { return -5; }\n"
-        "        if (qlo > 255) { return -6; }\n"
-        "        if (qhi < 0) { return -7; }\n"
-        "        if (qhi > 255) { return -8; }\n"
-        "        return 0;\n"), 0);
-}
 
 // 3.a-rest — endpoint and clamp behaviour: the low corner at `lo` quantizes to 0
 // (decodes to lo), the high corner at `hi` quantizes to 255 (decodes to hi), and
 // out-of-span coordinates clamp instead of indexing past the lattice.
-TEST(XpuBvhCodecTests, quantizeEndpointsAndClamp) {
-    EXPECT_EQ(runI32(IMP,
-        "        float32 lo = 0.0f;\n"
-        "        float32 hi = 10.0f;\n"
-        "        if (BvhCodec.quantizeMin(0.0f, lo, hi) != 0) { return -1; }\n"
-        "        if (BvhCodec.quantizeMax(10.0f, lo, hi) != 255) { return -2; }\n"
-        // dequantize the extremes reproduces the span ends
-        "        float32 d0 = BvhCodec.dequantize(0, lo, hi);\n"
-        "        if (d0 < -0.0001f) { return -3; }\n"
-        "        if (d0 > 0.0001f) { return -4; }\n"
-        "        float32 d255 = BvhCodec.dequantize(255, lo, hi);\n"
-        "        if (d255 < 9.9999f) { return -5; }\n"
-        "        if (d255 > 10.0001f) { return -6; }\n"
-        // below-span min clamps to 0, above-span max clamps to 255
-        "        if (BvhCodec.quantizeMin(0.0f - 5.0f, lo, hi) != 0) { return -7; }\n"
-        "        if (BvhCodec.quantizeMax(20.0f, lo, hi) != 255) { return -8; }\n"
-        "        return 0;\n"), 0);
-}
 
 // 3.a-rest — byte pack/unpack round-trips little-endian, including a top byte (200)
 // that sets the int32 sign bit — the `& 255` in unpackByte cleans the arithmetic

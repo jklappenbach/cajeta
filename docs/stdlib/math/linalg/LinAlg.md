@@ -18,13 +18,13 @@ public final class Demo {
         int64[] shp = heap int64[2];
         shp[0] = 2;
         shp[1] = 2;
-        Tensor<float32> a = Tensor.zeros<float32>(shp);
+        Tensor<float32> a #= Tensor.zeros<float32>(shp);
         a.set2(0, 0, 4.0f);
         a.set2(0, 1, 1.0f);
         a.set2(1, 0, 1.0f);
         a.set2(1, 1, 3.0f);
         float32 d = LinAlg.det<float32>(a);          // 11
-        Tensor<float32> ai = LinAlg.inv<float32>(a);
+        Tensor<float32> ai #= LinAlg.inv<float32>(a);
         return;
     }
 }

@@ -67,7 +67,7 @@ public final class MatmulKernel {
         a.upload(ha);
         b.upload(hb);
         c.upload(hc);
-        KernelStream s = KernelStream.current();
+        KernelStream s #= KernelStream.current();
 
         uint32 total = n * (n / 8);          // one thread per (row, 8-col block)
         uint32 block = 64;

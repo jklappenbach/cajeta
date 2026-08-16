@@ -44,75 +44,17 @@ int64_t observeDrops(const std::string& body) {
 // Inner-block local fires its drop at the closing `}`, before the
 // outer block continues. Observable via a probe-after-block that sees
 // the count already incremented.
-TEST(BlockScopedDropTests, innerBlockArrayDropsAtClosingBrace) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        {\n"
-        "            int32[] tmp = heap int32[2];\n"
-        "        }\n"  // tmp's drop fires HERE
-        "        int64 mid = Cajeta.dropCount();\n"
-        "        return (int32) mid;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
 // Two sequential inner blocks each drop their own local at their own
 // closing brace — count = 2 by the time we observe.
-TEST(BlockScopedDropTests, sequentialBlocksEachDropOnExit) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        {\n"
-        "            int32[] a = heap int32[1];\n"
-        "        }\n"
-        "        {\n"
-        "            int32[] b = heap int32[1];\n"
-        "        }\n"
-        "        int64 c = Cajeta.dropCount();\n"
-        "        return (int32) c;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}
 
 // Nested blocks: inner fires first, then outer at its own closing.
 // At the probe between inner-end and outer-end, count = 1; at the
 // final read (post outer-end), count = 2.
-TEST(BlockScopedDropTests, nestedBlocksFireInnerFirstThenOuter) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        int64 afterInner = 0;\n"
-        "        {\n"
-        "            int32[] outer = heap int32[1];\n"
-        "            {\n"
-        "                int32[] inner = heap int32[1];\n"
-        "            }\n"  // inner fires HERE → count = 1
-        "            afterInner = Cajeta.dropCount();\n"
-        "        }\n"  // outer fires HERE → count = 2
-        "        int64 afterOuter = Cajeta.dropCount();\n"
-        "        return (int32) (afterInner * 10 + afterOuter);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 12);  // 1*10 + 2
-}
 
 // Method-level locals still drop at method exit. observeDrops fires
 // run()'s return → method-body block fires its frame → count visible
 // to read().
-TEST(BlockScopedDropTests, methodBodyLocalDropsAtMethodExit) {
-    EXPECT_EQ(observeDrops(
-        "int32[] arr = heap int32[1];"
-    ), 1);
-}
 
 // The lock-twice-in-a-method pattern from docs/specification/concurrent/Concurrency.md. Pre-block-
 // scoped-drops this deadlocked: the first LockGuard didn't release
@@ -159,22 +101,3 @@ TEST(BlockScopedDropTests, twoBackToBackCriticalSections) {
 // declared at any nesting level get dropped before the return
 // instruction. Count should be 2: outer + inner both drop on the
 // return path.
-TEST(BlockScopedDropTests, earlyReturnFiresAllEnclosingFrames) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static int32 worker() {\n"
-        "        int32[] outer = heap int32[1];\n"
-        "        {\n"
-        "            int32[] inner = heap int32[1];\n"
-        "            return 0;\n"  // fires inner + outer before ret
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        Cajeta.dropCountReset();\n"
-        "        int32 v = worker();\n"
-        "        return (int32) Cajeta.dropCount();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 2);
-}

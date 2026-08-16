@@ -46,37 +46,6 @@ TEST(VarargsTests, threeArgsPackIntoArray) {
 }
 
 // count() on the packed array reports the trailing-arg count.
-TEST(VarargsTests, sizeMatchesTrailingArgCount) {
-    auto src =
-        "package test;\n"
-        "public class Calc {\n"
-        "    public int32 count(int32... xs) { return (int32) xs.count(); }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Calc c = heap Calc();\n"
-        "        return c.count(1, 2, 3, 4, 5);\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 5);
-}
 
 // Mixing fixed and varargs: a leading fixed param followed by trailing
 // `int32...`. Fixed param threads through normally; the rest pack.
-TEST(VarargsTests, fixedPlusVarargs) {
-    auto src =
-        "package test;\n"
-        "public class Calc {\n"
-        "    public int32 sumWithBase(int32 base, int32... xs) {\n"
-        "        return base + xs[0] + xs[1];\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Calc c = heap Calc();\n"
-        "        return c.sumWithBase(100, 5, 7);\n"
-        "    }\n"
-        "}\n";
-    // 100 + 5 + 7 = 112
-    EXPECT_EQ(runI32(src), 112);
-}

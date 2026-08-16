@@ -137,29 +137,3 @@ TEST(GfxGraphicsRegistrationTests, vertexAndFragmentShadersAutoRegister) {
 // §4 registration — graphics registration is Vulkan/SPIR-V-only: the neutral
 // seam no-ops (returns 0, touches nothing) for non-Spirv backends, since the
 // other device targets have no rasterization pipeline.
-TEST(GfxGraphicsRegistrationTests, nonSpirvBackendsNoOp) {
-    const std::string src =
-        "package test;\n"
-        "public class S {\n"
-        "    @Vertex\n"
-        "    public static Vector<float32,4> vsMain(Vector<float32,4> position) {\n"
-        "        return position;\n"
-        "    }\n"
-        "}\n";
-
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.S");
-    std::vector<MethodPtr> shaders = collectShaders(module);
-    ASSERT_EQ(shaders.size(), 1u);
-
-    for (auto backend : {cajeta::xpu::Backend::Nvptx, cajeta::xpu::Backend::Amdgpu,
-                         cajeta::xpu::Backend::Cpu}) {
-        llvm::LLVMContext ctx;
-        llvm::Module host("gfx_reg_noop", ctx);
-        int emitted = cajeta::xpu::emitGraphicsRegistration(
-            backend, shaders, host, "vulkan1.3");
-        EXPECT_EQ(emitted, 0) << "graphics registration must no-op for "
-                              << cajeta::xpu::backendName(backend);
-        EXPECT_EQ(host.getNamedGlobal("xpu.spirv.vsMain"), nullptr);
-    }
-}

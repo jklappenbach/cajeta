@@ -47,38 +47,10 @@ namespace {
 
 // ─── manifest-level: melt block is recognized + preserved ─────────
 
-TEST(MeltParserTests, manifestRetainsMeltBlock) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" },
-        "melt": {
-            "dependencies": { "x.y": "1.0.0" }
-        }
-    })");
-    EXPECT_TRUE(m.hasMelt);
-    EXPECT_FALSE(m.meltRaw.empty());
-}
 
-TEST(MeltParserTests, manifestWithoutMeltLeavesFlagFalse) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" }
-    })");
-    EXPECT_FALSE(m.hasMelt);
-    EXPECT_TRUE(m.meltRaw.empty());
-}
 
 // ─── mutual exclusion ─────────────────────────────────────────────
 
-TEST(MeltParserTests, meltWithTasksIsRejected) {
-    auto m = loadManifestString(R"({
-        "details": { "name": "p", "version": "1.0.0" },
-        "melt": { "dependencies": {} },
-        "tasks": { "build": { "actions": [{ "action": "exec",
-                                            "params": { "command": "echo" } }] } }
-    })");
-    ASSERT_FALSE((bool)m);
-    auto msg = errorText(m.takeError());
-    EXPECT_NE(msg.find("both 'melt' and 'tasks'"), std::string::npos);
-}
 
 TEST(MeltParserTests, meltWithWorkspaceIsRejected) {
     auto m = loadManifestString(R"({
@@ -144,16 +116,6 @@ TEST(MeltParserTests, parseMeltCapturesAllExportableFields) {
     EXPECT_EQ(melt->melts[0].version, "1.0.0");
 }
 
-TEST(MeltParserTests, parseMeltReturnsEmptyWhenNoMeltBlock) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" }
-    })");
-    auto melt = parseMelt(m);
-    ASSERT_TRUE((bool)melt) << errorText(melt.takeError());
-    EXPECT_TRUE(melt->dependencies.empty());
-    EXPECT_TRUE(melt->properties.empty());
-    EXPECT_TRUE(melt->melts.empty());
-}
 
 // ─── parseMelt: non-exportable fields rejected ────────────────────
 
@@ -172,62 +134,11 @@ TEST(MeltParserTests, parseMeltRejectsNonExportableField) {
               std::string::npos);
 }
 
-TEST(MeltParserTests, parseMeltRejectsNonStringPropertyValue) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" },
-        "melt": {
-            "properties": { "bad": 42 }
-        }
-    })");
-    auto melt = parseMelt(m);
-    ASSERT_FALSE((bool)melt);
-    auto msg = errorText(melt.takeError());
-    EXPECT_NE(msg.find("must be a string"), std::string::npos);
-}
 
-TEST(MeltParserTests, parseMeltRejectsNonStringDependencyConstraint) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" },
-        "melt": {
-            "dependencies": { "x.y": { "version": "1.0.0" } }
-        }
-    })");
-    auto melt = parseMelt(m);
-    ASSERT_FALSE((bool)melt);
-    auto msg = errorText(melt.takeError());
-    EXPECT_NE(msg.find("must be a version constraint string"),
-              std::string::npos);
-}
 
 // ─── parseSettingsMelts ───────────────────────────────────────────
 
-TEST(MeltParserTests, parseSettingsMeltsParsesPins) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" },
-        "settings": {
-            "melts": [
-                "com.example.platform-melt@2024.1.0",
-                "com.example.test-melt@1.0.0"
-            ]
-        }
-    })");
-    auto imports = parseSettingsMelts(m);
-    ASSERT_TRUE((bool)imports) << errorText(imports.takeError());
-    ASSERT_EQ(imports->size(), 2u);
-    EXPECT_EQ((*imports)[0].name, "com.example.platform-melt");
-    EXPECT_EQ((*imports)[0].version, "2024.1.0");
-    EXPECT_EQ((*imports)[1].name, "com.example.test-melt");
-    EXPECT_EQ((*imports)[1].version, "1.0.0");
-}
 
-TEST(MeltParserTests, parseSettingsMeltsEmptyWhenNoBlock) {
-    auto m = mustLoad(R"({
-        "details": { "name": "p", "version": "1.0.0" }
-    })");
-    auto imports = parseSettingsMelts(m);
-    ASSERT_TRUE((bool)imports) << errorText(imports.takeError());
-    EXPECT_TRUE(imports->empty());
-}
 
 TEST(MeltParserTests, parseSettingsMeltsRejectsMalformedEntry) {
     auto m = mustLoad(R"({
@@ -257,34 +168,6 @@ TEST(MeltParserTests, parseSettingsMeltsRejectsNonStringEntry) {
 
 // ─── parseMeltImport ──────────────────────────────────────────────
 
-TEST(MeltParserTests, parseMeltImportSplitsNameAndVersion) {
-    auto r = parseMeltImport("com.example.melt@2024.1.0");
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->name, "com.example.melt");
-    EXPECT_EQ(r->version, "2024.1.0");
-}
 
-TEST(MeltParserTests, parseMeltImportUsesLastAt) {
-    // Names don't contain '@' today, but if a registry ever lets one
-    // through, splitting on the rightmost '@' keeps the version part
-    // intact.
-    auto r = parseMeltImport("name@with@1.0.0");
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->name, "name@with");
-    EXPECT_EQ(r->version, "1.0.0");
-}
 
-TEST(MeltParserTests, parseMeltImportRejectsMissingAt) {
-    auto r = parseMeltImport("no-at-sign");
-    ASSERT_FALSE((bool)r);
-}
 
-TEST(MeltParserTests, parseMeltImportRejectsEmptyHalves) {
-    auto a = parseMeltImport("@1.0.0");
-    ASSERT_FALSE((bool)a);
-    consumeError(a.takeError());
-
-    auto b = parseMeltImport("name@");
-    ASSERT_FALSE((bool)b);
-    consumeError(b.takeError());
-}

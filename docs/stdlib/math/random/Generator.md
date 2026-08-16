@@ -17,9 +17,9 @@ import cajeta.math.random.Generator;
 public final class Demo {
     public static void run() {
         Generator g = heap Generator(42);
-        Tensor<float32> u = g.uniform(1000);       // [0, 1)
-        Tensor<float32> z = g.normal(1000);        // N(0, 1)
-        Tensor<int64> d = g.integers(1, 7, 10);    // ten rolls of a die
+        Tensor<float32> u #= g.uniform(1000);       // [0, 1)
+        Tensor<float32> z #= g.normal(1000);        // N(0, 1)
+        Tensor<int64> d #= g.integers(1, 7, 10);    // ten rolls of a die
         return;
     }
 }

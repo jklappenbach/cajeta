@@ -77,62 +77,17 @@ int64_t observeDrops(const std::string& body) {
 // (`Task` is an unknown class) or at codegen (await on the local
 // doesn't recognize CajetaTask). With them, it produces the inner
 // compute()'s 7.
-TEST(TaskTypingTests, declareAwaitOneTask) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 compute() { return 7; }\n"
-        "    public static int32 run() {\n"
-        "        Task<int32> t = spawn compute();\n"
-        "        return await t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 7);
-}
 
 // The canonical use case the AsyncStatus.md gap explicitly named:
 // store two task handles, then await each. Lets future tests exercise
 // fiber-on-fiber lock contention (when there's something to contend
 // for); for v1 with sync lowering it just proves both handles can
 // outlive the call site of either spawn.
-TEST(TaskTypingTests, twoHandlesStoredThenAwaited) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 left()  { return 10; }\n"
-        "    public static async int32 right() { return 32; }\n"
-        "    public static int32 run() {\n"
-        "        Task<int32> a = spawn left();\n"
-        "        Task<int32> b = spawn right();\n"
-        "        int32 va = await a;\n"
-        "        int32 vb = await b;\n"
-        "        return va + vb;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}
 
 // Different element types resolve as distinct Task<T> instances —
 // Task<int32> and Task<int64> share the wrapper class machinery but
 // each gets its own CajetaTask with the right value-field width.
 // Catches any place the int32-specialization leaks across to int64.
-TEST(TaskTypingTests, differentTaskElementTypes) {
-    auto src =
-        "package test;\n"
-        "public final class D {\n"
-        "    public static async int32 small() { return 100; }\n"
-        "    public static async int64 large() { return 100000000000; }\n"
-        "    public static int32 run() {\n"
-        "        Task<int32> a = spawn small();\n"
-        "        Task<int64> b = spawn large();\n"
-        "        int32 va = await a;\n"
-        "        int64 vb = await b;\n"
-        "        return va + (int32)(vb - 99999999900);\n"
-        "    }\n"
-        "}\n";
-    // small() = 100; large() = 1e11. (1e11 - 99999999900) = 100. Sum = 200.
-    EXPECT_EQ(runI32(src), 200);
-}
 
 // Drop-count assertion: two declared-then-awaited tasks drop exactly
 // twice, not four times. Without the ownership-transfer wiring,

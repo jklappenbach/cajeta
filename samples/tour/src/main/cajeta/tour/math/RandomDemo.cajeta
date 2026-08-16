@@ -29,8 +29,8 @@ public class RandomDemo extends DemoClass {
         // same stream, draw for draw.
         Generator g1 = heap Generator(42);
         Generator g2 = heap Generator(42);
-        Tensor<float32> u1 = g1.uniform(8);
-        Tensor<float32> u2 = g2.uniform(8);
+        Tensor<float32> u1 #= g1.uniform(8);
+        Tensor<float32> u2 #= g2.uniform(8);
         this.check(u1.ndim() == 1 && u1.size() == 8, "uniform(8): 1-D, 8 samples");
         boolean same = true;
         int64 i = 0;
@@ -47,7 +47,7 @@ public class RandomDemo extends DemoClass {
 
         // A different seed lands on a different stream.
         Generator g3 = heap Generator(43);
-        Tensor<float32> u3 = g3.uniform(8);
+        Tensor<float32> u3 #= g3.uniform(8);
         boolean differs = false;
         i = 0;
         while (i < 8) {
@@ -68,7 +68,7 @@ public class RandomDemo extends DemoClass {
 
         // integers(low, high, n): int64 draws in the half-open [low, high).
         Generator g4 = heap Generator(7);
-        Tensor<int64> ints = g4.integers(10, 20, 16);
+        Tensor<int64> ints #= g4.integers(10, 20, 16);
         this.check(ints.size() == 16, "integers(10, 20, 16): 16 draws");
         boolean intsOk = true;
         i = 0;

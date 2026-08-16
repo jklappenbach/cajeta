@@ -8,11 +8,11 @@ connection is pending. The listener exposes its descriptor as the public `fd`
 field (`-1` once closed).
 
 ```cajeta
-IpAddress lo = IpAddress.loopbackV4();
-SocketAddress bindAddr = SocketAddress.of(#lo, 0);
-TcpListener listener = TcpListener.bind(bindAddr);
+IpAddress lo #= IpAddress.loopbackV4();
+SocketAddress bindAddr #= SocketAddress.of(#lo, 0);
+TcpListener listener #= TcpListener.bind(bindAddr);
 int32 port = listener.boundPort();   // kernel-assigned ephemeral port
-TcpStream conn = listener.accept();  // blocks until a client connects
+TcpStream conn #= listener.accept();  // blocks until a client connects
 conn.close();
 listener.close();
 ```

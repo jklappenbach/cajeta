@@ -44,7 +44,7 @@ public class Md5Bench extends Benchmark {
     }
 
     public void run(int32 iterations) {
-        int8[] d = MD5.hash(this.data, this.len);
+        int8[] d #= MD5.hash(this.data, this.len);
         this.digestLen = (int64) d.count();
     }
 

@@ -49,13 +49,13 @@ public class ReflectionDemo extends DemoClass {
         int32 mcount = c.getMethodCount();
         int32 mi = 0;
         while (mi < mcount) {
-            Method m = c.getMethod(mi);
+            Method m #= c.getMethod(mi);
             int32 pcount = m.getParameterCount();
             System.stdout.println("  method[" + mi + "]    = " + m.getName()
                 + " (" + pcount + " params)");
             int32 pi = 0;
             while (pi < pcount) {
-                Parameter p = m.getParameter(pi);
+                Parameter p #= m.getParameter(pi);
                 System.stdout.println("      param[" + pi + "] = "
                     + p.getName() + " : " + p.getTypeName());
                 pi = pi + 1;
@@ -65,13 +65,13 @@ public class ReflectionDemo extends DemoClass {
 
         // Construct a fresh Counter reflectively via its no-arg constructor.
         // The result is an owned heap object (dropped at scope exit).
-        Constructor ctor = c.getConstructor(0);
-        Object obj = ctor.heapInstance();
+        Constructor ctor #= c.getConstructor(0);
+        Object obj #= ctor.heapInstance();
         System.stdout.println("  heapInstance -> Counter with "
             + Class.of(obj).getFieldCount() + " field(s)");
 
         // Reflective field write: set v = 40 directly through the Field object.
-        Field vf = c.getField(0);
+        Field vf #= c.getField(0);
         vf.setInt32(obj, 40);
         System.stdout.println("  reflective set v = " + vf.getInt32(obj));
         this.check(c.getFieldName(0).equals("v") && vf.getInt32(obj) == 40,
@@ -81,7 +81,7 @@ public class ReflectionDemo extends DemoClass {
         // on the constructed instance with a packed argument. v: 40 -> 42.
         int32 k = 0;
         while (k < mcount) {
-            Method m = c.getMethod(k);
+            Method m #= c.getMethod(k);
             if (m.getParameterCount() == 1) {
                 int64[] args = heap int64[1];
                 args[0] = (int64) 2;
@@ -101,7 +101,7 @@ public class ReflectionDemo extends DemoClass {
         int32 ai = 0;
         int32 acount = c.getAnnotationCount();
         while (ai < acount) {
-            Annotation a = c.getAnnotation(ai);
+            Annotation a #= c.getAnnotation(ai);
             System.stdout.println("    @" + a.getName());
             ai = ai + 1;
         }
@@ -112,7 +112,7 @@ public class ReflectionDemo extends DemoClass {
         // Down to a method's annotation: bumpBy carries @Mutates.
         int32 mj = 0;
         while (mj < mcount) {
-            Method m = c.getMethod(mj);
+            Method m #= c.getMethod(mj);
             if (m.hasAnnotation("code.Mutates")) {
                 System.stdout.println("  method @Mutates   = " + m.getName());
             }
@@ -124,9 +124,9 @@ public class ReflectionDemo extends DemoClass {
         // class's `@Tracked(2)` has an unnamed int argument (read with the
         // conventional key "value"), and the field's `@Metric("count")` an
         // unnamed string — value reflection, not just names.
-        Annotation tracked = c.getAnnotation(0);
+        Annotation tracked #= c.getAnnotation(0);
         System.stdout.println("  @Tracked(value)   = " + (int32) tracked.getInt("value"));
-        Annotation metric = vf.getAnnotation(0);
+        Annotation metric #= vf.getAnnotation(0);
         System.stdout.println("  @Metric(value)    = " + metric.getString("value"));
         this.check((int32) tracked.getInt("value") == 2
             && metric.getString("value").equals("count"),
@@ -136,7 +136,7 @@ public class ReflectionDemo extends DemoClass {
         // the argument by key, then read each element.
         int32 li = 0;
         while (li < acount) {
-            Annotation a = c.getAnnotation(li);
+            Annotation a #= c.getAnnotation(li);
             if (a.getName().equals("code.Labels")) {
                 int32 vi = a.getArgIndex("value");
                 int32 vn = a.getArgListCount(vi);

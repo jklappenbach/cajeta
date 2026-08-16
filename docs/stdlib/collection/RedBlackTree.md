@@ -17,7 +17,7 @@ String v = idx.get(42);            // "answer"
 boolean has = idx.containsKey(7);  // true
 int32 lo = idx.min();              // 7
 int32 hi = idx.max();              // 42
-ArrayList<int32> keys = idx.keysInOrder();  // ascending
+ArrayList<int32> keys #= idx.keysInOrder();  // ascending
 ```
 
 ## Methods

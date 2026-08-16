@@ -18,21 +18,21 @@ class SumHandler extends JsonHandler {
 public final class JsonApiTest {
     public static int32 run() {
         // 1) SAX parse via the stdlib JsonHandler/JsonSax
-        int8[] b = File.readAllBytes("/tmp/jsonbench/twitter.json");
+        int8[] b #= File.readAllBytes("/tmp/jsonbench/twitter.json");
         int64 n = (int64) b.count();
         SumHandler h = heap SumHandler();
         JsonSax.parse(b, n, h);
         System.stdout.println("SAX: keys=" + h.keys + " (expect 13345)");
 
         // 2) JSONL round-trip via JsonLinesWriter
-        FileWriter fw = File.openWrite("/tmp/jsonbench/out.jsonl", OpenMode.WRITE);
+        FileWriter fw #= File.openWrite("/tmp/jsonbench/out.jsonl", OpenMode.WRITE);
         JsonLinesWriter jl = heap JsonLinesWriter(fw);
         jl.beginObject().key("level").writeString("INFO").key("seq").writeNumber((int64) 1).endObject().endLine();
         jl.beginObject().key("level").writeString("WARN").key("seq").writeNumber((int64) 2).endObject().endLine();
         jl.flush();
         fw.close();
 
-        int8[] rb = File.readAllBytes("/tmp/jsonbench/out.jsonl");
+        int8[] rb #= File.readAllBytes("/tmp/jsonbench/out.jsonl");
         System.stdout.println("JSONL bytes read back: " + rb.count());
         return 0;
     }

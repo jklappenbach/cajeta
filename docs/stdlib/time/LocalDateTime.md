@@ -12,7 +12,7 @@ roll the date forward. Combine with a [ZoneOffset](ZoneOffset.md) to obtain an
 LocalDateTime dt = LocalDateTime.of(2026, 6, 8, 14, 30);
 LocalDateTime later = dt.plusHours(12L);
 int32 day = later.getDayOfMonth();   // 9 — carried into the next day
-String text = later.iso();           // "2026-06-09T02:30"
+String text #= later.iso();           // "2026-06-09T02:30"
 ```
 
 ## Methods

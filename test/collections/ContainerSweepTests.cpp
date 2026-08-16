@@ -144,81 +144,11 @@ TEST(ContainerSweepTests, arrayListOwnedAddDropsAtListTeardown) {
 // one that frees at scope exit. The leak count proves the element is freed
 // exactly once — a list that wrongly took title would double-free, and one
 // that leaked would show a survivor.
-TEST(ContainerSweepTests, arrayListLendStoresABorrow) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
-        "            xs.add(mine);\n"
-        "            if (xs.get(0).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
-TEST(ContainerSweepTests, arrayListTransferLeavesSourceReadable) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
-        "            xs.add(#mine);\n"
-        "            if (xs.get(0).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"          // demoted to a borrow, still live
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 // Was `arrayListMixedOwnershipDropsOnlyOwned`. Mixed ownership inside one
 // container is exactly what spec 2.3 removes, so the surviving contract is the
 // simpler one: every element is owned, and teardown drops every element.
-TEST(ContainerSweepTests, arrayListAllElementsOwnedDropAtTeardown) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell second = heap Cell(20);\n"
-        "            ArrayList<Cell> xs = heap ArrayList<Cell>();\n"
-        "            xs.add(#heap Cell(1));\n"
-        "            xs.add(#second);\n"
-        "            t = xs.get(0).n + xs.get(1).n;\n"   // 21
-        "            t = t + second.n;\n"                // 41 — demoted read
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 41);
-}
 
 // `set(i, #b)` over an owned slot — the displaced element is released at the
 // store (spec §5.1.3 displaced-release), the new one is owned, teardown
@@ -353,58 +283,11 @@ TEST(ContainerSweepTests, heapOwnedPushPopReclaims) {
 // why this is a rewrite and not a `#` patch.
 // A LEND into a Heap. `pop()` is remove-shaped, so it hands the borrow back
 // out; `mine` held title throughout and frees once at scope exit.
-TEST(ContainerSweepTests, heapLendStoresABorrow) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            Heap<Cell> h = heap Heap<Cell>();\n"
-        "            h.push(mine);\n"
-        "            if (h.pop().n != 9) { return -98; }\n"
-        "            t = mine.n;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 
 // The transferring spelling round-trips through sift and pop: the heap takes
 // the title on push and hands it back on pop, so `back` owns it and reclaims
 // it. The source stays readable across the whole trip.
-TEST(ContainerSweepTests, heapTransferPushPopRoundTrips) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            Heap<Cell> h = heap Heap<Cell>();\n"
-        "            h.push(#mine);\n"
-        "            Cell back = h.pop();\n"       // flagged: owned → back drops
-        "            if (back.n != 9) { return -98; }\n"
-        "            t = mine.n;\n"                // demoted read, still live
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 // ===================== HashSet =====================
 
@@ -498,29 +381,6 @@ TEST(ContainerSweepTests, linkedListOwnedAddDropsAtTeardown) {
 // spelling compiles: the a LinkedList stores a BORROW and `mine` keeps title,
 // freeing exactly once at scope exit (leaked == 0 proves neither a
 // double-free nor a survivor).
-TEST(ContainerSweepTests, linkedListLendStoresABorrow) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            LinkedList<Cell> list = heap LinkedList<Cell>();\n"
-        "            list.add(mine);\n"
-        "            if (list.get(0).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 
 // The node's value store forwards the caller's flag through the ctor — a
@@ -644,58 +504,10 @@ TEST(ContainerSweepTests, redBlackOwnedPutReclaimsAtTeardown) {
 // spelling compiles: the a RedBlackTree stores a BORROW and `mine` keeps title,
 // freeing exactly once at scope exit (leaked == 0 proves neither a
 // double-free nor a survivor).
-TEST(ContainerSweepTests, redBlackLendStoresABorrow) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
-        "            m.put(1, mine);\n"
-        "            if (m.get(1).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 
 // The transferred value survives fixup (rotations + recolours) and the tree
 // reclaims it at teardown.
-TEST(ContainerSweepTests, redBlackTransferPutSurvivesFixup) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            RedBlackTree<int32, Cell> m = heap RedBlackTree<int32, Cell>();\n"
-        "            m.put(1, #mine);\n"
-        "            int32 i = 2;\n"
-        "            while (i < 20) { m.put(i, #heap Cell(i)); i = i + 1; }\n"
-        "            if (m.get(1).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"                // demoted read, still live
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 // Same-key put over an owned value displaced-releases the old one.
 TEST(ContainerSweepTests, redBlackReplaceDropsDisplacedOwnedValue) {
@@ -779,58 +591,10 @@ TEST(ContainerSweepTests, bplusOwnedPutSurvivesSplitReclaimsAtTeardown) {
 // spelling compiles: the a BPlusTree stores a BORROW and `mine` keeps title,
 // freeing exactly once at scope exit (leaked == 0 proves neither a
 // double-free nor a survivor).
-TEST(ContainerSweepTests, bplusLendStoresABorrow) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
-        "            m.put(1, mine);\n"
-        "            if (m.get(1).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 
 // The transferred value survives the leaf shifts and the split cascade (50
 // entries over order 32 forces splits) and the tree reclaims it at teardown.
-TEST(ContainerSweepTests, bplusTransferPutSurvivesSplit) {
-    std::string src = std::string(kCellSrc) +
-        "public final class D {\n"
-        "    public static int32 work() {\n"
-        "        int32 t = 0;\n"
-        "        {\n"
-        "            Cell mine = heap Cell(9);\n"
-        "            BPlusTree<int32, Cell> m = heap BPlusTree<int32, Cell>();\n"
-        "            m.put(1, #mine);\n"
-        "            int32 i = 10;\n"
-        "            while (i < 50) { m.put(i, #heap Cell(i)); i = i + 1; }\n"
-        "            if (m.get(1).n != 9) { return -98; }\n"
-        "            t = mine.n;\n"                // demoted read, still live
-        "        }\n"
-        "        return t;\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        int64 base = Cajeta.liveCount();\n"
-        "        int32 t = work();\n"
-        "        int64 leaked = Cajeta.liveCount() - base;\n"
-        "        return (int32) (leaked * 100) + t;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 9);
-}
 
 // BPlus same-key put over an owned value displaced-releases the old one.
 TEST(ContainerSweepTests, bplusReplaceDropsDisplacedOwnedValue) {

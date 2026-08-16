@@ -19,7 +19,7 @@ public class StringDemo extends DemoClass {
 
         // The raw line arrives padded; trim() first, always.
         String raw = "  GET /api/orders?id=42 HTTP/1.1 200  ";
-        String line = raw.trim();
+        String line #= raw.trim();
         this.check(line.startsWith("GET") && line.endsWith("200"),
             "trim + startsWith/endsWith orient the parse");
 
@@ -27,9 +27,9 @@ public class StringDemo extends DemoClass {
         int32 sp1 = (int32) line.indexOf(" ");
         int32 sp2 = (int32) line.indexOfFrom(" ", (int64)(sp1 + 1));
         int32 sp3 = (int32) line.indexOfFrom(" ", (int64)(sp2 + 1));
-        String method = line.substring(0, sp1);
-        String url = line.substring(sp1 + 1, sp2);
-        String status = line.substring(sp3 + 1, (int32) line.count());
+        String method #= line.substring(0, sp1);
+        String url #= line.substring(sp1 + 1, sp2);
+        String status #= line.substring(sp3 + 1, (int32) line.count());
         System.stdout.println("  method = " + method + ", url = " + url
             + ", status = " + status);
         this.check(method.equals("GET") && status.equals("200"),
@@ -37,8 +37,8 @@ public class StringDemo extends DemoClass {
 
         // The query splits off the path at '?'.
         int32 q = (int32) url.indexOf("?");
-        String path = url.substring(0, q);
-        String query = url.substring(q + 1, (int32) url.count());
+        String path #= url.substring(0, q);
+        String query #= url.substring(q + 1, (int32) url.count());
         this.check(path.equals("/api/orders") && query.equals("id=42")
             && url.contains("?id="), "path/query split at the '?'");
 
@@ -47,19 +47,19 @@ public class StringDemo extends DemoClass {
             "operator== is content equality");
 
         // Case folding for canonical comparisons.
-        String proto = line.substring(sp2 + 1, sp3);
-        String protoLower = proto.toLowerCase();
+        String proto #= line.substring(sp2 + 1, sp3);
+        String protoLower #= proto.toLowerCase();
         this.check(protoLower.equals("http/1.1")
             && proto.toUpperCase().equals("HTTP/1.1"),
             "toLowerCase/toUpperCase fold ASCII");
 
         // substringView: the same window with ZERO copy — it shares the
         // parent's bytes, so prefer it for transient slices on hot paths.
-        String pathView = url.substringView(0, q);
+        String pathView #= url.substringView(0, q);
         this.check(pathView.equals(path), "substringView reads the same slice");
 
         // replace produces the redacted variant for logs.
-        String redacted = line.replace("id=42", "id=***");
+        String redacted #= line.replace("id=42", "id=***");
         this.check(redacted.contains("id=***") && !redacted.contains("id=42"),
             "replace redacts the query value");
 
@@ -71,7 +71,7 @@ public class StringDemo extends DemoClass {
         out.append(path);
         out.append(" -> ");
         out.append(status);
-        String summary = out.toString();
+        String summary #= out.toString();
         System.stdout.println("  summary: " + summary);
         this.check(summary.equals("GET /api/orders -> 200")
             && out.count() == (int32) summary.count(),

@@ -9,7 +9,7 @@ into the caller's array via the syscall. Call `close()` when done; there is no
 auto-close-on-drop destructor yet.
 
 ```cajeta
-FileReader r = File.openRead("/var/log/app.log");
+FileReader r #= File.openRead("/var/log/app.log");
 int8[] buf = heap int8[4096];
 int32 n = r.read(buf, 4096);
 while (n != 0) {

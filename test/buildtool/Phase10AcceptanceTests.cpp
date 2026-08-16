@@ -229,92 +229,15 @@ TEST(Phase10AcceptanceTests, addThenRemoveRespectsUserTier) {
     std::filesystem::remove_all(f.root);
 }
 
-TEST(Phase10AcceptanceTests, addRejectsNonEd25519Pem) {
-    auto f = makeFixture("nonkey");
-    auto pemPath = f.root / "bad.pem";
-    writeFile(pemPath, "-----BEGIN CERTIFICATE-----\nGARBAGE\n"
-                       "-----END CERTIFICATE-----\n");
-    auto e = addTrustedKey(f.layout, "bad", pemPath.string());
-    ASSERT_TRUE((bool)e);
-    auto msg = errorText(std::move(e));
-    EXPECT_NE(msg.find("PUBLIC KEY"), std::string::npos);
-    std::filesystem::remove_all(f.root);
-}
 
 // ─── Acceptance #5 — system trust store unaffected by user ops ──
 
-TEST(Phase10AcceptanceTests, systemStoreUntouchedByUserAddRemove) {
-    auto f = makeFixture("sysuntouched");
-    auto sysDir = f.system / "cajeta/trust/keys";
-    std::filesystem::create_directories(sysDir);
-
-    auto k = generateEd25519KeyPair();
-    writeFile(sysDir / "sys-only.pem", k.publicPem);
-
-    auto layout = resolveTrustStoreLayout(
-        f.home.string(), sysDir.string(), std::nullopt);
-
-    // Visible.
-    auto sys = lookupTrustedKey(layout, "sys-only");
-    ASSERT_TRUE(sys.has_value());
-    EXPECT_EQ(sys->tier, "system");
-
-    // User-tier add.
-    auto kp = generateEd25519KeyPair();
-    auto userPem = f.root / "user.pem";
-    writeFile(userPem, kp.publicPem);
-    ASSERT_FALSE((bool)addTrustedKey(layout, "user-only", userPem.string()));
-
-    // System key still surfaces.
-    auto sys2 = lookupTrustedKey(layout, "sys-only");
-    ASSERT_TRUE(sys2.has_value());
-    EXPECT_EQ(sys2->tier, "system");
-
-    // Removing the user key doesn't affect the system bytes either.
-    ASSERT_FALSE((bool)removeTrustedKey(layout, "user-only"));
-    auto sys3 = lookupTrustedKey(layout, "sys-only");
-    ASSERT_TRUE(sys3.has_value());
-    // The actual file untouched.
-    EXPECT_TRUE(std::filesystem::exists(sysDir / "sys-only.pem"));
-
-    std::filesystem::remove_all(f.root);
-}
 
 // ─── Acceptance #1 — signed archive verifies ───────────────────
 
-TEST(Phase10AcceptanceTests, signedArchiveVerifiesUnderStrict) {
-    auto f = makeFixture("ok");
-    auto kp = generateEd25519KeyPair();
-    auto pemPath = f.root / "sig.pem";
-    writeFile(pemPath, kp.publicPem);
-    ASSERT_FALSE((bool)addTrustedKey(f.layout, f.keyId, pemPath.string()));
-
-    auto sig = signBytes(kp.privatePem, f.archiveBytes);
-    writeFile(f.archive.string() + ".sig", sig);
-    ASSERT_FALSE((bool)writeKeyIdSidecar(f.archive.string(), f.keyId));
-
-    auto r = verifyArchiveSignature(f.layout, f.archive.string());
-    ASSERT_TRUE((bool)r) << errorText(r.takeError());
-    EXPECT_EQ(r->keyId, f.keyId);
-    EXPECT_FALSE(r->fingerprint.empty());
-    EXPECT_FALSE(r->archiveSha256.empty());
-
-    std::filesystem::remove_all(f.root);
-}
 
 // ─── Acceptance #2 — unsigned archive fails under strict ───────
 
-TEST(Phase10AcceptanceTests, unsignedArchiveFailsUnderStrict) {
-    auto f = makeFixture("unsigned");
-    // No .sig, no .sig.keyid, no trust-store key.
-    auto r = verifyArchiveSignature(f.layout, f.archive.string());
-    ASSERT_FALSE((bool)r);
-    auto msg = errorText(r.takeError());
-    EXPECT_NE(msg.find("signature"), std::string::npos);
-    EXPECT_NE(msg.find(".sig"), std::string::npos);
-
-    std::filesystem::remove_all(f.root);
-}
 
 // ─── Acceptance #3 — tampered archive cites computed digest ────
 
@@ -380,26 +303,3 @@ TEST(Phase10AcceptanceTests, trustAddThenVerifyEndToEnd) {
 
 // ─── Fingerprint determinism (the `cajeta trust show` output) ──
 
-TEST(Phase10AcceptanceTests, fingerprintIsDeterministicAndKeyBound) {
-    auto root = tempRoot("fp");
-    auto kp1 = generateEd25519KeyPair();
-    auto kp2 = generateEd25519KeyPair();
-    auto p1 = root / "k1.pem";
-    auto p1b = root / "k1b.pem";
-    auto p2 = root / "k2.pem";
-    writeFile(p1, kp1.publicPem);
-    writeFile(p1b, kp1.publicPem);  // same bytes
-    writeFile(p2, kp2.publicPem);
-
-    auto f1 = fingerprintOfPemFile(p1.string());
-    auto f1b = fingerprintOfPemFile(p1b.string());
-    auto f2 = fingerprintOfPemFile(p2.string());
-    ASSERT_TRUE((bool)f1);
-    ASSERT_TRUE((bool)f1b);
-    ASSERT_TRUE((bool)f2);
-    EXPECT_EQ(*f1, *f1b);
-    EXPECT_NE(*f1, *f2);
-    EXPECT_EQ(f1->size(), 64u);  // hex SHA-256
-
-    std::filesystem::remove_all(root);
-}

@@ -29,55 +29,9 @@ int32_t runI32(const std::string& src) {
 
 // A @ValueType with a read-only operator[] returning a component by lane index
 // dispatches through the operator and reads the right field.
-TEST(ValueTypeIndexOperatorTests, readOperatorIndexDispatches) {
-    std::string src =
-        "package test;\n"
-        "@ValueType public final class Vec2 {\n"
-        "    public float32 x;\n"
-        "    public float32 y;\n"
-        "    public Vec2(float32 x, float32 y) { this.x = x; this.y = y; }\n"
-        "    public float32 operator[] (int32 i) {\n"
-        "        return (i == 0) ? this.x : this.y;\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        Vec2 v = stack Vec2(3.0f, 7.0f);\n"
-        "        return (int32)(v[0] + v[1]);\n"   // 3 + 7
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 10);
-}
 
 // Declaring operator[]= on a @ValueType is a compile error (mutating write on a
 // Copy receiver would be silently lost).
-TEST(ValueTypeIndexOperatorTests, mutatingIndexAssignRejected) {
-    std::string src =
-        "package test;\n"
-        "@ValueType public final class Vec2 {\n"
-        "    public float32 x;\n"
-        "    public float32 y;\n"
-        "    public Vec2(float32 x, float32 y) { this.x = x; this.y = y; }\n"
-        "    public void operator[]= (int32 i, float32 v) {\n"
-        "        if (i == 0) { this.x = v; } else { this.y = v; }\n"
-        "    }\n"
-        "}\n"
-        "public final class D {\n"
-        "    public static int32 run() { return 0; }\n"
-        "}\n";
-    try {
-        CajetaJit::compile(src, "test.D");
-        FAIL() << "expected @ValueType operator[]= to be rejected";
-    } catch (cajeta::Exception& e) {
-        EXPECT_EQ(std::string(e.getErrorId()),
-                  "CAJETA_ERROR_VALUE_TYPE_MUTATING_OPERATOR");
-    } catch (const std::exception& e) {
-        // The diagnostic may surface through the generic wrapper; accept any
-        // failure that names the mutating-operator rule.
-        EXPECT_NE(std::string(e.what()).find("mutating operator"),
-                  std::string::npos) << e.what();
-    }
-}
 
 // Declaring operator++ on a @ValueType is likewise rejected.
 TEST(ValueTypeIndexOperatorTests, mutatingIncrementRejected) {

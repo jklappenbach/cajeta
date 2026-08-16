@@ -30,7 +30,7 @@ public class CollectDemo extends DemoClass {
         // The basic shape: stream -> collect(collector) -> container.
         // toList's supplier makes the empty list, its accumulator
         // appends, and ownership of the result flows out to us.
-        ArrayList<int32> copy = src.stream()
+        ArrayList<int32> copy #= src.stream()
             .collect(Collectors.toList<int32>());
         System.stdout.println("  collect(toList) count = " + copy.count());
         this.check(copy.count() == 5, "collect drained every element");
@@ -45,7 +45,7 @@ public class CollectDemo extends DemoClass {
 
         // collect terminates a whole pipeline: intermediate stages
         // run lazily, then the collector materializes the survivors.
-        ArrayList<int32> doubledEvens = src.stream()
+        ArrayList<int32> doubledEvens #= src.stream()
             .filter((x) -> x % 2 == 0)
             .map<int32>((x) -> x * 2)
             .collect(Collectors.toList<int32>());

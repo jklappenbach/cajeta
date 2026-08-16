@@ -59,7 +59,7 @@ public class FileIoDemo extends DemoClass {
         data[4] = (int8) 111;  // 'o'
 
         File.writeAllBytes(FileIoDemo.LOG, data, 5);
-        int8[] back = File.readAllBytes(FileIoDemo.LOG);
+        int8[] back #= File.readAllBytes(FileIoDemo.LOG);
         boolean same = (int32) back.count() == 5;
         int32 i = 0;
         while (same && i < 5) {
@@ -73,17 +73,17 @@ public class FileIoDemo extends DemoClass {
     // 2. WRITE truncates-or-creates; APPEND adds at EOF. A log file is the
     //    canonical APPEND customer — reopening with WRITE would erase it.
     public void writeThenAppend() {
-        FileWriter w = File.openWrite(FileIoDemo.LOG, OpenMode.WRITE);
+        FileWriter w #= File.openWrite(FileIoDemo.LOG, OpenMode.WRITE);
         w.writeString("INFO  service started\n");     // 22 bytes
         w.flush();
         w.close();
 
-        FileWriter a = File.openWrite(FileIoDemo.LOG, OpenMode.APPEND);
+        FileWriter a #= File.openWrite(FileIoDemo.LOG, OpenMode.APPEND);
         a.writeString("WARN  disk 87% full\n");       // 20 bytes
         a.flush();
         a.close();
 
-        int8[] back = File.readAllBytes(FileIoDemo.LOG);
+        int8[] back #= File.readAllBytes(FileIoDemo.LOG);
         System.stdout.println("  writeThenAppend: " + back.count()
             + " bytes after WRITE + APPEND");
         this.check((int32) back.count() == 42,
@@ -94,7 +94,7 @@ public class FileIoDemo extends DemoClass {
     //    max bytes and 0 at EOF — so the loop, not one call, is the idiom.
     //    A 16-byte buffer over a 42-byte file must take 3 reads.
     public void streamingReaderEofLoop() {
-        FileReader r = File.openRead(FileIoDemo.LOG);
+        FileReader r #= File.openRead(FileIoDemo.LOG);
         int8[] buf = heap int8[16];
         int64 total = 0;
         int32 reads = 0;
@@ -117,14 +117,14 @@ public class FileIoDemo extends DemoClass {
     //    guard BOTH before trusting the bytes (the TlsTour idiom). No
     //    exception on this path; absence is a normal case for a reader.
     public void missingFile() {
-        int8[] ghost = File.readAllBytes("/tmp/cajeta_tour_no_such_file");
+        int8[] ghost #= File.readAllBytes("/tmp/cajeta_tour_no_such_file");
         boolean absent = ghost == null || (int32) ghost.count() == 0;
         this.check(absent, "missing file reads as null-or-empty, not garbage");
     }
 
     // 5. The tour leaves no droppings (the NpyDemo pattern).
     public void cleanup() {
-        Path p = Path.of(FileIoDemo.LOG);
+        Path p #= Path.of(FileIoDemo.LOG);
         p.delete();
         this.check(!p.exists(), "temp log deleted");
     }

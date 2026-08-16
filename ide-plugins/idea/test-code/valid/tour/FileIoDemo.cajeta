@@ -51,7 +51,7 @@ public class FileIoDemo extends DemoClass {
         data[4] = (int8) 111;  // 'o'
 
         File.writeAllBytes(path, data, 5);
-        int8[] back = File.readAllBytes(path);
+        int8[] back #= File.readAllBytes(path);
         System.stdout.println("  oneShot: wrote 5 bytes, readAllBytes returned "
             + back.count() + " bytes");
     }
@@ -63,7 +63,7 @@ public class FileIoDemo extends DemoClass {
     public void streamingWriter() {
         String path = "/tmp/cajeta_tour_streaming.txt";
 
-        FileWriter w = File.openWrite(path, OpenMode.WRITE);
+        FileWriter w #= File.openWrite(path, OpenMode.WRITE);
         w.writeString("first line\n");
         w.writeString("second line\n");
         w.flush();
@@ -71,7 +71,7 @@ public class FileIoDemo extends DemoClass {
 
         // Read back via one-shot to verify the writer landed bytes
         // on disk.
-        int8[] back = File.readAllBytes(path);
+        int8[] back #= File.readAllBytes(path);
         System.stdout.println("  streamingWriter: wrote 2 lines, total bytes = "
             + back.count());
     }
@@ -82,7 +82,7 @@ public class FileIoDemo extends DemoClass {
     // pulled.
     public void streamingReader() {
         String path = "/tmp/cajeta_tour_streaming.txt";
-        FileReader r = File.openRead(path);
+        FileReader r #= File.openRead(path);
         int8[] buf = heap int8[64];
         int32 n = r.read(buf, 64);
         int64 pos = r.position();

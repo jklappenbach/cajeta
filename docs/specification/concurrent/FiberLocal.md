@@ -119,7 +119,7 @@ the context explicitly:
 
 ```cajeta
 // Producer: snapshot the live bindings and hand them off with the work item.
-FiberContext ctx = FiberContext.capture();   // immutable snapshot, # owns it
+FiberContext ctx #= FiberContext.capture();   // immutable snapshot, # owns it
 channel.send(WorkItem(payload, #ctx));
 
 // Worker fiber: reinstall the snapshot for the extent of handling this item.

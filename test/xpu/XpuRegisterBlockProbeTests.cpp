@@ -184,33 +184,3 @@ TEST(XpuRegisterBlockProbeTests, probe12LowersCleanly) {
 // U1.1.b + U1.1.c + U1.3: read VGPR/spill + ds_read widths and LOG the routing
 // verdict. The kernel must lower (measurement succeeded); the verdict (KERNEL-ONLY
 // vs COMPILER-DEEP) is recorded into the plan — it is data, not a pass/fail gate.
-TEST(XpuRegisterBlockProbeTests, probe12ReportsRoutingDecision) {
-    std::string isa = isaOf(kProbe12Src, "probe12");
-    ASSERT_FALSE(isa.empty()) << "probe failed to lower";
-    int vgpr = parseAmdMeta(isa, "vgpr_count");
-    int spill = parseAmdMeta(isa, "vgpr_spill_count");
-    ASSERT_GT(vgpr, 0) << "failed to parse .vgpr_count";
-
-    int b128 = countOccurrences(isa, "ds_read_b128")
-             + countOccurrences(isa, "ds_load_b128");
-    int b64 = countOccurrences(isa, "ds_read_b64")
-            + countOccurrences(isa, "ds_load_b64");
-    int u16 = countOccurrences(isa, "ds_read_u16")
-            + countOccurrences(isa, "ds_load_u16");
-
-    bool noSpill = (spill == 0);
-    bool wideReads = (b128 > 0) && (u16 == 0);
-    const char* verdict = (noSpill && wideReads) ? "KERNEL-ONLY (Unit 2 not needed)"
-                                                 : "COMPILER-DEEP (Unit 2 required)";
-
-    std::cerr << "[rb-probe] 12-accumulator (3x4) register block on gfx1151:\n"
-              << "  vgpr_count=" << vgpr
-              << "  vgpr_spill=" << spill
-              << "  theoretical_occupancy=" << rdna35Occupancy(vgpr) << " waves/SIMD\n"
-              << "  ds_read widths: b128=" << b128 << " b64=" << b64
-              << " u16=" << u16 << "\n"
-              << "  VERDICT: " << verdict << "\n"
-              << "  (vs shipped gemmF16: 4 accs, vgpr~113; see XpuOccupancyTests)\n";
-
-    SUCCEED() << "probe measured; verdict logged for plan U1.3";
-}

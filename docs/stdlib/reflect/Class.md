@@ -12,7 +12,7 @@ construct instances reflectively, and query the process-wide class registry.
 ```cajeta
 ArrayList<int32> xs = heap ArrayList<int32>();
 Class<?> c = Class.of(xs);
-String name = c.getName();       // fully-qualified canonical name
+String name #= c.getName();       // fully-qualified canonical name
 int32 nFields = c.getFieldCount();
 int32 nMethods = c.getMethodCount();
 ```

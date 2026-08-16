@@ -35,7 +35,7 @@ public class RedBlackTreeDemo extends DemoClass {
 
         // Range scan: events in the window [2000, 2300] via the ordered
         // key walk. keysInOrder() is ascending BY CONTRACT — checked.
-        ArrayList<int32> keys = byTime.keysInOrder();
+        ArrayList<int32> keys #= byTime.keysInOrder();
         boolean ascending = true;
         int32 inWindow = 0;
         int32 k = 1;

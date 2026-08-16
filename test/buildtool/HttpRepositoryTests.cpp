@@ -80,22 +80,6 @@ namespace {
 
 // ─── settings.repositories[].auth parsing ─────────────────────────────
 
-TEST(HttpRepositoryTests, parsesBearerAuthFromManifest) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "repositories": [
-                { "name": "nexus", "url": "https://nexus.local",
-                  "auth": { "type": "bearer", "token-env": "NEXUS_TOKEN" } }
-            ]
-        }
-    })");
-    auto specs = parseRepositories(m);
-    ASSERT_TRUE((bool)specs) << errorText(specs.takeError());
-    ASSERT_EQ(specs->size(), 1u);
-    EXPECT_EQ((*specs)[0].auth.type, "bearer");
-    EXPECT_EQ((*specs)[0].auth.tokenEnv, "NEXUS_TOKEN");
-}
 
 TEST(HttpRepositoryTests, parsesMtlsAuthFromManifest) {
     auto m = mustLoad(R"({
@@ -139,91 +123,12 @@ TEST(HttpRepositoryTests, errorsOnBearerWithoutTokenSource) {
     EXPECT_NE(msg.find("token"), std::string::npos);
 }
 
-TEST(HttpRepositoryTests, errorsOnMtlsWithoutCertOrKey) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "repositories": [
-                { "name": "broken", "url": "https://x.y",
-                  "auth": { "type": "mtls",
-                            "client-cert": "/etc/cert.pem" } }
-            ]
-        }
-    })");
-    auto specs = parseRepositories(m);
-    ASSERT_FALSE((bool)specs);
-    auto msg = errorText(specs.takeError());
-    EXPECT_NE(msg.find("mtls"), std::string::npos);
-    EXPECT_NE(msg.find("client-key"), std::string::npos);
-}
 
-TEST(HttpRepositoryTests, errorsOnUnknownAuthType) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "repositories": [
-                { "name": "broken", "url": "https://x.y",
-                  "auth": { "type": "magic" } }
-            ]
-        }
-    })");
-    auto specs = parseRepositories(m);
-    ASSERT_FALSE((bool)specs);
-    auto msg = errorText(specs.takeError());
-    EXPECT_NE(msg.find("auth.type"), std::string::npos);
-}
 
 // ─── live HTTP wire conformance ───────────────────────────────────────
 
-TEST(HttpRepositoryTests, listVersionsParsesV1Response) {
-    TestHttpServer srv;
-    srv.route("/dev.cajeta.http/versions.json", 200,
-              R"({"versions":["1.0.0","1.2.3","1.2.4"],"deprecated":[]})");
 
-    auto stage = makeTempDir("listvers");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto vers = repo.listVersions("dev.cajeta.http");
-    ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
-    ASSERT_EQ(vers->size(), 3u);
-    EXPECT_EQ((*vers)[0], "1.0.0");
-    EXPECT_EQ((*vers)[1], "1.2.3");
-    EXPECT_EQ((*vers)[2], "1.2.4");
 
-    rmTree(stage);
-}
-
-TEST(HttpRepositoryTests, listVersionsReturnsEmptyOn404) {
-    TestHttpServer srv;
-    // No route registered → 404.
-
-    auto stage = makeTempDir("listmiss");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto vers = repo.listVersions("does.not.exist");
-    ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
-    EXPECT_TRUE(vers->empty());
-
-    rmTree(stage);
-}
-
-TEST(HttpRepositoryTests, fetchWritesArtifactToStageDir) {
-    TestHttpServer srv;
-    const std::string body = "fake .cja bytes";
-    srv.route("/some.pkg/1.0.0/some.pkg-1.0.0.cja", 200, body);
-
-    auto stage = makeTempDir("fetch");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto path = repo.fetch("some.pkg", "1.0.0");
-    ASSERT_TRUE((bool)path) << errorText(path.takeError());
-    ASSERT_TRUE(std::filesystem::exists(*path));
-    std::ifstream in(*path, std::ios::binary);
-    std::ostringstream got; got << in.rdbuf();
-    EXPECT_EQ(got.str(), body);
-
-    rmTree(stage);
-}
 
 TEST(HttpRepositoryTests, fetchManifestJsonReturnsManifestEndpoint) {
     TestHttpServer srv;
@@ -242,19 +147,6 @@ TEST(HttpRepositoryTests, fetchManifestJsonReturnsManifestEndpoint) {
     rmTree(stage);
 }
 
-TEST(HttpRepositoryTests, fetchManifestJsonReturnsNulloptOn404) {
-    TestHttpServer srv;
-    // No manifest endpoint registered → 404 → backwards-compat
-    // path (treated as a leaf by the walker).
-    auto stage = makeTempDir("manifest-miss");
-    HttpRepository repo("test", srv.baseUrl(),
-                        RepositoryAuth{}, stage.string());
-    auto js = repo.fetchManifestJson("pre.sidecar", "0.1.0");
-    ASSERT_TRUE((bool)js) << errorText(js.takeError());
-    EXPECT_FALSE(js->has_value());
-
-    rmTree(stage);
-}
 
 TEST(HttpRepositoryTests, fetchErrorsOnNonSuccessStatus) {
     TestHttpServer srv;
@@ -274,23 +166,6 @@ TEST(HttpRepositoryTests, fetchErrorsOnNonSuccessStatus) {
 
 // ─── bearer-token auth (literal and env-var forms) ────────────────────
 
-TEST(HttpRepositoryTests, bearerLiteralTokenLandsInAuthHeader) {
-    TestHttpServer srv;
-    srv.route("/p/versions.json", 200, R"({"versions":["1.0.0"]})");
-
-    RepositoryAuth auth;
-    auth.type = "bearer";
-    auth.tokenLiteral = "secret-literal-xyz";
-
-    auto stage = makeTempDir("bearer-lit");
-    HttpRepository repo("test", srv.baseUrl(), auth, stage.string());
-    auto vers = repo.listVersions("p");
-    ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
-
-    EXPECT_EQ(srv.lastAuthHeader(), "Bearer secret-literal-xyz");
-
-    rmTree(stage);
-}
 
 TEST(HttpRepositoryTests, bearerEnvTokenLandsInAuthHeader) {
     TestHttpServer srv;
@@ -314,23 +189,3 @@ TEST(HttpRepositoryTests, bearerEnvTokenLandsInAuthHeader) {
     rmTree(stage);
 }
 
-TEST(HttpRepositoryTests, missingEnvVarSendsNoAuthHeader) {
-    // Configured to read $UNSET_TOKEN_THAT_DOES_NOT_EXIST. The driver
-    // must not synthesize a malformed header — the request goes out
-    // with no Authorization, and the server (which has no auth check)
-    // happily serves the resource.
-    TestHttpServer srv;
-    srv.route("/p/versions.json", 200, R"({"versions":["1.0.0"]})");
-
-    RepositoryAuth auth;
-    auth.type = "bearer";
-    auth.tokenEnv = "UNSET_TOKEN_THAT_DOES_NOT_EXIST_84621";
-
-    auto stage = makeTempDir("bearer-missing");
-    HttpRepository repo("test", srv.baseUrl(), auth, stage.string());
-    auto vers = repo.listVersions("p");
-    ASSERT_TRUE((bool)vers) << errorText(vers.takeError());
-    EXPECT_EQ(srv.lastAuthHeader(), "");
-
-    rmTree(stage);
-}

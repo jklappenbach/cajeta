@@ -42,8 +42,8 @@ public class PathDemo extends DemoClass {
 
         // 1. Construction + the absolute/relative split. The only test
         // is the first byte: '/' means absolute.
-        Path abs = Path.of("/home/julian/notes/todo.txt");
-        Path rel = Path.of("src/lang");
+        Path abs #= Path.of("/home/julian/notes/todo.txt");
+        Path rel #= Path.of("src/lang");
         this.check(abs.isAbsolute(), "leading '/' makes a path absolute");
         this.check(rel.isRelative(), "no leading '/' makes a path relative");
         System.stdout.println("  \"/home/julian/notes/todo.txt\" absolute = "
@@ -51,7 +51,7 @@ public class PathDemo extends DemoClass {
 
         // 2. Decomposing the last segment: name keeps the extension,
         // stem strips it, extension is the text after the rightmost dot.
-        String leaf = abs.name();
+        String leaf #= abs.name();
         this.check(leaf.equals("todo.txt"), "name() is the last segment");
         this.check(abs.stem().equals("todo"), "stem() drops the extension");
         this.check(abs.extension().equals("txt"), "extension() is the suffix");
@@ -60,7 +60,7 @@ public class PathDemo extends DemoClass {
 
         // 3. Only the RIGHTMOST dot splits — "archive.tar.gz" stems to
         // "archive.tar" with extension "gz" (the pathlib pairing).
-        Path tarball = Path.of("archive.tar.gz");
+        Path tarball #= Path.of("archive.tar.gz");
         this.check(tarball.stem().equals("archive.tar"),
             "single-dot strip: stem keeps earlier dots");
         this.check(tarball.extension().equals("gz"),
@@ -70,12 +70,12 @@ public class PathDemo extends DemoClass {
 
         // 4. parent() walks up one level; the root is its own parent, so
         // repeated parent() calls terminate instead of underflowing.
-        Path dir = abs.parent();
+        Path dir #= abs.parent();
         String dirText = text(dir);
         this.check(dirText.equals("/home/julian/notes"),
             "parent() strips the last segment");
-        Path root = Path.of("/");
-        Path rootParent = root.parent();
+        Path root #= Path.of("/");
+        Path rootParent #= root.parent();
         String rootText = text(rootParent);
         this.check(rootText.equals("/"), "parent of the root is the root");
         System.stdout.println("  parent = " + dirText
@@ -84,13 +84,13 @@ public class PathDemo extends DemoClass {
         // 5. resolve() joins one segment per call, adding a '/' only when
         // the left side doesn't already end in one — so chains read like
         // the path they build.
-        Path srcDir = rel.resolve("stream");
-        Path srcFile = srcDir.resolve("Stream.cajeta");
+        Path srcDir #= rel.resolve("stream");
+        Path srcFile #= srcDir.resolve("Stream.cajeta");
         String joined = text(srcFile);
         this.check(joined.equals("src/lang/stream/Stream.cajeta"),
             "resolve() chains with single separators");
-        Path slashed = Path.of("/tmp/");
-        Path log = slashed.resolve("x.log");
+        Path slashed #= Path.of("/tmp/");
+        Path log #= slashed.resolve("x.log");
         String logText = text(log);
         this.check(logText.equals("/tmp/x.log"),
             "no double '/' after a trailing separator");

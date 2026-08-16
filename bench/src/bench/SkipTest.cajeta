@@ -10,9 +10,9 @@ class Rec {
 
 public final class SkipTest {
     public static int32 run() {
-        int8[] bytes = File.readAllBytes("/tmp/jsonbench/skip.json");
+        int8[] bytes #= File.readAllBytes("/tmp/jsonbench/skip.json");
         int64 n = (int64) bytes.count();
-        Rec r = Json.parse<Rec>(bytes, n);
+        Rec r #= Json.parse<Rec>(bytes, n);
         System.stdout.println("a=" + r.a + " b=" + r.b + (r.a == 1 && r.b == 2 ? "  OK (nested unknown key skipped)" : "  FAIL"));
         return 0;
     }

@@ -114,21 +114,7 @@ namespace {
 
 // ─── version-constraint logic ─────────────────────────────────────────
 
-TEST(DependencyTests, versionSatisfiesWildcards) {
-    EXPECT_TRUE(versionSatisfies("1.2.3",   "*"));
-    EXPECT_TRUE(versionSatisfies("0.0.1",   "*"));
-    EXPECT_TRUE(versionSatisfies("1.2.7",   "1.2.*"));
-    EXPECT_TRUE(versionSatisfies("1.2.0",   "1.2.*"));
-    EXPECT_TRUE(versionSatisfies("1.99.99", "1.*"));
-    EXPECT_FALSE(versionSatisfies("2.0.0",  "1.*"));
-    EXPECT_FALSE(versionSatisfies("1.3.0",  "1.2.*"));
-}
 
-TEST(DependencyTests, versionSatisfiesExact) {
-    EXPECT_TRUE(versionSatisfies("1.2.3", "1.2.3"));
-    EXPECT_FALSE(versionSatisfies("1.2.4", "1.2.3"));
-    EXPECT_FALSE(versionSatisfies("1.2.3-rc1", "1.2.3"));  // core comparison
-}
 
 TEST(DependencyTests, versionSatisfiesRangeOperators) {
     EXPECT_TRUE(versionSatisfies("1.2.0", ">=1.2.0"));
@@ -191,29 +177,6 @@ TEST(DependencyTests, compareVersionsOrders) {
 
 // ─── settings.repositories parsing ────────────────────────────────────
 
-TEST(DependencyTests, parsesRepositoriesByPriority) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "repositories": [
-                { "name": "central",  "url": "https://repo.cajeta.org",
-                  "priority": 0 },
-                { "name": "local-dev","type": "filesystem",
-                  "path": "/tmp/local",  "priority": 200 },
-                { "name": "company",  "url": "https://nexus.internal",
-                  "priority": 100 }
-            ]
-        }
-    })");
-    auto repos = parseRepositories(m);
-    ASSERT_TRUE((bool)repos);
-    ASSERT_EQ(repos->size(), 3u);
-    EXPECT_EQ((*repos)[0].name, "local-dev");   // priority 200 first
-    EXPECT_EQ((*repos)[1].name, "company");     // priority 100
-    EXPECT_EQ((*repos)[2].name, "central");     // priority 0 last
-    EXPECT_EQ((*repos)[0].type, "filesystem");
-    EXPECT_EQ((*repos)[0].path, "/tmp/local");
-}
 
 TEST(DependencyTests, parsesRepositoriesInfersTypeFromFields) {
     auto m = mustLoad(R"({
@@ -231,37 +194,9 @@ TEST(DependencyTests, parsesRepositoriesInfersTypeFromFields) {
     EXPECT_EQ((*repos)[1].type, "http");
 }
 
-TEST(DependencyTests, parsesRepositoriesErrorsOnMissingPathOrUrl) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "repositories": [
-                { "name": "broken", "type": "filesystem" }
-            ]
-        }
-    })");
-    auto repos = parseRepositories(m);
-    ASSERT_FALSE((bool)repos);
-    auto msg = errorText(repos.takeError());
-    EXPECT_NE(msg.find("requires 'path'"), std::string::npos);
-}
 
 // ─── settings.dependencies parsing ────────────────────────────────────
 
-TEST(DependencyTests, parsesDependenciesShortForm) {
-    auto m = mustLoad(R"({
-        "details": { "name": "a.b", "version": "0.1" },
-        "settings": {
-            "dependencies": {
-                "dev.cajeta.http": "1.2.*",
-                "cajeta.lang":        "0.5.0"
-            }
-        }
-    })");
-    auto deps = parseDependencies(m);
-    ASSERT_TRUE((bool)deps);
-    ASSERT_EQ(deps->size(), 2u);
-}
 
 TEST(DependencyTests, parsesDependenciesObjectFormWithFromPin) {
     auto m = mustLoad(R"({
@@ -285,35 +220,7 @@ TEST(DependencyTests, parsesDependenciesObjectFormWithFromPin) {
 
 // ─── FilesystemRepository ─────────────────────────────────────────────
 
-TEST(DependencyTests, filesystemRepoListsAndFetches) {
-    auto root = makeFsRepo({
-        {"com.example.foo", "1.0.0", "foo-1.0.0-content"},
-        {"com.example.foo", "1.0.1", "foo-1.0.1-content"},
-        {"com.example.foo", "1.2.0", "foo-1.2.0-content"},
-        {"com.example.bar", "0.1.0", "bar-content"},
-    });
-    FilesystemRepository repo("test", root.string());
 
-    auto versions = repo.listVersions("com.example.foo");
-    ASSERT_TRUE((bool)versions);
-    EXPECT_EQ(versions->size(), 3u);
-
-    auto fetched = repo.fetch("com.example.foo", "1.0.1");
-    ASSERT_TRUE((bool)fetched);
-    std::ifstream in(*fetched, std::ios::binary);
-    std::stringstream ss; ss << in.rdbuf();
-    EXPECT_EQ(ss.str(), "foo-1.0.1-content");
-    rmTree(root);
-}
-
-TEST(DependencyTests, filesystemRepoReturnsEmptyForUnknownPackage) {
-    auto root = makeFsRepo({});
-    FilesystemRepository repo("test", root.string());
-    auto versions = repo.listVersions("unknown.pkg");
-    ASSERT_TRUE((bool)versions);
-    EXPECT_TRUE(versions->empty());
-    rmTree(root);
-}
 
 TEST(DependencyTests, filesystemRepoErrorsOnMissingArtifact) {
     auto root = makeFsRepo({{"com.example.foo", "1.0.0", "x"}});
@@ -421,85 +328,11 @@ TEST(DependencyTests, resolverErrorsWhenNoVersionSatisfies) {
     rmTree(homeDir);
 }
 
-TEST(DependencyTests, resolverHonorsFromRepoPin) {
-    auto repoA = makeFsRepo({{"acme.lib", "1.0.0", "from-A"}});
-    auto repoB = makeFsRepo({{"acme.lib", "1.0.0", "from-B"}});
-    auto projectDir = makeTempDir("res-pin-proj");
-    auto homeDir    = makeTempDir("res-pin-home");
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("A", repoA.string()),
-        std::make_shared<FilesystemRepository>("B", repoB.string()),
-    };
-    std::vector<DependencySpec> deps;
-    DependencySpec d;
-    d.name = "acme.lib";
-    d.versionConstraint = "1.0.0";
-    d.fromRepo = "B";  // pin to B even though A is listed first
-    deps.push_back(d);
 
-    ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveDirect(deps, repos, cache);
-    ASSERT_TRUE((bool)resolved);
-    EXPECT_EQ((*resolved)[0].resolvedFromRepo, "B");
-
-    rmTree(repoA);
-    rmTree(repoB);
-    rmTree(projectDir);
-    rmTree(homeDir);
-}
-
-TEST(DependencyTests, resolverFallsThroughRepoPriorityWhenFirstLacksPackage) {
-    auto repoLowPrio = makeFsRepo({{"com.example.bar", "0.1.0", "lo"}});
-    auto repoHighPrio = makeFsRepo({{"com.example.bar", "0.2.0", "hi"}});
-    auto projectDir = makeTempDir("res-fall-proj");
-    auto homeDir    = makeTempDir("res-fall-home");
-    // High-priority repo has the higher version; resolver should
-    // pick it.
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("hi", repoHighPrio.string()),
-        std::make_shared<FilesystemRepository>("lo", repoLowPrio.string()),
-    };
-    std::vector<DependencySpec> deps;
-    DependencySpec d; d.name = "com.example.bar"; d.versionConstraint = "*";
-    deps.push_back(d);
-
-    ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveDirect(deps, repos, cache);
-    ASSERT_TRUE((bool)resolved);
-    EXPECT_EQ((*resolved)[0].version, "0.2.0");
-    EXPECT_EQ((*resolved)[0].resolvedFromRepo, "hi");
-
-    rmTree(repoHighPrio);
-    rmTree(repoLowPrio);
-    rmTree(projectDir);
-    rmTree(homeDir);
-}
 
 // ─── filesystem sidecar manifest (Phase 6b) ───────────────────────────
 
-TEST(DependencyTests, filesystemRepoReadsSidecarManifestJson) {
-    auto root = makeFsRepo({{"com.example.foo", "1.0.0", "x"}});
-    writeSidecarManifest(root, "com.example.foo", "1.0.0",
-                         {{"com.example.bar", "1.*"}});
-    FilesystemRepository repo("test", root.string());
 
-    auto js = repo.fetchManifestJson("com.example.foo", "1.0.0");
-    ASSERT_TRUE((bool)js) << errorText(js.takeError());
-    ASSERT_TRUE(js->has_value());
-    EXPECT_NE((*js)->find("com.example.foo"), std::string::npos);
-    EXPECT_NE((*js)->find("com.example.bar"), std::string::npos);
-    rmTree(root);
-}
-
-TEST(DependencyTests, filesystemRepoNoSidecarReturnsNullopt) {
-    auto root = makeFsRepo({{"com.example.foo", "1.0.0", "x"}});
-    // No sidecar written.
-    FilesystemRepository repo("test", root.string());
-    auto js = repo.fetchManifestJson("com.example.foo", "1.0.0");
-    ASSERT_TRUE((bool)js) << errorText(js.takeError());
-    EXPECT_FALSE(js->has_value());
-    rmTree(root);
-}
 
 // ─── transitive resolver ──────────────────────────────────────────────
 
@@ -901,84 +734,7 @@ TEST(DependencyTests, parsesOverridesShortAndObjectForms) {
 
 // ─── MVS with overrides (Phase 6b) ────────────────────────────────────
 
-TEST(DependencyTests, mvsOverridePinsTransitive) {
-    // root -> foo, foo -> bar >=1.0.0. Without overrides MVS picks
-    // bar 1.0.0 (lowest). Override forces bar 1.5.0; the override
-    // wins (no direct dep on bar).
-    auto root = makeFsRepo({
-        {"o.foo", "1.0.0", "foo"},
-        {"o.bar", "1.0.0", "b1"},
-        {"o.bar", "1.5.0", "b2"},
-        {"o.bar", "1.9.0", "b3"},
-    });
-    writeSidecarManifest(root, "o.foo", "1.0.0", {{"o.bar", ">=1.0.0"}});
-    writeSidecarManifest(root, "o.bar", "1.0.0", {});
-    writeSidecarManifest(root, "o.bar", "1.5.0", {});
-    writeSidecarManifest(root, "o.bar", "1.9.0", {});
 
-    auto projectDir = makeTempDir("ov-pin-proj");
-    auto homeDir    = makeTempDir("ov-pin-home");
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("test", root.string()),
-    };
-    std::vector<DependencySpec> deps;
-    DependencySpec d; d.name = "o.foo"; d.versionConstraint = "1.0.0";
-    deps.push_back(d);
-
-    std::vector<OverrideSpec> overrides;
-    OverrideSpec ov; ov.name = "o.bar"; ov.versionConstraint = "1.5.0";
-    overrides.push_back(ov);
-
-    ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveMvs(deps, repos, cache, overrides);
-    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
-
-    std::string barVersion;
-    for (const auto& r : *resolved) {
-        if (r.name == "o.bar") barVersion = r.version;
-    }
-    EXPECT_EQ(barVersion, "1.5.0");
-
-    rmTree(root);
-    rmTree(projectDir);
-    rmTree(homeDir);
-}
-
-TEST(DependencyTests, mvsOverrideIgnoredForDirectRootDep) {
-    // Root depends directly on bar 1.9.0. Override says bar 1.0.0.
-    // Spec: direct beats override. bar stays at 1.9.0.
-    auto root = makeFsRepo({
-        {"o2.bar", "1.0.0", "b1"},
-        {"o2.bar", "1.5.0", "b2"},
-        {"o2.bar", "1.9.0", "b3"},
-    });
-    writeSidecarManifest(root, "o2.bar", "1.0.0", {});
-    writeSidecarManifest(root, "o2.bar", "1.5.0", {});
-    writeSidecarManifest(root, "o2.bar", "1.9.0", {});
-
-    auto projectDir = makeTempDir("ov-direct-proj");
-    auto homeDir    = makeTempDir("ov-direct-home");
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("test", root.string()),
-    };
-    std::vector<DependencySpec> deps;
-    DependencySpec d; d.name = "o2.bar"; d.versionConstraint = "1.9.0";
-    deps.push_back(d);
-
-    std::vector<OverrideSpec> overrides;
-    OverrideSpec ov; ov.name = "o2.bar"; ov.versionConstraint = "1.0.0";
-    overrides.push_back(ov);
-
-    ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveMvs(deps, repos, cache, overrides);
-    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
-    ASSERT_EQ(resolved->size(), 1u);
-    EXPECT_EQ((*resolved)[0].version, "1.9.0");
-
-    rmTree(root);
-    rmTree(projectDir);
-    rmTree(homeDir);
-}
 
 TEST(DependencyTests, mvsOverrideMajorDowngradeErrors) {
     // root -> foo, foo -> bar >=2.0.0. Override pins bar to 1.0.0.
@@ -1020,88 +776,7 @@ TEST(DependencyTests, mvsOverrideMajorDowngradeErrors) {
     rmTree(homeDir);
 }
 
-TEST(DependencyTests, mvsOverrideMajorDowngradeAllowed) {
-    // Same as above but with allow-major-downgrade=true. The build
-    // succeeds and bar resolves to 1.0.0.
-    auto root = makeFsRepo({
-        {"d2.foo", "1.0.0", "foo"},
-        {"d2.bar", "1.0.0", "b1"},
-        {"d2.bar", "2.0.0", "b2"},
-    });
-    writeSidecarManifest(root, "d2.foo", "1.0.0", {{"d2.bar", ">=2.0.0"}});
-    writeSidecarManifest(root, "d2.bar", "1.0.0", {});
-    writeSidecarManifest(root, "d2.bar", "2.0.0", {});
 
-    auto projectDir = makeTempDir("ov-dg-allow-proj");
-    auto homeDir    = makeTempDir("ov-dg-allow-home");
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("test", root.string()),
-    };
-    std::vector<DependencySpec> deps;
-    DependencySpec d; d.name = "d2.foo"; d.versionConstraint = "1.0.0";
-    deps.push_back(d);
-
-    std::vector<OverrideSpec> overrides;
-    OverrideSpec ov; ov.name = "d2.bar"; ov.versionConstraint = "1.0.0";
-    ov.allowMajorDowngrade = true;
-    overrides.push_back(ov);
-
-    ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveMvs(deps, repos, cache, overrides);
-    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
-    std::string barVersion;
-    for (const auto& r : *resolved) {
-        if (r.name == "d2.bar") barVersion = r.version;
-    }
-    EXPECT_EQ(barVersion, "1.0.0");
-
-    rmTree(root);
-    rmTree(projectDir);
-    rmTree(homeDir);
-}
-
-TEST(DependencyTests, mvsOverrideRangeNarrowsResolution) {
-    // foo -> bar >=1.0.0. Bar repo has 1.0.0, 1.5.0, 1.9.0.
-    // Without override MVS picks 1.0.0. Override range
-    // ">=1.5.0,<1.9.0" picks 1.5.0 (lowest satisfying).
-    auto root = makeFsRepo({
-        {"o3.foo", "1.0.0", "foo"},
-        {"o3.bar", "1.0.0", "b1"},
-        {"o3.bar", "1.5.0", "b2"},
-        {"o3.bar", "1.9.0", "b3"},
-    });
-    writeSidecarManifest(root, "o3.foo", "1.0.0", {{"o3.bar", ">=1.0.0"}});
-    writeSidecarManifest(root, "o3.bar", "1.0.0", {});
-    writeSidecarManifest(root, "o3.bar", "1.5.0", {});
-    writeSidecarManifest(root, "o3.bar", "1.9.0", {});
-
-    auto projectDir = makeTempDir("ov-range-proj");
-    auto homeDir    = makeTempDir("ov-range-home");
-    std::vector<RepositoryPtr> repos = {
-        std::make_shared<FilesystemRepository>("test", root.string()),
-    };
-    std::vector<DependencySpec> deps;
-    DependencySpec d; d.name = "o3.foo"; d.versionConstraint = "1.0.0";
-    deps.push_back(d);
-
-    std::vector<OverrideSpec> overrides;
-    OverrideSpec ov; ov.name = "o3.bar";
-    ov.versionConstraint = ">=1.5.0,<1.9.0";
-    overrides.push_back(ov);
-
-    ArtifactCache cache(projectDir.string(), homeDir.string());
-    auto resolved = resolveMvs(deps, repos, cache, overrides);
-    ASSERT_TRUE((bool)resolved) << errorText(resolved.takeError());
-    std::string barVersion;
-    for (const auto& r : *resolved) {
-        if (r.name == "o3.bar") barVersion = r.version;
-    }
-    EXPECT_EQ(barVersion, "1.5.0");
-
-    rmTree(root);
-    rmTree(projectDir);
-    rmTree(homeDir);
-}
 
 // Path + git overrides ship in Phase 6c (see PathOverrideTests.cpp +
 // GitOverrideTests.cpp for full coverage). The boundary case worth

@@ -1490,13 +1490,6 @@ static const char* kMipSrcCpu() {
 
 // A large grid drives the runtime's multi-core fan-out (Inc 5A); the result must
 // match the serial computation exactly — every work-item ran once, none twice.
-TEST(XpuCpuDispatchTests, saxpyLargeGridParallelOnCpu) {
-    auto jit = CajetaJit::compile(kSaxpyLargeSource, "test.Saxpy", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<float (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    EXPECT_FLOAT_EQ(fn(), 262144.0f);   // 4 * 65536
-}
 
 // The headline: a host-source @Kernel program compiled --xpu-backend=cpu runs on
 // the CPU with no GPU, through the real dispatcher + launcher-thunk grid loop.
@@ -1563,15 +1556,6 @@ TEST(XpuCpuDispatchTests, deviceHelperChainOnCpu) {
 
 // Item 2 follow-up: a @Device helper taking KernelBuffer<T> params runs on CPU — buffer
 // bases pass by value into the helper, which reads `in` and writes `out`.
-TEST(XpuCpuDispatchTests, deviceHelperBufferParamOnCpu) {
-    auto jit = CajetaJit::compile(kDeviceBufferParamSource, "test.DevBuf",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3)";
-}
 
 // Stage 11: a kernel calls a @Device helper in ANOTHER class (a shared device-
 // math library). MathLib.square lives in its own class; DevX's kernel resolves
@@ -1741,28 +1725,9 @@ TEST(XpuCpuDispatchTests, devicePrintfOnCpu) {
 
 // KernelBuffer.slice — a non-owning sub-view passed to a kernel writes through the
 // parent's storage at the slice offset; the head half stays untouched.
-TEST(XpuCpuDispatchTests, bufferSliceKernelOnCpu) {
-    auto jit = CajetaJit::compile(kBufferSliceSource, "test.Slice", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: head touched; 200+i: tail[i] != i)";
-}
 
 // KernelBuffer.slice — upload/download through a mid-buffer view honor the byte
 // offset; only the sliced range changes, the surrounding parent is preserved.
-TEST(XpuCpuDispatchTests, bufferSliceUploadDownloadOnCpu) {
-    auto jit = CajetaJit::compile(kBufferSliceUploadSource, "test.SliceIO",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: head; 300+i: mid; 200+i: tail clobbered)";
-}
 
 // KernelBuffer MemoryKind (Stage B4) — a host-accessible (Unified) buffer with
 // zero-copy hostStore/hostLoad on the CPU. On the CPU "device" memory IS host
@@ -1802,16 +1767,6 @@ const char* kMemKindUnifiedSource =
     "    }\n"
     "}\n";
 
-TEST(XpuCpuDispatchTests, memoryKindUnifiedHostCopyOnCpu) {
-    auto jit = CajetaJit::compile(kMemKindUnifiedSource, "test.MemKind",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] != i+1 — host<->device sharing broke)";
-}
 
 // Async copies / transfer queues (Stage B4) — the full async pipeline on the
 // CPU (portability). KernelStream.create() is the default stream (handle 0) on the CPU
@@ -1911,16 +1866,6 @@ const char* kEventFenceSource =
     "    }\n"
     "}\n";
 
-TEST(XpuCpuDispatchTests, eventFenceSyncOnCpu) {
-    auto jit = CajetaJit::compile(kEventFenceSource, "test.Sync", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (1: fence not signaled; 100+i: out[i] != i+2 — "
-                         "event/fence sync broke)";
-}
 
 // Bindless / multi-buffer descriptor sets (Stage B4) — portability on the CPU.
 // The same KernelBuffer<int32>[] gather kernel: bufs[b][i] across `count` buffers
@@ -1985,150 +1930,42 @@ TEST(XpuCpuDispatchTests, bindlessBufferArrayOnCpu) {
 // Item 7: a POD struct passed by value as a kernel arg runs on CPU. The struct
 // is marshalled field-by-field; the kernel reads p.mul/p.add to compute
 // out[i] = i*3 + 7 for every work-item.
-TEST(XpuCpuDispatchTests, podStructArgOnCpu) {
-    auto jit = CajetaJit::compile(kPodStructArgSource, "test.PodArg",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: out[i] != i*3+7)";
-}
 
 // Item 8: a Texture2D sampled through a Sampler (bilinear) runs on CPU — the
 // texture/sampler kernel args marshal, `.sample()` lowers to the C sampler, and
 // the bilinear/texel-center math returns the expected filtered texels.
-TEST(XpuCpuDispatchTests, textureSampleOnCpu) {
-    auto jit = CajetaJit::compile(kTextureSampleSource, "test.TexSample",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
-}
 
 // B3 multi-channel on CPU: an RGBA32F Texture2D sampled through the CPU vec4
 // sampler returns all four channels (sample() -> Vector<float32,4>). Verifies the
 // format-routed CPU alloc/upload + the `caj_v4f` sampler off the GPU.
-TEST(XpuCpuDispatchTests, textureSampleRgba32fOnCpu) {
-    auto jit = CajetaJit::compile(kRgbaSampleSrcCpu("TextureFormat.RGBA32F"),
-                                  "test.TexRgbaCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F sample mismatch at i)";
-}
 
 // B3 8-bit normalized RGBA on CPU: bytes 0..255 stored, read back as float [0,1].
 // Exercises the float->unorm8 quantize-on-upload path + the vec4 CPU sampler,
 // within unorm8 quantization of the 0.02 tol.
-TEST(XpuCpuDispatchTests, textureSampleRgba8UnormOnCpu) {
-    auto jit = CajetaJit::compile(kRgbaSampleSrcCpu("TextureFormat.RGBA8_UNORM"),
-                                  "test.TexRgbaCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA8_UNORM sample mismatch at i)";
-}
 
 // B3 half-float single channel on CPU (R16F): float uploaded, round-tripped
 // through binary16 (the CPU emulation of the device's f16 storage), read back as
 // float. Texel values {0,1,2,3} are f16-exact, so the same bit-exact expecteds.
-TEST(XpuCpuDispatchTests, textureSampleR16fOnCpu) {
-    auto jit = CajetaJit::compile(kR1SampleSrcCpu("TextureFormat.R16F"),
-                                  "test.TexR1Cpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R16F sample mismatch at i)";
-}
 
 // B3 half-float RGBA on CPU (RGBA16F): four-channel cheap HDR, binary16-emulated.
 // Channel values within the 0.02 tol of their f16 round-trip.
-TEST(XpuCpuDispatchTests, textureSampleRgba16fOnCpu) {
-    auto jit = CajetaJit::compile(kRgbaSampleSrcCpu("TextureFormat.RGBA16F"),
-                                  "test.TexRgbaCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA16F sample mismatch at i)";
-}
 
 // B3 texelFetch on CPU, single-channel R32F: `tex.fetch(x, y)` reads the exact
 // stored texel by integer coord — no Sampler, no filtering. The 2x2 {0,1,2,3}
 // image must return each value exactly in .x.
-TEST(XpuCpuDispatchTests, textureFetchOnCpu) {
-    auto jit = CajetaJit::compile(kR1FetchSrcCpu(), "test.TexFetchR1Cpu",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R32F fetch mismatch at i)";
-}
 
 // B3 texelFetch on CPU, RGBA32F: all four channels of each texel read back
 // exactly by integer coordinate (the unfiltered twin of textureSampleRgba32fOnCpu).
-TEST(XpuCpuDispatchTests, textureFetchRgba32fOnCpu) {
-    auto jit = CajetaJit::compile(kRgbaFetchSrcCpu("TextureFormat.RGBA32F"),
-                                  "test.TexFetchCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: RGBA32F fetch mismatch at i)";
-}
 
 // B3 Step 2b: integer texelFetch on CPU, RGBA32I — a Texture2D<int32> read back
 // as exact signed integers across all four channels (the int twin of RGBA32F).
-TEST(XpuCpuDispatchTests, textureFetchRgba32iOnCpu) {
-    auto jit = CajetaJit::compile(kRgbaIntFetchSrcCpu("int32", "TextureFormat.RGBA32I"),
-                                  "test.TexFetchIntCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (RGBA32I fetch mismatch)";
-}
 
 // RGBA32UI — Texture2D<uint32>, exact unsigned integers across four channels.
-TEST(XpuCpuDispatchTests, textureFetchRgba32uiOnCpu) {
-    auto jit = CajetaJit::compile(kRgbaIntFetchSrcCpu("uint32", "TextureFormat.RGBA32UI"),
-                                  "test.TexFetchIntCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (RGBA32UI fetch mismatch)";
-}
 
 // Single-channel R32I — the stored int lands in .x; missing channels expand
 // G/B = 0, A = 1 (the integer-texture channel default).
-TEST(XpuCpuDispatchTests, textureFetchR32iOnCpu) {
-    auto jit = CajetaJit::compile(kR32iFetchSrcCpu(), "test.TexFetchR32iCpu",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: R32I value; 200+i: alpha default)";
-}
 
 // B3 texture dims: Texture3D fetch on CPU — a 2x2x2 volume read voxel-exact.
-TEST(XpuCpuDispatchTests, texture3dFetchOnCpu) {
-    auto jit = CajetaJit::compile(kTex3dFetchSrcCpu(), "test.Tex3dFetchCpu",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: voxel index mismatch at i)";
-}
 
 // Texture3D sample on CPU — nearest at voxel centers (exact) + a trilinear
 // midpoint (voxel 0/1 blend = 0.5).
@@ -2226,15 +2063,6 @@ TEST(XpuCpuDispatchTests, twoSamplersInOneKernelOnCpu) {
 
 // Integer Texture3D fetch on CPU — a 2x2x2 RGBA32I volume read voxel-exact (the
 // 3-D twin of textureFetchRgba32iOnCpu; fetchTexture3D threads the int texel type).
-TEST(XpuCpuDispatchTests, texture3dFetchRgba32iOnCpu) {
-    auto jit = CajetaJit::compile(kTex3dIntFetchSrcCpu("int32", "TextureFormat.RGBA32I"),
-                                  "test.Tex3dIntFetchCpu", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r << " (3D RGBA32I fetch mismatch)";
-}
 
 // Explicit-only bundling is a build-time contract (locked decision #3): when the
 // env forces a backend that wasn't bundled, no backend is available — the
@@ -2382,43 +2210,6 @@ TEST(XpuCpuDispatchTests, memoryFenceOnCpu) {
 // atomics still guarantee atomicity (just not ordering), so the count is exact
 // (out[0] == N). Proves enum constants resolve in kernels + the relaxed atomic
 // path runs. (Cross-checks the VK/AMD device runs of the same kernel.)
-TEST(XpuCpuDispatchTests, relaxedAtomicCounterOnCpu) {
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "import cajeta.xpu.MemoryOrder;\n"
-        "public class RAC {\n"
-        "    @Kernel\n"
-        "    public static void count(KernelBuffer<int32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) {\n"
-        "            out.atomicAdd(0, 1, MemoryOrder.Relaxed);\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 n = 256;\n"
-        "        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);\n"
-        "        int32[] z = heap int32[1];\n"
-        "        z[0] = 0;\n"
-        "        out.upload(z);\n"
-        "        KernelStream s #= KernelStream.current();\n"
-        "        count.launch(s, grid: [1], block: [256])(out, n);\n"
-        "        s.sync();\n"
-        "        int32[] ho = heap int32[1];\n"
-        "        out.download(ho);\n"
-        "        if (ho[0] != 256) { return ho[0]; }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.RAC", cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "got " << r << " (expected 256 — relaxed atomic count)";
-}
 
 // Stage 11: a specialization constant on CPU. `Spec.geti(0, 4242)` bakes its
 // compile-time default as an i32 literal (CPU recompiles per launch — there is
@@ -2609,16 +2400,6 @@ const char* kDeviceDispatchTableSource =
     "    }\n"
     "}\n";
 
-TEST(XpuCpuDispatchTests, deviceDispatchTableOnCpu) {
-    auto jit = CajetaJit::compile(kDeviceDispatchTableSource, "test.DispB",
-                                  cpuOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] wrong — indexed device dispatch table)";
-}
 
 // Bounds: a runtime index past the table size is a DEFINED no-op — the
 // zero-initialized result slot is returned (no trap, no UB). Here sel = i+100

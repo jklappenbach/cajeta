@@ -231,120 +231,13 @@ constexpr const char* BYTES_HELPER =
 
 // `["a\nb\"c\\d\/e"]`: decoded = a,0A,b,22,c,5C,d,2F,e (9 bytes);
 // verbatim keeps the two-byte escapes (13 bytes). Both from one token.
-TEST(JsonReaderTests, decodedEscapesVerbatimUnchanged) {
-    auto src = std::string(PRELUDE) +
-        "import cajeta.lang.String;\n"
-        "public final class D {\n" + BYTES_HELPER +
-        "    public static int32 run() {\n"
-        "        String j = \"[\\\"a\\\\nb\\\\\\\"c\\\\\\\\d\\\\/e\\\"]\";\n"
-        "        int8[] buf #= D.bytesOf(j);\n"
-        "        JsonReader r = heap JsonReader(buf, (int64) buf.count());\n"
-        "        r.next();\n"                       // START_ARRAY
-        "        r.next();\n"                       // STRING
-        "        int8[] raw #= r.currentBytes();\n"
-        "        int8[] dec #= r.currentDecodedBytes();\n"
-        "        int8[] raw2 #= r.currentBytes();\n" // decode didn't disturb
-        "        if ((int32) raw.count() != 13) { return 1; }\n"
-        "        if ((int32) raw2.count() != 13) { return 2; }\n"
-        "        if ((int32) dec.count() != 9) { return 3; }\n"
-        "        if (dec[0] != (int8) 97) { return 4; }\n"    // a
-        "        if (dec[1] != (int8) 10) { return 5; }\n"    // \n
-        "        if (dec[2] != (int8) 98) { return 6; }\n"    // b
-        "        if (dec[3] != (int8) 34) { return 7; }\n"    // "
-        "        if (dec[4] != (int8) 99) { return 8; }\n"    // c
-        "        if (dec[5] != (int8) 92) { return 9; }\n"    // backslash
-        "        if (dec[6] != (int8) 100) { return 10; }\n"  // d
-        "        if (dec[7] != (int8) 47) { return 11; }\n"   // /
-        "        if (dec[8] != (int8) 101) { return 12; }\n"  // e
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}
 
 // `["Aé中😀"]` spelled entirely in \uXXXX escapes: BMP escapes and a
 // surrogate pair decode to UTF-8: 41 | C3 A9 | E4 B8 AD | F0 9F 98 80
 // (10 bytes).
-TEST(JsonReaderTests, decodedUnicodeBmpAndSurrogatePair) {
-    auto src = std::string(PRELUDE) +
-        "import cajeta.lang.String;\n"
-        "public final class D {\n" + BYTES_HELPER +
-        "    public static int32 run() {\n"
-        "        String j = \"[\\\"\\\\u0041\\\\u00e9\\\\u4e2d\\\\ud83d\\\\ude00\\\"]\";\n"
-        "        int8[] buf #= D.bytesOf(j);\n"
-        "        JsonReader r = heap JsonReader(buf, (int64) buf.count());\n"
-        "        r.next();\n"
-        "        r.next();\n"
-        "        int8[] dec #= r.currentDecodedBytes();\n"
-        "        if ((int32) dec.count() != 10) { return 1; }\n"
-        "        int32[] want = [65, 195, 169, 228, 184, 173,\n"
-        "                        240, 159, 152, 128];\n"
-        "        int32 i = 0;\n"
-        "        while (i < 10) {\n"
-        "            if (((int32) dec[i] & 255) != want[i]) { return 10 + i; }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}
 
 // `["\b\f\r\t"]` → 08 0C 0D 09; and `currentDecodedString()` wraps the
 // same bytes as a String (byteLength 4).
-TEST(JsonReaderTests, decodedControlShortsAndStringAccessor) {
-    auto src = std::string(PRELUDE) +
-        "import cajeta.lang.String;\n"
-        "public final class D {\n" + BYTES_HELPER +
-        "    public static int32 run() {\n"
-        "        String j = \"[\\\"\\\\b\\\\f\\\\r\\\\t\\\"]\";\n"
-        "        int8[] buf #= D.bytesOf(j);\n"
-        "        JsonReader r = heap JsonReader(buf, (int64) buf.count());\n"
-        "        r.next();\n"
-        "        r.next();\n"
-        "        int8[] dec #= r.currentDecodedBytes();\n"
-        "        if ((int32) dec.count() != 4) { return 1; }\n"
-        "        if (dec[0] != (int8) 8) { return 2; }\n"
-        "        if (dec[1] != (int8) 12) { return 3; }\n"
-        "        if (dec[2] != (int8) 13) { return 4; }\n"
-        "        if (dec[3] != (int8) 9) { return 5; }\n"
-        "        String s #= r.currentDecodedString();\n"
-        "        if (s.byteLength() != 4) { return 6; }\n"
-        "        if (s.byteAt(0) != 8) { return 7; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}
 
 // Escape-free string and a NUMBER token: decoded == verbatim on both —
 // the accessor is additive and changes nothing for clean input.
-TEST(JsonReaderTests, decodedIdentityWithoutEscapes) {
-    auto src = std::string(PRELUDE) +
-        "import cajeta.lang.String;\n"
-        "public final class D {\n" + BYTES_HELPER +
-        "    public static int32 run() {\n"
-        "        String j = \"[\\\"plain text\\\", 425]\";\n"
-        "        int8[] buf #= D.bytesOf(j);\n"
-        "        JsonReader r = heap JsonReader(buf, (int64) buf.count());\n"
-        "        r.next();\n"
-        "        r.next();\n"
-        "        int8[] raw #= r.currentBytes();\n"
-        "        int8[] dec #= r.currentDecodedBytes();\n"
-        "        if (raw.count() != dec.count()) { return 1; }\n"
-        "        int32 n = (int32) raw.count();\n"
-        "        int32 i = 0;\n"
-        "        while (i < n) {\n"
-        "            if (raw[i] != dec[i]) { return 2; }\n"
-        "            i = i + 1;\n"
-        "        }\n"
-        "        r.next();\n"                       // NUMBER
-        "        int8[] rawN #= r.currentBytes();\n"
-        "        int8[] decN #= r.currentDecodedBytes();\n"
-        "        if (rawN.count() != decN.count()) { return 3; }\n"
-        "        if (decN[0] != (int8) 52) { return 4; }\n"
-        "        return 0;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 0);
-}

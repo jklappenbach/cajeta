@@ -52,7 +52,7 @@ public class Blake3Bench extends Benchmark {
 
     public boolean checkResult() {
         // Pin to the official BLAKE3 vector for the 1 MiB i%251 buffer.
-        String hex = Blake3.hashHex(this.data, this.len);
+        String hex #= Blake3.hashHex(this.data, this.len);
         return hex == "74cb441fd087764ca9c3694da742ebe30cbeb3060a17009ca81825c7a8d10343";
     }
 }

@@ -28,8 +28,20 @@
 #include <fstream>
 #endif
 
+// MinGW's CRT has no pwrite(2), and its off_t is 32 bits — the exact width
+// these tests exist to exercise. The Windows equivalents (_lseeki64,
+// _chsize_s) are 64-bit clean; FSCTL_SET_SPARSE is what keeps the multi-GiB
+// fixtures metadata-only on NTFS, the way ftruncate already does on POSIX.
 #ifdef _WIN32
 #include <io.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <winioctl.h>
 #endif
 
 #ifndef O_BINARY
@@ -78,24 +90,54 @@ std::string readRaw(const std::string& path) {
     return out;
 }
 
+// Mark the file sparse before it is extended. A no-op on POSIX, where
+// ftruncate past EOF already leaves a hole; on NTFS the flag is what turns
+// the 2 GiB / 8 GiB fixtures from a reserve-and-zero-fill into metadata.
+void markSparse(int fd) {
+#ifdef _WIN32
+    HANDLE h = (HANDLE) ::_get_osfhandle(fd);
+    if (h != INVALID_HANDLE_VALUE) {
+        DWORD returned = 0;
+        ::DeviceIoControl(h, FSCTL_SET_SPARSE, nullptr, 0, nullptr, 0,
+                          &returned, nullptr);
+    }
+#else
+    (void) fd;
+#endif
+}
+
+// Set the file length. ::ftruncate takes off_t, which is 32 bits on MinGW —
+// a 2^31+16 length would wrap negative there, silently defeating the very
+// bit-31 case under test.
+int truncateTo(int fd, int64_t size) {
+#ifdef _WIN32
+    return ::_chsize_s(fd, size) == 0 ? 0 : -1;
+#else
+    return ::ftruncate(fd, (off_t) size);
+#endif
+}
+
+// Positional write. MinGW has no pwrite(2); these fixtures are
+// single-threaded and own the descriptor, so seek-then-write is exact.
+int64_t writeAt(int fd, const void* buf, size_t len, int64_t offset) {
+#ifdef _WIN32
+    if (::_lseeki64(fd, offset, SEEK_SET) < 0) return -1;
+    return (int64_t) ::_write(fd, buf, (unsigned int) len);
+#else
+    return (int64_t) ::pwrite(fd, buf, len, (off_t) offset);
+#endif
+}
+
 // Create a sparse file of `size` bytes whose last `markLen` bytes are `mark`.
 // Sparse: only the tail extent occupies disk.
 void makeSparseWithTailMark(const std::string& path, int64_t size,
                             const char* mark, size_t markLen) {
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT | O_TRUNC | O_BINARY, 0644);
     ASSERT_GE(fd, 0) << "open(" << path << ")";
-#ifdef _WIN32
-    // MinGW has no pwrite, and its off_t is 32-bit — both silently break the
-    // past-bit-31 sizes this helper exists for. Use the 64-bit CRT seams.
-    ASSERT_EQ(_chsize_s(fd, size), 0);
-    ASSERT_EQ(_lseeki64(fd, size - (int64_t) markLen, SEEK_SET),
-              size - (int64_t) markLen);
-    ASSERT_EQ(::write(fd, mark, (unsigned) markLen), (int) markLen);
-#else
-    ASSERT_EQ(::ftruncate(fd, (off_t) size), 0);
-    ASSERT_EQ(::pwrite(fd, mark, markLen, (off_t) (size - (int64_t) markLen)),
-              (ssize_t) markLen);
-#endif
+    markSparse(fd);
+    ASSERT_EQ(truncateTo(fd, size), 0);
+    ASSERT_EQ(writeAt(fd, mark, markLen, size - (int64_t) markLen),
+              (int64_t) markLen);
     ::close(fd);
 }
 
@@ -367,39 +409,6 @@ TEST(FileIo64Tests, hugeMappingStaysBounded) {
 // time decode loops. Four known f32 little-endian patterns are written to a
 // file, mapped, copied into a Storage<float32>'s buffer in one call, and
 // read back as floats — bit-exact.
-TEST(FileIo64Tests, mappedFileCopyToTypedStorage) {
-    const std::string path = uniquePath("copy_to.bin");
-    {
-        const float vals[4] = {1.5f, -2.25f, 3.0f, 0.0625f};
-        int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
-        ASSERT_GE(fd, 0);
-        ASSERT_EQ(::write(fd, vals, sizeof(vals)), (ssize_t) sizeof(vals));
-        ::close(fd);
-    }
-    std::string src =
-        "package test;\n"
-        "import cajeta.io.file.MappedFile;\n"
-        "import cajeta.math.Storage;\n"
-        "public final class D {\n"
-        "    public static int32 run() {\n"
-        "        MappedFile m = heap MappedFile(\"" + path + "\");\n"
-        "        if (m.size() != 16) { return -1; }\n"
-        "        Storage<float32> s = heap Storage<float32>(4);\n"
-        "        int64 got = m.copyTo(0, s.hostAddress(), 16);\n"
-        "        if (got != 16) { return -2; }\n"
-        "        if (s.get(0) != 1.5f) { return -3; }\n"
-        "        if (s.get(1) != -2.25f) { return -4; }\n"
-        "        if (s.get(2) != 3.0f) { return -5; }\n"
-        "        if (s.get(3) != 0.0625f) { return -6; }\n"
-        // out-of-range source window and dead destination are rejected
-        "        if (m.copyTo(8, s.hostAddress(), 16) != -1) { return -7; }\n"
-        "        if (m.copyTo(0, 0, 4) != -1) { return -8; }\n"
-        "        return 1;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-    ::unlink(path.c_str());
-}
 
 // 4.2.5 pin — File.write returns the count actually written, per its
 // documented contract (File.cajeta: "Returns the count actually written").

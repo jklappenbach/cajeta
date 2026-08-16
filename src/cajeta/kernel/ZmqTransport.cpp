@@ -301,13 +301,30 @@ namespace cajeta::kernel {
                 outbound.push(std::move(out));
             });
             protocol.setSessionId(sessionId);
-            // Spec 6 wants the notebook's own directory to be the project,
-            // and `setProjectDir(cwd)` is the one line that does it — but it
-            // is NOT set yet, deliberately. A session with a classpath
-            // currently fails codegen outright (plan 7.2.5), so defaulting
-            // this to the cwd would break `cajeta kernel` for every user who
-            // launched Jupyter inside a project with dependencies, which is
-            // most of them. Turn it on when 7.2.5 lands, not before.
+            // Spec 6 — the notebook's own directory IS the project. Jupyter
+            // launches a kernel there, nothing in the protocol carries a
+            // classpath, and the governing `cajeta.json` up from that
+            // directory is the one the user means. Without this line the
+            // whole classpath feature reaches nobody: a notebook sitting in a
+            // project full of dependencies silently gets a stdlib-only
+            // session, and the failure looks like a missing import rather
+            // than a kernel that never looked.
+            //
+            // Held back until 7.2.5 landed, because until then a session WITH
+            // a classpath failed outright and this line would have broken
+            // `cajeta kernel` for everyone who launched Jupyter inside a
+            // project. That is fixed; this is the consumer that ships it.
+            //
+            // Read HERE rather than captured at bind(): the execution thread
+            // owns session creation, and this is the value that reaches it.
+            // No manifest anywhere above the cwd is not an error — that is a
+            // notebook outside a project, which is an ordinary stdlib-only
+            // session.
+            {
+                std::error_code ec;
+                auto cwd = std::filesystem::current_path(ec);
+                if (!ec) protocol.setProjectDir(cwd.string());
+            }
             this->protocol.store(&protocol, std::memory_order_release);
 
             Envelope envelope;

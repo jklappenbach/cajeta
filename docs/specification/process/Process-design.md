@@ -65,7 +65,7 @@ for (String line : p.stdout().reader().lines()) {
     println(line);
 }
 
-ExitStatus st = p.waitFor();
+ExitStatus st #= p.waitFor();
 if (!st.success()) {
     throw heap UnrecoverableException("ls failed with code " + st.code());
 }

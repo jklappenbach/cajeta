@@ -104,7 +104,7 @@ public class Server {
         }
         try {
             JsonReader r = heap JsonReader(#lineCopy, (int64) len);
-            JsonValue req = r.readValue();
+            JsonValue req #= r.readValue();
             Server.dispatch(req, out);
         } catch (JsonParseException e) {
             Server.writeError(out, null, -32700, "Parse error");
@@ -124,7 +124,7 @@ public class Server {
             Server.writeError(out, null, -32600, "Invalid Request");
             return;
         }
-        String method = methodV.asString();
+        String method #= methodV.asString();
         if (method.equals("initialize")) {
             Server.writeInitialize(out, id);
         } else if (method.equals("notifications/initialized")
@@ -387,7 +387,7 @@ public class Server {
         if (cfgPath == null) {
             return;
         }
-        int8[] bytes = File.readAllBytes(cfgPath);
+        int8[] bytes #= File.readAllBytes(cfgPath);
         if (bytes == null) {
             return;
         }
@@ -698,7 +698,7 @@ public class Server {
             Server.writeError(out, id, -32602, "tools/call requires a name");
             return;
         }
-        String name = nameV.asString();
+        String name #= nameV.asString();
         JsonValue argsV = p.get("arguments");
         JsonObject toolArgs = null;
         if (argsV != null && argsV.kind() == JsonValue.OBJECT) {
@@ -1080,7 +1080,7 @@ public class Server {
                 // (local) args — a struct field passed directly (decoded.bytes
                 // / decoded.byteLength()) reaches the runtime as a raw pointer,
                 // so copy both into locals first.
-                int8[] dbytes = decoded.toBytes();
+                int8[] dbytes #= decoded.toBytes();
                 int32 dlen = decoded.byteLength();
                 File.writeAllBytes(full, dbytes, dlen);
             }
@@ -1150,7 +1150,7 @@ public class Server {
             n = (int32) bytes.count();
         }
         String tok = Server.jsonEscape(bytes, n);
-        int8[] tb = tok.toBytes();
+        int8[] tb #= tok.toBytes();
         int32 tl = tok.byteLength();
         w.writeRaw(tb, tl);
     }
@@ -1180,7 +1180,7 @@ public class Server {
             Server.writeError(out, id, -32602, "compile requires an 'entry' string");
             return;
         }
-        String entry = entryV.asString();
+        String entry #= entryV.asString();
 
         String key = Server.computeKey("compile", entry, files);
         if (Server.cacheEnabled) {
@@ -1225,15 +1225,15 @@ public class Server {
         if (code == 0) {
             String aname = Server.artifactName(entry);
             String apath = Server.joinPath(outDir, aname);
-            int8[] cja = File.readAllBytes(apath);
+            int8[] cja #= File.readAllBytes(apath);
             if (cja != null) {
-                String b64 = Base64.encode(cja, cja.count());
+                String b64 #= Base64.encode(cja, cja.count());
                 bw.key("artifact");
                 bw.writeString(b64);
             }
         }
         bw.endObject();
-        int8[] obj = bw.toBytes();
+        int8[] obj #= bw.toBytes();
 
         Server.rmrf(tmpRoot);
 
@@ -1270,7 +1270,7 @@ public class Server {
             Server.writeError(out, id, -32602, "jit_execute requires an 'entry' string");
             return;
         }
-        String entry = entryV.asString();
+        String entry #= entryV.asString();
 
         String key = Server.computeKey("jit_execute", entry, files);
         if (Server.cacheEnabled) {
@@ -1310,7 +1310,7 @@ public class Server {
         Server.writeStringField(bw, "stdout", r.stdout());
         Server.writeStringField(bw, "stderr", r.stderr());
         bw.endObject();
-        int8[] obj = bw.toBytes();
+        int8[] obj #= bw.toBytes();
 
         Server.rmrf(tmpRoot);
 

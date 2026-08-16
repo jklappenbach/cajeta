@@ -14,10 +14,10 @@ cleanly into `HashMap` and `HashSet`.
 
 ```cajeta
 String s = "  Hello, World  ";
-String clean = s.trim();                 // "Hello, World" — zero-copy window
+String clean #= s.trim();                 // "Hello, World" — zero-copy window
 boolean hi = clean.startsWith("Hello");  // true
 int64 comma = clean.indexOf(",");        // 5
-String loud = clean.toUpperCase();       // "HELLO, WORLD"
+String loud #= clean.toUpperCase();       // "HELLO, WORLD"
 int64 cps = clean.count();               // 12 — codepoints, not bytes
 int8[] buf = heap int8[2];
 buf[0] = (int8) 104;                     // 'h'

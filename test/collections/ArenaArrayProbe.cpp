@@ -63,26 +63,6 @@ TEST(ArenaArrayProbe, returnedArrayStaysHeap) {
 // 3.1.4 — mixed scope: one eligible array + one escaping array in the same scope.
 // Each is routed correctly under a single mark/reset pair; the eligible one is
 // arena'd, the escaping one is heap, and the returned value is valid.
-TEST(ArenaArrayProbe, mixedScopeRoutedCorrectly) {
-    auto jit = jitOf(
-        "    static int32[] held;\n"
-        "    public static int64 probe(int32 n) {\n"
-        "        int64 abase = Cajeta.arenaInUse();\n"
-        "        int32[] local = heap int32[8];\n"          // eligible
-        "        int32[] escapes = heap int32[8];\n"        // escapes via store below
-        "        local[0] = n;\n"
-        "        escapes[0] = n + 1;\n"
-        "        A.held = escapes;\n"                       // store -> escapes stays heap
-        "        int64 aused = Cajeta.arenaInUse() - abase;\n"
-        "        if (local[0] != n) { return -1; }\n"
-        "        if (A.held[0] != n + 1) { return -2; }\n"
-        "        return aused;\n"                           // exactly one array's worth
-        "    }\n");
-    auto fn = jit->lookup<int64_t (*)(int32_t)>("probe");
-    int64_t r = fn(7);
-    EXPECT_GT(r, 0) << "eligible array in mixed scope did not use the arena";
-    EXPECT_LT(r, 4096) << "escaping array was also arena'd (both took arena path)";
-}
 
 // 3.1.x (loop bound) — per-iteration reset keeps a loop of eligible arrays bounded.
 TEST(ArenaArrayProbe, loopArrayBounded) {

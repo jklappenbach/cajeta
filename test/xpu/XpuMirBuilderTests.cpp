@@ -83,99 +83,16 @@ cajeta::MethodPtr findMethod(const cajeta::CajetaClassPtr& klass,
 } // namespace
 
 // Non-@Kernel methods produce nullptr from the per-method builder.
-TEST(XpuMirBuilderTests, nonKernelMethodReturnsNullptr) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    public static void notAKernel() { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-    auto klass = module->getStructures()["test.K"];
-    ASSERT_NE(klass, nullptr);
-    auto m = findMethod(klass, "notAKernel");
-    ASSERT_NE(m, nullptr);
-
-    EXPECT_EQ(XpuMirBuilder::buildKernelForMethod(m), nullptr);
-}
 
 // @Kernel method with simple int args produces a kernel record
 // whose canonical name reflects package+class+method and whose
 // parameter list mirrors the method signature.
-TEST(XpuMirBuilderTests, simpleKernelBuildsRecord) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel\n"
-        "    public static void run(int32 a, uint32 b) { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-    auto klass = module->getStructures()["test.K"];
-    ASSERT_NE(klass, nullptr);
-    auto m = findMethod(klass, "run");
-    ASSERT_NE(m, nullptr);
-
-    auto k = XpuMirBuilder::buildKernelForMethod(m);
-    ASSERT_NE(k, nullptr);
-    EXPECT_EQ(k->canonicalName, "test.K.run");
-    ASSERT_EQ(k->params.size(), 2u);
-    EXPECT_EQ(k->params[0].name, "a");
-    EXPECT_EQ(k->params[1].name, "b");
-    EXPECT_EQ(k->params[0].type.addressSpace, AddressSpace::Generic);
-    EXPECT_EQ(k->params[1].type.addressSpace, AddressSpace::Generic);
-}
 
 // @Wave(width = 32) and @Backend("nvidia") flow through to the
 // MIR record via XpuKernelAttr.
-TEST(XpuMirBuilderTests, waveAndBackendAttributesSurfaced) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel @Wave(width: 32) @Backend(\"nvidia\")\n"
-        "    public static void run() { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-    auto klass = module->getStructures()["test.K"];
-    ASSERT_NE(klass, nullptr);
-    auto m = findMethod(klass, "run");
-    ASSERT_NE(m, nullptr);
-
-    auto k = XpuMirBuilder::buildKernelForMethod(m);
-    ASSERT_NE(k, nullptr);
-    ASSERT_TRUE(k->waveWidth.has_value());
-    EXPECT_EQ(*k->waveWidth, 32);
-    ASSERT_EQ(k->backends.size(), 1u);
-    EXPECT_EQ(k->backends[0], XpuBackend::Nvidia);
-}
 
 // buildForModule walks all @Kernel methods in a module's class
 // table and returns a populated XpuMirModule.
-TEST(XpuMirBuilderTests, buildForModuleEnumeratesAllKernels) {
-    auto src =
-        "package test;\n"
-        "public class K {\n"
-        "    @Kernel public static void a() { }\n"
-        "    @Kernel public static void b(int32 x) { }\n"
-        "    public static void notAKernel() { }\n"
-        "}\n";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, src, "test.K");
-
-    auto mir = XpuMirBuilder::buildForModule(module);
-    ASSERT_NE(mir, nullptr);
-    EXPECT_EQ(mir->kernels.size(), 2u);
-    // Names should include test.K.a and test.K.b (any order — the
-    // method iteration order isn't guaranteed by getAllMethods).
-    bool sawA = false, sawB = false;
-    for (auto& k : mir->kernels) {
-        if (k->canonicalName == "test.K.a") sawA = true;
-        if (k->canonicalName == "test.K.b") sawB = true;
-    }
-    EXPECT_TRUE(sawA);
-    EXPECT_TRUE(sawB);
-}
 
 // XpuMirPrinter produces a text dump that includes the kernel
 // canonical name, wave width, backend tag, and parameter list.

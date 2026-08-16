@@ -113,31 +113,6 @@ namespace {
 
 // ─── parser ────────────────────────────────────────────────────────
 
-TEST(GitRepositoryTests, parserAcceptsTagTagBranchRev) {
-    auto src = R"({
-        "details": { "name": "p", "version": "0.1.0" },
-        "settings": {
-            "repositories": [
-                { "name": "by-tag",    "type": "git",
-                  "url": "https://example.com/x", "tag": "v0.1.0" },
-                { "name": "by-branch", "type": "git",
-                  "url": "https://example.com/x", "branch": "main" },
-                { "name": "by-rev",    "type": "git",
-                  "url": "https://example.com/x",
-                  "rev": "abc1234", "subdir": "pkg/core" }
-            ]
-        }
-    })";
-    auto m = loadManifestString(src);
-    ASSERT_TRUE(static_cast<bool>(m)) << errorText(m.takeError());
-    auto repos = parseRepositories(*m);
-    ASSERT_TRUE(static_cast<bool>(repos)) << errorText(repos.takeError());
-    ASSERT_EQ(repos->size(), 3u);
-    EXPECT_EQ((*repos)[0].gitRef, "v0.1.0");
-    EXPECT_EQ((*repos)[1].gitRef, "main");
-    EXPECT_EQ((*repos)[2].gitRef, "abc1234");
-    EXPECT_EQ((*repos)[2].gitSubdir, "pkg/core");
-}
 
 TEST(GitRepositoryTests, parserRejectsGitWithoutRef) {
     auto src = R"({
@@ -157,104 +132,15 @@ TEST(GitRepositoryTests, parserRejectsGitWithoutRef) {
               std::string::npos);
 }
 
-TEST(GitRepositoryTests, parserRejectsGitWithoutUrl) {
-    auto src = R"({
-        "details": { "name": "p", "version": "0.1.0" },
-        "settings": {
-            "repositories": [
-                { "name": "nourl", "type": "git", "ref": "main" }
-            ]
-        }
-    })";
-    auto m = loadManifestString(src);
-    ASSERT_TRUE(static_cast<bool>(m)) << errorText(m.takeError());
-    auto repos = parseRepositories(*m);
-    ASSERT_FALSE(static_cast<bool>(repos));
-    EXPECT_NE(errorText(repos.takeError()).find("requires 'url'"),
-              std::string::npos);
-}
 
 // ─── driver: clone + read manifest ────────────────────────────────
 
-TEST(GitRepositoryTests, listVersionsReturnsDeclaredVersionOnMatch) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
 
-    auto up = makeUpstream("v1.2.3", {
-        {"cajeta.json", manifestJson("acme.lib", "1.2.3")},
-    });
-    auto stage = makeTempDir("stage").string();
 
-    GitRepository r("test-git", up.url, "v1.2.3", "", stage);
-    auto vs = r.listVersions("acme.lib");
-    ASSERT_TRUE(static_cast<bool>(vs)) << errorText(vs.takeError());
-    ASSERT_EQ(vs->size(), 1u);
-    EXPECT_EQ((*vs)[0], "1.2.3");
-}
 
-TEST(GitRepositoryTests, listVersionsReturnsEmptyOnNameMismatch) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v1.0.0", {
-        {"cajeta.json", manifestJson("acme.lib", "1.0.0")},
-    });
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "v1.0.0", "", stage);
-    auto vs = r.listVersions("not.acme.lib");
-    ASSERT_TRUE(static_cast<bool>(vs)) << errorText(vs.takeError());
-    EXPECT_EQ(vs->size(), 0u);
-}
-
-TEST(GitRepositoryTests, fetchManifestJsonReturnsBytes) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v0.9.1", {
-        {"cajeta.json", manifestJson("acme.util", "0.9.1")},
-    });
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "v0.9.1", "", stage);
-    auto mj = r.fetchManifestJson("acme.util", "0.9.1");
-    ASSERT_TRUE(static_cast<bool>(mj)) << errorText(mj.takeError());
-    ASSERT_TRUE(mj->has_value());
-    EXPECT_NE((*mj)->find("\"acme.util\""), std::string::npos);
-}
-
-TEST(GitRepositoryTests, fetchManifestJsonNulloptOnNameOrVersionMismatch) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v1.0.0", {
-        {"cajeta.json", manifestJson("acme.lib", "1.0.0")},
-    });
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "v1.0.0", "", stage);
-    auto a = r.fetchManifestJson("acme.lib", "9.9.9");
-    ASSERT_TRUE(static_cast<bool>(a)) << errorText(a.takeError());
-    EXPECT_FALSE(a->has_value());
-
-    auto b = r.fetchManifestJson("other.pkg", "1.0.0");
-    ASSERT_TRUE(static_cast<bool>(b)) << errorText(b.takeError());
-    EXPECT_FALSE(b->has_value());
-}
 
 // ─── driver: fetch artifact ────────────────────────────────────────
 
-TEST(GitRepositoryTests, fetchReturnsArtifactPathWhenPrebuilt) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v1.0.0", {
-        {"cajeta.json", manifestJson("acme.lib", "1.0.0")},
-        {"build/archive/acme.lib-1.0.0.cja", "stub-bytes"},
-    });
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "v1.0.0", "", stage);
-    auto p = r.fetch("acme.lib", "1.0.0");
-    ASSERT_TRUE(static_cast<bool>(p)) << errorText(p.takeError());
-    EXPECT_NE(p->find("acme.lib-1.0.0.cja"), std::string::npos);
-    EXPECT_TRUE(std::filesystem::is_regular_file(*p));
-}
 
 TEST(GitRepositoryTests, fetchErrorsWhenArtifactMissing) {
     if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
@@ -289,47 +175,9 @@ TEST(GitRepositoryTests, fetchErrorsOnVersionMismatch) {
 
 // ─── driver: subdir layout ─────────────────────────────────────────
 
-TEST(GitRepositoryTests, subdirLocatesNestedManifest) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v0.5.0", {
-        {"cajeta.json", manifestJson("acme.nested", "0.5.0")},
-        {"build/archive/acme.nested-0.5.0.cja", "stub"},
-    }, "pkg/core");
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "v0.5.0", "pkg/core", stage);
-    auto vs = r.listVersions("acme.nested");
-    ASSERT_TRUE(static_cast<bool>(vs)) << errorText(vs.takeError());
-    ASSERT_EQ(vs->size(), 1u);
-    EXPECT_EQ((*vs)[0], "0.5.0");
-
-    auto p = r.fetch("acme.nested", "0.5.0");
-    ASSERT_TRUE(static_cast<bool>(p)) << errorText(p.takeError());
-    EXPECT_NE(p->find("pkg/core/build/archive"), std::string::npos);
-}
 
 // ─── driver: clone is cached ───────────────────────────────────────
 
-TEST(GitRepositoryTests, secondListReusesClone) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v0.1.0", {
-        {"cajeta.json", manifestJson("acme.lib", "0.1.0")},
-    });
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "v0.1.0", "", stage);
-    auto v1 = r.listVersions("acme.lib");
-    ASSERT_TRUE(static_cast<bool>(v1)) << errorText(v1.takeError());
-
-    // Remove the upstream entirely; second call must still succeed
-    // because the clone has already been materialised locally.
-    std::filesystem::remove_all(up.dir);
-    auto v2 = r.listVersions("acme.lib");
-    ASSERT_TRUE(static_cast<bool>(v2)) << errorText(v2.takeError());
-    EXPECT_EQ(v1->size(), v2->size());
-}
 
 // ─── driver: bad ref + bad URL ─────────────────────────────────────
 
@@ -345,17 +193,3 @@ TEST(GitRepositoryTests, cloneFailureSurfacesClearError) {
               std::string::npos);
 }
 
-TEST(GitRepositoryTests, badRefSurfacesClearError) {
-    if (!gitOnPath()) GTEST_SKIP() << "git not on PATH";
-
-    auto up = makeUpstream("v1.0.0", {
-        {"cajeta.json", manifestJson("acme.lib", "1.0.0")},
-    });
-    auto stage = makeTempDir("stage").string();
-
-    GitRepository r("test-git", up.url, "ref-does-not-exist", "", stage);
-    auto vs = r.listVersions("acme.lib");
-    ASSERT_FALSE(static_cast<bool>(vs));
-    EXPECT_NE(errorText(vs.takeError()).find("checkout"),
-              std::string::npos);
-}

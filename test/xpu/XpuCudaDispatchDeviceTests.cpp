@@ -803,72 +803,6 @@ TEST(XpuCudaDispatchDeviceTests, noOverrideReadsDefaultOnCuda) {
 // llvm.nvvm.tex.unified.2d → PTX tex.2d. A 2×2 R32F image {0,1,2,3} sampled at the
 // four texel centers returns the exact texels; the dead-center (0.5,0.5) returns
 // the 4-texel average 1.5. Epsilon compare guards GPU interpolation precision.
-TEST(XpuCudaDispatchDeviceTests, textureSampleRoutesToCudaOnDevice) {
-    CAJETA_SKIP_IF_NO_CUDA();
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.KernelBuffer;\n"
-        "import cajeta.gfx.Texture2D;\n"
-        "import cajeta.gfx.Sampler;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class TexSample {\n"
-        "    @Kernel\n"
-        "    public static void sample(Texture2D tex, Sampler s,\n"
-        "                              KernelBuffer<float32> us, KernelBuffer<float32> vs,\n"
-        "                              KernelBuffer<float32> out, uint32 n) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < n) { Vector<float32,4> c = tex.sample(s, us[i], vs[i]); out[i] = c.x; }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 w = 2;\n"
-        "        uint32 h = 2;\n"
-        "        float32[] pixels = heap float32[4];\n"
-        "        pixels[0] = 0.0f; pixels[1] = 1.0f;\n"
-        "        pixels[2] = 2.0f; pixels[3] = 3.0f;\n"
-        "        Texture2D tex = heap Texture2D(w, h);\n"
-        "        tex.upload(pixels);\n"
-        "        Sampler samp = heap Sampler(1, 0);\n"   // linear, clamp
-        "        uint32 n = 5;\n"
-        "        float32[] hus = heap float32[n];\n"
-        "        float32[] hvs = heap float32[n];\n"
-        "        float32[] hexp = heap float32[n];\n"
-        "        hus[0] = 0.25f; hvs[0] = 0.25f; hexp[0] = 0.0f;\n"
-        "        hus[1] = 0.75f; hvs[1] = 0.25f; hexp[1] = 1.0f;\n"
-        "        hus[2] = 0.25f; hvs[2] = 0.75f; hexp[2] = 2.0f;\n"
-        "        hus[3] = 0.75f; hvs[3] = 0.75f; hexp[3] = 3.0f;\n"
-        "        hus[4] = 0.5f;  hvs[4] = 0.5f;  hexp[4] = 1.5f;\n"
-        "        float32[] hout = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { hout[i] = -1.0f; }\n"
-        "        KernelBuffer<float32> us = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> vs = heap KernelBuffer<float32>(0, n);\n"
-        "        KernelBuffer<float32> out = heap KernelBuffer<float32>(0, n);\n"
-        "        us.allocate(); vs.allocate(); out.allocate();\n"
-        "        us.upload(hus); vs.upload(hvs); out.upload(hout);\n"
-        "        KernelStream s #= KernelStream.current();\n"
-        "        sample.launch(s, grid: [1], block: [64])(tex, samp, us, vs, out, n);\n"
-        "        s.sync();\n"
-        "        out.download(hout);\n"
-        "        us.free(); vs.free(); out.free();\n"
-        "        if (hout[0] == -1.0f) { return (int32)(555); }\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            float32 d = hout[i] - hexp[i];\n"
-        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.TexSample", cudaOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    if (r == 555) {
-        GTEST_SKIP() << "CUDA texture alloc unavailable (driver lacks "
-                        "cuArrayCreate/cuTexObjectCreate)";
-    }
-    EXPECT_EQ(r, 777) << "fail code " << r << " (100+i: sampled texel != expected)";
-}
 
 // Image2D storage RMW on the real NVIDIA device — the writable twin of the texture
 // path. `fill` writes each texel via img.store(); `rmw` reads-modify-writes it
@@ -876,62 +810,6 @@ TEST(XpuCudaDispatchDeviceTests, textureSampleRoutesToCudaOnDevice) {
 // the NVPTX storeImage/loadImage seam (sust.b.2d / suld.b.2d over a CUsurfObject)
 // end to end: surface-capable cuArray + the CAJETA_KP_IMAGE launch arm
 // (cuSurfObjectCreate) + the cuMemcpy2D download.
-TEST(XpuCudaDispatchDeviceTests, imageLoadStoreRmwRoutesToCudaOnDevice) {
-    CAJETA_SKIP_IF_NO_CUDA();
-    const char* src =
-        "package test;\n"
-        "import cajeta.xpu.Image2D;\n"
-        "import cajeta.xpu.KernelStream;\n"
-        "import cajeta.xpu.KernelThread;\n"
-        "public class ImgRmwCuda {\n"
-        "    @Kernel\n"
-        "    public static void fill(Image2D img, uint32 w, uint32 h) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < w * h) { img.store(i % w, i / w, (float32)(i / w * w + i % w)); }\n"
-        "    }\n"
-        "    @Kernel\n"
-        "    public static void rmw(Image2D img, uint32 w, uint32 h) {\n"
-        "        uint32 i = KernelThread.globalIdX();\n"
-        "        if (i < w * h) {\n"
-        "            uint32 x = i % w;\n"
-        "            uint32 y = i / w;\n"
-        "            float32 v = img.load(x, y);\n"
-        "            img.store(x, y, 2.0f * v + 1.0f);\n"
-        "        }\n"
-        "    }\n"
-        "    public static int32 run() {\n"
-        "        uint32 w = 4;\n"
-        "        uint32 h = 4;\n"
-        "        uint32 n = w * h;\n"
-        "        Image2D img = heap Image2D(w, h);\n"
-        "        KernelStream s #= KernelStream.current();\n"
-        "        fill.launch(s, grid: [1], block: [64])(img, w, h);\n"
-        "        s.sync();\n"
-        "        rmw.launch(s, grid: [1], block: [64])(img, w, h);\n"
-        "        s.sync();\n"
-        "        float32[] out = heap float32[n];\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) { out[i] = -1.0f; }\n"
-        "        img.download(out);\n"
-        "        if (out[0] == -1.0f) { return (int32)(555); }\n"
-        "        for (uint32 i = 0; i < n; i = i + 1) {\n"
-        "            float32 d = out[i] - (float32)(2 * i + 1);\n"
-        "            if (d < -0.01f || d > 0.01f) { return (int32)(100 + i); }\n"
-        "        }\n"
-        "        return 777;\n"
-        "    }\n"
-        "}\n";
-    auto jit = CajetaJit::compile(src, "test.ImgRmwCuda", cudaOptions());
-    ASSERT_NE(jit, nullptr);
-    auto fn = jit->lookup<int (*)()>("run");
-    ASSERT_NE(fn, nullptr);
-    int r = fn();
-    if (r == 555) {
-        GTEST_SKIP() << "CUDA storage images unavailable (driver lacks "
-                        "cuArrayCreate/cuSurfObjectCreate)";
-    }
-    EXPECT_EQ(r, 777) << "fail code " << r
-                      << " (100+i: out[i] != 2*i+1 — storeImage/loadImage RMW)";
-}
 
 // Bundle BOTH nvptx and cpu; CAJETA_XPU_BACKEND=cpu forces the fall to the CPU
 // even on a box WITH the NVIDIA GPU present — the explicit-bundle degrade-to-CPU

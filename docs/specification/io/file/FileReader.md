@@ -51,7 +51,7 @@ public class FileReader {
 ## Idiomatic loop
 
 ```cajeta
-FileReader r = File.openRead(p);
+FileReader r #= File.openRead(p);
 int8[] buf = heap int8[8192];
 int32 n = r.read(buf, 8192);
 while (n > 0) {

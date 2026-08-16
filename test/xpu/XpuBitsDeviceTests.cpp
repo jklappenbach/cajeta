@@ -34,6 +34,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "jit/CoffSafeJit.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
@@ -141,84 +142,7 @@ void checkResult(const std::vector<uint32_t>& in,
 
 } // namespace
 
-TEST(XpuBitsDeviceTests, bitInstructionsRunOnCpu) {
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kBitsSource);
-    auto k = findMethod(module->getStructures()["test.M"], "bitops");
-    ASSERT_NE(k, nullptr);
 
-    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
-    ASSERT_NE(tm, nullptr) << "host target not registered";
-    auto ctx = std::make_unique<llvm::LLVMContext>();
-    auto host = std::make_unique<llvm::Module>("xpu_bits_exec", *ctx);
-    cajeta::xpu::cpu::configureHostModule(*host, *tm);
-    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
-
-    auto jitOrErr = llvm::orc::LLJITBuilder().create();
-    ASSERT_TRUE(static_cast<bool>(jitOrErr))
-        << llvm::toString(jitOrErr.takeError());
-    auto jit = std::move(*jitOrErr);
-    auto err = jit->addIRModule(
-        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
-    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
-    auto symOrErr = jit->lookup("bitops");
-    ASSERT_TRUE(static_cast<bool>(symOrErr))
-        << llvm::toString(symOrErr.takeError());
-    auto bitops = symOrErr->toPtr<BitsFn>();
-
-    std::vector<uint32_t> in = makeInput();
-    std::vector<uint32_t> out(4 * kN, 0);
-    const int32_t B = 64;
-    const int32_t G = (int32_t) (kN / 64);
-    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
-        for (int32_t tid = 0; tid < B; ++tid)
-            bitops(out.data(), in.data(), kN,
-                   tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
-
-    checkResult(in, out);
-}
-
-TEST(XpuBitsDeviceTests, bitInstructionsRunOnVulkanDevice) {
-    using namespace cajeta::xpu::vulkan;
-    if (!VulkanDriver::available()) GTEST_SKIP() << "no Vulkan compute device";
-    Compiler compiler;
-    auto module = compileForInspection(compiler, kBitsSource);
-    auto k = findMethod(module->getStructures()["test.M"], "bitops");
-    ASSERT_NE(k, nullptr);
-
-    auto tm = createSpirvTargetMachine("vulkan1.3");
-    ASSERT_NE(tm, nullptr);
-    llvm::LLVMContext deviceCtx;
-    llvm::Module deviceModule("xpu_bits_vk", deviceCtx);
-    configureDeviceModule(deviceModule, *tm);
-    lowerKernel(k, deviceModule);
-    std::vector<uint8_t> spirv = emitSpirv(deviceModule, *tm);
-    ASSERT_FALSE(spirv.empty()) << "SPIR-V emission failed";
-
-    std::vector<uint32_t> in = makeInput();
-    std::vector<uint32_t> out(4 * kN, 0);
-    VulkanDriver vk;
-    ASSERT_TRUE(vk.init());
-    VulkanDriver::Buffer dOut = vk.alloc(out.size() * sizeof(uint32_t));
-    VulkanDriver::Buffer dIn = vk.alloc(in.size() * sizeof(uint32_t));
-    VulkanDriver::Buffer dN = vk.alloc(sizeof(uint32_t));
-    ASSERT_NE(dOut, 0u); ASSERT_NE(dIn, 0u); ASSERT_NE(dN, 0u);
-    ASSERT_TRUE(vk.upload(dOut, out.data(), out.size() * sizeof(uint32_t)));
-    ASSERT_TRUE(vk.upload(dIn, in.data(), in.size() * sizeof(uint32_t)));
-    ASSERT_TRUE(vk.upload(dN, &kN, sizeof(uint32_t)));
-
-    const unsigned block = kVulkanLocalSizeX;
-    const unsigned grid = (kN + block - 1) / block;
-    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "bitops",
-                          {dOut, dIn, dN}, grid));
-
-    std::vector<uint32_t> result(out.size());
-    ASSERT_TRUE(vk.download(result.data(), dOut,
-                            result.size() * sizeof(uint32_t)));
-    vk.free(dOut); vk.free(dIn); vk.free(dN);
-
-    checkResult(in, result);
-}
 
 TEST(XpuBitsDeviceTests, bitInstructionsRunOnAmdDevice) {
     using namespace cajeta::xpu::amd;

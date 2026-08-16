@@ -15,23 +15,23 @@ public class GuidDemo extends DemoClass {
 
         // A fresh random (version-4) GUID, seeded from the OS CSPRNG
         // (/dev/urandom on POSIX, BCryptGenRandom on Windows).
-        Guid a = Guid.random();
+        Guid a #= Guid.random();
         System.stdout.println("  random()       = " + a.toString());
 
         // Parse the canonical text form back to a value; toString() is its
         // inverse and normalizes to lowercase.
-        Guid b = Guid.parse("01234567-89AB-CDEF-FEDC-BA9876543210");
+        Guid b #= Guid.parse("01234567-89AB-CDEF-FEDC-BA9876543210");
         System.stdout.println("  parse()        = " + b.toString());
 
         // Compose from two 64-bit halves (e.g. two database columns), and read
         // them back out.
-        Guid c = Guid.fromHalves((uint64) 255L, (uint64) 1L);
+        Guid c #= Guid.fromHalves((uint64) 255L, (uint64) 1L);
         System.stdout.println("  fromHalves     = " + c.toString());
         System.stdout.println("    high()       = " + (int32) c.high());
         System.stdout.println("    low()        = " + (int32) c.low());
 
         // equals() is the exact 128-bit comparison.
-        Guid d = Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
+        Guid d #= Guid.parse("01234567-89ab-cdef-fedc-ba9876543210");
         System.stdout.println("  b.equals(d)    = " + b.equals(d));   // true
         System.stdout.println("  a.equals(b)    = " + a.equals(b));   // false
         this.check(b.equals(d) && !a.equals(b),
@@ -44,7 +44,7 @@ public class GuidDemo extends DemoClass {
         // Malformed input raises a recoverable GuidFormatException.
         boolean rejected = false;
         try {
-            Guid bad = Guid.parse("not-a-valid-guid");
+            Guid bad #= Guid.parse("not-a-valid-guid");
             System.stdout.println("  parse(bad)     = " + bad.toString());
         } catch (GuidFormatException e) {
             rejected = true;

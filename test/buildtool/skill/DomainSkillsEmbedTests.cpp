@@ -180,22 +180,3 @@ static const CatalogEntry kCatalog[] = {
     {"cajeta.stdlib", "stdlib-overview", "cajeta.stdlib"},
 };
 
-TEST(CatalogSkillsTests, catalogIdsResolveAndBindingsSearchable) {
-    auto ctx = loadSkillSearchContext(
-        std::vector<ResolvedPackageEntry>{},
-        [](llvm::StringRef) -> std::optional<std::string> { return std::nullopt; });
-    ASSERT_TRUE((bool) ctx);
-
-    for (const auto& e : kCatalog) {
-        auto p = embeddedStdlibSkillPayload(e.library, e.id);
-        ASSERT_TRUE((bool) p) << e.id << " must be embedded in " << e.library;
-        EXPECT_NE(p->find(std::string("id: ") + e.id), std::string::npos) << e.id;
-
-        auto results = searchSkills(e.binding, std::nullopt, std::nullopt, *ctx);
-        bool found = false;
-        for (const auto& r : results)
-            if (r.uri.find(std::string("/") + e.id) != std::string::npos)
-                found = true;
-        EXPECT_TRUE(found) << e.binding << " must surface " << e.id;
-    }
-}

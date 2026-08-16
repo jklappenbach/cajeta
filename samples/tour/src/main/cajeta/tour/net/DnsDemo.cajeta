@@ -30,12 +30,12 @@ public class DnsDemo extends DemoClass {
 
         // 1. Numeric literal: parse-through, no resolver involved.
         // Exactly one V4 endpoint comes back, carrying the asked port.
-        SocketAddress[] addrs = Dns.resolve("127.0.0.1", 8080);
+        SocketAddress[] addrs #= Dns.resolve("127.0.0.1", 8080);
         this.check(addrs.count() == 1,
             "numeric literal resolves to exactly one endpoint");
         SocketAddress a0 = addrs[0];
         IpAddress ip = a0.getIp();
-        IpAddress lo4 = IpAddress.loopbackV4();
+        IpAddress lo4 #= IpAddress.loopbackV4();
         this.check(ip.isV4() && ip.equals(lo4),
             "127.0.0.1 parses through to the V4 loopback");
         this.check(a0.getPort() == 8080,
@@ -46,10 +46,10 @@ public class DnsDemo extends DemoClass {
         // 2. "localhost": answered from the local hosts database. The
         // address set is platform-dependent (v4-only, v6-only, or
         // both), so the check accepts any loopback in the result.
-        SocketAddress[] lh = Dns.resolve("localhost", 80);
+        SocketAddress[] lh #= Dns.resolve("localhost", 80);
         int32 n = lh.count();
         this.check(n >= 1, "localhost resolves to at least one endpoint");
-        IpAddress lo6 = IpAddress.loopbackV6();
+        IpAddress lo6 #= IpAddress.loopbackV6();
         boolean sawLoopback = false;
         int32 i = 0;
         while (i < n) {

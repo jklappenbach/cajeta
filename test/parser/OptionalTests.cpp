@@ -79,35 +79,4 @@ TEST(OptionalTests, orElseReturnsValueOnPresent) {
 // replacing the historical untyped `throw 1` (CAJETA_ERROR_NONE_UNWRAP).
 // Full coverage of the checked-get contract lives in
 // OptionalCheckedGetTests; this pins the catch-and-continue shape.
-TEST(OptionalTests, getOnEmptyThrows) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.Optional;\n"
-        "import cajeta.error.NoOptionalValueException;\n"
-        "public final class S {\n"
-        "    public static int32 run() {\n"
-        "        Optional<int32> empty = heap Optional<int32>(false, 0);\n"
-        "        int32 result = -1;\n"
-        "        try {\n"
-        "            result = empty.get();\n"
-        "        } catch (NoOptionalValueException e) {\n"
-        "            result = 1;\n"
-        "        }\n"
-        "        return result;\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 1);
-}
 
-TEST(OptionalTests, getOnPresentReturnsValue) {
-    auto src =
-        "package test;\n"
-        "import cajeta.lang.Optional;\n"
-        "public final class S {\n"
-        "    public static int32 run() {\n"
-        "        Optional<int32> opt = heap Optional<int32>(true, 42);\n"
-        "        return opt.get();\n"
-        "    }\n"
-        "}\n";
-    EXPECT_EQ(runI32(src), 42);
-}

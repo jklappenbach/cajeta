@@ -27,19 +27,19 @@ public class NetDemo extends DemoClass {
         System.stdout.println("-- Networking: TCP loopback echo (cajeta.io.net) --");
 
         // Server: bind 127.0.0.1:0, read back the kernel-assigned port.
-        IpAddress listenAddr = IpAddress.loopbackV4();
-        SocketAddress bindAddr = SocketAddress.of(#listenAddr, 0);
-        TcpListener listener = TcpListener.bind(bindAddr);
+        IpAddress listenAddr #= IpAddress.loopbackV4();
+        SocketAddress bindAddr #= SocketAddress.of(#listenAddr, 0);
+        TcpListener listener #= TcpListener.bind(bindAddr);
         int32 port = listener.boundPort();
         System.stdout.println("  bound 127.0.0.1 on an ephemeral port (port > 0 = "
             + (port > 0) + ")");
         this.check(port > 0, "bind(0) yields a kernel-assigned port");
 
         // Client: connect to that port; server accepts the connection.
-        IpAddress clientAddr = IpAddress.loopbackV4();
-        SocketAddress connAddr = SocketAddress.of(#clientAddr, port);
-        TcpStream client = TcpStream.connect(#connAddr);
-        TcpStream server = listener.accept();
+        IpAddress clientAddr #= IpAddress.loopbackV4();
+        SocketAddress connAddr #= SocketAddress.of(#clientAddr, port);
+        TcpStream client #= TcpStream.connect(#connAddr);
+        TcpStream server #= listener.accept();
 
         // Client writes 4 bytes: "ping" = 112,105,110,103.
         int8[] ping = heap int8[4];

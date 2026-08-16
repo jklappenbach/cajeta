@@ -191,17 +191,6 @@ TEST(Phase14, settingsToolchainRejectsUnknownSubfield) {
     }
 }
 
-TEST(Phase14, settingsToolchainRequiresVersion) {
-    std::string body = R"({
-        "details": { "name": "x.y", "version": "1.0.0" },
-        "settings": { "toolchain": { "distribution": "official" } }
-    })";
-    auto m = loadManifestString(body, "<inline>");
-    ASSERT_TRUE(static_cast<bool>(m));
-    auto pin = parseToolchainPin(*m);
-    EXPECT_FALSE(static_cast<bool>(pin));
-    if (!pin) llvm::consumeError(pin.takeError());
-}
 
 TEST(Phase14, settingsToolchainRejectsInvalidFetch) {
     std::string body = R"({

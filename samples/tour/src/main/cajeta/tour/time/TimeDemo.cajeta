@@ -96,7 +96,7 @@ public class TimeDemo extends DemoClass {
         // ZoneOffset / ZoneId / ZonedDateTime — offsets and zones.
         ZoneOffset minus5 = ZoneOffset.ofHours(-5);
         System.stdout.println("  ZoneOffset -5h = " + minus5.getTotalSeconds() + "s");
-        ZoneId utc = ZoneId.of("UTC");
+        ZoneId utc #= ZoneId.of("UTC");
         ZoneOffset utcOff = utc.offsetAt(t0);
         ZonedDateTime zdt = ZonedDateTime.ofInstant(t0, utcOff);
         ZoneOffset zdtOff = zdt.getOffset();
@@ -108,8 +108,8 @@ public class TimeDemo extends DemoClass {
             && zdt.getYear() == 1970, "offsets and the UTC zone resolve");
 
         // DateTimeFormatter — strftime-style pattern formatting.
-        DateTimeFormatter fmt = DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
-        String formatted = fmt.formatDateTime(dt);
+        DateTimeFormatter fmt #= DateTimeFormatter.ofPattern("%Y-%m-%d %H:%M:%S");
+        String formatted #= fmt.formatDateTime(dt);
         System.stdout.println("  DateTimeFormatter = " + formatted);
         this.check(formatted.equals("2026-06-08 14:30:00"),
             "strftime pattern renders the exact string");

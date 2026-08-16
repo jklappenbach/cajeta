@@ -90,7 +90,7 @@ public final class TokCount {
     }
 
     static void check(String path, String name, int64 expect) {
-        int8[] b = File.readAllBytes(path);
+        int8[] b #= File.readAllBytes(path);
         int64 n = (int64) b.count();
         int64 sc = scalarTokens(b, n);
         int64 sm = simdTokens(b, n);

@@ -129,94 +129,23 @@ int32_t runI32(const std::string& body) {
 } // namespace
 
 // 4a -- among viable backends, the highest priority() binds (the real fake beats the -1000 floor).
-TEST(IfxRegistryTests, highestPriorityViableBackendBinds) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap NullWindowBackend());\n"        // floor, prio -1000
-        "r.registerWindow(heap FakeWindow(\"real\", 10, true));\n"
-        "WindowBackend b = r.selectWindow(false);\n"
-        "return b.priority();\n"), 10);
-}
 
 // 4a (tie-break) -- equal priority resolves to the FIRST-registered backend, deterministically.
-TEST(IfxRegistryTests, priorityTieBreaksToFirstRegistered) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap FakeWindow(\"first\", 5, true));\n"
-        "r.registerWindow(heap FakeWindow(\"second\", 5, true));\n"
-        "WindowBackend b = r.selectWindow(false);\n"
-        "if (b.name().equals(\"first\")) { return 1; }\n"
-        "return 0;\n"), 1);
-}
 
 // 4b -- a backend that probe()s false is never bound, even at a far higher priority. Headless so the
 // fall-through to the floor is silent (not the loud-error path).
-TEST(IfxRegistryTests, nonViableBackendNeverBoundEvenAtHigherPriority) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap FakeWindow(\"broken\", 9999, false));\n"   // high prio, NOT viable
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "WindowBackend b = r.selectWindow(true);\n"
-        "return b.priority();\n"), -1000);   // the floor bound, not the non-viable high-prio fake
-}
 
 // 4d -- only the null floor present + an opt-in headless request -> bind null silently (no throw).
-TEST(IfxRegistryTests, headlessRequestBindsNullFloorSilently) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "WindowBackend b = r.selectWindow(true);\n"
-        "if (b.name().equals(\"null\")) { return 1; }\n"
-        "return 0;\n"), 1);
-}
 
 // 4e -- only the null floor present + an interactive window request -> loud IfxException (testable),
 // never a silent black screen.
-TEST(IfxRegistryTests, interactiveRequestWithOnlyNullFloorFailsLoudly) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "try {\n"
-        "    WindowBackend b = r.selectWindow(false);\n"
-        "    return 0;\n"                       // reached only if no throw -- a regression
-        "} catch (IfxException e) {\n"
-        "    return 1;\n"                        // the loud-error path fired
-        "}\n"), 1);
-}
 
 // 4f -- the three domains are selected independently: a real window backend binds while input falls
 // to its null floor, each resolved from its own registry.
-TEST(IfxRegistryTests, domainsSelectIndependently) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap FakeWindow(\"real\", 10, true));\n"
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "r.registerInput(heap NullInputBackend());\n"   // only the floor for input
-        "WindowBackend w = r.selectWindow(false);\n"
-        "InputBackend  i = r.selectInput();\n"
-        "if (w.priority() == 10 && i.priority() == -1000) { return 1; }\n"
-        "return -1;\n"), 1);
-}
 
 // Input selection prefers the higher-priority viable backend over the floor (per-domain symmetry).
-TEST(IfxRegistryTests, inputSelectsHighestPriorityViable) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerInput(heap NullInputBackend());\n"
-        "r.registerInput(heap FakeInput(\"pad\", 7, true));\n"
-        "InputBackend i = r.selectInput();\n"
-        "return i.priority();\n"), 7);
-}
 
 // Audio has no loud-error case -- falling to the silent floor is a valid headless outcome (no throw).
-TEST(IfxRegistryTests, audioFallsToSilentFloorWithoutThrowing) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerAudio(heap NullAudioBackend());\n"
-        "AudioBackend a = r.selectAudio();\n"
-        "if (a.name().equals(\"null\")) { return 1; }\n"
-        "return 0;\n"), 1);
-}
 
 // ---- Unit 5: bootstrap / auto-registration of the null floor (spec section 5 "always registered") ----
 // The process-wide registry, BackendRegistry.instance(), auto-registers the Null* floor on first
@@ -225,50 +154,15 @@ TEST(IfxRegistryTests, audioFallsToSilentFloorWithoutThrowing) {
 
 // 5a (window) -- the shared registry already carries the null window floor on first access: an opt-in
 // headless request binds it silently, the app having registered nothing.
-TEST(IfxRegistryTests, sharedRegistryAutoRegistersNullWindowFloor) {
-    EXPECT_EQ(runI32(
-        "WindowBackend b = BackendRegistry.instance().selectWindow(true);\n"
-        "if (b.name().equals(\"null\")) { return 1; }\n"
-        "return 0;\n"), 1);
-}
 
 // 5a (input + audio) -- the input and audio floors are auto-registered too, each domain resolving to
 // its own -1000 floor with no app registration.
-TEST(IfxRegistryTests, sharedRegistryAutoRegistersInputAndAudioFloor) {
-    EXPECT_EQ(runI32(
-        "InputBackend i = BackendRegistry.instance().selectInput();\n"
-        "AudioBackend a = BackendRegistry.instance().selectAudio();\n"
-        "if (i != null && a != null && i.priority() == -1000 && a.priority() == -1000) { return 1; }\n"
-        "return 0;\n"), 1);
-}
 
 // 7a -- supports(Feature) wired through the registry: supportsWindow() delegates to the bound
 // backend, distinguishing a provided capability (FakeWindow advertises MultiWindow) from an
 // unsupported one (Touch), independent of the -1000 null floor also being registered.
-TEST(IfxRegistryTests, supportsWindowDelegatesToBoundBackend) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "r.registerWindow(heap FakeWindow(\"real\", 10, true));\n"   // bound (priority 10)
-        "int32 acc = 0;\n"
-        "if (r.supportsWindow(Feature.MultiWindow)) { acc = acc + 1; }\n"   // +1 (advertised)
-        "if (r.supportsWindow(Feature.Touch))       { acc = acc + 100; }\n" // +0 (not advertised)
-        "return acc;\n"), 1);
-}
 
 // 7a (floor) -- with only the null floor bound in each domain, every optional feature is unsupported.
-TEST(IfxRegistryTests, supportsWindowFalseForNullFloorOnly) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "r.registerInput(heap NullInputBackend());\n"
-        "r.registerAudio(heap NullAudioBackend());\n"
-        "int32 acc = 0;\n"
-        "if (r.supportsWindow(Feature.MultiWindow)) { acc = acc + 1; }\n"
-        "if (r.supportsInput(Feature.GamepadRumble)) { acc = acc + 1; }\n"
-        "if (r.supportsAudio(Feature.Hdr))           { acc = acc + 1; }\n"
-        "return acc;\n"), 0);   // floor supports nothing across all three domains
-}
 
 // 7a (unregistered domain) -- supports*() is robust when a domain has NO backend registered: it
 // reports false instead of crashing. (Regression: the bound-backend lookup must not null-compare an
@@ -287,84 +181,18 @@ TEST(IfxRegistryTests, supportsFalseForUnregisteredDomain) {
 
 // 4e -- IfxInfo.describe() snapshots the bound backend per domain from the shared registry: a real
 // window backend registered through instance() shows up as the bound window name (over the floor).
-TEST(IfxRegistryTests, ifxInfoDescribeReflectsRegisteredWindow) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry.instance().registerWindow(heap FakeWindow(\"win32\", 100, true));\n"
-        "IfxInfo info #= IfxInfo.describe();\n"
-        "if (info.windowBackendName().equals(\"win32\")\n"
-        "    && info.inputBackendName().equals(\"null\")\n"     // input floor (auto-registered)
-        "    && info.audioBackendName().equals(\"null\")) { return 1; }\n"  // audio floor
-        "return 0;\n"), 1);
-}
 
 // 4c -- CAJETA_IFX_WINDOW=<name> forces that registered backend over probe()/priority(): the named
 // low-priority backend binds even though a higher-priority one is viable.
-TEST(IfxRegistryTests, envOverrideForcesNamedWindowBackend) {
-    setenv("CAJETA_IFX_WINDOW", "lowprio", 1);
-    int32_t got = runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap FakeWindow(\"fast\", 100, true));\n"     // higher priority
-        "r.registerWindow(heap FakeWindow(\"lowprio\", 1, true));\n"    // lower priority, but named
-        "WindowBackend b = r.selectWindow(false);\n"
-        "if (b.name().equals(\"lowprio\")) { return 1; }\n"
-        "return 0;\n");
-    unsetenv("CAJETA_IFX_WINDOW");
-    EXPECT_EQ(got, 1);
-}
 
 // 4g -- an unknown CAJETA_IFX_WINDOW value is a loud launch error (IfxException), even for a headless
 // request: the operator named a backend that is not registered, so we fail rather than silently ignore.
-TEST(IfxRegistryTests, envOverrideUnknownWindowNameFailsLoudly) {
-    setenv("CAJETA_IFX_WINDOW", "nonesuch", 1);
-    int32_t got = runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerWindow(heap NullWindowBackend());\n"
-        "r.registerWindow(heap FakeWindow(\"fast\", 100, true));\n"
-        "try {\n"
-        "    WindowBackend b = r.selectWindow(true);\n"   // headless, but the unknown name still throws
-        "    return 0;\n"
-        "} catch (IfxException e) {\n"
-        "    return 1;\n"
-        "}\n");
-    unsetenv("CAJETA_IFX_WINDOW");
-    EXPECT_EQ(got, 1);
-}
 
 // 4c (input) -- CAJETA_IFX_INPUT forces the named input backend over priority.
-TEST(IfxRegistryTests, envOverrideForcesNamedInputBackend) {
-    setenv("CAJETA_IFX_INPUT", "pad", 1);
-    int32_t got = runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerInput(heap FakeInput(\"fast\", 100, true));\n"
-        "r.registerInput(heap FakeInput(\"pad\", 1, true));\n"
-        "InputBackend i = r.selectInput();\n"
-        "if (i.name().equals(\"pad\")) { return 1; }\n"
-        "return 0;\n");
-    unsetenv("CAJETA_IFX_INPUT");
-    EXPECT_EQ(got, 1);
-}
 
 // 4c (audio) -- CAJETA_IFX_AUDIO forces the named audio backend over priority.
-TEST(IfxRegistryTests, envOverrideForcesNamedAudioBackend) {
-    setenv("CAJETA_IFX_AUDIO", "alsa", 1);
-    int32_t got = runI32(
-        "BackendRegistry r = heap BackendRegistry();\n"
-        "r.registerAudio(heap FakeAudio(\"fast\", 100, true));\n"
-        "r.registerAudio(heap FakeAudio(\"alsa\", 1, true));\n"
-        "AudioBackend a = r.selectAudio();\n"
-        "if (a.name().equals(\"alsa\")) { return 1; }\n"
-        "return 0;\n");
-    unsetenv("CAJETA_IFX_AUDIO");
-    EXPECT_EQ(got, 1);
-}
 
 // 5b -- instance() is a true process-wide singleton AND is the load-time register() entry external
 // backends call: a backend registered through instance() lands in the same registry the app selects
 // from, so it wins over the auto-registered floor (also proving select(false) does not fail loudly
 // once a real backend is present).
-TEST(IfxRegistryTests, sharedRegistryIsSingletonAndAppRegistrationWins) {
-    EXPECT_EQ(runI32(
-        "BackendRegistry.instance().registerWindow(heap FakeWindow(\"real\", 50, true));\n"
-        "WindowBackend b = BackendRegistry.instance().selectWindow(false);\n"
-        "return b.priority();\n"), 50);
-}

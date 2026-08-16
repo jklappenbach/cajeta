@@ -27,13 +27,13 @@ public class FftDemo extends DemoClass {
         // bin 0 carries the whole sum (4), every other bin is 0.
         int64[] s8 = heap int64[1];
         s8[0] = 8;
-        Tensor<float32> con = Tensor.zeros<float32>(s8);
+        Tensor<float32> con #= Tensor.zeros<float32>(s8);
         int64 i = 0;
         while (i < 4) {
             con.set1(2 * i, 1.0f);
             i = i + 1;
         }
-        Tensor<float32> fc = Fft.fft(con);
+        Tensor<float32> fc #= Fft.fft(con);
         System.stdout.println("  fft([1,1,1,1]) bin0 = " + (int32)(fc.get1(0) + 0.5f)
             + "   (expect 4 — all energy in DC)");
         this.check(close(fc.get1(0), 4.0f) && close(fc.get1(1), 0.0f),
@@ -47,12 +47,12 @@ public class FftDemo extends DemoClass {
         this.check(rest, "constant signal: bins 1..3 are zero");
 
         // Known DFT: numpy fft([1,2,3,4]) = [10, -2+2j, -2, -2-2j].
-        Tensor<float32> x = Tensor.zeros<float32>(s8);
+        Tensor<float32> x #= Tensor.zeros<float32>(s8);
         x.set1(0, 1.0f);
         x.set1(2, 2.0f);
         x.set1(4, 3.0f);
         x.set1(6, 4.0f);
-        Tensor<float32> fx = Fft.fft(x);
+        Tensor<float32> fx #= Fft.fft(x);
         this.check(close(fx.get1(0), 10.0f) && close(fx.get1(1), 0.0f),
             "fft([1,2,3,4]) bin 0 == 10");
         this.check(close(fx.get1(2), -2.0f) && close(fx.get1(3), 2.0f),
@@ -62,7 +62,7 @@ public class FftDemo extends DemoClass {
 
         // Inverse round-trip: ifft conjugates the twiddles and scales by 1/N,
         // so ifft(fft(x)) reproduces the signal to float tolerance.
-        Tensor<float32> rt = Fft.ifft(fx);
+        Tensor<float32> rt #= Fft.ifft(fx);
         boolean same = true;
         i = 0;
         while (i < 8) {
@@ -73,7 +73,7 @@ public class FftDemo extends DemoClass {
 
         // fftfreq(4, 1): non-negative frequencies first, then the negative
         // ones (numpy order): [0, 0.25, -0.5, -0.25].
-        Tensor<float32> fr = Fft.fftfreq(4, 1.0f);
+        Tensor<float32> fr #= Fft.fftfreq(4, 1.0f);
         this.check(close(fr.get1(0), 0.0f) && close(fr.get1(1), 0.25f)
             && close(fr.get1(2), -0.5f) && close(fr.get1(3), -0.25f),
             "fftfreq(4, 1) == [0, 0.25, -0.5, -0.25]");

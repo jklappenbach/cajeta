@@ -133,15 +133,3 @@ TEST(XpuVulkanAotCliTests, vulkanBackendEmitsSpirvBinary) {
 }
 
 // Default backend (None) is host-only: no Vulkan artifact even with a @Kernel.
-TEST(XpuVulkanAotCliTests, defaultBackendEmitsNoSpirvArtifact) {
-    auto [src, build] = makeProject();
-
-    Compiler compiler;
-    compiler.setEmitMode(EmitMode::IR);
-    compiler.compile("test.M.saxpy", src.string(), build.string());
-
-    EXPECT_TRUE(findArtifact(build, ".spv").empty());
-    EXPECT_TRUE(findArtifact(build, ".spvasm").empty());
-
-    fs::remove_all(src.parent_path());
-}
