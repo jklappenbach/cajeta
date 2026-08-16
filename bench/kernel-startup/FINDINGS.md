@@ -405,3 +405,35 @@ It was ~46.6 s before (a) and barely moved, which confirms it is neither parse
 nor instantiation. Nothing has instrumented it yet. It is now the dominant cost
 of a dependency notebook start and should be measured before any further work
 on the front end.
+
+### The ~40s is eager codegen of the whole world (2026-08-16)
+
+`[cell]` probes in `KernelSession::execute`, `project-with-deps`, cell 1:
+
+    [cell] codegen fixpoint: 3 iterations over 147 modules, 23394 methods
+    [cell] codegen method bodies       27,439 ms   55% of cell 1
+    [cell] verify + JIT materialize    16,026 ms   32%
+    [cell] reflect thunks + ClassObject     30 ms
+    [cell] legalize + demote               141 ms
+    [cell] createModule / compile / resolve  0 ms
+    [cell] TOTAL                       43,639 ms
+
+With `[ingest]` 5,042 ms and `[prime]` ~5.8 s that accounts for the whole ~50 s.
+
+**A cell computing `20 + 42` generates 23,394 LLVM function bodies** — every
+method of the stdlib and of every dependency, over 147 modules, three passes.
+Cell 2 runs the same fixpoint in 27 ms, so the cost is first-time generation,
+not the scan.
+
+The loop is deliberate: the comment says the stdlib is included because "a cell
+that calls into the stdlib needs those bodies to exist or the cell fails to
+materialize". But ORC materializes lazily -- the verify path's own comment says
+"ORC materializes lazily, so that code is never compiled unless something calls
+it". So the kernel eagerly emits IR for a world the JIT would have pulled in on
+demand, then spends 16 s verifying and materializing it.
+
+THE LEVER: emit method bodies on demand instead of eagerly. This is the same
+"instantiate declarations, not definitions" idea as 7.2.9 but one layer down, at
+IR emission, and it is worth ~27 s directly plus most of the 16 s verify (147
+modules / 23k functions) against 7.2.9's few hundred ms. It should be reordered
+ahead of 7.2.9.

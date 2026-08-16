@@ -546,6 +546,24 @@ CellResult KernelSession::execute(const std::string& source,
         }
     } bridge(result, *impl.compiler);
 
+    // CAJETA_PRIME_TIMING=1 — the cell half of a cold start. [prime] and
+    // [ingest] together account for under 11s of a ~50s first cell; nothing has
+    // ever measured what runs after them.
+    const bool cellTiming = std::getenv("CAJETA_PRIME_TIMING") != nullptr;
+    auto cellStart = std::chrono::steady_clock::now();
+    auto cellMark = cellStart;
+    auto cellPhase = [&](const char* name) {
+        if (!cellTiming) return;
+        auto now = std::chrono::steady_clock::now();
+        auto ms = [](auto d) {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(d).count();
+        };
+        std::fprintf(stderr, "[cell] %-28s %7lld ms   (cumulative %lld ms)\n",
+                     name, (long long) ms(now - cellMark),
+                     (long long) ms(now - cellStart));
+        cellMark = now;
+    };
+
     CajetaModulePtr cellModule;
     try {
         cellModule = impl.compiler->createModule(
@@ -586,7 +604,9 @@ CellResult KernelSession::execute(const std::string& source,
         // (jupyter-kernel 2.1.6). Only consulted for user-typed
         // specializations, and only when no codegen frame is open.
         CajetaModule::setActiveUnitModule(cellModule);
+        cellPhase("createModule");
         impl.compiler->compile(cellModule);
+        cellPhase("compile (front end)");
         // Codegen finalize, mirroring the JIT host's cold path. `compile()`
         // builds the front-end world; bodies, statics, and the reflective
         // thunks are separate passes, and skipping them leaves
@@ -597,6 +617,7 @@ CellResult KernelSession::execute(const std::string& source,
         CajetaModule::validatePlaceholders();
         CajetaModule::resolveAdviceMatches();
         CajetaModule::resolveDependencyGraph();
+        cellPhase("resolve placeholders/graph");
         // The codegen set INCLUDES the stdlib module: its method bodies are
         // emitted lazily, on demand, and a cell that calls into the stdlib
         // needs those bodies to exist or the cell fails to materialize on
@@ -617,8 +638,11 @@ CellResult KernelSession::execute(const std::string& source,
             return mods;
         };
         size_t prevMethodCount = 0;
+        size_t cgIters = 0, cgLastMethods = 0, cgMods = 0;
         while (true) {
+            ++cgIters;
             auto mods = codegenMods();
+            cgMods = mods.size();
             size_t methodCount = 0;
             for (auto& m : mods) methodCount += m->getAllMethods().size();
             for (auto& m : mods)
@@ -629,14 +653,22 @@ CellResult KernelSession::execute(const std::string& source,
                 for (auto& method : m->getAllMethods()) method->generateCode();
             size_t after = 0;
             for (auto& m : codegenMods()) after += m->getAllMethods().size();
+            cgLastMethods = after;
             if (after == methodCount && after == prevMethodCount) break;
             prevMethodCount = after;
         }
+        if (cellTiming) {
+            std::fprintf(stderr,
+                "[cell] codegen fixpoint: %zu iterations over %zu modules, "
+                "%zu methods\n", cgIters, cgMods, cgLastMethods);
+        }
+        cellPhase("codegen method bodies");
         {
             for (auto& m : codegenMods())
                 for (auto& [name, klass] : m->getStructures())
                     if (klass) klass->generateStaticInitializers();
         }
+        cellPhase("static initializers");
         // REFL-2: reflective adapter bodies + #ClassObject registration.
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
@@ -645,6 +677,7 @@ CellResult KernelSession::execute(const std::string& source,
                 klass->finalizeClassObject();
             }
         }
+        cellPhase("reflect thunks + ClassObject");
     } catch (cajeta::Exception& e) {
         // script-units 5.5 / spec 2.2 — a failed cell leaves the session
         // exactly as it was. No dylib was created, and the ownership table
@@ -762,6 +795,7 @@ CellResult KernelSession::execute(const std::string& source,
         impl.stats.weakDemotedInstantiations +=
             cajeta::jit::demoteInstantiationsToWeakODR(m->getLlvmModule());
     }
+    cellPhase("legalize + demote");
 
     // NO ARCHIVE/STDLIB SYMBOL RECONCILIATION HAPPENS HERE, and a pass that
     // does one was removed on 2026-08-15 rather than fixed. It was written
@@ -924,6 +958,7 @@ CellResult KernelSession::execute(const std::string& source,
     }
 
     impl.cellJDs.push_back(&cellJD);
+    cellPhase("verify + JIT materialize");
     ++impl.stats.cellsCompiled;
     ++impl.stats.cellDylibsCreated;
 
