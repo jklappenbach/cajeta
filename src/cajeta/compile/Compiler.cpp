@@ -769,6 +769,30 @@ namespace cajeta {
     // prediction vs the semantic walk that follows it.
     static long long g_antlrParseNs = 0;
 
+    // Synthesized units never reached the two-stage path, so every template
+    // instantiation re-parsed in full LL — the reason two-stage took the prime
+    // 36.4s -> 4.9s and left dependency ingest untouched.
+    // Sizes fix (b) -- memoizing a template's tree instead of re-parsing it per
+    // instantiation. The text is argument-invariant, so every instantiation of
+    // one template parses identical input; this says what that repetition costs
+    // now that stage 1 handles it.
+    static long long g_syntheticParseNs = 0;
+    static long long g_syntheticParses = 0;
+
+    antlr4::tree::ParseTree* parseSyntheticCompilationUnit(
+            CajetaParser& parser, antlr4::CommonTokenStream& tokens,
+            const std::string& what) {
+        auto t0 = std::chrono::steady_clock::now();
+        auto* tree = parseCompilationUnitTwoStage(
+            parser, tokens,
+            [&] { parser.addErrorListener(&antlr4::ConsoleErrorListener::INSTANCE); },
+            what);
+        g_syntheticParseNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - t0).count();
+        ++g_syntheticParses;
+        return tree;
+    }
+
     static void parseSource(CajetaModulePtr module,
                             antlr4::ANTLRInputStream& input,
                             const char* label,
@@ -1176,15 +1200,21 @@ namespace cajeta {
                     std::string(f.content, f.contentBytes));
                 auto dP = DClock::now();
                 const long long antlrBefore = g_antlrParseNs;
+                const long long synthBefore = g_syntheticParseNs;
+                const long long synthCountBefore = g_syntheticParses;
                 parseSource(stdlib, in, /*label=*/rel.c_str());
                 if (dTiming) {
                     long long totMs =
                         std::chrono::duration_cast<std::chrono::milliseconds>(
                             DClock::now() - dP).count();
                     long long antlrMs = (g_antlrParseNs - antlrBefore) / 1000000;
+                    long long synthMs = (g_syntheticParseNs - synthBefore) / 1000000;
                     dPerFile.emplace_back(
                         totMs, rel + "  (antlr " + std::to_string(antlrMs)
-                                   + " ms, walk " + std::to_string(totMs - antlrMs)
+                                   + " ms, synth " + std::to_string(synthMs)
+                                   + " ms x" + std::to_string(
+                                         g_syntheticParses - synthCountBefore)
+                                   + ", walk " + std::to_string(totMs - antlrMs - synthMs)
                                    + " ms)");
                 }
                 dAdd(dParseNs, dP);

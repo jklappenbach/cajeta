@@ -613,7 +613,9 @@ namespace cajeta {
             antlr4::CommonTokenStream ifTokens(&ifLexer);
             ifTokens.fill();
             CajetaParser ifParser(&ifTokens);
-            auto* ifUnit = ifParser.compilationUnit();
+            auto* ifUnit = dynamic_cast<CajetaParser::CompilationUnitContext*>(
+                parseSyntheticCompilationUnit(ifParser, ifTokens,
+                                              "synthetic:interface"));
             CajetaParser::InterfaceDeclarationContext* ifDecl = nullptr;
             for (auto* td : ifUnit->typeDeclaration()) {
                 if (auto* id = td->interfaceDeclaration()) {
@@ -752,7 +754,9 @@ namespace cajeta {
         antlr4::CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
-        auto* compUnit = parser.compilationUnit();
+        auto* compUnit = dynamic_cast<CajetaParser::CompilationUnitContext*>(
+            parseSyntheticCompilationUnit(parser, tokens,
+                                          "synthetic:instantiate"));
 
         // The synthesized input wraps one class (or record) declaration. Find
         // it; bail loudly if the snippet structure is somehow wrong (would
@@ -1233,7 +1237,9 @@ namespace cajeta {
         antlr4::CommonTokenStream tokens(&lexer);
         tokens.fill();
         CajetaParser parser(&tokens);
-        auto* compUnit = parser.compilationUnit();
+        auto* compUnit = dynamic_cast<CajetaParser::CompilationUnitContext*>(
+            parseSyntheticCompilationUnit(parser, tokens,
+                                          "synthetic:inspect"));
 
         CajetaParser::ClassBodyContext* declBody = nullptr;
         for (auto* td : compUnit->typeDeclaration()) {
