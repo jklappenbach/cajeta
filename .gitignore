@@ -123,3 +123,6 @@ research/ml/course-material/
 # (hundreds of MB for the index alone, ~95 GB with raw .gcda trees) and
 # machine-specific; regenerate with tools/coverage/, never commit.
 .coverage/
+build-cov/
+# analyze.py writes this to the cwd, so it lands at the repo root.
+coverage-optimize.json
