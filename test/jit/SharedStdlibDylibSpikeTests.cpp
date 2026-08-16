@@ -43,13 +43,9 @@ using namespace llvm::orc;
 std::atomic<int> g_spikeCtorRuns{0};
 extern "C" void spike_bump_counter() { g_spikeCtorRuns.fetch_add(1); }
 
-// NAME THE SHARED SYMBOL SO NOTHING IN THE PROCESS CAN OWN IT TOO. This test
-// used to export `sl_add`, which is also libbsd's skip-list API — and libbsd is
-// in this binary's process image. The JIT resolved the host definition instead
-// of this one, so `fn1(5)` called `sl_add((struct sl *)5, (void *)100)`, which
-// read a field at +8 and took SIGSEGV on 0xd. The crash pointed at the JIT, and
-// the test had been dying that way since at least 2026-08-10 without anyone
-// seeing it: it sat outside the routine gate, so the sweep never ran it.
+// The shared symbol is prefixed so nothing in the process image can own it too:
+// this exported `sl_add` until 2026-08-16, which is also libbsd's skip-list API,
+// and the JIT resolved libbsd's — SIGSEGV on the first call.
 //
 // Build the shared "stdlib" module in its own context:
 //   i32  cajeta_spike_shared_add(i32 a, i32 b) { return a + b; }
@@ -150,16 +146,10 @@ TEST_F(SharedStdlibDylibSpike, sharedStdlibResolvesAcrossUserDylibsCtorRunsOnce)
     u1.addToLinkOrder(stdlibJD);
     exitOnErr(jit->addIRModule(u1, buildUserModule("user_call_1", 100)));
     exitOnErr(jit->initialize(u1));
-    // ASSERT THE BINDING BEFORE CALLING IT. If a host library owns this name
-    // too, the user module binds to the host definition and the first call jumps
-    // into foreign code with our argument types — a SIGSEGV whose backtrace
-    // blames the JIT rather than the name collision behind it.
-    //
-    // Search the LINK ORDER, not the dylib. `jit->lookup(u1, name)` searches U1
-    // alone: U1 only declares this symbol, so that lookup misses even when
-    // linking is working perfectly. The link order is what the linker consults
-    // to resolve a module's externals, so mirroring it here is what actually
-    // asserts "U1 resolves the shared add from StdlibJD".
+    // Assert the binding before calling it, so a host-symbol collision fails as
+    // a comparison instead of a SIGSEGV. Search the LINK ORDER, not the dylib:
+    // `jit->lookup(u1, name)` searches U1 alone, and U1 only declares this
+    // symbol, so it misses even when linking works.
     auto shared = exitOnErr(jit->lookup(stdlibJD, "cajeta_spike_shared_add"));
     ASSERT_NE(shared.getValue(), 0u);
     auto viaLinkOrder = [&](JITDylib& user) {

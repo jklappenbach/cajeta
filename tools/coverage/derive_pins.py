@@ -1,30 +1,15 @@
 #!/usr/bin/env python3
 """Derive behaviour pins from history: which tests were written to guard a fix?
 
-test-battery-restructure unit 3. A coverage-derived gate is structurally blind
-to assertions. `KernelSessionTests.aSessionsStructNamesDoNotLeakIntoTheNext`
-covers zero unique lines — the leak it guards is a WRONG VALUE on lines other
-tests already execute — so a greedy line-cover drops it and the corpus loses
-the only thing standing between that bug and its return. Spec §5.1 caveat 1.
+A coverage-derived gate is blind to assertions — a guard for a wrong VALUE on
+lines other tests already execute holds zero unique coverage and gets dropped.
+`regression_filter.txt` is the hand-curated answer; this derives the same signal
+mechanically: a test introduced by a commit that ALSO changed src/ was written
+to pin that change.
 
-`regression_filter.txt` is the spec's answer ("line-redundant by design"), but
-it is hand-curated and was never extended as new tests landed. This derives the
-same signal mechanically instead:
-
-    a test introduced by a commit that ALSO changed src/ was written to pin
-    that change.
-
-One reverse walk of `git log -p` over the test sources attributes each test to
-the commit that first added it; a second pass asks whether that commit touched
-src/. No per-test judgement, no LLM in the loop, reproducible by anyone.
-
-WHY --max-src-files EXISTS, and why it is not optional in practice: a bulk
-import or a sweeping refactor touches src/ and adds hundreds of tests at once,
-and those tests are not pinning anything in particular. Without a focus bound
-such a commit pins its entire contribution and the filter degenerates toward
-"every test". A fix is small: it touches a few source files and adds the test
-that proves it. The bound is what distinguishes the two, so report the
-distribution before trusting any single value.
+--max-src-files bounds "focused fix". Without it a bulk import or sweeping
+refactor pins its entire contribution and the manifest degenerates toward "every
+test", so check --histogram before trusting a value.
 
     ./derive_pins.py --root . --max-src-files 8 --out /tmp/pins.txt
     ./derive_pins.py --root . --histogram
@@ -50,9 +35,8 @@ def git(root, *args):
 def first_adding_commit(root):
     """test name -> sha of the commit that first added its TEST macro.
 
-    --reverse walks oldest-first, so the first sighting of a macro is its
-    introduction. A test deleted and re-added keeps the ORIGINAL commit, which
-    is the conservative reading: if it ever pinned a fix, it still does.
+    --reverse walks oldest-first, so first sighting = introduction. A test
+    deleted and re-added keeps the original commit (conservative).
     """
     out = git(root, "log", "--reverse", "--format=\x01%H", "-p",
               "--no-renames", "--", "test/*.cpp", "test/*.cc")

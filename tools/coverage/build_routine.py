@@ -141,29 +141,18 @@ def main():
                     help='downgrade unresolvable pins to a warning')
     ap.add_argument('--target', type=float, default=0.995)
     ap.add_argument('--exclude', action='append', default=[],
-                    help='manifest whose tests are never emitted (stress: the '
-                         'runner drops them anyway, so listing one here is a '
-                         'lie about what the gate runs)')
+                    help='manifest whose tests are never emitted (e.g. stress, '
+                         'which the runner drops anyway)')
     ap.add_argument('--budget-seconds', type=float,
-                    help='derive a TIME-bounded set instead of a coverage '
-                         'target: greedily take the best lines-per-second '
-                         'until the budget is spent. This is what light_filter '
-                         'needs — its contract is "~90s", which a coverage '
-                         'target cannot express.')
+                    help='time-bounded set instead of a coverage target: best '
+                         'lines-per-second until the budget is spent')
     ap.add_argument('--durations', help='TSV: Suite.test<TAB>ms (for --budget-seconds)')
     ap.add_argument('--no-keep-unmeasured', action='store_true',
-                    help="do NOT union unmeasured/unmeasurable tests into the "
-                         "result. The keep rule exists because routine_filter "
-                         "is used as a DELETE-SET COMPLEMENT — 'cannot be "
-                         "proven redundant, so do not remove it'. A subset gate "
-                         "(light/release) deletes nothing, so it buys no safety "
-                         "there and only costs wall-clock: on 2026-08-16 it put "
-                         "507 unmeasurable tests into light, blowing its ~90s "
-                         "contract out to ~338s.")
+                    help="omit unmeasured/unmeasurable tests. The keep rule "
+                         "guards delete-set complements; a subset gate deletes "
+                         "nothing, so there it only costs wall-clock.")
     ap.add_argument('--suite-level', action='store_true',
-                    help="emit 'Suite.*' per selected test's suite (release "
-                         "filter's form: its rationale is per-suite host "
-                         "independence, not per-test)")
+                    help="emit 'Suite.*' (release_filter's form)")
     ap.add_argument('--out')
     a = ap.parse_args()
     if a.selftest:
@@ -193,12 +182,8 @@ def main():
         universe_bits |= m
     universe = universe_bits.bit_count()
 
-    # --suite-level: the unit of selection is the SUITE, because that is what
-    # release_filter names (`CompilerTests.*`) and what the release workflow
-    # runs. Budgeting per TEST and collapsing afterwards is incoherent —
-    # selecting one test drags in every sibling, so a 3,013s test-level budget
-    # realised as 26,464s when first tried. Aggregate first: a suite's mask is
-    # the union of its tests', its cost the sum.
+    # Select whole SUITES: budgeting per test then collapsing is incoherent,
+    # since selecting one test drags in every sibling.
     unit_suite = {}
     if a.suite_level:
         agg, agg_dur = {}, {}
@@ -212,9 +197,8 @@ def main():
     got = 0
     pool = dict(masks)
     if a.budget_seconds:
-        # Maximise coverage per SECOND, not per test. Picking by raw gain fills
-        # the budget with whatever is biggest, which here is also the slowest —
-        # SortJoinTests alone is 177s and would eat twice light's entire budget.
+        # Coverage per SECOND: picking by raw gain fills the budget with the
+        # biggest tests, which are also the slowest.
         dur = {}
         if a.durations:
             for line in open(a.durations):
@@ -273,21 +257,13 @@ def main():
                 else:
                     dangling_pins.append((p, name))
             elif name in battery:
-                # Exists, but gtest never runs it. Pinning a DISABLED test is a
-                # different defect from pinning a renamed one: nothing was lost,
-                # the pin is simply inert. Say which, or the fix looks like a
-                # rename hunt that will find nothing.
+                # Exists but never runs: inert, not missing. Different fix.
                 disabled_pins.append((p, name))
             else:
                 dangling_pins.append((p, name))
 
-    # A DANGLING PIN PROTECTS NOTHING, SILENTLY. This used to be `if name in
-    # runnable` with no else: a pin whose test had been renamed was skipped
-    # without a word, so the behaviour it named went unprotected and the test
-    # that actually holds the assertion became deletable. On 2026-08-16 that
-    # deleted the successors of three of the four dangling pins in
-    # regression_filter.txt — the manifest said "protect this", the name was one
-    # rename out of date, and the tool agreed by saying nothing.
+    # A pin that resolves to nothing protects nothing. Skipping it silently
+    # leaves whatever replaced it unpinned, and therefore deletable.
     if disabled_pins:
         sys.stderr.write(
             f'WARNING: {len(disabled_pins)} pin(s) name a DISABLED test — it is '
@@ -306,28 +282,10 @@ def main():
         if not a.allow_dangling_pins:
             return 2
 
-    # UNMEASURABLE, not redundant. A unit whose index entry attributes ZERO
-    # lines ran and covered nothing the parent process could see — the
-    # signature of a test that drives the `cajeta` CLI as a child process
-    # (ANALYSIS caveat 2). gcov instruments the parent; the work happens in the
-    # fork. Treating that as "covers nothing, therefore droppable" deletes the
-    # only tests of the entire CLI surface, which is what happened on
-    # 2026-08-15: 227 such tests went, including every BuildToolArms and
-    # ArchiveCommand case.
-    #
-    # "Can't be proven redundant, so it stays" already governs tests with no
-    # entry at all. A zero-line entry is the same epistemic position with more
-    # steps, so it gets the same answer.
-    #
-    # NOTE the conflation, which is deliberate: zero attribution also means "the
-    # test CRASHED before gcov could flush" (index_gcov.py says so where it
-    # records the empty unit). This rule therefore promotes known-crashing tests
-    # into the gate, which is how
-    # SharedStdlibDylibSpike.sharedStdlibResolvesAcrossUserDylibsCtorRunsOnce
-    # was found on 2026-08-15 — crashing since at least the 2026-08-10 measure,
-    # outside the gate, so the sweep never ran it and nobody knew. Keeping a
-    # crasher visible is the right answer; a test that cannot complete is the
-    # last thing that should be silently deleted for "covering nothing".
+    # Zero attributed lines means UNMEASURABLE, not redundant: the work happened
+    # in a forked `cajeta` CLI (gcov instruments the parent), or the test crashed
+    # before gcov flushed. Either way it can't be proven redundant, so it stays —
+    # same rule as a test with no index entry at all.
     unmeasurable = {u for u, files in units.items()
                     if not any(files.values())}
     unmeasured = (runnable - set(units)) | unmeasurable

@@ -16,7 +16,7 @@
 # A test referenced as data by another test cannot be judged on its
 # own coverage. See check_filters.py's REFERENCE check.
 #
-# CarameloSpatialIndexDeviceTests.optixRecordsImplOnNvptxDevice is pinned
+# XpuRayQueryDeviceTests.optixRecordsImplOnNvptxDevice is pinned
 # because 759a9cd0 gave it an OptiX-presence skip guard hours before this
 # delete set was computed. A delete set is only as current as the corpus it
 # was derived from; a test someone just fixed is not a deletion candidate.
@@ -256,7 +256,7 @@ CancellationTests.cancelDeregistersReactorOp
 CancellationTests.completionBracketReturnsToZero
 CancellationTests.deregisterWithoutRegisterIsSafe
 CancellationTests.nestedBracketsBalance
-CarameloSpatialIndexDeviceTests.optixRecordsImplOnNvptxDevice
+XpuRayQueryDeviceTests.optixRecordsImplOnNvptxDevice
 CastTests.castBindsWholePostfixChainNotJustTheReceiver
 CastTests.classTypeParamCastOfParenthesizedOperand
 CastTests.primitiveCastBindsWholeChainLikeJava

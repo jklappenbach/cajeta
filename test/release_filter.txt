@@ -55,7 +55,7 @@ AvroSynthesizerTests.*
 BuildActionTests.*
 BuilderAnnotationTests.*
 CajetaArchiveTests.*
-CarameloSpatialIndexDeviceTests.*
+XpuRayQueryDeviceTests.*
 CirAnalysisTests.*
 CirCoreTests.*
 CleanActionTests.*

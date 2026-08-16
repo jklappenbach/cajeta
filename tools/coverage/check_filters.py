@@ -1,49 +1,18 @@
 #!/usr/bin/env python3
 """Do the filters, the durations table, and the binary agree on what exists?
 
-test-battery-restructure 4.1.1. Every failure this guards is SILENT — nothing
-errors, the build stays clean, and the sweep goes green over whatever it
-happened to run.
+test-battery-restructure 4.1.1. Every failure here is silent — nothing errors,
+the build stays clean, and the sweep goes green over whatever it happened to run.
 
-  DANGLING     a filter naming a test the binary does not have. gtest matches
-               nothing and simply runs less (spec §8.1). Found live on
-               2026-08-15: `KernelCellTests.primitiveBindingAcrossCellsRefuses-
-               Loudly` was renamed by 219c7adb and had not run in the everyday
-               sweep since.
-
-  OVERLAP      a test in both the routine gate and the stress battery. The
-               runner excludes stress from the sweep, so the routine entry is a
-               lie about what runs.
-
-  UNTIMED      a gate test with no row in the durations table. `run_one_test`
-               falls back to the flat TEST_TIMEOUT, which killed 4 tests on the
-               2026-08-15 gate — including the largest single coverage
-               contributor in the battery. Every newly-promoted test arrives in
-               this state, so this is a routine hazard, not an edge case.
-
-  REFERENCE    a test that drives ANOTHER test by name through a
-               `--gtest_filter` string, where the named test no longer exists.
-               gtest warns and runs nothing, so the driving test fails with an
-               unrelated-looking assertion. Found on 2026-08-15 when the
-               deletion removed `ZoneOffsetTests`, which
-               `ForkPerTestModeTests` drives to verify the fork-per-test
-               harness: the failure read `Expected: (serialOk) > (0)`, naming
-               neither the deleted suite nor the deletion. This dependency
-               lives in a STRING LITERAL — no filter, index or coverage measure
-               can see it.
-
-  STALE        the routine filter was derived from a different battery than the
-               one that exists now. THIS IS THE EXPENSIVE ONE. `routine_filter`
-               is DERIVED from `.coverage/index`; refresh the index without
-               re-running build_routine.py and the filter silently describes an
-               older corpus. On 2026-08-15 that turned `corpus - routine -
-               stress` into a delete set that removed 4,607 tests including
-               that session's own regression guards — every one of which looked
-               fine, built clean, and passed the gate.
-
-`build_routine.py` records the battery size it derived against in the filter
-header; this compares that against the binary. A filter with no such header
-cannot be checked and is reported, not assumed good.
+  DANGLING   a filter naming a test the binary lacks; gtest matches nothing and
+             just runs less (spec 8.1).
+  OVERLAP    a test in both the routine gate and stress; the runner drops it.
+  UNTIMED    a gate test with no duration row, so it gets the flat TEST_TIMEOUT.
+  REFERENCE  a test that drives another BY NAME in a string literal, where the
+             named test is gone. The driver then fails on an unrelated assertion.
+  STALE      the routine filter was derived against a different battery. Only the
+             binary-is-LARGER direction is fatal: those tests are outside the
+             gate, and `corpus - routine` turns them into a delete set.
 
     ./check_filters.py --binary build/test/cajeta_test --root .
     ./check_filters.py --selftest
@@ -91,24 +60,12 @@ REFERENCE_RX = re.compile(r'"([A-Za-z_]\w*)\.([A-Za-z0-9_*]+)"')
 
 
 def references_in_sources(root, binary_tests):
-    """gtest filter strings that name another test, found in test sources.
+    """Filter strings in test sources that name another test.
 
-    A string literal `"Foo.bar"` is ambiguous: in this repo it is far more
-    often a `.cajeta` SOURCE FILENAME than a test reference. Over-collecting
-    and letting `resolves()` decide produced 487 false positives (`A.cajeta`,
-    `App.cajeta`, ...) that buried the single real one — the same flood the
-    wildcard bug caused in `release_filter`, so the rule is narrowed here:
-
-      *  `Suite.*` is always a reference. Nothing else uses that shape, and it
-         is the idiom a driving test actually writes.
-      *  `Suite.name` counts only when `Suite` exists in the binary, which
-         rules out filenames (there is no suite `App`) at the cost below.
-
-    KNOWN GAP: a reference to `DeletedSuite.specificTest` — fully qualified,
-    suite already gone — is NOT caught, because nothing distinguishes it from a
-    filename once its suite no longer exists. The precise version of this check
-    runs at DELETION time, where the delete set names exactly what is about to
-    disappear and no guessing is required.
+    `"Foo.bar"` is ambiguous — usually a `.cajeta` filename, not a test — so
+    only `Suite.*`, or `Suite.name` whose suite exists, counts. GAP: a reference
+    to an already-deleted suite is indistinguishable from a filename. The exact
+    check lives in delete_tests.py, where the doomed set is known.
     """
     suites = {t.split(".", 1)[0] for t in binary_tests}
     refs = set()
@@ -142,13 +99,10 @@ def is_runnable(name):
 
 
 def resolves(entry, binary_tests):
-    """Does this filter entry name at least one real test?
+    """True if the entry matches a real test.
 
-    Entries are gtest filter patterns, not plain names: `release_filter.txt` is
-    written as `CompilerTests.*`. Comparing those literally reports every one as
-    dangling — which is what the first version of this tool did, turning a
-    49-entry file into 49 false alarms and burying the 4 real ones next to it.
-    A pattern is dangling only when it matches NOTHING.
+    Entries are gtest PATTERNS (`CompilerTests.*`), not plain names; comparing
+    them literally reports every wildcard as dangling.
     """
     if "*" not in entry and "?" not in entry:
         return entry in binary_tests
@@ -166,17 +120,15 @@ def check(binary_tests, filters, durations, routine_key="routine",
         if dangling:
             problems.append((f"{name}: DANGLING", sorted(dangling)))
 
-    # Unit 5 removed test/routine_filter.txt: the sweep runs the whole corpus
-    # less stress, so THAT is the gate the untimed/overlap checks are about.
-    # Falling back to an empty set would silently make those checks vacuous.
+    # No routine filter: the gate is the corpus. An empty set here would make
+    # the untimed/overlap checks vacuous.
     if routine_key in filters:
         routine = filters[routine_key][0]
     else:
         routine = {t for t in binary_tests if is_runnable(t)}
     stress = filters.get("stress", (set(), None))[0]
-    # Only meaningful while a routine FILTER exists. Once the corpus is the gate
-    # (unit 5) every stress test is trivially "in" it, and reporting that as an
-    # overlap turns a real check into 9 lines of noise.
+    # Only meaningful while a routine FILTER exists; with the corpus as the gate
+    # every stress test is trivially "in" it.
     if routine_key in filters:
         overlap = routine & stress
         if overlap:
@@ -184,11 +136,8 @@ def check(binary_tests, filters, durations, routine_key="routine",
 
     untimed = {t for t in routine & binary_tests if is_runnable(t)} - durations
     if untimed:
-        # ADVISORY, not fatal. Most untimed tests SKIP on this host (no CUDA, no
-        # OptiX), so they never approach the budget and can never be timed — a
-        # permanently-red check is one nobody reads. It still lists every name,
-        # because this is what killed 4 tests on the 2026-08-15 gate, including
-        # the battery's largest coverage contributor.
+        # Advisory: most untimed tests SKIP here (no CUDA/OptiX) and can never be
+        # timed, and a permanently-red check is one nobody reads.
         notes.append(
             f"UNTIMED: {len(untimed)} gate test(s) have no duration row, so "
             "they get the flat TEST_TIMEOUT on their first run:\n    "
@@ -203,9 +152,6 @@ def check(binary_tests, filters, durations, routine_key="routine",
 
     runnable = {t for t in binary_tests if is_runnable(t)}
     if routine_key not in filters:
-        # The endgame state. Assert it stays that way: a routine filter that
-        # reappears without covering the corpus is a shadow set, and a shadow
-        # set is what made every test outside it invisible to the sweep.
         notes.append("no routine_filter.txt — corpus IS the gate (spec 8.4)")
         return problems, notes
     battery = filters[routine_key][1]
@@ -213,18 +159,14 @@ def check(binary_tests, filters, durations, routine_key="routine",
         notes.append(f"{routine_key}: no 'Battery:' header — staleness "
                      "unverifiable; regenerate with build_routine.py")
     elif len(runnable) > battery:
-        # THE DANGEROUS DIRECTION. The binary has tests the derivation never
-        # saw, so they are absent from the gate by construction — and if anyone
-        # computes `corpus - routine` they are a delete set. This is exactly
-        # what removed 4,607 tests on 2026-08-15.
+        # Tests the derivation never saw: outside the gate by construction, and
+        # a delete set to anyone computing `corpus - routine`.
         problems.append((
             f"STALE: {routine_key} derived against {battery} runnable tests, "
             f"binary now has {len(runnable)} — {len(runnable) - battery} the "
             f"derivation never saw", []))
     elif len(runnable) < battery:
-        # The harmless direction: tests were deleted after the derivation, so
-        # the filter is a superset. Worth re-stamping, but nothing can fall
-        # through the gap. Reported as a note so it does not mask the above.
+        # Harmless: the filter is a superset, so nothing falls through.
         notes.append(
             f"{routine_key}: derived against {battery}, binary now has "
             f"{len(runnable)} (tests removed since) — re-derive to re-stamp")

@@ -26,17 +26,9 @@
 # Regenerate after a full sweep, or whenever the suite's shape changes enough
 # that shard balance drifts. Check the result in.
 #
-# PRUNING (test-battery-restructure 4.2.4). Rows are filtered to the tests the
-# binary actually has. Deleting 2,447 tests left 2,892 rows naming tests that no
-# longer exist — harmless to the packer, which never looks them up, but it is the
-# same silent-mismatch shape as a filter naming a missing test, and it makes the
-# durations table useless as a cross-check.
-#
-# MERGING, not overwriting. The seed sometimes holds a timing for a test the
-# local file lacks (it ran on a host with CUDA, or before a filtered run). Local
-# values win where both exist -- they are in-process gtest ms, which is what the
-# packer models -- but a seed-only row is kept rather than dropped, because
-# losing it costs a real budget and gains nothing.
+# Rows are pruned to the tests the binary has, and MERGED rather than overwritten:
+# the seed sometimes holds a timing the local file lacks. Local wins where both
+# exist (in-process gtest ms is what the packer models).
 
 set -euo pipefail
 
@@ -70,8 +62,7 @@ else
     exit 1
 fi
 
-# Filter to the live corpus and merge in seed-only rows. Needs the binary; with
-# no binary the corpus is unknown, so pruning is skipped rather than guessed at.
+# Needs the binary to know what is live; without it, skip the prune.
 TEST_BIN="${TEST_BIN:-build/test/cajeta_test}"
 if [ -x "$TEST_BIN" ]; then
     live=$(mktemp); merged=$(mktemp)

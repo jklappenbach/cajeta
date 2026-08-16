@@ -321,17 +321,11 @@ if [ ${#patterns[@]} -gt 0 ]; then
     list_filter_args=("--gtest_filter=$lf")
 fi
 tests=()
-# THE CORPUS IS THE GATE (test-battery-restructure unit 5, spec 8.4). There is
-# no routine filter and no FULL=1: with no explicit patterns the sweep runs
-# every test the binary has, less the hand-curated stress battery.
-#
-# The routine gate existed because ~4,600 tests were compiled and never run. It
-# was a coverage-derived subset, and being DERIVED is what made it dangerous:
-# refresh the coverage index without regenerating it and it silently described
-# an older corpus, so anything newer was outside the gate and invisible to the
-# sweep. That cost a 4,607-test deletion on 2026-08-15. Now that the corpus was
-# cut down to what the gate ran, the filter has no job left — and keeping it
-# would only recreate the drift.
+# THE CORPUS IS THE GATE (spec 8.4). No routine filter, no FULL=1: with no
+# explicit patterns the sweep runs every test the binary has, less the
+# hand-curated stress battery. The old routine filter was DERIVED from the
+# coverage index, so refreshing the index without regenerating it left newer
+# tests outside the gate and unrun.
 if [ -n "${CAJETA_TESTS_FILE:-}" ]; then
     # Injected list (test seam): one fully-qualified Suite.test per line, in the
     # order the suites should group. No binary invoked.
@@ -515,18 +509,11 @@ else
     for ((i=0; i<num_chunks; i++)); do chunk_weight[$i]=$(( chunk_count[$i] * DEFAULT_TEST_MS )); done
 fi
 
-# WEIGHT-AWARE RE-SPLIT. Chunking above is by COUNT (BATCH_MAX), and weights are
-# only known now — so a 16-test chunk of slow tests can want far more wall-clock
-# than BATCH_CAP allows. Previously that was resolved by clamping the deadline
-# down to the cap, which guaranteed the chunk was killed and re-run one test at
-# a time, paying BATCH_CAP seconds for nothing first. MatrixTests measured
-# 1,897s, asked 5,691s, got 1,800s, died.
-#
-# Split instead. Budget per chunk is the weight whose derived deadline just fits
-# the cap: BATCH_CAP/BATCH_SLACK seconds. A single test over that budget becomes
-# its own chunk and keeps its measured deadline (chunk_deadline handles it) —
-# it cannot be split further, and killing a test we know is slow is the bug, not
-# the safeguard.
+# Weight-aware re-split. Chunking above is by COUNT and weights are only known
+# now, so a chunk of slow tests can want far more wall-clock than BATCH_CAP
+# allows. Split it rather than clamp its deadline: budget per chunk is
+# BATCH_CAP/BATCH_SLACK seconds. A single test over that budget cannot be split
+# and keeps its measured deadline.
 if [ "$BATCH" = "1" ] && [ "${WEIGHTED:-1}" != "0" ] && [ "$BATCH_SLACK" -gt 0 ]; then
     _budget_ms=$(( BATCH_CAP * 1000 / BATCH_SLACK ))
     declare -a _nn _nl _nc _nw
@@ -599,16 +586,12 @@ while IFS=$'\t' read -r wt idx; do
     shard_total[$min_s]=$(( shard_total[$min_s] + chunk_count[$idx] ))
 done <<< "$sorted_chunks"
 
-# Deadline for one chunk, in seconds. ONE definition, used by both the executor
-# (run_suite_batch) and PLAN_ONLY, so what the plan reports is what the run
-# enforces — when these were separate, the clamp below was invisible until it
-# had already cost a run half an hour.
+# Deadline for one chunk, in seconds. One definition shared by run_suite_batch
+# and PLAN_ONLY, so the plan reports what the run enforces.
 #
-# BATCH_CAP bounds a chunk whose cost we are GUESSING at (count * TEST_TIMEOUT).
-# It must not clamp a deadline derived from MEASURED durations below that
-# measurement: doing so kills a chunk using a budget computed from knowing the
-# chunk needs more, then re-runs every test serially anyway. On 2026-08-15 that
-# burned ~1800s x 3 fallbacks — about 90 minutes of a 4,956s gate.
+# BATCH_CAP bounds a GUESSED cost (count * TEST_TIMEOUT). It must not clamp a
+# deadline derived from MEASURED durations below that measurement — that kills a
+# chunk we already know needs longer, then re-runs it serially anyway.
 chunk_deadline() {
     local idx="$1" n="${chunk_count[$1]}" deadline wsec
     deadline=$(( n * TEST_TIMEOUT ))
@@ -618,9 +601,8 @@ chunk_deadline() {
         [ "$wsec" -gt "$deadline" ] && deadline=$wsec
     fi
     if [ "$deadline" -gt "$BATCH_CAP" ]; then
-        # Never below the evidence. For a split chunk wsec is already under the
-        # cap (see the weight-aware splitter), so this only fires for a single
-        # test that legitimately measures longer than the cap.
+        # Never below the evidence. Split chunks are already under the cap, so
+        # this only fires for a single test measuring longer than it.
         if [ "$wsec" -gt "$BATCH_CAP" ]; then deadline=$wsec; else deadline=$BATCH_CAP; fi
     fi
     [ "$deadline" -lt "$TEST_TIMEOUT" ] && deadline=$TEST_TIMEOUT

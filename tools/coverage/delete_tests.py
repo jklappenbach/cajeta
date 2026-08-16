@@ -1,20 +1,14 @@
 #!/usr/bin/env python3
 """Remove named gtest cases from the sources.
 
-test-battery-restructure unit 3. Deleting 4,607 of 6,056 tests by hand is not
-on; deleting them by regex is worse, because a `TEST(...)` body contains braces
-inside strings, comments and raw literals, and a regex that gets one wrong
-silently truncates a file at the wrong place and takes surviving tests with it.
+Brace-matches each body with a scanner that understands `//`, `/* */`, char and
+string literals, and `R"tag(...)tag"` — a regex truncates a file at the first
+brace inside a string and takes surviving tests with it. A file whose cases are
+all removed is deleted.
 
-So: scan for the macro, then brace-match the body with a scanner that knows
-about `//`, `/* */`, `'c'`, `"str"` with escapes, and `R"tag(...)tag"`. A file
-whose test cases are ALL removed is deleted outright.
-
-What this deliberately does NOT do is tidy up afterwards. Helpers, fixtures and
-constants left unreferenced by a deletion stay put — an unused static function
-is a compiler warning that a human reads, whereas a tool guessing at which
-helper "belonged" to a deleted test would quietly remove things surviving tests
-need. The build tells us what is genuinely orphaned.
+Does NOT tidy up: helpers left unreferenced stay put. A tool guessing which
+helper "belonged" to a deleted test removes things surviving tests need; the
+build arbitrates.
 
     ./delete_tests.py --list .coverage/delete_set.txt --root test [--apply]
     ./delete_tests.py --selftest
@@ -25,20 +19,13 @@ import os
 import re
 import sys
 
-# Directories a test-source walk must never descend into. `.claude/worktrees/*`
-# is the one that bit: a nested git worktree holding a FULL SECOND COPY of the
-# test tree. On 2026-08-16 a caller passed --root "." by accident (a shell
-# command substitution returned empty, so `dirname ""` became `.`) and this tool
-# obediently deleted 1,874 tests out of that worktree. Nothing in the repo's own
-# sources was touched, which is exactly why it was easy to miss.
+# Never descend into these: nested worktrees and vendored trees hold second
+# copies of the test tree, and deleting out of one is invisible in git status.
 SKIP_DIRS = {'.git', '.claude', '.cache', 'node_modules', '_deps',
              'build', 'build-cov', 'build-tsan', 'cmake-build-debug'}
 
-# Anchored to COLUMN 0. Every one of this repo's 6,063 test macros starts
-# there and none is indented (checked, not assumed), so the anchor costs
-# nothing and buys immunity to the two decoys that matter: `// TEST(...)` in a
-# comment and `"TEST(...)"` inside a string literal. Matching those would take
-# the brace scanner off to the wrong offset and cut a hole in a live file.
+# Anchored to column 0: every test macro in this repo starts there, and the
+# anchor rules out `// TEST(...)` and `"TEST(...)"` decoys.
 MACRO = re.compile(
     r"^(TEST|TEST_F|TEST_P)\s*\(\s*([A-Za-z_]\w*)\s*,\s*([A-Za-z_]\w*)\s*\)",
     re.MULTILINE)
@@ -177,17 +164,9 @@ REFERENCE_RX = re.compile(r'"([A-Za-z_]\w*)\.([A-Za-z0-9_*]+)"')
 def referenced_by_other_tests(root, doomed):
     """Doomed tests that another test names in a string literal.
 
-    Some tests drive OTHER tests: `ForkPerTestModeTests` runs
-    `--gtest_filter=ZoneOffsetTests.*` to verify the fork-per-test harness.
-    Delete the subject and gtest matches nothing, so the driving test fails
-    with an assertion naming neither the deleted suite nor the deletion — on
-    2026-08-15 it read `Expected: (serialOk) > (0)`.
-
-    This dependency lives in a STRING LITERAL, so no filter, index, or coverage
-    measure can see it. Here it IS precisely checkable, because `doomed` names
-    exactly what is about to disappear: a literal is a problem iff it resolves
-    to something in that set. No heuristics, no false positives from `.cajeta`
-    filenames.
+    Some tests drive others by gtest filter; deleting the subject makes the
+    driver fail on an unrelated assertion. Exact here, because `doomed` names
+    what is about to disappear — no heuristics needed.
     """
     doomed_suites = {s for s, _ in doomed}
     hits = {}
@@ -202,7 +181,7 @@ def referenced_by_other_tests(root, doomed):
             for m in REFERENCE_RX.finditer(text):
                 suite, name = m.group(1), m.group(2)
                 if name == "*":
-                    # Whole suite: a problem only if EVERY test in it dies.
+                    # Whole suite: a problem only if every test in it dies.
                     if suite in doomed_suites and not any(
                             s == suite and (s, n) not in doomed
                             for s, n in doomed):
@@ -238,8 +217,6 @@ def main():
         return 2
     if os.path.realpath(args.root) == os.path.realpath(os.getcwd()) \
             and not args.allow_repo_root:
-        # A repo-root walk is almost always an accident, and it is the one that
-        # reaches sibling worktrees and vendored trees.
         print("error: --root is the repository root. Deleting test cases "
               "repo-wide reaches nested worktrees and vendored copies; pass "
               "an explicit subtree (e.g. --root test), or --allow-repo-root "
