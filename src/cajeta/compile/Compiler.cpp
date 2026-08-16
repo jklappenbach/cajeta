@@ -943,6 +943,11 @@ namespace cajeta {
     }
 
     static bool isLazyStdlibPackage(const std::string& pkg) {
+        // CAJETA_NO_LAZY_STDLIB=1 forces every package eager. The A/B separates
+        // the drain's route cost from its content cost — the lazy split moves
+        // when parsing is paid, not whether.
+        static const bool noLazy = std::getenv("CAJETA_NO_LAZY_STDLIB") != nullptr;
+        if (noLazy) return false;
         // cajeta.math — the numpy-equivalent, including its nested submodules
         // (cajeta.math.linalg / fft / random / stats) — is parsed on demand.
         if (pkg == "cajeta.math" || pkg.rfind("cajeta.math.", 0) == 0) return true;
