@@ -111,8 +111,14 @@ reached without a lookup have no interception point.
 
 ## 5. Control and diagnosis
 
-- **5.1** When `CAJETA_EAGER_CODEGEN=1` is set, the previous eager behaviour is
-  restored exactly, so any regression can be A/B'd in one run.
+- **5.1** When `CAJETA_EAGER_CODEGEN=1` is set, eager emission is restored
+  exactly, so any regression can be A/B'd in one run. This is a **permanent
+  supported control** (Julian, 2026-08-16), not a migration aid — the question
+  "is it the lazy path?" stays answerable for the life of the feature.
+- **5.1.1** Because it is permanent, the eager path stays exercised: it is
+  covered by tests rather than left to rot. An escape hatch that is never run
+  is broken by the time it is needed, and the day it is needed is a day
+  something else is already wrong.
 - **5.2** When `CAJETA_PRIME_TIMING=1` is set, the number of bodies generated on
   demand and the time spent generating them are reported, so the eager and lazy
   paths are comparable on the same instrument.
