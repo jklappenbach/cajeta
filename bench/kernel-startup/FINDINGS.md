@@ -216,3 +216,32 @@ belongs to 7.2.9.
 
 Separately: `EntryKind::ClassBitcode` is written and read by nothing. Every
 `.cja` ships one compiled class per source that no consumer opens.
+
+## The drain is one template, not a routing problem (2026-08-16)
+
+`buildPendingPrototypes` is ~99.9% `drainDeferredInstantiations`; its fixpoint
+scan costs ~2 ms of 44 s. Instrumented per instantiation, quiet box, Release:
+
+| | eager (all 444) | drain (dependency) |
+|---|---|---|
+| deferred total | 19,381 ms | 43,140 ms |
+| instantiations | 47 | 35 |
+| per instantiation | 412 ms | 1,232 ms |
+| worst single | 2,471 ms | **9,955 ms** |
+| worst template | `cajeta.math.Tensor` | `cajeta.math.Tensor` |
+| prototypes built | 91 | 8 |
+
+Baseline for scale: the stdlib prime's worst is 291 ms (`cajeta.collection.HashMap`).
+
+Two defects, not one:
+
+1. **`Tensor` costs 2.5 s to instantiate on the BEST path** — 8.5x HashMap's
+   worst. Inherent to the class as written, not to how it is reached.
+2. **The drain multiplies it ~4x** — same template, 9,955 ms vs 2,471 ms, while
+   doing FEWER instantiations (35 vs 47) in more than twice the time. Per
+   instantiation, not volume.
+
+This is not what 7.2.9 is scoped for. Caching a layout that should not have cost
+10 s persists the wrong artifact; shrinking the eager set moves it; a front-end
+state cache stores it. Ask why one instantiation is 34x the normal worst before
+building a cache tier around it.
