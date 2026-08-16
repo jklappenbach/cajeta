@@ -43,8 +43,16 @@ using namespace llvm::orc;
 std::atomic<int> g_spikeCtorRuns{0};
 extern "C" void spike_bump_counter() { g_spikeCtorRuns.fetch_add(1); }
 
+// NAME THE SHARED SYMBOL SO NOTHING IN THE PROCESS CAN OWN IT TOO. This test
+// used to export `sl_add`, which is also libbsd's skip-list API — and libbsd is
+// in this binary's process image. The JIT resolved the host definition instead
+// of this one, so `fn1(5)` called `sl_add((struct sl *)5, (void *)100)`, which
+// read a field at +8 and took SIGSEGV on 0xd. The crash pointed at the JIT, and
+// the test had been dying that way since at least 2026-08-10 without anyone
+// seeing it: it sat outside the routine gate, so the sweep never ran it.
+//
 // Build the shared "stdlib" module in its own context:
-//   i32  sl_add(i32 a, i32 b) { return a + b; }
+//   i32  cajeta_spike_shared_add(i32 a, i32 b) { return a + b; }
 //   internal void stdlib_ctor() { spike_bump_counter(); }   (in llvm.global_ctors)
 ThreadSafeModule buildStdlibModule() {
     auto ctx = std::make_unique<LLVMContext>();
@@ -53,9 +61,9 @@ ThreadSafeModule buildStdlibModule() {
     Type* i32 = Type::getInt32Ty(*ctx);
     Type* voidTy = Type::getVoidTy(*ctx);
 
-    // i32 sl_add(i32, i32)
+    // i32 cajeta_spike_shared_add(i32, i32)
     auto* addTy = FunctionType::get(i32, {i32, i32}, false);
-    auto* add = Function::Create(addTy, Function::ExternalLinkage, "sl_add", *m);
+    auto* add = Function::Create(addTy, Function::ExternalLinkage, "cajeta_spike_shared_add", *m);
     {
         auto* bb = BasicBlock::Create(*ctx, "entry", add);
         b.SetInsertPoint(bb);
@@ -86,8 +94,8 @@ ThreadSafeModule buildStdlibModule() {
 }
 
 // Build a "user" module in its own context:
-//   declare i32 @sl_add(i32, i32)
-//   i32 <entry>(i32 x) { return sl_add(x, addend); }
+//   declare i32 @cajeta_spike_shared_add(i32, i32)
+//   i32 <entry>(i32 x) { return cajeta_spike_shared_add(x, addend); }
 ThreadSafeModule buildUserModule(const char* entryName, int addend) {
     auto ctx = std::make_unique<LLVMContext>();
     auto m = std::make_unique<Module>(entryName, *ctx);
@@ -95,7 +103,7 @@ ThreadSafeModule buildUserModule(const char* entryName, int addend) {
     Type* i32 = Type::getInt32Ty(*ctx);
 
     auto* addTy = FunctionType::get(i32, {i32, i32}, false);
-    auto* slAdd = Function::Create(addTy, Function::ExternalLinkage, "sl_add", *m);
+    auto* slAdd = Function::Create(addTy, Function::ExternalLinkage, "cajeta_spike_shared_add", *m);
 
     auto* entryTy = FunctionType::get(i32, {i32}, false);
     auto* entry = Function::Create(entryTy, Function::ExternalLinkage, entryName, *m);
@@ -142,27 +150,50 @@ TEST_F(SharedStdlibDylibSpike, sharedStdlibResolvesAcrossUserDylibsCtorRunsOnce)
     u1.addToLinkOrder(stdlibJD);
     exitOnErr(jit->addIRModule(u1, buildUserModule("user_call_1", 100)));
     exitOnErr(jit->initialize(u1));
+    // ASSERT THE BINDING BEFORE CALLING IT. If a host library owns this name
+    // too, the user module binds to the host definition and the first call jumps
+    // into foreign code with our argument types — a SIGSEGV whose backtrace
+    // blames the JIT rather than the name collision behind it.
+    //
+    // Search the LINK ORDER, not the dylib. `jit->lookup(u1, name)` searches U1
+    // alone: U1 only declares this symbol, so that lookup misses even when
+    // linking is working perfectly. The link order is what the linker consults
+    // to resolve a module's externals, so mirroring it here is what actually
+    // asserts "U1 resolves the shared add from StdlibJD".
+    auto shared = exitOnErr(jit->lookup(stdlibJD, "cajeta_spike_shared_add"));
+    ASSERT_NE(shared.getValue(), 0u);
+    auto viaLinkOrder = [&](JITDylib& user) {
+        return exitOnErr(ES.lookup(
+            JITDylibSearchOrder{
+                {&user, JITDylibLookupFlags::MatchExportedSymbolsOnly},
+                {&stdlibJD, JITDylibLookupFlags::MatchExportedSymbolsOnly}},
+            ES.intern("cajeta_spike_shared_add")));
+    };
+    ASSERT_EQ(viaLinkOrder(u1).getAddress().getValue(), shared.getValue())
+        << "U1's link order resolved a DIFFERENT definition than StdlibJD's — a "
+           "host library in this process probably exports the same name";
+
     auto sym1 = exitOnErr(jit->lookup(u1, "user_call_1"));
     auto fn1 = sym1.toPtr<int(int)>();
-    EXPECT_EQ(fn1(5), 105) << "U1 must resolve sl_add from the shared StdlibJD";
+    EXPECT_EQ(fn1(5), 105) << "U1 must resolve the shared add from StdlibJD";
 
     // --- user dylib #2 links against the SAME shared stdlib ---
     auto& u2 = exitOnErr(jit->createJITDylib("U2"));
     u2.addToLinkOrder(stdlibJD);
     exitOnErr(jit->addIRModule(u2, buildUserModule("user_call_2", 200)));
     exitOnErr(jit->initialize(u2));
+    ASSERT_EQ(viaLinkOrder(u2).getAddress().getValue(), shared.getValue())
+        << "U2's link order resolved a different definition than StdlibJD's";
+
     auto sym2 = exitOnErr(jit->lookup(u2, "user_call_2"));
     auto fn2 = sym2.toPtr<int(int)>();
-    EXPECT_EQ(fn2(5), 205) << "U2 must resolve sl_add from the SAME StdlibJD";
+    EXPECT_EQ(fn2(5), 205) << "U2 must resolve the shared add from the SAME StdlibJD";
 
     // The crux: even though two user dylibs link against StdlibJD and each was
     // initialize()'d, the stdlib global ctor ran exactly once (at StdlibJD init).
     EXPECT_EQ(g_spikeCtorRuns.load(), 1)
         << "stdlib ctor must NOT re-run when user dylibs that link it initialize";
 
-    // Same shared definition backs both users (identical sl_add address).
-    auto slAddSym = exitOnErr(jit->lookup(stdlibJD, "sl_add"));
-    EXPECT_NE(slAddSym.getValue(), 0u);
 }
 
 } // namespace
