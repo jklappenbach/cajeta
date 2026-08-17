@@ -21,6 +21,7 @@
 #include <atomic>
 #include <functional>
 #include <mutex>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -89,9 +90,13 @@ namespace cajeta {
     private:
         CajetaSymbolIndex& index;
         DeliverFn deliver;
-        // Both guarded by the CompilerGate — only one thread emits at a time.
+        // All guarded by the CompilerGate — only one thread emits at a time.
         size_t generated = 0;
         long long emitNs = 0;
+        // Thread_local IR variables already served for an __emutls_v./_t.
+        // lookup: one delivery defines both object symbols, so the sibling
+        // must not deliver a second copy.
+        std::set<std::string> servedEmutls;
     };
 
 } // namespace cajeta

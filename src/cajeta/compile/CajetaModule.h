@@ -915,12 +915,15 @@ namespace cajeta {
             keepSet = std::move(ks);
         }
         // Should class `canon` (a canonical name) keep its reflection
-        // registration ctor? Under Full mode — or before a keep-set is computed
-        // (JIT, or pre-0b) — everything is kept. Under Lean, only keep-set
-        // members. The two emission sites (StructureMetadata / CajetaClass) gate
-        // appendToGlobalCtors on this. See plans/compiler/lean-linker-dce.md.
+        // registration ctor? Before a keep-set is computed (eager JIT, or
+        // pre-0b) everything is kept; once one is INSTALLED, only members —
+        // in any link mode. Lean installs one after 0b resolution; the lazy
+        // kernel installs the per-cell resolution (lazy-codegen 4.2.4,
+        // spec 2.2.1) so registration stops binding every class's reflect
+        // chain at cell 1. The two emission sites (StructureMetadata /
+        // CajetaClass) gate appendToGlobalCtors on this. See
+        // plans/compiler/lean-linker-dce.md.
         bool keepsClass(const std::string& canon) const {
-            if (compilerFlags.linkMode == LinkMode::Full) return true;
             if (!keepSet) return true;
             return keepSet->count(canon) > 0;
         }

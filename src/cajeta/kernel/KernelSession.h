@@ -147,6 +147,11 @@ namespace cajeta::kernel {
         // lazy codegen only the cell's own module goes through the loop, so
         // this collapsing is THE observable for lazy-codegen 4.2.1.
         long long eagerBodiesGenerated = 0;
+        // Bodies the DefinitionGenerator delivered on demand. With
+        // init-extract delivery (4.2.4) a trivial cell's total stays a
+        // fraction of the world's ~3,205 — before it, delivered
+        // vtable/RTTI/#ClassObject definitions pulled 2,906 of them.
+        long long lazyBodiesDelivered = 0;
     };
 
     // How a session is built (spec 6). Everything here is optional; the

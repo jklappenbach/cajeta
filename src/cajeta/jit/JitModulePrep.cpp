@@ -20,9 +20,14 @@ void legalizeCrossModuleRefs(llvm::Module* m) {
         if (auto* g = llvm::dyn_cast<llvm::GlobalVariable>(gv)) {
             if (auto* existing = m->getGlobalVariable(g->getName(), true))
                 return existing;
+            // Thread-locality MUST carry over: under emulated TLS a plain
+            // declaration compiles to a direct load of `X`, but a TLS
+            // definition only ever exports `__emutls_v.X` — the lookup then
+            // fails ("Symbols not found") and the state silently splits.
             return new llvm::GlobalVariable(
                 *m, g->getValueType(), g->isConstant(),
-                llvm::GlobalValue::ExternalLinkage, nullptr, g->getName());
+                llvm::GlobalValue::ExternalLinkage, nullptr, g->getName(),
+                nullptr, g->getThreadLocalMode(), g->getAddressSpace());
         }
         return nullptr;
     };

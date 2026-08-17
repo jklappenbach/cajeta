@@ -192,5 +192,15 @@ TEST(LazyKernelTests, lazyCellSkipsTheEagerWorld) {
     // orders of magnitude smaller; 2,000 is a loose ceiling, not a target.
     EXPECT_LT(st.eagerBodiesGenerated, 2000)
         << "the kernel still emits the world eagerly under the lazy flag";
+    // 4.2.4 — and the generator must not be re-emitting the world either:
+    // before init-extract delivery, the whole stdlib module's
+    // vtable/RTTI/#ClassObject definitions bound every class's chain at
+    // materialization — 2,906 of ~3,205 bodies for this same cell. The
+    // extract carries only the ctor closure; 1,500 is a loose ceiling.
+    EXPECT_GT(st.lazyBodiesDelivered, 0)
+        << "nothing came through the generator — is lazy actually on?";
+    EXPECT_LT(st.lazyBodiesDelivered, 1500)
+        << "the registration cascade is back: a delivered module is binding "
+           "the world";
     s->shutdown();
 }

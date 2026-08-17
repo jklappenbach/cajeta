@@ -118,6 +118,21 @@ namespace cajeta {
                     // exactly that reason.
                     return snapshotLiveDefinition(gv);
                 }
+                // Emulated TLS: a thread_local IR variable X reaches the
+                // object level ONLY as __emutls_v.X (control block) and
+                // __emutls_t.X (initial value) — lookups arrive under those
+                // names, never X. Serve X's IR definition once; it lowers
+                // to both, so the sibling name must not deliver a second
+                // copy ("duplicate definition of __emutls_v...").
+                for (const char* pre : {"__emutls_v.", "__emutls_t."}) {
+                    if (symbol.rfind(pre, 0) != 0) continue;
+                    std::string base = symbol.substr(11);
+                    if (auto* gv = index.findLiveDefinition(base)) {
+                        if (!servedEmutls.insert(base).second)
+                            return std::nullopt;   // sibling already served
+                        return snapshotLiveDefinition(gv);
+                    }
+                }
                 return std::nullopt;
             };
             for (const auto& symbol : symbols) {

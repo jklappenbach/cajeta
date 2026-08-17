@@ -42,6 +42,7 @@
 #include "cajeta/jit/CajetaDefinitionGenerator.h"
 #include "cajeta/jit/CajetaLazyEmitter.h"
 #include "cajeta/jit/LazyCodegen.h"
+#include "cajeta/compile/ReflectionKeepSet.h"
 #include "cajeta/util/FdCapture.h"
 
 namespace cajeta::kernel {
@@ -271,6 +272,15 @@ struct KernelSession::Impl {
     // ingest, so a cell's verify pass can tell "our IR is malformed" from
     // "a dependency we did not compile is malformed".
     std::set<llvm::Module*> prebuilt;
+    // lazy-codegen 4.2.4 — ctor functions already delivered in an
+    // init-extract. Accumulating modules (the stdlib above all) are never
+    // delivered whole under lazy; each cell delivers the ctor DELTA and the
+    // generator serves everything else, so a delivered module cannot bind
+    // every class's vtable/RTTI/thunk chain at materialization.
+    std::set<std::string> deliveredCtors;
+    // The session's DefinitionGenerator, owned by the main JITDylib; held
+    // raw for stats only (generatedCount -> lazyBodiesDelivered).
+    cajeta::CajetaDefinitionGenerator* lazyGenerator = nullptr;
     // Globals DEFINED by an already-delivered cell. Statics are session-
     // lived: the declaring cell owns the storage and later cells must
     // REFERENCE it, never emit a fresh zero-initialized copy that their own
@@ -337,12 +347,14 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     // nothing.
     {
         Impl* ip = &impl;
-        mainJD.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
+        auto gen = std::make_unique<cajeta::CajetaDefinitionGenerator>(
             impl.symbolIndex,
             [ip](llvm::orc::ThreadSafeModule tsm,
                  llvm::orc::JITDylib& jd) -> llvm::Error {
                 return ip->jit->addIRModule(jd, std::move(tsm));
-            }));
+            });
+        impl.lazyGenerator = gen.get();   // observability only (stats)
+        mainJD.addGenerator(std::move(gen));
     }
 
     // Process symbols on the main dylib — the native runtime the JIT'd code
@@ -732,6 +744,18 @@ CellResult KernelSession::execute(const std::string& source,
                     if (klass) klass->generateStaticInitializers();
         }
         cellPhase("static initializers");
+        // lazy-codegen 4.2.4 (spec 2.2.1) — under lazy, registration is
+        // gated by the cell's resolved reflection keep-set, the same
+        // resolution Lean-mode DCE runs: a reg ctor's #ClassObject pulls the
+        // class's whole reflect chain through the init extract, so "register
+        // everything" is the cascade. A forces-ALL site resolves to null =
+        // keep-all, exactly as in AOT (spec 2.2.2). Already-created reg
+        // ctors are permanent; the set only gates NEW ones, so keeps
+        // accumulate across cells.
+        if (lazyBodies) {
+            auto keep = cajeta::resolveReflectionKeepSet();
+            for (auto& m : codegenMods()) m->setKeepSet(keep);
+        }
         // REFL-2: reflective adapter bodies + #ClassObject registration.
         // #ClassObject stays eager in all modes — registration runs at dylib
         // init, which nothing looks up (spec 2.2). The thunk BODIES are named
@@ -852,14 +876,37 @@ CellResult KernelSession::execute(const std::string& source,
         return result;
     }
 
+    // lazy-codegen 4.2.4 — an ACCUMULATING module (the stdlib, or any
+    // compiled non-cell module) is never delivered whole under lazy: a
+    // whole delivery's vtable/RTTI/#ClassObject definitions bind every
+    // class's reflect chain the moment the module materializes (measured:
+    // 2,906 of ~3,205 bodies at cell 1). Instead its ctor DELTA is
+    // extracted below and everything else arrives through the generator.
+    // This also fixes late-first-use instantiations for good: the module
+    // stays out of impl.delivered, so nothing is ever stranded in it.
+    const bool lazyDelivery = cajeta::lazyCodegenEnabled();
+    // By IR-module identity, and ONLY the stdlib: a cell's work spans
+    // several CajetaModules (script synthesis mints its own unit for the
+    // cell class), all of which must deliver whole — comparing against
+    // cellModule alone routed the cell's own entry through the generator.
+    llvm::Module* stdlibIr = nullptr;
+    if (auto stdlibM = CajetaModule::getStdlibModule())
+        stdlibIr = stdlibM->getLlvmModule();
+    auto accumulating = [&](const CajetaModulePtr& m) {
+        return lazyDelivery && stdlibIr
+            && m->getLlvmModule() == stdlibIr;
+    };
+
     // Same preparation the per-module delivery path runs: legalize every
     // module before verifying any (a use from B trips A's verifier), then
     // demote instantiations so a specialization shared with an earlier cell
-    // is not a duplicate definition.
+    // is not a duplicate definition. Accumulating modules skip the live-IR
+    // passes — their extract runs the same passes on the clone.
     std::vector<CajetaModulePtr> scan(fresh.begin(), fresh.end());
     cajeta::backfillDropFunctions(scan, scan);
     cajeta::pinDropFunctionDefinitions(scan);
     for (auto& m : fresh) {
+        if (accumulating(m)) continue;
         cajeta::jit::legalizeCrossModuleRefs(m->getLlvmModule());
         impl.stats.weakDemotedInstantiations +=
             cajeta::jit::demoteInstantiationsToWeakODR(m->getLlvmModule());
@@ -901,6 +948,10 @@ CellResult KernelSession::execute(const std::string& source,
             && g.getLinkage() != llvm::GlobalValue::InternalLinkage;
     };
     for (auto& m : fresh) {
+        // Never strip an accumulating module's live initializers: they are
+        // what findLiveDefinition serves (a stripped global is a
+        // declaration, and the generator would answer "Symbols not found").
+        if (accumulating(m)) continue;
         for (auto& g : m->getLlvmModule()->globals()) {
             if (!sharedGlobal(g)) continue;
             if (!impl.definedGlobals.count(g.getName().str())) continue;
@@ -923,6 +974,7 @@ CellResult KernelSession::execute(const std::string& source,
 
     std::set<llvm::Module*> skipDelivery;
     for (auto& m : fresh) {
+        if (accumulating(m)) continue;   // 4.2.4 — extract path, below
         llvm::Module* lm = m->getLlvmModule();
         std::string verifyErr;
         llvm::raw_string_ostream vs(verifyErr);
@@ -980,8 +1032,17 @@ CellResult KernelSession::execute(const std::string& source,
     // delivery path uses, and the reason a delivered cell can never be
     // disturbed by a later one.
     for (auto& m : fresh) {
+        if (accumulating(m)) continue;   // 4.2.4 — extract path, below
         llvm::Module* lm = m->getLlvmModule();
         if (skipDelivery.count(lm)) continue;
+        if (std::getenv("CAJETA_PRIME_TIMING")) {
+            size_t defs = 0, decls = 0;
+            for (auto& gv : lm->global_values())
+                (gv.isDeclaration() ? decls : defs)++;
+            std::fprintf(stderr,
+                         "[deliver] whole %s: %zu defs, %zu decls\n",
+                         lm->getModuleIdentifier().c_str(), defs, decls);
+        }
         llvm::SmallVector<char, 0> buf;
         {
             llvm::raw_svector_ostream os(buf);
@@ -1016,6 +1077,29 @@ CellResult KernelSession::execute(const std::string& source,
         impl.delivered.insert(lm);
         for (auto& g : lm->globals()) {
             if (sharedGlobal(g)) impl.definedGlobals.insert(g.getName().str());
+        }
+    }
+
+    // 4.2.4 — the accumulating modules' init deltas: the not-yet-delivered
+    // ctors (statics + kept registrations) and their closure, nothing else.
+    // Everything the delta references arrives through the generator.
+    for (auto& m : fresh) {
+        if (!accumulating(m)) continue;
+        auto delta = cajeta::extractInitDelta(m->getLlvmModule(),
+                                              impl.deliveredCtors);
+        if (!delta) {
+            result.errorId = "CAJETA_ERROR_INTERNAL";
+            result.message = "init-delta extract failed ["
+                           + m->getLlvmModule()->getModuleIdentifier() + "]: "
+                           + llvm::toString(delta.takeError());
+            return result;
+        }
+        if (!(*delta)) continue;   // nothing new since the last cell
+        if (auto err = impl.jit->addIRModule(cellJD, std::move(*delta))) {
+            result.errorId = "CAJETA_ERROR_INTERNAL";
+            result.message = "init-delta addIRModule failed: "
+                           + llvm::toString(std::move(err));
+            return result;
         }
     }
 
@@ -1268,6 +1352,17 @@ void* KernelSession::lookupSymbol(const std::string& exactName) {
             llvm::consumeError(sym.takeError());
         }
     }
+    // lazy-codegen 4.2.4 — under init-extract delivery the stdlib's
+    // definitions live in the MAIN dylib, where the generator delivers
+    // them; a cell's calls resolve there through its link order, so the
+    // session must read the SAME copy (the result side-channel above all:
+    // reading any other copy reports "no result" forever). Last, so a
+    // cell's own definition still wins every earlier lookup.
+    if (auto sym = impl.jit->lookup(impl.jit->getMainJITDylib(), exactName)) {
+        return reinterpret_cast<void*>(sym->getValue());
+    } else {
+        llvm::consumeError(sym.takeError());
+    }
     return nullptr;
 }
 
@@ -1469,6 +1564,12 @@ void KernelSession::shutdown() {
     std::filesystem::remove_all(impl.scratchRoot, ec);
 }
 
-const SessionStats& KernelSession::stats() const { return impl_->stats; }
+const SessionStats& KernelSession::stats() const {
+    if (impl_->lazyGenerator) {
+        impl_->stats.lazyBodiesDelivered =
+            (long long) impl_->lazyGenerator->generatedCount();
+    }
+    return impl_->stats;
+}
 
 }  // namespace cajeta::kernel
