@@ -312,12 +312,34 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
         return nullptr;
     };
 
+    // Every block starts at most ONE region. `collect` already guards its own
+    // BFS with a `seen` set; this walk had no equivalent, so a CFG that comes
+    // back around to a block already regioned kept going — appending a
+    // RegionJob per lap, forever. `samples/profile` built with
+    // `--xpu-backend=cpu` reached a 67,108,864-element `jobs` vector and 116 GB
+    // of RSS before the OOM killer took the compiler (kernel log:
+    // "Out of memory: Killed process (cajeta) total-vm:176864816kB").
+    //
+    // A revisit means the barrier control flow is not the structured sequence
+    // the region model assumes, which is precisely the case this pass is
+    // supposed to DECLINE: `emitKernelRegistration` already wraps the call in
+    // `try { fissionBarrierKernel(...) } catch (cajeta::Exception&)` and falls
+    // back to a host stub. That fallback was simply unreachable for this shape,
+    // because the walk never got around to throwing — it ran out of memory
+    // first. Raising `unsupported` here is what connects the two.
+    //
+    // Deliberately NOT a silent `return`: dropping the region would leave the
+    // kernel half-fissioned, and this pass's rule is never to miscompile.
+    llvm::SmallPtrSet<llvm::BasicBlock*, 32> regioned;
     std::function<void(llvm::BasicBlock*, llvm::Loop*, llvm::BasicBlock*)> walk =
         [&](llvm::BasicBlock* start, llvm::Loop* encLoop,
             llvm::BasicBlock* predBlock) {
         llvm::BasicBlock* cur = start;
         llvm::BasicBlock* pred = predBlock;
         while (cur) {
+            if (!regioned.insert(cur).second)
+                unsupported("unstructured barrier control flow (a block is "
+                            "reached by more than one region path)");
             // Sitting directly on a barrier-subloop header (a nested loop with no
             // separating preheader region): enter it as a subloop rather than
             // letting `collect` walk through and flatten it. Cajeta's structured
