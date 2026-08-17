@@ -10,6 +10,9 @@
 
 #include "gtest/gtest.h"
 
+#include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h"
+
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/jit/CajetaDefinitionGenerator.h"
@@ -181,4 +184,48 @@ TEST(DefinitionGeneratorTests, repeatedResolutionIsStable) {
     ASSERT_EQ(first.size(), 1u);
     ASSERT_EQ(second.size(), 1u);
     EXPECT_EQ(first[0], second[0]);
+}
+
+// 2.2.2 asserted end-to-end — when ORC's real lookup machinery drives
+// tryToGenerate, the emit callback runs INSIDE the compiler gate. This is the
+// wiring test the direct CompilerGateTests cannot cover: a generator that
+// forgot to route emission through the gate passes those and fails here.
+// The emit probe defines nothing, so the lookup itself fails afterwards with
+// the ordinary missing-symbol error — consumed, because the probe is the test.
+TEST(DefinitionGeneratorTests, orcLookupRunsEmitUnderTheGate) {
+    ModeGuard guard;
+    setLazyCodegenEnabled(true);
+
+    Compiler compiler;
+    compileSource(compiler, "Zeta");
+    CajetaSymbolIndex index;
+    index.build(hostModuleSet(compiler));
+    const std::string sym = anyIndexedSymbol(compiler, index);
+    ASSERT_FALSE(sym.empty());
+
+    auto epc = llvm::cantFail(
+        llvm::orc::SelfExecutorProcessControl::Create());
+    llvm::orc::ExecutionSession session(std::move(epc));
+    auto& jd = session.createBareJITDylib("gate-probe");
+
+    bool emitRan = false;
+    bool gateHeld = false;
+    jd.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
+        index,
+        [&](const cajeta::MethodPtr& method, llvm::orc::JITDylib&)
+                -> llvm::Error {
+            emitRan = true;
+            gateHeld = cajeta::CompilerGate::heldByThisThread();
+            EXPECT_EQ(method, index.find(sym));
+            return llvm::Error::success();
+        }));
+
+    auto result = session.lookup(
+        {{&jd, llvm::orc::JITDylibLookupFlags::MatchExportedSymbolsOnly}},
+        session.intern(sym));
+    llvm::consumeError(result.takeError());
+
+    EXPECT_TRUE(emitRan) << "ORC never reached the generator";
+    EXPECT_TRUE(gateHeld) << "emission ran outside the compiler gate";
+    llvm::cantFail(session.endSession());
 }

@@ -8,20 +8,54 @@
 // adapter over it. The decision is where the bugs live — claiming a symbol we
 // cannot emit turns a clean fall-through into a failed materialization.
 //
-// ORC serializes entry per generator (Core.h: a mutex, an InUse flag, and a
-// PendingLookups deque), so a second concurrent lookup parks rather than
-// re-entering the compiler's single-threaded global state.
+// ORC serializes entry per generator object only (Core.h: a mutex, an InUse
+// flag, a PendingLookups deque). Cross-generator serialization — several
+// generators, one compiler world — is the CompilerGate below.
 
 #include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/Core.h"
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
 namespace cajeta {
+
+    // 2.2.2 — one thread inside the compiler at a time, PROCESS-WIDE. ORC
+    // serializes tryToGenerate per generator object; a process holds several
+    // generators but one compiler world (canonicalMap, active module,
+    // substitution stack). Recursive, because emitting a body can re-enter a
+    // lookup on the same thread — still single-threaded, and a plain mutex
+    // would deadlock the session at the first cascade (spec 3.4).
+    class CompilerGate {
+    public:
+        static CompilerGate& instance();
+
+        void run(const std::function<void()>& fn);
+
+        // True while the calling thread is inside run().
+        static bool heldByThisThread();
+
+        // Observation, so tests ASSERT the discipline instead of trusting the
+        // mutex: the most threads ever seen inside at once.
+        size_t maxThreadsObserved() const { return maxInside.load(); }
+        void resetObservation() { maxInside.store(0); }
+
+        // Counts without locking — the control that proves the observation can
+        // see concurrency, so maxThreadsObserved()==1 is never vacuous.
+        void runUngatedForTest(const std::function<void()>& fn);
+
+    private:
+        void observe(const std::function<void()>& fn);
+
+        std::recursive_mutex mutex;
+        std::atomic<size_t> inside{0};
+        std::atomic<size_t> maxInside{0};
+    };
 
     class CajetaDefinitionGenerator : public llvm::orc::DefinitionGenerator {
     public:
