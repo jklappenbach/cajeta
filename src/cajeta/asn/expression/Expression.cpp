@@ -3452,6 +3452,36 @@ bool cajetaRhsCarriesRedundantSharp(
         // it here rather than defaulting. Non-mode-carrying `#x` keeps its own
         // path: that spelling is a CLAIM, and a false one is what
         // MOVE_OF_BORROW case (c) exists to reject.
+        // 8.2.8 / spec §4.7 — `#` over a `^T` result, caught AT THE LINE that
+        // makes the mistake. This is the `keyAt` bug the spec opened with, and
+        // it is the payoff for making the stance signature-level: no
+        // provenance, no callee body, just the declared return.
+        //
+        // Both spellings are refused, and the second one deliberately. `#x` is
+        // a CLAIM and false here, which is uncontroversial. `#=` is
+        // MODE-CARRYING and would in fact record a borrow and be memory-safe —
+        // but §4.6 spent this unit making `#=` mean "a title moved here" so
+        // that a reader can tell an acquisition from a view without opening
+        // the callee. A `#=` that records a borrow reintroduces exactly the
+        // ambiguity the rule removed, so it is a diagnostic rather than a
+        // silent success. The fix is the same one word either way: plain `=`.
+        if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
+            if (MethodPtr vm = mceInner->getResolvedMethod()) {
+                if (vm->isReturnsView()) {
+                    throw Exception(
+                        "`" + vm->toCanonical(false) + "` is declared `^` — it "
+                        "returns a VIEW interior to its receiver, which still "
+                        "owns and frees it — and this binding claims it with "
+                        "`#`. A view has no title to take: "
+                          "the claim would arm a drop on memory the receiver "
+                          "frees, and the second free is the caller's. Fix: "
+                          "bind it with a plain `=` — a `^` result is a "
+                          "borrow, and the receiver must outlive it. See "
+                          "specs/stdlib-ownership-convention-spec.md §4.7.",
+                        "CAJETA_ERROR_TRANSFER_OF_VIEW_RESULT");
+                }
+            }
+        }
         if (isSharpStore() && !runtimeTitleFlag) {
             if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
                 runtimeTitleFlag = module->getBuilder()->getInt64(

@@ -401,7 +401,7 @@ than as corruption.
 
   ```
   int8[] w = s.toBytes();     // `#int8[]` — w is yours to free
-  int8[] w = s.trimView();    // plain     — the String still owns it
+  int8[] w = s.root();        // plain     — the String still owns it
   ```
 
   Identical to a reader, opposite facts about who frees `w`.
@@ -420,12 +420,40 @@ than as corruption.
   came to be filed on a leak that did not exist.
 - **4.7** *(from §2.8)* **A `^T` body is restricted at compile time** to
   `this`, interior reads, and other `^T` results — never an owned local,
-  a fresh allocation, a `#T` result, or a parameter. In exchange the
-  method emits no return-flag write at all (the flag is statically 0),
-  and §4.1 becomes decidable from the signature rather than from
+  a fresh allocation, a `#T` result, or a parameter. In exchange
+  §4.1 becomes decidable from the signature rather than from
   per-local provenance: `#` applied to a `^T` result is an error on the
   spot. That is the `keyAt` bug this spec opened with, caught at the
   line that makes the mistake.
+
+  **IMPLEMENTED 2026-08-17 (plan 8.2.8).** The sigil is `^` in
+  return-type position (`(REFERENCE | CARET)? typeType`; infix xor is
+  untouched — prefix position is unreachable in expressions). Five
+  diagnostics, each pinned by `test/expression/BorrowReturnTests.cpp`:
+
+  | shape | error |
+  |---|---|
+  | `x #= viewCall()` / `#viewCall()` | `CAJETA_ERROR_TRANSFER_OF_VIEW_RESULT` |
+  | `#T f() { return viewCall(); }` | `CAJETA_ERROR_OWNED_RETURN_OF_BORROW` |
+  | `^T` body returns owned local / fresh alloc / `#T` result / parameter | `CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR` |
+  | `^int32` (any value-semantics return) | `CAJETA_ERROR_VIEW_RETURN_OF_VALUE` |
+
+  `#=` receipt of a `^` result is refused along with `#x`, deliberately:
+  it would record a borrow and be memory-safe, but §4.6 spent this unit
+  making `#=` mean "a title moved here" — a `#=` that records a borrow
+  reintroduces the ambiguity the rule removed. A `^` result binds with
+  plain `=`.
+
+  **The original "emits no return-flag write at all" clause is REVISED:
+  the callee-side write stays, by measurement of a hole rather than by
+  preference.** A `^` method invoked through a method reference or a
+  function-typed local loses its static stance at the call site, so
+  that caller still reads the transfer word; a callee that skipped the
+  write would hand it a stale flag. Until `^` has a stance story for
+  references, the callee writes constant 0 (one TLS store) and direct
+  call sites may fold to constant 0 as an optimization when `^` gains
+  users. What IS statically true: the flag is a compile-time constant
+  0, which is the §4.1 decidability this section exists for.
 - **4.8** ~~*(prerequisite for §2.8's `T`)* Transparent carry must
   actually be transparent — a returned local's flag is forwarded only
   for `ParameterField`, so `T f() { T x = heap ...; return x; }`

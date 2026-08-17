@@ -2103,6 +2103,99 @@ namespace cajeta {
                 }
             }
         }
+        // 8.2.8 / spec §4.7 — the `^T` BODY RESTRICTION, part 1: the arms
+        // decidable from the return expression's SHAPE alone. `^` is a promise
+        // that the result is interior to the receiver, and that promise is
+        // what the caller-side rules are entitled to trust without opening
+        // this body. The closed list §4.7 gives: `this`, an interior read, or
+        // another `^T` result. The rejected shapes are not lifetime QUESTIONS,
+        // they are known leaks: a fresh allocation or an owned local returned
+        // as a view has no owner anywhere once this frame exits, because `^`
+        // tells the caller not to free it.
+        //
+        // Runs BEFORE the fresh-return guard below, deliberately: that guard
+        // also rejects these shapes (a `^` method is not `returnsOwnership`,
+        // so it walks the plain-return path), but its message prescribes `#`
+        // without ever acknowledging the `^` the developer actually wrote.
+        // Whichever check throws first owns the diagnostic, so this one goes
+        // first. The CALL arm is deferred to part 2 (post-codegen): a
+        // MethodCallExpression's resolvedMethod is null until it generates —
+        // the same fact that moved §4.5's view check and 8.2.12's hook.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->isReturnsView() && expression) {
+                ExpressionPtr inner = expression;
+                if (auto mv = dynamic_pointer_cast<MoveExpression>(expression)) {
+                    auto& mch = mv->getChildren();
+                    if (!mch.empty()) {
+                        if (auto e = dynamic_pointer_cast<Expression>(mch[0])) {
+                            inner = e;
+                        }
+                    }
+                }
+                // `return this` and `return this.f` / `return a.b` are the
+                // interior reads the stance is FOR. A DotExpression is an
+                // interior read whatever its root: the result points into
+                // whatever the root already owns, so the view rides that
+                // lifetime. `null` is trivially safe — it points nowhere.
+                bool permitted =
+                    dynamic_pointer_cast<ThisExpression>(inner) != nullptr
+                    || dynamic_pointer_cast<DotExpression>(inner) != nullptr
+                    // Part 2's arm — do not judge a call before it resolves.
+                    || dynamic_pointer_cast<MethodCallExpression>(inner) != nullptr;
+                std::string what;
+                if (auto idExpr =
+                        dynamic_pointer_cast<IdentifierExpression>(inner)) {
+                    const std::string& n = idExpr->getTextValue();
+                    if (n == "this" || n == "null") {
+                        permitted = true;
+                    } else if (auto scope = module->getScopeStack().peek()) {
+                        // A PARAMETER is refused even though it is often a
+                        // borrow in fact: `^` says "interior to the RECEIVER",
+                        // and a parameter's lifetime is the caller's. That is
+                        // the same ambiguity CAJETA_ERROR_BORROW_RETURN_MULTI_
+                        // PARAM already declines to guess at, and admitting it
+                        // here would make `^` mean two different lifetimes.
+                        FieldPtr f = scope->getField(n);
+                        if (f && m->getParameters().count(n) > 0) {
+                            what = "parameter `" + n + "`, whose lifetime "
+                                   "belongs to the CALLER, not to this "
+                                   "receiver";
+                        } else {
+                            what = "local `" + n + "`, which this frame owns "
+                                   "— once it exits, nothing holds a title to "
+                                   "the value and `^` has told the caller not "
+                                   "to free it";
+                        }
+                    }
+                }
+                if (!permitted && what.empty()
+                        && Method::exprIsStackConstruction(inner)) {
+                    what = "a `stack` construction, which is reclaimed "
+                           "when this frame exits";
+                }
+                if (!permitted) {
+                    if (what.empty()) {
+                        // A fresh `heap`/`new` allocation, or any shape the
+                        // list above does not name. Never guess: describe what
+                        // `^` admits and let the developer place their case.
+                        what = "a value that is not interior to the receiver";
+                    }
+                    throw Exception(
+                        "method `" + m->toCanonical(false) + "` is declared "
+                        "`^` (a VIEW interior to the receiver, which the "
+                        "caller must not free), but it returns " + what
+                        + ". A `^` return may only hand back `this`, an "
+                          "interior read (`this.field`, `a.b`), or another "
+                          "`^` result — those are the shapes whose lifetime "
+                          "the receiver already guarantees. Fix: declare the "
+                          "return `#` if the caller should receive a title "
+                          "and free it, or return interior state if you meant "
+                          "a view. See "
+                          "specs/stdlib-ownership-convention-spec.md §4.7.",
+                        "CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR");
+                }
+            }
+        }
         // Memory-model § Function signatures: returning a fresh
         // allocation (`return heap X(...)`, `return new X(...)`,
         // `return heap X { ... }`) requires the enclosing method's
@@ -2441,6 +2534,114 @@ namespace cajeta {
             }
         }
         llvm::Value* val = expression->generateCode(module);
+        // 8.2.8 / spec §4.7 — the `^T` BODY RESTRICTION, part 2: the CALL
+        // arm, which part 1 (pre-codegen) deferred here because a
+        // MethodCallExpression's resolvedMethod is null until it generates.
+        // Delegation through another `^` is the whole point of a wrapper —
+        // the lifetime is the inner receiver's and travels intact. Anything
+        // else a call hands back is refused: a `#` result's title would be
+        // disclaimed on the spot (the value dies with nobody holding it), and
+        // a plain result's mode is runtime state `^`'s static-0 flag cannot
+        // carry. An UNRESOLVED call (intrinsic path) is refused too — `^` is
+        // a promise, and a promise this check cannot verify is not admitted;
+        // there is no `^` code in the tree yet, so strictness costs nothing
+        // and can be revisited with evidence.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->isReturnsView() && expression) {
+                ExpressionPtr innerV = expression;
+                if (auto mv = dynamic_pointer_cast<MoveExpression>(expression)) {
+                    auto& mch = mv->getChildren();
+                    if (!mch.empty()) {
+                        if (auto e = dynamic_pointer_cast<Expression>(mch[0])) {
+                            innerV = e;
+                        }
+                    }
+                }
+                if (auto viewCall =
+                        dynamic_pointer_cast<MethodCallExpression>(innerV)) {
+                    MethodPtr vm = viewCall->getResolvedMethod();
+                    std::string what;
+                    if (vm && vm->isReturnsView()) {
+                        // permitted: view-to-view delegation
+                    } else if (vm && vm->isReturnsOwnership()) {
+                        what = "the result of `" + vm->toCanonical(false)
+                             + "`, which is declared `#` — the title arrives "
+                               "here and `^` then disclaims it, so the value "
+                               "dies with nobody holding it";
+                    } else if (vm) {
+                        what = "the result of `" + vm->toCanonical(false)
+                             + "`, whose plain return carries a RUNTIME mode "
+                               "that `^`'s statically-borrow flag cannot "
+                               "represent";
+                    } else {
+                        what = "an unresolved call result this check cannot "
+                               "verify against the `^` promise";
+                    }
+                    if (!what.empty()) {
+                        throw Exception(
+                            "method `" + m->toCanonical(false) + "` is "
+                            "declared `^` (a VIEW interior to the receiver, "
+                            "which the caller must not free), but it returns "
+                            + what
+                            + ". A `^` return may only hand back `this`, an "
+                              "interior read (`this.field`, `a.b`), or "
+                              "another `^` result — those are the shapes "
+                              "whose lifetime the receiver already "
+                              "guarantees. Fix: declare the return `#` if the "
+                              "caller should receive a title and free it, or "
+                              "return interior state if you meant a view. See "
+                              "specs/stdlib-ownership-convention-spec.md "
+                              "§4.7.",
+                            "CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR");
+                    }
+                }
+            }
+        }
+        // 8.2.8 / spec §4.7 — the SIGNATURE-DECIDABLE half of §4.5, and the
+        // reason `^T` exists. The provenance walk above reaches only an
+        // IdentifierExpression whose borrow origin was recorded; plan 8.2.13's
+        // probe showed a call result, a formal and an interior read all slip
+        // past it, each one a live UAF (the caller's receipt frees the owner's
+        // field and the owner's drop doubles it). Chasing those with deeper
+        // inference is the route §4.7 declines: when the callee says `^T`,
+        // forwarding it under a `#T` is decidable with no reference to the
+        // callee's body and no provenance at all.
+        //
+        // Placed HERE, after generateCode, and that placement is the whole
+        // bug-fix: `getResolvedMethod()` is null until the call generates, so
+        // the same check written beside its sibling above silently passed
+        // every program. That is exactly how 8.2.12's hook site enforced
+        // nothing for a full unit — 604 calls, all `<unresolved>`.
+        if (auto m = module->getCurrentMethod()) {
+            if (m->isReturnsOwnership() && expression
+                    && !dynamic_pointer_cast<MoveExpression>(expression)) {
+                if (auto viewCall =
+                        dynamic_pointer_cast<MethodCallExpression>(expression)) {
+                    if (MethodPtr vm = viewCall->getResolvedMethod()) {
+                        if (vm->isReturnsView()) {
+                            throw Exception(
+                                "method `" + m->toCanonical(false)
+                                + "` promises ownership with a `#` return "
+                                "type, but it returns the result of `"
+                                + vm->toCanonical(false) + "`, which is "
+                                "declared `^` — a VIEW interior to its "
+                                "receiver, which still owns and frees it. The "
+                                "`#` asserts a title this frame never held, so "
+                                "the caller arms a drop on someone else's "
+                                "value: a double free on the caller's scope "
+                                "exit. Fix: declare this method `^` too and "
+                                "let the view travel (the caller then never "
+                                "frees it), or produce an owned value, or "
+                                "return `#= ` a local whose runtime mode you "
+                                "actually hold. See "
+                                "specs/stdlib-ownership-convention-spec.md "
+                                "§4.5 and §4.7.",
+                                "CAJETA_ERROR_OWNED_RETURN_OF_BORROW");
+                        }
+                    }
+                }
+            }
+        }
         // A returned CALL result rides the inner call's title flag out —
         // for plain returns the static borrow default would clobber a
         // flag-true result (the WsReadAction TITLE_MISS regression); for

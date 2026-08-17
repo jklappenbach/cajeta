@@ -106,6 +106,18 @@ namespace cajeta {
         // transfers ownership of the returned value to its caller. See
         // `MemoryModel.md` § Function signatures.
         bool returnsOwnership = false;
+        // True iff the return type is prefixed with `^` — the VIEW stance
+        // (spec §4.7): the result is interior to the receiver, the caller must
+        // not free it, and the method emits no return-flag write because the
+        // flag is statically 0. Mutually exclusive with `returnsOwnership`;
+        // the grammar makes them alternatives of one optional prefix.
+        //
+        // This is the only one of the three stances that is decidable from the
+        // SIGNATURE. `#` and plain `T` both need the return statement's
+        // provenance to say what actually came back, which is why §4.5's guard
+        // reaches only the shapes whose provenance was recorded (plan 8.2.13's
+        // probe: a call result, a formal and an interior read all slip past).
+        bool returnsView = false;
         // True when this method was injected by a registered member
         // synthesizer (source-synthesis facility). Consulted by checks that
         // distinguish compiler-generated members from user-authored ones —
@@ -554,6 +566,8 @@ namespace cajeta {
 
         bool isReturnsOwnership() const { return returnsOwnership; }
         void setReturnsOwnership(bool v) { returnsOwnership = v; }
+        bool isReturnsView() const { return returnsView; }
+        void setReturnsView(bool v) { returnsView = v; }
 
         // title-tracking Unit 5 (spec §4.4) — the per-call transfer ABI.
         // needsTransferWord(): this method's LLVM signature carries a hidden

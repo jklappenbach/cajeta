@@ -1954,6 +1954,14 @@ namespace cajeta {
                             && common->typeTypeOrVoid()->REFERENCE() != nullptr) {
                         method->setReturnsOwnership(true);
                     }
+                    // `^T` on an interface method — the VIEW stance (§4.7).
+                    // Interfaces need it at least as much as classes: an
+                    // implementor's body is invisible at the call site, so the
+                    // signature is the only place the fact can live.
+                    if (common->typeTypeOrVoid()
+                            && common->typeTypeOrVoid()->CARET() != nullptr) {
+                        method->setReturnsView(true);
+                    }
                     // xref (ide-symbol-index §2): interface methods are the TARGET
                     // of every override edge, so they must be locatable.
                     if (common->getStart()) {
@@ -2451,6 +2459,13 @@ namespace cajeta {
                     && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
             }
+            // `^T operator[] (...)` — the VIEW stance (§4.7). This is the
+            // `keyAt` shape the spec opened with: an indexer handing back
+            // interior state is precisely where a caller reaches for `#`.
+            if (ctx->typeTypeOrVoid()
+                    && ctx->typeTypeOrVoid()->CARET() != nullptr) {
+                method->setReturnsView(true);
+            }
             return static_pointer_cast<MemberDeclaration>(
                 make_shared<MethodDeclaration>(method, ctx->getStart()));
         }
@@ -2648,9 +2663,15 @@ namespace cajeta {
                 method->setAbstract(true);
             }
             // `#T foo()` — return transfers ownership. The grammar puts the `#`
-            // on typeTypeOrVoid (`REFERENCE? typeType`); see MemoryModel.md.
+            // on typeTypeOrVoid (`(REFERENCE | CARET)? typeType`); see
+            // MemoryModel.md.
             if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->REFERENCE() != nullptr) {
                 method->setReturnsOwnership(true);
+            }
+            // `^T foo()` — the VIEW stance (spec §4.7). Alternatives of one
+            // optional prefix, so the two can never both be set.
+            if (ctx->typeTypeOrVoid() && ctx->typeTypeOrVoid()->CARET() != nullptr) {
+                method->setReturnsView(true);
             }
             // `throws T1, T2` — advisory list of RecoverableException
             // subtypes the body may produce. Carried on the Method for the

@@ -298,11 +298,18 @@ methodBody
     | ';'
     ;
 
-// Return type marker: an optional REFERENCE ('#') prefix on the return type
-// declares that the function transfers ownership to its caller. See
+// Return type marker (spec §2.8's three stances). REFERENCE ('#') declares the
+// function transfers a title to its caller; CARET ('^') declares the result is
+// a VIEW interior to the receiver, which the caller must not free (§4.7); a
+// bare type carries whatever mode the return expression holds. See
 // MemoryModel.md § Borrow / transfer rules and § Function signatures.
+//
+// CARET is infix xor everywhere else. As a PREFIX it is unreachable in
+// expression position, so reading it here costs the grammar no ambiguity —
+// which is why plan 8.2.1 chose it over `&` (the intersection-type separator)
+// and `~` (the destructor sigil), both of which misread in type position.
 typeTypeOrVoid
-    : REFERENCE? typeType
+    : (REFERENCE | CARET)? typeType
     | VOID
     ;
 

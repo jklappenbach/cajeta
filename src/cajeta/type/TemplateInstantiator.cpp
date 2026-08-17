@@ -722,6 +722,14 @@ namespace cajeta {
                             && common->typeTypeOrVoid()->REFERENCE() != nullptr) {
                         method->setReturnsOwnership(true);
                     }
+                    // `^T foo()` — the VIEW stance (spec §4.7) rides the same
+                    // rail for the same reason: dropping it here would let an
+                    // instantiated interface's `^` result be `#`-claimed with
+                    // no diagnostic.
+                    if (common->typeTypeOrVoid()
+                            && common->typeTypeOrVoid()->CARET() != nullptr) {
+                        method->setReturnsView(true);
+                    }
                     ifBody->getDeclarations().push_back(
                         make_shared<MethodDeclaration>(method, common->getStart()));
                 }

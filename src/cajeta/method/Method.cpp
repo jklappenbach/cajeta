@@ -1413,6 +1413,21 @@ namespace cajeta {
                 returnIsReferenceTyped = true;
             }
         }
+        // 8.2.8 / spec §4.7 — `^` promises a view INTO something with
+        // reference semantics. On a primitive or by-value return there is
+        // nothing to view: the caller receives a copy either way, so the
+        // sigil could only mislead. Rejected at the declaration, like the
+        // other signature-shape checks in this block.
+        if (returnsView && !returnIsReferenceTyped && returnType) {
+            throw Exception(
+                "method '" + name + "' declares a `^` (view) return over `"
+                + returnType->toCanonical() + "`, which has value semantics — "
+                "the caller receives a copy, so there is no interior to view "
+                "and nothing the sigil could protect. Fix: drop the `^` (a "
+                "by-value return needs no ownership marker). See "
+                "specs/stdlib-ownership-convention-spec.md §4.7.",
+                "CAJETA_ERROR_VIEW_RETURN_OF_VALUE");
+        }
         // sret value-returning methods aren't borrow-returning — the result
         // is constructed directly into the caller's slot by copy (M3
         // NRVO), so there's no parameter lifetime to inherit. Exempt them
