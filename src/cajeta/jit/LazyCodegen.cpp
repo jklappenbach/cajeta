@@ -22,8 +22,13 @@ namespace cajeta {
             // hot path does not pay for it; the value stays writable, which is
             // the whole point of 2.1.5.
             static std::atomic<bool> cell{[] {
-                const char* v = std::getenv("CAJETA_EAGER_CODEGEN");
-                if (v && std::string(v) == "1") return false;   // explicit eager
+                // Explicit eager wins — it is the permanent escape hatch.
+                const char* eager = std::getenv("CAJETA_EAGER_CODEGEN");
+                if (eager && std::string(eager) == "1") return false;
+                // Force-enable for A/B from outside the process (battery runs,
+                // the DynCol repro) before Unit 4 flips the default.
+                const char* lazy = std::getenv("CAJETA_LAZY_CODEGEN");
+                if (lazy && std::string(lazy) == "1") return true;
                 return kDefaultLazy;
             }()};
             return cell;

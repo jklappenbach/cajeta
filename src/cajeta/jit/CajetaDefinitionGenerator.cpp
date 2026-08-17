@@ -4,6 +4,7 @@
 
 #include "llvm/Support/Error.h"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 
@@ -82,6 +83,7 @@ namespace cajeta {
             // fall through exactly as today rather than failing the lookup —
             // Unit 2 must not be able to break a session it is not driving.
             if (claimed.empty() || !emit) return;
+            auto t0 = std::chrono::steady_clock::now();
             for (const auto& method : claimed) {
                 if (llvm::Error err = emit(method, jd)) {
                     result = std::move(err);
@@ -89,10 +91,14 @@ namespace cajeta {
                 }
                 ++generated;
             }
+            emitNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - t0).count();
             if (std::getenv("CAJETA_PRIME_TIMING")) {
+                // spec 5.2 — comparable with [cell] codegen on one instrument.
                 std::fprintf(stderr,
-                             "[lazy] generated %zu body(ies), %zu total\n",
-                             claimed.size(), generated);
+                             "[lazy] generated %zu body(ies); %zu total, "
+                             "%lld ms\n",
+                             claimed.size(), generated, emitNs / 1000000);
             }
         });
         return result;

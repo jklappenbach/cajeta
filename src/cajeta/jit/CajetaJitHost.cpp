@@ -17,6 +17,8 @@
 
 #include "cajeta/jit/CajetaJitErrorShim.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
+#include "cajeta/jit/CajetaDefinitionGenerator.h"
+#include "cajeta/jit/CajetaLazyEmitter.h"
 #include "cajeta/jit/CajetaJitWinSymbols.h"
 
 #include <algorithm>
@@ -285,6 +287,10 @@ struct BuiltJit {
     // empty). The LLJIT holds a raw pointer, so it must live as long as the
     // JIT — late materialization is legal even if today's flow front-loads it.
     std::unique_ptr<llvm::ObjectCache> objCache;
+    // lazy-codegen: heap-held because BuiltJit is returned by value and the
+    // definition generator holds a reference into it.
+    std::unique_ptr<cajeta::CajetaSymbolIndex> symbolIndex =
+        std::make_unique<cajeta::CajetaSymbolIndex>();
 };
 
 
@@ -696,6 +702,20 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
     }
 
     auto& mainDylib = out.jit->getMainJITDylib();
+    // lazy-codegen 2.2.3 — added FIRST, so a host library sharing a method's
+    // name can never shadow a body we can generate (the sl_add/libbsd class).
+    // Dark until lazy mode is on: eager default claims nothing.
+    {
+        llvm::orc::LLJIT* jptr = out.jit.get();
+        mainDylib.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
+            *out.symbolIndex,
+            [jptr](const cajeta::MethodPtr& method,
+                   llvm::orc::JITDylib& jd) -> llvm::Error {
+                auto tsm = cajeta::emitMethodModule(method);
+                if (!tsm) return tsm.takeError();
+                return jptr->addIRModule(jd, std::move(*tsm));
+            }));
+    }
     auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         out.jit->getDataLayout().getGlobalPrefix());
     if (!generator) {
@@ -1262,15 +1282,14 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
         // different set resolves symbols the JIT never asks for and misses the
         // ones it does.
         {
-            cajeta::CajetaSymbolIndex symbolIndex;
             auto ixT0 = std::chrono::steady_clock::now();
-            symbolIndex.build(codegenMods());
+            out.symbolIndex->build(codegenMods());
             if (std::getenv("CAJETA_PRIME_TIMING")) {
                 auto ixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - ixT0).count();
                 std::fprintf(stderr,
                     "[jit] symbol index: %zu entries in %lld ms\n",
-                    symbolIndex.size(), (long long) ixMs);
+                    out.symbolIndex->size(), (long long) ixMs);
             }
         }
 

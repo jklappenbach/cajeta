@@ -87,7 +87,9 @@ namespace cajeta {
     private:
         CajetaSymbolIndex& index;
         EmitFn emit;
-        size_t generated = 0;   // guarded by ORC's per-generator serialization
+        // Both guarded by the CompilerGate — only one thread emits at a time.
+        size_t generated = 0;
+        long long emitNs = 0;
     };
 
 } // namespace cajeta
