@@ -16,7 +16,10 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/Support/Error.h"
 
-namespace llvm { class GlobalValue; }
+#include <set>
+#include <string>
+
+namespace llvm { class GlobalValue; class Module; }
 
 namespace cajeta {
 
@@ -28,5 +31,18 @@ namespace cajeta {
     // generateCode, it already exists in a live module.
     llvm::Expected<llvm::orc::ThreadSafeModule>
     snapshotLiveDefinition(llvm::GlobalValue* gv);
+
+    // 4.2.4 — the init surface of an accumulating module: every
+    // llvm.global_ctors entry not in `deliveredCtors`, its reference
+    // closure, and a rebuilt llvm.global_ctors naming exactly those. The
+    // names of the ctors taken are added to `deliveredCtors` on success.
+    // Returns a FALSE (empty) ThreadSafeModule when nothing is new —
+    // deliver nothing, run nothing. Everything the extract references but
+    // does not define arrives later through the generator (spec 2.1); this
+    // is what keeps a delivered module from binding every class's
+    // vtable/RTTI/thunk chain at cell 1.
+    llvm::Expected<llvm::orc::ThreadSafeModule>
+    extractInitDelta(llvm::Module* live,
+                     std::set<std::string>& deliveredCtors);
 
 } // namespace cajeta
