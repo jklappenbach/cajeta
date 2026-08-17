@@ -364,6 +364,84 @@ TEST(SignatureAbiTests, lastUseAdvisorySeesReadInsideIfBranch) {
     EXPECT_FALSE(warnedAbout("reread"));
 }
 
+// 8.2.9 — the [plain-return-yields-title] lint: a plain-`T` method whose
+// EVERY return provably yields a title (heap allocation, directly or via a
+// body local) warns at the parse walk, before codegen's FRESH_RETURN error.
+// The lint prints to stderr (like [heap-optional-return]); capture it.
+// NB the compile still ERRORS afterward — the lint is the IDE-early copy.
+TEST(SignatureAbiTests, plainReturnYieldsTitleLintFires) {
+    std::string src =
+        "package test;\n"
+        "public final class LintCellA {\n"
+        "    public int32 n;\n"
+        "    public LintCellA(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static LintCellA make(boolean b) {\n"
+        "        if (b) { return heap LintCellA(1); }\n"
+        "        LintCellA x #= heap LintCellA(2);\n"
+        "        return x;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    try { CajetaJit::compile(src, "test.D"); } catch (...) {}
+    std::string err = ::testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("[plain-return-yields-title]"), std::string::npos)
+        << err;
+}
+
+// The conjunction discipline (§7.2): ONE borrow-shaped return silences the
+// lint — `LogFmt.fieldValue`-style mixed methods are CORRECT as plain `T`,
+// and a disjunction rule would flag the transparent-carry default itself.
+TEST(SignatureAbiTests, plainReturnYieldsTitleLintStaysSilentOnMixedReturns) {
+    std::string src =
+        "package test;\n"
+        "public final class LintCellB {\n"
+        "    public int32 n;\n"
+        "    public LintCellB(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static LintCellB pick(boolean b, LintCellB other) {\n"
+        "        if (b) { return heap LintCellB(1); }\n"
+        "        return other;\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    try { CajetaJit::compile(src, "test.D"); } catch (...) {}
+    std::string err = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[plain-return-yields-title]"), std::string::npos)
+        << err;
+}
+
+// The legal spelling is exempt: `return #x` forwards the frame's runtime
+// flag and is exactly what a mode-carrying method writes on purpose. The
+// lint must not push it toward `#T`.
+TEST(SignatureAbiTests, plainReturnYieldsTitleLintExemptsSharpReturns) {
+    std::string src =
+        "package test;\n"
+        "public final class LintCellC {\n"
+        "    public int32 n;\n"
+        "    public LintCellC(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static LintCellC make() {\n"
+        "        LintCellC x #= heap LintCellC(3);\n"
+        "        return #x;\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        LintCellC c = D.make();\n"
+        "        return c.n;\n"
+        "    }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    try { CajetaJit::compile(src, "test.D"); } catch (...) {}
+    std::string err = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[plain-return-yields-title]"), std::string::npos)
+        << err;
+}
+
 // 8.1.5 — an identity reference cast must not smuggle an owned local past
 // the fresh-return gate. Before the 6.2.6c peel was applied to the gate's
 // shape arms, `return (Cell) x` compiled while `return x` was rejected: the

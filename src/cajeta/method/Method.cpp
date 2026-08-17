@@ -435,6 +435,128 @@ namespace cajeta {
         return true;
     }
 
+    // --- Lint helpers for [plain-return-yields-title] ---------------------
+    // plan 8.2.9 — a plain-`T` method whose EVERY return provably yields a
+    // title should declare `#T`. Decidable in lint without resolution: the
+    // two title-yielding shapes are `return heap X(...)` and `return x`
+    // where `x` is a body local whose initializer is a heap allocation
+    // (either `T x = heap ...` or `T x #= heap ...` — the `#=` spelling
+    // wraps the initializer in a MoveExpression).
+    //
+    // The rule is a CONJUNCTION, never a disjunction: `LogFmt.fieldValue`
+    // and `Stream.reduce` mix title-yielding and borrow-yielding returns,
+    // and for them plain `T` is CORRECT under §2.8 — a rule firing on "some
+    // return carries" would flag the transparent-carry default itself.
+    // §7.2's discipline: conservatively stay silent on anything unprovable
+    // (calls, casts, `return #x` — which is the LEGAL spelling for exactly
+    // this situation — nulls, params).
+    //
+    // Severity note: since 8.2.5's measurement this shape is a codegen
+    // ERROR (`FRESH_RETURN_NEEDS_TRANSFER` rejects both spellings). The
+    // lint is the IDE-early copy of that error — it fires from the parse
+    // walk the lint-server does while the signature is being written,
+    // before any build runs codegen.
+    static void collectHeapInitLocals(const AbstractSyntaxNodePtr& node,
+            std::unordered_set<std::string>& out) {
+        if (!node) return;
+        if (auto lvd = dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+            for (auto& d : lvd->getVariableDeclarators()) {
+                if (!d) continue;
+                auto vi = dynamic_pointer_cast<VariableInitializer>(
+                    d->getInitializer());
+                if (!vi || vi->getChildren().empty()) continue;
+                AbstractSyntaxNodePtr init = vi->getChildren()[0];
+                // `T x #= heap ...` — the sharp store wraps the RHS.
+                if (auto mv = dynamic_pointer_cast<MoveExpression>(init)) {
+                    if (!mv->getChildren().empty()) init = mv->getChildren()[0];
+                }
+                if (auto ne = dynamic_pointer_cast<NewExpression>(init)) {
+                    if (!ne->getStackAlloc()) out.insert(d->getIdentifier());
+                }
+            }
+            return;
+        }
+        if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+            if (lbl->getBlock())
+                for (auto& c : lbl->getBlock()->getChildren())
+                    collectHeapInitLocals(c, out);
+            return;
+        }
+        if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+            if (sc->getBlock())
+                for (auto& c : sc->getBlock()->getChildren())
+                    collectHeapInitLocals(c, out);
+            return;
+        }
+        if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+            collectHeapInitLocals(iff->getThenBranch(), out);
+            collectHeapInitLocals(iff->getElseBranch(), out);
+            return;
+        }
+        if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+            collectHeapInitLocals(wh->getBody(), out);
+            return;
+        }
+        if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+            collectHeapInitLocals(fr->getBody(), out);
+            return;
+        }
+        if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+            collectHeapInitLocals(efr->getBody(), out);
+            return;
+        }
+        if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+            collectHeapInitLocals(dod->getBody(), out);
+            return;
+        }
+        for (auto& c : node->getChildren()) collectHeapInitLocals(c, out);
+    }
+
+    void Method::lintPlainReturnYieldsTitle() {
+        if (returnsOwnership || returnsView || !block) return;
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(returnType);
+        // Reference-semantics returns only: value types return by copy and
+        // shared-capable values (String/Slice) move out by share-bump —
+        // FRESH_RETURN exempts both, so the lint must too.
+        if (!rtClass || rtClass->isValueType()
+                || rtClass->isSharedCapableValue()) return;
+        static thread_local std::unordered_set<std::string> warnedPlain;
+        std::string parentCanonical = parent && parent->getQName()
+            ? trimTemplateArgs(parent->getQName()->toCanonical())
+            : std::string("");
+        std::string key = parentCanonical + "::" + name;
+        if (warnedPlain.count(key)) return;
+        std::unordered_set<std::string> heapLocals;
+        for (auto& c : block->getChildren()) collectHeapInitLocals(c, heapLocals);
+        int returnCount = 0;
+        bool allYieldTitle = methodVisitReturnsBlock(block,
+            [&](const ExpressionPtr& e) -> bool {
+                returnCount++;
+                if (!e) return false;
+                if (auto ne = dynamic_pointer_cast<NewExpression>(e)) {
+                    return !ne->getStackAlloc();
+                }
+                if (auto id = dynamic_pointer_cast<IdentifierExpression>(e)) {
+                    return heapLocals.count(id->getTextValue()) > 0;
+                }
+                return false;
+            });
+        if (!allYieldTitle || returnCount == 0) return;
+        warnedPlain.insert(key);
+        std::cerr << "warning: [plain-return-yields-title] "
+            << (parentCanonical.empty()
+                ? std::string("") : parentCanonical + ".")
+            << name
+            << " declares a plain return but every return hands out a "
+            << "fresh heap allocation — the caller receives a title the "
+            << "signature does not declare. Declare the return `#"
+            << (returnType && returnType->getQName()
+                ? returnType->getQName()->getTypeName() : std::string("T"))
+            << "` (codegen will reject this shape anyway: "
+            << "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER)."
+            << std::endl;
+    }
+
     void Method::lintHeapOptionalReturn() {
         // Gate: declared return must be `#Optional<...>` (heap ownership
         // transfer of an Optional). `@HeapReturn` is the escape hatch when
@@ -2155,6 +2277,9 @@ namespace cajeta {
         // emission. Dedupes internally so a single template doesn't
         // re-warn per instantiation.
         lintHeapOptionalReturn();
+        // [plain-return-yields-title] (plan 8.2.9) — same placement, same
+        // reasons: body walkable pre-abstract/template, warns once.
+        lintPlainReturnYieldsTitle();
         // Abstract methods carry no body — dispatch goes to a concrete
         // implementation via the vtable.
         if (abstractFlag) return;

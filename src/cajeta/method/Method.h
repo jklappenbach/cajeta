@@ -652,6 +652,11 @@ namespace cajeta {
         // `stack Optional<...>(...)` via the M3 sret/NRVO ABI. Fires
         // once per method (statically-deduped) from generateCode.
         void lintHeapOptionalReturn();
+        // plan 8.2.9 — [plain-return-yields-title]: a plain-`T` method whose
+        // every return provably yields a title (heap allocation, directly or
+        // through a body local) should declare `#T`. The IDE-early copy of
+        // CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER.
+        void lintPlainReturnYieldsTitle();
 
         // ---- Frame-arena eligibility (frame-arena-plan U2) ----------------
         // Names of owned String-concat locals proven non-escaping by the escape
