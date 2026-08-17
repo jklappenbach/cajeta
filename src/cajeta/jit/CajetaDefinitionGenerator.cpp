@@ -9,6 +9,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 
 namespace cajeta {
 
@@ -87,35 +88,52 @@ namespace cajeta {
             if (!deliver) return;
             auto t0 = std::chrono::steady_clock::now();
             size_t claimed = 0;
-            for (const auto& symbol : symbols) {
-                if (symbol.empty()) continue;
-                llvm::Expected<llvm::orc::ThreadSafeModule> tsm =
-                    llvm::orc::ThreadSafeModule();
+            // The full claim chain for one symbol, nullopt on a miss. Split
+            // out because a miss gets a SECOND attempt after index.refresh().
+            auto claim = [&](const std::string& symbol)
+                    -> std::optional<
+                           llvm::Expected<llvm::orc::ThreadSafeModule>> {
                 if (auto method = index.find(symbol)) {
-                    tsm = emitMethodModule(method);
-                } else if (auto* thunk = index.findReflectThunk(symbol)) {
+                    return emitMethodModule(method);
+                }
+                if (auto* thunk = index.findReflectThunk(symbol)) {
                     if (thunk->isInvoke) thunk->klass->emitReflectInvokeBody();
                     else thunk->klass->emitReflectNewBody();
                     auto* gv = index.findLiveDefinition(symbol);
                     if (!gv) {
                         // spec 5.3 — the thunk was indexed but its emitter
                         // left no definition; not an ordinary missing symbol.
-                        result = llvm::createStringError(
-                            llvm::inconvertibleErrorCode(),
-                            "lazy emit: reflect emitter left no body for '%s'",
-                            symbol.c_str());
-                        return;
+                        return llvm::Expected<llvm::orc::ThreadSafeModule>(
+                            llvm::createStringError(
+                                llvm::inconvertibleErrorCode(),
+                                "lazy emit: reflect emitter left no body "
+                                "for '%s'", symbol.c_str()));
                     }
-                    tsm = snapshotLiveDefinition(gv);
-                } else if (auto* gv = index.findLiveDefinition(symbol)) {
+                    return snapshotLiveDefinition(gv);
+                }
+                if (auto* gv = index.findLiveDefinition(symbol)) {
                     // Codegen synthesizes definitions outside the method
                     // table — drop thunks, vtable globals — including DURING
                     // a lazy generateCode a moment ago; searched live for
                     // exactly that reason.
-                    tsm = snapshotLiveDefinition(gv);
-                } else {
-                    continue;   // not ours — an ordinary fall-through
+                    return snapshotLiveDefinition(gv);
                 }
+                return std::nullopt;
+            };
+            for (const auto& symbol : symbols) {
+                if (symbol.empty()) continue;
+                auto attempt = claim(symbol);
+                if (!attempt) {
+                    // A template instantiated DURING this cascade defines
+                    // methods the host's index build could not see
+                    // (spec 3.5). refresh() is a no-op unless a structure
+                    // appeared, so genuinely foreign symbols stay cheap.
+                    index.refresh();
+                    attempt = claim(symbol);
+                }
+                if (!attempt) continue;   // not ours — ordinary fall-through
+                llvm::Expected<llvm::orc::ThreadSafeModule> tsm =
+                    std::move(*attempt);
                 if (!tsm) {
                     result = tsm.takeError();
                     return;

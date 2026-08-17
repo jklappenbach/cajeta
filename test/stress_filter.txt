@@ -12,16 +12,3 @@ OwnershipLeakProbe.benchScaleStaysBounded
 OwnershipLeakProbe.ownedElementsBalanceAtScale
 PrimitiveHashMapTests.swissResizeThousandInts
 StringBuildWorkload.fiveHundredAppendsIs4000Bytes
-# lazy-codegen Unit 3 — correct but ~8 min each until the reachability-pruned
-# extractor lands: every delivery clones the whole stdlib module, and
-# legalizeCrossModuleRefs makes even a static return-literal pull the full
-# ~900-symbol runtime closure. Move back to the sweep when they run in
-# seconds. heapAllocAndDropRunLazily (474 s) and
-# lookupGeneratesBodyAndCallReturnsRightValue (498 s) are verified green;
-# the rest are staged and not yet run to completion.
-LazyEmitterTests.lookupGeneratesBodyAndCallReturnsRightValue
-LazyEmitterTests.cascadeResolvesCalleeThroughTheGenerator
-LazyEmitterTests.secondLookupDoesNotRegenerate
-LazyRuntimeTests.heapAllocAndDropRunLazily
-LazyRuntimeTests.stdlibInstantiationRunsLazily
-LazyRuntimeTests.sharedInstantiationDoesNotDuplicateDefine

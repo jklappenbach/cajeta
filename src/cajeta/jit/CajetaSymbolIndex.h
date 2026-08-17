@@ -45,6 +45,15 @@ namespace cajeta {
             for (auto& m : modules) addModule(m);
         }
 
+        // Additive re-scan of the modules already handed to build(). Codegen
+        // run from the generator instantiates templates mid-cascade, defining
+        // methods (and reflect thunks) that did not exist when the host built
+        // the index (spec 3.5); the generator calls this before conceding a
+        // miss. Cheap when nothing changed: instantiation registers a new
+        // structure, so a stable structure count means there is nothing new
+        // to find.
+        void refresh();
+
         // Definitions codegen synthesizes OUTSIDE getAllMethods — drop thunks,
         // vtable/#ClassObject globals — searched live so entries created after
         // build() (a thunk born during a lazy generateCode) are still found.
@@ -75,6 +84,7 @@ namespace cajeta {
         std::unordered_map<std::string, MethodPtr> bySymbol;
         std::unordered_map<std::string, ReflectThunk> reflectThunks;
         std::vector<CajetaModulePtr> liveModules;   // deduped, build order
+        size_t lastStructureCount = 0;              // refresh() change gate
     };
 
 } // namespace cajeta

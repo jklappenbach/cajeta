@@ -18,6 +18,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include <filesystem>
@@ -95,17 +96,23 @@ std::list<CajetaModulePtr> hostModuleSet(Compiler& compiler) {
     return mods;
 }
 
-std::string symbolFor(Compiler& compiler, const std::string& cls,
-                      const std::string& shortName) {
+cajeta::MethodPtr methodFor(Compiler& compiler, const std::string& cls,
+                            const std::string& shortName) {
     for (auto& m : hostModuleSet(compiler))
         for (auto& method : m->getAllMethods()) {
             if (!method) continue;
             const std::string sym = method->getLlvmSymbolName();
             if (sym.find(cls) != std::string::npos
                 && sym.find("::" + shortName + "(") != std::string::npos)
-                return sym;
+                return method;
         }
     return {};
+}
+
+std::string symbolFor(Compiler& compiler, const std::string& cls,
+                      const std::string& shortName) {
+    auto m = methodFor(compiler, cls, shortName);
+    return m ? m->getLlvmSymbolName() : std::string();
 }
 
 struct LazyJit {
@@ -210,4 +217,57 @@ TEST(LazyRuntimeTests, sharedInstantiationDoesNotDuplicateDefine) {
     EXPECT_EQ(lazy.call(heapSym), 7);
     // And again — everything now resolves from ORC's own tables.
     EXPECT_EQ(lazy.call(listSym), 35);
+}
+
+// 3.1.3 — pin equivalence over the lazy set. The JIT-merge path pins drop
+// thunks to weak_odr because llvm::Linker discards unreferenced linkonce_odr
+// definitions. Snapshots are DELIVERED to ORC, never Linker-merged, so the
+// hazard cannot fire — assert the two properties that make that true:
+// a consumer's snapshot carries the thunk only as a declaration (nothing for
+// a linker to discard), and a snapshot OF the thunk keeps its definition
+// through the whole snapshot tail.
+TEST(LazyRuntimeTests, dropThunkSnapshotsCannotHitTheLinkerDiscard) {
+    ModeGuard guard;
+    setLazyCodegenEnabled(true);
+
+    Compiler compiler;
+    compileSource(compiler, "Pin");
+    cajeta::MethodPtr method = methodFor(compiler, "test.Runner", "useHeap");
+    ASSERT_TRUE(method);
+
+    auto tsm = cajeta::emitMethodModule(method);
+    ASSERT_TRUE(bool(tsm)) << llvm::toString(tsm.takeError());
+
+    std::string thunkName;
+    tsm->withModuleDo([&](llvm::Module& m) {
+        for (llvm::Function& f : m) {
+            if (!f.getName().starts_with("__cajeta")
+                || !f.getName().ends_with("_drop"))
+                continue;
+            EXPECT_TRUE(f.isDeclaration())
+                << f.getName().str()
+                << " rode along as a definition in a consumer's snapshot";
+            if (thunkName.empty()) thunkName = f.getName().str();
+        }
+    });
+    ASSERT_FALSE(thunkName.empty())
+        << "useHeap's snapshot references no drop thunk — fixture rotted";
+
+    // The definition itself lives where generateCode synthesized it.
+    llvm::GlobalValue* liveThunk = nullptr;
+    for (auto& cm : hostModuleSet(compiler)) {
+        if (llvm::Module* lm = cm ? cm->getLlvmModule() : nullptr)
+            if (llvm::GlobalValue* gv = lm->getNamedValue(thunkName))
+                if (!gv->isDeclaration()) { liveThunk = gv; break; }
+    }
+    ASSERT_NE(liveThunk, nullptr) << "no live definition of " << thunkName;
+
+    auto thunkTsm = cajeta::snapshotLiveDefinition(liveThunk);
+    ASSERT_TRUE(bool(thunkTsm)) << llvm::toString(thunkTsm.takeError());
+    thunkTsm->withModuleDo([&](llvm::Module& m) {
+        llvm::Function* f = m.getFunction(thunkName);
+        ASSERT_NE(f, nullptr);
+        EXPECT_FALSE(f->isDeclaration())
+            << "the kept thunk definition did not survive the snapshot tail";
+    });
 }

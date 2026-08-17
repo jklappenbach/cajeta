@@ -206,3 +206,32 @@ TEST(SymbolIndexTests, rebuildPicksUpMethodsCodegenCreated) {
         << "a rebuild dropped entries — it must be additive, since the JIT may "
            "already have resolved through the ones that vanished";
 }
+
+// 3.2.3 follow-on (spec 3.5) — the generator cannot re-run build(): it only
+// holds the index. refresh() alone must surface methods codegen created, and
+// stay a cheap no-op when nothing was instantiated since.
+TEST(SymbolIndexTests, refreshAloneSurfacesMethodsCodegenCreated) {
+    Compiler compiler;
+    compileSource(compiler, kSource, "WidgetRefresh");
+
+    CajetaSymbolIndex index;
+    index.build(hostModuleSet(compiler));
+    const size_t beforeCodegen = index.size();
+
+    for (auto& m : hostModuleSet(compiler))
+        for (auto& method : m->getAllMethods())
+            method->getLlvmFunctionType();
+    for (auto& m : hostModuleSet(compiler))
+        for (auto& method : m->getAllMethods())
+            method->generateCode();
+
+    index.refresh();
+    const size_t afterRefresh = index.size();
+    EXPECT_GT(afterRefresh, beforeCodegen)
+        << "codegen instantiated nothing new, or refresh() failed to see it — "
+           "either way this test lost its subject";
+
+    index.refresh();
+    EXPECT_EQ(index.size(), afterRefresh)
+        << "a refresh with no new instantiations changed the index";
+}
