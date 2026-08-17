@@ -7,11 +7,11 @@
 namespace cajeta {
 
     namespace {
-        // Unit 2 lands the generator BEHIND the eager path, so the default is
-        // eager and `CAJETA_EAGER_CODEGEN=1` only pins what is already true.
-        // Unit 4 flips this one line; the env var becomes load-bearing then,
-        // and stays a permanent control (spec 5.1).
-        constexpr bool kDefaultLazy = false;
+        // Flipped by Unit 4 (4.2.2, 2026-08-17): bodies are emitted on
+        // demand by default. `CAJETA_EAGER_CODEGEN=1` restores the eager
+        // fixpoint and stays a permanent supported control (spec 5.1) —
+        // keep both paths exercised (Unit 7).
+        constexpr bool kDefaultLazy = true;
 
         // Atomic because ORC calls the generator from materialization threads
         // while a host may still be configuring. Relaxed is enough: this gates

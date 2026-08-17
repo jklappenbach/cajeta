@@ -3277,6 +3277,12 @@ namespace cajeta {
         if (!rawLlvmType()) return;
         llvm::Function* dropFn = getOrCreateDropFunction();
         if (!dropFn) return;
+        // A DECLARATION has nothing to patch — and getInitializer() asserts
+        // on one. Reachable under lazy codegen: ctor bodies generate at
+        // GENERATOR time, after the session-statics dedup turned a
+        // redefinition's re-emitted vtable global into a declaration (the
+        // live table everyone shares was patched by its defining cell).
+        if (!vtGlobal->hasInitializer()) return;
         llvm::Constant* init = vtGlobal->getInitializer();
         if (!init) return;
         auto* structInit = llvm::dyn_cast<llvm::ConstantStruct>(init);
