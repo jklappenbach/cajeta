@@ -11,43 +11,51 @@ compiled: a method no build reached is a method nobody measured.
 
 | Measure | Count |
 |---------|-------|
-| Plain-return, class-returning methods compiled | 164 |
-| …of those, methods whose return can carry a title | 12 |
-| Ride-through rate | 7.3% |
+| Plain-return, class-returning methods compiled | 424 |
+| …of those, methods whose return can carry a title | 32 |
+| Ride-through rate | 7.5% |
 
 ## By mechanism
 
 | Mechanism | Methods | What the caller sees |
 |-----------|---------|----------------------|
-| `call-ride` | 10 | tail-calls a plain-return method; the decision is deferred one more frame (the fluent-builder chain) |
+| `call-ride` | 31 | tail-calls a plain-return method; the decision is deferred one more frame (the fluent-builder chain) |
 | `call-ride#` | 2 | tail-calls a method that DECLARES `#`; a title rides out through a signature that says borrow — the `viaPlain` shape |
-| `formal` | 1 | returns a parameter; the caller gets back whatever mode it lent — genuinely runtime-variable |
-| `move` | 1 | `return #x`; forwards the mode the frame holds (not an assertion of title — CLAUDE.md §2.2) |
 
 ## Coverage
 
-One row per harvested build. A truncated build measured everything
-it compiled before it stopped and nothing after, so the denominator
-above is a FLOOR, not a census.
+One row per harvested build. Every build ran to completion, so the
+denominator above is a CENSUS of what these libraries compile —
+the only remaining coverage limit is stdlib methods no library
+reaches.
 
 | Harvest | Plain returns seen | Title notes | Ran to completion |
 |---------|--------------------|-------------|-------------------|
-| `cajeta-codec.stderr` | 180 | 52 | no — stopped at `CAJETA_ERROR_CAPTURED_BORROW_PARAM` |
-| `cajeta-http.stderr` | 215 | 52 | no — stopped at `CAJETA_ERROR_CAPTURED_BORROW_PARAM` |
-| `cajeta-logging.stderr` | 248 | 62 | yes |
-| `cajeta-ml.stderr` | 377 | 99 | no — stopped at `CAJETA_ERROR_CAPTURED_BORROW_PARAM` |
-| `cajeta-timeseries.stderr` | 377 | 99 | no — stopped at `CAJETA_ERROR_CAPTURED_BORROW_PARAM` |
+| `cajeta-codec.stderr` | 230 | 54 | yes |
+| `cajeta-http.stderr` | 388 | 66 | yes |
+| `cajeta-logging.stderr` | 246 | 58 | yes |
+| `cajeta-ml.stderr` | 616 | 123 | yes |
+| `cajeta-timeseries.stderr` | 535 | 103 | yes |
 
 ## By package
 
 | Package | Ride-through methods |
 |---------|----------------------|
 | `cajeta.codec.json` | 5 |
-| `cajeta.lang` | 1 |
-| `cajeta.lang.stream` | 2 |
-| `cajeta.math` | 1 |
+| `cajeta.nucleo.frame` | 1 |
 | `cajeta.reflect` | 1 |
-| `dev.cajeta.logging` | 2 |
+| `dev.cajeta.codec.ion` | 2 |
+| `dev.cajeta.http.body` | 3 |
+| `dev.cajeta.http.client` | 1 |
+| `dev.cajeta.http.h2` | 2 |
+| `dev.cajeta.http.sse` | 1 |
+| `dev.cajeta.http.ws` | 4 |
+| `dev.cajeta.logging` | 1 |
+| `dev.cajeta.ml.io` | 4 |
+| `dev.cajeta.ml.linear` | 1 |
+| `dev.cajeta.ml.nn` | 3 |
+| `dev.cajeta.ml.train` | 2 |
+| `dev.cajeta.ml.zoo` | 1 |
 
 ## Every site
 
@@ -59,8 +67,8 @@ and the extra return type is noted rather than repeated.
 |--------|------|-------|-----|---------|
 | `cajeta.codec.json.JsonObject.get` | 109 | runtime | `call-ride` | `cajeta.codec.json.JsonValue` |
 | `cajeta.codec.json.JsonObject.get` | 111 | runtime | `call-ride` | `cajeta.codec.json.JsonValue` |
-| `cajeta.codec.json.JsonValue.setString` | 226 | runtime | `call-ride` | `cajeta.codec.json.JsonValue` |
-| `cajeta.codec.json.JsonValue.setString` | 228 | runtime | `call-ride` | `cajeta.codec.json.JsonValue` |
+| `cajeta.codec.json.JsonValue.setString` | 227 | runtime | `call-ride` | `cajeta.codec.json.JsonValue` |
+| `cajeta.codec.json.JsonValue.setString` | 229 | runtime | `call-ride` | `cajeta.codec.json.JsonValue` |
 | `cajeta.codec.json.JsonWriter.key` | 307 | runtime | `call-ride` | `cajeta.codec.json.JsonWriter` |
 | `cajeta.codec.json.JsonWriter.key` | 309 | runtime | `call-ride` | `cajeta.codec.json.JsonWriter` |
 | `cajeta.codec.json.JsonWriter.writeString` | 275 | runtime | `call-ride` | `cajeta.codec.json.JsonWriter` |
@@ -71,28 +79,36 @@ and the extra return type is noted rather than repeated.
 | `cajeta.codec.json.JsonWriter.writeValue` | 383 | runtime | `call-ride` | `cajeta.codec.json.JsonWriter` |
 | `cajeta.codec.json.JsonWriter.writeValue` | 386 | runtime | `call-ride` | `cajeta.codec.json.JsonWriter` |
 | `cajeta.codec.json.JsonWriter.writeValue` | 412 | runtime | `call-ride` | `cajeta.codec.json.JsonWriter` |
-| `cajeta.lang.Optional.orElse` | 116 | runtime | `formal` | `cajeta.codec.json.JsonArray` (+1 instantiations) |
-| `cajeta.lang.Optional.orElse` | 127 | runtime | `formal` | `cajeta.error.Throwable` |
-| `cajeta.lang.Optional.orElse` | 134 | runtime | `formal` | `cajeta.io.file.Path` |
-| `cajeta.lang.Optional.orElse` | 151 | runtime | `formal` | `cajeta.io.net.TcpStream` |
-| `cajeta.lang.Optional.orElse` | 167 | runtime | `formal` | `cajeta.io.net.dns.DnsCacheEntry` |
-| `cajeta.lang.Optional.orElse` | 195 | runtime | `formal` | `cajeta.buildtool.plugin.Finding` (+1 instantiations) |
-| `cajeta.lang.Optional.orElse` | 205 | runtime | `formal` | `cajeta.math.Tensor<float32>` (+5 instantiations) |
-| `cajeta.lang.stream.Stream.fold` | 108 | runtime | `move` | `cajeta.buildtool.plugin.Finding` (+3 instantiations) |
-| `cajeta.lang.stream.Stream.fold` | 118 | runtime | `move` | `cajeta.buildtool.plugin.Finding` (+8 instantiations) |
-| `cajeta.lang.stream.Stream.reduce` | 309 | runtime | `call-ride#` | `cajeta.io.file.Path` |
-| `cajeta.lang.stream.Stream.reduce` | 311 | runtime | `call-ride` | `cajeta.io.file.Path` |
-| `cajeta.lang.stream.Stream.reduce` | 342 | runtime | `call-ride#` | `cajeta.lang.String` |
-| `cajeta.lang.stream.Stream.reduce` | 344 | runtime | `call-ride` | `cajeta.lang.String` |
-| `cajeta.lang.stream.Stream.reduce` | 370 | runtime | `call-ride#` | `cajeta.buildtool.plugin.Finding` (+1 instantiations) |
-| `cajeta.lang.stream.Stream.reduce` | 372 | runtime | `call-ride` | `cajeta.buildtool.plugin.Finding` (+1 instantiations) |
-| `cajeta.lang.stream.Stream.reduce` | 380 | runtime | `call-ride#` | `cajeta.math.Tensor<float32>` (+5 instantiations) |
-| `cajeta.lang.stream.Stream.reduce` | 382 | runtime | `call-ride` | `cajeta.math.Tensor<float32>` (+5 instantiations) |
-| `cajeta.math.Tensor.deviceBuffer` | 623 | runtime | `call-ride` | `cajeta.xpu.KernelBuffer<bfloat16>` (+12 instantiations) |
+| `cajeta.nucleo.frame.SortKey.name` | 98 | runtime | `call-ride` | `cajeta.lang.String` |
+| `cajeta.nucleo.frame.SortKey.name` | 99 | runtime | `call-ride` | `cajeta.lang.String` |
+| `cajeta.nucleo.frame.SortKey.name` | 100 | runtime | `call-ride` | `cajeta.lang.String` |
 | `cajeta.reflect.TemplateArgument.getType` | 67 | runtime | `call-ride` | `cajeta.reflect.Class<?>` |
+| `dev.cajeta.codec.ion.IonCursor.readSymbol` | 166 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.codec.ion.IonSymbolTable.resolve` | 56 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.body.MultipartBody.addField` | 167 | runtime | `call-ride` | `dev.cajeta.http.body.MultipartBody` |
+| `dev.cajeta.http.body.MultipartBody.addFile` | 174 | runtime | `call-ride` | `dev.cajeta.http.body.MultipartBody` |
+| `dev.cajeta.http.body.MultipartPart.contentType` | 148 | runtime | `call-ride` | `dev.cajeta.http.MediaType` |
+| `dev.cajeta.http.client.ConnectionPool.lockedEntryFor` | 176 | runtime | `call-ride` | `dev.cajeta.http.client.OriginEntry` |
+| `dev.cajeta.http.h2.HpackDecoder.nameForIndex` | 142 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.h2.HpackDecoder.nameForIndex` | 146 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.h2.HpackDecoder.valueForIndex` | 154 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.h2.HpackDecoder.valueForIndex` | 158 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.sse.SseClient.lastEventId` | 125 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.ws.WebSocket.peerCloseReason` | 642 | runtime | `call-ride` | `dev.cajeta.http.ws.WsCloseReason` |
+| `dev.cajeta.http.ws.WebSocketConnection.subprotocol` | 43 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.http.ws.WsMessageAssembler.accept` | 185 | runtime | `call-ride` | `dev.cajeta.http.ws.WsMessage` |
+| `dev.cajeta.http.ws.WsMessageAssembler.accept` | 216 | runtime | `call-ride#` | `dev.cajeta.http.ws.WsMessage` |
+| `dev.cajeta.http.ws.WsMessageAssembler.finishMessage` | 305 | runtime | `call-ride#` | `dev.cajeta.http.ws.WsMessage` |
 | `dev.cajeta.logging.CapturingAppender.get` | 31 | runtime | `call-ride` | `cajeta.lang.String` |
-| `dev.cajeta.logging.LogFmt.fieldValue` | 46 | runtime | `call-ride` | `cajeta.lang.String` |
-| `dev.cajeta.logging.LogFmt.fieldValue` | 48 | runtime | `call-ride#` | `cajeta.lang.String` |
-| `dev.cajeta.logging.LogFmt.fieldValue` | 50 | runtime | `call-ride#` | `cajeta.lang.String` |
-| `dev.cajeta.logging.LogFmt.fieldValue` | 52 | runtime | `call-ride#` | `cajeta.lang.String` |
+| `dev.cajeta.ml.io.StateDict.get` | 69 | runtime | `call-ride` | `cajeta.math.Tensor<float32>` |
+| `dev.cajeta.ml.io.StateDict.nameAt` | 39 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.ml.io.StateDict.valueAt` | 43 | runtime | `call-ride` | `cajeta.math.Tensor<float32>` |
+| `dev.cajeta.ml.io.Unpickler.topStr` | 135 | runtime | `call-ride` | `cajeta.lang.String` |
+| `dev.cajeta.ml.linear.Lasso.coef` | 52 | runtime | `call-ride` | `cajeta.math.Tensor<float64>` |
+| `dev.cajeta.ml.nn.LoraLinear.biasParam` | 82 | runtime | `call-ride` | `dev.cajeta.ml.nn.Parameter` |
+| `dev.cajeta.ml.nn.LoraLinear.weightParam` | 78 | runtime | `call-ride` | `dev.cajeta.ml.nn.Parameter` |
+| `dev.cajeta.ml.nn.Sequential.at` | 35 | runtime | `call-ride` | `dev.cajeta.ml.nn.Module` |
+| `dev.cajeta.ml.train.SpelaTrainer.classVectorsAt` | 163 | runtime | `call-ride` | `cajeta.math.Tensor<float32>` |
+| `dev.cajeta.ml.train.SpelaTrainer.layerAt` | 156 | runtime | `call-ride` | `dev.cajeta.ml.nn.Module` |
+| `dev.cajeta.ml.zoo.EncoderStack.blockAt` | 44 | runtime | `call-ride` | `dev.cajeta.ml.nn.Module` |
 

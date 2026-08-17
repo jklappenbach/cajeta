@@ -364,6 +364,29 @@ TEST(SignatureAbiTests, lastUseAdvisorySeesReadInsideIfBranch) {
     EXPECT_FALSE(warnedAbout("reread"));
 }
 
+// 8.1.5 — an identity reference cast must not smuggle an owned local past
+// the fresh-return gate. Before the 6.2.6c peel was applied to the gate's
+// shape arms, `return (Cell) x` compiled while `return x` was rejected: the
+// disarm path (which does peel casts) still deactivated the local's drop,
+// so the value leaked through the one spelling the gate could not see —
+// exactly the leak shape 8.1.5's audit mode was filed to measure.
+TEST(SignatureAbiTests, castReturnOfOwnedLocalIsAlsoRejected) {
+    std::string src =
+        "package test;\n"
+        "public final class Cell {\n"
+        "    public int32 n;\n"
+        "    public Cell(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static Cell make() {\n"
+        "        Cell x #= heap Cell(1);\n"
+        "        return (Cell) x;\n"
+        "    }\n"
+        "    public static int32 run() { Cell c = D.make(); return c.n; }\n"
+        "}\n";
+    compileExpectError(src, "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
+}
+
 // arenaWalk hand-listed the control statements but missed TryStatement:
 // a concat local RETURNED from inside a try was judged non-escaping and
 // arena-routed. That stripped its drop entry, which MASKED the

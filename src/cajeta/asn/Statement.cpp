@@ -2292,8 +2292,29 @@ namespace cajeta {
             // exemption the guard rejects the very form built to satisfy it.
             if (!isLambda && !m->isReturnsOwnership() && !returnsValueType
                     && !returnsByValuePrimitive && !modeCarrying) {
-                auto newExpr = dynamic_pointer_cast<NewExpression>(expression);
-                auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(expression);
+                // 8.1.5 — identity reference casts are peeled (6.2.6c) before
+                // BOTH shape arms. Without this, `return (Cell) x` of an
+                // owned local compiled while the uncast spelling was
+                // rejected: one cast reopened the exact leak/dangle this
+                // guard exists to close (found while probing whether the
+                // 8.1.5 leak population was really empty — it was, except
+                // through this hole).
+                ExpressionPtr frInner = expression;
+                while (auto castE =
+                        dynamic_pointer_cast<CastExpression>(frInner)) {
+                    CajetaTypePtr dt = castE->getDestType();
+                    auto dc = dynamic_pointer_cast<CajetaClass>(dt);
+                    auto dv = dynamic_pointer_cast<CajetaView>(dt);
+                    bool refCast = (bool) dv
+                        || (dc && !dc->isInterface() && !dc->isValueType());
+                    if (!refCast || castE->getChildren().empty()) break;
+                    auto peeled = dynamic_pointer_cast<Expression>(
+                        castE->getChildren()[0]);
+                    if (!peeled) break;
+                    frInner = peeled;
+                }
+                auto newExpr = dynamic_pointer_cast<NewExpression>(frInner);
+                auto aggExpr = dynamic_pointer_cast<AggregateInitializerExpression>(frInner);
                 if (newExpr || aggExpr) {
                     std::string canonical = m->toCanonical(false);
                     throw Exception(
@@ -2321,7 +2342,7 @@ namespace cajeta {
                 // construction; this catches the symmetric leak when
                 // the freshly-owned value flows through a named local
                 // first. Same fix: mark the return type `#T`.
-                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(expression)) {
+                if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(frInner)) {
                     if (auto scope = module->getScopeStack().peek()) {
                         FieldPtr f = scope->getField(idExpr->getTextValue());
                         // 5.2.2 — formals are RUNTIME owners: their entry is
@@ -2342,20 +2363,39 @@ namespace cajeta {
                                 (klass && !klass->isInterface()
                                        && !klass->isValueType()) || (bool) view;
                             if (transferShape) {
+                                // 8.2.10 — the check deliberately keys on the
+                                // DROP ENTRY, not on the title: ownership is
+                                // runtime state, so a local that merely holds
+                                // a borrow from a call is indistinguishable
+                                // here and is rejected too (pinned by
+                                // SignatureAbiTests.plainReturnOfBorrowed-
+                                // LocalIsAlsoRejected). That is the accepted
+                                // cost — the decision record says LEAVE IT —
+                                // but the MESSAGE must not claim "the
+                                // allocation leaks" unconditionally: for the
+                                // borrow case that sends the developer
+                                // hunting an allocation that is not theirs.
+                                // Name both cases and both working spellings.
                                 std::string canonical = m->toCanonical(false);
                                 throw Exception(
-                                    "method `" + canonical + "` returns owned "
-                                    "local '" + idExpr->getTextValue() + "' "
-                                    "but its return type isn't marked `#` for "
-                                    "ownership transfer. The local owns its "
-                                    "value (its drop entry is active), so the "
-                                    "return deactivates this scope's drop, "
-                                    "while the caller — per the non-`#` "
-                                    "signature — won't register a fresh drop "
-                                    "entry on receipt: the allocation silently "
-                                    "leaks. Fix: change the return type to "
-                                    "`#T`. See docs/specification/MemoryModel"
-                                    ".md § Function signatures.",
+                                    "method `" + canonical + "` returns local "
+                                    "'" + idExpr->getTextValue() + "', which "
+                                    "has an active drop entry, through a "
+                                    "plain (non-`#`) return type. If the "
+                                    "local OWNS its value, the return "
+                                    "deactivates this scope's drop while the "
+                                    "caller registers none — the allocation "
+                                    "leaks; fix: mark the return type `#T`. "
+                                    "If the local only holds a BORROW from a "
+                                    "call, the compiler cannot tell (the drop "
+                                    "entry is the only static evidence, and "
+                                    "ownership is runtime state) — return the "
+                                    "call directly (`return f(...)`, which "
+                                    "rides the callee's flag) or use `return "
+                                    "#= " + idExpr->getTextValue() + "` "
+                                    "(which ships the frame's actual mode). "
+                                    "See docs/specification/MemoryModel.md "
+                                    "§ Function signatures.",
                                     "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER");
                             }
                         }

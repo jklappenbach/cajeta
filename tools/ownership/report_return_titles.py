@@ -184,9 +184,20 @@ def main():
 
     print('## Coverage')
     print()
-    print('One row per harvested build. A truncated build measured everything')
-    print('it compiled before it stopped and nothing after, so the denominator')
-    print('above is a FLOOR, not a census.')
+    # 8.1.3 — the floor/census distinction is a FACT of this run, not
+    # boilerplate: when every harvested build ran to completion the number IS
+    # the census the item asked for, and saying "floor" would under-claim it.
+    all_complete = all(not stopped for _n, _p, _t, stopped in cov)
+    print('One row per harvested build.', end=' ')
+    if all_complete:
+        print('Every build ran to completion, so the')
+        print('denominator above is a CENSUS of what these libraries compile —')
+        print('the only remaining coverage limit is stdlib methods no library')
+        print('reaches.')
+    else:
+        print('A truncated build measured everything')
+        print('it compiled before it stopped and nothing after, so the denominator')
+        print('above is a FLOOR, not a census.')
     print()
     print('| Harvest | Plain returns seen | Title notes | Ran to completion |')
     print('|---------|--------------------|-------------|-------------------|')
