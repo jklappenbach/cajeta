@@ -343,31 +343,43 @@ namespace cajeta {
         return snapshotOne(gv->getParent(), gv, gv->getName().str());
     }
 
+    namespace {
+        // Every defined llvm.global_ctors entry of `live`, in array order.
+        std::vector<std::pair<uint32_t, const llvm::Function*>>
+        definedCtors(llvm::Module* live) {
+            std::vector<std::pair<uint32_t, const llvm::Function*>> out;
+            auto* ga = live->getNamedGlobal("llvm.global_ctors");
+            if (!ga || !ga->hasInitializer()) return out;
+            auto* arr = llvm::dyn_cast<llvm::ConstantArray>(
+                ga->getInitializer());
+            if (!arr) return out;
+            for (const llvm::Use& u : arr->operands()) {
+                auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(u.get());
+                if (!entry || entry->getNumOperands() < 2) continue;
+                auto* prio = llvm::dyn_cast<llvm::ConstantInt>(
+                    entry->getOperand(0));
+                auto* fn = llvm::dyn_cast<llvm::Function>(
+                    entry->getOperand(1)->stripPointerCasts());
+                if (!prio || !fn || fn->isDeclaration()) continue;
+                out.emplace_back((uint32_t) prio->getZExtValue(), fn);
+            }
+            return out;
+        }
+    } // namespace
+
+    void recordDeliveredCtors(llvm::Module* live,
+                              std::set<std::string>& deliveredCtors) {
+        for (auto& [prio, fn] : definedCtors(live))
+            deliveredCtors.insert(fn->getName().str());
+    }
+
     llvm::Expected<llvm::orc::ThreadSafeModule>
     extractInitDelta(llvm::Module* live,
                      std::set<std::string>& deliveredCtors) {
         std::vector<std::pair<uint32_t, const llvm::Function*>> newCtors;
-        if (auto* ga = live->getNamedGlobal("llvm.global_ctors")) {
-            if (ga->hasInitializer()) {
-                auto* arr =
-                    llvm::dyn_cast<llvm::ConstantArray>(ga->getInitializer());
-                if (arr) {
-                    for (const llvm::Use& u : arr->operands()) {
-                        auto* entry = llvm::dyn_cast<llvm::ConstantStruct>(
-                            u.get());
-                        if (!entry || entry->getNumOperands() < 2) continue;
-                        auto* prio = llvm::dyn_cast<llvm::ConstantInt>(
-                            entry->getOperand(0));
-                        auto* fn = llvm::dyn_cast<llvm::Function>(
-                            entry->getOperand(1)->stripPointerCasts());
-                        if (!prio || !fn || fn->isDeclaration()) continue;
-                        if (deliveredCtors.count(fn->getName().str()))
-                            continue;
-                        newCtors.emplace_back(
-                            (uint32_t) prio->getZExtValue(), fn);
-                    }
-                }
-            }
+        for (auto& [prio, fn] : definedCtors(live)) {
+            if (deliveredCtors.count(fn->getName().str())) continue;
+            newCtors.emplace_back(prio, fn);
         }
         // Nothing new since the last delivery: an empty (false) TSM, which
         // callers must treat as "deliver nothing", not as an error.
