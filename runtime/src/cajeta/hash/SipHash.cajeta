@@ -74,7 +74,7 @@ public final class SipHash implements Hasher {
     public SipHash(int64 keyLow, int64 keyHigh) {
         this.k0 = keyLow;
         this.k1 = keyHigh;
-        this.state = SipHash.allocState(keyLow, keyHigh);
+        this.state #= SipHash.allocState(keyLow, keyHigh);
     }
 
     /** Frees the native SipHash state when the object is destroyed. */

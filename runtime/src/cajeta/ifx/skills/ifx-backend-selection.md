@@ -33,8 +33,12 @@ auto-registers the always-present floor (`NullWindowBackend` / `NullInputBackend
 empty. Backends register into the **same instance** at load:
 
 ```
-Win32WindowBackend win32 = heap Win32WindowBackend();   // must outlive every select*
-BackendRegistry.instance().registerWindow(win32);       // lend; never `#`
+// Hand the registry the title — nothing else has to stay alive for it.
+BackendRegistry.instance().registerWindow(heap Win32WindowBackend());
+
+// Or keep your own binding and LEND it; then `win32` must outlive every select*.
+Win32WindowBackend win32 #= heap Win32WindowBackend();
+BackendRegistry.instance().registerWindow(win32);
 ```
 
 Because the floor registers first and is lowest priority, any real backend that registers

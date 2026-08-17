@@ -529,7 +529,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -648,7 +648,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -753,7 +753,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -831,7 +831,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -900,7 +900,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -968,7 +968,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -1049,7 +1049,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }
@@ -1166,7 +1166,7 @@ public class ParallelDriver {
             if (piece == null) {
                 break;
             }
-            shares[si] = head.cloneChainOver(#piece);
+            shares[si] #= head.cloneChainOver(#piece);
             shareCount = shareCount + 1;
             si = si + 1;
         }

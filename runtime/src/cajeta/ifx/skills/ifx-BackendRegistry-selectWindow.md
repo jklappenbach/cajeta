@@ -36,11 +36,14 @@ Forcing `CAJETA_IFX_WINDOW=null` is therefore an explicit opt-in to the floor re
 
 ## Ownership / lifecycle
 
-The returned `WindowBackend` is a **borrowed** interface reference — and the registry holds
-only a borrow of it too: `registerWindow(WindowBackend backend)` is a plain formal forwarded
-to a plain `ArrayList.add`, so the slot records a lend (§2.3 — `#=` records the SOURCE's
-mode). Its lifetime is therefore that of whatever binding the registrant kept, not the
-registry's. Do **not** drop or free it; do not use it past that binding.
+The returned `WindowBackend` is a **borrowed** interface reference. Who owns the thing it
+borrows depends on how the backend was registered: `registerWindow(WindowBackend backend)`
+is a plain formal forwarded to `ArrayList.add`, which stores with `#=`, and §2.3's rule is
+that `#=` records the SOURCE's mode — the mode the CALL SITE sent, carried in the transfer
+word, not a fixed borrow. So `registerWindow(heap Win32WindowBackend())` and
+`registerWindow(#win32)` leave the registry owning the backend for the life of the process,
+while `registerWindow(win32)` lends it and ties the lifetime to the registrant's binding.
+Either way, do **not** drop or free what `selectWindow` hands back.
 There is no `#` transfer on this return. (Arrays returned by the backend's own methods —
 `poll`/`pollLifecycle` — *are* `#`-transferred; that is the `WindowBackend` class contract,
 not this method's.)

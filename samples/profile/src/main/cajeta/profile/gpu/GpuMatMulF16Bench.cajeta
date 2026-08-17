@@ -246,7 +246,7 @@ public class GpuMatMulF16Bench extends Benchmark {
     }
 
     public void setup() {
-        this.stream = KernelStream.current();
+        this.stream #= KernelStream.current();
     }
 
     // A = identity, B[idx]=idx%100 (exact in f16) ⇒ C == B exactly. f32 accumulate

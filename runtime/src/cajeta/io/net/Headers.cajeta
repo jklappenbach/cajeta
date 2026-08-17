@@ -107,8 +107,8 @@ public class Headers {
         if (this.sizeCount >= this.cap) {
             this.grow();
         }
-        this.keys[this.sizeCount] = name.toLowerCase();
-        this.values[this.sizeCount] = value.trim();
+        this.keys[this.sizeCount] #= name.toLowerCase();
+        this.values[this.sizeCount] #= value.trim();
         this.sizeCount = this.sizeCount + 1;
     }
 
@@ -176,7 +176,7 @@ public class Headers {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(lname)) {
                 String v = this.values[i];
-                out[w] = v.substring(0, v.byteLength());
+                out[w] #= v.substring(0, v.byteLength());
                 w = w + 1;
             }
             i = i + 1;

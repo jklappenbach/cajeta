@@ -119,7 +119,7 @@ public class MatMulBench extends Benchmark {
         this.ka.upload(this.a);
         this.kb.upload(this.b);
         this.kc.upload(this.c);
-        this.stream = KernelStream.current();
+        this.stream #= KernelStream.current();
 
         this.nU = (uint32) this.nDim;
         uint32 total = this.nU * (this.nU / 8);   // one item per (row, 8-col block)

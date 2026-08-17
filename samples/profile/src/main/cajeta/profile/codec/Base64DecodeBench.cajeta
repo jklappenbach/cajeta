@@ -38,7 +38,7 @@ public class Base64DecodeBench extends Benchmark {
             d[i] = (int8) ((i * 31 + 7) & 0xFF);
             i = i + 1;
         }
-        this.encoded = Base64.encode(d, this.origLen);
+        this.encoded #= Base64.encode(d, this.origLen);
     }
 
     public int64 inputSize() {

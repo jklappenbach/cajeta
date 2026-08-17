@@ -306,7 +306,7 @@ public class Uri {
             }
         }
         if (hashIdx >= 0) {
-            u.fragment = Uri.slice(b, hashIdx + 1, end);
+            u.fragment #= Uri.slice(b, hashIdx + 1, end);
             u.hasFragment = true;
             end = hashIdx;
         }
@@ -323,7 +323,7 @@ public class Uri {
             }
         }
         if (qIdx >= 0) {
-            u.query = Uri.slice(b, qIdx + 1, end);
+            u.query #= Uri.slice(b, qIdx + 1, end);
             u.hasQuery = true;
             end = qIdx;
         }
@@ -349,7 +349,7 @@ public class Uri {
             }
             if (colonAt > 0) {
                 String rawScheme #= Uri.slice(b, 0, colonAt);
-                u.scheme = rawScheme.toLowerCase();
+                u.scheme #= rawScheme.toLowerCase();
                 u.hasScheme = true;
                 cursor = colonAt + 1;
             }
@@ -386,7 +386,7 @@ public class Uri {
         }
 
         // path: the remainder.
-        u.path = Uri.slice(b, cursor, end);
+        u.path #= Uri.slice(b, cursor, end);
 
         return #u;
     }
@@ -440,7 +440,7 @@ public class Uri {
             i = i + 1;
         }
         if (atIdx >= 0) {
-            u.userinfo = Uri.slice(b, start, atIdx);
+            u.userinfo #= Uri.slice(b, start, atIdx);
             u.hasUserinfo = true;
             hostStart = atIdx + 1;
         }
@@ -462,7 +462,7 @@ public class Uri {
                     (int64) hostStart);
             }
             // host is the content between the brackets.
-            u.host = Uri.slice(b, hostStart + 1, close);
+            u.host #= Uri.slice(b, hostStart + 1, close);
             u.hostIsIpv6 = true;
             // After ']' an optional ':' port may follow.
             int32 afterBracket = close + 1;
@@ -487,10 +487,10 @@ public class Uri {
                 i = i + 1;
             }
             if (colonIdx >= 0) {
-                u.host = Uri.slice(b, hostStart, colonIdx);
+                u.host #= Uri.slice(b, hostStart, colonIdx);
                 Uri.parsePort(u, b, colonIdx + 1, end);
             } else {
-                u.host = Uri.slice(b, hostStart, end);
+                u.host #= Uri.slice(b, hostStart, end);
             }
         }
     }
@@ -857,55 +857,55 @@ public class Uri {
         // than parsing it.
         Uri ref = heap Uri();
         if (reference != null && reference.byteLength() > 0) {
-            ref = Uri.parse(reference);
+            ref #= Uri.parse(reference);
         }
         Uri t = heap Uri();
 
         if (ref.hasScheme) {
             // R.scheme defined: target is the reference (dot-segments
             // still removed from its path).
-            t.scheme = Uri.cloneStr(ref.scheme);
+            t.scheme #= Uri.cloneStr(ref.scheme);
             t.hasScheme = true;
             Uri.copyAuthority(t, ref);
-            t.path = Uri.removeDotSegments(ref.path);
-            t.query = Uri.cloneStr(ref.query);
+            t.path #= Uri.removeDotSegments(ref.path);
+            t.query #= Uri.cloneStr(ref.query);
             t.hasQuery = ref.hasQuery;
         } else {
             // Inherit base scheme.
-            t.scheme = Uri.cloneStr(base.scheme);
+            t.scheme #= Uri.cloneStr(base.scheme);
             t.hasScheme = base.hasScheme;
             if (ref.hasAuthority) {
                 Uri.copyAuthority(t, ref);
-                t.path = Uri.removeDotSegments(ref.path);
-                t.query = Uri.cloneStr(ref.query);
+                t.path #= Uri.removeDotSegments(ref.path);
+                t.query #= Uri.cloneStr(ref.query);
                 t.hasQuery = ref.hasQuery;
             } else {
                 Uri.copyAuthority(t, base);
                 if (ref.path.byteLength() == 0) {
                     // Empty reference path: keep base path; query is the
                     // reference's if it has one, else the base's.
-                    t.path = Uri.cloneStr(base.path);
+                    t.path #= Uri.cloneStr(base.path);
                     if (ref.hasQuery) {
-                        t.query = Uri.cloneStr(ref.query);
+                        t.query #= Uri.cloneStr(ref.query);
                         t.hasQuery = true;
                     } else {
-                        t.query = Uri.cloneStr(base.query);
+                        t.query #= Uri.cloneStr(base.query);
                         t.hasQuery = base.hasQuery;
                     }
                 } else {
                     if (Uri.byteAt(ref.path, 0) == 47) {  // absolute
-                        t.path = Uri.removeDotSegments(ref.path);
+                        t.path #= Uri.removeDotSegments(ref.path);
                     } else {
                         String merged #= Uri.merge(base, ref.path);
-                        t.path = Uri.removeDotSegments(merged);
+                        t.path #= Uri.removeDotSegments(merged);
                     }
-                    t.query = Uri.cloneStr(ref.query);
+                    t.query #= Uri.cloneStr(ref.query);
                     t.hasQuery = ref.hasQuery;
                 }
             }
         }
         // Fragment is always the reference's.
-        t.fragment = Uri.cloneStr(ref.fragment);
+        t.fragment #= Uri.cloneStr(ref.fragment);
         t.hasFragment = ref.hasFragment;
         return #t;
     }
@@ -937,9 +937,9 @@ public class Uri {
      */
     private static void copyAuthority(Uri dst, Uri src) {
         dst.hasAuthority = src.hasAuthority;
-        dst.userinfo = Uri.cloneStr(src.userinfo);
+        dst.userinfo #= Uri.cloneStr(src.userinfo);
         dst.hasUserinfo = src.hasUserinfo;
-        dst.host = Uri.cloneStr(src.host);
+        dst.host #= Uri.cloneStr(src.host);
         dst.hostIsIpv6 = src.hostIsIpv6;
         dst.port = src.port;
         dst.hasExplicitPort = src.hasExplicitPort;
@@ -991,7 +991,7 @@ public class UriBuilder {
 
     /** Set the (case-insensitive) scheme; marks the scheme present. */
     public UriBuilder scheme(String scheme) {
-        this.u.scheme = scheme.toLowerCase();
+        this.u.scheme #= scheme.toLowerCase();
         this.u.hasScheme = true;
         return this;
     }
@@ -1000,7 +1000,7 @@ public class UriBuilder {
     public UriBuilder userinfo(String userinfo) {
         // Clone so the builder's Uri owns the bytes independently of the
         // caller's argument (bare assignment is a borrow in this model).
-        this.u.userinfo = userinfo.substring(0, userinfo.byteLength());
+        this.u.userinfo #= userinfo.substring(0, userinfo.byteLength());
         this.u.hasUserinfo = true;
         return this;
     }
@@ -1011,7 +1011,7 @@ public class UriBuilder {
      * `toString` re-brackets it.
      */
     public UriBuilder host(String host) {
-        this.u.host = host.substring(0, host.byteLength());
+        this.u.host #= host.substring(0, host.byteLength());
         this.u.hasAuthority = true;
         this.u.hostIsIpv6 = host.contains(":");
         return this;
@@ -1027,20 +1027,20 @@ public class UriBuilder {
 
     /** Set the path component (always present; "" is valid). */
     public UriBuilder path(String path) {
-        this.u.path = path.substring(0, path.byteLength());
+        this.u.path #= path.substring(0, path.byteLength());
         return this;
     }
 
     /** Set the raw (already-encoded) query; marks query present. */
     public UriBuilder query(String query) {
-        this.u.query = query.substring(0, query.byteLength());
+        this.u.query #= query.substring(0, query.byteLength());
         this.u.hasQuery = true;
         return this;
     }
 
     /** Set the fragment; marks fragment present. */
     public UriBuilder fragment(String fragment) {
-        this.u.fragment = fragment.substring(0, fragment.byteLength());
+        this.u.fragment #= fragment.substring(0, fragment.byteLength());
         this.u.hasFragment = true;
         return this;
     }
@@ -1055,19 +1055,19 @@ public class UriBuilder {
         Uri r = heap Uri();
         // Clone each owned String so the returned Uri's lifetime is
         // independent of this builder (which still owns this.u).
-        r.scheme = this.u.scheme.substring(0, this.u.scheme.byteLength());
+        r.scheme #= this.u.scheme.substring(0, this.u.scheme.byteLength());
         r.hasScheme = this.u.hasScheme;
         r.hasAuthority = this.u.hasAuthority;
-        r.userinfo = this.u.userinfo.substring(0, this.u.userinfo.byteLength());
+        r.userinfo #= this.u.userinfo.substring(0, this.u.userinfo.byteLength());
         r.hasUserinfo = this.u.hasUserinfo;
-        r.host = this.u.host.substring(0, this.u.host.byteLength());
+        r.host #= this.u.host.substring(0, this.u.host.byteLength());
         r.hostIsIpv6 = this.u.hostIsIpv6;
         r.port = this.u.port;
         r.hasExplicitPort = this.u.hasExplicitPort;
-        r.path = this.u.path.substring(0, this.u.path.byteLength());
-        r.query = this.u.query.substring(0, this.u.query.byteLength());
+        r.path #= this.u.path.substring(0, this.u.path.byteLength());
+        r.query #= this.u.query.substring(0, this.u.query.byteLength());
         r.hasQuery = this.u.hasQuery;
-        r.fragment = this.u.fragment.substring(0, this.u.fragment.byteLength());
+        r.fragment #= this.u.fragment.substring(0, this.u.fragment.byteLength());
         r.hasFragment = this.u.hasFragment;
         return #r;
     }

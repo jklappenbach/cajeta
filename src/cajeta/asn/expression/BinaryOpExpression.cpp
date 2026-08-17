@@ -21,6 +21,7 @@
 #include "../../type/MatrixOps.h"
 #include "../../util/MemoryManager.h"
 #include "cajeta/ownership/ReturnTitleAudit.h"
+#include "cajeta/ownership/OwnedBindCheck.h"
 #include "Expression.h"
 #include "DotExpression.h"
 #include "MethodCallExpression.h"
@@ -35,6 +36,43 @@
 #include <llvm/IR/Intrinsics.h>
 
 namespace cajeta {
+
+    // 8.2.12 — render an assignment TARGET for the §4.6 diagnostic. The
+    // declaration position can name its lvalue outright (it just declared it);
+    // an assignment target is an expression, and the migration is driven off
+    // these strings, so `this.host`, `out[…]` and `x` must all come back
+    // legible. Falls back to `<target>` rather than an empty string: the note
+    // is grepped, and a blank field silently merges distinct sites.
+    static string assignTargetText(const ExpressionPtr& target) {
+        if (!target) return "<target>";
+        if (auto id = dynamic_pointer_cast<IdentifierExpression>(target)) {
+            return id->getTextValue();
+        }
+        if (auto dot = dynamic_pointer_cast<DotExpression>(target)) {
+            string path = DotExpression::buildPath(target);
+            if (!path.empty()) return path;
+            // buildPath bottoms out on an IdentifierExpression root and
+            // returns "" for every other root, `this` included — which is the
+            // most common assignment target there is. Name the field with its
+            // receiver rather than dropping the site to `<target>`.
+            auto& kids = dot->getChildren();
+            auto root = kids.empty()
+                ? nullptr : dynamic_pointer_cast<Expression>(kids[0]);
+            string recv = dynamic_pointer_cast<ThisExpression>(root)
+                ? string("this") : string("…");
+            return recv + "." + dot->getIdentifier();
+        }
+        if (auto aix = dynamic_pointer_cast<ArrayIndexExpression>(target)) {
+            auto& kids = aix->getChildren();
+            string recv = kids.empty()
+                ? string()
+                : assignTargetText(
+                      dynamic_pointer_cast<Expression>(kids[0]));
+            if (recv == "<target>") recv.clear();
+            return recv + "[…]";
+        }
+        return "<target>";
+    }
 
     // Emit `if (condTrap) { llvm.trap; unreachable; }` followed by an
     // OK basic-block that the IRBuilder lands in. Used to guard
@@ -1257,51 +1295,6 @@ namespace cajeta {
             }
         }
 
-        // 8.2.7 SIZING ONLY (spec §4.6) — the ASSIGNMENT position.
-        //
-        // §4.6 says "a `#T` result must be received with `#=`", and an lvalue
-        // is an lvalue: `x = f()` and `this.f = f()` are the same acquisition
-        // as `T x = f()`. But 8.2.7's 148-site measurement covered the
-        // DECLARATION position only, and shipping a rule against an unmeasured
-        // second population is precisely what cost Unit 3 its gate (3.3.3).
-        //
-        // So: count here, do not reject. The check lands on declarations,
-        // where the number is known; this emits the same `[owned-bind]` record
-        // tagged `pos=assign` so ONE harvest sizes the remainder, and 8.2.12
-        // decides on the number rather than on the argument.
-        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2
-                && ownership::ReturnTitleAudit::enabled()) {
-            if (auto rhsCall = dynamic_pointer_cast<MethodCallExpression>(
-                    children[1])) {
-                if (!rhsCall->getResolvedType()) {
-                    rhsCall->resolveTypes(module);
-                }
-                if (MethodPtr rm = rhsCall->getResolvedMethod()) {
-                    if (rm->isReturnsOwnership()) {
-                        auto holder = module->getCurrentMethod();
-                        std::string in = holder
-                            ? (holder->getParent()
-                                ? holder->getParent()->toCanonical() + "."
-                                : std::string()) + holder->getName()
-                            : std::string("<none>");
-                        std::string calleeKey =
-                            (rm->getParent()
-                                ? rm->getParent()->toCanonical() + "."
-                                : std::string()) + rm->getName();
-                        // 8.1.4 — withhold the line inside a monomorphization;
-                        // it counts into the synthesized instantiation buffer.
-                        const bool synthAsg = holder
-                            && (holder->isMethodTemplateInstantiation()
-                                || (holder->getParent()
-                                    && holder->getParent()->isInstantiation()));
-                        ownership::ReturnTitleAudit::ownedBind(
-                            calleeKey + " pos=assign", in,
-                            synthAsg ? 0 : getSourceLine());
-                    }
-                }
-            }
-        }
-
         // title-stores 6.2.1 — the loud-plain-store diagnostic (spec §2.4).
         // A plain `=` retaining store (field or slot destination) whose RHS
         // names a runtime-conditional owner (armed-capable formal, flagged
@@ -1484,6 +1477,76 @@ namespace cajeta {
         llvm::Value* rhs = children[1]->generateCode(module);
         ExpressionPtr lhsAst = dynamic_pointer_cast<Expression>(children[0]);
         ExpressionPtr rhsAst = dynamic_pointer_cast<Expression>(children[1]);
+
+        // 8.2.12 (spec §4.6) — the ASSIGNMENT position, now CHECKED.
+        //
+        // §4.6 says "a `#T` result must be received with `#=`", and an lvalue
+        // is an lvalue: `x = f()` and `this.f = f()` are the same acquisition
+        // as `T x = f()`. 8.2.7 landed the rule on declarations only and left
+        // this site counting, because shipping against an unmeasured
+        // population is what cost Unit 3 its gate (3.3.3).
+        //
+        // It has since been measured, and the number is not the argument for
+        // landing it — the DANGLE is. A plain slot store of a `#T` result
+        // records a BORROW of a value nothing owns, so the temporary is
+        // reclaimed at the end of the statement and the slot is left pointing
+        // at freed memory. `Dns.cajeta` built its result with
+        // `out[i] = SocketAddress.of(#ip, p)` and the DnsCacheTests fake
+        // resolver did the same, while `DnsCache.bakePort` — migrated during
+        // 8.2.7 — spells the identical line `#=`. Three copies of one shape,
+        // two of them a use-after-free, and nothing diagnosed the difference.
+        //
+        // The audit record stays for the sizing channel, suppressed in warn
+        // mode for the same reason the declaration site suppresses it: the
+        // check emits a strictly richer record for the same site, and a
+        // migration counted twice is a migration nobody can size.
+        //
+        // Sited AFTER the RHS has generated, not before it like the sizing
+        // record it replaces. A bare `resolveTypes()` on the call leaves
+        // `getResolvedMethod()` NULL at the top of this function — overload
+        // resolution needs the receiver, which the call resolves as part of
+        // its own codegen. Every one of the 604 assignment RHS calls in a
+        // stdlib build came back `<unresolved>` from the earlier site, so the
+        // check silently passed everything, which is exactly how a rule ships
+        // green and enforces nothing.
+        if (binaryOp == BINARY_OP_ASSIGN && children.size() >= 2) {
+            if (auto rhsCall = dynamic_pointer_cast<MethodCallExpression>(
+                    children[1])) {
+                if (MethodPtr rm = rhsCall->getResolvedMethod()) {
+                    if (rm->isReturnsOwnership()) {
+                        auto holder = module->getCurrentMethod();
+                        std::string in = holder
+                            ? (holder->getParent()
+                                ? holder->getParent()->toCanonical() + "."
+                                : std::string()) + holder->getName()
+                            : std::string("<none>");
+                        std::string calleeKey =
+                            (rm->getParent()
+                                ? rm->getParent()->toCanonical() + "."
+                                : std::string()) + rm->getName();
+                        // 8.1.4 — withhold the line inside a monomorphization;
+                        // it counts into the synthesized instantiation buffer.
+                        const bool synthAsg = holder
+                            && (holder->isMethodTemplateInstantiation()
+                                || (holder->getParent()
+                                    && holder->getParent()->isInstantiation()));
+                        if (ownership::ReturnTitleAudit::enabled()
+                                && !ownership::ownedBindWarns()) {
+                            ownership::ReturnTitleAudit::ownedBind(
+                                calleeKey + " pos=assign", in,
+                                synthAsg ? 0 : getSourceLine());
+                        }
+                        ownership::rejectPlainOwnedBind(
+                            calleeKey,
+                            assignTargetText(
+                                dynamic_pointer_cast<Expression>(children[0])),
+                            module->getSourcePath(),
+                            synthAsg ? 0 : (int) getSourceLine(),
+                            in + " pos=assign");
+                    }
+                }
+            }
+        }
 
         // A binary operator requires both operands to produce a value. When an
         // operand's codegen returns null, some sub-expression failed to yield

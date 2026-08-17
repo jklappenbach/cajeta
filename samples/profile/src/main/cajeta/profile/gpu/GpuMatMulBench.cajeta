@@ -203,7 +203,7 @@ public class GpuMatMulBench extends Benchmark {
     }
 
     public void setup() {
-        this.stream = KernelStream.current();
+        this.stream #= KernelStream.current();
     }
 
     // Build the per-variant inputs and upload them: A = identity, B[idx]=idx%100

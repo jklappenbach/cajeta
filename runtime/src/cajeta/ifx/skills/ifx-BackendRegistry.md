@@ -61,23 +61,21 @@ null window floor). There is no remove/unregister and no list-all accessor.
 
 ## Ownership / lifecycle
 
-- `register*(backend)` declares a **plain** interface formal (`WindowBackend backend`) and
-  forwards it to a plain `ArrayList.add`, so the registry **holds a borrow**, not a title.
-  **Do not write `#` at the call site.** A title handed to a plain formal is dropped when
-  *that* frame returns rather than travelling on to the list, so `r.registerWindow(#backend)`
-  frees the backend as `registerWindow` returns and leaves the registry holding a freed
-  pointer (measured for exactly this shape — a plain formal forwarded plainly into
-  `ArrayList.add`: the argument's destructor runs at the callee's return and the stored
-  element reads back as garbage).
-- **The backend must be owned by something that outlives every `select*` call.** For the
-  same reason, a construction passed straight into the call —
-  `r.registerWindow(heap Win32WindowBackend())` — is not self-sustaining either: the fresh
-  temporary's title lands in `registerWindow`'s formal and drops at its return. Keep the
-  instance in a binding that spans the process (a `main`-level local, a static) and lend
-  that binding to `register*`. Never register a backend whose storage can go away — the
-  registry keeps using it and nothing diagnoses a dangling entry.
-- `select*()` and `supports*()` return a **borrowed** reference into the registry — owned by
-  the registry, valid for the process. Do **not** free it.
+- `register*(backend)` is **DUAL-ROLE**, the `ArrayList` contract exactly. It declares a
+  plain interface formal (`WindowBackend backend`) and forwards it to `ArrayList.add`, which
+  stores with `#=` — and §2.3's rule is that `#=` records the SOURCE's mode. A plain formal
+  does not mean "always a borrow": its mode arrives at run time in the call's transfer word,
+  so what the registry records is what the CALL SITE sent.
+- **Surrender it and the registry owns it, for the life of the process:**
+  `r.registerWindow(heap Win32WindowBackend())` or `r.registerWindow(#win32)`. Nothing else
+  has to stay alive. This is what `instance()` itself does for the three null-floor
+  backends, which is also the proof the registry must support it — those are built inside
+  `instance()` and there is no other binding anywhere that could own them.
+- **Lend it and you keep the title:** `r.registerWindow(win32)`. Then `win32` must outlive
+  every `select*`/`supports*` call, because the registry is holding your pointer.
+- `select*()` and `supports*()` return a **borrowed** reference either way. Do **not** free
+  it; do not use it past the lifetime of whoever owns it (the registry when surrendered,
+  your binding when lent).
 
 ## Example (idiomatic; the registry surface exercised by test/ifx/IfxRegistryTests.cpp)
 
@@ -88,10 +86,10 @@ import cajeta.ifx.Feature;
 import cajeta.ifx.IfxException;
 
 // An OS backend registers itself at load (the null floor is already there via instance()).
-// Hold the instance in a binding that outlives every select*/supports* call, and LEND it —
-// no `#`, and not a temporary built inside the call.
-Win32WindowBackend win32 = heap Win32WindowBackend();
-BackendRegistry.instance().registerWindow(win32);
+// Surrender it: the registry owns it for the life of the process, and nothing else has to
+// stay alive. Lend instead (`registerWindow(win32)`) only if you want to keep the title,
+// and then `win32` must outlive every select*/supports* call.
+BackendRegistry.instance().registerWindow(heap Win32WindowBackend());
 
 // The app binds for this launch. Interactive request: throws IfxException if only the
 // silent floor is viable (no real cajeta-ifx-<os> linked).

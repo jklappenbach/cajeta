@@ -30,8 +30,17 @@ public final class KernelStream {
     }
 
     /**
-     * The per-thread default stream (handle 0). Always returns the same
+     * The per-thread default stream (handle 0). Always names the same
      * stream for the same thread; safe to retain across launches.
+     *
+     * Returns a TITLE (`#KernelStream`) even though the stream it names is
+     * shared, and the two facts do not conflict: what is shared is the
+     * backend `handle`, and what the caller receives is a fresh wrapper
+     * object minted per call. Receive it with `#=` and drop it whenever you
+     * like — the wrapper's teardown frees its 8 bytes and nothing else,
+     * because tearing down the STREAM is `destroy()`, which is explicit and a
+     * no-op on handle 0. A borrow-shaped return would have to hand out an
+     * object with no owner anywhere to name.
      *
      * @EntryPoint
      */

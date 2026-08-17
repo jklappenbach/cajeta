@@ -164,12 +164,12 @@ public class QueryParams {
         String rawKey;
         String rawVal;
         if (eq < 0) {
-            rawKey = query.substring(start, end);
+            rawKey #= query.substring(start, end);
             int8[] empty = heap int8[0];
             rawVal = heap String(#empty, 0);
         } else {
-            rawKey = query.substring(start, eq);
-            rawVal = query.substring(eq + 1, end);
+            rawKey #= query.substring(start, eq);
+            rawVal #= query.substring(eq + 1, end);
         }
         String decKey #= QueryParams.decodeComponent(rawKey, form);
         String decVal #= QueryParams.decodeComponent(rawVal, form);
@@ -269,7 +269,7 @@ public class QueryParams {
         while (i < this.sizeCount) {
             if (this.keys[i].equals(key)) {
                 String v = this.values[i];
-                out[w] = v.substring(0, v.byteLength());
+                out[w] #= v.substring(0, v.byteLength());
                 w = w + 1;
             }
             i = i + 1;

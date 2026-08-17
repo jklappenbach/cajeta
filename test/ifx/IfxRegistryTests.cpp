@@ -196,3 +196,55 @@ TEST(IfxRegistryTests, supportsFalseForUnregisteredDomain) {
 // backends call: a backend registered through instance() lands in the same registry the app selects
 // from, so it wins over the auto-registered floor (also proving select(false) does not fail loudly
 // once a real backend is present).
+
+// ---- 8.2.15: what mode does register*() record? ----
+//
+// The skills prose claimed the registry always holds a BORROW, that `#backend` frees the
+// backend at registerWindow's return, and that `registerWindow(heap X())` is "not
+// self-sustaining". All three are wrong, and the last one cannot be right: instance()
+// registers its three null-floor backends with exactly that shape, and there is no other
+// binding anywhere that could own them.
+//
+// register*() is DUAL-ROLE, the ArrayList contract — a plain formal forwarded to
+// ArrayList.add, which stores with `#=`, so the recorded mode is the one the CALL SITE sent
+// in the transfer word. Each test registers, then churns the allocator hard enough to reuse
+// any freed chunk, then reads the backend's name back through select*(). A dangling entry
+// comes back as a wrong length, not as a crash, so assert on the value.
+
+// 8.2.15a -- SURRENDERED as a fresh construction at the call site (the floor-registration
+// shape). The registry owns it; nothing else has to stay alive.
+TEST(IfxRegistryTests, registerOwnsAnInlineConstruction) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(heap FakeWindow(\"surrendered\", 10, true));\n"
+        "int32 i = 0;\n"
+        "while (i < 64) { FakeWindow junk #= heap FakeWindow(\"junk\", 1, true); i = i + 1; }\n"
+        "WindowBackend w = r.selectWindow(true);\n"
+        "return w.name().byteLength();\n"), 11);
+}
+
+// 8.2.15b -- SURRENDERED from a local with `#`. Same outcome: the title travels through the
+// plain formal into the list slot rather than dropping at the callee's return.
+TEST(IfxRegistryTests, registerOwnsASurrenderedLocal) {
+    EXPECT_EQ(runI32(
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "FakeWindow fw #= heap FakeWindow(\"surrendered\", 10, true);\n"
+        "r.registerWindow(#fw);\n"
+        "int32 i = 0;\n"
+        "while (i < 64) { FakeWindow junk #= heap FakeWindow(\"junk\", 1, true); i = i + 1; }\n"
+        "WindowBackend w = r.selectWindow(true);\n"
+        "return w.name().byteLength();\n"), 11);
+}
+
+// 8.2.15c -- LENT. The registrant keeps the title, and the registry holds a pointer that is
+// only as good as that binding — which is the case the prose described, and the only one.
+TEST(IfxRegistryTests, registerBorrowsALentLocal) {
+    EXPECT_EQ(runI32(
+        "FakeWindow fw #= heap FakeWindow(\"lentbackend\", 10, true);\n"
+        "BackendRegistry r = heap BackendRegistry();\n"
+        "r.registerWindow(fw);\n"
+        "int32 i = 0;\n"
+        "while (i < 64) { FakeWindow junk #= heap FakeWindow(\"junk\", 1, true); i = i + 1; }\n"
+        "WindowBackend w = r.selectWindow(true);\n"
+        "return w.name().byteLength();\n"), 11);
+}

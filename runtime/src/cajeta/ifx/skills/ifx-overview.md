@@ -23,7 +23,7 @@ here but the OS code lives in an external library — this package is the contra
 | Want to… | Start with |
 | --- | --- |
 | Get the process-wide registry (floor auto-registered) | `BackendRegistry.instance()` |
-| Register an OS backend at load | `BackendRegistry.instance().registerWindow/registerInput/registerAudio(backend)` — a plain LEND; never `#backend` (the registry holds a borrow, so the backend must outlive every `select*`) |
+| Register an OS backend at load | `BackendRegistry.instance().registerWindow/registerInput/registerAudio(backend)` — DUAL-ROLE: `register*(heap X())` or `register*(#x)` gives the registry the title; `register*(x)` lends, and `x` must then outlive every `select*` |
 | Bind the window backend for this launch | `registry.selectWindow(boolean headless)` |
 | Bind input / audio backend | `registry.selectInput()` / `registry.selectAudio()` |
 | Snapshot which backends are bound (never throws) | `IfxInfo.describe()` → `windowBackendName()` etc. |
