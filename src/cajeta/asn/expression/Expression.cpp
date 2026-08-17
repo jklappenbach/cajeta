@@ -624,6 +624,7 @@ bool cajetaRhsCarriesRedundantSharp(
                         // argument or a return still carries its own claim and
                         // stays checked.
                         mv->setModeCarrying(true);
+                        mv->setSharpStore(true);
                         child = mv;
                     }
                     // title-stores §2.3 Phase 2 (plan 7.2.2) — the legacy
@@ -3364,7 +3365,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 // use-after-free two entries in, and the SIGSEGV behind
                 // DnsCacheTests. Formals keep their word-bit path: their mode
                 // is decided at the call site, not here.
-                if (isModeCarrying() && !runtimeTitleFlag) {
+                if (isSharpStore() && !runtimeTitleFlag) {
                     FieldPtr srcF = scope->getField(mvName);
                     if (srcF && !dynamic_pointer_cast<ParameterField>(srcF)
                             && !scope->holdsStaticTitle(mvName)) {
@@ -3411,6 +3412,27 @@ bool cajetaRhsCarriesRedundantSharp(
                     string path = DotExpression::buildPath(inner);
                     if (!path.empty()) scope->demotePathToBorrow(path);
                 }
+            }
+        }
+        // 8.2.18's TWIN, for CALL RESULTS. The identifier branch above reads
+        // the source's mode off its scope entry, but a call result has no
+        // scope entry to read — so the flag stayed null and every consumer
+        // applied its const-1 (owned) default. A `#=` receipt of a
+        // BORROW-returning call therefore claimed a title over memory the
+        // callee's receiver still owns:
+        //
+        //     Cell borrowed #= h.peek();   // peek() returns a plain `Cell`
+        //
+        // freed `h`'s field at the receipt's scope exit, and `h.c` then read
+        // garbage. The callee's DECLARED return stance is the answer and the
+        // compiler already has it — `#T` transfers, plain `T` lends — so read
+        // it here rather than defaulting. Non-mode-carrying `#x` keeps its own
+        // path: that spelling is a CLAIM, and a false one is what
+        // MOVE_OF_BORROW case (c) exists to reject.
+        if (isSharpStore() && !runtimeTitleFlag) {
+            if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
+                runtimeTitleFlag = module->getBuilder()->getInt64(
+                    mceInner->isResolvedReturnsOwnership() ? 1 : 0);
             }
         }
         return value;

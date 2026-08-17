@@ -143,6 +143,7 @@ namespace cajeta {
                             if (auto inner = dynamic_pointer_cast<Expression>(kids[0])) {
                                 auto mv = make_shared<MoveExpression>(
                                     vdCtx->variableInitializer()->getStart());
+                                mv->setSharpStore(true);
                                 mv->addChild(inner);
                                 initializer = make_shared<VariableInitializer>(
                                     mv, vdCtx->variableInitializer()->getStart());

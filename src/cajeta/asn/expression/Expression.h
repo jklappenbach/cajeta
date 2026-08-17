@@ -624,11 +624,27 @@ namespace cajeta {
         // borrow-alias capture and U2 rejects that very `#=`.
         void setModeCarrying(bool v) { modeCarrying = v; }
         bool isModeCarrying() const { return modeCarrying; }
+
+        // Set on the wrapper synthesised by EVERY `#=` spelling — the
+        // assignment `dst #= v` AND the declaration `T x #= v`. `modeCarrying`
+        // deliberately marks only the assignment, because the two spellings
+        // differ in what the U2 rejection should do (8.2.17); this marks what
+        // they SHARE, which is that the store records the source's mode rather
+        // than claiming a title.
+        //
+        // Keep them separate. Making the declaration `modeCarrying` too would
+        // also exempt it from the provenance rejections, which
+        // `TransferFromBorrowTests.transferFromAnAliasStillNamesTheOwner` pins
+        // as an error. This flag answers "what flag does the store record?",
+        // not "what does the checker reject?".
+        void setSharpStore(bool v) { sharpStore = v; }
+        bool isSharpStore() const { return sharpStore; }
     private:
         bool forwardingSlotMove = false;
         bool redundantSharp = false;
         bool legacyTransferAssign = false;
         bool modeCarrying = false;
+        bool sharpStore = false;
     };
 
     // Structured-concurrency expressions (docs/specification/concurrent/Concurrency.md). All three wrap a

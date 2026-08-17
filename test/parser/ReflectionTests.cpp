@@ -1010,7 +1010,7 @@ TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
         "    public static int32 run() {\n"
         "        Box<Widget> b = heap Box<Widget>(heap Widget());\n"
         "        Class<?> c = Class.of(b);\n"
-        "        Class<?> t #= c.getTemplateArgument(0).getType();\n"
+        "        Class<?> t = c.getTemplateArgument(0).getType();\n"
         "        if (!t.getName().equals(\"test.Widget\")) { return 12; }\n"
         "        return 0;\n"
         "    }\n"

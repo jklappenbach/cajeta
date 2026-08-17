@@ -2866,6 +2866,7 @@ namespace cajeta {
                     }
                     auto mv = make_shared<MoveExpression>(
                         ctx->variableInitializer()->getStart());
+                    mv->setSharpStore(true);
                     mv->addChild(inner);
                     initializer = make_shared<VariableInitializer>(
                         mv, ctx->variableInitializer()->getStart());
