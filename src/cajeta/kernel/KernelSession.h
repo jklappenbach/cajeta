@@ -142,6 +142,11 @@ namespace cajeta::kernel {
         // silently-empty cross-cell read turns on.
         int sessionBindingsAtShutdown = -1;
         int liveSessionBindings = -1;
+        // generateCode invocations made by the eager codegen loop, summed
+        // over the session's cells. ~23k per cell on the eager path; under
+        // lazy codegen only the cell's own module goes through the loop, so
+        // this collapsing is THE observable for lazy-codegen 4.2.1.
+        long long eagerBodiesGenerated = 0;
     };
 
     // How a session is built (spec 6). Everything here is optional; the

@@ -97,6 +97,17 @@ namespace cajeta {
                 "lazy:" + sym, live->getContext());
             clone->setTargetTriple(live->getTargetTriple());
             clone->setDataLayout(live->getDataLayout());
+            // Module flags must come along ("Debug Info Version" above all):
+            // cloned bodies carry attached debug metadata, and the bitcode
+            // reader strips DI from a module whose version flag is absent
+            // ("ignoring debug info with an invalid version (0)").
+            {
+                llvm::SmallVector<llvm::Module::ModuleFlagEntry, 8> flags;
+                live->getModuleFlagsMetadata(flags);
+                for (auto& f : flags)
+                    clone->addModuleFlag(f.Behavior, f.Key->getString(),
+                                         f.Val);
+            }
 
             llvm::ValueToValueMapTy vmap;
             for (const llvm::GlobalValue* gv : reached) {

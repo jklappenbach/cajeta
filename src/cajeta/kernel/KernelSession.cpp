@@ -41,6 +41,7 @@
 #include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/jit/CajetaDefinitionGenerator.h"
 #include "cajeta/jit/CajetaLazyEmitter.h"
+#include "cajeta/jit/LazyCodegen.h"
 #include "cajeta/util/FdCapture.h"
 
 namespace cajeta::kernel {
@@ -675,6 +676,13 @@ CellResult KernelSession::execute(const std::string& source,
             }
         }
 
+        // lazy-codegen 4.2.1 — ordinary bodies leave the eager fixpoint when
+        // lazy emission is on. Types, declarations, and vtable completion
+        // stay eager for every module (delivered globals reference them);
+        // generateCode() runs only for the CELL's own module, so compile
+        // errors in the user's code still surface here, not at first call.
+        // Everything else arrives through the DefinitionGenerator.
+        const bool lazyBodies = cajeta::lazyCodegenEnabled();
         size_t prevMethodCount = 0;
         size_t cgIters = 0, cgLastMethods = 0, cgMods = 0;
         while (true) {
@@ -687,8 +695,13 @@ CellResult KernelSession::execute(const std::string& source,
                 for (auto& method : m->getAllMethods())
                     method->getLlvmFunctionType();
             for (auto& m : mods) m->completePendingInterfaceVTables();
-            for (auto& m : mods)
-                for (auto& method : m->getAllMethods()) method->generateCode();
+            for (auto& m : mods) {
+                if (lazyBodies && m != cellModule) continue;
+                for (auto& method : m->getAllMethods()) {
+                    method->generateCode();
+                    ++impl.stats.eagerBodiesGenerated;
+                }
+            }
             size_t after = 0;
             for (auto& m : codegenMods()) after += m->getAllMethods().size();
             cgLastMethods = after;
@@ -720,10 +733,16 @@ CellResult KernelSession::execute(const std::string& source,
         }
         cellPhase("static initializers");
         // REFL-2: reflective adapter bodies + #ClassObject registration.
+        // #ClassObject stays eager in all modes — registration runs at dylib
+        // init, which nothing looks up (spec 2.2). The thunk BODIES are named
+        // symbols referenced from the #ClassObject initialiser, so under lazy
+        // they arrive through the generator on demand (spec 2.4).
         for (auto& [key, type] : CajetaType::getCanonicalMap()) {
             if (auto klass = std::dynamic_pointer_cast<CajetaClass>(type)) {
-                klass->emitReflectInvokeBody();
-                klass->emitReflectNewBody();
+                if (!lazyBodies) {
+                    klass->emitReflectInvokeBody();
+                    klass->emitReflectNewBody();
+                }
                 klass->finalizeClassObject();
             }
         }
