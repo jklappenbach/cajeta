@@ -25,9 +25,11 @@ struct ModeGuard {
 
 } // namespace
 
-// Unit 2 lands the generator behind the eager path: until Unit 4 flips it, a
-// process that sets nothing must behave exactly as it does today.
-TEST(LazyCodegenModeTests, defaultsToEager) {
+// Unit 4 flipped the default to lazy; eager remains a first-class mode
+// (spec 5.1 — CAJETA_EAGER_CODEGEN is permanent, and Unit 7 keeps the path
+// exercised). The seed itself is untestable in-process (static init reads
+// the env once); what must hold is that eager is still selectable.
+TEST(LazyCodegenModeTests, eagerRemainsSelectable) {
     ModeGuard guard;
     setLazyCodegenEnabled(false);
     EXPECT_FALSE(lazyCodegenEnabled());

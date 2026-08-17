@@ -311,7 +311,12 @@ namespace cajeta {
         method->getLlvmFunctionType();
         method->generateCode();
 
-        CajetaModulePtr parent = method->getModule();
+        // The EMIT module, not the home module: a user-typed specialization
+        // redirects its emission to the unit being compiled
+        // (stdlib-reuse policy), so ArrayList<cell.Foo>::count's body lands
+        // in the CELL's module while getModule() still names the stdlib —
+        // and the snapshot must be cut where the body actually is.
+        CajetaModulePtr parent = method->getEmitModule();
         llvm::Module* live = parent ? parent->getLlvmModule() : nullptr;
         if (!live) {
             return llvm::createStringError(
