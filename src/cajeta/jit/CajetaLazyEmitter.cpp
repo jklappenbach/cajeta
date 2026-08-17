@@ -262,6 +262,92 @@ namespace cajeta {
             }
             auto t3 = now();
 
+            // CAJETA_SNAPSHOT_VALIDATE=1: walk the clone the way the bitcode
+            // writer will, printing each holder BEFORE touching its operands —
+            // a crash mid-walk names the value the writer would have died on.
+            if (std::getenv("CAJETA_SNAPSHOT_VALIDATE")) {
+                llvm::SmallPtrSet<const llvm::Constant*, 32> seenv;
+                std::function<void(const llvm::Constant*)> scanv =
+                    [&](const llvm::Constant* c) {
+                        if (!seenv.insert(c).second) return;
+                        unsigned id = c->getValueID();
+                        if (id > 90)
+                            std::fprintf(stderr,
+                                         "[val]   BAD id=%u at %p\n", id,
+                                         (const void*) c);
+                        if (auto* g = llvm::dyn_cast<llvm::GlobalValue>(c)) {
+                            if (g->getParent() != clone.get())
+                                std::fprintf(stderr,
+                                             "[val]   FOREIGN global %s "
+                                             "(parent %p)\n",
+                                             g->getName().str().c_str(),
+                                             (const void*) g->getParent());
+                            return;
+                        }
+                        for (const llvm::Use& u : c->operands())
+                            if (auto* op =
+                                    llvm::dyn_cast<llvm::Constant>(u.get()))
+                                scanv(op);
+                    };
+                for (llvm::GlobalVariable& g : clone->globals()) {
+                    std::fprintf(stderr, "[val] global %s\n",
+                                 g.getName().str().c_str());
+                    if (g.hasInitializer()) scanv(g.getInitializer());
+                }
+                llvm::SmallPtrSet<const llvm::Metadata*, 32> seenmd;
+                std::function<void(const llvm::Metadata*)> scanmd =
+                    [&](const llvm::Metadata* md) {
+                        if (!md || !seenmd.insert(md).second) return;
+                        if (auto* vam =
+                                llvm::dyn_cast<llvm::ValueAsMetadata>(md)) {
+                            const llvm::Value* v = vam->getValue();
+                            std::fprintf(stderr, "[val]   VAM %p -> %p\n",
+                                         (const void*) vam, (const void*) v);
+                            if (v)
+                                if (auto* c = llvm::dyn_cast<llvm::Constant>(v))
+                                    scanv(c);
+                            return;
+                        }
+                        if (auto* node = llvm::dyn_cast<llvm::MDNode>(md))
+                            for (const llvm::MDOperand& op : node->operands())
+                                scanmd(op.get());
+                    };
+                for (llvm::Function& f : *clone) {
+                    std::fprintf(stderr, "[val] fn %s\n",
+                                 f.getName().str().c_str());
+                    llvm::SmallVector<
+                        std::pair<unsigned, llvm::MDNode*>, 8> fmds;
+                    f.getAllMetadata(fmds);
+                    for (auto& [kind, node] : fmds) scanmd(node);
+                    for (llvm::BasicBlock& bb : f)
+                        for (llvm::Instruction& inst : bb) {
+                            for (const llvm::Use& u : inst.operands())
+                                if (auto* op = llvm::dyn_cast<llvm::Constant>(
+                                        u.get()))
+                                    scanv(op);
+                            llvm::SmallVector<
+                                std::pair<unsigned, llvm::MDNode*>, 8> imds;
+                            inst.getAllMetadata(imds);
+                            for (auto& [kind, node] : imds) scanmd(node);
+                        }
+                }
+                for (llvm::GlobalVariable& g : clone->globals()) {
+                    llvm::SmallVector<
+                        std::pair<unsigned, llvm::MDNode*>, 8> gmds;
+                    g.getAllMetadata(gmds);
+                    std::fprintf(stderr, "[val] global-md %s\n",
+                                 g.getName().str().c_str());
+                    for (auto& [kind, node] : gmds) scanmd(node);
+                }
+                for (const llvm::NamedMDNode& nmd : clone->named_metadata()) {
+                    std::fprintf(stderr, "[val] named-md %s\n",
+                                 nmd.getName().str().c_str());
+                    for (const llvm::MDNode* node : nmd.operands())
+                        scanmd(node);
+                }
+                std::fprintf(stderr, "[val] %s walk clean\n", ident.c_str());
+            }
+
             llvm::SmallVector<char, 0> buf;
             {
                 llvm::raw_svector_ostream os(buf);

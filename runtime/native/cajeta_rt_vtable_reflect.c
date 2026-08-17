@@ -807,6 +807,16 @@ static struct { const char* name; void* classObject; }* g_cajeta_classes = NULL;
 static int g_cajeta_class_count = 0;
 static int g_cajeta_class_cap   = 0;
 
+// CAJETA_REFLECT_TRACE=1: stderr trace of registrations and adapter dispatches.
+static int cajeta_reflect_trace(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("CAJETA_REFLECT_TRACE");
+        v = (e && *e == '1') ? 1 : 0;
+    }
+    return v;
+}
+
 static void* cajeta_registry_rtti_for(const char* name) {
     if (!name) return NULL;
     for (int i = 0; i < g_cajeta_class_count; ++i) {
@@ -841,6 +851,9 @@ void __cajeta_register_class(const char* name, void* classObject) {
     g_cajeta_classes[g_cajeta_class_count].name = strdup(name);
     g_cajeta_classes[g_cajeta_class_count].classObject = classObject;
     ++g_cajeta_class_count;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] reg %d %s co=%p\n",
+                g_cajeta_class_count, name, classObject);
 }
 
 // Class.forName backend. `nameBytes` is a cajeta int8[] ({ i64 count,
@@ -856,9 +869,16 @@ void* __cajeta_class_for_name(void* nameBytes) {
     const char* data = (const char*) nameBytes + 8;
     for (int i = 0; i < g_cajeta_class_count; ++i) {
         const char* n = g_cajeta_classes[i].name;
-        if (n && (int64_t) strlen(n) == len && memcmp(n, data, (size_t) len) == 0)
+        if (n && (int64_t) strlen(n) == len && memcmp(n, data, (size_t) len) == 0) {
+            if (cajeta_reflect_trace())
+                fprintf(stderr, "[refl] forName hit %s co=%p (of %d)\n",
+                        n, g_cajeta_classes[i].classObject, g_cajeta_class_count);
             return g_cajeta_classes[i].classObject;
+        }
     }
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] forName MISS %.*s (of %d)\n",
+                (int) len, data, g_cajeta_class_count);
     return NULL;
 }
 
@@ -1387,6 +1407,10 @@ int64_t __cajeta_object_invoke_scalar0(void* obj, int32_t idx) {
     void (*adapter)(void*, int32_t, void*, void*) =
         (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
     if (!adapter) return 0;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] invoke0 type=%s idx=%d mcount=%d adapter=%p\n",
+                ((CajetaRtti*) rtti)->typeName, idx,
+                ((CajetaRtti*) rtti)->methodCount, (void*) adapter);
     int64_t ret = 0;
     adapter(obj, idx, NULL, &ret);
     return ret;
@@ -1408,6 +1432,10 @@ int64_t __cajeta_object_invoke_scalar(void* obj, int32_t idx, void* argArray) {
     void (*adapter)(void*, int32_t, void*, void*) =
         (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
     if (!adapter) return 0;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] invokeN type=%s idx=%d mcount=%d adapter=%p\n",
+                ((CajetaRtti*) rtti)->typeName, idx,
+                ((CajetaRtti*) rtti)->methodCount, (void*) adapter);
     void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
     int64_t ret = 0;
     adapter(obj, idx, args, &ret);
@@ -1427,6 +1455,10 @@ void* __cajeta_rtti_invoke_obj(void* rtti, void* obj, int32_t idx, void* argArra
     void (*adapter)(void*, int32_t, void*, void*) =
         (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
     if (!adapter) return NULL;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] rttiInvokeObj type=%s idx=%d mcount=%d adapter=%p\n",
+                ((CajetaRtti*) rtti)->typeName, idx,
+                ((CajetaRtti*) rtti)->methodCount, (void*) adapter);
     void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
     void* ret = NULL;
     adapter(obj, idx, args, &ret);
@@ -1437,6 +1469,10 @@ int64_t __cajeta_rtti_invoke_scalar(void* rtti, void* obj, int32_t idx, void* ar
     void (*adapter)(void*, int32_t, void*, void*) =
         (void (*)(void*, int32_t, void*, void*)) ((CajetaRtti*) rtti)->invokeAdapter;
     if (!adapter) return 0;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] rttiInvokeScalar type=%s idx=%d mcount=%d adapter=%p\n",
+                ((CajetaRtti*) rtti)->typeName, idx,
+                ((CajetaRtti*) rtti)->methodCount, (void*) adapter);
     void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
     int64_t ret = 0;
     adapter(obj, idx, args, &ret);

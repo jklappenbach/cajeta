@@ -119,15 +119,11 @@ TEST(LazyReflectionTests, boundedHeapInstanceConstructsAnUnemittedSubtype) {
 // cell, exactly as it does under AOT DCE (spec 2.2.2 — the two mechanisms
 // answer "what must survive" identically). The class it names was defined a
 // cell EARLIER with no reflection anywhere near it, so only the forced keep
-// can have registered it.
-//
-// DISABLED (lazy-codegen 5.1.3, 2026-08-17): forced keep-all under lazy
-// SIGSEGVs while the generator serves the full registry closure — the crash
-// lands after the cajeta.xpu.AccelerationStructure family's bodies deliver
-// (~1,785 deliveries in), jumping through a bad pointer inside JIT'd code.
-// Narrow keeps (every other test here) are solid; this is the mass-
-// registration path only. Re-enable when the plan's 5.1.3 blocker closes.
-TEST(LazyReflectionTests, DISABLED_dynamicForNameForcesKeepAllAcrossCells) {
+// can have registered it. Also pins the 5.1.3 fix: snapshots must legalize
+// foreign globals reachable through METADATA, or the bitcode writer's
+// unchecked ValueID switch computes a wild jump on the first runtime-function
+// snapshot whose shared-context debug metadata names another module's copy.
+TEST(LazyReflectionTests, dynamicForNameForcesKeepAllAcrossCells) {
     ModeGuard guard;
     auto s = lazySession();
     ASSERT_NE(nullptr, s.get());
