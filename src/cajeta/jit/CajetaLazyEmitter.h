@@ -16,9 +16,17 @@
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/Support/Error.h"
 
+namespace llvm { class GlobalValue; }
+
 namespace cajeta {
 
     llvm::Expected<llvm::orc::ThreadSafeModule>
     emitMethodModule(const MethodPtr& method);
+
+    // A definition codegen synthesized outside the method table — a drop
+    // thunk, a vtable or #ClassObject global — snapshotted as-is; no
+    // generateCode, it already exists in a live module.
+    llvm::Expected<llvm::orc::ThreadSafeModule>
+    snapshotLiveDefinition(llvm::GlobalValue* gv);
 
 } // namespace cajeta

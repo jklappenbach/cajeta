@@ -82,6 +82,21 @@ std::string anyIndexedSymbol(Compiler& compiler, const CajetaSymbolIndex&) {
     return {};
 }
 
+// The FIXTURE's method, for tests that go on to EMIT: "any indexed symbol" can
+// land on an abstract or bodiless stdlib method, whose generateCode legitimately
+// produces nothing — fine for resolve()-only tests, fatal for emission ones.
+std::string fixtureSymbol(Compiler& compiler, const std::string& stem) {
+    for (auto& m : hostModuleSet(compiler))
+        for (auto& method : m->getAllMethods()) {
+            if (!method) continue;
+            const std::string sym = method->getLlvmSymbolName();
+            if (sym.find("test." + stem) != std::string::npos
+                && sym.find("::doubled(") != std::string::npos)
+                return sym;
+        }
+    return {};
+}
+
 } // namespace
 
 // 2.1.2 — a symbol we do not know is not ours. The generator must decline so
@@ -200,7 +215,7 @@ TEST(DefinitionGeneratorTests, orcLookupRunsEmitUnderTheGate) {
     compileSource(compiler, "Zeta");
     CajetaSymbolIndex index;
     index.build(hostModuleSet(compiler));
-    const std::string sym = anyIndexedSymbol(compiler, index);
+    const std::string sym = fixtureSymbol(compiler, "Zeta");
     ASSERT_FALSE(sym.empty());
 
     auto epc = llvm::cantFail(
@@ -212,11 +227,12 @@ TEST(DefinitionGeneratorTests, orcLookupRunsEmitUnderTheGate) {
     bool gateHeld = false;
     jd.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
         index,
-        [&](const cajeta::MethodPtr& method, llvm::orc::JITDylib&)
+        [&](llvm::orc::ThreadSafeModule tsm, llvm::orc::JITDylib&)
                 -> llvm::Error {
             emitRan = true;
             gateHeld = cajeta::CompilerGate::heldByThisThread();
-            EXPECT_EQ(method, index.find(sym));
+            EXPECT_TRUE(static_cast<bool>(tsm))
+                << "the generator delivered an empty snapshot";
             return llvm::Error::success();
         }));
 

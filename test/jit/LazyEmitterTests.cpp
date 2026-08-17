@@ -102,11 +102,9 @@ struct LazyJit {
         out.jit = llvm::cantFail(llvm::orc::LLJITBuilder().create());
         auto gen = std::make_unique<CajetaDefinitionGenerator>(
             index,
-            [&jit = *out.jit](const MethodPtr& method,
+            [&jit = *out.jit](llvm::orc::ThreadSafeModule tsm,
                               llvm::orc::JITDylib& jd) -> llvm::Error {
-                auto tsm = cajeta::emitMethodModule(method);
-                if (!tsm) return tsm.takeError();
-                return jit.addIRModule(jd, std::move(*tsm));
+                return jit.addIRModule(jd, std::move(tsm));
             });
         out.generator = gen.get();
         out.jit->getMainJITDylib().addGenerator(std::move(gen));
