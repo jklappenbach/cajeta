@@ -31,7 +31,7 @@ public class StreamsDemo extends DemoClass {
         // static type of any combinator chain), then consume it with a
         // terminal later. Each stream is single-use — one terminal
         // drains it — so each pipeline below starts fresh.
-        Stream<int32> odds = xs.stream().filter((x) -> x % 2 == 1);
+        Stream<int32> odds #= xs.stream().filter((x) -> x % 2 == 1);
         int32 oddCount = odds.count();
         System.stdout.println("  odds in [1..10] held in a Stream<int32> local, count = "
             + oddCount);

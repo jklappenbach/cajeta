@@ -76,7 +76,7 @@ TEST(Utf8Tests, utf8AsRecordField) {
         "            Tick u = t;\n"                          // value copy: memcpy
         "            if (u.price != 42.5) { return -1; }\n"
         "            if (!u.venue.equalsString(\"NYSE\")) { return -2; }\n"
-        "            String round = u.venue.toString();\n"
+        "            String round #= u.venue.toString();\n"
         "            if (round.size() != 4) { return -3; }\n"
         "        }\n"
         "        if (Cajeta.liveCount() != base) { return -4; }\n"

@@ -104,7 +104,7 @@ namespace cajeta {
         return "";
     }
 
-    void Scope::rejectTransferOfBorrow(const string& name) {
+    void Scope::rejectTransferOfBorrow(const string& name, bool modeCarrying) {
         FieldPtr field = getField(name);
         if (!field) return;
         bool isFormal = (bool) dynamic_pointer_cast<ParameterField>(field);
@@ -132,6 +132,15 @@ namespace cajeta {
                       "construct a fresh value.",
                 "CAJETA_ERROR_MOVE_OF_BORROW");
         }
+
+        // A `#=` store claims no title — it forwards the source's mode — so
+        // the two PROVENANCE checks below do not apply to it: their sources
+        // may still hold a title at run time, and `#=` is U3's prescribed fix
+        // for a borrow-alias capture. Check (a) above still applies, because a
+        // source already transferred in this frame has no mode left to
+        // forward. Without this split the same `#=` was rejected when it
+        // declared a local and accepted when it stored to a field.
+        if (modeCarrying) return;
 
         // Formals are excluded from the two STATIC checks below, and must stay
         // excluded: a formal's ownership is fixed at the call site and carried
@@ -184,6 +193,20 @@ namespace cajeta {
                       "variant if the API has one.",
                 "CAJETA_ERROR_MOVE_OF_BORROW");
         }
+    }
+
+    bool Scope::holdsStaticTitle(const string& name) {
+        FieldPtr field = getField(name);
+        if (!field) return false;
+        if (dynamic_pointer_cast<ParameterField>(field)) return false;
+        auto klass = dynamic_pointer_cast<CajetaClass>(field->getType());
+        if (!klass || klass->isValueType() || klass->isSharedCapableValue()) {
+            return false;
+        }
+        if (isBorrow(name)) return false;               // (a) already transferred
+        if (!field->getDropEntry()) return false;       // (b) never owned
+        if (!field->getCallBorrowOrigin().empty()) return false;  // (c) call borrow
+        return true;
     }
 
     namespace {

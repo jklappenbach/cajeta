@@ -54,9 +54,9 @@ public class Cat extends Animal {
 // below. Field is the simple T value; the methods are T-parametric.
 public class WildBox<T> {
     public T value;
-    public WildBox(T v) { this.value = v; }
+    public WildBox(T v) { this.value #= v; }
     public T get() { return this.value; }
-    public void set(T v) { this.value = v; }
+    public void set(T v) { this.value #= v; }
 }
 
 public class WildcardsDemo extends DemoClass {

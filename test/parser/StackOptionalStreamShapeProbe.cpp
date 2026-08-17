@@ -155,7 +155,7 @@ TEST(StackOptionalStreamShapeProbe, returnLocalOptionalFromSretMethod) {
         "}\n"
         "public class Filter {\n"
         "    Src source;\n"
-        "    public Filter(Src s) { this.source = s; }\n"
+        "    public Filter(Src s) { this.source #= s; }\n"
         "    public Optional<int32> next() {\n"
         "        Optional<int32> o = this.source.next();\n"
         "        while (o.isPresent()) {\n"

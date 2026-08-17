@@ -206,7 +206,7 @@ const char* CONTAINER =
     "}\n"
     "public class Holder<T extends Numeric> {\n"
     "    Storage<T> store;\n"
-    "    public Holder(Storage<T> s) { this.store = s; }\n"
+    "    public Holder(Storage<T> s) { this.store #= s; }\n"
     "    public T read() { return this.store.get(); }\n"
     "    public void write(T v) { this.store.set(v); }\n"
     "}\n";

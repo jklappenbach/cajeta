@@ -127,7 +127,7 @@ TEST(FieldOwnershipAliasingTests, mixedOwnerAndAliasFieldsDropCorrectly) {
         "    public Borrowed alias;\n"   // aliased — auto-drop no-ops via live-set
         "    public Container(Borrowed b) {\n"
         "        this.owned = heap Owned();\n"
-        "        this.alias = b;\n"
+        "        this.alias #= b;\n"
         "    }\n"
         "}\n"
         "public final class D {\n"

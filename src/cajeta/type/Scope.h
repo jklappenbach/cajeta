@@ -226,7 +226,31 @@ namespace cajeta {
         // where the cajeta-llama corruption actually lived
         // (`heap String(#kb, kl)`), i.e. the blind spot covered the
         // motivating case. One body, three call sites, no drift.
-        void rejectTransferOfBorrow(const string& name);
+        //
+        // `modeCarrying` marks a `#=` store, which claims no title of its own
+        // — it forwards whatever mode the source holds. Such a store keeps
+        // only the DOUBLE-TRANSFER check: a source already transferred in this
+        // frame provably holds nothing left to forward, so no runtime mode can
+        // make the store safe. The provenance-inferred cases (an alias, a
+        // borrow returned by a plain call) stay admissible, because there the
+        // source may still legitimately hold a title at run time — and because
+        // `#=` is U3's prescribed fix for a borrow-alias capture, which would
+        // otherwise collide head-on with this rejection.
+        void rejectTransferOfBorrow(const string& name,
+                                    bool modeCarrying = false);
+
+        // True when `name` statically holds a title of its own — it owns a
+        // drop entry and is not an alias, a formal, or a plain call's borrow.
+        // The non-throwing companion to rejectTransferOfBorrow: same three
+        // questions, asked instead of enforced.
+        //
+        // A mode-carrying `#=` consumes its source only when this is true. A
+        // borrowed source has no title to hand over, so the store records a
+        // borrow and leaves the source exactly as it was — which is what lets
+        // one lent local feed several slots (Cache.linkAtHead threads `node`
+        // into prev/head/tail). Demoting there would make the second store
+        // read as a double transfer of a title that never moved.
+        bool holdsStaticTitle(const string& name);
 
         // U3 (spec 2.4, 3.2, 4.2) — the CALLEE-side mirror of the above.
         // Throws CAJETA_ERROR_CAPTURED_BORROW_PARAM when `srcName` is a

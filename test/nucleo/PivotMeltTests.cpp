@@ -103,7 +103,7 @@ TEST(PivotMeltTests, pivotLongToWideIsEagerAndErased) {
         "        int32 score = 0;\n"
         "        String[] idx = heap String[1];\n"
         "        idx[0] = \"sym\";\n"
-        "        Table<?> r = lg.pivot(idx, 1, \"quarter\", \"amt\");\n"
+        "        Table<?> r #= lg.pivot(idx, 1, \"quarter\", \"amt\");\n"
         // One row per distinct sym (A, B), columns sym + q1 + q2.
         "        if (r.rowCount() == 2 && r.width() == 3\n"
         "                && r.strAt(\"sym\", 0).equals(\"A\")\n"
@@ -117,8 +117,8 @@ TEST(PivotMeltTests, pivotLongToWideIsEagerAndErased) {
         "        }\n"
         // The erased result narrows on a record whose pivoted columns are
         // nullable (a pivot cell may be absent).
-        "        Table<?> r2 = lg.pivot(idx, 1, \"quarter\", \"amt\");\n"
-        "        Table<WideRec> wr = r2.as<WideRec>();\n"
+        "        Table<?> r2 #= lg.pivot(idx, 1, \"quarter\", \"amt\");\n"
+        "        Table<WideRec> wr #= r2.as<WideRec>();\n"
         "        if (wr.rowCount() == 2 && wr.q1.get(1) == 3.0) {\n"
         "            score = score + 4;\n"
         "        }\n"

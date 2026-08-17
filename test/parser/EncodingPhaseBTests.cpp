@@ -74,7 +74,7 @@ TEST(EncodingPhaseBTests, toBytesCallsEncode) {
         "    public static int32 run() {\n"
         "        M m = heap M();\n"
         "        m.id = 17;\n"
-        "        int8[] bytes = m.toBytes();\n"
+        "        int8[] bytes #= m.toBytes();\n"
         "        return (int32) bytes[0];\n"
         "    }\n"
         "}\n";

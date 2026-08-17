@@ -42,7 +42,7 @@ TEST(TableFromCsvTests, typedColumnsParseWithHeaderMapping) {
         "            + \"NYSE,x,1.5,1000\\n\"\n"
         "            + \"BATS,y,2.5,2000\\n\"\n"
         "            + \"ARCA,z,3.5,3000\\n\";\n"
-        "        Table<Quote> t = Table.fromCsv<Quote>(csv);\n"
+        "        Table<Quote> t #= Table.fromCsv<Quote>(csv);\n"
         "        if (t.rowCount() != 3) { return 1; }\n"
         "        if (t.price.get(0) != 1.5) { return 2; }\n"
         "        if (t.price.get(2) != 3.5) { return 3; }\n"

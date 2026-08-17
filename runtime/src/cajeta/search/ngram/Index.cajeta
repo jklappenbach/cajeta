@@ -68,7 +68,7 @@ public class Index<T> {
      * Duplicates are not removed here — `candidates` dedups by value.
      */
     private #ArrayList<String> grams(String key) {
-        String lower = key.toLowerCase();
+        String lower #= key.toLowerCase();
         ArrayList<String> out = heap ArrayList<String>();
         int32 len = (int32) lower.count();
         if (len <= 0) {

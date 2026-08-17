@@ -79,7 +79,7 @@ public class FrameDemo extends DemoClass {
         System.stdout.println("");
         System.stdout.println("-- cajeta.nucleo.frame: the typed dataframe --");
 
-        Table<Tick> t = FrameDemo.tape();
+        Table<Tick> t #= FrameDemo.tape();
         this.check(t.rowCount() == (int64) 6, "six ticks on the tape");
         this.check(t.colCount() == 4 && t.colNameAt(1).equals("price"),
             "the record's fields ARE the schema (name and order)");
@@ -174,7 +174,7 @@ public class FrameDemo extends DemoClass {
             "projection pushdown: the scan touched fewer columns than the table has");
 
         // 6. Rows, when you want them: a typed iterator and random access.
-        TickRows it = t.rows();
+        TickRows it #= t.rows();
         float64 notional = (float64) 0.0;
         int64 seen = (int64) 0;
         while (it.hasNext()) {
@@ -203,7 +203,7 @@ public class FrameDemo extends DemoClass {
         String csv = "venue,ignored,price,size,ts\n"
             + "IEX,x,15.0,400.0,7000000000\n"
             + "IEX,y,25.0,600.0,8000000000\n";
-        Table<Tick> loaded = Table.fromCsv<Tick>(csv);
+        Table<Tick> loaded #= Table.fromCsv<Tick>(csv);
         this.check(loaded.rowCount() == (int64) 2,
             "fromCsv parsed both data rows");
         this.check(loaded.price.get((int64) 1) == 25.0
@@ -214,7 +214,7 @@ public class FrameDemo extends DemoClass {
         //    raises FrameException rather than filling a silent default.
         boolean raised = false;
         try {
-            Table<Tick> bad = Table.fromCsv<Tick>("price\n1.0\n");
+            Table<Tick> bad #= Table.fromCsv<Tick>("price\n1.0\n");
         } catch (FrameException fe) {
             raised = true;
         }

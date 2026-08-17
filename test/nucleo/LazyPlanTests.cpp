@@ -69,7 +69,7 @@ TEST(LazyPlanTests, buildingExecutesNothingCollectForcesOnce) {
         "    public static int32 run() {\n"
         + kBuild +
         "        int64 a0 = t.price.dataAddress();\n"
-        "        Table<Tick> h = t.lazy();\n"
+        "        Table<Tick> h #= t.lazy();\n"
         "        int32 score = 0;\n"
         "        if (h.executions() == 0) { score = score + 1; }\n"
         "        if (t.price.dataAddress() == a0 && t.price.get(2) == 3.5) {\n"
@@ -93,7 +93,7 @@ TEST(LazyPlanTests, reforceReturnsCachedResult) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         + kBuild +
-        "        Table<Tick> h = t.lazy();\n"
+        "        Table<Tick> h #= t.lazy();\n"
         "        Table<Tick> r1 = h.collect();\n"
         "        int64 a1 = r1.price.dataAddress();\n"
         "        Table<Tick> r2 = h.collect();\n"
@@ -124,10 +124,10 @@ TEST(LazyPlanTests, scalarReductionsAndBoundedHead) {
         // ledger) — the explicit type carries the same semantics.
         "        float64 spread = t.price.max() - t.price.min();\n"
         "        if (spread == 2.0) { score = score + 8; }\n"
-        "        Table<Tick> h2 = t.lazy().head(2);\n"
+        "        Table<Tick> h2 #= t.lazy().head(2);\n"
         "        if (h2.rowCount() == 2 && h2.price.get(1) == 2.5) { score = score + 16; }\n"
         "        if (h2.price.dataAddress() == t.price.dataAddress()) { score = score + 32; }\n"
-        "        Table<Tick> f = t.lazy().fetch(10);\n"   // clamps to 3
+        "        Table<Tick> f #= t.lazy().fetch(10);\n"   // clamps to 3
         "        if (f.rowCount() == 3) { score = score + 64; }\n"
         "        return score;\n"
         "    }\n"
@@ -143,7 +143,7 @@ TEST(LazyPlanTests, rowIterationWalksTypedRows) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         + kBuild +
-        "        TickRows it = t.rows();\n"
+        "        TickRows it #= t.rows();\n"
         "        float64 acc = 0.0;\n"
         "        int32 n = 0;\n"
         "        int32 arca = 0;\n"
@@ -176,12 +176,12 @@ TEST(LazyPlanTests, describeShowsPlanNotRows) {
         "public final class D {\n"
         "    public static int32 run() {\n"
         + kBuild +
-        "        Table<Tick> h = t.lazy();\n"
+        "        Table<Tick> h #= t.lazy();\n"
         "        String d #= h.describe();\n"
         "        int32 score = 0;\n"
         "        if (d.contains(\"unforced\") && d.contains(\"scan\")) { score = score + 1; }\n"
         "        if (!d.contains(\"1.5\") && !d.contains(\"ARCA\")) { score = score + 2; }\n"
-        "        String m = t.describe();\n"
+        "        String m #= t.describe();\n"
         "        if (m.contains(\"3 rows\") && m.contains(\"price\") && m.contains(\"utf8\")) {\n"
         "            score = score + 4;\n"
         "        }\n"
@@ -207,7 +207,7 @@ TEST(LazyPlanTests, terminalMisuseFailsLoud) {
         "        } catch (FrameException e) {\n"
         "            score = score + 1;\n"
         "        }\n"
-        "        Table<Tick> h = t.lazy();\n"
+        "        Table<Tick> h #= t.lazy();\n"
         "        try {\n"
         "            Table<Tick> h2 #= h.lazy();\n"
         "        } catch (FrameException e) {\n"

@@ -67,7 +67,7 @@ public class DbConn {
     }
 
     public int32 makeWithId(int32 id) {
-        DbConn c = this.factory.make(id); // assisted: pool threaded, id supplied
+        DbConn c #= this.factory.make(id); // assisted: pool threaded, id supplied
         return c.id * 100 + c.poolSize;
     }
 }

@@ -169,7 +169,7 @@ TEST(ReflectionTests, sealedPrivateFieldThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Vault v = heap Vault();\n"
-        "        Field f = Class.of(v).getField(0);\n"   // secret (private)
+        "        Field f #= Class.of(v).getField(0);\n"   // secret (private)
         "        try {\n"
         "            int32 x = f.getInt32(v);\n"
         "            return 0;\n"
@@ -195,7 +195,7 @@ TEST(ReflectionTests, sealedPublicFieldStillReadable) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Vault v = heap Vault();\n"
-        "        Field f = Class.of(v).getField(1);\n"   // open (public)
+        "        Field f #= Class.of(v).getField(1);\n"   // open (public)
         "        return f.getInt32(v);\n"
         "    }\n"
         "}\n"), 7);
@@ -240,7 +240,7 @@ TEST(ReflectionTests, unsealedPrivateFieldReadable) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Open o = heap Open();\n"
-        "        Field f = Class.of(o).getField(0);\n"   // secret (private, but not sealed)
+        "        Field f #= Class.of(o).getField(0);\n"   // secret (private, but not sealed)
         "        return f.getInt32(o);\n"
         "    }\n"
         "}\n"), 9);
@@ -261,7 +261,7 @@ TEST(ReflectionTests, sealedPrivateMethodInvokeThrows) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Svc s = heap Svc();\n"
-        "        Method m = Class.of(s).getMethod(0);\n"   // hidden (private)
+        "        Method m #= Class.of(s).getMethod(0);\n"   // hidden (private)
         "        try {\n"
         "            int32 x = m.invokeInt32(s);\n"
         "            return 0;\n"
@@ -406,7 +406,7 @@ TEST(ReflectionTests, annotationObjectName) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (!a.getName().equals(\"code.Service\")) { return 1; }\n"
         "        if (!a.toString().equals(\"code.Service\")) { return 2; }\n"
         "        return 0;\n"
@@ -588,7 +588,7 @@ TEST(ReflectionTests, classAnnotationIntArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (a.getArgCount() != 1) { return 10; }\n"
         "        if (a.getInt(\"value\") != (int64) 2) { return 11; }\n"
         "        return 0;\n"
@@ -609,7 +609,7 @@ TEST(ReflectionTests, classAnnotationNamedStringArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (a.getArgCount() != 1) { return 10; }\n"
         "        if (!a.getArgName(0).equals(\"name\")) { return 11; }\n"
         "        if (!a.getString(\"name\").equals(\"disk\")) { return 12; }\n"
@@ -631,7 +631,7 @@ TEST(ReflectionTests, classAnnotationUnnamedStringArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (!a.getString(\"value\").equals(\"prod\")) { return 11; }\n"
         "        return 0;\n"
         "    }\n"
@@ -651,7 +651,7 @@ TEST(ReflectionTests, classAnnotationBoolArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (!a.getBool(\"value\")) { return 11; }\n"
         "        if (a.getArgKind(0) != 2) { return 12; }\n"
         "        return 0;\n"
@@ -678,7 +678,7 @@ TEST(ReflectionTests, classAnnotationClassRefArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (a.getArgKind(0) != 3) { return 11; }\n"
         "        if (!a.getClassRef(\"value\").equals(\"Marker\")) { return 12; }\n"
         "        return 0;\n"
@@ -699,7 +699,7 @@ TEST(ReflectionTests, annotationArgByIndex) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (a.getArgKind(0) != 0) { return 10; }\n"          // 0 = int64
         "        if (a.getArgInt(0) != (int64) 7) { return 11; }\n"
         "        if (a.getArgName(0).byteLength() != 0) { return 12; }\n" // unnamed
@@ -721,7 +721,7 @@ TEST(ReflectionTests, annotationArgWrongKindFallback) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (!a.getString(\"value\").equals(\"\")) { return 10; }\n" // int read as string
         "        if (a.getInt(\"missing\") != (int64) 0) { return 11; }\n"   // absent key
         "        if (a.getBool(\"value\")) { return 12; }\n"                 // int read as bool
@@ -744,7 +744,7 @@ TEST(ReflectionTests, fieldAnnotationArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Field f = Class.of(heap Widget()).getField(0);\n"
+        "        Field f #= Class.of(heap Widget()).getField(0);\n"
         "        Annotation a #= f.getAnnotation(0);\n"
         "        if (a.getInt(\"value\") != (int64) 5) { return 11; }\n"
         "        return 0;\n"
@@ -796,7 +796,7 @@ TEST(ReflectionTests, annotationMultipleNamedArgs) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        if (a.getArgCount() != 2) { return 10; }\n"
         "        if (a.getInt(\"min\") != (int64) 3) { return 11; }\n"
         "        if (a.getInt(\"max\") != (int64) 9) { return 12; }\n"
@@ -877,7 +877,7 @@ TEST(ReflectionTests, annotationIntListArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        int32 idx = a.getArgIndex(\"value\");\n"
         "        if (a.getArgKind(idx) != 4) { return 11; }\n"
         "        if (a.getArgListCount(idx) != 3) { return 12; }\n"
@@ -901,7 +901,7 @@ TEST(ReflectionTests, annotationBoolListArg) {
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
-        "        Annotation a = Class.of(heap Widget()).getAnnotation(0);\n"
+        "        Annotation a #= Class.of(heap Widget()).getAnnotation(0);\n"
         "        int32 idx = a.getArgIndex(\"value\");\n"
         "        if (a.getArgKind(idx) != 6) { return 11; }\n"
         "        if (a.getArgListCount(idx) != 2) { return 12; }\n"
@@ -1004,7 +1004,7 @@ TEST(ReflectionTests, templateArgGetTypeResolvesClass) {
         "}\n"
         "public class Box<T> {\n"
         "    T value;\n"
-        "    public Box(T v) { this.value = v; }\n"
+        "    public Box(T v) { this.value #= v; }\n"
         "}\n"
         "public final class M {\n"
         "    public static int32 run() {\n"
@@ -1219,7 +1219,7 @@ TEST(ReflectionTests, modifiersObjectClassFlags) {
         "public final class M {\n"
         "    public static int32 run() {\n"
         "        Gadget g = heap Gadget();\n"
-        "        Modifiers m = Class.of(g).getModifiers();\n"
+        "        Modifiers m #= Class.of(g).getModifiers();\n"
         "        int32 r = 0;\n"
         "        if (m.isPublic()) { r = r + 1; }\n"
         "        if (m.isFinal())  { r = r + 2; }\n"

@@ -148,7 +148,7 @@ std::string sortOrderEntry() {
         "        int32 score = 0;\n"
         // Ascending, with a tie: ids 2 and 4 both hold px 1.0 and must come
         // out in INPUT order — that is what stable means.
-        "        Table<Px> h1 = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h1 #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.px());\n"
         "        });\n"
         "        if (h1.executions() == 0) { score = score + 1; }\n"
@@ -159,7 +159,7 @@ std::string sortOrderEntry() {
         "            score = score + 2;\n"
         "        }\n"
         // Descending — the tie STILL keeps input order (2 before 4).
-        "        Table<Px> h2 = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h2 #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.px().desc());\n"
         "        });\n"
         "        Table<Px> r2 = h2.collect();\n"
@@ -169,7 +169,7 @@ std::string sortOrderEntry() {
         "            score = score + 4;\n"
         "        }\n"
         // Nulls LAST by default, whichever direction.
-        "        Table<Px> h3 = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h3 #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.bid());\n"
         "        });\n"
         "        Table<Px> r3 = h3.collect();\n"
@@ -178,7 +178,7 @@ std::string sortOrderEntry() {
         "                && r3.id.get(4) == 4) {\n"
         "            score = score + 8;\n"
         "        }\n"
-        "        Table<Px> h4 = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h4 #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.bid().desc());\n"
         "        });\n"
         "        Table<Px> r4 = h4.collect();\n"
@@ -188,7 +188,7 @@ std::string sortOrderEntry() {
         "            score = score + 16;\n"
         "        }\n"
         // The override: nulls FIRST.
-        "        Table<Px> h5 = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h5 #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.bid(), Sorts.NULLS_FIRST);\n"
         "        });\n"
         "        Table<Px> r5 = h5.collect();\n"
@@ -199,7 +199,7 @@ std::string sortOrderEntry() {
         "        }\n"
         // Multi-key: sym ascending (utf8), then px DESCENDING within it.
         // sym "a" holds ids 2 (1.0), 4 (1.0), 5 (5.0) -> 5, 2, 4.
-        "        Table<Px> h6 = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h6 #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.sym());\n"
         "            s.add(c.px().desc());\n"
         "        });\n"
@@ -223,15 +223,15 @@ std::string joinFamilyEntry() {
         "        int32 score = 0;\n"
         // INNER: left rows 0,1,2 match; left row 3 (acct 3) drops. Output
         // is left-driven: matched pairs in left order.
-        "        Table<Ord> oh = o.lazy();\n"
-        "        Table<Acct> ah = a.lazy();\n"
+        "        Table<Ord> oh #= o.lazy();\n"
+        "        Table<Acct> ah #= a.lazy();\n"
         "        Table<?> j1 #= oh.join(ah, (OrdCols c, Sels s) -> {\n"
         "            s.add(c.acct());\n"
         "        }, Join.INNER);\n"
         "        if (j1.executions() == 0) { score = score + 1; }\n"
         // The key appears ONCE; the shape is left columns then the right's
         // non-key columns.
-        "        Table<Filled> n1 = j1.as<Filled>();\n"
+        "        Table<Filled> n1 #= j1.as<Filled>();\n"
         "        Table<Filled> r1 = n1.collect();\n"
         "        if (r1.rowCount() == 3 && r1.acct.get(0) == 1\n"
         "                && r1.qty.get(0) == 10.0 && r1.fee.get(0) == 0.5\n"
@@ -246,8 +246,8 @@ std::string joinFamilyEntry() {
         "            score = score + 4;\n"
         "        }\n"
         // LEFT: every left row survives; acct 3 gets nulls on the right.
-        "        Table<Ord> oh2 = o.lazy();\n"
-        "        Table<Acct> ah2 = a.lazy();\n"
+        "        Table<Ord> oh2 #= o.lazy();\n"
+        "        Table<Acct> ah2 #= a.lazy();\n"
         "        Table<?> j2 #= oh2.join(ah2, (OrdCols c, Sels s) -> {\n"
         "            s.add(c.acct());\n"
         "        }, Join.LEFT);\n"
@@ -262,8 +262,8 @@ std::string joinFamilyEntry() {
         "        }\n"
         // RIGHT: every right row survives; acct 5 has no left row, so its
         // qty is null and its KEY comes from the right side.
-        "        Table<Ord> oh3 = o.lazy();\n"
-        "        Table<Acct> ah3 = a.lazy();\n"
+        "        Table<Ord> oh3 #= o.lazy();\n"
+        "        Table<Acct> ah3 #= a.lazy();\n"
         "        Table<?> j3 #= oh3.join(ah3, (OrdCols c, Sels s) -> {\n"
         "            s.add(c.acct());\n"
         "        }, Join.RIGHT);\n"
@@ -277,8 +277,8 @@ std::string joinFamilyEntry() {
         "        }\n"
         // FULL: matched pairs, then the left-only row, then the right-only
         // row — 3 + 1 + 1.
-        "        Table<Ord> oh4 = o.lazy();\n"
-        "        Table<Acct> ah4 = a.lazy();\n"
+        "        Table<Ord> oh4 #= o.lazy();\n"
+        "        Table<Acct> ah4 #= a.lazy();\n"
         "        Table<?> j4 #= oh4.join(ah4, (OrdCols c, Sels s) -> {\n"
         "            s.add(c.acct());\n"
         "        }, Join.FULL);\n"
@@ -295,13 +295,13 @@ std::string joinFamilyEntry() {
         // nullable (a null key matches nothing), so `Filled.acct` — a
         // plain int64 — narrows. The LEFT join's `fee` went nullable, so
         // narrowing THAT to `Filled` must fail.
-        "        Table<Ord> oh5 = o.lazy();\n"
-        "        Table<Acct> ah5 = a.lazy();\n"
+        "        Table<Ord> oh5 #= o.lazy();\n"
+        "        Table<Acct> ah5 #= a.lazy();\n"
         "        Table<?> j5 #= oh5.join(ah5, (OrdCols c, Sels s) -> {\n"
         "            s.add(c.acct());\n"
         "        }, Join.LEFT);\n"
         "        try {\n"
-        "            Table<Filled> bad = j5.as<Filled>();\n"
+        "            Table<Filled> bad #= j5.as<Filled>();\n"
         "        } catch (FrameException e) {\n"
         "            if (e.getMessage().contains(\"fee\")) { score = score + 64; }\n"
         "        }\n"
@@ -426,7 +426,7 @@ std::string pushdownEntry() {
         "        int32 score = 0;\n"
         // sort <- filter: the predicate sinks to the scan, so only the
         // three passing rows are ever materialized.
-        "        Table<Px> h = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> h #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.px().desc());\n"
         "        }).filter((PxCols c) -> c.px() > 1.5);\n"
         "        if (h.explain().contains(\"scan[filter]\")) {\n"
@@ -441,7 +441,7 @@ std::string pushdownEntry() {
         "            score = score + 4;\n"
         "        }\n"
         // The same chain unoptimized must give the identical answer.
-        "        Table<Px> hu = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "        Table<Px> hu #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "            s.add(c.px().desc());\n"
         "        }).filter((PxCols c) -> c.px() > 1.5);\n"
         "        hu.optimize(false);\n"
@@ -453,8 +453,8 @@ std::string pushdownEntry() {
         "        }\n"
         // A join is a barrier: the filter above it stays above it, and the
         // scan reads every column and row.
-        "        Table<Ord> oh = o.lazy();\n"
-        "        Table<Acct> ah = a.lazy();\n"
+        "        Table<Ord> oh #= o.lazy();\n"
+        "        Table<Acct> ah #= a.lazy();\n"
         "        Table<?> j #= oh.join(ah, (OrdCols c, Sels s) -> {\n"
         "            s.add(c.acct());\n"
         "        }, Join.INNER);\n"
@@ -473,7 +473,7 @@ std::string pushdownEntry() {
         // A computed sort key has no column to order by — loud at plan
         // build, naming the fix.
         "        try {\n"
-        "            Table<Px> bad = t.lazy().sort((PxCols c, Sorts s) -> {\n"
+        "            Table<Px> bad #= t.lazy().sort((PxCols c, Sorts s) -> {\n"
         "                s.add(c.px() * 2.0);\n"
         "            });\n"
         "        } catch (FrameException e) {\n"

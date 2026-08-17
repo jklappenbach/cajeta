@@ -141,7 +141,7 @@ public class Column<T> {
             throw heap ColumnTypeException(
                 "Column.fromTensor requires a contiguous rank-1 tensor");
         }
-        Tensor<E> root = t.alias();
+        Tensor<E> root #= t.alias();
         return heap Column<E>(#root, 0, t.size());
     }
 

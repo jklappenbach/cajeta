@@ -377,7 +377,7 @@ public final class LinAlg {
         int64 k = 1;
         if (b.ndim() == 2) { k = b.shapeAt(1); }
         Tensor<E> bsrc #= b.copy();
-        Tensor<E> bp = b.copy();
+        Tensor<E> bp #= b.copy();
         // bp = Pᵀ·B (P has exactly one 1 per column: P[perm[i]][i] = 1)
         int64 i = 0;
         while (i < n) {

@@ -26,7 +26,7 @@ public class Harness {
             return;
         }
         b.setup();
-        ArrayList<String> vs = b.variants();
+        ArrayList<String> vs #= b.variants();
         int32 vi = 0;
         int32 vn = vs.count();
         while (vi < vn) {

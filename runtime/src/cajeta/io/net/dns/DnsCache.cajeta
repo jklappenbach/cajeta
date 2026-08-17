@@ -285,7 +285,7 @@ public final class DnsCache {
                 len = 4;
             }
             IpAddress copy #= IpAddress.fromOctets(oct, len);
-            out[i] = SocketAddress.of(#copy, port);
+            out[i] #= SocketAddress.of(#copy, port);
             i = i + 1;
         }
         return #out;

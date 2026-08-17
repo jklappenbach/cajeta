@@ -222,7 +222,14 @@ public final class Dns {
             // accessor would report.
             IpAddress ip #= IpAddress.fromOctets(oct, n);
             int32 p = Dns.getaddrinfoPort(handle, i);
-            out[i] = SocketAddress.of(#ip, p);
+            // `#=`, not `=`: `SocketAddress.of` returns `#SocketAddress`, so a
+            // plain slot store records a BORROW of a value nothing owns — the
+            // temporary is reclaimed at the end of the statement and the slot
+            // dangles, while the returned array's teardown skips the slot and
+            // leaks nothing because it never held a title. `#=` gives the slot
+            // the title, which is what `#out` then hands the caller. Same shape
+            // and same fix as `DnsCache.bakePort`.
+            out[i] #= SocketAddress.of(#ip, p);
             i = i + 1;
         }
         Dns.freeaddrinfoNative(handle);

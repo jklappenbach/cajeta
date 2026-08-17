@@ -177,7 +177,7 @@ fs::path buildReflectingDep(const fs::path& root, const std::string& reflExpr) {
         "import cajeta.reflect.Class;\n"
         "public class Disco {\n"
         "    public static int32 scan() {\n"
-        "        Class<?>[] hits = " + reflExpr + ";\n"
+        "        Class<?>[] hits #= " + reflExpr + ";\n"
         "        return (int32) hits.count();\n"
         "    }\n"
         "}\n");

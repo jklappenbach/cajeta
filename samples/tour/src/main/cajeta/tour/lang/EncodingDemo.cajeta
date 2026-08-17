@@ -58,7 +58,7 @@ public class EncodingDemo extends DemoClass {
         Rgb c = heap Rgb();
         c.red = 200;
         c.green = 45;
-        int8[] bytes = c.toBytes();
+        int8[] bytes #= c.toBytes();
         System.stdout.println("  Rgb(200, 45).toBytes() -> ["
             + (((int32) bytes[0]) & 0xFF) + ", "
             + (((int32) bytes[1]) & 0xFF) + "]");

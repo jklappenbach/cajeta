@@ -32,7 +32,7 @@ public class PairDemo extends DemoClass {
         this.check(age.second() == 36, "second() returns the V component");
 
         // Pairs are ordinary values: pass them, store them, nest them.
-        Pair<int32, int32> qr = this.divMod(47, 5);
+        Pair<int32, int32> qr #= this.divMod(47, 5);
         System.stdout.println("  divMod(47, 5) -> quotient=" + qr.first()
             + " remainder=" + qr.second());
         this.check(qr.first() == 9, "pair carries the quotient out of the method");

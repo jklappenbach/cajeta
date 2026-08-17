@@ -698,8 +698,25 @@ namespace cajeta {
                 if (declIsString && initializer) {
                     if (auto varInit = dynamic_pointer_cast<VariableInitializer>(initializer)) {
                         auto& kids = varInit->getChildren();
-                        auto mc = kids.empty() ? nullptr
-                            : dynamic_pointer_cast<MethodCallExpression>(kids[0]);
+                        // §4.6 spells this receipt `String w #= s.substring(…)`
+                        // because `substring` returns `#String`, and that wraps
+                        // the call in a MoveExpression — so looking for the
+                        // call directly found nothing and the downgrade
+                        // silently stopped firing, turning every local
+                        // substring into a stake-taking share. The receipt
+                        // spelling records WHO OWNS the result; it says nothing
+                        // about whether the local escapes, which is the only
+                        // question this rewrite asks. Unwrap and carry on.
+                        // (`substringView`/`trimView` are `#String` too, so the
+                        // rewritten call still satisfies the receipt.)
+                        auto init0 = kids.empty() ? nullptr
+                            : dynamic_pointer_cast<Expression>(kids[0]);
+                        if (auto mvWrap = dynamic_pointer_cast<MoveExpression>(init0)) {
+                            auto& mvKids = mvWrap->getChildren();
+                            init0 = mvKids.empty() ? nullptr
+                                : dynamic_pointer_cast<Expression>(mvKids[0]);
+                        }
+                        auto mc = dynamic_pointer_cast<MethodCallExpression>(init0);
                         const std::string mcName = mc ? mc->getMethodCallName() : "";
                         if (mc && (mcName == "substring" || mcName == "trim")) {
                             auto& mck = mc->getChildren();

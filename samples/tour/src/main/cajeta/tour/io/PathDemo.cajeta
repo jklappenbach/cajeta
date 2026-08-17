@@ -71,12 +71,12 @@ public class PathDemo extends DemoClass {
         // 4. parent() walks up one level; the root is its own parent, so
         // repeated parent() calls terminate instead of underflowing.
         Path dir #= abs.parent();
-        String dirText = text(dir);
+        String dirText #= text(dir);
         this.check(dirText.equals("/home/julian/notes"),
             "parent() strips the last segment");
         Path root #= Path.of("/");
         Path rootParent #= root.parent();
-        String rootText = text(rootParent);
+        String rootText #= text(rootParent);
         this.check(rootText.equals("/"), "parent of the root is the root");
         System.stdout.println("  parent = " + dirText
             + "; parent of \"/\" = " + rootText);
@@ -86,12 +86,12 @@ public class PathDemo extends DemoClass {
         // the path they build.
         Path srcDir #= rel.resolve("stream");
         Path srcFile #= srcDir.resolve("Stream.cajeta");
-        String joined = text(srcFile);
+        String joined #= text(srcFile);
         this.check(joined.equals("src/lang/stream/Stream.cajeta"),
             "resolve() chains with single separators");
         Path slashed #= Path.of("/tmp/");
         Path log #= slashed.resolve("x.log");
-        String logText = text(log);
+        String logText #= text(log);
         this.check(logText.equals("/tmp/x.log"),
             "no double '/' after a trailing separator");
         System.stdout.println("  joined = " + joined + "; \"/tmp/\" + x.log = "

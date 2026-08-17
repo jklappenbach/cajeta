@@ -2987,9 +2987,31 @@ bool cajetaRhsCarriesRedundantSharp(
         // owned heap block, not the address of the local slot that holds it.
         // Load through the alloca so the destination receives the actual heap
         // pointer.
+        //
+        // Only a variable SLOT may be loaded through. A producer expression
+        // hands back a freshly built body whose alloca IS the value: a call
+        // returning an interface (MethodCallExpression's S9.5.5 repack),
+        // `stack Foo()`, an aggregate initializer, a record upcast, a slice.
+        // `isa<AllocaInst>` cannot tell those apart from a slot, so gate on the
+        // AST shape — the same rule loadIfLValue uses for its own alloca branch
+        // (`treatAllocaAsSlot`), which is why every one of those producers has a
+        // carve-out there. This shortcut predates loadIfLValue and had none.
+        //
+        // Symptom: `Face f #= D.make(10)` where `make` returns `#Face`. The load
+        // yielded the 24-byte fat-pointer body BY VALUE, which the declaration
+        // then stored into f's 8-byte `ptr` slot — so the slot held the body's
+        // first word (the implementer's data ptr) where a body POINTER belongs,
+        // and it overran the slot by 16 bytes. Dispatch read the body fields out
+        // of the implementer: `iface_vtable` became field `k`, and
+        // `getelementptr ptr, ptr k, i64 1` faulted at k+8.
         if (value) {
             if (auto* a = llvm::dyn_cast<llvm::AllocaInst>(value)) {
-                value = module->getBuilder()->CreateLoad(a->getAllocatedType(), a);
+                bool allocaIsSlot = !inner
+                    || dynamic_pointer_cast<IdentifierExpression>(inner) != nullptr;
+                if (allocaIsSlot) {
+                    value = module->getBuilder()->CreateLoad(
+                        a->getAllocatedType(), a);
+                }
             }
         }
         // slices 9.2.1 — `#arr[i]`: move an element OUT of an owning local
@@ -3236,19 +3258,37 @@ bool cajetaRhsCarriesRedundantSharp(
                 // never builds this node) cannot drift apart again. The
                 // per-case reasoning moved with the code.
                 //
-                // A MODE-CARRYING `#=` store is exempt: it records whatever
-                // mode the source holds rather than claiming a title, so a
-                // lent source records a borrow and nothing is double-freed.
-                // The rejection is for a claim that is false; `#=` makes no
+                // A MODE-CARRYING `#=` store is PARTIALLY exempt, and the flag
+                // says which part: it records whatever mode the source holds
+                // rather than claiming a title, so a lent source records a
+                // borrow and nothing is double-freed. The provenance
+                // rejections are for a claim that is false; `#=` makes no
                 // claim. (U3: this is also what lets `#=` be the prescribed
                 // fix for a borrow-alias capture without the two checks
-                // contradicting each other.)
-                if (!isModeCarrying()) {
-                    scope->rejectTransferOfBorrow(mvName);
+                // contradicting each other.) The DOUBLE-TRANSFER rejection
+                // still applies — a source already transferred in this frame
+                // has no mode left to forward.
+                //
+                // Passing the flag rather than skipping the call is what keeps
+                // the two LHS positions honest. `#=` only reaches this node
+                // with modeCarrying set from the ASSIGNMENT spelling
+                // (`h.c #= t`); the DECLARATION spelling (`Tag b #= t`) builds
+                // its wrapper elsewhere and never set it, so the same store
+                // rejected as a declaration and compiled as a field assignment.
+                scope->rejectTransferOfBorrow(mvName, isModeCarrying());
+                // A mode-carrying `#=` CONSUMES its source only when the
+                // source statically holds a title. A borrowed source has none
+                // to hand over: the store records a borrow and the source is
+                // unchanged, so one lent local can legitimately feed several
+                // slots — `Cache.linkAtHead` threads a borrowed `node` into
+                // prev, head and tail. Demoting on the first of those made the
+                // second read as a double transfer of a title that never
+                // moved. A `#x` claim still demotes unconditionally.
+                if (!isModeCarrying() || scope->holdsStaticTitle(mvName)) {
+                    scope->demoteToBorrow(mvName,
+                        "moved by `#" + mvName + "` at line "
+                            + std::to_string(getSourceLine()));
                 }
-                scope->demoteToBorrow(mvName,
-                    "moved by `#" + mvName + "` at line "
-                        + std::to_string(getSourceLine()));
                 // If the moved-out identifier has a drop entry, flag it inactive
                 // so scope-exit doesn't re-free the value the new owner holds.
                 // 5.2.2: a formal's entry is runtime truth (armed from the
@@ -3306,6 +3346,29 @@ bool cajetaRhsCarriesRedundantSharp(
                                     bMv->getInt64(1), "mv_word_bit");
                             }
                         }
+                    }
+                }
+                // A mode-carrying `#=` off a source that statically holds NO
+                // title must record a BORROW. Every consumer of this flag
+                // defaults a null one to const-1 (owned) — correct for a `#x`
+                // CLAIM, wrong for `#=`, which only forwards what the source
+                // has. A borrow alias reaches neither branch above (no drop
+                // entry to read, not a formal with a transfer-word bit), so
+                // the flag stayed null and the slot silently claimed the
+                // object.
+                //
+                // That is what `Cache.linkAtHead` hit: `this.mruHead #= n`
+                // with `n` aliasing a lent formal recorded OWNED, so
+                // `unlinkOnly`'s later plain `this.mruHead = node.next`
+                // displaced-released a node the map still owned — a
+                // use-after-free two entries in, and the SIGSEGV behind
+                // DnsCacheTests. Formals keep their word-bit path: their mode
+                // is decided at the call site, not here.
+                if (isModeCarrying() && !runtimeTitleFlag) {
+                    FieldPtr srcF = scope->getField(mvName);
+                    if (srcF && !dynamic_pointer_cast<ParameterField>(srcF)
+                            && !scope->holdsStaticTitle(mvName)) {
+                        runtimeTitleFlag = module->getBuilder()->getInt64(0);
                     }
                 }
                 // script-units U4 (spec §4.2) — a session binding's title

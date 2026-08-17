@@ -54,7 +54,7 @@ public class ProcessDemo extends DemoClass {
         ProcessResult r #= cmd.run();
         this.check(r.launched(), "echo launched");
         this.check(r.exited() && r.code() == 0, "echo exited with code 0");
-        String out = ProcessDemo.text(r.stdout());
+        String out #= ProcessDemo.text(r.stdout());
         System.stdout.println("  /bin/echo captured stdout = " + out.trim()
             + " (" + r.stdout().count() + " bytes, exit " + r.code() + ")");
         this.check(out.equals("hello, tour\n"), "captured stdout is the echoed text");

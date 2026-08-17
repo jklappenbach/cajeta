@@ -83,7 +83,7 @@ public class Result {
     }
 
     public #String toRow() {
-        String s = Csv.field("" + this.schemaVersion);
+        String s #= Csv.field("" + this.schemaVersion);
         s = s + "," + Csv.field(this.runId);
         s = s + "," + Csv.field(this.timestampUnix);
         s = s + "," + Csv.field(this.benchmark);

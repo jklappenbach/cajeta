@@ -96,7 +96,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "    public static int32 downsampleFamily() {\n"
         + kBuild +
         "        int32 score = 0;\n"
-        "        Table<?> h = t.lazy().resample((BarCols c) -> c.ts(),\n"
+        "        Table<?> h #= t.lazy().resample((BarCols c) -> c.ts(),\n"
         "            Duration.ofSeconds(60)).agg((BarCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().first().alias(\"o\"));\n"
         "            ag.add(c.px().max().alias(\"hi\"));\n"
@@ -139,7 +139,7 @@ TEST(ResampleTests, downsampleAlignmentDynamicFormAndFailLoudMatrix) {
         "        }\n"
         // The erased result narrows on a record whose agg field is nullable
         // (resample aggregates always are). A last-only resample:
-        "        Table<?> h2 = t.lazy().resample((BarCols c) -> c.ts(),\n"
+        "        Table<?> h2 #= t.lazy().resample((BarCols c) -> c.ts(),\n"
         "            Duration.ofSeconds(60)).agg((BarCols c, Aggs ag) -> {\n"
         "            ag.add(c.px().last().alias(\"lastpx\"));\n"
         "        });\n"

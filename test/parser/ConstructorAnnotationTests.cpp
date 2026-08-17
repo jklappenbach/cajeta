@@ -134,7 +134,7 @@ TEST(ConstructorAnnotationTests, staticNameAccessAppliesToFactory) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
-        "        Pt p = Pt.of(42);\n"
+        "        Pt p #= Pt.of(42);\n"
         "        return p.v;\n"
         "    }\n"
         "}\n";

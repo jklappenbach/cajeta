@@ -1805,7 +1805,7 @@ public class Tensor<T> {
         Placement.guardSingle<E>("Tensor.matrixPower", a);
         int64 d = a.shapeAt(0);
         if (n == 0) { return Tensor.eye<E>(d); }
-        Tensor<E> result = a.copy();
+        Tensor<E> result #= a.copy();
         int32 step = 1;
         while (step < n) {
             result = Tensor.matmul<E>(result, a);

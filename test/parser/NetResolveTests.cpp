@@ -88,7 +88,7 @@ TEST(NetResolveTests, numericV4ResolvesToItself) {
     // match, port==8080, and the error ordinal is OK(0).
     std::string body =
         hostLiteral("host", "127.0.0.1") +
-        "        pointer h = resolve(host, 9, 8080, -1);\n"
+        "        pointer h #= resolve(host, 9, 8080, -1);\n"
         "        int32 err = lastError();\n"
         "        int32 c = count(h);\n"
         "        int32 fam = family(h, 0);\n"
@@ -118,7 +118,7 @@ TEST(NetResolveTests, localhostResolvesToLoopback) {
     // at the native layer.
     std::string body =
         hostLiteral("host", "localhost") +
-        "        pointer h = resolve(host, 9, 443, -1);\n"
+        "        pointer h #= resolve(host, 9, 443, -1);\n"
         "        int32 c = count(h);\n"
         "        int32 sawLoopback = 0;\n"
         "        int32 i = 0;\n"
@@ -151,7 +151,7 @@ TEST(NetResolveTests, badHostReturnsNullWithNonameError) {
     // maps to `UnknownHost`. Mirrors DnsTests.badHostRaisesUnknownHost.
     std::string body =
         hostLiteral("host", "no.such.host.cajeta.invalid") +
-        "        pointer h = resolve(host, 27, 80, -1);\n"
+        "        pointer h #= resolve(host, 27, 80, -1);\n"
         "        int32 err = lastError();\n"
         // A NULL handle reports count 0 (every accessor is NULL-safe); a
         // resolved handle would report >= 1. Release is NULL-safe either way.
@@ -170,7 +170,7 @@ TEST(NetResolveTests, familyFilterSelectsV6) {
     // V6 address whose 16 octets are ::1 (last byte 1, all others 0).
     std::string body =
         hostLiteral("host", "::1") +
-        "        pointer h = resolve(host, 3, 80, 1);\n"
+        "        pointer h #= resolve(host, 3, 80, 1);\n"
         "        int32 c = count(h);\n"
         "        int32 fam = family(h, 0);\n"
         "        int8[] oct = heap int8[16];\n"
@@ -199,7 +199,7 @@ TEST(NetResolveTests, portIsBakedIntoEveryAddress) {
     // port `getaddrinfo` baked into the sockaddr, surfaced host-order).
     std::string body =
         hostLiteral("host", "localhost") +
-        "        pointer h = resolve(host, 9, 9090, -1);\n"
+        "        pointer h #= resolve(host, 9, 9090, -1);\n"
         "        int32 c = count(h);\n"
         "        int32 ok = 1;\n"
         "        int32 i = 0;\n"
@@ -220,7 +220,7 @@ TEST(NetResolveTests, outOfRangeIndexReturnsSentinel) {
     // iteration is 0..count-1, but a defensive sentinel beats UB on a bug).
     std::string body =
         hostLiteral("host", "127.0.0.1") +
-        "        pointer h = resolve(host, 9, 80, -1);\n"
+        "        pointer h #= resolve(host, 9, 80, -1);\n"
         "        int32 c = count(h);\n"
         "        int8[] oct = heap int8[16];\n"
         "        int32 fam = family(h, c);\n"     // index == count → OOR

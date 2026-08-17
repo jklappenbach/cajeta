@@ -87,7 +87,7 @@ public class LinAlgDemo extends DemoClass {
         Tensor<float32>[] qr #= LinAlg.qr<float32>(a);
         Tensor<float32> qrRec #= Tensor.matmul<float32>(qr[0], qr[1]);
         this.check(sameMatrix(qrRec, a), "QR: Q.R reconstructs A");
-        Tensor<float32> qtView = qr[0].transpose();
+        Tensor<float32> qtView #= qr[0].transpose();
         Tensor<float32> qt #= qtView.copy();
         Tensor<float32> qtq #= Tensor.matmul<float32>(qt, qr[0]);
         Tensor<float32> eye #= Tensor.eye<float32>(2);

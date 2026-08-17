@@ -85,7 +85,7 @@ public class JsonTiersDemo extends DemoClass {
         JsonValue limits = obj.get("limits");
         int32 rps = limits.asObject().get("rps").asInt32();
         JsonArray tags = obj.get("tags").asArray();
-        String firstTag = tags.get(0).asString();
+        String firstTag #= tags.get(0).asString();
         System.stdout.println("  Tier-3 tree: limits.rps=" + rps + ", "
             + tags.count() + " tags, first=" + firstTag);
         this.check(root.kind() == JsonValue.OBJECT && obj.containsKey("service"),

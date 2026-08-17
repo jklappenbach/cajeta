@@ -63,7 +63,7 @@ public class SearchDemo extends DemoClass {
         m.add("apple", 10);
         m.add("maple", 20);
         m.add("zebra", 30);
-        ArrayList<Match<int32>> hits = m.match("aple");
+        ArrayList<Match<int32>> hits #= m.match("aple");
         System.stdout.println("  fuzzy match(aple) hits = " + hits.count());
         this.check(hits.count() == 2, "aple fuzzy-matches apple and maple, not zebra");
         Match<int32> first = hits.get(0);
@@ -74,7 +74,7 @@ public class SearchDemo extends DemoClass {
         this.check(first.distance() == 1, "one insertion away from apple");
 
         // An exact key is just distance 0 — it always ranks first.
-        ArrayList<Match<int32>> exact = m.match("zebra");
+        ArrayList<Match<int32>> exact #= m.match("zebra");
         this.check(exact.count() == 1 && exact.get(0).distance() == 0,
             "exact key matches at distance 0");
     }
