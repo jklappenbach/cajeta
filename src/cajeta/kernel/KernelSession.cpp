@@ -38,6 +38,7 @@
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/jit/JitModulePrep.h"
+#include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/util/FdCapture.h"
 
 namespace cajeta::kernel {
@@ -259,6 +260,9 @@ struct KernelSession::Impl {
     // dead cell's error — poisoning every subsequent cell. Skipped forever
     // (script-units 5.5: a failed cell leaves the session unchanged).
     std::set<llvm::Module*> poisoned;
+    // lazy-codegen Unit 1 — mangled symbol -> method, rebuilt per cell because
+    // codegen instantiates templates and so defines new methods (spec 3.5).
+    CajetaSymbolIndex symbolIndex;
     // 7.2.5 — llvm::Modules that came from a CLASSPATH ARCHIVE rather than
     // from this session's codegen. Recorded once at create, right after the
     // ingest, so a cell's verify pass can tell "our IR is malformed" from
@@ -641,6 +645,20 @@ CellResult KernelSession::execute(const std::string& source,
             }
             return mods;
         };
+        // lazy-codegen 1.2.2 — index alongside the eager loop. Observed only;
+        // Unit 2's DefinitionGenerator is what will consult it.
+        {
+            auto ixT0 = std::chrono::steady_clock::now();
+            impl.symbolIndex.build(codegenMods());
+            if (cellTiming) {
+                auto ixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - ixT0).count();
+                std::fprintf(stderr,
+                    "[cell] symbol index: %zu entries in %lld ms\n",
+                    impl.symbolIndex.size(), (long long) ixMs);
+            }
+        }
+
         size_t prevMethodCount = 0;
         size_t cgIters = 0, cgLastMethods = 0, cgMods = 0;
         while (true) {
