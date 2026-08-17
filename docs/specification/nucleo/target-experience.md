@@ -32,13 +32,13 @@ import cajeta.math.Tensor;
 var prices = ParquetFile.open("ticks.parquet").column<float32>("price");
 
 // That column IS a 1-D tensor buffer — same bytes, no marshalling. (invariant §2.3) ✅
-Tensor<float32> t = prices.asTensor();        // zero-copy: validity bitmap absent => raw buffer
+Tensor<float32> t #= prices.asTensor();       // zero-copy: validity bitmap absent => raw buffer
 
 // Fused, lowered to GPU, differentiable — all over the same memory.            ➕(@) 🔨(@Grad)
 var normalized = (t - t.mean()) / t.std();    // one fused kernel, no temporaries
 
 // And it can hand back to the Python world with no serialization (C Data Interface). ✅
-var handle = prices.exportArrow();            // ArrowArray/ArrowSchema -> pyarrow sees it live
+var handle #= prices.exportArrow();           // ArrowArray/ArrowSchema -> pyarrow sees it live
 ```
 
 ---
@@ -201,7 +201,7 @@ Tensor<float32> batchedKernel(Tensor<float32> x) { ... } // batching + fusion as
 
 ```cajeta
 // Zero-copy out to the Python ecosystem via the C Data Interface (no libarrow link). ✅
-var arrowHandle = frame.exportArrow();         // pyarrow / Polars / DuckDB read it live
+var arrowHandle #= frame.exportArrow();        // pyarrow / Polars / DuckDB read it live
 
 // Zero-copy in from a numpy array handed across the same ABI.                         ✅
 var t = Tensor.importArrow<float32>(externalHandle);

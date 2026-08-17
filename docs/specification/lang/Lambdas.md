@@ -330,7 +330,7 @@ appendDot();
 appendDot();
 
 // ERROR: cannot read `buf` while `appendDot` holds an exclusive borrow
-// String snapshot = buf.toString();
+// String snapshot #= buf.toString();
 ```
 
 Drop `appendDot` (let it go out of scope) before reading `buf` again, and the conflict resolves.
@@ -532,10 +532,10 @@ The lifetime / aliasing rules from the memory model produce error messages tied 
 ```
 StringBuilder buf = heap StringBuilder();
 () -> void writer = () -> { buf.append("."); };
-String snap = buf.toString();    // ERROR
-//            ^ conflicting access
-//              `buf` is exclusively borrowed by `writer`; reading it here would alias
-//              hint: drop `writer` (let it go out of scope) before reading `buf`
+String snap #= buf.toString();   // ERROR
+//             ^ conflicting access
+//               `buf` is exclusively borrowed by `writer`; reading it here would alias
+//               hint: drop `writer` (let it go out of scope) before reading `buf`
 ```
 
 ```

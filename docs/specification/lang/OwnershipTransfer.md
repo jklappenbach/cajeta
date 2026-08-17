@@ -447,12 +447,14 @@ keep a borrow). Both halves earn their place.
    caller-side acknowledgement exists and is required: a `#T` result must be
    received with `#=` (`Foo x #= somefn();`); a plain `=` is
    `CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`
-   (`src/cajeta/ownership/OwnedBindCheck.cpp`), enforced today at the
-   DECLARATION position — the assignment position (`x = f()`, `this.f = f()`)
-   is covered by the rule as stated but not yet rejected (plan 8.2.12). It is
+   (`src/cajeta/ownership/OwnedBindCheck.cpp`), enforced at BOTH positions —
+   the declaration (`T x = f()`) since plan 8.2.7 and the assignment
+   (`x = f()`, `this.f = f()`, `arr[i] = f()`) since plan 8.2.12. It is
    load-bearing exactly because it makes an acquisition legible without
-   opening the callee: `int8[] w #= s.toBytes()` frees, `int8[] w = s.trimView()`
-   does not. Note the marker goes on the BINDING, not the type —
+   opening the callee: `int8[] w #= s.toBytes()` frees, `int8[] w = s.root()`
+   does not. (`root()`, not `trimView()` — `trimView` returns a fresh
+   borrow-WINDOW wrapper and is truthfully `#String`; `root()` is the plain
+   borrowed handle.) Note the marker goes on the BINDING, not the type —
    `#Foo x = somefn();` is `CAJETA_ERROR_TYPE_TRANSFER_RETIRED`.
 
 3. **`#T` and templates.** When the formal is `#T` where T is a

@@ -713,7 +713,7 @@ emits a specialized variant whose body is a direct field load
 or call with no `Integer.valueOf`-style boxing in sight.
 
 ```cajeta
-Field idField = User.class.getField("id");
+Field idField #= User.class.getField("id");
 int64 id = idField.getInt64(user);   // emits: load + return, no Object
 ```
 
@@ -746,7 +746,7 @@ class MethodHandle_Int32_to_Int64 extends MethodHandle<Int64Returning> {
 }
 
 // Usage in user code:
-Method m = User.class.getMethod("ageDelta", int32.class);
+Method m #= User.class.getMethod("ageDelta", int32.class);
 var handle = (MethodHandle_Int32_to_Int64) m.bindCallSite();
 int64 r = handle.call(user, 30);   // one vtable hop, no boxing
 ```
@@ -857,7 +857,7 @@ public String toJson(Object obj) {
 
 ```cajeta
 for (cls in Class.classesAnnotated("Component")) {
-    var injectMethod = cls.getMethod("__cajeta_inject");
+    var injectMethod #= cls.getMethod("__cajeta_inject");
     Object instance = injectMethod.invoke(null);   // static method
     container.register(cls, instance);
 }

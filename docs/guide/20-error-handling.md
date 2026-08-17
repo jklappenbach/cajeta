@@ -111,7 +111,7 @@ public class Reporter {
         Optional<Throwable> cause = t.getCause(); // empty when none
         StackFrame[] frames = t.getStackTrace();  // throw-site first
         t.printStackTrace();                      // human-readable, to stderr
-        String json = t.toJson();                 // one NDJSON diagnostic object
+        String json #= t.toJson();                // one NDJSON diagnostic object
     }
 }
 ```

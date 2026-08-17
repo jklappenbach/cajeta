@@ -152,7 +152,7 @@ public class Grams {
     // Rolling n-grams of a dying local — the views outlive `lower`.
     public #ArrayList<String> grams(String key, int32 n) {
         ArrayList<String> out = heap ArrayList<String>();
-        String lower = key.toLowerCase();
+        String lower #= key.toLowerCase();
         int32 len = (int32) lower.count();
         int32 i = 0;
         while (i + n <= len) {
