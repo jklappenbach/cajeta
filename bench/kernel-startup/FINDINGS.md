@@ -464,3 +464,41 @@ The duplicate is a counting artifact, not a cost. Do not "fix" it for speed.
 
 12,379 bodies in 27.3 s is ~2.2 ms each -- ordinary LLVM cost, paid on a world
 the cell never touches. The lever is emitting on demand, not emitting faster.
+
+### Snapshot cost: 540 ms -> 226 us (lazy-codegen 3.2.3, 2026-08-17)
+
+A lazy delivery snapshots the kept definition out of its live module. The
+original snapshot CloneModule'd the whole module — for the stdlib that is
+~11k function declarations plus every local-linkage global, ~540 ms per
+delivery, ~900 deliveries for the runtime closure, 8+ minutes per end-to-end
+test. Two stages of pruning, both measured on
+`LazyRuntimeTests.heapAllocAndDropRunLazily` (868-2,992 snapshots):
+
+    stage                                per snapshot     heapAlloc test
+    CloneModule everything                   ~540 ms          474 s
+    closure predicate + decl strip            ~36 ms         34.2 s
+    fresh module + CloneFunctionInto         ~226 us          2.7 s
+
+    fresh-module phase breakdown: closure walk 13 us, shells + body clone
+    51 us, legalize/demote/strip 30 us, bitcode round-trip 132 us.
+
+Two findings worth keeping:
+
+1. **Unused declarations widen the cascade.** Pre-pruning, every snapshot
+   declared all ~11k stdlib symbols, and legalizeCrossModuleRefs made them
+   honest — so even a static return-literal pulled the full ~900-symbol
+   runtime closure through the generator. With pruned declarations the
+   static-arithmetic fixture dropped from ~900 deliveries to 4. Emission
+   cost AND cascade width both scale with what a snapshot declares.
+
+2. **Instantiations born mid-cascade are invisible to the index.** Codegen
+   run from inside the generator instantiates templates (PeekStream<int32>
+   et al.) whose methods did not exist when the host built the index; the
+   kernel host's post-codegen rebuild never happens under lazy emission.
+   `CajetaSymbolIndex::refresh()` — additive re-scan, gated on the structure
+   count so a genuinely foreign symbol stays O(modules) — plus one retry per
+   missed symbol in the generator. This turned the two never-green stream
+   tests green (stdlibInstantiation 4.0 s, sharedInstantiation 4.1 s).
+
+All six end-to-end lazy tests are back in the sweep (1.3-4.1 s each);
+`test/stress_filter.txt` no longer carries them.

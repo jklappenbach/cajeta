@@ -41,6 +41,18 @@ namespace cajeta {
         }
     }
 
+    void CajetaSymbolIndex::refresh() {
+        size_t structures = 0;
+        for (auto& m : liveModules)
+            if (m) structures += m->getStructures().size();
+        if (structures == lastStructureCount) return;
+        lastStructureCount = structures;
+        // addModule mutates nothing but the maps for already-known modules;
+        // copy the vector so its dedup push_back cannot invalidate iteration.
+        std::vector<CajetaModulePtr> known = liveModules;
+        for (auto& m : known) addModule(m);
+    }
+
     MethodPtr CajetaSymbolIndex::find(const std::string& symbol) const {
         auto it = bySymbol.find(symbol);
         return it == bySymbol.end() ? nullptr : it->second;

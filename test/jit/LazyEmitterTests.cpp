@@ -14,11 +14,15 @@
 #include "cajeta/jit/LazyCodegen.h"
 #include "cajeta/method/Method.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/TargetSelect.h"
 
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 
 using cajeta::CajetaDefinitionGenerator;
@@ -78,17 +82,22 @@ std::list<CajetaModulePtr> hostModuleSet(Compiler& compiler) {
     return mods;
 }
 
-// The fixture method's symbol, from the index — never hand-spelled.
-std::string symbolFor(Compiler& compiler, const std::string& shortName) {
+// The fixture method itself, from the module set — never hand-spelled.
+MethodPtr methodFor(Compiler& compiler, const std::string& shortName) {
     for (auto& m : hostModuleSet(compiler))
         for (auto& method : m->getAllMethods()) {
             if (!method) continue;
             const std::string sym = method->getLlvmSymbolName();
             if (sym.find("test.Calc") != std::string::npos
                 && sym.find("::" + shortName + "(") != std::string::npos)
-                return sym;
+                return method;
         }
     return {};
+}
+
+std::string symbolFor(Compiler& compiler, const std::string& shortName) {
+    MethodPtr m = methodFor(compiler, shortName);
+    return m ? m->getLlvmSymbolName() : std::string();
 }
 
 struct LazyJit {
@@ -120,6 +129,82 @@ struct LazyJit {
 };
 
 } // namespace
+
+// 3.2.3 — the snapshot is pruned to the kept definition's reference closure.
+// Both properties are checked by an independent walk over the delivered
+// module, so the test cannot share a bug with the extractor:
+//   (1) every definition is transitively referenced from the kept symbol;
+//   (2) every declaration has at least one use.
+// Before pruning this fails on both counts: the clone carries every
+// local-linkage global in the stdlib module and a declaration for each of
+// its ~11k functions.
+TEST(LazyEmitterTests, snapshotIsPrunedToTheKeptClosure) {
+    ModeGuard guard;
+    setLazyCodegenEnabled(true);
+
+    Compiler compiler;
+    compileSource(compiler, "Pruned");
+    MethodPtr method = methodFor(compiler, "base");
+    ASSERT_TRUE(method);
+
+    auto tsm = cajeta::emitMethodModule(method);
+    ASSERT_TRUE(bool(tsm)) << llvm::toString(tsm.takeError());
+
+    const std::string sym = method->getLlvmSymbolName();
+    tsm->withModuleDo([&](llvm::Module& m) {
+        llvm::Function* kept = m.getFunction(sym);
+        ASSERT_NE(kept, nullptr);
+        ASSERT_FALSE(kept->isDeclaration());
+
+        llvm::SmallPtrSet<const llvm::GlobalValue*, 32> closure;
+        llvm::SmallPtrSet<const llvm::Constant*, 32> seen;
+        llvm::SmallVector<const llvm::GlobalValue*, 32> work{kept};
+        closure.insert(kept);
+        std::function<void(const llvm::Constant*)> scan =
+            [&](const llvm::Constant* c) {
+                if (!seen.insert(c).second) return;
+                if (auto* gv = llvm::dyn_cast<llvm::GlobalValue>(c)) {
+                    if (closure.insert(gv).second) work.push_back(gv);
+                    return;
+                }
+                for (const llvm::Use& u : c->operands())
+                    if (auto* op = llvm::dyn_cast<llvm::Constant>(u.get()))
+                        scan(op);
+            };
+        while (!work.empty()) {
+            const llvm::GlobalValue* gv = work.pop_back_val();
+            for (const llvm::Use& u : gv->operands())
+                if (auto* op = llvm::dyn_cast<llvm::Constant>(u.get()))
+                    scan(op);
+            if (auto* fn = llvm::dyn_cast<llvm::Function>(gv))
+                for (const llvm::BasicBlock& bb : *fn)
+                    for (const llvm::Instruction& inst : bb)
+                        for (const llvm::Use& u : inst.operands())
+                            if (auto* op =
+                                    llvm::dyn_cast<llvm::Constant>(u.get()))
+                                scan(op);
+        }
+
+        size_t unreachedDefs = 0, unusedDecls = 0;
+        std::string sampleDef, sampleDecl;
+        for (const llvm::GlobalValue& gv : m.global_values()) {
+            if (gv.isDeclaration()) {
+                if (gv.use_empty()) {
+                    ++unusedDecls;
+                    if (sampleDecl.empty()) sampleDecl = gv.getName().str();
+                }
+            } else if (!closure.count(&gv)) {
+                ++unreachedDefs;
+                if (sampleDef.empty()) sampleDef = gv.getName().str();
+            }
+        }
+        EXPECT_EQ(unreachedDefs, 0u)
+            << unreachedDefs << " definitions outside the kept closure, e.g. "
+            << sampleDef;
+        EXPECT_EQ(unusedDecls, 0u)
+            << unusedDecls << " declarations with no uses, e.g. " << sampleDecl;
+    });
+}
 
 // 2.1.1 — a symbol never eagerly emitted resolves through the generator and
 // calling it returns the right value.
