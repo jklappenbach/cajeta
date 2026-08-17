@@ -1,0 +1,227 @@
+# Profiling capability audit for the cajeta profiler, on the two self-hosted
+# NVIDIA runners: PHOENIX (native Windows) and phoenix-wsl (WSL2 on the SAME
+# physical box). Same RTX 4090 through two OS paths, so any difference is
+# attributable to the OS rather than confounded with hardware.
+#
+# WHY THIS EXISTS
+# The GPU kernel-timing research settled every backend empirically except one
+# question, which stayed an inference: whether CUDA events and CUPTI Activity
+# kernel timestamps are exempt from NVIDIA's profiling permission gate
+# (NVreg_RestrictProfilingToAdminUsers / RmProfilingAdminOnly). Two independent
+# research passes could not find NVIDIA stating it in so many words. That single
+# question decides whether our baseline CUDA timing tier works for ordinary
+# unprivileged users, so it should be measured before we build on it — the AMD
+# half of the research was measured and it is where every expensive surprise
+# turned up (silently-zero counters, a 5.68 s clock skew, timestamps latching
+# before the kernel finished).
+#
+# READING THE RESULT
+# The probe prints `RESULT key=value` lines; the verdict is `RESULT verdict=`.
+#   EXEMPTION_PROVEN                  timing worked AND the Profiling API was
+#                                     refused for privileges in the same process
+#   INCONCLUSIVE_PROCESS_PRIVILEGED   the Profiling API was ALLOWED, so this
+#                                     account is privileged or the gate is off.
+#                                     Timing passing proves nothing. Not a pass.
+#   TIMING_BROKEN                     the baseline tier does not work here
+#
+# The gate-state steps below run FIRST precisely because the verdict cannot be
+# interpreted without them.
+#
+# Dispatch-only. Reads state and runs a short probe; changes nothing.
+
+name: gpu-profiling-audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Which runner(s) to audit'
+        required: true
+        type: choice
+        options: [both, windows, wsl]
+        default: both
+      iters:
+        description: 'Spin-kernel iterations (kernel duration knob)'
+        required: false
+        default: '200000'
+      reps:
+        description: 'Launch count for the overhead measurement'
+        required: false
+        default: '200'
+
+jobs:
+
+  # ---------------------------------------------------------------- Windows
+  windows:
+    if: ${{ inputs.target == 'both' || inputs.target == 'windows' }}
+    runs-on: [self-hosted, Windows, X64, gpu]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # The gate state decides whether the probe's verdict means anything.
+      # On Windows the switch is a registry value under the driver's NVTweak
+      # key, not a modprobe option — the modprobe remediation in NVIDIA's
+      # article is Linux-only and does not apply here.
+      - name: Profiling gate state + elevation
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path captures | Out-Null
+
+          $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+          $pr = New-Object Security.Principal.WindowsPrincipal($id)
+          $elevated = $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "RUNNER_ACCOUNT=$($id.Name)"
+          Write-Host "RUNNER_ELEVATED=$elevated"
+
+          $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak'
+          $val = (Get-ItemProperty -Path $key -Name 'RmProfilingAdminOnly' -ErrorAction SilentlyContinue).RmProfilingAdminOnly
+          if ($null -eq $val) {
+            Write-Host "RmProfilingAdminOnly=ABSENT (driver default applies: restricted)"
+          } else {
+            Write-Host "RmProfilingAdminOnly=$val  (1 = admin-only, 0 = open)"
+          }
+
+          nvidia-smi
+          nvcc --version | Select-Object -Last 1
+          Write-Host "CUDA_PATH=$env:CUDA_PATH"
+
+      # Confirms the research claim that CUPTI ships with the Toolkit and is
+      # deliberately NOT on the loader path — and records the real paths so our
+      # dlopen probe list is measured rather than guessed.
+      - name: CUPTI discovery
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "--- cupti64 DLLs under CUDA_PATH ---"
+          Get-ChildItem -Path $env:CUDA_PATH -Recurse -Filter 'cupti64*.dll' -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host $_.FullName }
+          Write-Host "--- cupti.lib ---"
+          Get-ChildItem -Path $env:CUDA_PATH -Recurse -Filter 'cupti.lib' -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host $_.FullName }
+          Write-Host "--- is cupti already resolvable on PATH? ---"
+          $found = $false
+          foreach ($p in $env:PATH.Split(';')) {
+            if ($p -and (Test-Path $p)) {
+              $hit = Get-ChildItem -Path $p -Filter 'cupti64*.dll' -ErrorAction SilentlyContinue
+              if ($hit) { Write-Host "ON_PATH: $($hit.FullName)"; $found = $true }
+            }
+          }
+          if (-not $found) { Write-Host "ON_PATH: none - matches the documented behaviour" }
+
+      # nvcc on Windows needs cl.exe; source the VS build env via vswhere
+      # (same pattern as gpu-probe.yml — the service PATH has no cmake/cl).
+      - name: Compile the probe (MSVC host env)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvars64.bat"
+          nvcc -arch=native -O2 tools\gpuprobe\probe_cupti_caps.cu -o probe_cupti_caps.exe ^
+            -I"%CUDA_PATH%\extras\CUPTI\include" ^
+            -L"%CUDA_PATH%\extras\CUPTI\lib64" -lcupti -lcuda
+          if errorlevel 1 exit /b 1
+
+      - name: Run the audit
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # CUPTI is not on the loader path by design, so make the DLL findable
+          # for this process only.
+          $env:PATH = "$env:CUDA_PATH\extras\CUPTI\lib64;$env:CUDA_PATH\bin;$env:PATH"
+          ./probe_cupti_caps.exe ${{ inputs.iters }} ${{ inputs.reps }} 2>&1 |
+            Tee-Object -FilePath captures/windows-audit.txt
+          if ($LASTEXITCODE -ne 0) { throw 'probe failed to initialize CUDA' }
+
+      - name: Verdict
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $v = Select-String -Path captures/windows-audit.txt -Pattern '^RESULT verdict=' |
+                 ForEach-Object { $_.Line }
+          Write-Host "=== WINDOWS: $v ==="
+
+      - name: Upload capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-audit-windows
+          path: captures/
+          if-no-files-found: warn
+
+  # -------------------------------------------------------------------- WSL
+  wsl:
+    if: ${{ inputs.target == 'both' || inputs.target == 'wsl' }}
+    runs-on: [self-hosted, wsl]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # WSL2 routes CUDA through the Windows driver via a stubbed libcuda.so;
+      # there is no Linux nvidia kernel module, so /proc/driver/nvidia/params
+      # is expected to be ABSENT and the Windows-side registry value governs.
+      # Confirming that here is the point — it tells us which knob a user would
+      # actually have to turn.
+      - name: Profiling gate state + environment
+        run: |
+          set +e
+          mkdir -p captures
+          echo "WSL_DETECTED=$(grep -qi microsoft /proc/version && echo YES || echo NO)"
+          echo "UID=$(id -u)  USER=$(id -un)"
+          sudo -n true 2>/dev/null && echo "PASSWORDLESS_SUDO=YES" || echo "PASSWORDLESS_SUDO=NO"
+          echo "--- /proc/driver/nvidia/params (expected absent under WSL) ---"
+          if [ -r /proc/driver/nvidia/params ]; then
+            grep -i profil /proc/driver/nvidia/params || cat /proc/driver/nvidia/params
+          else
+            echo "ABSENT - no Linux nvidia module; the Windows driver governs"
+          fi
+          echo "--- driver / toolkit ---"
+          nvidia-smi
+          nvcc --version | tail -1
+          echo "CUDA_HOME=${CUDA_HOME:-unset}"
+          ls -d /usr/local/cuda* 2>/dev/null
+
+      - name: CUPTI discovery
+        run: |
+          set +e
+          echo "--- libcupti under /usr/local/cuda* ---"
+          find /usr/local/cuda* -name 'libcupti.so*' 2>/dev/null
+          echo "--- is libcupti resolvable by the loader? ---"
+          if ldconfig -p 2>/dev/null | grep -q libcupti; then
+            ldconfig -p | grep libcupti
+          else
+            echo "NOT in ldconfig cache - matches the documented behaviour"
+          fi
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset}"
+
+      - name: Compile the probe
+        run: |
+          set -euo pipefail
+          CUDA="${CUDA_HOME:-$(ls -d /usr/local/cuda 2>/dev/null || ls -d /usr/local/cuda-* | head -1)}"
+          echo "using CUDA=$CUDA"
+          nvcc -arch=native -O2 tools/gpuprobe/probe_cupti_caps.cu -o probe_cupti_caps \
+            -I"$CUDA/extras/CUPTI/include" \
+            -L"$CUDA/extras/CUPTI/lib64" -lcupti -lcuda
+
+      - name: Run the audit
+        run: |
+          set -euo pipefail
+          CUDA="${CUDA_HOME:-$(ls -d /usr/local/cuda 2>/dev/null || ls -d /usr/local/cuda-* | head -1)}"
+          export LD_LIBRARY_PATH="$CUDA/extras/CUPTI/lib64:${LD_LIBRARY_PATH:-}"
+          ./probe_cupti_caps ${{ inputs.iters }} ${{ inputs.reps }} 2>&1 |
+            tee captures/wsl-audit.txt
+
+      - name: Verdict
+        run: |
+          echo "=== WSL ==="
+          grep -E '^RESULT verdict=' captures/wsl-audit.txt
+
+      - name: Upload capture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiling-audit-wsl
+          path: captures/
+          if-no-files-found: warn

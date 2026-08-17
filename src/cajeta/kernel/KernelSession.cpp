@@ -39,6 +39,8 @@
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
+#include "cajeta/jit/CajetaDefinitionGenerator.h"
+#include "cajeta/jit/CajetaLazyEmitter.h"
 #include "cajeta/util/FdCapture.h"
 
 namespace cajeta::kernel {
@@ -327,9 +329,25 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     }
     impl.jit = std::move(*jitOrErr);
 
+    auto& mainJD = impl.jit->getMainJITDylib();
+    // lazy-codegen 2.2.3 — added FIRST, so a host library sharing a method's
+    // name can never shadow a body we can generate (the sl_add/libbsd
+    // collision class). Dark until lazy mode is on: eager default claims
+    // nothing.
+    {
+        Impl* ip = &impl;
+        mainJD.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
+            impl.symbolIndex,
+            [ip](const cajeta::MethodPtr& method,
+                 llvm::orc::JITDylib& jd) -> llvm::Error {
+                auto tsm = cajeta::emitMethodModule(method);
+                if (!tsm) return tsm.takeError();
+                return ip->jit->addIRModule(jd, std::move(*tsm));
+            }));
+    }
+
     // Process symbols on the main dylib — the native runtime the JIT'd code
     // calls into (and the last-resort resolver for every cell).
-    auto& mainJD = impl.jit->getMainJITDylib();
     auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
         impl.jit->getDataLayout().getGlobalPrefix());
     if (!generator) {
