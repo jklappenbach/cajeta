@@ -406,7 +406,12 @@ namespace cajeta {
                 "        " + gradTypeName + "[] gs = heap " + gradTypeName + "["
                     + std::to_string(gradExprs.size()) + "];\n";
             for (size_t k = 0; k < gradExprs.size(); ++k) {
-                src += "        gs[" + std::to_string(k) + "] = "
+                // 8.2.12 (spec §4.6) — `#=`, because every gradient expression
+                // is a freshly built Tensor (`matmul`, `sumTo`, `mulScalar`, …,
+                // all `#`-returning) and this array owns what it holds:
+                // `grads` is declared `#T[]` and hands the whole thing out. A
+                // plain `=` recorded a borrow of a value nothing owned.
+                src += "        gs[" + std::to_string(k) + "] #= "
                     + gradExprs[k] + ";\n";
             }
             src += "        return gs;\n"

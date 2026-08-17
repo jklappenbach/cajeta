@@ -820,7 +820,7 @@ namespace cajeta {
         if (!ty || !ty->getQName()) return "";
         // @JsonRaw: capture wire-form bytes (with delimiters); skip cursor.
         if (isJsonRaw(prop)) {
-            return "out." + f + " = JsonIndex.valueWireBytes(b, idx, ci);\n"
+            return "out." + f + " #= JsonIndex.valueWireBytes(b, idx, ci);\n"
                    "            ci = JsonIndex.skipValue(b, idx, ci);\n";
         }
         // Optional<T> — null value → empty Optional; else present.
@@ -903,7 +903,7 @@ namespace cajeta {
         // #-returning). Sync the cursor through jc around the call.
         if (auto nested = std::dynamic_pointer_cast<CajetaClass>(ty)) {
             return "jc.ci = ci;\n"
-                   "            out." + f + " = Json.walkValue<" + tc + ">(jc);\n"
+                   "            out." + f + " #= Json.walkValue<" + tc + ">(jc);\n"
                    "            ci = jc.ci;\n";
         }
         return "";

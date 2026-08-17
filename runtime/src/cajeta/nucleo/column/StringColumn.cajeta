@@ -157,7 +157,7 @@ public class StringColumn {
         String[] vals = heap String[(int32) len];
         int64 i = 0;
         while (i < len) {
-            vals[(int32) i] = this.get(off + i);
+            vals[(int32) i] #= this.get(off + i);
             i = i + 1;
         }
         return StringColumn.of(vals);

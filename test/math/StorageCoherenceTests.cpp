@@ -132,7 +132,7 @@ TEST(StorageCoherenceTests, deviceMoveReleasesHostMirror) {
         "    static Tensor<float32> t;\n"
         "    public static int32 alloc() {\n"
         "        int64[] s = heap int64[1]; s[0] = 16777216;\n"   // 64 MiB of f32
-        "        t = Tensor.ones<float32>(s);\n"
+        "        t #= Tensor.ones<float32>(s);\n"
         "        if (t.get1(12345) != 1.0f) { return -1; }\n"
         "        return 1;\n"
         "    }\n"

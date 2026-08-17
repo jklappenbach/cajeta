@@ -30,7 +30,7 @@ TEST(StringElemStoreTests, fieldGrowCopyLoopKeepsElements) {
         "    public Box() { this.keys = heap String[4]; this.cap = 4; this.n = 0; }\n"
         "    public void add(String s) {\n"
         "        if (this.n >= this.cap) { this.grow(); }\n"
-        "        this.keys[this.n] = s.toLowerCase();\n"
+        "        this.keys[this.n] #= s.toLowerCase();\n"
         "        this.n = this.n + 1;\n"
         "    }\n"
         "    void grow() {\n"

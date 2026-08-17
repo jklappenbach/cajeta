@@ -323,9 +323,9 @@ public final class LinAlg {
         sh[0] = n;
         sh[1] = n;
         Tensor<E>[] out = heap Tensor<E>[3];
-        out[0] = Tensor.zeros<E>(sh);                    // P
-        out[1] = Tensor.zeros<E>(sh);                    // L
-        out[2] = Tensor.zeros<E>(sh);                    // U
+        out[0] #= Tensor.zeros<E>(sh);                    // P
+        out[1] #= Tensor.zeros<E>(sh);                    // L
+        out[2] #= Tensor.zeros<E>(sh);                    // U
         int64 i = 0;
         while (i < n) {
             int64 j = 0;
@@ -476,8 +476,8 @@ public final class LinAlg {
         rsh[0] = rk;
         rsh[1] = n;
         Tensor<E>[] out = heap Tensor<E>[2];
-        out[0] = Tensor.zeros<E>(qsh);                       // Q
-        out[1] = Tensor.zeros<E>(rsh);                       // R
+        out[0] #= Tensor.zeros<E>(qsh);                       // Q
+        out[1] #= Tensor.zeros<E>(rsh);                       // R
         int64 ri = 0;
         while (ri < rk) {
             int64 rc = ri;
@@ -627,8 +627,8 @@ public final class LinAlg {
         int64[] vs = heap int64[1];
         vs[0] = n;
         Tensor<E>[] out = heap Tensor<E>[2];
-        out[0] = Tensor.zeros<E>(vs);            // eigenvalues w
-        out[1] = Tensor.zeros<E>(sh);            // eigenvectors V (columns)
+        out[0] #= Tensor.zeros<E>(vs);            // eigenvalues w
+        out[1] #= Tensor.zeros<E>(sh);            // eigenvectors V (columns)
         int64 d = 0;
         while (d < n) {
             E dv = m.get2(d, d);
@@ -746,9 +746,9 @@ public final class LinAlg {
         int64[] ssh = heap int64[1];
         ssh[0] = r;
         Tensor<E>[] out = heap Tensor<E>[3];
-        out[0] = Tensor.zeros<E>(ush);                       // U = Vt'ᵀ (m,r)
-        out[1] = Tensor.zeros<E>(ssh);                       // S (copied: core owns its element)
-        out[2] = Tensor.zeros<E>(vsh);                       // Vt = U'ᵀ (r,n)
+        out[0] #= Tensor.zeros<E>(ush);                       // U = Vt'ᵀ (m,r)
+        out[1] #= Tensor.zeros<E>(ssh);                       // S (copied: core owns its element)
+        out[2] #= Tensor.zeros<E>(vsh);                       // Vt = U'ᵀ (r,n)
         int64 si = 0;
         while (si < r) {
             out[1].set1(si, core[1].get1(si));
@@ -1137,9 +1137,9 @@ public final class LinAlg {
         ush[0] = m;
         ush[1] = n;
         Tensor<E>[] out = heap Tensor<E>[3];
-        out[0] = Tensor.zeros<E>(ush);
-        out[1] = Tensor.zeros<E>(vs);
-        out[2] = Tensor.zeros<E>(vsh);
+        out[0] #= Tensor.zeros<E>(ush);
+        out[1] #= Tensor.zeros<E>(vs);
+        out[2] #= Tensor.zeros<E>(vsh);
         int64 ui = 0;
         while (ui < m) {
             int64 uj = 0;
