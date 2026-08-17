@@ -16,6 +16,7 @@
 #include "cajeta/method/Method.h"
 
 #include "llvm/ExecutionEngine/Orc/Core.h"
+#include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 
 #include <atomic>
 #include <functional>
@@ -59,14 +60,15 @@ namespace cajeta {
 
     class CajetaDefinitionGenerator : public llvm::orc::DefinitionGenerator {
     public:
-        // Generate `method`'s body and deliver the module that now defines it.
-        // Host-supplied: the kernel and the JIT host add modules differently.
-        using EmitFn = std::function<llvm::Error(const MethodPtr&,
-                                                 llvm::orc::JITDylib&)>;
+        // Add a finished snapshot to the JIT. Host-supplied — the kernel and
+        // the JIT host add modules differently; emission itself (which body,
+        // how it is packaged) is the generator's job, not the host's.
+        using DeliverFn = std::function<llvm::Error(llvm::orc::ThreadSafeModule,
+                                                    llvm::orc::JITDylib&)>;
 
         explicit CajetaDefinitionGenerator(CajetaSymbolIndex& index,
-                                           EmitFn emit = nullptr)
-            : index(index), emit(std::move(emit)) {}
+                                           DeliverFn deliver = nullptr)
+            : index(index), deliver(std::move(deliver)) {}
 
         // The methods this generator will emit for `symbols`. Empty when lazy
         // emission is off, so Unit 2 is inert until Unit 4 flips the default.
@@ -86,7 +88,7 @@ namespace cajeta {
 
     private:
         CajetaSymbolIndex& index;
-        EmitFn emit;
+        DeliverFn deliver;
         // Both guarded by the CompilerGate — only one thread emits at a time.
         size_t generated = 0;
         long long emitNs = 0;

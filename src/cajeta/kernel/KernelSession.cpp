@@ -338,11 +338,9 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
         Impl* ip = &impl;
         mainJD.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
             impl.symbolIndex,
-            [ip](const cajeta::MethodPtr& method,
+            [ip](llvm::orc::ThreadSafeModule tsm,
                  llvm::orc::JITDylib& jd) -> llvm::Error {
-                auto tsm = cajeta::emitMethodModule(method);
-                if (!tsm) return tsm.takeError();
-                return ip->jit->addIRModule(jd, std::move(*tsm));
+                return ip->jit->addIRModule(jd, std::move(tsm));
             }));
     }
 

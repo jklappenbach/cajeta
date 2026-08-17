@@ -709,11 +709,9 @@ bool buildLLJITFromModules(const std::vector<ModuleBC>& modules,
         llvm::orc::LLJIT* jptr = out.jit.get();
         mainDylib.addGenerator(std::make_unique<cajeta::CajetaDefinitionGenerator>(
             *out.symbolIndex,
-            [jptr](const cajeta::MethodPtr& method,
+            [jptr](llvm::orc::ThreadSafeModule tsm,
                    llvm::orc::JITDylib& jd) -> llvm::Error {
-                auto tsm = cajeta::emitMethodModule(method);
-                if (!tsm) return tsm.takeError();
-                return jptr->addIRModule(jd, std::move(*tsm));
+                return jptr->addIRModule(jd, std::move(tsm));
             }));
     }
     auto generator = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(

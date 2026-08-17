@@ -1,5 +1,7 @@
 #include "cajeta/jit/CajetaDefinitionGenerator.h"
 
+#include "cajeta/jit/CajetaLazyEmitter.h"
+#include "cajeta/type/CajetaClass.h"
 #include "cajeta/jit/LazyCodegen.h"
 
 #include "llvm/Support/Error.h"
@@ -78,19 +80,57 @@ namespace cajeta {
         llvm::Error result = llvm::Error::success();
         llvm::ErrorAsOutParameter guard(&result);
         CompilerGate::instance().run([&] {
-            auto claimed = resolve(symbols);
-            // Without a host emitter the generator can decide but not deliver;
+            // Without a host deliverer the generator can decide but not act;
             // fall through exactly as today rather than failing the lookup —
-            // Unit 2 must not be able to break a session it is not driving.
-            if (claimed.empty() || !emit) return;
+            // the generator must not be able to break a session it is not
+            // driving.
+            if (!deliver) return;
             auto t0 = std::chrono::steady_clock::now();
-            for (const auto& method : claimed) {
-                if (llvm::Error err = emit(method, jd)) {
+            size_t claimed = 0;
+            for (const auto& symbol : symbols) {
+                if (symbol.empty()) continue;
+                llvm::Expected<llvm::orc::ThreadSafeModule> tsm =
+                    llvm::orc::ThreadSafeModule();
+                if (auto method = index.find(symbol)) {
+                    tsm = emitMethodModule(method);
+                } else if (auto* thunk = index.findReflectThunk(symbol)) {
+                    if (thunk->isInvoke) thunk->klass->emitReflectInvokeBody();
+                    else thunk->klass->emitReflectNewBody();
+                    auto* gv = index.findLiveDefinition(symbol);
+                    if (!gv) {
+                        // spec 5.3 — the thunk was indexed but its emitter
+                        // left no definition; not an ordinary missing symbol.
+                        result = llvm::createStringError(
+                            llvm::inconvertibleErrorCode(),
+                            "lazy emit: reflect emitter left no body for '%s'",
+                            symbol.c_str());
+                        return;
+                    }
+                    tsm = snapshotLiveDefinition(gv);
+                } else if (auto* gv = index.findLiveDefinition(symbol)) {
+                    // Codegen synthesizes definitions outside the method
+                    // table — drop thunks, vtable globals — including DURING
+                    // a lazy generateCode a moment ago; searched live for
+                    // exactly that reason.
+                    tsm = snapshotLiveDefinition(gv);
+                } else {
+                    continue;   // not ours — an ordinary fall-through
+                }
+                if (!tsm) {
+                    result = tsm.takeError();
+                    return;
+                }
+                if (llvm::Error err = deliver(std::move(*tsm), jd)) {
                     result = std::move(err);
                     return;
                 }
+                if (std::getenv("CAJETA_PRIME_TIMING")) {
+                    std::fprintf(stderr, "[lazy]   -> %s\n", symbol.c_str());
+                }
+                ++claimed;
                 ++generated;
             }
+            if (claimed == 0) return;
             emitNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - t0).count();
             if (std::getenv("CAJETA_PRIME_TIMING")) {
@@ -98,7 +138,7 @@ namespace cajeta {
                 std::fprintf(stderr,
                              "[lazy] generated %zu body(ies); %zu total, "
                              "%lld ms\n",
-                             claimed.size(), generated, emitNs / 1000000);
+                             claimed, generated, emitNs / 1000000);
             }
         });
         return result;

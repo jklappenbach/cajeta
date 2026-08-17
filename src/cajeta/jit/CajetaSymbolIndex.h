@@ -18,6 +18,11 @@
 #include <list>
 #include <string>
 #include <unordered_map>
+#include <vector>
+
+namespace llvm { class GlobalValue; }
+
+namespace cajeta { class CajetaClass; }
 
 namespace cajeta {
 
@@ -40,6 +45,22 @@ namespace cajeta {
             for (auto& m : modules) addModule(m);
         }
 
+        // Definitions codegen synthesizes OUTSIDE getAllMethods — drop thunks,
+        // vtable/#ClassObject globals — searched live so entries created after
+        // build() (a thunk born during a lazy generateCode) are still found.
+        // Returns a definition or nullptr; declarations never match.
+        llvm::GlobalValue* findLiveDefinition(const std::string& symbol) const;
+
+        // Reflective thunks (spec 2.4). Emitted by the REFL-2 loop in an eager
+        // session — which a lazy session never runs — and referenced from the
+        // RTTI/#ClassObject wiring of EVERY heap class, reflective or not. The
+        // generator emits them on demand through the class that owns them.
+        struct ReflectThunk {
+            std::shared_ptr<CajetaClass> klass;
+            bool isInvoke = false;   // else reflect_new
+        };
+        const ReflectThunk* findReflectThunk(const std::string& symbol) const;
+
         // The method emitted under `symbol`, or nullptr. Never throws — an
         // unknown symbol is an ordinary miss that falls through to the JIT's
         // other generators.
@@ -52,6 +73,8 @@ namespace cajeta {
         void addModule(const CajetaModulePtr& module);
 
         std::unordered_map<std::string, MethodPtr> bySymbol;
+        std::unordered_map<std::string, ReflectThunk> reflectThunks;
+        std::vector<CajetaModulePtr> liveModules;   // deduped, build order
     };
 
 } // namespace cajeta
