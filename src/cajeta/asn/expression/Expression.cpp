@@ -3285,7 +3285,30 @@ bool cajetaRhsCarriesRedundantSharp(
                 // prev, head and tail. Demoting on the first of those made the
                 // second read as a double transfer of a title that never
                 // moved. A `#x` claim still demotes unconditionally.
-                if (!isModeCarrying() || scope->holdsStaticTitle(mvName)) {
+                //
+                // 8.2.23 — gated on isSharpStore(), NOT isModeCarrying().
+                // Whether the source is CONSUMED is a fact about the SOURCE, so
+                // it cannot depend on which side of the `#=` the destination
+                // sits. `modeCarrying` marks only the assignment spelling, so
+                // the declaration spelling kept demoting unconditionally and
+                // the two positions answered differently for one source:
+                //
+                //     void f(Cell n) { this.a #= n; this.b #= n; }  // compiles
+                //     int32 g(Cell n) { Cell x #= n; Cell y #= n; } // MOVE_OF_BORROW
+                //
+                // A plain formal is conditional acquisition — its mode arrives
+                // at run time in the transfer word — so demoting it on the
+                // first store is wrong in BOTH positions. That is the dual-role
+                // shape TransferFromBorrowTests 3.1.6 pins for the field
+                // position; the local position had no pin and no fix.
+                //
+                // The REJECTION above deliberately keeps isModeCarrying():
+                // cases (b)/(c) are intent checks, not safety checks, and the
+                // two positions genuinely differ there — a declaration off a
+                // borrow alias is pinned as an error (3.1.4), while the field
+                // store must stay legal because it is what CAPTURED_BORROW
+                // prescribes as the fix.
+                if (!isSharpStore() || scope->holdsStaticTitle(mvName)) {
                     scope->demoteToBorrow(mvName,
                         "moved by `#" + mvName + "` at line "
                             + std::to_string(getSourceLine()));
