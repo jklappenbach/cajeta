@@ -1316,8 +1316,18 @@ namespace cajeta {
                                 // twice is a migration nobody can size.
                                 if (ownership::ReturnTitleAudit::enabled()
                                         && !ownership::ownedBindWarns()) {
+                                    // 8.1.4 — withhold the line inside a
+                                    // monomorphization; it counts into the
+                                    // synthesized instantiation buffer, not
+                                    // the file.
+                                    auto auditM = module->getCurrentMethod();
+                                    const bool synth = auditM
+                                        && (auditM->isMethodTemplateInstantiation()
+                                            || (auditM->getParent()
+                                                && auditM->getParent()->isInstantiation()));
                                     ownership::ReturnTitleAudit::ownedBind(
-                                        calleeKey, in, mc->getSourceLine());
+                                        calleeKey, in,
+                                        synth ? 0 : mc->getSourceLine());
                                 }
                                 // 8.2.7 (spec §4.6) — THE CHECK. A `#T` result
                                 // bound with plain `=` leaves the acquisition

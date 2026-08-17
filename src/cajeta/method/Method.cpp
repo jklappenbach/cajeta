@@ -1423,13 +1423,41 @@ namespace cajeta {
         if (staticMethod && !returnsOwnership && !returnsStackValue()
                 && returnIsReferenceTyped
                 && parameterList.size() > 1) {
-            char buf[256];
-            snprintf(buf, sizeof(buf),
-                "multi-parameter free function '%s' cannot return a borrow; "
-                "use `#%s` to return ownership, or reduce to a single parameter",
-                name.c_str(),
-                returnType->getQName() ? returnType->getQName()->getTypeName().c_str() : "T");
-            throw Exception(buf, "CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM");
+            // 8.2.11 — never fabricate the spelling. A type PARAMETER's QName
+            // comes back as the wildcard sentinel `?`, so the old
+            // `"#" + getTypeName()` rendered as "use `#?` to return
+            // ownership" — prescribing a sigil the language does not have, and
+            // sending a reader looking for it. Prefer the declared type name,
+            // fall back to the canonical, and when neither is a spelling a
+            // developer could type, describe the fix instead of inventing one.
+            std::string retSpelling;
+            if (returnType) {
+                const std::string tn = returnType->getQName()
+                    ? returnType->getQName()->getTypeName() : std::string();
+                if (!tn.empty() && tn.find('?') == std::string::npos) {
+                    retSpelling = tn;
+                } else {
+                    const std::string canon = returnType->toCanonical();
+                    if (!canon.empty() && canon.find('?') == std::string::npos) {
+                        retSpelling = canon;
+                    }
+                }
+            }
+            const std::string fix = retSpelling.empty()
+                ? std::string("mark the return type `#` (for a type parameter "
+                              "`T`, that is `#T`)")
+                : ("use `#" + retSpelling + "` to return ownership");
+            // The RULE, stated once: a static multi-parameter function cannot
+            // return a borrow because no single parameter's lifetime is
+            // implied — cajeta's lifetime-elision rule. See
+            // docs/specification/lang/OwnershipTransfer.md § Lifetime elision.
+            throw Exception(
+                "multi-parameter free function '" + name + "' cannot return a "
+                "borrow: with more than one parameter there is no single "
+                "lifetime for the result to inherit, so the compiler cannot "
+                "tell whose memory it points into. Fix: " + fix
+                + ", or reduce to a single parameter",
+                "CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM");
         }
 
         if (!staticMethod && !thisAlreadyInserted) {

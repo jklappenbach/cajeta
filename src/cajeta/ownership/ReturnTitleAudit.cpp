@@ -57,9 +57,15 @@ namespace cajeta::ownership {
     void ReturnTitleAudit::record(ReturnTitleRecord rec) {
         // One line per site, on the diagnostic channel, so a library build can
         // be harvested without linking against the compiler.
+        // 8.1.4 — line 0 means "no trustworthy line": a template
+        // monomorphization's AST counts lines into a synthesized instantiation
+        // buffer, not into the file. Print a marker rather than a number, so a
+        // harvest cannot mistake a buffer offset for a file position.
         std::cerr << "cajeta: note: [return-title] " << rec.className << "."
-                  << rec.methodName << ":" << rec.line
-                  << " carry=" << toString(rec.carry)
+                  << rec.methodName;
+        if (rec.line > 0) std::cerr << ":" << rec.line;
+        else std::cerr << ":(instantiation)";
+        std::cerr << " carry=" << toString(rec.carry)
                   << " via=" << toString(rec.via)
                   << " returns=" << rec.returnType;
         if (rec.via == TitleVia::CallRide) {
@@ -90,10 +96,18 @@ namespace cajeta::ownership {
 
     void ReturnTitleAudit::ownedBind(const std::string& calleeKey,
                                      const std::string& inMethod, int line) {
-        std::string key = inMethod + ":" + std::to_string(line) + " <- "
-            + calleeKey;
+        // 8.1.4 — `line <= 0` means the caller could not vouch for it (a
+        // template monomorphization counts lines into a synthesized buffer).
+        // Same rule as the [return-title] record: a marker, never a number
+        // that points somewhere real and wrong. Instantiation records then
+        // dedupe per method+callee rather than per bogus offset, which is the
+        // right granularity anyway — one monomorphization's line tells you
+        // nothing the others don't.
+        const std::string where = line > 0 ? std::to_string(line)
+                                           : std::string("(instantiation)");
+        std::string key = inMethod + ":" + where + " <- " + calleeKey;
         if (!binds().insert(key).second) return;
-        std::cerr << "cajeta: note: [owned-bind] " << inMethod << ":" << line
+        std::cerr << "cajeta: note: [owned-bind] " << inMethod << ":" << where
                   << " callee=" << calleeKey << "\n";
     }
 

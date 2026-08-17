@@ -1288,8 +1288,15 @@ namespace cajeta {
                             (rm->getParent()
                                 ? rm->getParent()->toCanonical() + "."
                                 : std::string()) + rm->getName();
+                        // 8.1.4 — withhold the line inside a monomorphization;
+                        // it counts into the synthesized instantiation buffer.
+                        const bool synthAsg = holder
+                            && (holder->isMethodTemplateInstantiation()
+                                || (holder->getParent()
+                                    && holder->getParent()->isInstantiation()));
                         ownership::ReturnTitleAudit::ownedBind(
-                            calleeKey + " pos=assign", in, getSourceLine());
+                            calleeKey + " pos=assign", in,
+                            synthAsg ? 0 : getSourceLine());
                     }
                 }
             }

@@ -158,6 +158,41 @@ The new rule is paired:
    way an inline local does, so if the body neither stores nor transfers
    it, the parameter's drop fires at the body's scope exit.
 
+### Lifetime elision: why a multi-parameter free function cannot return a borrow
+
+A borrow-returning function does not say whose memory the result points into —
+it is *inferred* from the parameters. With exactly one reference parameter the
+inference is forced: the result can only borrow from that one, so its lifetime
+is the argument's and the caller already holds it. That is cajeta's whole
+lifetime-elision rule, and it is why the single-parameter case needs no
+annotation.
+
+With more than one reference parameter the inference has no unique answer.
+`Str pick(Str a, Str b)` might return `a`, might return `b`, and the compiler
+cannot tell which — so it cannot tell the caller which argument must outlive
+the result. Rather than guess, or demand explicit lifetime annotations, cajeta
+rejects the shape (`CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM`):
+
+```cajeta
+// error: no single parameter's lifetime is implied
+public static Str pick(Str a, Str b) { ... }
+
+// fine — one reference parameter, the lifetime is inferred from it
+public static Str first(Str a) { ... }
+
+// fine — the result is a TITLE, so it borrows from nothing
+public static #Str join(Str a, Str b) { ... }
+```
+
+The fix is almost always the third form: a function combining two inputs is
+producing a new value, not lending one of them back. The `#` goes on the
+RETURN type; for a type parameter the spelling is `#T`. There is no `#?` —
+`?` is the wildcard sentinel, not something you can write.
+
+Value returns are exempt. An sret-constructed result (`return stack
+Optional<R>(...)`) is copied into the caller's slot and borrows from nothing,
+so `Tasks.withTimeout(Duration, Task<R>) -> Optional<R>` is legal.
+
 ## Grammar
 
 The arg-expression rule extends to admit a leading `#`:

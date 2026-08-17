@@ -1656,7 +1656,19 @@ namespace cajeta {
         rec.className = cls;
         rec.methodName = m->getName();
         rec.returnType = ret;
-        rec.line = sourceLine;
+        // 8.1.4 — a line is reported ONLY when it points at real source. A
+        // monomorphization's AST comes from a synthesized instantiation
+        // buffer, so `getSourceLine()` counts lines in that buffer, not in the
+        // file: `Stream.reduce` reported :309/:342/:370 for a body that lives
+        // at :331-335, and a different number per instantiation. Class,
+        // method, mechanism and counts are all still correct — only the line
+        // is meaningless, so it is dropped rather than printed. A line that
+        // points somewhere real and wrong is worse than no line at all; this
+        // is the same convention `AbstractSyntaxNode::getSourceFile` follows.
+        const bool synthesizedBuffer =
+            m->isMethodTemplateInstantiation()
+            || (m->getParent() && m->getParent()->isInstantiation());
+        rec.line = synthesizedBuffer ? 0 : sourceLine;
         rec.carry = llvm::isa<llvm::ConstantInt>(flag)
             ? own::TitleCarry::StaticTitle : own::TitleCarry::RuntimeFlag;
 
