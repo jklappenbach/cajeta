@@ -1350,9 +1350,20 @@ namespace cajeta {
                             // when the callee's body PROVES an interior view —
                             // every return a `this.field` read. Anything else
                             // is allowed rather than guessed at (spec §7.2).
+                            // 8.2.8 — a declared `^` return is the SIGNATURE
+                            // form of the same fact the body scan infers, and
+                            // it covers the shapes the scan cannot (`return
+                            // this;`, delegation through another `^`). Without
+                            // this arm, `Cell v = w.borrowed(); return v;`
+                            // inside a `#`-declared method recorded no origin,
+                            // §4.5 found nothing to object to, and the caller
+                            // armed a drop on the receiver's interior — the
+                            // one-hop launder of exactly the UAF `^` exists to
+                            // close.
                             if (!rm->isReturnsOwnership()
-                                    && !rm->returnsStackValue()
-                                    && rm->returnsInteriorView()) {
+                                    && (rm->isReturnsView()
+                                        || (!rm->returnsStackValue()
+                                            && rm->returnsInteriorView()))) {
                                 auto rt = dynamic_pointer_cast<CajetaClass>(
                                     rm->getReturnType());
                                 // Only title-bearing results can be wrongly

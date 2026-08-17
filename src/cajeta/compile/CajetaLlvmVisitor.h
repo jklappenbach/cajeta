@@ -2464,6 +2464,24 @@ namespace cajeta {
             // interior state is precisely where a caller reaches for `#`.
             if (ctx->typeTypeOrVoid()
                     && ctx->typeTypeOrVoid()->CARET() != nullptr) {
+                // …but never on `operator#[]`: that operator EXISTS to
+                // extract a title out of the container (`#w[i]` dispatches to
+                // it and its consumers default the transfer word to owned),
+                // so a view stance on it is a contradiction in one signature
+                // — and the `#w[i]` dispatch path never consults the stance,
+                // which would leave the caller claiming a title over interior
+                // storage. `^` belongs on the PLAIN `operator[]`.
+                if (ctx->REFERENCE() && ctx->LBRACK() && ctx->RBRACK()) {
+                    throw Exception(
+                        "`operator#[]` cannot declare a `^` (view) return: it "
+                        "is the title-EXTRACTING index operator — `#w[i]` "
+                        "dispatches to it precisely to take ownership out of "
+                        "the container, which is the opposite of a view. "
+                        "Declare the view on the plain `operator[]` instead, "
+                        "and keep `operator#[]` returning `#`. See "
+                        "specs/stdlib-ownership-convention-spec.md §4.7.",
+                        "CAJETA_ERROR_VIEW_ON_EXTRACTING_OPERATOR");
+                }
                 method->setReturnsView(true);
             }
             return static_pointer_cast<MemberDeclaration>(

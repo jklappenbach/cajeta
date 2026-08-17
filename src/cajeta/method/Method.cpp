@@ -653,8 +653,12 @@ namespace cajeta {
         }
         returnsStackValueCache = 0;
         // A `#`-marked return is an explicit heap ownership transfer, never a
-        // by-value copy — they're mutually exclusive.
-        if (returnsOwnership) return false;
+        // by-value copy — they're mutually exclusive. A `^`-marked return is a
+        // borrowed pointer into the receiver, equally never a by-value copy:
+        // without this line a `^` method containing `return stack X(...)`
+        // silently became an sret VALUE method whose returns exited codegen
+        // before the §4.7 body check could see them.
+        if (returnsOwnership || returnsView) return false;
         // A @ValueType (Vec2, Matrix, ...) is a small POD aggregate returned
         // *by value* in registers (the isValueTypeR path in generatePrototype),
         // never via the sret hidden-pointer ABI. Exclude it here so every sret
@@ -1194,6 +1198,65 @@ namespace cajeta {
         // instantiation pins each T to a real type. See
         // docs/specification/lang/templates/MethodLevelTemplate.md.
         if (isMethodTemplate()) return;
+        // 8.2.8 / spec §4.7 — `^` stance-shape validation, hoisted ABOVE the
+        // abstract early-return so interface declarations get it too (the
+        // first cut sat below it, so `interface I { ^int32 x(); }` compiled
+        // clean and every caller carried a view stance over a primitive
+        // copy). Two shapes are rejected, one is demoted:
+        //
+        // - `^` over a value-semantics return: the caller receives a copy, so
+        //   there is no interior to view. On a HAND-WRITTEN method that is an
+        //   error at the declaration. On a TEMPLATE INSTANTIATION it is a
+        //   demotion instead — `^V keyAt(K)` instantiated at V=int32 simply
+        //   returns the copy (exactly as `#` on a primitive is a no-op), or
+        //   the spec's own motivating container could not hold primitives.
+        // - `^` on a STATIC method: the view is interior to the RECEIVER and
+        //   a static method has no receiver, so there is no lifetime for the
+        //   result to ride. (This also keeps the multi-parameter borrow
+        //   check below out of `^`'s way — its fix-suggestion prescribes `#`,
+        //   which §4.7's diagnostics would then reject.)
+        if (returnsView) {
+            bool refTypedR = false;
+            if (returnType) {
+                if (auto rc = std::dynamic_pointer_cast<CajetaClass>(returnType)) {
+                    if (!std::dynamic_pointer_cast<CajetaView>(returnType)
+                            && !returnType->isValueType()) {
+                        refTypedR = true;
+                    }
+                } else if (std::dynamic_pointer_cast<CajetaArray>(returnType)) {
+                    refTypedR = true;
+                }
+            }
+            const bool instantiated = isMethodTemplateInstantiation()
+                || (parent && parent->isInstantiation());
+            if (!refTypedR && returnType) {
+                if (instantiated) {
+                    returnsView = false;
+                } else {
+                    throw Exception(
+                        "method '" + name + "' declares a `^` (view) return "
+                        "over `" + returnType->toCanonical() + "`, which has "
+                        "value semantics — the caller receives a copy, so "
+                        "there is no interior to view and nothing the sigil "
+                        "could protect. Fix: drop the `^` (a by-value return "
+                        "needs no ownership marker). See "
+                        "specs/stdlib-ownership-convention-spec.md §4.7.",
+                        "CAJETA_ERROR_VIEW_RETURN_OF_VALUE");
+                }
+            }
+            if (returnsView
+                    && modifiers.find(STATIC) != modifiers.end()) {
+                throw Exception(
+                    "method '" + name + "' is STATIC and declares a `^` "
+                    "(view) return — but a `^` result is interior to the "
+                    "RECEIVER, and a static method has no receiver, so there "
+                    "is no lifetime for the view to ride. Fix: make it an "
+                    "instance method on the owning object, return `#` for a "
+                    "fresh value, or use a plain return (spec §4.8's carry). "
+                    "See specs/stdlib-ownership-convention-spec.md §4.7.",
+                    "CAJETA_ERROR_VIEW_RETURN_STATIC");
+            }
+        }
         auto& llvmFunction = llvmFunctionRef();          // U6.3b: frozen-aware
         auto& llvmFunctionType = llvmFunctionTypeRef();  // U6.3b
         // Emit-target swap (test-reuse): for a stdlib-template instantiation
@@ -1412,21 +1475,6 @@ namespace cajeta {
                 // bootstrap shape).
                 returnIsReferenceTyped = true;
             }
-        }
-        // 8.2.8 / spec §4.7 — `^` promises a view INTO something with
-        // reference semantics. On a primitive or by-value return there is
-        // nothing to view: the caller receives a copy either way, so the
-        // sigil could only mislead. Rejected at the declaration, like the
-        // other signature-shape checks in this block.
-        if (returnsView && !returnIsReferenceTyped && returnType) {
-            throw Exception(
-                "method '" + name + "' declares a `^` (view) return over `"
-                + returnType->toCanonical() + "`, which has value semantics — "
-                "the caller receives a copy, so there is no interior to view "
-                "and nothing the sigil could protect. Fix: drop the `^` (a "
-                "by-value return needs no ownership marker). See "
-                "specs/stdlib-ownership-convention-spec.md §4.7.",
-                "CAJETA_ERROR_VIEW_RETURN_OF_VALUE");
         }
         // sret value-returning methods aren't borrow-returning — the result
         // is constructed directly into the caller's slot by copy (M3

@@ -433,10 +433,19 @@ than as corruption.
 
   | shape | error |
   |---|---|
-  | `x #= viewCall()` / `#viewCall()` | `CAJETA_ERROR_TRANSFER_OF_VIEW_RESULT` |
-  | `#T f() { return viewCall(); }` | `CAJETA_ERROR_OWNED_RETURN_OF_BORROW` |
-  | `^T` body returns owned local / fresh alloc / `#T` result / parameter | `CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR` |
-  | `^int32` (any value-semantics return) | `CAJETA_ERROR_VIEW_RETURN_OF_VALUE` |
+  | `x #= viewCall()` / `#viewCall()` (casts peeled) | `CAJETA_ERROR_TRANSFER_OF_VIEW_RESULT` |
+  | `#T f() { return viewCall(); }` — direct, cast-wrapped, or parked in a local | `CAJETA_ERROR_OWNED_RETURN_OF_BORROW` |
+  | `^T` body returns owned local / fresh alloc / `stack` / `#T` result / parameter / another object's field / `^` call on a non-`this`-rooted receiver | `CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR` |
+  | `^int32` (any value-semantics return), interfaces included; template `^V` at a primitive DEMOTES instead | `CAJETA_ERROR_VIEW_RETURN_OF_VALUE` |
+  | `^` on a static method (no receiver, no lifetime to ride) | `CAJETA_ERROR_VIEW_RETURN_STATIC` |
+  | `^` on `operator#[]` (the title-EXTRACTING operator) | `CAJETA_ERROR_VIEW_ON_EXTRACTING_OPERATOR` |
+  | method reference to a `^` method; `(P) -> ^R` function types | `CAJETA_ERROR_VIEW_REFERENCE_UNSUPPORTED` |
+  | implementor's `^` stance differs from the interface's | `CAJETA_ERROR_VIEW_STANCE_MISMATCH` |
+
+  The permitted body shapes are decided by `Method::exprIsInteriorRead` —
+  the SAME oracle §4.5's provenance machinery trusts — so `this.f`,
+  `this.f[i]`, bare `this`, `null`, and `^`-delegation on a `this`-rooted
+  receiver chain all pass, and nothing else does.
 
   `#=` receipt of a `^` result is refused along with `#x`, deliberately:
   it would record a borrow and be memory-safe, but §4.6 spent this unit

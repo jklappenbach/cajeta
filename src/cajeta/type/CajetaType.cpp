@@ -1289,6 +1289,23 @@ namespace cajeta {
                     auto vIt = canonicalMap.find(voidQ->toCanonical());
                     if (vIt != canonicalMap.end()) ret = vIt->second;
                 } else if (rt->typeType()) {
+                    // 8.2.8 / spec §4.7 — the grammar lets `^R` parse here
+                    // (functionType routes through typeTypeOrVoid), but the
+                    // function-type ABI has only two return shapes (ownership
+                    // pointer-return vs sret value-return) and no view
+                    // stance: classifying a CARET silently as either one is
+                    // a wrong ABI with no diagnostic. Rejected until `^` has
+                    // a reference-stance story (the spec's open question).
+                    if (rt->CARET() != nullptr) {
+                        throw Exception(
+                            "`^` (view) returns are not supported on function "
+                            "types: `(P) -> ^R` has no ABI form — function "
+                            "values carry an ownership stance only. Use a "
+                            "plain or `#R` return, or call the `^` method "
+                            "directly. See "
+                            "specs/stdlib-ownership-convention-spec.md §4.7.",
+                            "CAJETA_ERROR_VIEW_REFERENCE_UNSUPPORTED");
+                    }
                     ret = fromContext(rt->typeType(), module);
                     returnsOwn = (rt->REFERENCE() != nullptr);
                 }

@@ -3465,7 +3465,22 @@ bool cajetaRhsCarriesRedundantSharp(
         // the callee. A `#=` that records a borrow reintroduces exactly the
         // ambiguity the rule removed, so it is a diagnostic rather than a
         // silent success. The fix is the same one word either way: plain `=`.
-        if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
+        ExpressionPtr innerVw = inner;
+        // Identity reference casts are peeled (6.2.6c) so `v #= (Cell)
+        // h.peek()` cannot launder the stance past the check below.
+        while (auto castVw = dynamic_pointer_cast<CastExpression>(innerVw)) {
+            CajetaTypePtr dt = castVw->getDestType();
+            auto dc = dynamic_pointer_cast<CajetaClass>(dt);
+            auto dv = dynamic_pointer_cast<CajetaView>(dt);
+            bool refCast = (bool) dv
+                || (dc && !dc->isInterface() && !dc->isValueType());
+            if (!refCast || castVw->getChildren().empty()) break;
+            auto peeled =
+                dynamic_pointer_cast<Expression>(castVw->getChildren()[0]);
+            if (!peeled) break;
+            innerVw = peeled;
+        }
+        if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(innerVw)) {
             if (MethodPtr vm = mceInner->getResolvedMethod()) {
                 if (vm->isReturnsView()) {
                     throw Exception(
@@ -4967,6 +4982,25 @@ bool cajetaRhsCarriesRedundantSharp(
             // Ownership-returning methods can't adapt: an sret target
             // would discard the heap pointer's owner role and leak.
             bool returnsOwn = !staticMethod->returnsStackValue();
+            // 8.2.8 / spec §4.7 — a `^` method cannot be referenced yet: the
+            // function-type surface has no view stance, so the reference seam
+            // would erase the one fact `^` exists to make unforgeable. A
+            // `(P) -> #R` binding would even make the CALLER contractually
+            // right to `#=` the result — a title forged over the receiver's
+            // interior through the seam. Rejected until `^` has a
+            // reference-stance story (the spec's recorded open question).
+            if (staticMethod->isReturnsView()) {
+                throw Exception(
+                    "method reference '" + methodName + "' targets a `^` "
+                    "(view-returning) method: function types carry no view "
+                    "stance, so the reference would erase the signature fact "
+                    "callers rely on (and a `#R` function type would license "
+                    "a `#=` receipt over the receiver's interior). Call the "
+                    "method directly, or wrap it in a lambda that returns an "
+                    "owned copy. See "
+                    "specs/stdlib-ownership-convention-spec.md §4.7.",
+                    "CAJETA_ERROR_VIEW_REFERENCE_UNSUPPORTED");
+            }
             if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
                 bool expectedSret = !expectedFn->isReturnsOwnership()
                     && expectedFn->usesSret();
@@ -5028,6 +5062,21 @@ bool cajetaRhsCarriesRedundantSharp(
             // value. Same shape rule + LHS-pinned override + matrix
             // checks as the static case above.
             bool returnsOwn = !instanceMethod->returnsStackValue();
+            // 8.2.8 / spec §4.7 — same rejection as the static half above:
+            // no view stance on function types yet, so a `^` method cannot
+            // cross the reference seam without erasing its contract.
+            if (instanceMethod->isReturnsView()) {
+                throw Exception(
+                    "method reference '" + methodName + "' targets a `^` "
+                    "(view-returning) method: function types carry no view "
+                    "stance, so the reference would erase the signature fact "
+                    "callers rely on (and a `#R` function type would license "
+                    "a `#=` receipt over the receiver's interior). Call the "
+                    "method directly, or wrap it in a lambda that returns an "
+                    "owned copy. See "
+                    "specs/stdlib-ownership-convention-spec.md §4.7.",
+                    "CAJETA_ERROR_VIEW_REFERENCE_UNSUPPORTED");
+            }
             if (auto expectedFn = std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
                 bool expectedSret = !expectedFn->isReturnsOwnership()
                     && expectedFn->usesSret();

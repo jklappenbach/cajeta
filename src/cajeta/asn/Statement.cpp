@@ -8,7 +8,9 @@
 #include "expression/CallExpression.h"
 #include "expression/Identifier.h"
 #include "expression/DotExpression.h"
+#include "expression/LiteralExpression.h"
 #include "expression/NewExpression.h"
+#include <functional>
 #include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/ScriptUnitSynthesis.h"
@@ -2108,19 +2110,23 @@ namespace cajeta {
         // that the result is interior to the receiver, and that promise is
         // what the caller-side rules are entitled to trust without opening
         // this body. The closed list §4.7 gives: `this`, an interior read, or
-        // another `^T` result. The rejected shapes are not lifetime QUESTIONS,
-        // they are known leaks: a fresh allocation or an owned local returned
-        // as a view has no owner anywhere once this frame exits, because `^`
-        // tells the caller not to free it.
+        // another `^T` result.
+        //
+        // The shape oracle is `Method::exprIsInteriorRead` — the SAME test
+        // §4.5's provenance machinery already trusts — not a local
+        // re-implementation. The review of the first cut found the divergent
+        // copy wrong three ways at once: it blessed a dot off ANY root
+        // (`return h.c` of a frame-owned `h` — the exact UAF the stance
+        // exists to prevent), rejected `this.f[i]` (the spec's motivating
+        // indexer shape), and never matched `return null` (null is a
+        // TextLiteralExpression, so an identifier arm for it is dead code).
         //
         // Runs BEFORE the fresh-return guard below, deliberately: that guard
-        // also rejects these shapes (a `^` method is not `returnsOwnership`,
-        // so it walks the plain-return path), but its message prescribes `#`
-        // without ever acknowledging the `^` the developer actually wrote.
-        // Whichever check throws first owns the diagnostic, so this one goes
-        // first. The CALL arm is deferred to part 2 (post-codegen): a
-        // MethodCallExpression's resolvedMethod is null until it generates —
-        // the same fact that moved §4.5's view check and 8.2.12's hook.
+        // also rejects some of these shapes, but its message prescribes `#`
+        // without acknowledging the `^` the developer wrote. The CALL arm is
+        // deferred to part 2 (post-codegen): a MethodCallExpression's
+        // resolvedMethod is null until it generates — the same fact that
+        // moved §4.5's view check and 8.2.12's hook.
         if (auto m = module->getCurrentMethod()) {
             if (m->isReturnsView() && expression) {
                 ExpressionPtr inner = expression;
@@ -2132,39 +2138,69 @@ namespace cajeta {
                         }
                     }
                 }
-                // `return this` and `return this.f` / `return a.b` are the
-                // interior reads the stance is FOR. A DotExpression is an
-                // interior read whatever its root: the result points into
-                // whatever the root already owns, so the view rides that
-                // lifetime. `null` is trivially safe — it points nowhere.
+                // Identity REFERENCE casts are peeled exactly as the
+                // disarm/escape checks peel them (6.2.6c): `(Cell) h.peek()`
+                // must reach the same verdict as `h.peek()`, or a cast is a
+                // stance-laundering spell.
+                while (auto castE = dynamic_pointer_cast<CastExpression>(inner)) {
+                    CajetaTypePtr dt = castE->getDestType();
+                    auto dc = dynamic_pointer_cast<CajetaClass>(dt);
+                    auto dv = dynamic_pointer_cast<CajetaView>(dt);
+                    bool refCast = (bool) dv
+                        || (dc && !dc->isInterface() && !dc->isValueType());
+                    if (!refCast || castE->getChildren().empty()) break;
+                    auto peeled =
+                        dynamic_pointer_cast<Expression>(castE->getChildren()[0]);
+                    if (!peeled) break;
+                    inner = peeled;
+                }
                 bool permitted =
                     dynamic_pointer_cast<ThisExpression>(inner) != nullptr
-                    || dynamic_pointer_cast<DotExpression>(inner) != nullptr
-                    // Part 2's arm — do not judge a call before it resolves.
+                    || Method::exprIsInteriorRead(inner)
+                    // Part 2's arm — never judge a call before it resolves.
                     || dynamic_pointer_cast<MethodCallExpression>(inner) != nullptr;
+                if (!permitted) {
+                    // `return null` — points nowhere, nothing to free, always
+                    // a valid miss for a view-returning lookup.
+                    if (auto tl =
+                            dynamic_pointer_cast<TextLiteralExpression>(inner)) {
+                        if (tl->getLiteralType() == LITERAL_TYPE_NULL) {
+                            permitted = true;
+                        }
+                    }
+                }
                 std::string what;
-                if (auto idExpr =
-                        dynamic_pointer_cast<IdentifierExpression>(inner)) {
-                    const std::string& n = idExpr->getTextValue();
-                    if (n == "this" || n == "null") {
-                        permitted = true;
-                    } else if (auto scope = module->getScopeStack().peek()) {
-                        // A PARAMETER is refused even though it is often a
-                        // borrow in fact: `^` says "interior to the RECEIVER",
-                        // and a parameter's lifetime is the caller's. That is
-                        // the same ambiguity CAJETA_ERROR_BORROW_RETURN_MULTI_
-                        // PARAM already declines to guess at, and admitting it
-                        // here would make `^` mean two different lifetimes.
-                        FieldPtr f = scope->getField(n);
-                        if (f && m->getParameters().count(n) > 0) {
+                if (!permitted) {
+                    if (auto idExpr =
+                            dynamic_pointer_cast<IdentifierExpression>(inner)) {
+                        const std::string& n = idExpr->getTextValue();
+                        auto scope = module->getScopeStack().peek();
+                        FieldPtr f = scope ? scope->getField(n) : nullptr;
+                        if (n == "this") {
+                            permitted = true;
+                        } else if (!f) {
+                            // Not a frame binding, so the name resolves through
+                            // the implicit-this / static-property fallback:
+                            // `return c;` IS `return this.c;` spelled short —
+                            // an interior read. A name that resolves to nothing
+                            // fails later with its own diagnostic.
+                            permitted = true;
+                        } else if (m->getParameters().count(n) > 0) {
+                            // Refused even though a parameter is often a borrow
+                            // in fact: `^` says interior to the RECEIVER, and a
+                            // parameter's lifetime is the caller's — the same
+                            // ambiguity CAJETA_ERROR_BORROW_RETURN_MULTI_PARAM
+                            // declines to guess at.
                             what = "parameter `" + n + "`, whose lifetime "
                                    "belongs to the CALLER, not to this "
                                    "receiver";
                         } else {
-                            what = "local `" + n + "`, which this frame owns "
-                                   "— once it exits, nothing holds a title to "
-                                   "the value and `^` has told the caller not "
-                                   "to free it";
+                            what = "local `" + n + "` — a named frame binding "
+                                   "is outside §4.7's closed list whatever it "
+                                   "holds (a title dies with this frame; a "
+                                   "borrow's owner is not named by the "
+                                   "signature). Inline the read the local "
+                                   "stands for";
                         }
                     }
                 }
@@ -2173,11 +2209,20 @@ namespace cajeta {
                     what = "a `stack` construction, which is reclaimed "
                            "when this frame exits";
                 }
+                if (!permitted && what.empty()
+                        && dynamic_pointer_cast<DotExpression>(inner)) {
+                    // A dot whose root is NOT `this` — h.c of a local or
+                    // parameter. That interior is the OTHER object's business:
+                    // its owner is a frame binding or the caller, neither of
+                    // which this signature names, and if the root is a
+                    // frame-owned local the view outlives its storage.
+                    what = "a field of an object other than `this` — the "
+                           "receiver's signature cannot vouch for another "
+                           "object's interior (and a frame-owned root is freed "
+                           "at scope exit, dangling the view)";
+                }
                 if (!permitted) {
                     if (what.empty()) {
-                        // A fresh `heap`/`new` allocation, or any shape the
-                        // list above does not name. Never guess: describe what
-                        // `^` admits and let the developer place their case.
                         what = "a value that is not interior to the receiver";
                     }
                     throw Exception(
@@ -2185,12 +2230,12 @@ namespace cajeta {
                         "`^` (a VIEW interior to the receiver, which the "
                         "caller must not free), but it returns " + what
                         + ". A `^` return may only hand back `this`, an "
-                          "interior read (`this.field`, `a.b`), or another "
-                          "`^` result — those are the shapes whose lifetime "
-                          "the receiver already guarantees. Fix: declare the "
-                          "return `#` if the caller should receive a title "
-                          "and free it, or return interior state if you meant "
-                          "a view. See "
+                          "interior read (`this.field`, `this.field[i]`, or "
+                          "the bare-name spelling), `null`, or another `^` "
+                          "result on a `this`-rooted receiver. Fix: declare "
+                          "the return `#` if the caller should receive a "
+                          "title and free it, or return interior state if you "
+                          "meant a view. See "
                           "specs/stdlib-ownership-convention-spec.md §4.7.",
                         "CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR");
                 }
@@ -2535,17 +2580,14 @@ namespace cajeta {
         }
         llvm::Value* val = expression->generateCode(module);
         // 8.2.8 / spec §4.7 — the `^T` BODY RESTRICTION, part 2: the CALL
-        // arm, which part 1 (pre-codegen) deferred here because a
-        // MethodCallExpression's resolvedMethod is null until it generates.
-        // Delegation through another `^` is the whole point of a wrapper —
-        // the lifetime is the inner receiver's and travels intact. Anything
-        // else a call hands back is refused: a `#` result's title would be
-        // disclaimed on the spot (the value dies with nobody holding it), and
-        // a plain result's mode is runtime state `^`'s static-0 flag cannot
-        // carry. An UNRESOLVED call (intrinsic path) is refused too — `^` is
-        // a promise, and a promise this check cannot verify is not admitted;
-        // there is no `^` code in the tree yet, so strictness costs nothing
-        // and can be revisited with evidence.
+        // arm, deferred here because a MethodCallExpression's resolvedMethod
+        // is null until it generates. Delegation through another `^` is the
+        // point of a wrapper — but ONLY on a `this`-rooted receiver chain.
+        // The first cut accepted any resolved `^` callee, which laundered a
+        // view of a dying frame-owned local (`Holder tmp #= …; return
+        // tmp.peek();`) into a caller-facing borrow flag over freed memory.
+        // The receiver walk below is the missing half of the promise: every
+        // hop of the chain must itself ride `this`'s lifetime.
         if (auto m = module->getCurrentMethod()) {
             if (m->isReturnsView() && expression) {
                 ExpressionPtr innerV = expression;
@@ -2557,12 +2599,80 @@ namespace cajeta {
                         }
                     }
                 }
+                // Same reference-cast peel as part 1 (6.2.6c).
+                while (auto castE = dynamic_pointer_cast<CastExpression>(innerV)) {
+                    CajetaTypePtr dt = castE->getDestType();
+                    auto dc = dynamic_pointer_cast<CajetaClass>(dt);
+                    auto dv = dynamic_pointer_cast<CajetaView>(dt);
+                    bool refCast = (bool) dv
+                        || (dc && !dc->isInterface() && !dc->isValueType());
+                    if (!refCast || castE->getChildren().empty()) break;
+                    auto peeled =
+                        dynamic_pointer_cast<Expression>(castE->getChildren()[0]);
+                    if (!peeled) break;
+                    innerV = peeled;
+                }
                 if (auto viewCall =
                         dynamic_pointer_cast<MethodCallExpression>(innerV)) {
                     MethodPtr vm = viewCall->getResolvedMethod();
+                    // Is every receiver hop of a call chain rooted at `this`?
+                    // Accepts: absent receiver (implicit this), `this`, an
+                    // interior read, a bare name that is NOT a frame binding
+                    // (the implicit-this property spelling), and another
+                    // resolved `^` call whose own receiver passes recursively.
+                    std::function<bool(const ExpressionPtr&)> thisRooted =
+                        [&](const ExpressionPtr& r) -> bool {
+                        if (!r) return true;
+                        ExpressionPtr e = r;
+                        while (auto cE = dynamic_pointer_cast<CastExpression>(e)) {
+                            CajetaTypePtr dt = cE->getDestType();
+                            auto dc = dynamic_pointer_cast<CajetaClass>(dt);
+                            auto dv = dynamic_pointer_cast<CajetaView>(dt);
+                            bool refCast = (bool) dv
+                                || (dc && !dc->isInterface()
+                                    && !dc->isValueType());
+                            if (!refCast || cE->getChildren().empty()) break;
+                            auto pe = dynamic_pointer_cast<Expression>(
+                                cE->getChildren()[0]);
+                            if (!pe) break;
+                            e = pe;
+                        }
+                        if (dynamic_pointer_cast<ThisExpression>(e)) return true;
+                        if (Method::exprIsInteriorRead(e)) return true;
+                        if (auto id =
+                                dynamic_pointer_cast<IdentifierExpression>(e)) {
+                            if (id->getTextValue() == "this") return true;
+                            auto scope = module->getScopeStack().peek();
+                            return !(scope
+                                     && scope->getField(id->getTextValue()));
+                        }
+                        if (auto mc =
+                                dynamic_pointer_cast<MethodCallExpression>(e)) {
+                            MethodPtr rm = mc->getResolvedMethod();
+                            if (rm && rm->isReturnsView()) {
+                                auto& ch = mc->getChildren();
+                                return thisRooted(ch.empty()
+                                    ? nullptr
+                                    : dynamic_pointer_cast<Expression>(ch[0]));
+                            }
+                        }
+                        return false;
+                    };
                     std::string what;
                     if (vm && vm->isReturnsView()) {
-                        // permitted: view-to-view delegation
+                        auto& ch = viewCall->getChildren();
+                        if (!thisRooted(ch.empty()
+                                ? nullptr
+                                : dynamic_pointer_cast<Expression>(ch[0]))) {
+                            what = "the result of `" + vm->toCanonical(false)
+                                 + "` on a receiver that is not rooted at "
+                                   "`this` — the view rides THAT receiver's "
+                                   "lifetime (a frame local dies at scope "
+                                   "exit; a parameter's owner is the caller), "
+                                   "which this method's signature cannot "
+                                   "vouch for";
+                        }
+                        // else: view-to-view delegation on this's lifetime.
                     } else if (vm && vm->isReturnsOwnership()) {
                         what = "the result of `" + vm->toCanonical(false)
                              + "`, which is declared `#` — the title arrives "
@@ -2584,12 +2694,11 @@ namespace cajeta {
                             "which the caller must not free), but it returns "
                             + what
                             + ". A `^` return may only hand back `this`, an "
-                              "interior read (`this.field`, `a.b`), or "
-                              "another `^` result — those are the shapes "
-                              "whose lifetime the receiver already "
-                              "guarantees. Fix: declare the return `#` if the "
-                              "caller should receive a title and free it, or "
-                              "return interior state if you meant a view. See "
+                              "interior read, `null`, or another `^` result "
+                              "on a `this`-rooted receiver. Fix: declare the "
+                              "return `#` if the caller should receive a "
+                              "title and free it, or return interior state if "
+                              "you meant a view. See "
                               "specs/stdlib-ownership-convention-spec.md "
                               "§4.7.",
                             "CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR");
@@ -2615,8 +2724,24 @@ namespace cajeta {
         if (auto m = module->getCurrentMethod()) {
             if (m->isReturnsOwnership() && expression
                     && !dynamic_pointer_cast<MoveExpression>(expression)) {
+                // Identity reference casts are peeled (6.2.6c) so
+                // `return (Cell) h.peek();` cannot launder the stance.
+                ExpressionPtr innerB = expression;
+                while (auto castE =
+                        dynamic_pointer_cast<CastExpression>(innerB)) {
+                    CajetaTypePtr dt = castE->getDestType();
+                    auto dc = dynamic_pointer_cast<CajetaClass>(dt);
+                    auto dv = dynamic_pointer_cast<CajetaView>(dt);
+                    bool refCast = (bool) dv
+                        || (dc && !dc->isInterface() && !dc->isValueType());
+                    if (!refCast || castE->getChildren().empty()) break;
+                    auto peeled = dynamic_pointer_cast<Expression>(
+                        castE->getChildren()[0]);
+                    if (!peeled) break;
+                    innerB = peeled;
+                }
                 if (auto viewCall =
-                        dynamic_pointer_cast<MethodCallExpression>(expression)) {
+                        dynamic_pointer_cast<MethodCallExpression>(innerB)) {
                     if (MethodPtr vm = viewCall->getResolvedMethod()) {
                         if (vm->isReturnsView()) {
                             throw Exception(

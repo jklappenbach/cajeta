@@ -166,10 +166,14 @@ TEST(BorrowReturn, ViewOfFreshAllocationIsRejected) {
     EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR", errorOf(
         std::string(kHolder) +
         "public final class F {\n"
-        "    public static ^Cell make() { return heap Cell(1); }\n"
+        "    public ^Cell make() { return heap Cell(1); }\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 run() { Cell v = F.make(); return v.n; }\n"
+        "    public static int32 run() {\n"
+        "        F f #= heap F();\n"
+        "        Cell v = f.make();\n"
+        "        return v.n;\n"
+        "    }\n"
         "}\n"));
 }
 
@@ -178,13 +182,17 @@ TEST(BorrowReturn, ViewOfOwnedLocalIsRejected) {
     EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR", errorOf(
         std::string(kHolder) +
         "public final class F {\n"
-        "    public static ^Cell make() {\n"
+        "    public ^Cell make() {\n"
         "        Cell x #= heap Cell(1);\n"
         "        return x;\n"
         "    }\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 run() { Cell v = F.make(); return v.n; }\n"
+        "    public static int32 run() {\n"
+        "        F f #= heap F();\n"
+        "        Cell v = f.make();\n"
+        "        return v.n;\n"
+        "    }\n"
         "}\n"));
 }
 
@@ -195,10 +203,14 @@ TEST(BorrowReturn, ViewOfOwnedResultIsRejected) {
         std::string(kHolder) +
         "public final class F {\n"
         "    public static #Cell own() { return heap Cell(1); }\n"
-        "    public static ^Cell borrowed() { return F.own(); }\n"
+        "    public ^Cell borrowed() { return F.own(); }\n"
         "}\n"
         "public final class D {\n"
-        "    public static int32 run() { Cell v = F.borrowed(); return v.n; }\n"
+        "    public static int32 run() {\n"
+        "        F f #= heap F();\n"
+        "        Cell v = f.borrowed();\n"
+        "        return v.n;\n"
+        "    }\n"
         "}\n"));
 }
 
@@ -210,12 +222,13 @@ TEST(BorrowReturn, ViewOfParameterIsRejected) {
     EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR", errorOf(
         std::string(kHolder) +
         "public final class F {\n"
-        "    public static ^Cell pass(Cell c) { return c; }\n"
+        "    public ^Cell pass(Cell c) { return c; }\n"
         "}\n"
         "public final class D {\n"
         "    public static int32 run() {\n"
         "        Holder h #= heap Holder(7);\n"
-        "        Cell v = F.pass(h.peek());\n"
+        "        F f #= heap F();\n"
+        "        Cell v = f.pass(h.peek());\n"
         "        return v.n;\n"
         "    }\n"
         "}\n"));
@@ -233,6 +246,278 @@ TEST(BorrowReturn, ViewOfPrimitiveReturnIsRejectedAtTheDeclaration) {
         "}\n"
         "public final class D {\n"
         "    public static int32 run() { return F.bad(); }\n"
+        "}\n"));
+}
+
+// ---------------------------------------------------- review-hardening pins
+//
+// Each test below pins a hole the adversarial review of the first cut found
+// and this file's fixtures did not cover. The recurring root cause was a
+// divergent re-implementation of `Method::exprIsInteriorRead`; the checks now
+// use it directly, and these tests are the proof of the difference.
+
+// The first cut permitted ANY DotExpression, so a view into a frame-owned
+// local's interior compiled — a guaranteed UAF (the local's drop frees the
+// storage the view points into at scope exit).
+TEST(BorrowReturn, ViewOfALocalObjectsFieldIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR", errorOf(
+        std::string(kHolder) +
+        "public final class W {\n"
+        "    public ^Cell f() {\n"
+        "        Holder h #= heap Holder(1);\n"
+        "        return h.c;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        W w #= heap W();\n"
+        "        Cell v = w.f();\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// The first cut's delegation arm accepted any resolved `^` callee without
+// looking at the RECEIVER, so a dying local laundered a view through a nested
+// `^` call. Every hop of the chain must ride `this`'s lifetime.
+TEST(BorrowReturn, ViewDelegationOnALocalReceiverIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR", errorOf(
+        std::string(kHolder) +
+        "public final class W {\n"
+        "    public ^Cell grab() {\n"
+        "        Holder tmp #= heap Holder(9);\n"
+        "        return tmp.peek();\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        W w #= heap W();\n"
+        "        Cell v = w.grab();\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// The one-hop launder: a `^` result parked in a local and returned under a
+// `#` declaration. Closed by recording call-borrow provenance from the
+// SIGNATURE (isReturnsView) instead of only the body scan, so §4.5's
+// existing check finds the origin.
+TEST(BorrowReturn, SharpReturnOfViewResultThroughALocalIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_OWNED_RETURN_OF_BORROW", errorOf(
+        std::string(kHolder) +
+        "public final class W {\n"
+        "    public Holder h;\n"
+        "    public W(int32 v) { this.h #= heap Holder(v); }\n"
+        "    public ^Cell borrowed() { return this.h.peek(); }\n"
+        "}\n"
+        "public final class F {\n"
+        "    public static #Cell forge(W w) {\n"
+        "        Cell v = w.borrowed();\n"
+        "        return v;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        W w #= heap W(7);\n"
+        "        Cell v #= F.forge(w);\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// `return stack Cell(1)` in a `^` body: before returnsStackValue() learned
+// about `^`, the method silently became an sret VALUE method whose returns
+// exited codegen before the body check could see them.
+TEST(BorrowReturn, ViewOfStackConstructionIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_NOT_INTERIOR", errorOf(
+        std::string(kHolder) +
+        "public final class F {\n"
+        "    public ^Cell make() { return stack Cell(1); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        F f #= heap F();\n"
+        "        Cell v = f.make();\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// An identity reference cast is a stance-laundering spell unless peeled —
+// the same 6.2.6c peel the disarm/escape checks already do. Both the
+// callee-side forward and the caller-side receipt are pinned.
+TEST(BorrowReturn, CastCannotLaunderAViewPastTheSharpReturnCheck) {
+    EXPECT_EQ("CAJETA_ERROR_OWNED_RETURN_OF_BORROW", errorOf(
+        std::string(kHolder) +
+        "public final class F {\n"
+        "    public static #Cell f(Holder h) { return (Cell) h.peek(); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h #= heap Holder(7);\n"
+        "        Cell v #= F.f(h);\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+TEST(BorrowReturn, CastCannotLaunderAViewPastTheReceiptCheck) {
+    EXPECT_EQ("CAJETA_ERROR_TRANSFER_OF_VIEW_RESULT", errorOf(driver(
+        "        Holder h #= heap Holder(7);\n"
+        "        Cell v #= (Cell) h.peek();\n"
+        "        return v.n;\n")));
+}
+
+// `^` on `operator#[]` is a contradiction in one signature: that operator
+// exists to EXTRACT a title, and its dispatch path never consults the stance.
+TEST(BorrowReturn, ViewOnTheExtractingIndexOperatorIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_ON_EXTRACTING_OPERATOR", errorOf(
+        std::string(kHolder) +
+        "public final class Bag {\n"
+        "    public Cell x;\n"
+        "    public Bag() { this.x #= heap Cell(3); }\n"
+        "    public ^Cell operator#[](int32 i) { return this.x; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n"));
+}
+
+// A method reference to a `^` method would erase the stance at the seam —
+// and a `#R` function type would even license a `#=` receipt over the
+// receiver's interior. Rejected until `^` has a reference-stance story.
+TEST(BorrowReturn, MethodReferenceToAViewMethodIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_REFERENCE_UNSUPPORTED", errorOf(driver(
+        "        Holder h #= heap Holder(7);\n"
+        "        (Holder) -> Cell f = Holder::peek;\n"
+        "        Cell v = f(h);\n"
+        "        return v.n;\n")));
+}
+
+// `(P) -> ^R` has no ABI form — function values carry an ownership stance
+// only, and silently classifying the CARET picked the sret VALUE ABI.
+TEST(BorrowReturn, ViewInFunctionTypePositionIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_REFERENCE_UNSUPPORTED", errorOf(driver(
+        "        Holder h #= heap Holder(7);\n"
+        "        (Holder) -> ^Cell f = Holder::peek;\n"
+        "        return 0;\n")));
+}
+
+// Interface-typed call sites apply the INTERFACE's stance rules, so a `#`
+// implementor under a `^` declaration is a leak (and the converse a double
+// free). The stance is part of the implementation obligation.
+TEST(BorrowReturn, ImplementorStanceMustMatchTheInterfaces) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_STANCE_MISMATCH", errorOf(
+        std::string(kHolder) +
+        "public interface Peeker {\n"
+        "    ^Cell look();\n"
+        "}\n"
+        "public final class Own implements Peeker {\n"
+        "    public #Cell look() { return heap Cell(1); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Own o #= heap Own();\n"
+        "        return 0;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// `this.cells[i]` — an index into interior storage is still interior
+// (`Method::exprIsInteriorRead`'s ArrayIndex recursion). The first cut
+// rejected the spec's own motivating indexer shape.
+TEST(BorrowReturn, IndexedInteriorReadIsPermitted) {
+    EXPECT_EQ(7, runI32(
+        std::string(kHolder) +
+        "public final class W {\n"
+        "    public Cell[] cells;\n"
+        "    public W(int32 v) {\n"
+        "        this.cells #= heap Cell[2];\n"
+        "        this.cells[0] #= heap Cell(v);\n"
+        "    }\n"
+        "    public ^Cell at(int32 i) { return this.cells[i]; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        W w #= heap W(7);\n"
+        "        Cell v = w.at(0);\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// `return null` — the natural miss for a view-returning lookup. null is a
+// TextLiteralExpression, which the first cut's identifier arm could never
+// match (dead code the review caught).
+TEST(BorrowReturn, ViewMayReturnNull) {
+    EXPECT_EQ(7, runI32(
+        std::string(kHolder) +
+        "public final class W {\n"
+        "    public Holder h;\n"
+        "    public W(int32 v) { this.h #= heap Holder(v); }\n"
+        "    public ^Cell find(boolean hit) {\n"
+        "        if (hit) { return this.h.peek(); }\n"
+        "        return null;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        W w #= heap W(7);\n"
+        "        Cell v = w.find(true);\n"
+        "        return v.n;\n"
+        "    }\n"
+        "}\n"));
+}
+
+// A STATIC method has no receiver, so there is no lifetime for a view to
+// ride — rejected at the declaration (which also keeps the multi-parameter
+// borrow check's `use #` fix-suggestion out of `^`'s way).
+TEST(BorrowReturn, ViewOnAStaticMethodIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_STATIC", errorOf(
+        std::string(kHolder) +
+        "public final class F {\n"
+        "    public static ^Cell s(Holder h) { return null; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n"));
+}
+
+// The value-semantics rejection reaches ABSTRACT declarations too — the
+// first cut sat below the abstract early-return, so an interface could
+// declare `^int32` and every caller carried a view stance over a copy.
+TEST(BorrowReturn, ViewOfPrimitiveOnAnInterfaceIsRejected) {
+    EXPECT_EQ("CAJETA_ERROR_VIEW_RETURN_OF_VALUE", errorOf(
+        "package test;\n"
+        "public interface P2 {\n"
+        "    ^int32 x();\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n"));
+}
+
+// …but a template's `^V` instantiated at a primitive DEMOTES to a plain
+// copy instead of erroring (exactly as `#` on a primitive is a no-op), or
+// the spec's motivating keyAt container could not hold primitives. At a
+// class type the view stance survives and the interior stays alive.
+TEST(BorrowReturn, TemplateViewDemotesAtPrimitiveAndViewsAtClass) {
+    EXPECT_EQ(7, runI32(
+        std::string(kHolder) +
+        "public class Box<V> {\n"
+        "    public V v;\n"
+        "    public Box(#V x) { this.v #= x; }\n"
+        "    public ^V get() { return this.v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Box<int32> b #= heap Box<int32>(5);\n"
+        "        int32 k = b.get();\n"
+        "        Box<Cell> bc #= heap Box<Cell>(#(heap Cell(7)));\n"
+        "        Cell cv = bc.get();\n"
+        "        if (k != 5) { return -1; }\n"
+        "        return cv.n;\n"
+        "    }\n"
         "}\n"));
 }
 

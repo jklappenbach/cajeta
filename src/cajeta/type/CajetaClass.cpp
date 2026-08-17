@@ -5031,6 +5031,40 @@ namespace cajeta {
                 if (m->isConstructor()) continue;
                 if (m->getModifiers().find(STATIC) != m->getModifiers().end()) continue;
                 if (auto concrete = findConcreteFor(m)) {
+                    // 8.2.8 / spec §4.7 — the return STANCE is part of the
+                    // obligation when `^` is involved on either side. `^`'s
+                    // entire premise is that call sites trust the signature
+                    // they can see, and an interface-typed call site sees the
+                    // INTERFACE's: a `#` implementor under a `^` declaration
+                    // transfers a title the caller was told never to free
+                    // (leak), and a `^` implementor under a `#` declaration
+                    // hands out an interior the caller was told to drop
+                    // (double free). (`#`-vs-plain mismatches predate this
+                    // check and keep their existing behavior — a separate
+                    // audit's scope, not silently changed here.)
+                    if (m->isReturnsView() != concrete->isReturnsView()) {
+                        throw Exception(
+                            "class '" + qName->toCanonical() + "' implements '"
+                            + m->toCanonical(/*labeled=*/false)
+                            + "' with a mismatched return stance: the "
+                            "interface declares "
+                            + (m->isReturnsView()
+                                ? std::string("`^` (a view the caller must "
+                                              "not free)")
+                                : std::string("a non-view return"))
+                            + " but the implementation declares "
+                            + (concrete->isReturnsView()
+                                ? std::string("`^`")
+                                : (concrete->isReturnsOwnership()
+                                    ? std::string("`#` (an owned transfer)")
+                                    : std::string("a plain return")))
+                            + ". Interface-typed call sites apply the "
+                            "interface's rules, so the mismatch is a leak or "
+                            "a double free depending on direction. Fix: make "
+                            "the stances agree. See "
+                            "specs/stdlib-ownership-convention-spec.md §4.7.",
+                            "CAJETA_ERROR_VIEW_STANCE_MISMATCH");
+                    }
                     uniqueByCanonical[m->toCanonical(/*labeled=*/false)] = concrete;
                     continue;
                 }
