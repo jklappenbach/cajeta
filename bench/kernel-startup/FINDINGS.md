@@ -502,3 +502,34 @@ Two findings worth keeping:
 
 All six end-to-end lazy tests are back in the sweep (1.3-4.1 s each);
 `test/stress_filter.txt` no longer carries them.
+
+### Lazy codegen lands: 50.3 s -> 12.4 s (Units 4-5 core, 2026-08-17)
+
+With `kDefaultLazy = true` (Unit 4), the kernel emits bodies on demand:
+the eager fixpoint runs generateCode only for the cell's own module, the
+stdlib module is never delivered whole — each cell delivers its
+llvm.global_ctors DELTA (keep-set-gated registration, spec 2.2.1) and the
+generator serves everything else per class on first use.
+
+    project-with-deps, cell 1 (jupyter_client, real dependency):
+
+    session start (2026-08-14)    255.7 s
+    after two-stage parse (a)      50.3 s
+    after lazy codegen             12.4 s     (~20x overall)
+
+    [cell] verify + JIT materialize   16,026 ms -> 11 ms
+    bodies:   23,394 eager generateCode calls -> 1,055 lazy deliveries
+              (440 ms of emission at ~420 us each)
+    cell 2:   0.18 s
+
+Battery with lazy as DEFAULT: 3,735 discovered, 0 failed / 0 timed out /
+0 crashed, 2,103 s. The remaining cell-1 cost is ingest + stdlib prime
+(~10.5 s measured 2026-08-16) — the codegen term is gone.
+
+The flip found three deep bugs, all state-splitting, all fixed (see the
+4.2.4 commit): per-snapshot cloning of mutable runtime statics (result
+buffer, exception TLS, drop chain), thread-locality dropped by legalize
+declarations, and emulated-TLS lookups arriving as __emutls_v.X. Plus
+two battery finds: snapshots must cut from getEmitModule() (user-typed
+specializations emit into the cell), and patchVirtualTableDropFn
+asserting on declaration vtables.
