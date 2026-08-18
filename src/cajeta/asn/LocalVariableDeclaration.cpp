@@ -180,6 +180,10 @@ namespace cajeta {
         llvm::Value* nameStr = builder->CreateGlobalString(field->getName());
         builder->CreateCall(bindFn, {nameStr, slot,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), size)});
+        // The assignment path keys session re-binds on this flag (4.2.4(b));
+        // without it a top-level `k += 2` skips the re-box and a later cell
+        // reads the stale box.
+        field->setSessionBound(true);
     }
 
     // Emit drop-chain wiring for an owner local. Allocates a DropEntry blob on
