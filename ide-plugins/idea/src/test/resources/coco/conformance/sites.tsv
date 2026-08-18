@@ -1,0 +1,48 @@
+coco-sites v1
+0	function	0	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)		
+1	line	5	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)		
+2	branch-true	5	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)	entry	land_rhs
+3	branch-false	5	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)	entry	land_merge
+4	branch-true	5	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)	land_merge	if_then
+5	branch-false	5	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)	land_merge	if_merge
+6	line	6	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)		
+7	line	8	-1	probe/Cond.cajeta	probe.Cond	both(b:int32,a:int32)		
+8	function	0	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)		
+9	line	11	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)		
+10	branch-true	11	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)	entry	lor_merge
+11	branch-false	11	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)	entry	lor_rhs
+12	branch-true	11	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)	lor_merge	if_then
+13	branch-false	11	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)	lor_merge	if_merge
+14	line	12	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)		
+15	line	14	-1	probe/Cond.cajeta	probe.Cond	either(b:int32,a:int32)		
+16	function	0	-1	probe/Cond.cajeta	probe.Cond	guarded(n:int32)		
+17	line	27	-1	probe/Cond.cajeta	probe.Cond	guarded(n:int32)		
+18	function	0	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+19	line	17	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+20	line	18	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+21	line	19	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+22	branch-true	19	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)	while_head	while_body
+23	branch-false	19	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)	while_head	while_exit
+24	line	20	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+25	line	23	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+26	line	21	-1	probe/Cond.cajeta	probe.Cond	loop(n:int32)		
+27	function	0	-1	probe/Cond.cajeta	probe.Cond	main()		
+28	line	37	-1	probe/Cond.cajeta	probe.Cond	main()		
+29	line	38	-1	probe/Cond.cajeta	probe.Cond	main()		
+30	line	39	-1	probe/Cond.cajeta	probe.Cond	main()		
+31	branch-true	39	-1	probe/Cond.cajeta	probe.Cond	main()	ofc.add.ok4	if_then
+32	branch-false	39	-1	probe/Cond.cajeta	probe.Cond	main()	ofc.add.ok4	if_merge
+33	line	40	-1	probe/Cond.cajeta	probe.Cond	main()		
+34	line	42	-1	probe/Cond.cajeta	probe.Cond	main()		
+35	function	0	-1	probe/Cond.cajeta	probe.Cond	neverCalled(n:int32)		
+36	line	31	-1	probe/Cond.cajeta	probe.Cond	neverCalled(n:int32)		
+37	branch-true	31	-1	probe/Cond.cajeta	probe.Cond	neverCalled(n:int32)	entry	if_then
+38	branch-false	31	-1	probe/Cond.cajeta	probe.Cond	neverCalled(n:int32)	entry	if_merge
+39	line	32	-1	probe/Cond.cajeta	probe.Cond	neverCalled(n:int32)		
+40	line	34	-1	probe/Cond.cajeta	probe.Cond	neverCalled(n:int32)		
+41	function	0	-1	probe/Helper.cajeta	probe.Helper	twice(n:int32)		
+42	line	5	-1	probe/Helper.cajeta	probe.Helper	twice(n:int32)		
+43	branch-true	5	-1	probe/Helper.cajeta	probe.Helper	twice(n:int32)	entry	if_then
+44	branch-false	5	-1	probe/Helper.cajeta	probe.Helper	twice(n:int32)	entry	if_merge
+45	line	5	-1	probe/Helper.cajeta	probe.Helper	twice(n:int32)		
+46	line	6	-1	probe/Helper.cajeta	probe.Helper	twice(n:int32)		

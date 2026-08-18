@@ -80,3 +80,14 @@ slow; the entire problem is standing the session up.
 ## Not a gate
 
 No thresholds, no pass/fail. Numbers get committed here and reviewed.
+
+## Measured — 2026-08-17, cajeta 0.20.0 (64214f6e), Release, repeat=2 medians
+
+Lazy codegen is now the default (bodies emitted on first use; the
+`lazy-codegen` plan). Same protocol as above.
+
+| scenario | startup | cell 1 | cell 2 | vs 2026-08-15 |
+|---|---|---|---|---|
+| no-project | 0.24s | **3.37s** | 0.04s | ~16x |
+| project-no-deps | 0.23s | **3.34s** | 0.04s | ~16x |
+| project-with-deps | 0.23s | **8.22s** | 0.08s | **~31x** |

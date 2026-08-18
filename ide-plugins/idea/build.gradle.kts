@@ -40,6 +40,15 @@ dependencies {
             providers.gradleProperty("platformType"),
             providers.gradleProperty("platformVersion"),
         )
+
+        // Coverage lives in a platform MODULE, not in the java-coverage plugin —
+        // com.intellij.modules.coverage owns the coverageEngine/coverageRunner
+        // extension points and the Coverage tool window. Depending on the plugin
+        // instead would pull in Java-specific code and break the "no CLion-only,
+        // works on IDEA Community" requirement (ide-coverage spec §1.5.4).
+        bundledModule("intellij.platform.coverage")
+        bundledModule("intellij.platform.coverage.agent")
+
         testFramework(TestFrameworkType.Platform)
     }
 }

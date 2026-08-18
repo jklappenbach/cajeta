@@ -533,3 +533,24 @@ declarations, and emulated-TLS lookups arriving as __emutls_v.X. Plus
 two battery finds: snapshots must cut from getEmitModule() (user-typed
 specializations emit into the cell), and patchVirtualTableDropFn
 asserting on declaration vtables.
+
+### Unit 6 close-out: the three scenarios, re-measured (2026-08-17)
+
+Release binary at 64214f6e (lazy default + the 5.1.3 metadata-legalize fix
+and the json-envelope lint routing), quiet box (load < 2 gate), repeat=2
+medians via measure.py — the same protocol as the 2026-08-15 baseline.
+
+    scenario            cell 1 (2026-08-15)   cell 1 (now)   cell 2
+    no-project                    54.19 s          3.37 s     0.04 s
+    project-no-deps               53.45 s          3.34 s     0.04 s
+    project-with-deps            255.66 s          8.22 s     0.08 s
+
+no-project ~16x, project-with-deps ~31x over the arc. The deps scenario
+improved further since the 12.4 s Units-4/5 measurement (same protocol);
+the remaining 8.2 s is ingest + stdlib prime + the ~5 s dependency
+overhead, with the codegen term gone. project-no-deps still matches
+no-project (-0.03 s), so the empty-classpath resident path held.
+
+Battery wall-clock re-measure (6.2.2): 2,214 s / 32 shards on the 5.3.1
+clean run, vs 2,103 s at the 4.3.1 lazy-default run and 1,794-2,109 s
+pre-lazy references — unchanged within box noise.
