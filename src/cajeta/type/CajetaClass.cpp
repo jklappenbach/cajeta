@@ -1772,7 +1772,8 @@ namespace cajeta {
                 auto propType = prop->getType();
                 auto propClass = dynamic_pointer_cast<CajetaClass>(propType);
                 if (propClass && propClass->isWildcardInstantiation()) {
-                    std::cerr << "warning: [wildcard-field-in-small-class] "
+                    std::ostringstream w;
+                    w << "warning: [wildcard-field-in-small-class] "
                         << "class " << qName->toCanonical()
                         << " declares wildcard-typed field '"
                         << prop->getName() << "' of type "
@@ -1782,8 +1783,8 @@ namespace cajeta {
                         << "class are constructed in a hot path, pick a "
                         << "concrete element type or push the wildcard "
                         << "outward. Suppress with "
-                        << "@SuppressLint(\"wildcard-field-in-small-class\")."
-                        << std::endl;
+                        << "@SuppressLint(\"wildcard-field-in-small-class\").\n";
+                    logLine("warn", w.str());
                 }
             }
         }
@@ -2048,13 +2049,14 @@ namespace cajeta {
                     // Missing or unbuilt — leave a null slot, but say so:
                     // a dispatch through it is a guaranteed nil-call SIGSEGV
                     // (iface-generic-returns spec, requirement 2.3).
-                    std::cerr << "warning: [iface-vtable-null-slot] "
-                              << classCanonical << " has no built implementation for "
-                              << ifaceCanonical << "::" << ifaceMethod->getName()
-                              << (concrete ? " (found, LLVM function unbuilt)"
-                                           : " (no same-name concrete method)")
-                              << " — dispatch through this interface slot will crash"
-                              << std::endl;
+                    std::ostringstream w;
+                    w << "warning: [iface-vtable-null-slot] "
+                      << classCanonical << " has no built implementation for "
+                      << ifaceCanonical << "::" << ifaceMethod->getName()
+                      << (concrete ? " (found, LLVM function unbuilt)"
+                                   : " (no same-name concrete method)")
+                      << " — dispatch through this interface slot will crash\n";
+                    logLine("warn", w.str());
                     entries.push_back(llvm::ConstantPointerNull::get(ptrTy));
                     continue;
                 }
@@ -6807,11 +6809,13 @@ namespace cajeta {
                 // (an interface method has no body, so that's a nil call at
                 // runtime). Diagnose instead of crashing silently
                 // (iface-generic-returns spec, requirement 2.3).
-                std::cerr << "warning: [iface-dispatch-index-miss] "
-                          << this->getQName()->toCanonical() << "::"
-                          << method->getName()
-                          << " not found in the flattened interface method list"
-                          << " — interface dispatch will crash" << std::endl;
+                std::ostringstream w;
+                w << "warning: [iface-dispatch-index-miss] "
+                  << this->getQName()->toCanonical() << "::"
+                  << method->getName()
+                  << " not found in the flattened interface method list"
+                  << " — interface dispatch will crash\n";
+                logLine("warn", w.str());
             }
 
             // Swap the body pointer for the data pointer at the `this`

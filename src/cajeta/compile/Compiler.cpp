@@ -132,7 +132,8 @@ namespace cajeta {
         };
         std::ofstream out(path);
         if (!out) {
-            std::cerr << "warning: could not write keepset JSON to " << path << "\n";
+            logLine("warn",
+                    "warning: could not write keepset JSON to " + path + "\n");
             return;
         }
         out << "{\n";
@@ -2759,9 +2760,10 @@ namespace cajeta {
             // there, keeping everything IS the point, not a selector to tighten.
             for (auto& reason : rk.forceAllReasons) {
                 if (reason == "--debug-info=full") continue;
-                std::cerr << "warning: [reflection-forces-keep-all] " << reason
-                          << " — the lean linker retains the whole class registry"
-                             " for this build.\n";
+                logLine("warn",
+                        "warning: [reflection-forces-keep-all] " + reason +
+                        " — the lean linker retains the whole class registry"
+                        " for this build.\n");
             }
             if (!rk.forcesAll) {
                 // canon -> first reason it was kept (provenance for --why-kept

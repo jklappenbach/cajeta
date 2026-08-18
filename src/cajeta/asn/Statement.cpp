@@ -476,7 +476,8 @@ namespace cajeta {
                         auto recvClass = dynamic_pointer_cast<CajetaClass>(
                             recv->getResolvedType());
                         if (recvClass && recvClass->isWildcardInstantiation()) {
-                            std::cerr << "warning: [discarded-wildcard-next] "
+                            std::ostringstream w;
+                            w << "warning: [discarded-wildcard-next] "
                                 << "call to '" << name
                                 << "' on wildcard-typed receiver "
                                 << recvClass->toCanonical()
@@ -486,8 +487,8 @@ namespace cajeta {
                                 << "discarded; remove the call if you don't "
                                 << "need its value, or bind the result and "
                                 << "act on it. Suppress with "
-                                << "@SuppressLint(\"discarded-wildcard-next\")."
-                                << std::endl;
+                                << "@SuppressLint(\"discarded-wildcard-next\").\n";
+                            logLine("warn", w.str());
                         }
                     }
                 }

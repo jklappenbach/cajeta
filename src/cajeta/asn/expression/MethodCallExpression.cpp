@@ -7801,12 +7801,13 @@ namespace cajeta {
                             if (covered) break;
                         }
                         if (!covered) {
-                            std::cerr << "warning: [uncaught-throws] call to "
+                            std::ostringstream w;
+                            w << "warning: [uncaught-throws] call to "
                                 << methodCallName
                                 << " can throw " << thrownType->toCanonical()
                                 << " but enclosing " << currentMethod->getName()
-                                << " neither catches nor declares it"
-                                << std::endl;
+                                << " neither catches nor declares it\n";
+                            logLine("warn", w.str());
                         }
                     }
                 }
@@ -7857,7 +7858,8 @@ namespace cajeta {
                 if (receiverIsWildcard && isElementProducing
                         && !currentMethod->isLintSuppressed(
                             "wildcard-materialize-in-loop")) {
-                    std::cerr << "warning: [wildcard-materialize-in-loop] "
+                    std::ostringstream w;
+                    w << "warning: [wildcard-materialize-in-loop] "
                         << "call to '" << methodCallName
                         << "' on wildcard-typed receiver "
                         << targetClass->toCanonical()
@@ -7866,8 +7868,8 @@ namespace cajeta {
                         << " — dispatch goes through the template-relative "
                         << "vtable hash on every iteration; downcast to the "
                         << "concrete type at the loop boundary, or suppress "
-                        << "with @SuppressLint(\"wildcard-materialize-in-loop\")."
-                        << std::endl;
+                        << "with @SuppressLint(\"wildcard-materialize-in-loop\").\n";
+                    logLine("warn", w.str());
                 }
                 if (targetMethod
                         && !currentMethod->isLintSuppressed(
@@ -7875,7 +7877,8 @@ namespace cajeta {
                     auto retClass = dynamic_pointer_cast<CajetaClass>(
                         targetMethod->getReturnType());
                     if (retClass && retClass->isWildcardInstantiation()) {
-                        std::cerr << "warning: [wildcard-crosses-hot-boundary] "
+                        std::ostringstream w;
+                        w << "warning: [wildcard-crosses-hot-boundary] "
                             << "call to '" << methodCallName
                             << "' inside a loop in "
                             << currentMethod->getName()
@@ -7884,8 +7887,8 @@ namespace cajeta {
                             << " — the receive site can't be specialized "
                             << "at the call boundary; restructure to "
                             << "concrete or suppress with "
-                            << "@SuppressLint(\"wildcard-crosses-hot-boundary\")."
-                            << std::endl;
+                            << "@SuppressLint(\"wildcard-crosses-hot-boundary\").\n";
+                        logLine("warn", w.str());
                     }
                 }
             }
