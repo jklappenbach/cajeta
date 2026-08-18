@@ -336,3 +336,30 @@ TEST(XpuCpuWaveSimdTests, divergentReduceSumIsActiveLaneMasked) {
 // replaces the scalar reduceSum call with its SIMD variant — visible as the
 // VFABI attribute and the `llvm.vector.reduce.add` the variant lowers to (the
 // width-1 scalar path never emits a vector reduce).
+
+// The arm64-darwin/NEON failure class, pinned on x86: strip masked-memory SIMD
+// from the cost model (baseline SSE2) and the divergent reduce must STILL be
+// wave-correct. Before the mask-as-data rewrite (CpuRegistration), whether the
+// guarded wave call widened through its masked VFABI variant was a COST choice,
+// and on hosts without masked loads/stores LoopVectorize scalarized it per
+// predicated lane — each lane calling the width-1 identity stub, so every
+// active lane silently received its own value instead of the wave sum (the
+// v0.21.0 release-gate failure on arm64-darwin). runWaveDriver's ISA-specific
+// width expectations don't apply under the override, so drive directly.
+#if defined(__x86_64__) && !defined(_WIN32)
+TEST(XpuCpuWaveSimdTests, divergentReduceSumSurvivesNoMaskedMemoryHost) {
+    setenv("CAJETA_XPU_CPU_MCPU", "x86-64", 1);
+    setenv("CAJETA_XPU_CPU_MATTR", "+sse2", 1);
+    auto jit = CajetaJit::compile(kWaveSource, "test.M", cpuOptions());
+    unsetenv("CAJETA_XPU_CPU_MCPU");
+    unsetenv("CAJETA_XPU_CPU_MATTR");
+    ASSERT_NE(jit, nullptr);
+    auto fn = jit->lookup<unsigned (*)()>("runDivergentReduceSum");
+    ASSERT_NE(fn, nullptr);
+    unsigned w = fn();
+    EXPECT_GT(w, 2u) << "driver failure code " << w
+                     << " (< 8: setup; 100+i: wrong result at lane i-100)";
+    EXPECT_TRUE(isPowerOfTwo(w)) << "wave width " << w << " not a power of two";
+    EXPECT_EQ(w, 4u);   // SSE2: 128-bit vectors, 4 x i32 lanes
+}
+#endif

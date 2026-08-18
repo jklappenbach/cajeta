@@ -61,6 +61,12 @@ std::unique_ptr<llvm::TargetMachine> createCpuTargetMachine() {
             sf.AddFeature(f.first(), f.second);
         features = sf.getString();
     }
+    // Debug overrides: reproduce ANOTHER host's cost-model decisions here
+    // (e.g. CAJETA_XPU_CPU_MCPU=x86-64 CAJETA_XPU_CPU_MATTR= strips AVX so
+    // LoopVectorize faces NEON-like no-masked-memory costs on an x86 box —
+    // how the arm64-darwin divergent-wave miscompile was reproduced locally).
+    if (const char* mcpu = std::getenv("CAJETA_XPU_CPU_MCPU")) cpu = mcpu;
+    if (const char* mattr = std::getenv("CAJETA_XPU_CPU_MATTR")) features = mattr;
     llvm::TargetOptions opt;
     llvm::TargetMachine* tm = target->createTargetMachine(
         triple, cpu, features, opt, /*RM=*/llvm::Reloc::PIC_);

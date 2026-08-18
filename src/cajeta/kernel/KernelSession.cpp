@@ -1,4 +1,5 @@
 #include "cajeta/kernel/KernelSession.h"
+#include "cajeta/jit/CajetaJitWinSymbols.h"
 
 #include "cajeta/jit/JitCoffLinking.h"
 
@@ -369,6 +370,33 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
                       + llvm::toString(generator.takeError()));
     }
     mainJD.addGenerator(std::move(*generator));
+
+    // Windows symbol bridge: a PE exports nothing, so the process generator
+    // above cannot see the statically linked CRT/libm/cajeta-native families
+    // (see CajetaJitWinSymbols.cpp). CajetaJitHost installs this map and the
+    // kernel session must too — without it every cell fails to materialize on
+    // COFF ("Symbols not found: [ close, opendir, fabsf, __cajeta_tls_*, ... ]",
+    // the v0.21.0 gate's last Windows failure class). No-op elsewhere.
+    {
+        size_t winSymCount = 0;
+        const cajeta::jit::JitWinSym* winSyms =
+            cajeta::jit::winJitSymbols(&winSymCount);
+        if (winSymCount) {
+            auto& execSession = impl.jit->getExecutionSession();
+            llvm::orc::SymbolMap winSymMap;
+            for (size_t i = 0; i < winSymCount; ++i) {
+                winSymMap[execSession.intern(winSyms[i].name)] =
+                    llvm::orc::ExecutorSymbolDef(
+                        llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
+                        llvm::JITSymbolFlags::Exported);
+            }
+            if (auto err = mainJD.define(
+                    llvm::orc::absoluteSymbols(std::move(winSymMap)))) {
+                return setErr("windows symbol bridge define failed: "
+                              + llvm::toString(std::move(err)));
+            }
+        }
+    }
 
     auto bootstrapOrErr = impl.jit->createJITDylib("CajetaBootstrap");
     if (!bootstrapOrErr) {
