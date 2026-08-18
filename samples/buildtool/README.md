@@ -7,9 +7,11 @@ demonstrates a different project shape from
 | Sample                  | Shape                                                |
 |-------------------------|------------------------------------------------------|
 | [`basic/`](basic/)      | Single-package project — the simplest possible shape |
+| [`library/`](library/)  | Reusable package published as a `.cja` archive       |
 | [`workspace/`](workspace/) | Workspace with shared libraries + apps as members    |
 | [`multi-binary/`](multi-binary/) | Single package producing several binaries from one source tree |
 | [`melt/`](melt/)        | Melt-only package — curated version set, no source   |
+| [`notebook/`](notebook/) | Jupyter notebook project — `run` opens the lab, deps become the kernel classpath |
 
 These directories double as the source of truth for
 `cajeta init <type>`. CMake (`cmake/EmbedInitTemplates.cmake`)

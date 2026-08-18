@@ -50,10 +50,11 @@ namespace {
 
 } // namespace
 
-TEST(InitTemplateTests, embedsAllFiveArchetypes) {
+TEST(InitTemplateTests, embedsAllSixArchetypes) {
     auto names = availableInitTemplates();
     std::set<std::string> nameSet(names.begin(), names.end());
-    EXPECT_EQ(names.size(), 5u);
+    EXPECT_EQ(names.size(), 6u);
+    EXPECT_TRUE(nameSet.count("notebook"));
     EXPECT_TRUE(nameSet.count("basic"));
     EXPECT_TRUE(nameSet.count("library"));
     EXPECT_TRUE(nameSet.count("workspace"));
@@ -168,4 +169,30 @@ TEST(InitTemplateTests, errorsOnUnknownTemplate) {
         EXPECT_NE(msg.find("basic"), std::string::npos)
             << "error should list available templates; got: " << msg;
     }
+}
+
+// jupyter-kernel 7.2.11 — the notebook archetype: a manifest whose `run`
+// task launches the notebook application, plus a starter notebook. The
+// kernelspec install lives in `cajeta init` (verified by the CLI-level
+// test below), not in the template bytes.
+TEST(InitTemplateTests, notebookArchetypeShapesARunTaskAndANotebook) {
+    auto tpl = findInitTemplate("notebook");
+    ASSERT_TRUE(tpl.has_value());
+
+    std::string manifest, starter;
+    for (const auto& f : tpl->files) {
+        if (f.relativePath == "cajeta.json") manifest = std::string(f.contents);
+        if (f.relativePath == "notebooks/welcome.ipynb")
+            starter = std::string(f.contents);
+    }
+    ASSERT_FALSE(manifest.empty()) << "notebook archetype has no manifest";
+    ASSERT_FALSE(starter.empty()) << "notebook archetype has no starter notebook";
+
+    auto parsed = loadManifestString(manifest, "cajeta.json");
+    ASSERT_TRUE(bool(parsed)) << "notebook manifest failed to parse";
+    EXPECT_NE(manifest.find("\"run\""), std::string::npos);
+    EXPECT_NE(manifest.find("jupyter"), std::string::npos)
+        << "the run task does not launch the notebook application";
+    EXPECT_NE(starter.find("\"cajeta\""), std::string::npos)
+        << "the starter notebook does not select the cajeta kernel";
 }

@@ -1,0 +1,56 @@
+{
+    // Notebook starter — what `cajeta init notebook` writes. A project
+    // whose primary artifact is a Jupyter notebook: the manifest's
+    // dependencies become the kernel's classpath (the Cajeta kernel
+    // resolves the nearest cajeta.json when it launches), and `cajeta run`
+    // opens the notebook application. `cajeta init notebook` also installs
+    // the Jupyter kernelspec if it is not already present.
+
+    "details": {
+        "name":               "com.example.notebook",
+        "version":            "0.1.0",
+        "description":        "Cajeta notebook project",
+        "license":            "Apache-2.0",
+        "authors":            ["sample"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["filesystem", "clock"],
+
+        // Dependencies declared here are resolved once when the kernel's
+        // session starts, and every cell can import them. The core stdlib
+        // (cajeta.lang, cajeta.collection, cajeta.math, …) is built into
+        // the toolchain and needs no entry.
+        "dependencies": {},
+
+        "repositories": [
+            { "name": "central", "url": "https://olla.cajeta.dev",
+              "priority": 0 }
+        ]
+    },
+
+    "tasks": {
+
+        // `cajeta run` — open the notebook application in this project.
+        // Jupyter launches kernels in the notebook's own directory, so the
+        // Cajeta kernel picks up THIS manifest's dependencies.
+        "run": {
+            "description": "Open Jupyter Lab on this project's notebooks",
+            "actions": [
+                { "action": "exec", "command": "jupyter",
+                  "args":   ["lab", "notebooks/welcome.ipynb"] }
+            ]
+        },
+
+        // The kernelspec is normally installed by `cajeta init notebook`;
+        // this re-runs that install (e.g. after a toolchain upgrade).
+        "kernelspec": {
+            "description": "(Re)install the Jupyter kernelspec for Cajeta",
+            "actions": [
+                { "action": "exec", "command": "cajeta",
+                  "args":   ["init", "--kernel", "--force"] }
+            ]
+        }
+    }
+}

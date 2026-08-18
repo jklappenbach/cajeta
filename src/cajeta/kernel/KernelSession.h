@@ -172,6 +172,10 @@ namespace cajeta::kernel {
         // Archive paths added directly, after anything `projectDir`
         // resolved. For a caller that knows exactly which `.cja` it wants.
         std::vector<std::string> classpath;
+        // Called at each build phase boundary (7.2.8) so a host can narrate
+        // the wait — the whole session build runs inside the first
+        // execute_request, which otherwise shows a silent running cell.
+        std::function<void(const std::string& phase)> progress;
     };
 
     class KernelSession {

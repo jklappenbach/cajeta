@@ -99,6 +99,11 @@ namespace cajeta::kernel {
             } else {
                 SessionOptions options;
                 options.projectDir = projectDir;
+                // 7.2.8 — the build runs inside the first execute_request;
+                // narrate it so the cell reads as working, not hung.
+                options.progress = [this](const std::string& phase) {
+                    stream("stdout", "[session] " + phase + "…\n");
+                };
                 session = KernelSession::create(options, error);
             }
             live.store(session.get(), std::memory_order_release);
@@ -210,7 +215,17 @@ namespace cajeta::kernel {
         const int count = executionCount;
 
         std::string error;
+        const bool building = !session;
         KernelSession* s = ensureSession(&error);
+        // 7.2.8 — the narration served its purpose; clear it so the cell's
+        // final state is only its real output. wait=true defers the clear
+        // until the next output arrives, so the last phase line stays
+        // visible right up to the result.
+        if (building && s) {
+            dap::Json clear = dap::Json::object();
+            clear["wait"] = true;
+            publishIoPub("clear_output", request, std::move(clear));
+        }
         if (!s) {
             dap::Json err = dap::Json::object();
             err["ename"] = "KernelError";
