@@ -100,7 +100,7 @@ TEST(OllaWriteThroughTest, ResolveWritesNoWorkstationCacheTier) {
         "{\"details\":{\"name\":\"c\",\"version\":\"0.1.0\"},\"settings\":{"
         "\"dependencies\":{\"y.pkg\":\"2.0.0\"},"
         "\"repositories\":[{\"name\":\"remote\",\"type\":\"filesystem\","
-        "\"path\":\"" + remote.string() + "\"}]}}");
+        "\"path\":\"" + remote.generic_string() + "\"}]}}");
     ASSERT_TRUE(static_cast<bool>(m)) << errorText(m.takeError());
     auto r = resolveProjectDependencies(*m, proj.string(), home.string());
     ASSERT_TRUE(static_cast<bool>(r)) << errorText(r.takeError());

@@ -33,3 +33,30 @@ static inline int cajeta_getpid() {
     return ::getpid();
 #endif
 }
+
+// Portable path of the RUNNING TEST EXECUTABLE — used by tests that locate
+// the build tree relative to themselves. `/proc/self/exe` is a Linux-ism:
+// fs::canonical("/proc/self/exe") throws on macOS (no /proc) and Windows.
+#include <filesystem>
+#include <string>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>   // _NSGetExecutablePath
+#elif defined(_WIN32)
+// <process.h> already included above; GetModuleFileNameA needs windows.h.
+#include <windows.h>
+#endif
+
+static inline std::filesystem::path cajeta_self_exe() {
+#if defined(_WIN32)
+    char buf[4096];
+    DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    return std::filesystem::canonical(std::string(buf, n));
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t sz = sizeof(buf);
+    if (::_NSGetExecutablePath(buf, &sz) != 0) return {};
+    return std::filesystem::canonical(buf);
+#else
+    return std::filesystem::canonical("/proc/self/exe");
+#endif
+}

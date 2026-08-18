@@ -41,9 +41,12 @@ TEST(NativeOllaHttpTests, fetchesOverHttpIntoCache) {
                                  srv.baseUrl(), cacheRoot);
     ASSERT_TRUE((bool) r) << errText(r.takeError());
     EXPECT_EQ(*r, cacheRoot + "/zstd/1.5.2/linux-x64/libzstd.a");
-    std::ifstream f(*r, std::ios::binary);
-    std::string got((std::istreambuf_iterator<char>(f)), {});
-    EXPECT_EQ(got, "ZSTD-HTTP-BYTES");
+    {
+        // Scoped: Windows cannot remove_all below while this stream is open.
+        std::ifstream f(*r, std::ios::binary);
+        std::string got((std::istreambuf_iterator<char>(f)), {});
+        EXPECT_EQ(got, "ZSTD-HTTP-BYTES");
+    }
     fs::remove_all(cacheRoot);
 }
 

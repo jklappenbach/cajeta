@@ -139,25 +139,28 @@ namespace cajeta::buildtool {
         std::string resolveLlvmTool(const char* tool) {
             namespace fs = std::filesystem;
             std::error_code ec;
+            // generic_string() throughout: these paths are advertised to
+            // plugins in JSON, where a native '\\' both needs escaping and
+            // defeats substring checks; Windows spawns accept '/' fine.
             if (const char* env = ::getenv("CAJETA_LLVM_BIN")) {
                 fs::path p = fs::path(env) / tool;
-                if (fs::is_regular_file(p, ec)) return p.string();
+                if (fs::is_regular_file(p, ec)) return p.generic_string();
             }
 #ifdef CAJETA_LLVM_TOOLS_BIN
             {
                 fs::path p = fs::path(CAJETA_LLVM_TOOLS_BIN) / tool;
-                if (fs::is_regular_file(p, ec)) return p.string();
+                if (fs::is_regular_file(p, ec)) return p.generic_string();
             }
 #endif
             {
                 fs::path self = runningExecutable();
                 if (self.is_absolute()) {
                     fs::path p = self.parent_path() / tool;
-                    if (fs::is_regular_file(p, ec)) return p.string();
+                    if (fs::is_regular_file(p, ec)) return p.generic_string();
                 }
             }
             if (auto onPath = llvm::sys::findProgramByName(tool)) {
-                return *onPath;
+                return fs::path(*onPath).generic_string();
             }
             return tool;
         }

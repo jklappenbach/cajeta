@@ -167,10 +167,11 @@ TEST_F(CompilerMcpServerTest, listAndGetSkillsTools) {
 #ifndef _WIN32
 
 #include "cajeta/buildtool/Subprocess.h"
+#include "../PortableEnv.h"
 
 namespace {
     std::string mcpCajetaExe() {
-        auto build = fs::canonical("/proc/self/exe").parent_path().parent_path();
+        auto build = cajeta_self_exe().parent_path().parent_path();
         return (build / "src" / "cajeta").string();
     }
 
