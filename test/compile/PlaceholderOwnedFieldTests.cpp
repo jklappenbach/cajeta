@@ -320,4 +320,81 @@ TEST(PlaceholderOwnedFieldTests, PROBE_inlineBuildCrossFrame) {
 // `#Interface` return anywhere — must keep working. It is what cajeta-ml
 // ships today, so a regression here breaks a released library.
 
+// P5 — the cajeta-ml migration crash shape (Bagging.cajeta:118,
+// GridSearch.cajeta:75): the factory method is declared ON AN INTERFACE and
+// dispatched through an interface-typed receiver. P1 covers a static callee
+// and P3 a class-instance callee; here `create` reaches the callee via the
+// per-(impl, iface) vtable, and the `#=` bind must still end with the local's
+// slot holding a well-formed fat-body pointer. The observed failure stored
+// the raw implementer pointer instead, so the next dispatch read the vtable
+// out of body[0] and the first data field out of body[+8].
+TEST(PlaceholderOwnedFieldTests, PROBE_ifaceFactoryDispatchOwnedBind) {
+    std::string src =
+        "package test;\n"
+        "public interface Face {\n"
+        "    int32 poke(int32 v);\n"
+        "}\n"
+        "public interface Maker {\n"
+        "    #Face create(int32 k);\n"
+        "}\n"
+        "public final class Plus implements Face {\n"
+        "    public int32 k;\n"
+        "    public Plus(int32 kk) { this.k = kk; }\n"
+        "    public int32 poke(int32 v) { return v + this.k; }\n"
+        "}\n"
+        "public final class PlusMaker implements Maker {\n"
+        "    public #Face create(int32 k) { return heap Plus(k); }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Maker m = heap PlusMaker();\n"
+        "        Face f #= m.create(10);\n"
+        "        return f.poke(5);\n"          // 15
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 15);
+}
+
+// P6 — same, with the factory held in a FIELD (`this.factory.create(...)`),
+// the literal Bagging::fit shape.
+TEST(PlaceholderOwnedFieldTests, PROBE_ifaceFactoryFieldDispatchOwnedBind) {
+    std::string src =
+        "package test;\n"
+        "public interface Face {\n"
+        "    int32 poke(int32 v);\n"
+        "}\n"
+        "public interface Maker {\n"
+        "    #Face create(int32 k);\n"
+        "}\n"
+        "public final class Plus implements Face {\n"
+        "    public int32 k;\n"
+        "    public Plus(int32 kk) { this.k = kk; }\n"
+        "    public int32 poke(int32 v) { return v + this.k; }\n"
+        "}\n"
+        "public final class PlusMaker implements Maker {\n"
+        "    public #Face create(int32 k) { return heap Plus(k); }\n"
+        "}\n"
+        "public final class Bag {\n"
+        "    public Maker factory;\n"
+        "    public Bag(#Maker f) { this.factory #= f; }\n"
+        "    public int32 fit(int32 v) {\n"
+        "        Face p #= this.factory.create(10);\n"
+        "        return p.poke(v);\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Bag b = heap Bag(#heap PlusMaker());\n"
+        "        return b.fit(5);\n"            // 15
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(fn, nullptr);
+    EXPECT_EQ(fn(), 15);
+}
+
 } // namespace
