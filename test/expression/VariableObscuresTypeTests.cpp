@@ -120,3 +120,67 @@ TEST(VariableObscuresTypeTests, classNameBeforeLocalDeclarationStillClass) {
     ASSERT_NE(nullptr, fn);
     EXPECT_EQ(42, fn());
 }
+
+// 6.3.3 sibling — the Math-namespace short-circuit ran before the
+// obscuring check, so a local named `Math` was hijacked by the constant
+// table: `Math.PI` returned 3.14159 while `Math` was a Data local.
+TEST(VariableObscuresTypeTests, localObscuresMathNamespace) {
+    auto jit = CajetaJit::compile(
+        "package test;\n"
+        "public class Data {\n"
+        "    public float64 PI;\n"
+        "    public Data(float64 v) { this.PI = v; }\n"
+        "}\n"
+        "public final class App {\n"
+        "    public static float64 run() {\n"
+        "        Data Math = heap Data(1.5);\n"
+        "        return Math.PI;\n"
+        "    }\n"
+        "}\n", "test.App");
+    ASSERT_NE(nullptr, jit.get());
+    auto fn = jit->lookup<double (*)()>("run");
+    ASSERT_NE(nullptr, fn);
+    EXPECT_EQ(1.5, fn());
+}
+
+// 6.3.3 sibling — the enum-constant short-circuit had the same hole: a
+// local named like an enum type lost `X.MEMBER` to the ordinal table.
+TEST(VariableObscuresTypeTests, localObscuresEnumTypeName) {
+    auto jit = CajetaJit::compile(
+        "package test;\n"
+        "public enum Verb { GET, POST }\n"
+        "public class Data {\n"
+        "    public int32 POST;\n"
+        "    public Data(int32 v) { this.POST = v; }\n"
+        "}\n"
+        "public final class App {\n"
+        "    public static int32 run() {\n"
+        "        Data Verb = heap Data(7);\n"
+        "        return Verb.POST;\n"
+        "    }\n"
+        "}\n", "test.App");
+    ASSERT_NE(nullptr, jit.get());
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(nullptr, fn);
+    EXPECT_EQ(7, fn());
+}
+
+// Non-regression: with no obscuring local, both short-circuits keep
+// working exactly as before.
+TEST(VariableObscuresTypeTests, namespaceAndEnumStillResolveWithoutALocal) {
+    auto jit = CajetaJit::compile(
+        "package test;\n"
+        "public enum Verb { GET, POST }\n"
+        "public final class App {\n"
+        "    public static int32 run() {\n"
+        "        float64 pi = Math.PI;\n"
+        "        int32 ord = Verb.POST;\n"
+        "        if (pi > 3.14 && pi < 3.15) { return 10 + ord; }\n"
+        "        return ord;\n"
+        "    }\n"
+        "}\n", "test.App");
+    ASSERT_NE(nullptr, jit.get());
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    ASSERT_NE(nullptr, fn);
+    EXPECT_EQ(11, fn());
+}

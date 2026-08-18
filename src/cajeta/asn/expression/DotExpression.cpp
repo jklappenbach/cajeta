@@ -221,10 +221,29 @@ namespace cajeta {
         // rejected at the `#` operand instead.
         // Per `specs/transfer-demotes-to-borrow-spec.md` §2.3.1.
 
+        // Variable obscures type (script-units 6.3.3(a); JLS 6.4.2's
+        // obscuring rule): a bare identifier naming BOTH an in-scope
+        // variable and a class means the VARIABLE. Codegen is sequential,
+        // so the scope holds exactly the locals declared so far — a use
+        // BEFORE the local's declaration still means the class. Checked
+        // once here, consumed by all four sites below: the namespace and
+        // enum-constant short-circuits (a local named `Math` or like an
+        // enum type must not be hijacked by the constant tables), the
+        // static shortcut (which must not hijack `S.total` when `S` is a
+        // local), and the pinned-type repair before the property walk.
+        FieldPtr obscuringLocal;
+        if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+            if (auto sc = module->getScopeStack().peek()) {
+                obscuringLocal = sc->getField(idLhs->getTextValue());
+            }
+        }
+
         // Static-namespace constants: Math.PI / Math.E / Integer.MAX_VALUE / ... .
         // These have no instance backing and don't survive the GEP path below, so we
         // short-circuit them here and emit IR constants directly.
-        if (auto idExpr = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
+        if (auto idExpr = obscuringLocal
+                ? nullptr
+                : dynamic_pointer_cast<IdentifierExpression>(children[0])) {
             auto& ctx = *module->getLlvmContext();
             const std::string& ns = idExpr->getTextValue();
             if (ns == "Math") {
@@ -258,25 +277,6 @@ namespace cajeta {
                 }
                 return llvm::ConstantInt::get(
                     llvm::Type::getInt32Ty(ctx), *v, /*isSigned=*/true);
-            }
-        }
-
-        // Variable obscures type (script-units 6.3.3(a); JLS 6.4.2's
-        // obscuring rule): a bare identifier naming BOTH an in-scope
-        // variable and a class means the VARIABLE. Codegen is sequential,
-        // so the scope holds exactly the locals declared so far — a use
-        // BEFORE the local's declaration still means the class. Checked
-        // once here, consumed by both the static shortcut below (which
-        // must not hijack `S.total` when `S` is a local) and the
-        // pinned-type repair before the property walk (the resolver
-        // PRE-PASS runs before body locals register, so its
-        // static-reference fallback can pin the CLASS on a receiver that
-        // is really a local — the poison that broke stdlib codegen for
-        // any user class named like a stdlib method's local, e.g. `t`).
-        FieldPtr obscuringLocal;
-        if (auto idLhs = dynamic_pointer_cast<IdentifierExpression>(children[0])) {
-            if (auto sc = module->getScopeStack().peek()) {
-                obscuringLocal = sc->getField(idLhs->getTextValue());
             }
         }
 
