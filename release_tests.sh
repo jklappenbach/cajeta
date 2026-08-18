@@ -81,14 +81,28 @@ fi
 echo ">> Compiler smoke: $("$CAJETA_BIN" --version 2>/dev/null | head -1)"
 
 # Parse the filter file: drop `#` comments and blank lines, trim whitespace,
-# collect one pattern per remaining line.
+# collect one pattern per remaining line. An `optional:` prefix marks a
+# feature-gated suite (compiled out on hosts without the feature's dep, e.g.
+# KernelTransportTests without libzmq) — absent is tolerated with a warning,
+# present runs like any other line.
 patterns=()
+optionals=()                                    # parallel to patterns: 1 = optional
 while IFS= read -r line || [ -n "$line" ]; do
     line="${line%%#*}"                          # strip trailing/whole-line comment
     line="${line#"${line%%[![:space:]]*}"}"     # ltrim
     line="${line%"${line##*[![:space:]]}"}"     # rtrim
     [ -z "$line" ] && continue
+    opt=0
+    case "$line" in
+        optional:*)
+            opt=1
+            line="${line#optional:}"
+            line="${line#"${line%%[![:space:]]*}"}"   # ltrim again after prefix
+            ;;
+    esac
+    [ -z "$line" ] && continue
     patterns+=("$line")
+    optionals+=("$opt")
 done < "$FILTER_FILE"
 
 if [ ${#patterns[@]} -eq 0 ]; then
@@ -114,10 +128,19 @@ if [ -z "$discovered" ]; then
     exit 1
 fi
 missing=()
-for p in "${patterns[@]}"; do
+kept=()
+for i in "${!patterns[@]}"; do
+    p="${patterns[$i]}"
     suite="${p%%.*}"
     # gtest prints each suite as a `SuiteName.` header at column 0.
-    if ! grep -qE "^${suite}\." <<< "$discovered"; then
+    if grep -qE "^${suite}\." <<< "$discovered"; then
+        kept+=("$p")
+    elif [ "${optionals[$i]}" = "1" ]; then
+        # Feature-gated suite compiled out on this host (e.g. no libzmq).
+        # Skipping is deliberate and LOUD — a rename of an optional suite
+        # also lands here, so the warning names the line to check.
+        echo ">> optional suite absent on this host (feature compiled out?): $p — skipped" >&2
+    else
         missing+=("$p")
     fi
 done
@@ -127,6 +150,13 @@ if [ ${#missing[@]} -gt 0 ]; then
     echo "A suite was renamed or removed — update $FILTER_FILE." >&2
     exit 1
 fi
+if [ ${#kept[@]} -eq 0 ]; then
+    # Never fall through to an empty pattern list: cajeta_tests.sh with no
+    # filters runs the FULL battery, which is not what a release gate ran.
+    echo "error: every release-filter suite is absent on this host" >&2
+    exit 1
+fi
+patterns=("${kept[@]}")
 
 # Delegate to cajeta_tests.sh for sharded execution. PARALLEL is forced (default
 # nproc) so the subset runs in parallel even though it's a filtered run —

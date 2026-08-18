@@ -64,8 +64,8 @@ if(NOT TARGET zstd::libzstd_shared)
     # finds libzstd.dll.a — matching the clang/xxd HINTS below and the
     # top-level CMAKE_PREFIX_PATH seed.
     set(_cajeta_zstd_win_hint "")
-    if(WIN32 AND EXISTS "C:/msys64/mingw64/lib")
-        set(_cajeta_zstd_win_hint "C:/msys64/mingw64/lib")
+    if(WIN32 AND CAJETA_MSYS_MINGW_ROOT)
+        set(_cajeta_zstd_win_hint "${CAJETA_MSYS_MINGW_ROOT}/lib")
     endif()
     find_library(ZSTD_LIBRARY
             NAMES zstd libzstd.so libzstd.so.1 libzstd.dylib libzstd.1.dylib
@@ -105,8 +105,8 @@ elseif(TARGET libzmq-static)
     set(CAJETA_ZMQ_TARGET libzmq-static)
 else()
     set(_cajeta_zmq_win_hint "")
-    if(WIN32 AND EXISTS "C:/msys64/mingw64/lib")
-        set(_cajeta_zmq_win_hint "C:/msys64/mingw64/lib")
+    if(WIN32 AND CAJETA_MSYS_MINGW_ROOT)
+        set(_cajeta_zmq_win_hint "${CAJETA_MSYS_MINGW_ROOT}/lib")
     endif()
     find_path(ZMQ_INCLUDE_DIR zmq.h
             HINTS
@@ -325,8 +325,9 @@ endif()
 # above, so the lld discovery automatically tracks whichever LLVM was found
 # (no separate hardcoded major version).
 # lld MUST come from the SAME toolchain as find_package(LLVM) above. On the
-# self-hosted Windows runner the top-level CMakeLists seeds C:/msys64/mingw64
-# onto CMAKE_PREFIX_PATH (needed so glog/gtest/antlr4/zstd/... resolve there) —
+# self-hosted Windows runner the top-level CMakeLists seeds the active MSYS2
+# mingw64 prefix (CAJETA_MSYS_MINGW_ROOT) onto CMAKE_PREFIX_PATH (needed so
+# glog/gtest/antlr4/zstd/... resolve there) —
 # but that MSYS2 tree also ships a STOCK mingw lld of a DIFFERENT LLVM major
 # (22) than the cajeta-llvm fork we actually link (23), built against a
 # different libstdc++. A bare find_library there mixes stock-22 lld objects
@@ -418,8 +419,9 @@ set(GENERATED_SOURCES
 # rationale as the CMAKE_PREFIX_PATH seed in the top-level CMakeLists. No effect
 # on Linux/macOS, where /usr/bin etc. already cover it.
 set(CAJETA_MSYS_BIN_HINTS "")
-if(WIN32)
-    foreach(_d "C:/msys64/mingw64/bin" "C:/msys64/usr/bin")
+if(WIN32 AND CAJETA_MSYS_MINGW_ROOT)
+    get_filename_component(_cajeta_msys_root "${CAJETA_MSYS_MINGW_ROOT}" DIRECTORY)
+    foreach(_d "${CAJETA_MSYS_MINGW_ROOT}/bin" "${_cajeta_msys_root}/usr/bin")
         if(EXISTS "${_d}")
             list(APPEND CAJETA_MSYS_BIN_HINTS "${_d}")
         endif()

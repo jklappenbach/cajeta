@@ -24,6 +24,12 @@
 # release_tests.cmd, and the CMake `release_tests` target) join the
 # patterns with `:` into a single --gtest_filter.
 #
+# An `optional:` prefix marks a FEATURE-GATED suite: one whose tests are
+# compiled out when the feature's dependency is absent on the build host
+# (so zero matches there is expected, not drift). release_tests.sh skips
+# an absent optional suite with a loud warning and still runs it wherever
+# it exists; a missing NON-optional suite remains a hard error.
+#
 # MAINTENANCE
 # -----------
 # release_tests.sh fails loudly if any pattern below matches zero
@@ -102,7 +108,7 @@ JsonCTests.*
 KernelIoTests.*
 KernelProtocolTests.*
 KernelSessionTests.*
-KernelTransportTests.*
+optional: KernelTransportTests.*  # zmq transport - compiled out without libzmq (CAJETA_HAVE_ZMQ); release runners install no zeromq
 LambdaNestedBlockPatternsTests.*
 LockfileMeltsTests.*
 LockfileTests.*

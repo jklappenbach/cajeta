@@ -468,6 +468,15 @@ jobs:
           CMAKE_EXTRA=()
           if [ "${{ runner.os }}" = "Windows" ]; then
             export CC=gcc CXX=g++
+            # This self-hosted runner reuses build/ across runs, and CMake
+            # caches every find_ result. setup-msys2 (update: true) can move
+            # the toolchain between runs while cached include/lib paths keep
+            # pointing at the OLD msys2 (or at C:/msys64 from before the
+            # active-prefix fix) — which is how the v0.21.0 leg mixed two
+            # mingw runtimes and died in <stdlib.h>. Reconfigure fresh; the
+            # object cache is unaffected and a toolchain move forces a full
+            # recompile anyway.
+            rm -rf build/CMakeCache.txt build/CMakeFiles
             # Pin the runtime-bitcode clang to the cajeta-llvm FORK (LLVM 23).
             # The fork's relocated LLVMConfig.cmake exports a stale
             # LLVM_TOOLS_BINARY_DIR (a build-machine path that doesn't exist
