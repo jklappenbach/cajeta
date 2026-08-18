@@ -442,6 +442,127 @@ TEST(SignatureAbiTests, plainReturnYieldsTitleLintExemptsSharpReturns) {
         << err;
 }
 
+// --- 8.2.25 — [plain-return-of-owned-slot] ------------------------------
+//
+// `Cell f() { Cell[] a #= heap Cell[1]; a[0] #= heap Cell(5); return a[0]; }`
+// compiles and the caller's first read is freed memory: the frame-owned
+// array's scope-exit drop frees the armed element before the return value
+// is ever used. FRESH_RETURN cannot cover it (slot ownership is runtime
+// state — `a[0] = longLived; return a[0];` is legal), so per Julian
+// (2026-08-17) the provable subset gets a LINT, and there is deliberately
+// NO runtime protection. The proof is structural dominance: the arming
+// store must sit in a block that unconditionally encloses the return.
+TEST(SignatureAbiTests, plainReturnOfOwnedSlotLintFires) {
+    std::string src =
+        "package test;\n"
+        "public final class SlotCellA {\n"
+        "    public int32 n;\n"
+        "    public SlotCellA(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static SlotCellA f() {\n"
+        "        SlotCellA[] a #= heap SlotCellA[1];\n"
+        "        a[0] #= heap SlotCellA(5);\n"
+        "        return a[0];\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    try { CajetaJit::compile(src, "test.D"); } catch (...) {}
+    std::string err = ::testing::internal::GetCapturedStderr();
+    EXPECT_NE(err.find("[plain-return-of-owned-slot]"), std::string::npos)
+        << err;
+}
+
+// A plain slot store LENDS — the array never owns the element, its drop
+// won't touch it, and returning the borrow is legitimate. Silent.
+TEST(SignatureAbiTests, plainReturnOfOwnedSlotLintStaysSilentOnLentSlot) {
+    std::string src =
+        "package test;\n"
+        "public final class SlotCellB {\n"
+        "    public int32 n;\n"
+        "    public SlotCellB(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class Keeper {\n"
+        "    public SlotCellB keep;\n"
+        "    public Keeper() { this.keep #= heap SlotCellB(9); }\n"
+        "    public SlotCellB pick() {\n"
+        "        SlotCellB[] a #= heap SlotCellB[1];\n"
+        "        a[0] = this.keep;\n"
+        "        return a[0];\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Keeper k = heap Keeper();\n"
+        "        return k.pick().n;\n"
+        "    }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    try { CajetaJit::compile(src, "test.D"); } catch (...) {}
+    std::string err = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[plain-return-of-owned-slot]"), std::string::npos)
+        << err;
+}
+
+// The prescribed fix — `#SlotCellC f()` + `return #a[0]` (title extraction,
+// slot bit decays, array drop skips the element) — is silent AND runs
+// correctly: the extracted Cell survives the array.
+TEST(SignatureAbiTests, plainReturnOfOwnedSlotLintExemptsTitleExtraction) {
+    std::string src =
+        "package test;\n"
+        "public final class SlotCellC {\n"
+        "    public int32 n;\n"
+        "    public SlotCellC(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static #SlotCellC f() {\n"
+        "        SlotCellC[] a #= heap SlotCellC[1];\n"
+        "        a[0] #= heap SlotCellC(5);\n"
+        "        return #a[0];\n"
+        "    }\n"
+        "    public static int32 run() {\n"
+        "        SlotCellC c #= D.f();\n"
+        "        return c.n;\n"          // 5
+        "    }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    std::string err;
+    {
+        auto jit = CajetaJit::compile(src, "test.D");
+        err = ::testing::internal::GetCapturedStderr();
+        auto fn = jit->lookup<int32_t (*)()>("run");
+        ASSERT_NE(fn, nullptr);
+        EXPECT_EQ(fn(), 5);
+    }
+    EXPECT_EQ(err.find("[plain-return-of-owned-slot]"), std::string::npos)
+        << err;
+}
+
+// §7.2's price, paid knowingly: arming inside a conditional does not
+// dominate the return, so the proof fails and the lint stays silent.
+TEST(SignatureAbiTests, plainReturnOfOwnedSlotLintStaysSilentOnConditionalArm) {
+    std::string src =
+        "package test;\n"
+        "public final class SlotCellD {\n"
+        "    public int32 n;\n"
+        "    public SlotCellD(int32 v) { this.n = v; }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static SlotCellD f(boolean b) {\n"
+        "        SlotCellD[] a #= heap SlotCellD[1];\n"
+        "        if (b) { a[0] #= heap SlotCellD(5); }\n"
+        "        return a[0];\n"
+        "    }\n"
+        "    public static int32 run() { return 0; }\n"
+        "}\n";
+    ::testing::internal::CaptureStderr();
+    try { CajetaJit::compile(src, "test.D"); } catch (...) {}
+    std::string err = ::testing::internal::GetCapturedStderr();
+    EXPECT_EQ(err.find("[plain-return-of-owned-slot]"), std::string::npos)
+        << err;
+}
+
 // 8.1.5 — an identity reference cast must not smuggle an owned local past
 // the fresh-return gate. Before the 6.2.6c peel was applied to the gate's
 // shape arms, `return (Cell) x` compiled while `return x` was rejected: the
