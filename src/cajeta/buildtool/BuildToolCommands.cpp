@@ -483,6 +483,37 @@ namespace cajeta::buildtool {
             for (const auto& p : result->filesWritten) {
                 std::cout << "  " << p << "\n";
             }
+
+            // 7.2.11 — a notebook project is unusable until Jupyter can find
+            // the kernel, so init is where the kernelspec lands. An already-
+            // installed spec is success, not an error; `cajeta task
+            // kernelspec` force-refreshes after a toolchain upgrade.
+            if (templateName == "notebook") {
+                std::string exe = llvm::sys::fs::getMainExecutable(
+                    argv[0], reinterpret_cast<void*>(&initCommand));
+                if (exe.empty()) exe = "cajeta";
+                std::string specError;
+                std::string written = cajeta::kernel::installKernelSpec(
+                    exe, /*force=*/false, &specError);
+                if (!written.empty()) {
+                    std::cout << "Installed the cajeta kernelspec:\n  "
+                              << written << "\n";
+                } else if (specError.find("already installed")
+                               != std::string::npos) {
+                    std::cout << "Jupyter kernelspec already installed.\n";
+                } else {
+                    std::cout << "warning: kernelspec not installed: "
+                              << specError << "\n";
+                }
+                std::cout
+                    << "\nNext steps:\n"
+                    << "  1. Edit cajeta.json's `details.name`; add "
+                       "dependencies with `cajeta add`.\n"
+                    << "  2. cajeta run         # open Jupyter Lab on "
+                       "notebooks/welcome.ipynb\n";
+                return 0;
+            }
+
             std::cout
                 << "\nNext steps:\n"
                 << "  1. Edit cajeta.json's `details.name` to your package name.\n"
