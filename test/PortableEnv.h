@@ -41,20 +41,19 @@ static inline int cajeta_getpid() {
 #include <string>
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>   // _NSGetExecutablePath
-#elif defined(_WIN32)
-// Deliberately NOT <windows.h>: this header is included into TUs that
-// `using namespace std`, and windows.h's rpcndr.h `byte` then collides
-// with std::byte ("reference to 'byte' is ambiguous"). Declare the one
-// API we need instead (DWORD = unsigned long, HMODULE = void*).
-extern "C" __declspec(dllimport) unsigned long __stdcall
-GetModuleFileNameA(void* module, char* filename, unsigned long size);
 #endif
+// Windows deliberately needs NO extra include or declaration here:
+// <windows.h> in a shared test header collides with std::byte (rpcndr.h
+// 'byte' ambiguity) in using-namespace-std TUs, and re-declaring
+// GetModuleFileNameA conflicts in TUs that DO include windows.h (HMODULE
+// is not void*). The CRT's _get_pgmptr (already in <stdlib.h> above)
+// hands back the executable path with no Win32 headers at all.
 
 static inline std::filesystem::path cajeta_self_exe() {
 #if defined(_WIN32)
-    char buf[4096];
-    unsigned long n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
-    return std::filesystem::canonical(std::string(buf, n));
+    char* p = nullptr;
+    if (_get_pgmptr(&p) != 0 || !p || !*p) return {};
+    return std::filesystem::canonical(p);
 #elif defined(__APPLE__)
     char buf[4096];
     uint32_t sz = sizeof(buf);
