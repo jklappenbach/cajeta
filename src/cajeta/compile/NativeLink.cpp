@@ -51,9 +51,15 @@ namespace cajeta {
     std::vector<std::string> nativeLinkSearchDirs() {
         std::vector<std::string> dirs;
         if (const char* p = std::getenv("CAJETA_NATIVE_PATH")) {
+            // ';' on Windows — a ':' split would cut "C:\..." at the drive.
+#ifdef _WIN32
+            constexpr char kSep = ';';
+#else
+            constexpr char kSep = ':';
+#endif
             std::string s(p), cur;
             for (char c : s) {
-                if (c == ':') {
+                if (c == kSep) {
                     if (!cur.empty()) dirs.push_back(cur);
                     cur.clear();
                 } else {
@@ -75,15 +81,20 @@ namespace cajeta {
         for (const auto& lib : liveLibs) {
             std::string found;
             for (const auto& dir : searchDirs) {
-                std::vector<std::string> cands = {
-                    dir + "/" + platform + "/lib" + lib + ".a",
-                    dir + "/" + platform + "/" + lib + ".a",
-                    dir + "/lib" + lib + ".a",
-                    dir + "/" + lib + ".a",
+                // fs::path composition, not string concat: callers compare the
+                // result against fs-built paths, and on Windows a mixed
+                // "C:\dir/platform/lib.a" fails that comparison even though
+                // it opens fine.
+                const std::filesystem::path base(dir);
+                const std::filesystem::path cands[] = {
+                    base / platform / ("lib" + lib + ".a"),
+                    base / platform / (lib + ".a"),
+                    base / ("lib" + lib + ".a"),
+                    base / (lib + ".a"),
                 };
                 for (const auto& c : cands) {
                     std::error_code ec;
-                    if (std::filesystem::exists(c, ec)) { found = c; break; }
+                    if (std::filesystem::exists(c, ec)) { found = c.string(); break; }
                 }
                 if (!found.empty()) break;
             }
@@ -113,16 +124,18 @@ namespace cajeta {
             return std::filesystem::exists(p, ec);
         };
         for (const auto& dir : searchDirs) {
-            const std::string bases[] = {dir + "/" + platform, dir};
+            const std::filesystem::path bases[] = {
+                std::filesystem::path(dir) / platform, std::filesystem::path(dir)};
             for (const auto& base : bases) {
                 struct Cand { std::string suffix; bool isStatic; };
                 const Cand cands[] = {
                     {".so", false}, {".dylib", false}, {".a", true},
                 };
                 for (const auto& c : cands) {
-                    for (const std::string& p : {base + "/lib" + lib + c.suffix,
-                                                 base + "/" + lib + c.suffix}) {
-                        if (exists(p)) return NativeJitArtifact{p, c.isStatic};
+                    for (const auto& p : {base / ("lib" + lib + c.suffix),
+                                          base / (lib + c.suffix)}) {
+                        if (exists(p.string()))
+                            return NativeJitArtifact{p.string(), c.isStatic};
                     }
                 }
             }

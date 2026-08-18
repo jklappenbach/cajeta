@@ -33,3 +33,33 @@ static inline int cajeta_getpid() {
     return ::getpid();
 #endif
 }
+
+// Portable path of the RUNNING TEST EXECUTABLE — used by tests that locate
+// the build tree relative to themselves. `/proc/self/exe` is a Linux-ism:
+// fs::canonical("/proc/self/exe") throws on macOS (no /proc) and Windows.
+#include <filesystem>
+#include <string>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>   // _NSGetExecutablePath
+#endif
+// Windows deliberately needs NO extra include or declaration here:
+// <windows.h> in a shared test header collides with std::byte (rpcndr.h
+// 'byte' ambiguity) in using-namespace-std TUs, and re-declaring
+// GetModuleFileNameA conflicts in TUs that DO include windows.h (HMODULE
+// is not void*). The CRT's _get_pgmptr (already in <stdlib.h> above)
+// hands back the executable path with no Win32 headers at all.
+
+static inline std::filesystem::path cajeta_self_exe() {
+#if defined(_WIN32)
+    char* p = nullptr;
+    if (_get_pgmptr(&p) != 0 || !p || !*p) return {};
+    return std::filesystem::canonical(p);
+#elif defined(__APPLE__)
+    char buf[4096];
+    uint32_t sz = sizeof(buf);
+    if (::_NSGetExecutablePath(buf, &sz) != 0) return {};
+    return std::filesystem::canonical(buf);
+#else
+    return std::filesystem::canonical("/proc/self/exe");
+#endif
+}

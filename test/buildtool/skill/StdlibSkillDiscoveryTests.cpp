@@ -38,13 +38,14 @@ TEST(StdlibSkillDiscoveryTests, contextSeededWithStdlibWhenNoPackages) {
 
 #include "cajeta/buildtool/Subprocess.h"
 #include <filesystem>
+#include "../../PortableEnv.h"
 
 namespace {
     namespace fs = std::filesystem;
 
     std::string cajetaExe() {
         // build/test/cajeta_test -> build/src/cajeta
-        auto build = fs::canonical("/proc/self/exe").parent_path().parent_path();
+        auto build = cajeta_self_exe().parent_path().parent_path();
         return (build / "src" / "cajeta").string();
     }
 

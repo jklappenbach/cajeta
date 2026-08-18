@@ -55,6 +55,16 @@ on:
         required: false
         type: string
         default: 'all'
+      tests:
+        description: 'Targeted test run (dry-run only): space-separated gtest suite/test patterns run via cajeta_tests.sh INSTEAD of the release subset. Empty = full release subset. For iterating on a platform-specific failure without re-running everything.'
+        required: false
+        type: string
+        default: ''
+      test_env:
+        description: 'Targeted test run only: space-separated KEY=VALUE pairs exported before the run (e.g. debug dump knobs like CAJETA_XPU_DEBUG_WAVE=1).'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write   # needed for softprops/action-gh-release to create / update the Release
@@ -558,7 +568,25 @@ jobs:
           # crash-safe (per-test fallback on any suite crash; auto-fallback on any
           # reuse hazard), so a suite that destabilizes still degrades to per-test.
           BATCH: "1"
-        run: NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
+        run: |
+          set -euo pipefail
+          TESTS="${{ github.event_name == 'workflow_dispatch' && inputs.tests || '' }}"
+          if [ -n "$TESTS" ]; then
+            # Targeted iteration: run ONLY the named suites, raw runner, no
+            # release-filter drift guard. Never a substitute for the full
+            # subset on a tag cut — the tag path ignores this input.
+            TENV="${{ github.event_name == 'workflow_dispatch' && inputs.test_env || '' }}"
+            if [ -n "$TENV" ]; then
+              echo ">> targeted env: $TENV"
+              # shellcheck disable=SC2086
+              export $TENV
+            fi
+            echo ">> targeted test run: $TESTS"
+            # shellcheck disable=SC2086
+            NO_BUILD=1 KEEP_LOGS=run-logs ./cajeta_tests.sh $TESTS
+          else
+            NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
+          fi
 
       # Persist the raw per-shard test output (full gtest failure text +
       # crash markers, kept by KEEP_LOGS above) as an artifact. if: always()

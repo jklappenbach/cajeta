@@ -93,12 +93,13 @@ TEST(DomainSkillsEmbedTests, listScopedToToolchainEnumeratesDriverSkills) {
 #include "cajeta/buildtool/Subprocess.h"
 #include <filesystem>
 #include <unistd.h>
+#include "../../PortableEnv.h"
 
 namespace {
     namespace fs = std::filesystem;
 
     std::string cajetaExe() {
-        auto build = fs::canonical("/proc/self/exe").parent_path().parent_path();
+        auto build = cajeta_self_exe().parent_path().parent_path();
         return (build / "src" / "cajeta").string();
     }
 

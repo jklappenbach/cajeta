@@ -363,6 +363,23 @@ static const char* const kWaveOps[] = {
 // Attach SIMD variants for every wave op `f` uses and (if any, or `width()` is
 // used) report it a wave kernel. Shared by the single-loop (5C) and barrier
 // (fission) paths.
+
+// CAJETA_XPU_DEBUG_WAVE=1: dump each wave kernel's wrapper IR AFTER
+// vectorization + variant folding to stderr. The knob exists to diagnose
+// per-host LoopVectorize divergence from CI logs alone — the v0.21.0 gate
+// found the masked reduceSum variant produced wrong lane sums on
+// arm64-darwin while the identical IR was right on arm64-linux, and the
+// only way to see what the vectorizer did on a runner is to print it.
+static void maybeDumpWaveWrapper(const llvm::Function& f, unsigned waveW) {
+    if (!getenv("CAJETA_XPU_DEBUG_WAVE")) return;
+    std::string out;
+    llvm::raw_string_ostream os(out);
+    f.print(os);
+    fprintf(stderr, "[wave-dump] %s (W=%u)\n%s\n[wave-dump-end] %s\n",
+            f.getName().str().c_str(), waveW, os.str().c_str(),
+            f.getName().str().c_str());
+}
+
 bool setupWaveVariants(llvm::Function& f, llvm::Module& m, unsigned waveW) {
     bool waveKernel = false;
     for (const char* op : kWaveOps)
@@ -532,7 +549,10 @@ void foldWaveVariants(llvm::Function& f) {
                 }
                 if (!cpuVectorizeDisabled())
                     vectorizeFunction(*wrapper, hostTm.get());
-                if (waveKernel) foldWaveVariants(*wrapper);
+                if (waveKernel) {
+                    foldWaveVariants(*wrapper);
+                    maybeDumpWaveWrapper(*wrapper, waveW);
+                }
             } else {
             // 3-D work-item loop nest over (tid.z, tid.y, tid.x). The innermost
             // tid.x loop is the vectorizable/wave loop — so a 1-D block
@@ -633,7 +653,10 @@ void foldWaveVariants(llvm::Function& f) {
             // loop (they are alwaysinline, but no inliner runs at -O0) so codegen
             // emits the reduce/gather/ballot SIMD directly rather than a
             // per-iteration call.
-            if (waveKernel) foldWaveVariants(*wrapper);
+            if (waveKernel) {
+                foldWaveVariants(*wrapper);
+                maybeDumpWaveWrapper(*wrapper, waveW);
+            }
             }   // end of the barrier-free single-loop wrapper build
 
             // --- Uniform launcher thunk → the per-block wrapper -------------

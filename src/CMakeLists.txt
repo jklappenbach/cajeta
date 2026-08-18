@@ -856,7 +856,7 @@ endif()
 # not what a freshly-init'd project needs. The init command writes a
 # minimal next-steps message instead.
 set(CAJETA_INIT_TEMPLATE_ROOT ${PROJECT_SOURCE_DIR}/samples/buildtool)
-set(CAJETA_INIT_TEMPLATE_NAMES basic library workspace multi-binary melt)
+set(CAJETA_INIT_TEMPLATE_NAMES basic library workspace multi-binary melt notebook)
 set(CAJETA_INIT_TEMPLATE_FILES "")
 set(CAJETA_INIT_MANIFEST_ROWS "")
 foreach(tname ${CAJETA_INIT_TEMPLATE_NAMES})
@@ -871,12 +871,14 @@ foreach(tname ${CAJETA_INIT_TEMPLATE_NAMES})
                                                   ${troot}/*/cajeta.json
                                                   ${troot}/*/*/cajeta.json
                                                   ${troot}/*/*/*/cajeta.json)
-    # Source files (zero or more — `melt` has none).
+    # Source files (zero or more — `melt` has none). `notebook` ships a
+    # starter .ipynb instead of .cajeta sources.
     file(GLOB_RECURSE sources CONFIGURE_DEPENDS ${troot}/src/*.cajeta
                                                 ${troot}/*/src/*.cajeta
                                                 ${troot}/*/*/src/*.cajeta
                                                 ${troot}/*/*/*/src/*.cajeta
-                                                ${troot}/*/*/*/*/src/*.cajeta)
+                                                ${troot}/*/*/*/*/src/*.cajeta
+                                                ${troot}/notebooks/*.ipynb)
     list(SORT manifests)
     list(SORT sources)
     foreach(abs ${manifests} ${sources})

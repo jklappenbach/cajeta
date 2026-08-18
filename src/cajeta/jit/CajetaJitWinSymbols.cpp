@@ -111,6 +111,51 @@ extern "C" {
     float  fmaxf(float, float); double fmax(double, double);
 }
 
+
+// cajeta's OWN native families that live in libcajeta_lib but are absent from
+// the PE export table, so the process-symbol generator cannot see them — the
+// same class as the libm/dirent bindings above, rediscovered one family at a
+// time (v0.16.0 re-cut: dirent; v0.21.0 dry-run: every DAP/kernel test failed
+// materializing the runtime with "Symbols not found: [ __cajeta_tls_*,
+// cajeta_xpu_optix_* ]"). The TLS engine is a standalone native object (kept
+// out of the JIT bitcode so OpenSSL headers stay out of it — src/CMakeLists
+// ~623) and the OptiX entry points always exist (real or stub, OptixAccel.cpp)
+// — both comment "the JIT resolves them via its process-symbol generator",
+// which is true only on hosts that export them. Prototypes are deliberately
+// void(): only addresses are taken, never calls (same rationale as the file
+// header's C-vs-C++ note).
+extern "C" void __cajeta_tls_conn_new();
+extern "C" void __cajeta_tls_ctx_add_trust_pem();
+extern "C" void __cajeta_tls_ctx_free();
+extern "C" void __cajeta_tls_ctx_new();
+extern "C" void __cajeta_tls_ctx_set_alpn_select();
+extern "C" void __cajeta_tls_ctx_set_verify();
+extern "C" void __cajeta_tls_ctx_use_cert_key_pem();
+extern "C" void __cajeta_tls_ctx_use_system_trust();
+extern "C" void __cajeta_tls_feed_ciphertext();
+extern "C" void __cajeta_tls_free();
+extern "C" void __cajeta_tls_get_alpn();
+extern "C" void __cajeta_tls_handshake_step();
+extern "C" void __cajeta_tls_pending_ciphertext();
+extern "C" void __cajeta_tls_pull_ciphertext();
+extern "C" void __cajeta_tls_read_plaintext();
+extern "C" void __cajeta_tls_set_alpn();
+extern "C" void __cajeta_tls_set_sni();
+extern "C" void __cajeta_tls_set_verify_host();
+extern "C" void __cajeta_tls_shutdown();
+extern "C" void __cajeta_tls_verify_result();
+extern "C" void __cajeta_tls_write_plaintext();
+extern "C" void cajeta_xpu_optix_available();
+extern "C" void cajeta_xpu_optix_context();
+extern "C" void cajeta_xpu_optix_cuda_context();
+extern "C" void cajeta_xpu_optix_accel_build_aabbs();
+extern "C" void cajeta_xpu_optix_accel_build_triangles();
+extern "C" void cajeta_xpu_optix_traversable();
+extern "C" void cajeta_xpu_optix_accel_boxes();
+extern "C" void cajeta_xpu_optix_accel_free();
+extern "C" void cajeta_xpu_optix_launch();
+extern "C" void cajeta_xpu_optix_launch_tri();
+
 namespace cajeta::jit {
 
 #define CJ_SYM(jitname, fn) { jitname, reinterpret_cast<void*>(fn) }
@@ -165,6 +210,38 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("fmodf",  &fmodf),   CJ_SYM("fmod",   &fmod),
     CJ_SYM("fminf",  &fminf),   CJ_SYM("fmin",   &fmin),
     CJ_SYM("fmaxf",  &fmaxf),   CJ_SYM("fmax",   &fmax),
+    // cajeta native families invisible to COFF process lookup — see above.
+    CJ_SYM("__cajeta_tls_conn_new", &__cajeta_tls_conn_new),
+    CJ_SYM("__cajeta_tls_ctx_add_trust_pem", &__cajeta_tls_ctx_add_trust_pem),
+    CJ_SYM("__cajeta_tls_ctx_free", &__cajeta_tls_ctx_free),
+    CJ_SYM("__cajeta_tls_ctx_new", &__cajeta_tls_ctx_new),
+    CJ_SYM("__cajeta_tls_ctx_set_alpn_select", &__cajeta_tls_ctx_set_alpn_select),
+    CJ_SYM("__cajeta_tls_ctx_set_verify", &__cajeta_tls_ctx_set_verify),
+    CJ_SYM("__cajeta_tls_ctx_use_cert_key_pem", &__cajeta_tls_ctx_use_cert_key_pem),
+    CJ_SYM("__cajeta_tls_ctx_use_system_trust", &__cajeta_tls_ctx_use_system_trust),
+    CJ_SYM("__cajeta_tls_feed_ciphertext", &__cajeta_tls_feed_ciphertext),
+    CJ_SYM("__cajeta_tls_free", &__cajeta_tls_free),
+    CJ_SYM("__cajeta_tls_get_alpn", &__cajeta_tls_get_alpn),
+    CJ_SYM("__cajeta_tls_handshake_step", &__cajeta_tls_handshake_step),
+    CJ_SYM("__cajeta_tls_pending_ciphertext", &__cajeta_tls_pending_ciphertext),
+    CJ_SYM("__cajeta_tls_pull_ciphertext", &__cajeta_tls_pull_ciphertext),
+    CJ_SYM("__cajeta_tls_read_plaintext", &__cajeta_tls_read_plaintext),
+    CJ_SYM("__cajeta_tls_set_alpn", &__cajeta_tls_set_alpn),
+    CJ_SYM("__cajeta_tls_set_sni", &__cajeta_tls_set_sni),
+    CJ_SYM("__cajeta_tls_set_verify_host", &__cajeta_tls_set_verify_host),
+    CJ_SYM("__cajeta_tls_shutdown", &__cajeta_tls_shutdown),
+    CJ_SYM("__cajeta_tls_verify_result", &__cajeta_tls_verify_result),
+    CJ_SYM("__cajeta_tls_write_plaintext", &__cajeta_tls_write_plaintext),
+    CJ_SYM("cajeta_xpu_optix_available", &cajeta_xpu_optix_available),
+    CJ_SYM("cajeta_xpu_optix_context", &cajeta_xpu_optix_context),
+    CJ_SYM("cajeta_xpu_optix_cuda_context", &cajeta_xpu_optix_cuda_context),
+    CJ_SYM("cajeta_xpu_optix_accel_build_aabbs", &cajeta_xpu_optix_accel_build_aabbs),
+    CJ_SYM("cajeta_xpu_optix_accel_build_triangles", &cajeta_xpu_optix_accel_build_triangles),
+    CJ_SYM("cajeta_xpu_optix_traversable", &cajeta_xpu_optix_traversable),
+    CJ_SYM("cajeta_xpu_optix_accel_boxes", &cajeta_xpu_optix_accel_boxes),
+    CJ_SYM("cajeta_xpu_optix_accel_free", &cajeta_xpu_optix_accel_free),
+    CJ_SYM("cajeta_xpu_optix_launch", &cajeta_xpu_optix_launch),
+    CJ_SYM("cajeta_xpu_optix_launch_tri", &cajeta_xpu_optix_launch_tri),
     // Stateful CRT functions that maintain process-global tables — must resolve
     // to the same CRT instance as the host binary (see JitWinSymbols.c).
     CJ_SYM("_commit",          &::_commit),

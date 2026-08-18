@@ -287,8 +287,9 @@ TEST(Phase14, dispatchReExecsWhenPinnedInstalled) {
     auto d = computeDispatchDecision(tc, layout, "1.0.3");
     ASSERT_TRUE(static_cast<bool>(d));
     EXPECT_EQ(d->action, DispatchAction::ReExec);
-    EXPECT_NE(d->resolvedBinaryPath.find("/official/1.0.4/bin/cajeta"),
-              std::string::npos);
+    auto expected14 = (std::filesystem::path("official") / "1.0.4"
+                       / "bin" / "cajeta").string();
+    EXPECT_NE(d->resolvedBinaryPath.find(expected14), std::string::npos);
 }
 
 TEST(Phase14, dispatchNeedsInstallWhenAutoAndMissing) {
@@ -420,7 +421,9 @@ TEST(Phase14, storeLayoutHonorsHomeOverride) {
     auto root = tempRoot("homeOverride");
     auto layout = resolveToolchainStoreLayout(root.string());
     EXPECT_EQ(layout.root, root.string());
-    EXPECT_NE(layout.binaryPath("official", "1.0.3")
-                  .find("/official/1.0.3/bin/cajeta"),
+    // binaryPath composes with fs::path, so the separators are native.
+    auto expected13 = (std::filesystem::path("official") / "1.0.3"
+                       / "bin" / "cajeta").string();
+    EXPECT_NE(layout.binaryPath("official", "1.0.3").find(expected13),
               std::string::npos);
 }

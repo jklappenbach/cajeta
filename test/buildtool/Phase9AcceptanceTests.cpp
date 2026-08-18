@@ -114,7 +114,12 @@ TEST(Phase9AcceptanceTests, packageContainerThenUploadPutHittsRegistry) {
 
     // Tar the image-layout dir into one blob for upload.
     auto tarBundle = d / "image.tar";
-    std::string cmd = "tar -cf " + tarBundle.string() +
+    // --force-local on Windows: GNU tar parses "C:\..." as host:path.
+    std::string cmd = std::string("tar ")
+#ifdef _WIN32
+                      + "--force-local "
+#endif
+                      + "-cf " + tarBundle.string() +
                       " -C " + d.string() + " image";
     EXPECT_EQ(std::system(cmd.c_str()), 0);
 
