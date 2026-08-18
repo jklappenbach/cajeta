@@ -11,7 +11,21 @@ namespace cajeta {
         // demand by default. `CAJETA_EAGER_CODEGEN=1` restores the eager
         // fixpoint and stays a permanent supported control (spec 5.1) —
         // keep both paths exercised (Unit 7).
+        //
+        // ELF hosts only, for now. The lazy delivery path does not yet
+        // speak Mach-O or COFF symbol conventions: the v0.21.0 dry-run
+        // (2026-08-18) had every kernel-cell JIT fail to materialize on
+        // both — darwin missing underscore-mangled globals and the
+        // __emutls_v/__lazyp runtime stubs, mingw missing the printf
+        // shims (__mingw_fprintf) from lazy modules — while the same
+        // suites were green on aarch64-linux. Until the delivery layer
+        // learns those formats those hosts default to EAGER;
+        // CAJETA_LAZY_CODEGEN=1 still opts in anywhere.
+#if defined(__APPLE__) || defined(_WIN32)
+        constexpr bool kDefaultLazy = false;
+#else
         constexpr bool kDefaultLazy = true;
+#endif
 
         // Atomic because ORC calls the generator from materialization threads
         // while a host may still be configuring. Relaxed is enough: this gates
