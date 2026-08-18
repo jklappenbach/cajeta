@@ -20,14 +20,38 @@ class CocoAnalysis(private val project: Project) {
 
     private val current = AtomicReference<CocoCoverage?>(null)
     private val findings = AtomicReference<List<UncoveredMethod>>(emptyList())
+    private val attribution = AtomicReference<CocoAttributionModel?>(null)
+    private val ranking = AtomicReference<List<CrapEntry>?>(null)
     private val listeners = CopyOnWriteArrayList<(List<UncoveredMethod>) -> Unit>()
+    private val sideListeners = CopyOnWriteArrayList<() -> Unit>()
 
     val coverage: CocoCoverage? get() = current.get()
     val deadCode: List<UncoveredMethod> get() = findings.get()
 
+    /** Null when the run did not collect it — a real answer the view must show. */
+    val perTest: CocoAttributionModel? get() = attribution.get()
+
+    /** Null when the run produced no ranking. Order is coco's; do not re-sort. */
+    val risk: List<CrapEntry>? get() = ranking.get()
+
     fun addListener(listener: (List<UncoveredMethod>) -> Unit) {
         listeners += listener
         listener(findings.get())
+    }
+
+    /** For tabs whose data is not the dead-code list. */
+    fun addSideListener(listener: () -> Unit) {
+        sideListeners += listener
+        listener()
+    }
+
+    /** Read the artifacts that sit beside a run but are not the profile. */
+    fun updateSidecars(profile: java.io.File) {
+        attribution.set(CocoAttributionModel.beside(profile))
+        ranking.set(CocoCrap.beside(profile))
+        ApplicationManager.getApplication().invokeLater {
+            if (!project.isDisposed) sideListeners.forEach { it() }
+        }
     }
 
     /**
