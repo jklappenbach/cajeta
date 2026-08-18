@@ -327,6 +327,9 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
 
     std::unique_ptr<KernelSession> s(new KernelSession);
     Impl& impl = *s->impl_;
+    auto note = [&](const std::string& phase) {
+        if (options.progress) options.progress(phase);
+    };
 
     // COFF: RuntimeDyld's default object layer aborts the process on
     // IMAGE_REL_AMD64_ADDR32NB (see JitCoffLinking.h) — this bare builder was
@@ -379,6 +382,7 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     // the stdlib is built. Pure manifest/file work; no compiler needed yet.
     std::vector<std::string> archives;
     if (!options.projectDir.empty()) {
+        note("resolving project dependencies");
         std::string resolveError;
         if (!resolveProjectClasspath(options.projectDir, &archives,
                                      &resolveError)) {
@@ -411,6 +415,7 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     // Session-lived Compiler. The reuse core is single-threaded and its
     // baselines are thread_local, so this must be the thread that owns the
     // session (header contract).
+    note(useResidentStdlib ? "priming stdlib" : "building stdlib for classpath");
     try {
         if (useResidentStdlib) {
             auto& core = StdlibReuseCore::instance();
@@ -439,6 +444,9 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     // still be too late for cell 1.
     {
         if (!archives.empty()) {
+            note("ingesting " + std::to_string(archives.size())
+                 + (archives.size() == 1 ? " dependency archive"
+                                         : " dependency archives"));
             for (const auto& cp : archives) impl.compiler->addClasspath(cp);
             try {
                 impl.compiler->ingestClasspath();

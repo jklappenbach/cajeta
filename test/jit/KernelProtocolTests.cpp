@@ -95,10 +95,19 @@ TEST(KernelProtocolTests, executeRoundTrip) {
     ASSERT_NE(nullptr, input) << "no execute_input echo";
     EXPECT_EQ(1, input->content.at("execution_count").asInt());
 
-    const JupyterMessage* stream = h.first("stream");
+    // Not first("stream"): the session-build narration (7.2.8) streams
+    // before any cell output does.
+    const JupyterMessage* stream = nullptr;
+    for (const auto& s : h.sent) {
+        if (s.msg.type() == "stream"
+            && s.msg.content.at("text").asString().find("hello")
+                   != std::string::npos) {
+            stream = &s.msg;
+            break;
+        }
+    }
     ASSERT_NE(nullptr, stream) << "cell output never streamed";
     EXPECT_EQ("stdout", stream->content.at("name").asString());
-    EXPECT_NE(std::string::npos, stream->content.at("text").asString().find("hello"));
 
     const JupyterMessage* result = h.first("execute_result");
     ASSERT_NE(nullptr, result) << "no execute_result for a trailing expression";
@@ -330,5 +339,51 @@ TEST(KernelProtocolTests, ancillaryVerbsAnswered) {
     for (const auto& s : h.sent) {
         EXPECT_NE("status", s.msg.type())
             << "an ignored verb still moved the busy/idle state";
+    }
+}
+
+// jupyter-kernel 7.2.8 — the first cell must not be a silent wait. While
+// ensureSession builds the JIT session (stdlib prime, project resolution,
+// dependency ingest), the protocol publishes progress on IOPub, then a
+// clear_output(wait) so the finished cell shows only its real output. A
+// second execute builds nothing and must narrate nothing.
+TEST(KernelProtocolTests, firstExecuteNarratesSessionBuildThenClears) {
+    Harness h;
+    Json content = Json::object();
+    content["code"] = "20 + 22;\n";
+    h.send("execute_request", content);
+
+    std::vector<size_t> progress;
+    for (size_t i = 0; i < h.sent.size(); ++i) {
+        const auto& m = h.sent[i].msg;
+        if (m.type() == "stream"
+            && m.content.at("text").asString().rfind("[session]", 0) == 0)
+            progress.push_back(i);
+    }
+    ASSERT_FALSE(progress.empty())
+        << "session build published no progress on IOPub";
+
+    auto clears = h.indicesOf("clear_output");
+    ASSERT_EQ(clears.size(), 1u) << "expected exactly one clear_output";
+    EXPECT_TRUE(h.sent[clears[0]].msg.content.at("wait").asBool());
+
+    auto results = h.indicesOf("execute_result");
+    ASSERT_EQ(results.size(), 1u);
+    EXPECT_LT(progress.back(), clears[0])
+        << "clear_output must follow the progress it clears";
+    EXPECT_LT(clears[0], results[0])
+        << "clear_output must precede the result that replaces the narration";
+
+    const size_t before = h.sent.size();
+    content["code"] = "20 + 1;\n";
+    h.send("execute_request", content);
+    for (size_t i = before; i < h.sent.size(); ++i) {
+        const auto& m = h.sent[i].msg;
+        if (m.type() == "stream")
+            EXPECT_EQ(m.content.at("text").asString().rfind("[session]", 0),
+                      std::string::npos)
+                << "a warm execute re-narrated the session build";
+        EXPECT_NE(m.type(), "clear_output")
+            << "a warm execute cleared output it does not own";
     }
 }
