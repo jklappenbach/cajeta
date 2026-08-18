@@ -37,10 +37,17 @@ namespace cajeta::ownership {
     // `calleeKey` names the `#`-returning method, `lvalue` the local being
     // declared, `inMethod` the receiving method (for the enumeration record).
     // Throws in the default mode; reports and returns in warn mode.
+    //
+    // `classpathOrigin` — true when the site lives in a module re-parsed from
+    // a classpath `.cja` (a released dependency compiled lazily into this
+    // build). Those sites always demote to the note path: the consumer cannot
+    // edit the archive, so an error is unactionable — the rule is enforced
+    // when the dependency itself builds from source.
     void rejectPlainOwnedBind(const std::string& calleeKey,
                               const std::string& lvalue,
                               const std::string& file, int line,
-                              const std::string& inMethod);
+                              const std::string& inMethod,
+                              bool classpathOrigin = false);
 
     // Test control over the §5.5 switch, mirroring Scope's for
     // CAPTURED_BORROW. Off (error) by default.

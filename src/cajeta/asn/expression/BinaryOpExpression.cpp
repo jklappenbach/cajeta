@@ -1536,13 +1536,22 @@ namespace cajeta {
                                 calleeKey + " pos=assign", in,
                                 synthAsg ? 0 : getSourceLine());
                         }
+                        // Classpath demotion — mirror of the declaration-
+                        // position site: released-dependency internals note,
+                        // never error (the consumer cannot edit the archive).
+                        bool cpOriginAsg = module->isClasspathOrigin();
+                        if (!cpOriginAsg && holder && holder->getParent()
+                                && holder->getParent()->getModule()) {
+                            cpOriginAsg = holder->getParent()->getModule()
+                                ->isClasspathOrigin();
+                        }
                         ownership::rejectPlainOwnedBind(
                             calleeKey,
                             assignTargetText(
                                 dynamic_pointer_cast<Expression>(children[0])),
                             module->getSourcePath(),
                             synthAsg ? 0 : (int) getSourceLine(),
-                            in + " pos=assign");
+                            in + " pos=assign", cpOriginAsg);
                     }
                 }
             }

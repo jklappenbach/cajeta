@@ -292,6 +292,12 @@ namespace cajeta {
         string sourceRoot;
         string archiveRoot;
         string archivePath;
+        // True for modules re-parsed from a classpath `.cja`'s ClassSource
+        // entries (ingestClasspath) rather than from user source. Source-
+        // hygiene checks (spec §4.6 owned-bind) demote to notes on these:
+        // the consumer cannot edit a released archive, so an error would be
+        // unactionable — enforcement belongs to the dependency's own build.
+        bool classpathOrigin = false;
 
         map<string, CajetaClassPtr> structures;
         bool lambdaClassPtrReturn = false;
@@ -613,6 +619,14 @@ namespace cajeta {
 
         void setArchivePath(const string& archivePath) {
             this->archivePath = archivePath;
+        }
+
+        bool isClasspathOrigin() const {
+            return classpathOrigin;
+        }
+
+        void setClasspathOrigin(bool on) {
+            classpathOrigin = on;
         }
 
         map<string, map<string, QualifiedNamePtr>>& getImports() {

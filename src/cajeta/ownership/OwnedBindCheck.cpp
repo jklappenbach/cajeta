@@ -16,7 +16,8 @@ namespace cajeta::ownership {
     void rejectPlainOwnedBind(const std::string& calleeKey,
                               const std::string& lvalue,
                               const std::string& file, int line,
-                              const std::string& inMethod) {
+                              const std::string& inMethod,
+                              bool classpathOrigin) {
         std::string message =
             "`" + calleeKey + "` returns an OWNED result (`#`), and `" + lvalue
             + "` receives it with a plain `=`: the title moves here, but "
@@ -26,7 +27,7 @@ namespace cajeta::ownership {
               "the binding `" + lvalue + " #= " + "…`, which records the "
               "acquisition where it happens.";
 
-        if (!g_ownedBind.warns()) {
+        if (!g_ownedBind.warns() && !classpathOrigin) {
             throw Exception(message,
                             "CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER");
         }

@@ -1335,10 +1335,20 @@ namespace cajeta {
                                 // is what puts it in the reader's view without
                                 // opening the callee, which is the whole point
                                 // of the return-side redesign (§2.8).
+                                // Classpath demotion: a site inside a module
+                                // re-parsed from a `.cja` (or a template whose
+                                // declaring class rode in on one) is a released
+                                // dependency's internals — note, never error.
+                                bool cpOrigin = module->isClasspathOrigin();
+                                if (!cpOrigin && holder && holder->getParent()
+                                        && holder->getParent()->getModule()) {
+                                    cpOrigin = holder->getParent()->getModule()
+                                        ->isClasspathOrigin();
+                                }
                                 ownership::rejectPlainOwnedBind(
                                     calleeKey, field->getName(),
                                     module->getSourcePath(),
-                                    (int) mc->getSourceLine(), in);
+                                    (int) mc->getSourceLine(), in, cpOrigin);
                             }
                             // A plain return is NOT statically a borrow: the
                             // return flag is RUNTIME state, so a plain-return

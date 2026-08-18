@@ -1705,6 +1705,7 @@ namespace cajeta {
                 // entryName is already machine-independent, so this stays
                 // reproducible across build roots.
                 extMod->setSourcePath(entryName);
+                extMod->setClasspathOrigin(true);
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();
