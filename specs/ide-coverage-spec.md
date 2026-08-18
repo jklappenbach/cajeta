@@ -225,6 +225,10 @@ deleting.
 - **9.3** Whether mutation results warrant gutter markers of their own, or belong
   only in the view. A covered-but-mutation-surviving line is arguably the most
   actionable marker a coverage tool can draw.
-- **9.4** Whether the conformance fixture lives in coco, in the plugin's test
-  resources, or is shared. Shared is correct in principle and awkward across two
-  repos in practice.
+- **9.4** ~~Where the conformance fixture lives.~~ **RESOLVED 2026-08-17: it is
+  owned by coco and vendored by the plugin with a drift check.** coco owns the
+  format, so it owns the fixture. The plugin cannot reach a sibling checkout at
+  build time — Gradle has no path to one, and CI may not have it at all — so it
+  keeps a copy under its test resources with a `PROVENANCE.md` and a test that
+  asserts byte-identity when `COCO_REPO` names a checkout, and skips when it does
+  not. Copying silently is what creates drift; copying with a check does not.
