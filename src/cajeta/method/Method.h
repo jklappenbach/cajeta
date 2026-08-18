@@ -657,6 +657,12 @@ namespace cajeta {
         // through a body local) should declare `#T`. The IDE-early copy of
         // CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER.
         void lintPlainReturnYieldsTitle();
+        // plan 8.2.25 — [plain-return-of-owned-slot]: a plain return of
+        // `a[i]` where this body provably armed that slot on a frame-owned
+        // array is a borrow the frame's own drop frees before the caller
+        // reads it. Lint only, never an error; deliberately no runtime
+        // protection (Julian, 2026-08-17).
+        void lintPlainReturnOfOwnedSlot();
 
         // ---- Frame-arena eligibility (frame-arena-plan U2) ----------------
         // Names of owned String-concat locals proven non-escaping by the escape

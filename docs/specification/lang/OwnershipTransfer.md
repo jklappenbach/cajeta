@@ -465,6 +465,40 @@ keep a borrow). Both halves earn their place.
    the rejection in Phase 2 needs the same gate so primitive
    instantiations don't get spurious `CAJETA_ERROR_TRANSFER_REQUIRED`.
 
+4. **Plain return of a frame-owned interior slot — DECIDED (plan 8.2.25,
+   2026-08-17): lint, never an error, no runtime protection.**
+
+   ```cajeta
+   Cell f() {
+       Cell[] a #= heap Cell[1];
+       a[0] #= heap Cell(5);
+       return a[0];          // borrow of storage this frame frees
+   }
+   ```
+
+   compiles, and the caller's first read is freed memory: the array owns
+   the armed element, and the array's scope-exit drop takes it down before
+   the return value is ever used. This can never be a hard error — slot
+   ownership is runtime state, and `a[0] = longLived; return a[0];` (a
+   LENDING store) is the same syntax and perfectly legal. The compiler
+   instead ships `warning: [plain-return-of-owned-slot]` for the provable
+   subset: the return expression is `a[i]` with a literal index, `a` is a
+   frame-owned array declared in the same body, and the arming store
+   structurally dominates the return (arming inside a conditional or loop
+   does not count, per §7.2's never-block-on-cannot-prove).
+
+   The correct spellings: declare the return `#Cell` and extract the title
+   (`return #a[0]` — the slot's bit decays and the array's drop skips the
+   element), or store the element un-owned (plain `=`) when the array was
+   never meant to own it.
+
+   **Sharp edge, documented:** shapes the proof cannot see — conditional
+   arming, variable indexes, aggregates received from elsewhere — get no
+   diagnostic and remain a genuine use-after-free at runtime. There is
+   deliberately no runtime check: hot-path returns pay nothing for a
+   defect a reader can find, and the lint catches the shape people
+   actually write.
+
 ## See also
 
 - [`BorrowSoundness`](BorrowSoundness.md) — interim lint + debug-runtime

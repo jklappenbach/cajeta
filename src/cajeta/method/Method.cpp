@@ -558,6 +558,184 @@ namespace cajeta {
         logLine("warn", w.str());
     }
 
+    // 8.2.25 — [plain-return-of-owned-slot]. `return a[0]` where THIS body
+    // provably armed the slot (`a[0] #= heap ...`) on a frame-owned array is
+    // a borrow of storage the frame's own drop frees before the caller can
+    // read it. Slot ownership is runtime state, so this can never be an
+    // error (`a[0] = longLived; return a[0];` is legal); the lint covers the
+    // provable subset only, and the proof is STRUCTURAL DOMINANCE: the
+    // arming store must sit in a block that unconditionally encloses the
+    // return. Conditional/loop arming copies the environment into the
+    // branch and discards it — §7.2's price, paid knowingly. There is
+    // deliberately NO runtime protection (Julian, 2026-08-17).
+    namespace {
+        struct SlotArmEnv {
+            std::unordered_set<std::string> ownedArrays;
+            // "name\x1f<index literal>" — armed slots provable at this point.
+            std::unordered_set<std::string> armed;
+        };
+
+        std::string slotKeyOf(const ExpressionPtr& e) {
+            auto aix = dynamic_pointer_cast<ArrayIndexExpression>(e);
+            if (!aix || aix->getChildren().size() < 2) return "";
+            auto base = dynamic_pointer_cast<IdentifierExpression>(
+                aix->getChildren()[0]);
+            auto idx = dynamic_pointer_cast<IntegerLiteralExpression>(
+                aix->getChildren()[1]);
+            if (!base || !idx) return "";
+            return base->getTextValue() + "\x1f" + idx->getRawValue();
+        }
+
+        void walkSlotArm(const AbstractSyntaxNodePtr& node, SlotArmEnv& env,
+                const std::function<void(const std::string&, int)>& fire) {
+            if (!node) return;
+            if (auto lvd = dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+                for (auto& d : lvd->getVariableDeclarators()) {
+                    if (!d) continue;
+                    auto vi = dynamic_pointer_cast<VariableInitializer>(
+                        d->getInitializer());
+                    if (!vi || vi->getChildren().empty()) continue;
+                    AbstractSyntaxNodePtr init = vi->getChildren()[0];
+                    if (auto mv = dynamic_pointer_cast<MoveExpression>(init)) {
+                        if (!mv->getChildren().empty())
+                            init = mv->getChildren()[0];
+                    }
+                    if (auto ne = dynamic_pointer_cast<NewExpression>(init)) {
+                        if (!ne->getStackAlloc()
+                                && dynamic_pointer_cast<ArrayCreatorRest>(
+                                       ne->getCreatorRest())) {
+                            env.ownedArrays.insert(d->getIdentifier());
+                        }
+                    }
+                }
+                return;
+            }
+            // ExpressionStatement keeps its expression in a private slot, not
+            // in `children` — forward explicitly or every assignment is
+            // invisible to the walk.
+            if (auto es = dynamic_pointer_cast<ExpressionStatement>(node)) {
+                walkSlotArm(es->getExpression(), env, fire);
+                return;
+            }
+            if (auto bop = dynamic_pointer_cast<BinaryOpExpression>(node)) {
+                if (bop->getBinaryOp() == BINARY_OP_ASSIGN
+                        && bop->getChildren().size() >= 2) {
+                    std::string key = slotKeyOf(dynamic_pointer_cast<Expression>(
+                        bop->getChildren()[0]));
+                    if (!key.empty()) {
+                        std::string base = key.substr(0, key.find('\x1f'));
+                        AbstractSyntaxNodePtr rhs = bop->getChildren()[1];
+                        bool arms = false;
+                        if (dynamic_pointer_cast<MoveExpression>(rhs)) {
+                            arms = true;    // the `#=` desugar wraps its RHS
+                        } else if (auto rn =
+                                dynamic_pointer_cast<NewExpression>(rhs)) {
+                            arms = !rn->getStackAlloc();
+                        }
+                        if (arms && env.ownedArrays.count(base)) {
+                            env.armed.insert(key);
+                        } else {
+                            env.armed.erase(key);   // plain store lends
+                        }
+                        return;
+                    }
+                }
+                // fall through to generic recursion for nested shapes
+            }
+            if (auto ret = dynamic_pointer_cast<ReturnStatement>(node)) {
+                ExpressionPtr e = ret->getExpression();
+                // 6.2.6c — peel identity reference casts before shape checks.
+                while (auto cast = dynamic_pointer_cast<CastExpression>(e)) {
+                    e = cast->getChildren().empty() ? nullptr
+                        : dynamic_pointer_cast<Expression>(
+                              cast->getChildren()[0]);
+                }
+                std::string key = slotKeyOf(e);
+                if (!key.empty() && env.armed.count(key)) {
+                    fire(key.substr(0, key.find('\x1f')),
+                         (int) ret->getSourceLine());
+                }
+                return;
+            }
+            if (auto lbl = dynamic_pointer_cast<LabelStatement>(node)) {
+                if (lbl->getBlock())
+                    for (auto& c : lbl->getBlock()->getChildren())
+                        walkSlotArm(c, env, fire);
+                return;
+            }
+            if (auto sc = dynamic_pointer_cast<ScopeStatement>(node)) {
+                if (sc->getBlock())
+                    for (auto& c : sc->getBlock()->getChildren())
+                        walkSlotArm(c, env, fire);
+                return;
+            }
+            if (auto iff = dynamic_pointer_cast<IfStatement>(node)) {
+                SlotArmEnv thenEnv = env;
+                walkSlotArm(iff->getThenBranch(), thenEnv, fire);
+                SlotArmEnv elseEnv = env;
+                walkSlotArm(iff->getElseBranch(), elseEnv, fire);
+                return;
+            }
+            if (auto wh = dynamic_pointer_cast<WhileStatement>(node)) {
+                SlotArmEnv c = env; walkSlotArm(wh->getBody(), c, fire);
+                return;
+            }
+            if (auto fr = dynamic_pointer_cast<ForStatement>(node)) {
+                SlotArmEnv c = env; walkSlotArm(fr->getBody(), c, fire);
+                return;
+            }
+            if (auto efr = dynamic_pointer_cast<EnhancedForStatement>(node)) {
+                SlotArmEnv c = env; walkSlotArm(efr->getBody(), c, fire);
+                return;
+            }
+            if (auto dod = dynamic_pointer_cast<DoStatement>(node)) {
+                SlotArmEnv c = env; walkSlotArm(dod->getBody(), c, fire);
+                return;
+            }
+            for (auto& c : node->getChildren()) walkSlotArm(c, env, fire);
+        }
+    }  // namespace
+
+    void Method::lintPlainReturnOfOwnedSlot() {
+        if (returnsOwnership || returnsView || !block) return;
+        auto rtClass = dynamic_pointer_cast<CajetaClass>(returnType);
+        if (!rtClass || rtClass->isValueType()
+                || rtClass->isSharedCapableValue()) return;
+        static thread_local std::unordered_set<std::string> warnedSlot;
+        std::string parentCanonical = parent && parent->getQName()
+            ? trimTemplateArgs(parent->getQName()->toCanonical())
+            : std::string("");
+        std::string key = parentCanonical + "::" + name;
+        if (warnedSlot.count(key)) return;
+        SlotArmEnv env;
+        bool fired = false;
+        for (auto& c : block->getChildren()) {
+            walkSlotArm(c, env, [&](const std::string& arr, int line) {
+                if (fired) return;
+                fired = true;
+                warnedSlot.insert(key);
+                std::ostringstream w;
+                w << "warning: [plain-return-of-owned-slot] "
+                    << (parentCanonical.empty()
+                        ? std::string("") : parentCanonical + ".")
+                    << name << ":" << line
+                    << " returns a borrow of a slot this method owns — `"
+                    << arr << "` is a frame-owned array and this body armed "
+                    << "the returned element (`#=`), so the array's "
+                    << "scope-exit drop frees it before the caller can "
+                    << "read it. Extract the title instead: declare the "
+                    << "return `#"
+                    << (returnType && returnType->getQName()
+                        ? returnType->getQName()->getTypeName()
+                        : std::string("T"))
+                    << "` and write `return #" << arr << "[...]`, or store "
+                    << "the element un-owned (plain `=`) if the array was "
+                    << "never meant to own it.\n";
+                logLine("warn", w.str());
+            });
+        }
+    }
+
     void Method::lintHeapOptionalReturn() {
         // Gate: declared return must be `#Optional<...>` (heap ownership
         // transfer of an Optional). `@HeapReturn` is the escape hatch when
@@ -2282,6 +2460,8 @@ namespace cajeta {
         // [plain-return-yields-title] (plan 8.2.9) — same placement, same
         // reasons: body walkable pre-abstract/template, warns once.
         lintPlainReturnYieldsTitle();
+        // [plain-return-of-owned-slot] (plan 8.2.25) — same placement.
+        lintPlainReturnOfOwnedSlot();
         // Abstract methods carry no body — dispatch goes to a concrete
         // implementation via the vtable.
         if (abstractFlag) return;
