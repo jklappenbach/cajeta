@@ -45,4 +45,11 @@ namespace cajeta {
     extractInitDelta(llvm::Module* live,
                      std::set<std::string>& deliveredCtors);
 
+    // Mark every ctor `live` currently defines as delivered — called when a
+    // module is delivered WHOLE, so a later init delta over it carries only
+    // ctors born afterwards (a late keep's registration), never a re-run of
+    // what the whole delivery already initialized.
+    void recordDeliveredCtors(llvm::Module* live,
+                              std::set<std::string>& deliveredCtors);
+
 } // namespace cajeta

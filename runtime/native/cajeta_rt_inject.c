@@ -561,6 +561,9 @@ void* __cajeta_class_new0(void* rtti, int32_t ctorIdx) {
     void* (*adapter)(int32_t, void*) =
         (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
     if (!adapter) return NULL;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] new0 type=%s ctorIdx=%d adapter=%p\n",
+                ((CajetaRtti*) rtti)->typeName, ctorIdx, (void*) adapter);
     return adapter(ctorIdx, NULL);
 }
 // REFL-4 reflective construction WITH arguments. `argArray` is a cajeta
@@ -570,6 +573,9 @@ void* __cajeta_class_new(void* rtti, int32_t ctorIdx, void* argArray) {
     void* (*adapter)(int32_t, void*) =
         (void* (*)(int32_t, void*)) ((CajetaRtti*) rtti)->newInstanceAdapter;
     if (!adapter) return NULL;
+    if (cajeta_reflect_trace())
+        fprintf(stderr, "[refl] newN type=%s ctorIdx=%d adapter=%p\n",
+                ((CajetaRtti*) rtti)->typeName, ctorIdx, (void*) adapter);
     void* args = argArray ? (void*) ((char*) argArray + 8) : NULL;
     return adapter(ctorIdx, args);
 }

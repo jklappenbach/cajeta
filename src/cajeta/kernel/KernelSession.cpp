@@ -1075,16 +1075,34 @@ CellResult KernelSession::execute(const std::string& source,
             return result;
         }
         impl.delivered.insert(lm);
+        // The whole delivery just initialized these ctors; a later init
+        // delta over this module must carry only ctors born AFTER this
+        // point (a late keep's registration), never re-run them.
+        if (lazyDelivery) cajeta::recordDeliveredCtors(lm, impl.deliveredCtors);
         for (auto& g : lm->globals()) {
             if (sharedGlobal(g)) impl.definedGlobals.insert(g.getName().str());
         }
     }
 
-    // 4.2.4 — the accumulating modules' init deltas: the not-yet-delivered
-    // ctors (statics + kept registrations) and their closure, nothing else.
-    // Everything the delta references arrives through the generator.
-    for (auto& m : fresh) {
-        if (!accumulating(m)) continue;
+    // 4.2.4 — init deltas: the not-yet-delivered ctors (statics + kept
+    // registrations) and their closure, nothing else. Over EVERY compiled
+    // module, not just the accumulating ones: a later cell's keep can mint a
+    // registration ctor in an ALREADY-DELIVERED cell module (forcesAll, or a
+    // literal naming an earlier cell's class), and without a delta that ctor
+    // is stranded exactly like the pre-existing late-instantiation gap.
+    std::vector<CajetaModulePtr> deltaTargets;
+    if (lazyDelivery) {
+        std::set<llvm::Module*> seen;
+        auto consider = [&](const CajetaModulePtr& m) {
+            if (!m || !m->getLlvmModule()) return;
+            llvm::Module* lm = m->getLlvmModule();
+            if (impl.prebuilt.count(lm) || impl.poisoned.count(lm)) return;
+            if (seen.insert(lm).second) deltaTargets.push_back(m);
+        };
+        for (auto& m : impl.compiler->getModules()) consider(m);
+        if (auto stdlibM = CajetaModule::getStdlibModule()) consider(stdlibM);
+    }
+    for (auto& m : deltaTargets) {
         auto delta = cajeta::extractInitDelta(m->getLlvmModule(),
                                               impl.deliveredCtors);
         if (!delta) {
