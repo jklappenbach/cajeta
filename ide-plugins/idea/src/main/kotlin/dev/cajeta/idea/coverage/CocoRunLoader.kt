@@ -66,6 +66,7 @@ object CocoRunLoader {
 
         // Classify while still off the EDT — this queries the xref index.
         CocoAnalysis.getInstance(project).update(coverage)
+        CocoAnalysis.getInstance(project).updateSidecars(profile)
 
         val manager = CoverageDataManager.getInstance(project)
         val runner = CoverageRunner.getInstance(CajetaCoverageRunner::class.java)

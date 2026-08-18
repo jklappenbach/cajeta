@@ -3271,6 +3271,11 @@ namespace cajeta {
                         markFn, {}, "method.arena.mark");
                 }
             }
+            // script-units 4.2.4(b) — the body block about to run is the
+            // entry's ROOT: its direct statements are the session bindings.
+            if (module->isScriptUnit() && name == scriptEntryName()) {
+                module->armScriptRootBlock();
+            }
             block->generateCode(module);
         }
         } catch (cajeta::Exception& e) {
