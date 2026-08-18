@@ -55,6 +55,10 @@ class CajetaCoverageProgramRunner : AsyncProgramRunner<RunnerSettings>() {
             return resolvedPromise(null)
         }
 
+        // Remembered so a stale-coverage warning can offer to re-run THIS run,
+        // rather than sending the developer back to find the configuration.
+        CocoLastRun.getInstance(project).remember(environment)
+
         val result = state.execute(environment.executor, this)
             ?: return resolvedPromise(null)
         val outDir = resolveOutDir(configuration, setup)

@@ -71,6 +71,11 @@
              IDE run and the CI run are the same run. -->
         <programRunner implementation="dev.cajeta.idea.coverage.CajetaCoverageProgramRunner"/>
         <notificationGroup id="Cajeta Coverage" displayType="BALLOON"/>
+        <!-- Unit 5: saving a measured file invalidates its coverage. Saving is
+             the trigger because freshness compares content ON DISK — an unsaved
+             edit has invalidated nothing yet. -->
+        <fileDocumentManagerListener
+            implementation="dev.cajeta.idea.coverage.CocoStalenessWatcher"/>
 
         <!-- Find Usages (ide-features §2.0.4). Registering these turns on the
              platform's own usage machinery — right-click Find Usages, the

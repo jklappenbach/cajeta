@@ -49,13 +49,20 @@ object CocoRunLoader {
                 "no ${CocoArtifacts.SITE_TABLE_NAME} beside or above it — did instrument run?",
             )
         }
-        try {
+        val coverage = try {
             CocoArtifacts.load(profile)
         } catch (e: CocoFormatException) {
             return Outcome.Unreadable(profile, e.message ?: "unrecognised format")
         } catch (e: java.io.IOException) {
             return Outcome.Unreadable(profile, e.message ?: "could not be read")
-        }
+        } ?: return Outcome.NoArtifacts(outDir)
+
+        // Snapshot what the run measured, before anything can be edited. Doing
+        // this at load rather than lazily is what makes "changed after the run"
+        // detectable at all (spec §5).
+        val resolver = CocoPathResolver.forProfile(profile, sourceRootsOf(project))
+        CocoFreshness.getInstance(project)
+            .observeRun(profile, coverage.files.map(resolver::resolve))
 
         val manager = CoverageDataManager.getInstance(project)
         val runner = CoverageRunner.getInstance(CajetaCoverageRunner::class.java)
@@ -105,6 +112,10 @@ object CocoRunLoader {
         is Outcome.Unreadable ->
             "Coverage at ${outcome.profile.path} could not be read: ${outcome.reason}"
     }
+
+    private fun sourceRootsOf(project: Project): List<File> =
+        com.intellij.openapi.roots.ProjectRootManager.getInstance(project)
+            .contentSourceRoots.mapNotNull { it.canonicalPath }.map(::File)
 
     private val LOG = logger<CocoRunLoader>()
 }

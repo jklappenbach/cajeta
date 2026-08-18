@@ -554,3 +554,26 @@ no-project (-0.03 s), so the empty-classpath resident path held.
 Battery wall-clock re-measure (6.2.2): 2,214 s / 32 shards on the 5.3.1
 clean run, vs 2,103 s at the 4.3.1 lazy-default run and 1,794-2,109 s
 pre-lazy references — unchanged within box noise.
+
+### jupyter-kernel 7.2.9 re-measured: the walk is gone (2026-08-18)
+
+Both paths, Release @ HEAD, quiet box, project-with-deps
+(cajeta-timeseries), CAJETA_PRIME_TIMING=1:
+
+    AOT build, cold (artifact cache moved aside):
+        build wall                 25.8 s    (was 122-126 s)
+        [ingest] drain lazy stdlib  2.8 s    (was 89-91.5 s)
+        [defer] instantiation       1.0 s / walk 1.35 s / ran 35
+                                             (was 49.8 s walk / 160 ran)
+    Kernel, cell 1                  8.4 s    (walk 1.6 s, drain 3.1 s)
+
+The ~51 s of ANTLR tree re-walking that motivated lever (a) is now
+~1.3-1.6 s in both paths — the front-end materialization narrowing that
+landed alongside lazy codegen removed the trigger for most instantiations
+(35 run where 160 did). Lever (a) would recover at most ~1 s.
+
+New dominant cost in the cold build: ~20 s of the 25.8 s is outside the
+probed front-end phases (IR emit + verify + link) — a different item.
+
+Note: `cajeta build` serves a repeat build from `.cajeta/cache/artifact`
+in 0.02 s, so cold numbers require moving that aside.
