@@ -71,6 +71,13 @@ set "npat=0"
 for /f "usebackq eol=# tokens=* delims=" %%L in ("%FILTER_FILE%") do (
     set "line=%%L"
     for /f "tokens=* delims= " %%T in ("!line!") do set "line=%%T"
+    rem `optional:` marks a feature-gated suite (see release_filter.txt).
+    rem Absence is tolerated: gtest ignores non-matching patterns and the
+    rem wipeout guard below only fails on ZERO total matches.
+    if defined line if "!line:~0,9!"=="optional:" (
+        set "line=!line:~9!"
+        for /f "tokens=* delims= " %%T in ("!line!") do set "line=%%T"
+    )
     if defined line (
         set "pats=!pats! !line!"
         if defined filter ( set "filter=!filter!:!line!" ) else ( set "filter=!line!" )
