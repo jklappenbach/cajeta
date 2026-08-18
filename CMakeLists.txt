@@ -53,16 +53,43 @@ if(CAJETA_USE_CCACHE AND NOT CMAKE_CXX_COMPILER_LAUNCHER)
 endif()
 
 # Windows/MSYS2 convenience: glog, LLVM, zstd, antlr4, etc. are mingw-w64
-# packages whose *Config.cmake files live under C:/msys64/mingw64. Without
+# packages whose *Config.cmake files live under <msys2>/mingw64. Without
 # that prefix on CMAKE_PREFIX_PATH, a bare `cmake` from a shell that doesn't
 # have mingw64 on PATH fails at the first find_package (e.g.
-# "Could not find a package configuration file provided by glog"). Seed the
-# prefix here (only when the dir exists, so non-MSYS2 Windows setups and
-# Linux/macOS are unaffected) so configure works regardless of which shell
-# invoked it. An explicit -DCMAKE_PREFIX_PATH or a different MSYS root still
-# wins — we append rather than overwrite.
-if(WIN32 AND EXISTS "C:/msys64/mingw64/lib/cmake")
-    list(APPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
+# "Could not find a package configuration file provided by glog").
+#
+# WHICH msys2, though, must be the ACTIVE one. CI's setup-msys2 action
+# installs a second MSYS2 under the runner's _temp dir and builds with its
+# toolchain; hardcoding C:/msys64 there mixes headers/libs from two mingw
+# runtimes of different vintages. The v0.21.0 mingw leg died in <stdlib.h>
+# on exactly that (`_CRT_BEGIN_C_HEADER does not name a type`: crt macros
+# from one runtime against libstdc++/stdlib.h from the other) once
+# setup-msys2's `update: true` pulled ahead of the machine's C:/msys64.
+# Inside an MSYS2 shell, MSYSTEM_PREFIX names the active prefix — trust it
+# (translated to a native path via cygpath). Outside any MSYS2 shell (bare
+# cmake from an IDE or cmd), fall back to the conventional C:/msys64.
+# An explicit -DCAJETA_MSYS_MINGW_ROOT or -DCMAKE_PREFIX_PATH still wins.
+# Deliberately NOT cached when auto-detected: a cached detection would pin
+# the very staleness this exists to avoid on reused build dirs.
+set(CAJETA_MSYS_MINGW_ROOT "" CACHE PATH
+    "Active MSYS2 mingw64 prefix (native path); auto-detected when empty")
+if(WIN32 AND NOT CAJETA_MSYS_MINGW_ROOT)
+    if(DEFINED ENV{MSYSTEM_PREFIX})
+        execute_process(COMMAND cygpath -m "$ENV{MSYSTEM_PREFIX}"
+                RESULT_VARIABLE _cajeta_cygpath_rc
+                OUTPUT_VARIABLE _cajeta_msys_prefix
+                OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(_cajeta_cygpath_rc EQUAL 0 AND EXISTS "${_cajeta_msys_prefix}/lib/cmake")
+            set(CAJETA_MSYS_MINGW_ROOT "${_cajeta_msys_prefix}")
+        endif()
+    endif()
+    if(NOT CAJETA_MSYS_MINGW_ROOT AND EXISTS "C:/msys64/mingw64/lib/cmake")
+        set(CAJETA_MSYS_MINGW_ROOT "C:/msys64/mingw64")
+    endif()
+endif()
+if(CAJETA_MSYS_MINGW_ROOT)
+    list(APPEND CMAKE_PREFIX_PATH "${CAJETA_MSYS_MINGW_ROOT}")
+    message(STATUS "MSYS2 mingw64 prefix: ${CAJETA_MSYS_MINGW_ROOT}")
 endif()
 
 # Capture the short commit hash for `cajeta --version`. When git isn't
