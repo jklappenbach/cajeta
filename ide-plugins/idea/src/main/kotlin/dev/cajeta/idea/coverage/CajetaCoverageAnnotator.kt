@@ -80,12 +80,23 @@ class CajetaCoverageAnnotator(project: Project) : BaseCoverageAnnotator(project)
         return total
     }
 
+    /**
+     * A stale file reports staleness INSTEAD of a percentage (spec §5.1).
+     *
+     * Showing "78% lines covered" beside a file that has been edited since the
+     * run is the confidently-wrong case the whole unit exists to prevent — the
+     * number is precise, plausible, and no longer true.
+     */
     override fun getFileCoverageInformationString(
         project: Project,
         file: VirtualFile,
         bundle: CoverageSuitesBundle,
         manager: CoverageDataManager,
-    ): String? = metricsFor(file)?.let { "${it.linePercent}% lines covered" }
+    ): String? {
+        val m = metricsFor(file) ?: return null
+        if (CocoFreshness.getInstance(project).isStale(file.path)) return "stale — edited since the run"
+        return "${m.linePercent}% lines covered"
+    }
 
     override fun getDirCoverageInformationString(
         project: Project,
@@ -93,7 +104,12 @@ class CajetaCoverageAnnotator(project: Project) : BaseCoverageAnnotator(project)
         bundle: CoverageSuitesBundle,
         manager: CoverageDataManager,
     ): String? = metricsForDirectory(directory)?.let {
-        "${it.linePercent}% lines covered"
+        val stale = CocoFreshness.getInstance(project).staleFiles()
+            .count { p -> p.startsWith(directory.path) }
+        // A rollup over partly-stale content is itself untrustworthy, so the
+        // count is shown rather than hidden behind a single tidy number.
+        if (stale > 0) "${it.linePercent}% lines covered ($stale stale)"
+        else "${it.linePercent}% lines covered"
     }
 
     private fun collect(

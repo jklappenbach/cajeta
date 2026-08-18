@@ -66,10 +66,22 @@ class CajetaCoverageEngine : CoverageEngine() {
         project.service<CajetaCoverageAnnotatorService>().annotator
 
     /**
-     * Gutters are drawn in `.cajeta` files only. Without this the platform would
-     * try to annotate every open file against a coco run.
+     * Gutters are drawn in `.cajeta` files only, and only where the file still
+     * holds the content the run measured.
+     *
+     * The staleness half is spec §5.2 / plan 5.3.a: coverage is never drawn
+     * against source it was not measured on. Once a line has been inserted, every
+     * marking below it points at the wrong line, and a wrong green line is worse
+     * than no line — nothing downstream can tell it is wrong. Suppressing is per
+     * FILE, so editing one file leaves its neighbours' markings intact (5.1.c).
      */
-    override fun coverageEditorHighlightingApplicableTo(psiFile: PsiFile): Boolean =
+    override fun coverageEditorHighlightingApplicableTo(psiFile: PsiFile): Boolean {
+        if (!isCajetaFile(psiFile)) return false
+        val path = psiFile.virtualFile?.path ?: return true
+        return !CocoFreshness.getInstance(psiFile.project).isStale(path)
+    }
+
+    private fun isCajetaFile(psiFile: PsiFile): Boolean =
         psiFile.fileType == CajetaFileType ||
             psiFile.virtualFile?.extension.equals(CajetaFileType.defaultExtension, ignoreCase = true)
 
