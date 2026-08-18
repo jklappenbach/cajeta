@@ -65,6 +65,12 @@
              and Hide Coverage. None of that is reimplemented. -->
         <coverageEngine implementation="dev.cajeta.idea.coverage.CajetaCoverageEngine"/>
         <coverageRunner implementation="dev.cajeta.idea.coverage.CajetaCoverageRunner"/>
+        <!-- Unit 4: Run with Coverage on a Cajeta task. The task's argv is
+             UNCHANGED — measuring is declared in the manifest as a
+             cajeta.coverage.instrument action, not injected by the IDE, so the
+             IDE run and the CI run are the same run. -->
+        <programRunner implementation="dev.cajeta.idea.coverage.CajetaCoverageProgramRunner"/>
+        <notificationGroup id="Cajeta Coverage" displayType="BALLOON"/>
 
         <!-- Find Usages (ide-features §2.0.4). Registering these turns on the
              platform's own usage machinery — right-click Find Usages, the
@@ -217,6 +223,16 @@
     </extensions>
 
     <actions>
+        <!-- ide-coverage 4.2.c: load a previous coco run without re-running it.
+             The platform's Import Coverage exists but asks the user to find
+             build/coco/run/coco.profile by hand; the manifest already says
+             where it is. Sits in the platform's own Coverage menu. -->
+        <action id="Cajeta.LoadCoverage"
+                class="dev.cajeta.idea.coverage.LoadCajetaCoverageAction"
+                text="Load Cajeta Coverage"
+                description="Load the last coco run's results without running it again">
+            <add-to-group group-id="CoverageMenu" anchor="first"/>
+        </action>
         <!-- Julian, 2026-08-02: hierarchy from the right-click menu, beside
              Find Usages. These REFERENCE the platform's own actions rather
              than defining new ones, so they keep their keymap bindings

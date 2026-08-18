@@ -174,7 +174,14 @@ class CajetaCoverageEngineTest : BasePlatformTestCase() {
         val a = manager.addExternalCoverageSuite(first, runner())
         val b = manager.addExternalCoverageSuite(second, runner())
 
-        val ours = manager.suites.filter { it.runner is CajetaCoverageRunner }
+        // Filter to THESE two files rather than counting every Cajeta suite in
+        // the project: suites accumulate by design, and the light fixture shares
+        // one project across test methods, so a global count silently depends on
+        // what else ran first.
+        val ours = manager.suites.filter {
+            it.runner is CajetaCoverageRunner &&
+                it.coverageDataFileName in setOf(first.absolutePath, second.absolutePath)
+        }
         assertEquals(2, ours.size)
         assertEquals(
             setOf("run-1.profile", "run-2.profile"),

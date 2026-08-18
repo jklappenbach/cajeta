@@ -25,6 +25,25 @@ object CocoArtifacts {
 
     const val SITE_TABLE_NAME: String = "sites.tsv"
 
+    /**
+     * The whole-run profile under a coco output directory, or null when the run
+     * has not produced one.
+     *
+     * Prefers `coco.merged.profile`, which coco's own report path prefers: it is
+     * what a run that tracked per-test data writes, and taking the plain one
+     * instead would silently discard the attribution the run paid for.
+     *
+     * Per-test dumps (`coco-test-<name>.profile`) sit in the same directory and
+     * are deliberately NOT candidates — one of those is a single test's
+     * coverage, and reporting it as the run's would understate everything.
+     */
+    fun discoverProfile(outDir: File): File? {
+        val run = File(outDir, "run")
+        return sequenceOf("coco.merged.profile", "coco.profile")
+            .map { File(run, it) }
+            .firstOrNull { it.isFile }
+    }
+
     /** The site table belonging to [profile], or null when there is none. */
     fun locateSiteTable(profile: File): File? {
         val dir = profile.absoluteFile.parentFile ?: return null

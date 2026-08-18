@@ -23,6 +23,9 @@ class CajetaCoverageRunner : CoverageRunner() {
 
     override fun getId(): String = ID
 
+    // Deprecated in favour of getDataFileExtensions(), but still abstract, so
+    // it must be implemented. The plural defaults to a list of this one.
+    @Suppress("OVERRIDE_DEPRECATION")
     override fun getDataFileExtension(): String = "profile"
 
     override fun acceptsCoverageEngine(engine: CoverageEngine): Boolean =
