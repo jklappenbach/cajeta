@@ -42,14 +42,18 @@ static inline int cajeta_getpid() {
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>   // _NSGetExecutablePath
 #elif defined(_WIN32)
-// <process.h> already included above; GetModuleFileNameA needs windows.h.
-#include <windows.h>
+// Deliberately NOT <windows.h>: this header is included into TUs that
+// `using namespace std`, and windows.h's rpcndr.h `byte` then collides
+// with std::byte ("reference to 'byte' is ambiguous"). Declare the one
+// API we need instead (DWORD = unsigned long, HMODULE = void*).
+extern "C" __declspec(dllimport) unsigned long __stdcall
+GetModuleFileNameA(void* module, char* filename, unsigned long size);
 #endif
 
 static inline std::filesystem::path cajeta_self_exe() {
 #if defined(_WIN32)
     char buf[4096];
-    DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof(buf));
+    unsigned long n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
     return std::filesystem::canonical(std::string(buf, n));
 #elif defined(__APPLE__)
     char buf[4096];

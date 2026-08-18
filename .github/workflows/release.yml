@@ -60,6 +60,11 @@ on:
         required: false
         type: string
         default: ''
+      test_env:
+        description: 'Targeted test run only: space-separated KEY=VALUE pairs exported before the run (e.g. debug dump knobs like CAJETA_XPU_DEBUG_WAVE=1).'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   contents: write   # needed for softprops/action-gh-release to create / update the Release
@@ -570,6 +575,12 @@ jobs:
             # Targeted iteration: run ONLY the named suites, raw runner, no
             # release-filter drift guard. Never a substitute for the full
             # subset on a tag cut — the tag path ignores this input.
+            TENV="${{ github.event_name == 'workflow_dispatch' && inputs.test_env || '' }}"
+            if [ -n "$TENV" ]; then
+              echo ">> targeted env: $TENV"
+              # shellcheck disable=SC2086
+              export $TENV
+            fi
             echo ">> targeted test run: $TESTS"
             # shellcheck disable=SC2086
             NO_BUILD=1 KEEP_LOGS=run-logs ./cajeta_tests.sh $TESTS
