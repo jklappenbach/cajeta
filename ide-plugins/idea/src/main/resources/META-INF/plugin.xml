@@ -76,6 +76,14 @@
              edit has invalidated nothing yet. -->
         <fileDocumentManagerListener
             implementation="dev.cajeta.idea.coverage.CocoStalenessWatcher"/>
+        <!-- Unit 6, resolving spec §9.1: ONE window, a tab per capability.
+             The four views are one subject looked at four ways, so they share a
+             place and an open/closed state; Units 7-8 add tabs here. -->
+        <toolWindow
+            id="Cajeta Coverage"
+            anchor="right"
+            secondary="true"
+            factoryClass="dev.cajeta.idea.coverage.CocoToolWindowFactory"/>
 
         <!-- Find Usages (ide-features §2.0.4). Registering these turns on the
              platform's own usage machinery — right-click Find Usages, the

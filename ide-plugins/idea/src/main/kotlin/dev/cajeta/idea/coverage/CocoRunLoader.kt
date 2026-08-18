@@ -64,6 +64,9 @@ object CocoRunLoader {
         CocoFreshness.getInstance(project)
             .observeRun(profile, coverage.files.map(resolver::resolve))
 
+        // Classify while still off the EDT — this queries the xref index.
+        CocoAnalysis.getInstance(project).update(coverage)
+
         val manager = CoverageDataManager.getInstance(project)
         val runner = CoverageRunner.getInstance(CajetaCoverageRunner::class.java)
         val suite = manager.addExternalCoverageSuite(profile, runner)
