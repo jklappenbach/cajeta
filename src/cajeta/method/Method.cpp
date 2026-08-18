@@ -543,7 +543,8 @@ namespace cajeta {
             });
         if (!allYieldTitle || returnCount == 0) return;
         warnedPlain.insert(key);
-        std::cerr << "warning: [plain-return-yields-title] "
+        std::ostringstream w;
+        w << "warning: [plain-return-yields-title] "
             << (parentCanonical.empty()
                 ? std::string("") : parentCanonical + ".")
             << name
@@ -553,8 +554,8 @@ namespace cajeta {
             << (returnType && returnType->getQName()
                 ? returnType->getQName()->getTypeName() : std::string("T"))
             << "` (codegen will reject this shape anyway: "
-            << "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER)."
-            << std::endl;
+            << "CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER).\n";
+        logLine("warn", w.str());
     }
 
     void Method::lintHeapOptionalReturn() {
@@ -591,7 +592,8 @@ namespace cajeta {
             });
         if (!allHeapOptional || returnCount == 0) return;
         warned.insert(key);
-        std::cerr << "warning: [heap-optional-return] "
+        std::ostringstream w;
+        w << "warning: [heap-optional-return] "
             << (parentCanonical.empty()
                 ? std::string("") : parentCanonical + ".")
             << name
@@ -601,8 +603,8 @@ namespace cajeta {
             << "`return stack Optional<...>(...)` — the value lands "
             << "in the caller's slot by copy (sret), avoiding a heap "
             << "allocation per call. Suppress with @HeapReturn when "
-            << "the caller really needs heap ownership."
-            << std::endl;
+            << "the caller really needs heap ownership.\n";
+        logLine("warn", w.str());
     }
 
     // title-tracking Unit 5 (spec §4.4) — hidden-ABI participation. Both
@@ -2889,7 +2891,8 @@ namespace cajeta {
                         else supHasArgs = true;
                     }
                     if (supHasNoArg && supHasArgs) {
-                        std::cerr << "warning: [implicit-ctor-skip] in "
+                        std::ostringstream w;
+                        w << "warning: [implicit-ctor-skip] in "
                             << parent->getQName()->toCanonical()
                             << "(): explicit super(...) targets only the "
                             << "first parent's ctor; sibling parent '"
@@ -2900,8 +2903,8 @@ namespace cajeta {
                             << sup->getQName()->getTypeName()
                             << ">(...) once that grammar lands, or "
                             << "restructure to pick explicitly via "
-                            << "composition."
-                            << std::endl;
+                            << "composition.\n";
+                        logLine("warn", w.str());
                     }
                 }
                 if (sup->resolveMethod(supCtorName, noArgs,
