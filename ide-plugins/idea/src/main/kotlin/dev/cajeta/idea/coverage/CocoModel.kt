@@ -47,7 +47,20 @@ data class CocoSite(
     val method: String,
     val block: String,
     val target: String,
-)
+) {
+    /**
+     * Whether [line] names a real source line.
+     *
+     * `function` probes carry **line 0**, which is not a line — the format
+     * document called the field a 1-based source line without excepting them.
+     * A function probe therefore contributes to the function metric and never
+     * to a line's hit count.
+     */
+    val isSourceLine: Boolean get() = line > 0
+
+    /** Signature as the IDE shows it: the declaring type and the method. */
+    val signature: String get() = "$owner.$method"
+}
 
 /**
  * Hit counts for one run, or for one test when [label] is set.
@@ -83,6 +96,8 @@ data class CocoBranch(
     /** The basic block the branch sits in. */
     val block: String,
     val line: Int,
+    val trueHits: Long,
+    val falseHits: Long,
     val trueOutcome: BranchOutcome,
     val falseOutcome: BranchOutcome,
 ) {
@@ -115,15 +130,22 @@ class CocoCoverage(
      * Several probes can sit on one line, so summing invents executions — a line
      * run once would report as run many times. coco's own LCOV emitter takes the
      * max for the same reason (spec §3.4).
+     *
+     * Non-positive line numbers are not source lines and always read zero — see
+     * [isSourceLine].
      */
-    fun lineHits(file: String, line: Int): Long =
-        sites.asSequence()
+    fun lineHits(file: String, line: Int): Long {
+        if (line <= 0) return 0L
+        return sites.asSequence()
             .filter { it.file == file && it.line == line }
             .maxOfOrNull { profile.countOf(it.id) } ?: 0L
+    }
 
     /** Lines carrying at least one probe, i.e. the lines coverage can speak to. */
     fun instrumentedLines(file: String): List<Int> =
-        sites.asSequence().filter { it.file == file }.map { it.line }.distinct().sorted().toList()
+        sites.asSequence()
+            .filter { it.file == file && it.isSourceLine }
+            .map { it.line }.distinct().sorted().toList()
 
     fun isLineCovered(file: String, line: Int): Boolean = lineHits(file, line) > 0
 
@@ -152,6 +174,8 @@ class CocoCoverage(
                     method = key.method,
                     block = key.block,
                     line = t.line,
+                    trueHits = tc,
+                    falseHits = fc,
                     trueOutcome = outcome(tc, reached),
                     falseOutcome = outcome(fc, reached),
                 )

@@ -37,6 +37,13 @@
 
     <depends>com.intellij.modules.platform</depends>
 
+    <!-- Code coverage (ide-coverage §3). The coverageEngine/coverageRunner
+         extension points, the Coverage tool window and the gutter rendering all
+         live in this PLATFORM module, so they are present in IDEA Community —
+         the java-coverage plugin is a separate, Java-specific thing we do not
+         depend on. -->
+    <depends>com.intellij.modules.coverage</depends>
+
     <!-- W4a: pluggable markdown engines. Third-party plugins implement
          MarkdownEngine and register under this EP from their own plugin.xml. -->
     <extensionPoints>
@@ -52,6 +59,13 @@
     </extensions>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- Code coverage, ide-coverage Unit 3. Registering these two is what
+             gives Cajeta the platform's whole coverage UI: gutter markers, the
+             Coverage tool window with its per-directory rollups, suite switching
+             and Hide Coverage. None of that is reimplemented. -->
+        <coverageEngine implementation="dev.cajeta.idea.coverage.CajetaCoverageEngine"/>
+        <coverageRunner implementation="dev.cajeta.idea.coverage.CajetaCoverageRunner"/>
+
         <!-- Find Usages (ide-features §2.0.4). Registering these turns on the
              platform's own usage machinery — right-click Find Usages, the
              Ctrl+Click usages popup, and the docked Find window with its file
