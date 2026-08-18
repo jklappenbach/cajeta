@@ -204,3 +204,26 @@ TEST(LazyKernelTests, lazyCellSkipsTheEagerWorld) {
            "the world";
     s->shutdown();
 }
+
+// 6.1.1 (spec 6.4) — the DynCol repro, the plan's fast iteration loop, is
+// correct under the lazy DEFAULT. DynCol is the nucleo class whose eager
+// compile cost motivated the whole plan (30.7 s alone in the 144 s cell);
+// here its import, two writes, and two reads must flow through the
+// generator and produce the right value.
+TEST(LazyKernelTests, dynColReproIsCorrectUnderLazyEmission) {
+    ModeGuard guard;
+    setLazyCodegenEnabled(true);
+
+    auto s = session();
+    ASSERT_NE(nullptr, s.get());
+    CellResult r = s->execute(
+        "import cajeta.nucleo.column.DynCol;\n"
+        "DynCol d #= DynCol.newI64(3);\n"
+        "d.setI64(0, 40);\n"
+        "d.setI64(2, 2);\n"
+        "d.i64At(0) + d.i64At(2);\n");
+    ASSERT_TRUE(r.ok) << r.errorId << ": " << r.message;
+    ASSERT_TRUE(r.hasResult);
+    EXPECT_EQ("42", r.result);
+    s->shutdown();
+}

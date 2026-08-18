@@ -63,6 +63,14 @@ for the LLVM and host-triple lines.
 .PP
 The full per-feature override and XPU option set is printed by
 .BR "cajeta --help" .
+.SH ENVIRONMENT
+.TP
+.B CAJETA_EAGER_CODEGEN=1
+Restore eager method-body emission in the JIT hosts
+.RB ( "jit-run" ", " kernel ).
+By default bodies are compiled on first use (lazy codegen); this switch
+compiles every body up front. Supported permanently as the A/B and
+fallback control; AOT builds always compile everything and ignore it.
 .SH FILES
 .TP
 .I ~/.cajeta/

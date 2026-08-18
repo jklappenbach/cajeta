@@ -267,3 +267,56 @@ TEST(LazyEmitterTests, secondLookupDoesNotRegenerate) {
     EXPECT_EQ(lazy.generator->generatedCount(), after)
         << "a resolved symbol re-entered the generator";
 }
+
+// 6.1.2 (spec 5.3) — a method the index KNOWS but generateCode cannot give a
+// body (an interface method: pure declaration by construction — @Native was
+// the first candidate but gets a bridge body, measured writing this test)
+// reports the method by name and says WHY. The string is deliberately unlike
+// ORC's "Symbols not found" so a log reader can tell "the compiler failed to
+// produce this" from "nobody has ever heard of it".
+TEST(LazyEmitterTests, indexedMethodWithoutABodyNamesItselfAndTheReason) {
+    ModeGuard guard;
+    setLazyCodegenEnabled(true);
+
+    Compiler compiler;
+    const char* src = R"(package test;
+
+public interface Hollow {
+    int32 outside();
+}
+)";
+    auto base = std::filesystem::temp_directory_path() / "cajeta-lazyemit-hollow";
+    auto pkgDir = base / "src" / "main" / "cajeta" / "test";
+    std::filesystem::create_directories(pkgDir);
+    {
+        std::ofstream out(pkgDir / "Hollow.cajeta");
+        out << src;
+    }
+    auto archive = base / "archive";
+    std::filesystem::create_directories(archive);
+    auto m = compiler.createModule((pkgDir / "Hollow.cajeta").string(),
+                                   (base / "src" / "main" / "cajeta").string(),
+                                   archive.string());
+    compiler.compile(m);
+
+    MethodPtr method;
+    for (auto& mod : hostModuleSet(compiler))
+        for (auto& cand : mod->getAllMethods()) {
+            if (!cand) continue;
+            const std::string sym = cand->getLlvmSymbolName();
+            if (sym.find("test.Hollow") != std::string::npos
+                && sym.find("::outside(") != std::string::npos)
+                method = cand;
+        }
+    ASSERT_NE(nullptr, method.get());
+
+    auto tsm = cajeta::emitMethodModule(method);
+    ASSERT_FALSE(bool(tsm));
+    const std::string msg = llvm::toString(tsm.takeError());
+    EXPECT_NE(msg.find(method->getLlvmSymbolName()), std::string::npos)
+        << "the failure does not name the method: " << msg;
+    EXPECT_NE(msg.find("left no body"), std::string::npos)
+        << "the failure does not say why: " << msg;
+    EXPECT_EQ(msg.find("Symbols not found"), std::string::npos)
+        << "indistinguishable from an ordinary missing symbol: " << msg;
+}
