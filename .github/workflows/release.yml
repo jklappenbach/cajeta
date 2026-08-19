@@ -582,8 +582,13 @@ jobs:
               export $TENV
             fi
             echo ">> targeted test run: $TESTS"
+            # PARALLEL=1 even for a filtered run: the parallel path runs each
+            # test in ITS OWN process with crash isolation and per-test logs —
+            # a hard native death (the COFF exit-127 class) then names the
+            # dying test in the summary instead of swallowing the whole
+            # suite's buffered stdout.
             # shellcheck disable=SC2086
-            NO_BUILD=1 KEEP_LOGS=run-logs ./cajeta_tests.sh $TESTS
+            NO_BUILD=1 KEEP_LOGS=run-logs PARALLEL=1 ./cajeta_tests.sh $TESTS
           else
             NO_BUILD=1 KEEP_LOGS=run-logs ./release_tests.sh
           fi
