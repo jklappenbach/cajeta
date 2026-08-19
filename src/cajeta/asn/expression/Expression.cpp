@@ -4,6 +4,7 @@
 
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/compile/ExcFrameSetjmp.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/type/CajetaClass.h"
 #include "cajeta/type/CajetaFunctionType.h"
@@ -6209,22 +6210,17 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::Function* excPushFn = module->getRuntimeFunction("__cajeta_exc_push");
         llvm::Function* excPopFn  = module->getRuntimeFunction("__cajeta_exc_pop");
         llvm::Function* getThrownFn = module->getRuntimeFunction("__cajeta_get_thrown");
-        llvm::Function* setjmpFn = lmod->getFunction("setjmp");
-        if (!setjmpFn) {
-            llvm::FunctionType* sjt = llvm::FunctionType::get(
-                i32Ty, {ptrTy}, false);
-            setjmpFn = llvm::Function::Create(sjt,
-                llvm::Function::ExternalLinkage, "setjmp", lmod);
-            setjmpFn->addFnAttr(llvm::Attribute::ReturnsTwice);
-        }
 
         // Exception frame at trampoline entry — 512-byte blob covers
         // jmp_buf + prev + thrown_value on the targets we support; same
-        // sizing TryStatement uses.
+        // sizing TryStatement uses. 16-byte-aligned: MSVCRT's _setjmp stores
+        // XMM registers into the _JUMP_BUFFER with aligned stores
+        // (ExcFrameSetjmp.h).
         constexpr unsigned frameBytes = 512;
         llvm::IRBuilder<> trampEntryBuilder(trampEntry, trampEntry->begin());
-        llvm::Value* trampFrame = trampEntryBuilder.CreateAlloca(
+        llvm::AllocaInst* trampFrame = trampEntryBuilder.CreateAlloca(
             llvm::ArrayType::get(i8Ty, frameBytes), nullptr, "spawn_exc_frame");
+        trampFrame->setAlignment(llvm::Align(16));
 
         llvm::BasicBlock* trampTryBB = llvm::BasicBlock::Create(
             llvmCtx, "tramp_try", trampFn);
@@ -6236,7 +6232,7 @@ bool cajetaRhsCarriesRedundantSharp(
         if (excPushFn) {
             outerBuilder->CreateCall(excPushFn, {trampFrame});
         }
-        llvm::Value* sjResult = outerBuilder->CreateCall(setjmpFn, {trampFrame});
+        llvm::Value* sjResult = emitExcFrameSetjmp(*outerBuilder, trampFrame);
         llvm::Value* threwInTramp = outerBuilder->CreateICmpNE(sjResult,
             llvm::ConstantInt::get(i32Ty, 0));
         outerBuilder->CreateCondBr(threwInTramp, trampCatchBB, trampTryBB);

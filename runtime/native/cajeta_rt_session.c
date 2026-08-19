@@ -313,6 +313,24 @@ void __cajeta_session_trap_unwind(const char* what) {
     session_unwind_to_guard(__cajeta_session_trap_marker());
 }
 
+// The guard's captures must be NON-UNWINDING on x86-64 Windows. MSVCRT's
+// longjmp performs a full SEH unwind (RtlUnwindEx) through every frame
+// between the longjmp and the capture whenever the jmp_buf's Frame slot is
+// non-NULL — and mingw's <setjmp.h> setjmp macro captures with a live frame
+// pointer. A cell's throw longjmps from __cajeta_throw across the JIT'd cell
+// frames, whose unwind tables the COFF JIT drops (JitCoffLinking.h
+// dropSehFrames), so that unwind walks unregistered frames and kills the
+// process — KernelProtocolTests.throwingCellRepliesError died with a bare
+// exit 127 on the Windows JIT. `_setjmp(buf, NULL)` is the documented MSVCRT
+// opt-out: a NULL Frame makes longjmp restore registers without unwinding,
+// the same semantics every other platform already has. Codegen's inline
+// try/catch captures make the same choice in ExcFrameSetjmp.h.
+#if defined(_WIN32) && defined(__x86_64__)
+#define CAJETA_EXC_SETJMP(buf) _setjmp((buf), (void*) 0)
+#else
+#define CAJETA_EXC_SETJMP(buf) setjmp(buf)
+#endif
+
 void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
     // Anything read after the longjmp has to survive it: a non-volatile local
     // modified between setjmp and longjmp is indeterminate, and a parameter
@@ -329,7 +347,7 @@ void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
     struct cajeta_exception_frame* volatile priorGuard =
         __cajeta_session_guard_frame;
     __cajeta_session_guard_frame = &frame;
-    if (setjmp(frame.buf) == 0) {
+    if (CAJETA_EXC_SETJMP(frame.buf) == 0) {
         int32_t v = fn();
         __cajeta_session_guard_frame = priorGuard;
         __cajeta_exc_pop();
@@ -363,7 +381,7 @@ void* __cajeta_session_guard_call(int32_t (*entry)(void), int32_t* out_value) {
     {
         struct cajeta_exception_frame drain;
         __cajeta_exc_push(&drain);
-        if (setjmp(drain.buf) == 0) {
+        if (CAJETA_EXC_SETJMP(drain.buf) == 0) {
             __cajeta_scope_exit_to((void*) scopeMark);
         }
         __cajeta_exc_pop();
