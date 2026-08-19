@@ -70,7 +70,7 @@ TEST(JsonFloat, roundTripThroughWriter) {
 TEST(JsonFloat, floatObjectParses) {
     EXPECT_EQ(runI32(parseTo("{\\\"x\\\":1.5,\\\"y\\\":-2.25}") +
         "        if (v.kind() != JsonValue.OBJECT) { return -1; }\n"
-        "        JsonObject o = v.asObject();\n"
+        "        JsonObject o = v.object();\n"
         "        JsonValue x = o.get(\"x\");\n"
         "        return (int32) (x.asFloat64() * 100.0);\n"), 150);
 }

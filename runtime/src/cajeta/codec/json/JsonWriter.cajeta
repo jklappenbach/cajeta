@@ -386,7 +386,7 @@ public final class JsonWriter {
             return this.writeString(v.asBytes(), v.asBytesLength());
         }
         if (k == 4) {                                  // ARRAY
-            JsonArray a = v.asArray();
+            JsonArray a = v.array();
             this.beginArray();
             int32 i = 0;
             while (i < a.count()) {
@@ -397,7 +397,7 @@ public final class JsonWriter {
             return this;
         }
         if (k == 5) {                                  // OBJECT
-            JsonObject o = v.asObject();
+            JsonObject o = v.object();
             this.beginObject();
             int32 i = 0;
             while (i < o.count()) {

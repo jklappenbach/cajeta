@@ -100,8 +100,8 @@ import cajeta.codec.json.Json;
 import cajeta.codec.json.JsonValue;
 
 JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");   // owned DOM
-int64 id = v.asObject().get("id").asInt64();                  // 1
-String name #= v.asObject().get("name").asString();           // owned String view
+int64 id = v.object().get("id").asInt64();                  // 1
+String name #= v.object().get("name").asString();           // owned String view
 // v drops at scope exit, freeing the whole tree.
 ```
 

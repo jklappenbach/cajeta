@@ -60,7 +60,7 @@ public class ExcludeParser {
         while (i < excludeArr.count()) {
             JsonValue entry = excludeArr.get(i);
             if (entry.kind() == JsonValue.OBJECT) {
-                out.add(#parseTypedEntry(entry.asObject(), i));
+                out.add(#parseTypedEntry(entry.object(), i));
             } else if (entry.kind() == JsonValue.STRING) {
                 // Back-compat: bare string is implicitly file-kind.
                 String pat = entry.asString();

@@ -104,8 +104,8 @@ import cajeta.lang.String;
  *
  * ```cajeta
  * JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");
- * int64 id = v.asObject().get("id").asInt64();         // 1
- * String name = v.asObject().get("name").asString();   // "alice"
+ * int64 id = v.object().get("id").asInt64();         // 1
+ * String name = v.object().get("name").asString();   // "alice"
  * ```
  *
  * ## Tier 2 — raw pull tokenizer
@@ -129,7 +129,7 @@ public final class Json {
      * ```cajeta
      * int8[] buf = ...;                              // raw UTF-8 JSON
      * JsonValue v #= Json.parse(buf, (int64) buf.count());
-     * int64 id = v.asObject().get("id").asInt64();
+     * int64 id = v.object().get("id").asInt64();
      * ```
      *
      * Throws `JsonParseException` on malformed input.

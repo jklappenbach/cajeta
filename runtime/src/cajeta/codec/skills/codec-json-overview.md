@@ -95,8 +95,8 @@ import cajeta.codec.json.JsonValue;
 import cajeta.lang.String;
 
 JsonValue v #= Json.parse("{\"id\":1,\"name\":\"alice\"}");
-int64 id = v.asObject().get("id").asInt64();       // 1
-String name = v.asObject().getString("name").get();
+int64 id = v.object().get("id").asInt64();       // 1
+String name = v.object().getString("name").get();
 ```
 
 SAX — count keys in one streaming pass:

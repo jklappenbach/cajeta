@@ -8,8 +8,7 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 
 | Disposition | Count |
 |---|---|
-| conforming | 150 |
-| migrate | 2 |
+| conforming | 152 |
 
 | Kind | File | Method | Type | Disposition | Rationale |
 |---|---|---|---|---|---|
@@ -59,8 +58,8 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 | CAPTURE(elem) | `math/Storage.cajeta` | `set` | `T` | conforming | Storage<T> is numeric tensor backing (primitive/boolean at every instantiation) — an element store is a bit copy, no title exists |
 | CAPTURE(elem) | `nucleo/frame/DynFrame.cajeta` | `addIndexed` | `String` | conforming | already `#=` per element with the mode recorded in the slot (§2.3) |
 | CONDITIONAL | `codec/json/JsonValue.cajeta` | `setStringBorrowed` | `JsonValue` | conforming | the SHARP variant added by 4.2.1: caller contract is uniform (source outlives value); the root branch only makes the bound unnecessary, never changes it — not the §2.6 shape |
-| PRODUCER? | `codec/json/JsonValue.cajeta` | `asArray` | `JsonArray` | migrate:lifetime doc + §2.7 name review | body is a pure interior read (view) but `as...` reads as producer (§2.7); rename vs doc-only decided in 4.2.3 |
-| PRODUCER? | `codec/json/JsonValue.cajeta` | `asObject` | `JsonObject` | migrate:lifetime doc + §2.7 name review | same as asArray |
+| VIEW-RETURN | `codec/json/JsonValue.cajeta` | `array` | `JsonArray` | conforming | renamed from asArray per §2.7 (developer decision 2026-08-19, no aliases); pure interior read with lifetime doc |
+| VIEW-RETURN | `codec/json/JsonValue.cajeta` | `object` | `JsonObject` | conforming | renamed from asObject, same §2.7 rationale |
 | VIEW-RETURN | `buildtool/plugin/ActionResult.cajeta` | `errorMessage` | `String` | conforming | body is a bare field read; caller copies to outlive the result (§2.2) |
 | VIEW-RETURN | `buildtool/plugin/ActionResult.cajeta` | `findings` | `ArrayList<Finding>` | conforming | bare interior read of the owned list |
 | VIEW-RETURN | `buildtool/plugin/ActionResult.cajeta` | `outputs` | `HashMap<String, String>` | conforming | bare interior read of the owned map |
