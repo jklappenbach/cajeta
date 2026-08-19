@@ -13,6 +13,7 @@
 #include <functional>
 #include "expression/AggregateInitializerExpression.h"
 #include "../compile/CajetaModule.h"
+#include "../compile/ExcFrameSetjmp.h"
 #include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
@@ -1070,31 +1071,21 @@ namespace cajeta {
             return nullptr;
         }
 
-        // Declare setjmp(ptr) -> i32 as an external. libc's setjmp matches this
-        // signature on every supported target. Mark `returns_twice` so the optimizer
-        // doesn't reorder around it.
-        llvm::Module* lmod = module->getLlvmModule();
-        llvm::Function* setjmpFn = lmod->getFunction("setjmp");
-        if (!setjmpFn) {
-            llvm::FunctionType* sjt = llvm::FunctionType::get(
-                i32Ty, {llvm::PointerType::get(ctx, 0)}, false);
-            setjmpFn = llvm::Function::Create(sjt, llvm::Function::ExternalLinkage,
-                "setjmp", lmod);
-            setjmpFn->addFnAttr(llvm::Attribute::ReturnsTwice);
-        }
-
         // Allocate the frame at function entry to avoid setjmp/alloca interaction
         // issues (setjmp captures the SP; reusing the slot across nested try-blocks
         // could overwrite an outer frame, but distinct try-blocks each get their
         // own alloca which is enough for correctness).
         // 512 bytes covers jmp_buf + prev + thrown_value on common targets; the
         // exact size lives in __cajeta_exc_frame_size() in the runtime if we need
-        // to tighten this later.
+        // to tighten this later. 16-byte-aligned: MSVCRT's _setjmp stores XMM
+        // registers into the _JUMP_BUFFER with aligned stores (ExcFrameSetjmp.h).
         constexpr unsigned frameBytes = 512;
         llvm::IRBuilder<> entryBuilder(&parentFn->getEntryBlock(),
             parentFn->getEntryBlock().begin());
-        llvm::Value* framePtr = entryBuilder.CreateAlloca(
+        llvm::AllocaInst* frameAlloca = entryBuilder.CreateAlloca(
             llvm::ArrayType::get(i8Ty, frameBytes));
+        frameAlloca->setAlignment(llvm::Align(16));
+        llvm::Value* framePtr = frameAlloca;
 
         llvm::BasicBlock* tryBB = llvm::BasicBlock::Create(ctx, "try_body", parentFn);
         llvm::BasicBlock* catchBB = llvm::BasicBlock::Create(ctx, "try_catch", parentFn);
@@ -1116,7 +1107,9 @@ namespace cajeta {
                 entryBuilder.CreateAlloca(llvm::PointerType::get(ctx, 0));
             builder->CreateStore(builder->CreateCall(scopeSaveTop, {}), scopeWmSlot);
         }
-        llvm::Value* sjResult = builder->CreateCall(setjmpFn, {framePtr});
+        // The capture call is per-object-format (plain setjmp vs COFF's
+        // non-unwinding _setjmp(frame, NULL)) — see ExcFrameSetjmp.h.
+        llvm::Value* sjResult = emitExcFrameSetjmp(*builder, framePtr);
         llvm::Value* threw = builder->CreateICmpNE(sjResult,
             llvm::ConstantInt::get(i32Ty, 0));
         builder->CreateCondBr(threw, catchBB, tryBB);
@@ -1236,14 +1229,15 @@ namespace cajeta {
                 return daScope ? daScope->snapshotNotYetAssigned()
                                : std::set<std::string>();
             }
-            llvm::Value* catchFrame = entryBuilder.CreateAlloca(
+            llvm::AllocaInst* catchFrame = entryBuilder.CreateAlloca(
                 llvm::ArrayType::get(i8Ty, frameBytes));
+            catchFrame->setAlignment(llvm::Align(16));
             llvm::BasicBlock* catchBodyBB =
                 llvm::BasicBlock::Create(ctx, "catch_body", parentFn);
             llvm::BasicBlock* catchLandBB =
                 llvm::BasicBlock::Create(ctx, "catch_finally", parentFn);
             builder->CreateCall(push, {catchFrame});
-            llvm::Value* csj = builder->CreateCall(setjmpFn, {catchFrame});
+            llvm::Value* csj = emitExcFrameSetjmp(*builder, catchFrame);
             llvm::Value* cthrew = builder->CreateICmpNE(
                 csj, llvm::ConstantInt::get(i32Ty, 0));
             builder->CreateCondBr(cthrew, catchLandBB, catchBodyBB);

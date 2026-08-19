@@ -24,6 +24,7 @@ public class ColI64 {
     }
 
     public int32 ordinal() { return this.ordinal; }
+    /** VIEW of the column name — borrow, while this ColI64 lives. */
     public String name() { return this.name; }
 
     /** Name this reference as a selection item (`select` output rename). */

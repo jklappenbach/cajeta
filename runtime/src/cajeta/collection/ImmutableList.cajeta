@@ -122,6 +122,9 @@ public final class ImmutableList<T> {
     /**
      * Element at index `i` (0-based), or the type's zero value if
      * `i` is out of range.
+     *
+     * VIEW of the stored element — borrow, valid while this ImmutableList
+     * lives; copy it to retain.
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.sizeCount) {

@@ -61,6 +61,15 @@ patterns worth knowing before you start:
 - **Failures throw; there is no `Result` type.** Resource cleanup rides the
   drop chain — no try-with-resources (`cajeta/language/errors`).
 
+**The API surface follows the producer/view/sink convention** (audited and
+migrated across the whole library, `stdlib-ownership-convention` spec §2):
+producers return `#T` (receive with `#=`); views return plain `T`, are always
+borrows, and each states its lifetime bound in its doc line; every exception
+constructor takes `#String message` (a temporary message transfers in
+implicitly — `throw heap XException("..." + detail)` just works); and where an
+API could copy or alias it COPIES, with the alias separately named
+(`JsonValue.setString` copies; `setStringBorrowed` is the sharp variant).
+
 **Collections own exactly what you hand them** — element ownership is the
 CALLER's choice, made per call and recorded per slot: `xs.add(v)` lends and
 `xs.add(#v)` transfers, and teardown drops exactly the slots whose title was

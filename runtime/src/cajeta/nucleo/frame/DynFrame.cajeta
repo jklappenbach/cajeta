@@ -64,6 +64,7 @@ public class DynFrame {
 
     /** Columns declared for a B+ index (U14). */
     public int32 indexedCount() { return this.nIndexed; }
+    /** VIEW of the name — borrow, while this DynFrame lives. */
     public String indexedAt(int32 i) { return this.indexed[i]; }
 
     /** Declare column `name` indexed (the `Table.indexColumn` knob, U14).
@@ -93,14 +94,17 @@ public class DynFrame {
         }
     }
 
-    /** The Z-order spatial pair (U15), or null if none. */
+    /** The Z-order spatial pair (U15), or null if none. Each is a
+     *  VIEW — borrow, valid while this DynFrame lives. */
     public String spatialXOf() { return this.spatialX; }
     public String spatialYOf() { return this.spatialY; }
 
     /** Declare the Z-order spatial index over columns `x`, `y` (U15). */
     public void setSpatial(String x, String y) {
-        this.spatialX = x;
-        this.spatialY = y;
+        // `#=` mirrors addIndexed's slot store: a lent name stays lent,
+        // a `#`-passed name is owned by the frame (§2.3).
+        this.spatialX #= x;
+        this.spatialY #= y;
     }
 
     /** Copy `o`'s index declarations into this frame (alias carry). */
@@ -128,9 +132,11 @@ public class DynFrame {
         return this.cols[c].validAt(row);
     }
 
+    /** VIEW of the column name — borrow, while this DynFrame lives. */
     public String nameAt(int32 i) { return this.names[i]; }
     public int32 tagAt(int32 i) { return this.tags[i]; }
     public boolean nullableAt(int32 i) { return this.nulls[i]; }
+    /** VIEW of the column — borrow, valid while this DynFrame lives. */
     public DynCol colAt(int32 i) { return this.cols[i]; }
 
     /** Flip column `i` non-nullable (the fillNull schema effect). */

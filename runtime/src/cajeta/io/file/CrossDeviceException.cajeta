@@ -35,7 +35,7 @@ public class CrossDeviceException extends IoException {
      * throw heap CrossDeviceException("cannot rename across devices: /mnt/usb -> /home");
      * ```
      */
-    public CrossDeviceException(String message) {
-        super(message);
+    public CrossDeviceException(#String message) {
+        super(#message);
     }
 }

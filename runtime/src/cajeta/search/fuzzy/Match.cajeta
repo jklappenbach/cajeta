@@ -16,15 +16,20 @@ public class Match<T> {
     int32 distance;
 
     /** Build a match. `key` ownership transfers in (pass a `#`-moved copy). */
-    public Match(T value, String key, int32 distance) {
+    public Match(T value, #String key, int32 distance) {
         this.value #= value;
-        this.key = key;
+        // `#=`, matching the doc's stated transfer: the plain formal +
+        // plain store laundered Matcher's `#kc` — the frame kept title
+        // and freed the key at ctor exit (ownership-dispositions.md).
+        this.key #= key;
         this.distance = distance;
     }
 
-    /** The matched value. */
+    /** The matched value.
+     *  VIEW of the stored value — borrow, valid while this Match lives. */
     public T value() { return this.value; }
-    /** The key the value was indexed under. */
+    /** The key the value was indexed under.
+     *  VIEW of the stored key — borrow, valid while this Match lives. */
     public String key() { return this.key; }
     /** Edit distance from the query (0 = exact). */
     public int32 distance() { return this.distance; }

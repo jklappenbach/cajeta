@@ -156,6 +156,16 @@ extern "C" void cajeta_xpu_optix_accel_free();
 extern "C" void cajeta_xpu_optix_launch();
 extern "C" void cajeta_xpu_optix_launch_tri();
 
+// sjlj exception machinery. Codegen's try/catch and the runtime bitcode's
+// session guard capture with `_setjmp(frame, NULL)` on COFF (non-unwinding —
+// ExcFrameSetjmp.h / cajeta_rt_session.c), and __cajeta_throw longjmps. Both
+// live in MSVCRT, whose PE exports the process generator cannot see, so bind
+// them by address like the libm family above. Declared by hand (not via
+// <setjmp.h>) to dodge the header's setjmp macro; addresses only, never
+// called from here.
+extern "C" int _setjmp(void*, void*);
+extern "C" void longjmp(void*, int);
+
 namespace cajeta::jit {
 
 #define CJ_SYM(jitname, fn) { jitname, reinterpret_cast<void*>(fn) }
@@ -184,6 +194,9 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("___chkstk_ms",     &___chkstk_ms),
     CJ_SYM("sincos",           &sincos),
     CJ_SYM("sincosf",          &sincosf),
+    // sjlj exception machinery (MSVCRT) — see the extern "C" block above.
+    CJ_SYM("_setjmp",          &::_setjmp),
+    CJ_SYM("longjmp",          &::longjmp),
     // bf16 conversion builtins — see the extern "C" block above.
     // The two truncations go through the XMM0 wrappers, NOT libgcc directly.
     // __extendbfsf2 is bound as-is: LLVM expands `fpext bfloat to float`

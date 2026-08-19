@@ -12,7 +12,7 @@ import cajeta.lang.String;
  * conditions (mirrors {@link cajeta.math.linalg.LinAlgException}).
  */
 public class DistanceException extends RecoverableException {
-    public DistanceException(String message) {
+    public DistanceException(#String message) {
         this.message = message;
         this.cause = 0;
     }

@@ -108,6 +108,19 @@ uint32_t __cajeta_xpu_wave_reduce_min_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_and_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_or_u32(uint32_t value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
+// Mask-as-data spellings (compiler-generated; CpuRegistration's mask-as-data
+// rewrite hoists a guarded wave reduce out of divergent control flow and
+// passes the guard as an explicit lane-active argument, so LoopVectorize can
+// never scalarize the cross-lane op per lane — the arm64-darwin/NEON class
+// of silent wrong sums). Width-1 fallback: an active lane reduces to its own
+// value, an inactive lane contributes the op's identity (result unused —
+// every consumer of the result is still under the original guard).
+uint32_t __cajeta_xpu_wave_reduce_sum_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
+uint32_t __cajeta_xpu_wave_reduce_max_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
+uint32_t __cajeta_xpu_wave_reduce_min_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
+uint32_t __cajeta_xpu_wave_reduce_and_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
+uint32_t __cajeta_xpu_wave_reduce_or_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
+uint32_t __cajeta_xpu_wave_reduce_xor_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 // Exclusive prefix scan: width-1 fallback — lane 0's exclusive prefix is the
 // identity (0 for sum, 1 for product). The real scan runs in the VFABI variant.
 uint32_t __cajeta_xpu_wave_prefix_sum_u32(uint32_t value) { (void)value; return 0; }

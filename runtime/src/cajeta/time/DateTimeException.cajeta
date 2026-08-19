@@ -33,7 +33,7 @@ public class DateTimeException extends RecoverableException {
      * throw DateTimeException("hour must be 0..23");
      * ```
      */
-    public DateTimeException(String message) {
+    public DateTimeException(#String message) {
         this.message = message;
         this.cause = 0;
     }

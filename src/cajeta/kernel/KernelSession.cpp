@@ -1,4 +1,5 @@
 #include "cajeta/kernel/KernelSession.h"
+#include "cajeta/jit/CajetaJitWinSymbols.h"
 
 #include "cajeta/jit/JitCoffLinking.h"
 
@@ -370,6 +371,33 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     }
     mainJD.addGenerator(std::move(*generator));
 
+    // Windows symbol bridge: a PE exports nothing, so the process generator
+    // above cannot see the statically linked CRT/libm/cajeta-native families
+    // (see CajetaJitWinSymbols.cpp). CajetaJitHost installs this map and the
+    // kernel session must too — without it every cell fails to materialize on
+    // COFF ("Symbols not found: [ close, opendir, fabsf, __cajeta_tls_*, ... ]",
+    // the v0.21.0 gate's last Windows failure class). No-op elsewhere.
+    {
+        size_t winSymCount = 0;
+        const cajeta::jit::JitWinSym* winSyms =
+            cajeta::jit::winJitSymbols(&winSymCount);
+        if (winSymCount) {
+            auto& execSession = impl.jit->getExecutionSession();
+            llvm::orc::SymbolMap winSymMap;
+            for (size_t i = 0; i < winSymCount; ++i) {
+                winSymMap[execSession.intern(winSyms[i].name)] =
+                    llvm::orc::ExecutorSymbolDef(
+                        llvm::orc::ExecutorAddr::fromPtr(winSyms[i].addr),
+                        llvm::JITSymbolFlags::Exported);
+            }
+            if (auto err = mainJD.define(
+                    llvm::orc::absoluteSymbols(std::move(winSymMap)))) {
+                return setErr("windows symbol bridge define failed: "
+                              + llvm::toString(std::move(err)));
+            }
+        }
+    }
+
     auto bootstrapOrErr = impl.jit->createJITDylib("CajetaBootstrap");
     if (!bootstrapOrErr) {
         return setErr("bootstrap dylib create failed: "
@@ -538,6 +566,7 @@ CellResult KernelSession::execute(const std::string& source,
     struct DiagBridge {
         CellResult& result;
         Compiler& compiler;
+        std::string cellFile;   // the cell's display name ("In[3]") — see finish()
         DiagFormat priorFormat;
         std::string buffer;
         JsonGateScope gate;
@@ -545,8 +574,8 @@ CellResult KernelSession::execute(const std::string& source,
         std::unique_ptr<cajeta::util::FdCapture> capture;
         bool finished = false;
 
-        DiagBridge(CellResult& r, Compiler& c)
-            : result(r), compiler(c),
+        DiagBridge(CellResult& r, Compiler& c, std::string cellDisplayName)
+            : result(r), compiler(c), cellFile(std::move(cellDisplayName)),
               priorFormat(c.getFlags().diagFormat), gate(true) {
             CompilerFlags f = compiler.getFlags();
             f.diagFormat = DiagFormat::Json;
@@ -574,7 +603,23 @@ CellResult KernelSession::execute(const std::string& source,
             engine.emit(/*json=*/true);   // into the capture, still live
             capture.reset();              // restores fd 2, drains the tail
             std::string passthrough;
-            parseJsonlDiagnostics(buffer, &result.diagnostics, &passthrough);
+            std::vector<CellDiagnostic> parsed;
+            parseJsonlDiagnostics(buffer, &parsed, &passthrough);
+            // A cell's diagnostics are ITS OWN account. Under eager codegen
+            // the first cell also compiles the stdlib's method bodies, and
+            // since lint warnings ride the same NDJSON envelope, a "clean"
+            // cell would inherit dozens of stdlib lint hints (41 on the
+            // v0.21.0 gate — KernelIoTests.cleanCellHasNoDiagnostics).
+            // Errors are kept wherever they point — a cell that broke a
+            // stdlib specialization must hear about it — but sub-error
+            // diagnostics only count when they name this cell's source (or
+            // carry no location at all).
+            for (auto& d : parsed) {
+                if (d.severity != "error" && !d.file.empty()
+                        && d.file != cellFile)
+                    continue;
+                result.diagnostics.push_back(std::move(d));
+            }
             // Compiler chatter with no structured form is still compiler
             // output; put it back where it was going rather than swallow it.
             if (!passthrough.empty()) {
@@ -585,7 +630,7 @@ CellResult KernelSession::execute(const std::string& source,
             f.diagFormat = priorFormat;
             compiler.setFlags(f);
         }
-    } bridge(result, *impl.compiler);
+    } bridge(result, *impl.compiler, cellName);
 
     // CAJETA_PRIME_TIMING=1 — the cell half of a cold start. [prime] and
     // [ingest] together account for under 11s of a ~50s first cell; nothing has

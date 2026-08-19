@@ -77,6 +77,8 @@ namespace cajeta {
                                      llvm::Value* dropFn) {
         if (!module->isScriptUnit()) return false;
         if (!module->isScriptBindingName(field->getName())) return false;
+        // 4.2.4(b) — a block-local shadowing a binding NAME stays local.
+        if (!module->isScriptEntryTopLevel()) return false;
         auto* builder = module->getBuilder();
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
         if (parentFn == nullptr
@@ -118,6 +120,7 @@ namespace cajeta {
         if (field->isSessionBound()) return;          // owner path took it
         if (type->getTypeFlags() & PRIMITIVE_FLAG) return;  // boxed instead
         if (!module->isScriptBindingName(field->getName())) return;
+        if (!module->isScriptEntryTopLevel()) return;  // 4.2.4(b)
         // Only pointer-shaped storage: a slot holding an inline aggregate is
         // not a reference to register, and reading it as one would hand the
         // registry the address of a dead frame.
@@ -154,6 +157,7 @@ namespace cajeta {
         if (!module->isScriptUnit() || !field || !type) return;
         if (!(type->getTypeFlags() & PRIMITIVE_FLAG)) return;
         if (!module->isScriptBindingName(field->getName())) return;
+        if (!module->isScriptEntryTopLevel()) return;  // 4.2.4(b)
         auto* builder = module->getBuilder();
         if (!builder || !builder->GetInsertBlock()) return;
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
@@ -176,6 +180,10 @@ namespace cajeta {
         llvm::Value* nameStr = builder->CreateGlobalString(field->getName());
         builder->CreateCall(bindFn, {nameStr, slot,
             llvm::ConstantInt::get(llvm::Type::getInt64Ty(ctx), size)});
+        // The assignment path keys session re-binds on this flag (4.2.4(b));
+        // without it a top-level `k += 2` skips the re-box and a later cell
+        // reads the stale box.
+        field->setSessionBound(true);
     }
 
     // Emit drop-chain wiring for an owner local. Allocates a DropEntry blob on

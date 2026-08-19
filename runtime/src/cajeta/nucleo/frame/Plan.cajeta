@@ -148,7 +148,8 @@ public class Plan {
         return #n;
     }
 
-    /** GROUP payload: the head of the key-reference chain. */
+    /** GROUP payload: the head of the key-reference chain.
+     *  Borrow — valid while this Plan lives. */
     public Sel keysOf() {
         return this.keys;
     }
@@ -158,7 +159,8 @@ public class Plan {
         return this.nkeys;
     }
 
-    /** GROUP payload: the head of the aggregate chain. */
+    /** GROUP payload: the head of the aggregate chain.
+     *  Borrow — valid while this Plan lives. */
     public Agg aggsOf() {
         return this.aggs;
     }
@@ -178,7 +180,8 @@ public class Plan {
         return #n;
     }
 
-    /** SORT payload: the head of the key chain (most significant first). */
+    /** SORT payload: the head of the key chain (most significant first).
+     *  Borrow — valid while this Plan lives. */
     public SortKey sortKeysOf() {
         return this.sortKeys;
     }
@@ -206,7 +209,8 @@ public class Plan {
         return #n;
     }
 
-    /** JOIN payload: the head of the key-reference chain. */
+    /** JOIN payload: the head of the key-reference chain.
+     *  Borrow — valid while this Plan lives. */
     public Sel joinKeysOf() {
         return this.joinKeys;
     }
@@ -221,12 +225,14 @@ public class Plan {
         return this.joinHow;
     }
 
-    /** JOIN payload: the right input's op chain. */
+    /** JOIN payload: the right input's op chain.
+     *  Borrow — valid while this Plan lives. */
     public Plan rightPlanOf() {
         return this.rightPlan;
     }
 
-    /** JOIN payload: the right input's scan snapshot. */
+    /** JOIN payload: the right input's scan snapshot.
+     *  Borrow — valid while this Plan lives. */
     public DynFrame rightSrcOf() {
         return this.rightSrc;
     }
@@ -319,13 +325,16 @@ public class Plan {
 
     /** MELT payload: id-column count / name. */
     public int32 meltIdCount() { return this.nMeltId; }
+    /** Borrow of the name — valid while this Plan lives. */
     public String meltIdAt(int32 i) { return this.meltId[i]; }
 
     /** MELT payload: value-column count / name. */
     public int32 meltValCount() { return this.nMeltVal; }
+    /** Borrow of the name — valid while this Plan lives. */
     public String meltValAt(int32 i) { return this.meltVal[i]; }
 
-    /** MELT payload: the output variable/value column names. */
+    /** MELT payload: the output variable/value column names. Each is
+     *  a borrow — valid while this Plan lives. */
     public String meltVarNameOf() { return this.meltVarName; }
     public String meltValNameOf() { return this.meltValName; }
 
@@ -334,7 +343,8 @@ public class Plan {
         this.joinOut #= out;
     }
 
-    /** JOIN payload: the precomputed output schema. */
+    /** JOIN payload: the precomputed output schema.
+     *  Borrow — valid while this Plan lives. */
     public DynFrame joinOutOf() {
         return this.joinOut;
     }
@@ -424,12 +434,13 @@ public class Plan {
         return #n;
     }
 
-    /** FILTER payload. */
+    /** FILTER payload — borrow, valid while this Plan lives. */
     public Pred predOf() {
         return this.pred;
     }
 
-    /** FILLNULL/DROPNULLS payload: the target column (null = all). */
+    /** FILLNULL/DROPNULLS payload: the target column (null = all).
+     *  Borrow — valid while this Plan lives. */
     public String colNameOf() {
         return this.colName;
     }
@@ -449,7 +460,8 @@ public class Plan {
         return this.fillIsInt;
     }
 
-    /** PROJECT/WITH payload: the head of the selection chain. */
+    /** PROJECT/WITH payload: the head of the selection chain.
+     *  Borrow — valid while this Plan lives. */
     public Sel selsOf() {
         return this.sels;
     }
@@ -464,7 +476,8 @@ public class Plan {
         return this.kind;
     }
 
-    /** The input node, or null on the scan leaf. */
+    /** The input node, or null on the scan leaf.
+     *  Borrow — valid while this Plan lives. */
     public Plan childOf() {
         return this.child;
     }

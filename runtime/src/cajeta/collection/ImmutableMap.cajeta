@@ -151,6 +151,9 @@ public final class ImmutableMap<K, V> {
      * Value bound to `key`, or the type's zero value (null for class V, 0 for
      * primitive V) if absent. Use `containsKey` to distinguish absent from
      * present-and-null/zero.
+     *
+     * VIEW of the stored value — borrow, valid while this ImmutableMap lives;
+     * copy it to retain.
      */
     public V get(K key) {
         int64 h = key.hash();
@@ -232,7 +235,8 @@ public final class ImmutableMap<K, V> {
         return this.entryCount == 0;
     }
 
-    /** Key at dense index `i` (0-based, insertion order); zero value if out of range. */
+    /** Key at dense index `i` (0-based, insertion order); zero value if out of range.
+     *  VIEW of the stored key — borrow, valid while this ImmutableMap lives; copy it to retain. */
     public K keyAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
             K[] missDefault = stack K[1];
@@ -241,7 +245,8 @@ public final class ImmutableMap<K, V> {
         return this.keyArr[i];
     }
 
-    /** Value at dense index `i` (0-based, insertion order); zero value if out of range. */
+    /** Value at dense index `i` (0-based, insertion order); zero value if out of range.
+     *  VIEW of the stored value — borrow, valid while this ImmutableMap lives; copy it to retain. */
     public V valAt(int32 i) {
         if (i < 0 || i >= this.entryCount) {
             V[] missDefault = stack V[1];

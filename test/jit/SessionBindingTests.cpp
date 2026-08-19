@@ -115,3 +115,79 @@ TEST(SessionBindingTests, stackAtTopLevelRejected) {
         "Held h = stack Held(1);\n"
         "return h.v;\n"));
 }
+
+// 4.2.4(b) — a block-local SHADOWING a session-binding name is an ordinary
+// local: it drops at block exit, and the session binding (and its slot in
+// the registry) must be untouched by the block's bind/disarm/escape gates.
+TEST(SessionBindingTests, blockLocalShadowingASessionBindingStaysLocal) {
+    Session s(
+        "Probe p = heap Probe(1);\n"
+        "{\n"
+        "    Probe p = heap Probe(2);\n"
+        "    int32 ignore = p.id;\n"
+        "}\n"
+        "return 0;\n");
+    ASSERT_TRUE(s.ok());
+    s.entry();
+    EXPECT_EQ(1, s.dropCount()) << "block-local did not drop at block exit";
+    EXPECT_EQ(2, s.firstDropped()) << "the wrong value dropped first";
+    s.dropAll();
+    EXPECT_EQ(2, s.dropCount()) << "session binding lost by the shadow";
+    EXPECT_EQ(1, s.lastDropped());
+}
+
+// 3.2.4 — rebind drop coverage, interface shape: the old occupant drops at
+// the rebind (runtime uses the drop fn stored at bind time), and the NEW
+// occupant must be registered with a real drop fn so drop_all frees it.
+// DISABLED (script-units 3.2.4, measured 2026-08-18): an interface-typed
+// session binding drops NOTHING at the rebind and leaks one of two
+// occupants at drop_all (drops=0 then 1, expected 1 then 2) — the fat
+// { data, vtable, kind } body defeats the class-shaped drop selection in
+// BOTH the declaration choke point and the rebind path. Needs the
+// fat-pointer ownership design, not a patch.
+TEST(SessionBindingTests, DISABLED_interfaceTypedRebindDropsBothOccupants) {
+    Session s(
+        "public interface Ider { int32 id(); }\n"
+        "public class P2 implements Ider {\n"
+        "    public int32 n;\n"
+        "    public P2(int32 n) { this.n = n; }\n"
+        "    public int32 id() { return this.n; }\n"
+        "    public ~P2() {\n"
+        "        Probe.drops = Probe.drops + 1;\n"
+        "        if (Probe.firstDropped == 0) { Probe.firstDropped = this.n; }\n"
+        "        Probe.lastDropped = this.n;\n"
+        "    }\n"
+        "}\n"
+        "Ider x = heap P2(1);\n"
+        "x = heap P2(2);\n"
+        "return 0;\n");
+    ASSERT_TRUE(s.ok());
+    s.entry();
+    EXPECT_EQ(1, s.dropCount()) << "old interface-typed occupant not dropped at rebind";
+    EXPECT_EQ(1, s.firstDropped());
+    s.dropAll();
+    EXPECT_EQ(2, s.dropCount()) << "rebound interface-typed value leaked at session end";
+    EXPECT_EQ(2, s.lastDropped());
+}
+
+// 3.2.4 — rebind drop coverage, array shape: rebinding an array-typed
+// session binding must drop the old array's owned elements (and free its
+// storage) at the rebind, and register the new array for session drop.
+// DISABLED (script-units 3.2.4, measured 2026-08-18): SIGSEGV (null deref
+// in JIT'd code) at the entry — the array rebind path is not merely
+// uncovered, it crashes. Needs session-side element-ownership design
+// (the local teardown's elem-walk has no session counterpart).
+TEST(SessionBindingTests, DISABLED_probeElementArrayRebindDropsOldElements) {
+    Session s(
+        "Probe[] xs = heap Probe[1];\n"
+        "xs[0] = heap Probe(1);\n"
+        "xs = heap Probe[1];\n"
+        "xs[0] = heap Probe(2);\n"
+        "return 0;\n");
+    ASSERT_TRUE(s.ok());
+    s.entry();
+    EXPECT_EQ(1, s.dropCount()) << "old array's element not dropped at rebind";
+    EXPECT_EQ(1, s.firstDropped());
+    s.dropAll();
+    EXPECT_EQ(2, s.dropCount()) << "rebound array's element leaked at session end";
+}

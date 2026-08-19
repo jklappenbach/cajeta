@@ -90,6 +90,19 @@ namespace cajeta {
         auto m = module->getCurrentMethod();
         if (m) m->pushDropFrame();
 
+        // script-units 4.2.4(b) — true only for the entry's root block:
+        // a nested block's declarations are ordinary locals even when they
+        // shadow a session-binding NAME. Restored on every exit path.
+        struct TopLevelGuard {
+            CajetaModulePtr mod;
+            bool saved;
+            TopLevelGuard(CajetaModulePtr mod)
+                : mod(mod),
+                  saved(mod->setScriptEntryTopLevel(
+                      mod->consumeScriptRootBlockPending())) {}
+            ~TopLevelGuard() { mod->setScriptEntryTopLevel(saved); }
+        } topLevelGuard(module);
+
         auto* builder = module->getBuilder();
 
         // Frame-arena (frame-arena-plan U2): bracket this block's body with an

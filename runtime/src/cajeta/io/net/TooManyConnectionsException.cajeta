@@ -43,7 +43,7 @@ public class TooManyConnectionsException extends NetException {
      */
     public int32 cap;
 
-    public TooManyConnectionsException(String message, int32 cap) {
+    public TooManyConnectionsException(#String message, int32 cap) {
         this.message = message;
         this.cause = 0;
         this.kind = 99;   // NetException.KIND_OTHER — app-level cap, no errno

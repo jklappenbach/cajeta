@@ -57,6 +57,8 @@ public final class MapStream<T, R> extends Stream<R> {
      * inherit `Stream<R>.unwrap()` (whose default returns null), the
      * walker would terminate at the MapStream, and `.map().parallel()`
      * would fall back to sequential. (Step 5b — template wildcards.)
+     *
+     * VIEW of the wrapped source — borrow, valid while this MapStream lives.
      */
     @Inline
     public Stream<?> unwrap() {

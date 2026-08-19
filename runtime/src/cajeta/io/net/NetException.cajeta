@@ -71,7 +71,7 @@ public class NetException extends RecoverableException {
      */
     public int32 kind;
 
-    public NetException(String message) {
+    public NetException(#String message) {
         this.message = message;
         this.cause = 0;
         this.kind = 99;   // KIND_OTHER
@@ -94,7 +94,7 @@ public class NetException extends RecoverableException {
      * `position` — the proven NET-6.1 pattern. "Each subclass repeats
      * the field assignment," per `Throwable`'s own contract.
      */
-    public NetException(String message, int32 kind) {
+    public NetException(#String message, int32 kind) {
         this.message = message;
         this.cause = 0;
         this.kind = kind;

@@ -142,7 +142,8 @@ public final class Optional<T> {
         return #this.value;
     }
 
-    /** Returns the held value when present, otherwise `fallback`. Never throws. */
+    /** Returns the held value when present, otherwise `fallback`. Never throws.
+     *  VIEW either way — borrow, valid while this Optional (or the caller's `fallback`) lives; copy it to retain. */
     @Inline
     public T orElse(T fallback) {
         if (this.present) {

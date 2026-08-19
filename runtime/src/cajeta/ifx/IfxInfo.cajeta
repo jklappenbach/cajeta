@@ -45,11 +45,14 @@ public final class IfxInfo {
         return heap IfxInfo(window.name(), input.name(), audio.name());
     }
 
-    /** Name of the backend bound for the window domain in this snapshot (e.g. "win32" | "null"). */
+    /** Name of the backend bound for the window domain in this snapshot (e.g. "win32" | "null").
+     *  VIEW of the stored name — borrow, valid while this IfxInfo lives. */
     public String windowBackendName() { return this.windowName; }
-    /** Name of the backend bound for the input domain in this snapshot. */
+    /** Name of the backend bound for the input domain in this snapshot.
+     *  VIEW of the stored name — borrow, valid while this IfxInfo lives. */
     public String inputBackendName()  { return this.inputName; }
-    /** Name of the backend bound for the audio domain in this snapshot. */
+    /** Name of the backend bound for the audio domain in this snapshot.
+     *  VIEW of the stored name — borrow, valid while this IfxInfo lives. */
     public String audioBackendName()  { return this.audioName; }
 
     // ── Capability feature-detection (spec §6). Top-level facade over BackendRegistry: an app asks

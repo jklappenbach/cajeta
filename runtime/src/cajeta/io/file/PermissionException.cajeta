@@ -32,7 +32,7 @@ public class PermissionException extends IoException {
      * throw heap PermissionException("/etc/hosts: permission denied");
      * ```
      */
-    public PermissionException(String message) {
-        super(message);
+    public PermissionException(#String message) {
+        super(#message);
     }
 }

@@ -269,6 +269,8 @@ namespace cajeta {
         string sourcePath;
         bool scriptUnit = false;
         std::set<string> scriptBindingNames;
+        bool scriptRootBlockPending = false;
+        bool scriptEntryTopLevel = false;
         // script-units U4 — the session this unit compiles into (owned by
         // the host, may span many unit compiles) and the host's name for
         // this unit's source (a file path, a cell id) for diagnostics.
@@ -550,6 +552,26 @@ namespace cajeta {
         }
         const std::set<string>& getScriptBindingNames() const {
             return scriptBindingNames;
+        }
+
+        // script-units 4.2.4(b) — binding names are collected from TOP-LEVEL
+        // declarations, but the gates fire at codegen where a block-local can
+        // SHADOW the name (the entry's blocks share one method scope, so
+        // scope depth cannot discriminate). The entry method arms `pending`
+        // before its body block; Block::generateCode consumes it, so the
+        // flag is true exactly while the entry's DIRECT statements codegen
+        // and false inside any nested block or lambda.
+        void armScriptRootBlock() { scriptRootBlockPending = true; }
+        bool consumeScriptRootBlockPending() {
+            bool v = scriptRootBlockPending;
+            scriptRootBlockPending = false;
+            return v;
+        }
+        bool isScriptEntryTopLevel() const { return scriptEntryTopLevel; }
+        bool setScriptEntryTopLevel(bool v) {
+            bool prev = scriptEntryTopLevel;
+            scriptEntryTopLevel = v;
+            return prev;
         }
 
         // script-units U4 — the session table this unit compiles into and

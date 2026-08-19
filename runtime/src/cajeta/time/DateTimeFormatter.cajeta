@@ -42,7 +42,9 @@ public final class DateTimeFormatter {
      * ```
      */
     public DateTimeFormatter(String pattern) {
-        this.pattern = pattern;
+        // Copies (§2.5): the formatter keeps the pattern for its life;
+        // a borrowed pattern from a dropped builder would dangle.
+        this.pattern = "" + pattern;
     }
 
     /**
@@ -93,6 +95,7 @@ public final class DateTimeFormatter {
         return heap DateTimeFormatter(p);
     }
 
+    /** VIEW of the stored pattern — borrow, valid while this DateTimeFormatter lives. */
     @Inline
     public String getPattern() {
         return this.pattern;

@@ -28,7 +28,7 @@ public class DiskFullException extends IoException {
      * throw heap DiskFullException("no space left writing /var/log/app.log");
      * ```
      */
-    public DiskFullException(String message) {
-        super(message);
+    public DiskFullException(#String message) {
+        super(#message);
     }
 }

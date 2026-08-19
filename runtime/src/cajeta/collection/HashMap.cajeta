@@ -327,6 +327,9 @@ public final class HashMap<K, V> {
     /**
      * Retrieve the value at `key`, or null/zero if absent. Use `containsKey` to
      * distinguish "absent" from "present but stored null/0".
+     *
+     * VIEW of the stored value — borrow, valid while this HashMap lives and the
+     * entry is not removed or overwritten; copy it to retain.
      */
     public V get(K key) {
         int64 i = this.findSlot(key);

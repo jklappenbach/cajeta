@@ -136,12 +136,13 @@ public class Uri {
 
     // -- component accessors ------------------------------------------------
 
-    /** Lowercased scheme, or "" when absent. */
+    /** Lowercased scheme, or "" when absent. VIEW — borrow, valid while this Uri lives. */
     public String getScheme() {
         return this.scheme;
     }
 
-    /** Host (IPv6 brackets stripped), or "" when no authority. */
+    /** Host (IPv6 brackets stripped), or "" when no authority.
+     *  VIEW — borrow, valid while this Uri lives. */
     public String getHost() {
         return this.host;
     }
@@ -154,17 +155,17 @@ public class Uri {
         return this.port;
     }
 
-    /** Userinfo, or "" when absent. */
+    /** Userinfo, or "" when absent. VIEW — borrow, valid while this Uri lives. */
     public String getUserinfo() {
         return this.userinfo;
     }
 
-    /** Path (possibly ""). */
+    /** Path (possibly ""). VIEW — borrow, valid while this Uri lives. */
     public String getPath() {
         return this.path;
     }
 
-    /** Raw query, or "" when absent. */
+    /** Raw query, or "" when absent. VIEW — borrow, valid while this Uri lives. */
     public String getQuery() {
         return this.query;
     }
@@ -187,7 +188,7 @@ public class Uri {
         return QueryParams.parse(this.query);
     }
 
-    /** Fragment, or "" when absent. */
+    /** Fragment, or "" when absent. VIEW — borrow, valid while this Uri lives. */
     public String getFragment() {
         return this.fragment;
     }

@@ -122,6 +122,9 @@ public final class PageCache<K, V> {
      * Value of a resident tile, or `fallback` on a miss. Promotes the tile on a
      * hit. Takes an explicit fallback so it stays generic over any V (there is no
      * null/zero sentinel for an arbitrary value type).
+     *
+     * VIEW either way — borrow, valid while the tile stays resident (or, for
+     * `fallback`, while the caller's value lives); copy it to retain.
      */
     public V getOrDefault(K key, V fallback) {
         if (this.index.containsKey(key) == false) {
@@ -178,6 +181,8 @@ public final class PageCache<K, V> {
      * The key dropped by the most recent overflowing {@link #admit} (valid only
      * when that admit returned true) — the tile whose GPU page the consumer
      * should now free. Null before any eviction.
+     *
+     * VIEW of the consumer's key — borrow, valid only until the next {@link #admit}.
      */
     @Inline
     public K evictedKey() {

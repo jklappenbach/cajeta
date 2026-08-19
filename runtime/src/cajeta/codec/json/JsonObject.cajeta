@@ -86,6 +86,7 @@ public final class JsonObject {
         return this.keyLens[i];
     }
 
+    /** VIEW of the value at entry `i` — borrow, valid while this JsonObject lives. */
     @Inline
     public JsonValue valueAt(int32 i) {
         return this.values[i];
@@ -101,6 +102,8 @@ public final class JsonObject {
      * JsonValue v = cfg.get("name");
      * if (v != null) { String s = v.asString(); }
      * ```
+     *
+     * VIEW of the stored value — borrow, valid while this JsonObject lives.
      */
     @Inline
     public JsonValue get(String key) {
@@ -119,6 +122,8 @@ public final class JsonObject {
      * vocab made the scan O(n) per key and a parse-all-keys pass O(n²)
      * (cajeta-llama 5.2.4). First-match semantics for duplicate keys are
      * preserved: the index insert keeps the earliest entry for a key.
+     *
+     * VIEW of the stored value — borrow, valid while this JsonObject lives.
      */
     public JsonValue get(int8[] key, int32 keyLen) {
         if (this.sizeCount >= 16) {

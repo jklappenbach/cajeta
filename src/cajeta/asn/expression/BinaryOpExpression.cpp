@@ -4442,7 +4442,15 @@ namespace cajeta {
                 // write landed in the local staging slot the seeded read
                 // materializes, and the next cell read the OLD value.
                 bool seeded = lookedUp && lookedUp->isSessionSeeded();
-                if (module->isScriptBindingName(name) || seeded) {
+                // 4.2.4(b) — key on the FIELD's session flags, not the
+                // name: under a block-local shadow the write targets the
+                // LOCAL and must not touch the registry. The name-keyed
+                // fallback stays only for a scope that cannot see the
+                // field at all (lambda-swapped stacks).
+                bool sessionTarget = lookedUp
+                    ? (lookedUp->isSessionBound() || seeded)
+                    : module->isScriptBindingName(name);
+                if (sessionTarget) {
                     auto* builder = module->getBuilder();
                     llvm::Function* pfn =
                         builder->GetInsertBlock()->getParent();

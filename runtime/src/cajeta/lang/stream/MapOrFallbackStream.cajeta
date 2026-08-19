@@ -67,7 +67,8 @@ public class MapOrFallbackStream<T, R> extends Stream<R> {
         }
     }
 
-    /** Type-changing wrapper unwind — see MapStream. (Step 5b.) */
+    /** Type-changing wrapper unwind — see MapStream. (Step 5b.)
+     *  VIEW of the wrapped source — borrow, valid while this MapOrFallbackStream lives. */
     public Stream<?> unwrap() {
         return this.source;
     }

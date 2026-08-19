@@ -18,7 +18,7 @@ import cajeta.error.RecoverableException;
 public class CsvParseException extends RecoverableException {
     public int64 position;
 
-    public CsvParseException(String message, int64 position) {
+    public CsvParseException(#String message, int64 position) {
         this.message = message;
         this.cause = 0;
         this.position = position;

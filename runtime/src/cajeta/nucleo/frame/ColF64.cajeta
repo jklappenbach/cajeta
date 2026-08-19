@@ -48,9 +48,12 @@ public class ColF64 {
 
     public int32 kind() { return this.kind; }
     public int32 ordinal() { return this.ordinal; }
+    /** VIEW of the column name — borrow, while this ColF64 lives. */
     public String name() { return this.name; }
     public float64 literalValue() { return this.lit; }
+    /** VIEW of the left child — borrow, while this ColF64 lives. */
     public ColF64 leftChild() { return this.left; }
+    /** VIEW of the right child — borrow, while this ColF64 lives. */
     public ColF64 rightChild() { return this.right; }
 
     /** Name this expression as a selection item (`select`/`with` output). */

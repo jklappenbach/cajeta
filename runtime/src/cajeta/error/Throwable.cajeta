@@ -39,6 +39,8 @@ public class Throwable {
 
     /**
      * The human-readable message this throwable was constructed with.
+     *
+     * VIEW of the held message — borrow, valid while this Throwable lives; copy it to retain.
      */
     public String getMessage() {
         return this.message;

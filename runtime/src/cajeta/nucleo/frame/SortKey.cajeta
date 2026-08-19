@@ -86,11 +86,15 @@ public class SortKey {
         this.nullsFirst = v;
     }
 
+    /** VIEW of the float64 reference — borrow, while this key lives. */
     public ColF64 exprOf() { return this.expr; }
+    /** VIEW of the int64 reference — borrow, while this key lives. */
     public ColI64 iRefOf() { return this.iRef; }
+    /** VIEW of the utf8 reference — borrow, while this key lives. */
     public ColStr strRefOf() { return this.strRef; }
     public boolean isDescending() { return this.descending; }
     public boolean isNullsFirst() { return this.nullsFirst; }
+    /** VIEW of the next chain link — borrow, while this key lives. */
     public SortKey nextOf() { return this.next; }
 
     /** The referenced column's name — diagnostics and plan printing. */

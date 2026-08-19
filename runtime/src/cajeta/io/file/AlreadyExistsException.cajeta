@@ -33,7 +33,7 @@ public class AlreadyExistsException extends IoException {
      * throw heap AlreadyExistsException("/tmp/lock already exists");
      * ```
      */
-    public AlreadyExistsException(String message) {
-        super(message);
+    public AlreadyExistsException(#String message) {
+        super(#message);
     }
 }

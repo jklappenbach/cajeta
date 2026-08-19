@@ -43,7 +43,7 @@ public class MalformedAddressException extends NetException {
      */
     public int64 position;
 
-    public MalformedAddressException(String message, int64 position) {
+    public MalformedAddressException(#String message, int64 position) {
         this.message = message;
         this.cause = 0;
         this.kind = 12;   // NetException.KIND_INVALID — parse failure, not an errno-classified socket error

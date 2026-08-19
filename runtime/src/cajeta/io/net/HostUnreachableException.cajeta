@@ -12,7 +12,7 @@ import cajeta.lang.String;
  * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
  */
 public class HostUnreachableException extends NetException {
-    public HostUnreachableException(String message) {
+    public HostUnreachableException(#String message) {
         this.message = message;
         this.cause = 0;
         this.kind = 7;   // NetException.KIND_HOST_UNREACHABLE

@@ -51,6 +51,7 @@ public final class JsonArray {
     }
 
 
+    /** VIEW of the stored element — borrow, valid while this JsonArray lives. */
     @Inline
     public JsonValue get(int32 i) {
         return this.data[i];

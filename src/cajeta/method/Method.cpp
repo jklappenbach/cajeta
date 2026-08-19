@@ -12,6 +12,7 @@
 #include "../type/CajetaFunctionType.h"
 #include "../compile/CajetaModule.h"
 #include "../compile/Compiler.h"
+#include "../compile/ExcFrameSetjmp.h"
 #include "../compile/ScriptUnitSynthesis.h"
 #include "../error/VariableAssignmentException.h"
 #include "../error/Exception.h"
@@ -1360,35 +1361,29 @@ namespace cajeta {
             CajetaModulePtr module, llvm::IRBuilder<>& wb,
             llvm::Function* parentFn) {
         auto& ctx = *module->getLlvmContext();
-        auto* lmod = module->getLlvmModule();
         llvm::Type* i8Ty = llvm::Type::getInt8Ty(ctx);
         llvm::Type* i32Ty = llvm::Type::getInt32Ty(ctx);
-        llvm::PointerType* ptrTy = llvm::PointerType::get(ctx, 0);
 
         TryFrameInfo info{nullptr, nullptr, nullptr};
         llvm::Function* push = module->getRuntimeFunction("__cajeta_exc_push");
         if (!push) return info;
-        llvm::Function* setjmpFn = lmod->getFunction("setjmp");
-        if (!setjmpFn) {
-            llvm::FunctionType* sjt = llvm::FunctionType::get(
-                i32Ty, {ptrTy}, false);
-            setjmpFn = llvm::Function::Create(
-                sjt, llvm::Function::ExternalLinkage, "setjmp", lmod);
-            setjmpFn->addFnAttr(llvm::Attribute::ReturnsTwice);
-        }
 
         constexpr unsigned frameBytes = 512;
         llvm::IRBuilder<> entryBuilder(
             &parentFn->getEntryBlock(),
             parentFn->getEntryBlock().begin());
-        info.framePtr = entryBuilder.CreateAlloca(
+        llvm::AllocaInst* frameAlloca = entryBuilder.CreateAlloca(
             llvm::ArrayType::get(i8Ty, frameBytes));
+        // 16-byte-aligned: MSVCRT's _setjmp stores XMM registers into the
+        // _JUMP_BUFFER with aligned stores (ExcFrameSetjmp.h).
+        frameAlloca->setAlignment(llvm::Align(16));
+        info.framePtr = frameAlloca;
 
         info.tryBB = llvm::BasicBlock::Create(ctx, "afterthrow_try", parentFn);
         info.catchBB = llvm::BasicBlock::Create(ctx, "afterthrow_catch", parentFn);
 
         wb.CreateCall(push, {info.framePtr});
-        llvm::Value* sjResult = wb.CreateCall(setjmpFn, {info.framePtr});
+        llvm::Value* sjResult = emitExcFrameSetjmp(wb, info.framePtr);
         llvm::Value* threw = wb.CreateICmpNE(sjResult,
             llvm::ConstantInt::get(i32Ty, 0));
         wb.CreateCondBr(threw, info.catchBB, info.tryBB);
@@ -3270,6 +3265,11 @@ namespace cajeta {
                     methodArenaMark = module->getBuilder()->CreateCall(
                         markFn, {}, "method.arena.mark");
                 }
+            }
+            // script-units 4.2.4(b) — the body block about to run is the
+            // entry's ROOT: its direct statements are the session bindings.
+            if (module->isScriptUnit() && name == scriptEntryName()) {
+                module->armScriptRootBlock();
             }
             block->generateCode(module);
         }

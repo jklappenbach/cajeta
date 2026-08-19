@@ -54,7 +54,7 @@ public class MalformedUriException extends NetException {
      */
     public int64 position;
 
-    public MalformedUriException(String message, int64 position) {
+    public MalformedUriException(#String message, int64 position) {
         this.message = message;
         this.cause = 0;
         this.kind = 12;   // NetException.KIND_INVALID

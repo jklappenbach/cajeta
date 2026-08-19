@@ -87,12 +87,15 @@ public class Headers {
     /**
      * Lowercased field name at slot `i` — for the serializer, which
      * walks `0..count()` emitting one `name: value` line per slot.
+     *
+     * VIEW of the stored name — borrow, valid while this Headers lives.
      */
     public String nameAt(int32 i) {
         return this.keys[i];
     }
 
-    /** Field value at slot `i` (OWS-trimmed at insert). */
+    /** Field value at slot `i` (OWS-trimmed at insert). VIEW of the
+     *  stored value — borrow, valid while this Headers lives. */
     public String valueAt(int32 i) {
         return this.values[i];
     }

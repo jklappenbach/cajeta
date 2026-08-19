@@ -50,7 +50,8 @@ public final class SkipStream<T> extends Stream<T> {
         return this.source.next();
     }
 
-    /** Wrapper-chain unwind: returns the wrapped source `Stream`. */
+    /** Wrapper-chain unwind: returns the wrapped source `Stream`.
+     *  VIEW of the wrapped source — borrow, valid while this SkipStream lives. */
     @Inline
     public Stream<?> unwrap() {
         return this.source;

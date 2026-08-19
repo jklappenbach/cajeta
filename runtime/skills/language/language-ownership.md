@@ -138,6 +138,59 @@ public class OwnershipDemo {
 }
 ```
 
+## The stdlib convention — producer / view / sink (spec §2)
+
+Every stdlib API answers one question: **who may legitimately outlive the
+caller's scope?** Only sinks may. Everything else is producing a value or
+lending a view, and each genre has one correct spelling
+(`specs/stdlib-ownership-convention-spec.md`; inventory + dispositions in
+`docs/stdlib/ownership-audit.md` / `ownership-dispositions.md`):
+
+| Genre | Shape | Spelling | Examples |
+|---|---|---|---|
+| **producer** (§2.1) | materializes a NEW value | returns `#T`; receive with `#=` | `asString`, `toBytes`, `encode` |
+| **view** (§2.2) | exposes interior state for reading | plain `T`, body is interior reads only — always a borrow | `keyAt`, `get(i)`, `asBytes` |
+| **sink** (§2.3) | container whose job is holding values | plain `T` param + `#=` slot store — the CALLER chooses per call | `ArrayList.add`, node/carrier ctors |
+| **capture** (§2.4) | non-sink that keeps a parameter | the formal is `#T` | every exception's `#String message` |
+| **copy-vs-alias** (§2.5) | could do either | it COPIES; the alias is a separately-named sharp variant | `setString` / `setStringBorrowed` |
+
+`^T` (§2.8) is the opt-in FORCED-borrow return — body restricted to borrow
+sources, checked rather than described. Plain `T` stays the default because a
+view's frame holds no title: it already carries a borrow.
+
+Ownership conditioned on a runtime property the caller cannot see — SSO vs
+sliced representation, which constructor ran — is **non-conforming** (§2.6).
+`JsonValue.setString(String)` was the stdlib's only instance and now copies
+unconditionally.
+
+**The `keyAt` mistake, worked** (this one is invisible without the example —
+it compiled clean and corrupted at a distance):
+
+```cajeta
+int8[] kb = o.keyAt(j);          // VIEW — a borrow into o's interior
+heap String(#kb, kl);            // WRONG: # on a borrow FORWARDS the mode;
+                                 // o still owns, frees on drop → the String
+                                 // reads recycled memory (cajeta-llama bug)
+```
+
+The fix is to copy at the boundary — take the view, materialize your own
+owner from it — or use the producer-shaped accessor when one exists:
+
+```cajeta
+int8[] kb = o.keyAt(j);          // borrow, fine to READ while o lives
+int8[] mine #= copyOf(kb, kl);   // your own title, safe past o's drop
+heap String(#mine, kl);
+```
+
+Two lints police the seams the checker cannot reject outright:
+
+- **`[plain-return-yields-title]`** — a plain-`T` method whose every return
+  hands out a fresh allocation: the caller receives a title the signature
+  never declared. Declare the return `#T`.
+- **`[plain-return-of-owned-slot]`** — returning a borrow of a slot the
+  frame is about to free. Deliberately unprotected at runtime; the lint is
+  the only fence.
+
 ## Slices and the `shared` state
 
 `arr[a:b]` yields a zero-copy `Slice<T>` window (buffer, offset, length);
@@ -168,23 +221,11 @@ placement keyword).
 
   Passing a named local with a plain `=` store also stays correct: that lends,
   and the field aliases a value the caller still owns.
-  (`specs/field-store-title-trap-spec.md`.)```cajeta
+  (`specs/field-store-title-trap-spec.md`.)
+
+  ```cajeta
   public Box(T v) { this.value #= v; }   // field takes the title
   ```
-
-  `#=` consumes the formal's title, so its drop is deactivated. It is safe
-  whichever way the caller passed the value — surrendering
-  (`heap Box(heap Cell(1))`) and lending (`Cell c = heap Cell(1); heap Box(c);`)
-  both work — so you can apply this at the store site without reasoning about
-  callers.
-
-  Declaring `#T` is a *different*, stronger choice: it is API-visible and forces
-  every caller to surrender. Reach for it when you want to REQUIRE ownership,
-  not to fix this — changing the store is enough.
-
-  Passing a named local with a plain `=` store also stays correct: that lends,
-  and the field aliases a value the caller still owns.
-  (`specs/field-store-title-trap-spec.md`.)
 - Ownership at a call site is directional: a plain `T` parameter can *accept*
   an offered `#x` (the value then drops in the callee) — but a `#T` parameter
   never accepts a plain borrow.
@@ -209,8 +250,7 @@ placement keyword).
   list freed the element, and nothing diagnoses that yet (MemoryModel §1.7).
 
 
-  Reach for the copy when the caller genuinely needs to keep an owner past the
-  container's life; otherwise surrender and read `s` as a borrow.```cajeta
+  ```cajeta
   list.add(#s);                          // surrender the one String
   list.add(s.substring(0, s.count()));   // give the list its own copy; s stays owner
   ```

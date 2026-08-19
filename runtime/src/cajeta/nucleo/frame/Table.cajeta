@@ -180,7 +180,8 @@ public class Table<T> {
      * THE terminal (spec §4.5–4.6): execute the whole accumulated plan,
      * materialize the result, and cache it — re-forcing the same handle
      * returns the cached result without re-executing. On a materialized
-     * source table this is the identity.
+     * source table this is the identity. The result is a BORROW of the
+     * cached table — valid while this handle lives.
      * @EntryPoint
      */
     public Table<T> collect() {

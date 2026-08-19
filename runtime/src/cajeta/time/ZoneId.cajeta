@@ -28,7 +28,9 @@ public class ZoneId {
      * ```
      */
     public ZoneId(String id) {
-        this.id = id;
+        // Copies (§2.5): a ZoneId outlives most sources of its id, and
+        // ids are tiny — no aliasing variant is worth its sharp edge.
+        this.id = "" + id;
     }
 
     /**
@@ -61,7 +63,8 @@ public class ZoneId {
         return heap ZoneId("UTC");
     }
 
-    /** The IANA id string this zone was created with. */
+    /** The IANA id string this zone was created with.
+     *  VIEW of the stored id — borrow, valid while this ZoneId lives. */
     public String getId() {
         return this.id;
     }

@@ -23,7 +23,7 @@ import cajeta.lang.String;
 public class Base64Exception extends RecoverableException {
     public int64 position;
 
-    public Base64Exception(String message, int64 position) {
+    public Base64Exception(#String message, int64 position) {
         this.message = message;
         this.cause = 0;
         this.position = position;

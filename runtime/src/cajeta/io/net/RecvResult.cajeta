@@ -63,7 +63,7 @@ public class RecvResult {
         return this.count;
     }
 
-    /** The sender's address. */
+    /** The sender's address. VIEW — borrow, valid while this RecvResult lives. */
     public SocketAddress getFrom() {
         return this.from;
     }

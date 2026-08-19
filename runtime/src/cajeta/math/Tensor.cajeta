@@ -445,7 +445,8 @@ public class Tensor<T> {
         return this.viewFlag;
     }
 
-    /** The tensor this view shares storage with, or `null` if it owns its storage. */
+    /** The tensor this view shares storage with, or `null` if it owns its storage.
+     *  VIEW of the base tensor — borrow, valid while this Tensor lives. */
     public Tensor<T> base() {
         return this.baseTensor;
     }

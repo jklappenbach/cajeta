@@ -13,7 +13,7 @@ public class CertificateInvalidException extends TlsException {
     /** The `TlsConnection.CERT_*` ordinal describing why verification failed. */
     public int32 reason;
 
-    public CertificateInvalidException(String message, int32 reason) {
+    public CertificateInvalidException(#String message, int32 reason) {
         this.message = message;
         this.cause = 0;
         this.kind = 99;   // NetException.KIND_OTHER

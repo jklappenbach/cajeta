@@ -32,6 +32,14 @@ What it looks for, per spec section:
 Output is a markdown table on stdout. Classification is deliberately
 NOT automated beyond flagging: spec 2.3 (sinks) cannot be decided from
 syntax, and a script that guessed would launder judgement into data.
+
+With `--check-dispositions <file>` (plan 1.3.1 / 4.3.1) the findings
+are joined against the curated disposition table
+(docs/stdlib/ownership-dispositions.md): every finding must carry a
+disposition (conforming / migrate:... / exception:... /
+false-positive:...), and every disposition row must still match a
+finding. Either gap is reported and the exit status is nonzero — the
+re-run-after-migration regression the plan asks for.
 """
 
 import os
@@ -52,17 +60,52 @@ FIELD_RE = re.compile(
 
 PRIMITIVES = {
     'void', 'boolean', 'int8', 'int16', 'int32', 'int64', 'int128',
-    'uint8', 'uint16', 'uint32', 'uint64', 'float16', 'float32',
-    'float64', 'float128', 'bfloat16', 'char',
+    'uint8', 'uint16', 'uint32', 'uint64', 'uint128', 'float16',
+    'float32', 'float64', 'float128', 'bfloat16', 'char',
+    # sub-byte float scalars (lang/Float*.cajeta wrappers store these
+    # by value — a bit copy, not an ownership edge)
+    'float4e2m1', 'float6e2m3', 'float6e3m2', 'float8e4m3',
+    'float8e4m3fnuz', 'float8e5m2', 'float8e5m2fnuz',
+    # raw address: a resource handle with no title to record; RAII
+    # guards (LockGuard/WriteGuard) document the lifetime bound instead
+    'pointer',
 }
 
 PRODUCER_PREFIXES = ('to', 'as', 'read', 'encode', 'decode', 'copy',
                      'clone', 'format', 'build', 'make', 'create')
 
 
+# Builtin flat-lowered value types with no .cajeta declaration to scan.
+BUILTIN_VALUE_TYPES = {'Vector', 'Quaternion'}
+
+# Filled by scan_value_types(): enums and @ValueType classes. Both are
+# copied by value — a store or return of one is a bit copy, not an
+# ownership edge, so they are excluded from findings entirely.
+VALUE_TYPES = set(BUILTIN_VALUE_TYPES)
+
+ENUM_RE = re.compile(r'^\s*(?:public\s+)?enum\s+(\w+)')
+VALUETYPE_RE = re.compile(r'@ValueType\b.*?\bclass\s+(\w+)')
+
+
+def scan_value_types(root):
+    for dirpath, _dirs, files in os.walk(root):
+        for f in files:
+            if not f.endswith('.cajeta'):
+                continue
+            for ln in open(os.path.join(dirpath, f), encoding='utf-8'):
+                m = ENUM_RE.match(ln)
+                if m:
+                    VALUE_TYPES.add(m.group(1))
+                m = VALUETYPE_RE.search(ln)
+                if m:
+                    VALUE_TYPES.add(m.group(1))
+
+
 def is_primitive(t):
     base = t.replace('[]', '')
-    return base in PRIMITIVES
+    if base in PRIMITIVES:
+        return True
+    return base.split('<')[0] in VALUE_TYPES
 
 
 def method_body(lines, start):
@@ -92,17 +135,37 @@ def audit(path, rel):
     i = 0
     while i < len(lines):
         m = METHOD_RE.match(lines[i])
+        joined_extra = 0
+        if not m and re.match(r'^\s*(?:public|protected|private)\b[^;{}]*\($',
+                              lines[i].rstrip()) or \
+           (not m and '(' in lines[i] and ')' not in lines[i]
+            and re.match(r'^\s*(?:public|protected|private)\b', lines[i])):
+            # Signature wrapped across lines (EncodingException's six-param
+            # ctor was invisible to the single-line regex). Join until the
+            # opener line, then match the logical line.
+            probe = lines[i]
+            for j in range(i + 1, min(i + 5, len(lines))):
+                probe = probe.rstrip() + ' ' + lines[j].lstrip()
+                joined_extra = j - i
+                if '{' in lines[j] or ';' in lines[j]:
+                    break
+            m = METHOD_RE.match(probe)
         if not m:
             i += 1
             continue
         vis, static, _final, owned, rtype, name, params, tail = m.groups()
+        # Constructors have no return type, so the visibility keyword
+        # lands in the rtype capture group ("public JsonParseException(").
+        if vis is None and rtype in ('public', 'protected', 'private'):
+            vis = rtype
+            rtype = 'void'
         if name in ('if', 'while', 'for', 'switch', 'catch', 'return'):
             i += 1
             continue
         if tail == ';':                       # @Native / abstract
             i += 1
             continue
-        body, end = method_body(lines, i)
+        body, end = method_body(lines, i + joined_extra)
         public = (vis == 'public')
 
         # --- VIEW-RETURN / PRODUCER? -------------------------------
@@ -122,7 +185,10 @@ def audit(path, rel):
                 findings.append((kind, rel, name, rtype, ''))
 
         # --- CAPTURE ------------------------------------------------
-        for p in [p.strip() for p in params.split(',') if p.strip()]:
+        # Public surface only (1.1.2): a private or package-private
+        # method is not an API whose caller can be misled.
+        for p in ([p.strip() for p in params.split(',') if p.strip()]
+                  if public else []):
             pm = re.match(r'(#?)([A-Za-z_][\w.]*(?:<[^>]*>)?(?:\[\])*)\s+(\w+)$',
                           p)
             if not pm:
@@ -141,9 +207,17 @@ def audit(path, rel):
                            body):
                 findings.append(('CAPTURE(elem)', rel, name, p_type,
                                  p_name + ' — stored into an element'))
+            elif re.search(r'super\s*\([^)]*\b' + p_name + r'\b', body):
+                # The base's ctor stores it; the plain formal here launders
+                # the caller's mode into that store (EndOfFileException ->
+                # IoException -> RecoverableException(#String) chain).
+                findings.append(('CAPTURE(super)', rel, name, p_type,
+                                 p_name + ' — forwarded to super, which '
+                                 'stores it'))
 
         # --- CONDITIONAL --------------------------------------------
-        if 'setStringOwned' in body and 'setString(' in body:
+        if 'setStringOwned' in body and 'setString(' in body \
+                and re.search(r'\bif\s*\(', body):
             findings.append(('CONDITIONAL', rel, name, rtype,
                              'branches between owned and borrowed paths'))
         elif body.count('#=') and re.search(r'\bif\s*\(', body) \
@@ -154,8 +228,56 @@ def audit(path, rel):
     return findings
 
 
+DISPO_ROW_RE = re.compile(
+    r'^\| ([A-Z?()=#a-zA-Z-]+) \| `([^`]+)` \| `([^`]+)` \| `([^`]+)` \|'
+    r' ([^|]+) \|')
+
+
+def parse_dispositions(path):
+    """-> dict[(kind, file, method, type)] = disposition text."""
+    out = {}
+    for ln in open(path, encoding='utf-8'):
+        m = DISPO_ROW_RE.match(ln)
+        if not m:
+            continue
+        kind, rel, meth, typ, dispo = m.groups()
+        dispo = dispo.strip()
+        if dispo.lower() in ('disposition', '---'):
+            continue
+        out[(kind, rel, meth, typ)] = dispo
+    return out
+
+
+def check_dispositions(all_findings, dispo_path):
+    dispos = parse_dispositions(dispo_path)
+    finding_keys = set()
+    missing = []
+    for k, rel, name, t, _note in all_findings:
+        key = (k, rel, name, t)
+        finding_keys.add(key)
+        if key not in dispos:
+            missing.append(key)
+    stale = [k for k in dispos if k not in finding_keys]
+    ok = not missing and not stale
+    print('dispositions: %d findings, %d disposition rows, '
+          '%d missing, %d stale' %
+          (len(finding_keys), len(dispos), len(missing), len(stale)))
+    for k in missing:
+        print('MISSING disposition: %s | %s | %s | %s' % k)
+    for k in stale:
+        print('STALE disposition (no matching finding): %s | %s | %s | %s' % k)
+    return 0 if ok else 1
+
+
 def main():
-    root = sys.argv[1] if len(sys.argv) > 1 else 'runtime/src/cajeta'
+    args = list(sys.argv[1:])
+    dispo_path = None
+    if '--check-dispositions' in args:
+        i = args.index('--check-dispositions')
+        dispo_path = args[i + 1]
+        del args[i:i + 2]
+    root = args[0] if args else 'runtime/src/cajeta'
+    scan_value_types(root)
     all_findings = []
     for dirpath, _dirs, files in os.walk(root):
         for f in sorted(files):
@@ -164,6 +286,9 @@ def main():
             p = os.path.join(dirpath, f)
             rel = os.path.relpath(p, root)
             all_findings.extend(audit(p, rel))
+
+    if dispo_path:
+        sys.exit(check_dispositions(all_findings, dispo_path))
 
     by_kind = defaultdict(list)
     for k, rel, name, t, note in all_findings:
