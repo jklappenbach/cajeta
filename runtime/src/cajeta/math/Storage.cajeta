@@ -77,7 +77,8 @@ public class Storage<T> {
         return this.length;
     }
 
-    /** Read the element at linear buffer index `i`. Faults if device-resident. */
+    /** Read the element at linear buffer index `i`. Faults if device-resident.
+     *  VIEW of the stored element — borrow, valid while this Storage lives. */
     public T get(int64 i) {
         if (this.onDevice) {
             throw heap PlacementException("Storage.get: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first.");
@@ -139,7 +140,8 @@ public class Storage<T> {
         return this.onDevice;
     }
 
-    /** The device buffer (null until {@link #toDevice}) — for the op-dispatch seam. */
+    /** The device buffer (null until {@link #toDevice}) — for the op-dispatch seam.
+     *  VIEW of the device buffer — borrow, valid while this Storage lives. */
     public KernelBuffer<T> deviceBuffer() {
         return this.dev;
     }

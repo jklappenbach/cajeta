@@ -95,6 +95,7 @@ public final class DateTimeFormatter {
         return heap DateTimeFormatter(p);
     }
 
+    /** VIEW of the stored pattern — borrow, valid while this DateTimeFormatter lives. */
     @Inline
     public String getPattern() {
         return this.pattern;

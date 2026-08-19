@@ -154,6 +154,9 @@ public final class Heap<T> {
     /**
      * @returns the smallest element without removing it, or the
      *          type's zero value if the heap is empty.
+     *
+     * VIEW of the root element — borrow, valid while this Heap lives and the
+     * element is not popped or displaced by a push; copy it to retain.
      */
     @Inline
     public T peek() {

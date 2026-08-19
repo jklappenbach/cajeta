@@ -89,12 +89,19 @@ public class Agg {
     }
 
     public int32 kind() { return this.kind; }
+    /** VIEW of the float64 input — borrow, valid while this Agg lives. */
     public ColF64 exprOf() { return this.expr; }
+    /** VIEW of the int64 input — borrow, valid while this Agg lives. */
     public ColI64 iRefOf() { return this.iRef; }
+    /** VIEW of the utf8 input — borrow, valid while this Agg lives. */
     public ColStr strRefOf() { return this.strRef; }
+    /** VIEW of the left child — borrow, valid while this Agg lives. */
     public Agg leftAgg() { return this.left; }
+    /** VIEW of the right child — borrow, valid while this Agg lives. */
     public Agg rightAgg() { return this.right; }
+    /** VIEW of the alias name — borrow, valid while this Agg lives. */
     public String outNameOf() { return this.outName; }
+    /** VIEW of the next chain link — borrow, while this Agg lives. */
     public Agg nextOf() { return this.next; }
 
     /** The reduction's name, for diagnostics and plan printing. */

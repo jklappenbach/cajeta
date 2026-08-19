@@ -125,7 +125,8 @@ public class TensorProtocol {
         return #out;
     }
 
-    /** The runtime element dtype. */
+    /** The runtime element dtype.
+     *  VIEW of the stored dtype — borrow, valid while this TensorProtocol lives. */
     public DType dtype() {
         return this.dt;
     }

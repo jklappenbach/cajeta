@@ -211,6 +211,9 @@ public final class ImmutableSet<T> {
      * Member at dense index `i` (0-based, first-seen order), or the
      * type's zero value if out of range. Lets callers iterate members
      * without a stream.
+     *
+     * VIEW of the stored member — borrow, valid while this ImmutableSet
+     * lives; copy it to retain.
      */
     public T get(int32 i) {
         if (i < 0 || i >= this.elemCount) {

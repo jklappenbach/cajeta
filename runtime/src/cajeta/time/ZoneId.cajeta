@@ -63,7 +63,8 @@ public class ZoneId {
         return heap ZoneId("UTC");
     }
 
-    /** The IANA id string this zone was created with. */
+    /** The IANA id string this zone was created with.
+     *  VIEW of the stored id — borrow, valid while this ZoneId lives. */
     public String getId() {
         return this.id;
     }

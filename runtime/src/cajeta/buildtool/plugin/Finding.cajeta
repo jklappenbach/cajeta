@@ -69,11 +69,14 @@ public class Finding {
         this.message  #= message;
     }
 
+    /** VIEW of the rule slug — borrow, valid while this Finding lives. */
     public String   rule()     { return this.rule;     }
     public Severity severity() { return this.severity; }
+    /** VIEW of the source path — borrow, valid while this Finding lives. */
     public String   file()     { return this.file;     }
     public int32    line()     { return this.line;     }
     public int32    column()   { return this.column;   }
+    /** VIEW of the message — borrow, valid while this Finding lives. */
     public String   message()  { return this.message;  }
 
     // ── Common factories ────────────────────────────────────────

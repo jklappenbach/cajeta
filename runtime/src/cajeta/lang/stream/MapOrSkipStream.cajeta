@@ -68,7 +68,8 @@ public class MapOrSkipStream<T, R> extends Stream<R> {
         return stack Optional<R>(false);
     }
 
-    /** Type-changing wrapper unwind — see `MapStream`. (Step 5b.) */
+    /** Type-changing wrapper unwind — see `MapStream`. (Step 5b.)
+     *  VIEW of the wrapped source — borrow, valid while this MapOrSkipStream lives. */
     public Stream<?> unwrap() {
         return this.source;
     }

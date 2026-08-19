@@ -63,6 +63,7 @@ public final class TakeStream<T> extends Stream<T> {
         return o;
     }
 
+    /** VIEW of the wrapped source stream — borrow, valid while this TakeStream lives. */
     @Inline
     public Stream<?> unwrap() {
         return this.source;

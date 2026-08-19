@@ -66,7 +66,7 @@ public class SocketAddress {
 
     // -- accessors ----------------------------------------------------------
 
-    /** The IP endpoint. */
+    /** The IP endpoint. VIEW — borrow, valid while this SocketAddress lives. */
     public IpAddress getIp() {
         return this.ip;
     }

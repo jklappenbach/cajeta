@@ -93,6 +93,8 @@ public class FlatMapStream<T, R> extends Stream<R> {
      * fallback is sequential). The override is still useful for
      * `.flatMap().filter().parallel()`-style chains where this
      * FlatMap is not the closest-to-root.
+     *
+     * VIEW of the wrapped source — borrow, valid while this FlatMapStream lives.
      */
     public Stream<?> unwrap() {
         return this.source;

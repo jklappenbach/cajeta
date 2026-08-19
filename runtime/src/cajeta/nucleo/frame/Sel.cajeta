@@ -55,9 +55,14 @@ public class Sel {
         return #s;
     }
 
+    /** VIEW of the output name — borrow, valid while this Sel lives. */
     public String outNameOf() { return this.outName; }
+    /** VIEW of the float64 source — borrow, while this Sel lives. */
     public ColF64 exprOf() { return this.expr; }
+    /** VIEW of the int64 source — borrow, while this Sel lives. */
     public ColI64 iRefOf() { return this.iRef; }
+    /** VIEW of the utf8 source — borrow, while this Sel lives. */
     public ColStr strRefOf() { return this.strRef; }
+    /** VIEW of the next chain link — borrow, while this Sel lives. */
     public Sel nextOf() { return this.next; }
 }

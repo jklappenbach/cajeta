@@ -50,13 +50,19 @@ public class Pred {
     }
 
     public int32 kind() { return this.kind; }
+    /** VIEW of the float64 operand — borrow, while this Pred lives. */
     public ColF64 operandExpr() { return this.operand; }
+    /** VIEW of the int64 operand — borrow, while this Pred lives. */
     public ColI64 iOperandExpr() { return this.iOperand; }
+    /** VIEW of the utf8 operand — borrow, while this Pred lives. */
     public ColStr strOperandExpr() { return this.strOperand; }
     public float64 value() { return this.value; }
     public int64 iValue() { return this.iValue; }
+    /** VIEW of the string literal — borrow, while this Pred lives. */
     public String strValue() { return this.strValue; }
+    /** VIEW of the left child — borrow, while this Pred lives. */
     public Pred leftPredicate() { return this.leftPred; }
+    /** VIEW of the right child — borrow, while this Pred lives. */
     public Pred rightPredicate() { return this.rightPred; }
 
     /** Logical negation — a node, not an evaluation. */

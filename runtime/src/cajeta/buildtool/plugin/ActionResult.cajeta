@@ -90,8 +90,11 @@ public class ActionResult {
     }
 
     public boolean isError()       { return this.errorMessage.count() > 0; }
+    /** VIEW of the failure message — borrow, valid while this ActionResult lives. */
     public String  errorMessage()  { return this.errorMessage; }
+    /** VIEW of the output map — borrow, valid while this ActionResult lives. */
     public HashMap<String, String> outputs()  { return this.outputsMap;   }
+    /** VIEW of the finding list — borrow, valid while this ActionResult lives. */
     public ArrayList<Finding>      findings() { return this.findingsList; }
 
     /**
