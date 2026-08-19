@@ -213,16 +213,30 @@ public final class JsonValue {
     }
 
     /**
-     * String-typed `setString` overload. The String's bytes are
-     * stored as a BORROW — the String's lifetime must outlive this
-     * JsonValue. For ownership transfer use `setStringOwned(#bytes, len)`
-     * (the bytes move into this JsonValue and the caller's local
-     * deactivates).
+     * String-typed `setString` overload. COPIES the String's bytes:
+     * this JsonValue is self-contained and the source may drop freely
+     * (stdlib-ownership-convention §2.5 — the safe spelling is the
+     * unmarked one). It previously stored plain-root strings as a
+     * borrow, which made ownership depend on the argument's internal
+     * representation (§2.6) and dangled whenever the value outlived
+     * the source — the cajeta-llama corruption. For an explicit alias
+     * use `setStringBorrowed(s)`; for ownership transfer of a byte
+     * buffer use `setStringOwned(#bytes, len)`.
      */
     public JsonValue setString(String s) {
+        int8[] w #= s.toBytes();
+        return this.setStringOwned(#w, s.byteLength());
+    }
+
+    /**
+     * SHARP variant of `setString`: aliases the String's storage
+     * instead of copying. Lifetime bound: `s` must outlive this
+     * JsonValue. (Where the String has no plain root to alias — SSO
+     * or a sliced window — the bytes are copied instead; the call is
+     * then content-identical and the bound is simply unnecessary.)
+     */
+    public JsonValue setStringBorrowed(String s) {
         if (s.root() == null || s.byteOffset() != (int64) 0) {
-            // A borrow of a toBytes() temp would dangle; transfer an
-            // owned window copy instead.
             int8[] w #= s.toBytes();
             return this.setStringOwned(#w, s.byteLength());
         }

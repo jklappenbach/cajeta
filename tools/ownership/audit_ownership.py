@@ -135,6 +135,21 @@ def audit(path, rel):
     i = 0
     while i < len(lines):
         m = METHOD_RE.match(lines[i])
+        joined_extra = 0
+        if not m and re.match(r'^\s*(?:public|protected|private)\b[^;{}]*\($',
+                              lines[i].rstrip()) or \
+           (not m and '(' in lines[i] and ')' not in lines[i]
+            and re.match(r'^\s*(?:public|protected|private)\b', lines[i])):
+            # Signature wrapped across lines (EncodingException's six-param
+            # ctor was invisible to the single-line regex). Join until the
+            # opener line, then match the logical line.
+            probe = lines[i]
+            for j in range(i + 1, min(i + 5, len(lines))):
+                probe = probe.rstrip() + ' ' + lines[j].lstrip()
+                joined_extra = j - i
+                if '{' in lines[j] or ';' in lines[j]:
+                    break
+            m = METHOD_RE.match(probe)
         if not m:
             i += 1
             continue
@@ -150,7 +165,7 @@ def audit(path, rel):
         if tail == ';':                       # @Native / abstract
             i += 1
             continue
-        body, end = method_body(lines, i)
+        body, end = method_body(lines, i + joined_extra)
         public = (vis == 'public')
 
         # --- VIEW-RETURN / PRODUCER? -------------------------------
@@ -192,6 +207,13 @@ def audit(path, rel):
                            body):
                 findings.append(('CAPTURE(elem)', rel, name, p_type,
                                  p_name + ' — stored into an element'))
+            elif re.search(r'super\s*\([^)]*\b' + p_name + r'\b', body):
+                # The base's ctor stores it; the plain formal here launders
+                # the caller's mode into that store (EndOfFileException ->
+                # IoException -> RecoverableException(#String) chain).
+                findings.append(('CAPTURE(super)', rel, name, p_type,
+                                 p_name + ' — forwarded to super, which '
+                                 'stores it'))
 
         # --- CONDITIONAL --------------------------------------------
         if 'setStringOwned' in body and 'setString(' in body:

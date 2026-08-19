@@ -7,8 +7,8 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 
 | Disposition | Count |
 |---|---|
-| conforming | 136 |
-| migrate | 40 |
+| conforming | 140 |
+| migrate | 58 |
 
 | Kind | File | Method | Type | Disposition | Rationale |
 |---|---|---|---|---|---|
@@ -188,3 +188,25 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 | VIEW-RETURN | `time/ZoneId.cajeta` | `getId` | `String` | conforming | §2.2 — body is `return this.id` only |
 | VIEW-RETURN | `xpu/PageCache.cajeta` | `evictedKey` | `K` | conforming | §2.2/§2.7 — interior read, and the doc states the validity bound |
 | VIEW-RETURN | `xpu/PageCache.cajeta` | `getOrDefault` | `V` | conforming | §2.2 — returns either the caller's own `fallback` or an interior slot read |
+| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `Encoder<K>` | migrate:#= store | tree keeps the encoder for its life; `#=` records the caller's lend/transfer choice (§2.4→§2.3) |
+| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `Encoder<V>` | migrate:#= store | same strategy-object hold |
+| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `BufferEncoder<K>` | migrate:#= store | same hold, buffer-encoder form |
+| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `BufferEncoder<V>` | migrate:#= store | same hold, buffer-encoder form |
+| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `LtmPager` | `Encoder<K>` | migrate:#= store | pager keeps the encoder; same class as the tree's hold |
+| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `LtmPager` | `Encoder<V>` | migrate:#= store | same |
+| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `setBufferEncoders` | `BufferEncoder<K>` | migrate:#= store | post-construction setter, same hold |
+| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `setBufferEncoders` | `BufferEncoder<V>` | migrate:#= store | same |
+| CAPTURE(=) | `lang/EncodingException.cajeta` | `EncodingException` | `String` | migrate:#String param | plain store of message AND reason past the throw (§2.4); align with `#String` bases |
+| CAPTURE(#=) | `math/TensorProtocol.cajeta` | `TensorProtocol` | `Object` | conforming | already migrated (3.3.3): `#=` records lend-vs-transfer of the producer's storage (§2.3) |
+| CAPTURE(#=) | `math/TensorProtocol.cajeta` | `TensorProtocol` | `DType` | conforming | same ctor, dtype slot |
+| CAPTURE(#=) | `math/optim/OptimResult.cajeta` | `OptimResult` | `Tensor<float64>` | conforming | result carrier holds the solution tensor; `#=` sink model (§2.3) |
+| CAPTURE(super) | `io/file/AlreadyExistsException.cajeta` | `AlreadyExistsException` | `String` | migrate:#String param | plain formal laundered through super into the `#String` base store (§2.4) |
+| CAPTURE(super) | `io/file/CrossDeviceException.cajeta` | `CrossDeviceException` | `String` | migrate:#String param | same super-forward chain |
+| CAPTURE(super) | `io/file/DiskFullException.cajeta` | `DiskFullException` | `String` | migrate:#String param | same |
+| CAPTURE(super) | `io/file/EndOfFileException.cajeta` | `EndOfFileException` | `String` | migrate:#String param | same |
+| CAPTURE(super) | `io/file/IoException.cajeta` | `IoException` | `String` | migrate:#String param | the chain's hinge: forwards plain into RecoverableException(#String) |
+| CAPTURE(super) | `io/file/IsDirectoryException.cajeta` | `IsDirectoryException` | `String` | migrate:#String param | same super-forward chain |
+| CAPTURE(super) | `io/file/NotDirectoryException.cajeta` | `NotDirectoryException` | `String` | migrate:#String param | same |
+| CAPTURE(super) | `io/file/NotFoundException.cajeta` | `NotFoundException` | `String` | migrate:#String param | same |
+| CAPTURE(super) | `io/file/PermissionException.cajeta` | `PermissionException` | `String` | migrate:#String param | same |
+| CONDITIONAL | `codec/json/JsonValue.cajeta` | `setStringBorrowed` | `JsonValue` | conforming | the SHARP variant added by 4.2.1: caller contract is uniform (source outlives value); the root branch only makes the bound unnecessary, never changes it — not the §2.6 shape |
