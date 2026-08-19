@@ -39,6 +39,14 @@ public class JsonExample {
 | `static #JsonValue parse(int8[] bytes, int64 length)` ⚑ | Tier 3: parse a JSON byte buffer into a mutable `JsonValue` tree; throws `JsonParseException` on malformed input |
 | `static #JsonValue parse(String s)` ⚑ | Tier-3 `String` overload — parses the `String`'s UTF-8 payload directly, no copy |
 | `static #int8[] toBytes(JsonValue value)` ⚑ | Tier 3: serialize a `JsonValue` tree back to a fresh JSON byte buffer |
+
+Tier-3 builder ownership: `JsonValue.setString(String)` COPIES its argument
+(the value is self-contained; the source may drop freely). The aliasing
+variant is `setStringBorrowed(s)` — sharp, source must outlive the value —
+and `setStringOwned(#bytes, len)` transfers a byte buffer in.
+`asArray()` / `asObject()` are VIEWS of the held nodes (borrows, valid while
+the `JsonValue` lives), and `asString()` is a producer returning an owned
+copy.
 | `static T parse<T>(int8[] bytes, int64 length)` ⚑ | Tier 1: parse JSON bytes into a `T` by synthesizing per-`T` parse code at the call site |
 | `static T parse<T>(String s)` ⚑ | Tier-1 `String` overload — forwards to the byte-buffer variant |
 | `static int8[] toBytes<T>(T value)` ⚑ | Tier 1: emit `T` to JSON bytes; symmetric counterpart of `parse<T>` |
