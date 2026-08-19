@@ -22,6 +22,7 @@ class CocoAnalysis(private val project: Project) {
     private val findings = AtomicReference<List<UncoveredMethod>>(emptyList())
     private val attribution = AtomicReference<CocoAttributionModel?>(null)
     private val ranking = AtomicReference<List<CrapEntry>?>(null)
+    private val mutation = AtomicReference<List<MutantResult>?>(null)
     private val listeners = CopyOnWriteArrayList<(List<UncoveredMethod>) -> Unit>()
     private val sideListeners = CopyOnWriteArrayList<() -> Unit>()
 
@@ -33,6 +34,9 @@ class CocoAnalysis(private val project: Project) {
 
     /** Null when the run produced no ranking. Order is coco's; do not re-sort. */
     val risk: List<CrapEntry>? get() = ranking.get()
+
+    /** Null when mutation testing was never run — a separate coco pass. */
+    val mutants: List<MutantResult>? get() = mutation.get()
 
     fun addListener(listener: (List<UncoveredMethod>) -> Unit) {
         listeners += listener
@@ -49,6 +53,7 @@ class CocoAnalysis(private val project: Project) {
     fun updateSidecars(profile: java.io.File) {
         attribution.set(CocoAttributionModel.beside(profile))
         ranking.set(CocoCrap.beside(profile))
+        mutation.set(CocoMutation.beside(profile))
         ApplicationManager.getApplication().invokeLater {
             if (!project.isDisposed) sideListeners.forEach { it() }
         }

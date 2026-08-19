@@ -91,3 +91,19 @@ Lazy codegen is now the default (bodies emitted on first use; the
 | no-project | 0.24s | **3.37s** | 0.04s | ~16x |
 | project-no-deps | 0.23s | **3.34s** | 0.04s | ~16x |
 | project-with-deps | 0.23s | **8.22s** | 0.08s | **~31x** |
+
+## Measured — 2026-08-19, cajeta 0.21.0 (7c0f40f3, source build), Release, repeat=2 medians
+
+Release-verification run for the v0.21.0 ship. Parity with the 08-17 numbers
+(deltas within box noise).
+
+| scenario | startup | cell 1 | cell 2 |
+|---|---|---|---|
+| no-project | 0.24s | **3.56s** | 0.05s |
+| project-no-deps | 0.23s | **3.55s** | 0.05s |
+| project-with-deps | 0.23s | **8.83s** | 0.09s |
+
+Measured from source at the release line, NOT the published artifact: the
+v0.21.0 Linux x86_64 archive was built without libzmq, so `cajeta kernel`
+is unavailable in it and the scenarios cannot run — release-pipeline
+defect, the CI builder needs libzmq3-dev.

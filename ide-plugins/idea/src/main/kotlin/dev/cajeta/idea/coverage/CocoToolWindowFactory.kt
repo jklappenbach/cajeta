@@ -36,6 +36,8 @@ class CocoToolWindowFactory : ToolWindowFactory, DumbAware {
         toolWindow.contentManager.addContent(
             factory.createContent(CocoRiskPanel(project), "Risk", false)
         )
-        // Unit 8 adds its tab alongside these.
+        toolWindow.contentManager.addContent(
+            factory.createContent(CocoMutantsPanel(project), "Mutants", false)
+        )
     }
 }

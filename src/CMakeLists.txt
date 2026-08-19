@@ -141,7 +141,70 @@ else()
     endif()
 endif()
 
-find_package(LLVM REQUIRED CONFIG)
+# The major cajeta's codegen is written against. Pinned, and REQUESTED rather
+# than merely checked afterwards: a bare `find_package(LLVM CONFIG)` accepts
+# whatever config CMake's default search hits first, and a machine with ROCm
+# installed has an LLVM 22 config on that path. That configured cleanly and then
+# failed ~250 files into the build with a C++ signature error
+# (`ConstantPointerNull::get`) that names nothing about toolchains — a wrong
+# answer discovered as late as it possibly could be.
+#
+# Passing the version makes CMake reject an incompatible config during the
+# search and keep looking (LLVM's own LLVMConfigVersion.cmake is major.minor
+# exact), so the right toolchain still wins when both are present.
+set(CAJETA_LLVM_MAJOR 23)
+
+# Captured first: a failed find_package RESETS LLVM_DIR to LLVM_DIR-NOTFOUND,
+# so the value the user actually passed is gone by the time we report on it.
+set(CAJETA_LLVM_DIR_REQUESTED "${LLVM_DIR}")
+
+find_package(LLVM ${CAJETA_LLVM_MAJOR} CONFIG)
+
+if(NOT LLVM_FOUND)
+    # Distinguish "nothing suitable anywhere" from "you pointed me at the wrong
+    # one" — the second is a different mistake with a different fix, and
+    # reporting it as "not found" when LLVM_DIR is set right there reads as a
+    # bug in the build rather than in the argument.
+    if(NOT CAJETA_LLVM_DIR_REQUESTED STREQUAL "")
+        # CMake's own search already resolved and rejected a version; ask it
+        # rather than re-parsing, since LLVM's config files are often thin
+        # redirects whose text carries no version at all.
+        set(_cajeta_found_major "unknown")
+        if(LLVM_CONSIDERED_VERSIONS)
+            list(GET LLVM_CONSIDERED_VERSIONS 0 _cajeta_found_major)
+        endif()
+        message(FATAL_ERROR
+            "LLVM_DIR points at ${CAJETA_LLVM_DIR_REQUESTED}, which is not LLVM "
+            "${CAJETA_LLVM_MAJOR} (found major: ${_cajeta_found_major}).\n"
+            "cajeta's codegen is written against LLVM ${CAJETA_LLVM_MAJOR} and "
+            "does not build against other majors — a mismatched toolchain "
+            "configures cleanly and then fails deep in the build.\n"
+            "Point LLVM_DIR at an LLVM ${CAJETA_LLVM_MAJOR} install's "
+            "lib/cmake/llvm.")
+    endif()
+    message(FATAL_ERROR
+        "LLVM ${CAJETA_LLVM_MAJOR} was not found.\n"
+        "cajeta's codegen is written against LLVM ${CAJETA_LLVM_MAJOR} and does "
+        "not build against other majors.\n"
+        "Point CMake at it explicitly, e.g.:\n"
+        "    cmake -S . -B build -G Ninja -DLLVM_DIR=<llvm>/lib/cmake/llvm\n"
+        "See README.md for install options (apt.llvm.org ships llvm-23-dev; a "
+        "cajeta-llvm checkout works too).")
+endif()
+
+# Belt and braces: a config that satisfied the search but reports another major
+# would otherwise fail deep in the build for a reason no error message connects
+# to the toolchain.
+if(NOT LLVM_VERSION_MAJOR EQUAL CAJETA_LLVM_MAJOR)
+    message(FATAL_ERROR
+        "LLVM ${LLVM_VERSION_MAJOR} found at ${LLVM_DIR}, but cajeta requires "
+        "LLVM ${CAJETA_LLVM_MAJOR}.\n"
+        "Pass -DLLVM_DIR=<llvm-${CAJETA_LLVM_MAJOR}>/lib/cmake/llvm to override "
+        "the one CMake found first.")
+endif()
+
+# Named in every configure, so the toolchain in use is never a guess.
+message(STATUS "cajeta: LLVM ${LLVM_PACKAGE_VERSION} from ${LLVM_DIR}")
 # LLVM_DEFINITIONS is a single space-separated string (e.g.
 # "-D_GLIBCXX_USE_CXX11_ABI=1 -D__STDC_CONSTANT_MACROS ..."). Passing it to
 # add_definitions() verbatim collapses the whole string into ONE malformed
