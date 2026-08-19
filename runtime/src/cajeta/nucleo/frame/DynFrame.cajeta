@@ -99,8 +99,10 @@ public class DynFrame {
 
     /** Declare the Z-order spatial index over columns `x`, `y` (U15). */
     public void setSpatial(String x, String y) {
-        this.spatialX = x;
-        this.spatialY = y;
+        // `#=` mirrors addIndexed's slot store: a lent name stays lent,
+        // a `#`-passed name is owned by the frame (§2.3).
+        this.spatialX #= x;
+        this.spatialY #= y;
     }
 
     /** Copy `o`'s index declarations into this frame (alias carry). */

@@ -30,7 +30,7 @@ public class DateTimeParseException extends DateTimeException {
      * throw DateTimeParseException("Invalid value for MonthOfYear: 13", 5);
      * ```
      */
-    public DateTimeParseException(String message, int64 errorIndex) {
+    public DateTimeParseException(#String message, int64 errorIndex) {
         this.message = message;
         this.cause = 0;
         this.errorIndex = errorIndex;

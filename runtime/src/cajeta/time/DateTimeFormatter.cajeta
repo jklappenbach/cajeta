@@ -42,7 +42,9 @@ public final class DateTimeFormatter {
      * ```
      */
     public DateTimeFormatter(String pattern) {
-        this.pattern = pattern;
+        // Copies (§2.5): the formatter keeps the pattern for its life;
+        // a borrowed pattern from a dropped builder would dangle.
+        this.pattern = "" + pattern;
     }
 
     /**

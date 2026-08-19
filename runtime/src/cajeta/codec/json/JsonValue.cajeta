@@ -167,11 +167,15 @@ public final class JsonValue {
     }
 
     @Inline
+    /** VIEW of the held array — borrow, valid while this JsonValue
+     *  lives; never a materialized copy despite the `as` name. */
     public JsonArray asArray() {
         return this.arrVal;
     }
 
     @Inline
+    /** VIEW of the held object — borrow, valid while this JsonValue
+     *  lives; never a materialized copy despite the `as` name. */
     public JsonObject asObject() {
         return this.objVal;
     }

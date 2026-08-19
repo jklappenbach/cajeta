@@ -1,14 +1,15 @@
-# stdlib ownership dispositions (plan 1.3.1)
+# stdlib ownership dispositions (plan 1.3.1 / 4.3.1)
 
-One row per `ownership-audit.md` finding. Checked by
+One row per `ownership-audit.md` finding, reflecting the CURRENT
+source (the Unit 4 migration history lives in git). Checked by
 `tools/ownership/audit_ownership.py --check-dispositions <this file>`:
 a finding without a row, or a row without a finding, fails the run.
 Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 
 | Disposition | Count |
 |---|---|
-| conforming | 140 |
-| migrate | 58 |
+| conforming | 150 |
+| migrate | 2 |
 
 | Kind | File | Method | Type | Disposition | Rationale |
 |---|---|---|---|---|---|
@@ -18,6 +19,14 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 | CAPTURE(#=) | `collection/LinkedListNode.cajeta` | `LinkedListNode` | `T` | conforming | plain formal + `#=`, so the node owns only what the caller transferred (§2.3) |
 | CAPTURE(#=) | `collection/RedBlackNode.cajeta` | `RedBlackNode` | `K` | conforming | tree node is the sink; `#=` keeps the caller's mode per slot (§2.3) |
 | CAPTURE(#=) | `collection/RedBlackNode.cajeta` | `RedBlackNode` | `V` | conforming | same sink model, mode recorded not forced (§2.3) |
+| CAPTURE(#=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `BufferEncoder<K>` | conforming | same migrated slot, buffer-encoder form |
+| CAPTURE(#=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `BufferEncoder<V>` | conforming | same migrated slot, buffer-encoder form |
+| CAPTURE(#=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `Encoder<K>` | conforming | migrated 4.2.2: `#=` slot records the caller's lend/transfer choice (§2.3) |
+| CAPTURE(#=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `Encoder<V>` | conforming | same migrated slot |
+| CAPTURE(#=) | `collection/ltm/LtmPager.cajeta` | `LtmPager` | `Encoder<K>` | conforming | migrated 4.2.2: pager's `#=` encoder hold (§2.3) |
+| CAPTURE(#=) | `collection/ltm/LtmPager.cajeta` | `LtmPager` | `Encoder<V>` | conforming | same |
+| CAPTURE(#=) | `collection/ltm/LtmPager.cajeta` | `setBufferEncoders` | `BufferEncoder<K>` | conforming | migrated 4.2.2: post-construction setter, same slot model |
+| CAPTURE(#=) | `collection/ltm/LtmPager.cajeta` | `setBufferEncoders` | `BufferEncoder<V>` | conforming | same |
 | CAPTURE(#=) | `concurrent/FiberLocalBox.cajeta` | `FiberLocalBox` | `T` | conforming | box's stated job is holding the binding value; caller chooses via `#=` (§2.3) |
 | CAPTURE(#=) | `concurrent/Mutex.cajeta` | `Mutex` | `T` | conforming | Mutex is documented as owning the protected data; `heap Mutex(#v)` vs `(v)` is the caller's call (§2.3) |
 | CAPTURE(#=) | `concurrent/RwLock.cajeta` | `RwLock` | `T` | conforming | same fused own-the-data shape as Mutex; ctor doc states both modes (§2.3) |
@@ -30,58 +39,26 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 | CAPTURE(#=) | `lang/Optional.cajeta` | `Optional` | `T` | conforming | sink-shaped wrapper; `#=` plus `take()` for the owned counterpart (§2.3) |
 | CAPTURE(#=) | `lang/stream/ArrayStream.cajeta` | `ArrayStream` | `T[]` | conforming | buffer sink; documented as shared-not-copied with mode from the caller (§2.3) |
 | CAPTURE(#=) | `math/Tensor.cajeta` | `Tensor` | `Storage<T>` | conforming | §2.3 sink — Tensor's job is holding the buffer, `#=` records the title the factories surrender |
+| CAPTURE(#=) | `math/TensorProtocol.cajeta` | `TensorProtocol` | `DType` | conforming | same ctor, dtype slot |
+| CAPTURE(#=) | `math/TensorProtocol.cajeta` | `TensorProtocol` | `Object` | conforming | already migrated (3.3.3): `#=` records lend-vs-transfer of the producer's storage (§2.3) |
+| CAPTURE(#=) | `math/optim/OptimResult.cajeta` | `OptimResult` | `Tensor<float64>` | conforming | result carrier holds the solution tensor; `#=` sink model (§2.3) |
 | CAPTURE(#=) | `nucleo/column/Column.cajeta` | `Column` | `Tensor<T>` | conforming | buffer-holding container; `#=` records the caller's mode per slot (§2.3) |
 | CAPTURE(#=) | `nucleo/column/MxColumn.cajeta` | `MxColumn` | `Column<uint8>` | conforming | documented mode-forwarding wrapper — both lent and owned packed columns are live (§2.3) |
 | CAPTURE(#=) | `nucleo/column/NullableColumn.cajeta` | `NullableColumn` | `Column<T>` | conforming | two-buffer container; `#=` values slot carries the source's mode (§2.3) |
 | CAPTURE(#=) | `nucleo/column/NullableColumn.cajeta` | `NullableColumn` | `Column<uint8>` | conforming | same sink, validity bitmap slot (§2.3) |
 | CAPTURE(#=) | `nucleo/column/StringColumn.cajeta` | `StringColumn` | `Column<int32>` | conforming | offsets buffer held by a buffer container, `#=` store (§2.3) |
 | CAPTURE(#=) | `nucleo/column/StringColumn.cajeta` | `StringColumn` | `Column<uint8>` | conforming | utf8 data buffer, same sink slot (§2.3) |
+| CAPTURE(#=) | `nucleo/frame/DynFrame.cajeta` | `setSpatial` | `String` | conforming | migrated 4.2.2: `#=` mirrors addIndexed's slot store (§2.3) |
 | CAPTURE(#=) | `nucleo/transform/GradResult.cajeta` | `GradResult` | `G` | conforming | record result-carrier whose job is holding the returned grads (§2.3) |
 | CAPTURE(#=) | `nucleo/transform/GradResult.cajeta` | `GradResult` | `V` | conforming | same record carrier, forward-value slot (§2.3) |
 | CAPTURE(#=) | `search/fuzzy/Match.cajeta` | `Match` | `T` | conforming | §2.3 sink-shaped carrier, `#=` carries whichever mode the value arrived in |
-| CAPTURE(=) | `codec/Base64Exception.cajeta` | `Base64Exception` | `String` | migrate:#String param | non-sink plain store of message (§2.4); base RecoverableException already takes `#String` |
-| CAPTURE(=) | `codec/csv/CsvParseException.cajeta` | `CsvParseException` | `String` | migrate:#String param | same class as above; align with base-class transfer-in convention |
-| CAPTURE(=) | `codec/json/JsonParseException.cajeta` | `JsonParseException` | `String` | migrate:#String param | same class as above; message escapes with the throw, plain store dangles |
-| CAPTURE(=) | `error/ClassCastException.cajeta` | `ClassCastException` | `String` | migrate:#String param | non-sink capture of a plain `String` beyond the call (§2.4); every sibling (`Throwable`, `Exception`, `RecoverableException`, `UnrecoverableException`, `NoOptionalValueException`) already takes `#String` |
-| CAPTURE(=) | `ifx/IfxException.cajeta` | `IfxException` | `String` | migrate:#String message | §2.4 capture; base `RecoverableException(#String)` already takes title — subclass diverges |
-| CAPTURE(=) | `io/net/AddressInUseException.cajeta` | `AddressInUseException` | `String` | migrate:#String param | non-sink keeps the message past the throw site (§2.4); base `Throwable(#String)` already spells it so |
-| CAPTURE(=) | `io/net/AddressNotAvailableException.cajeta` | `AddressNotAvailableException` | `String` | migrate:#String param | same §2.4 capture; matches the DNS siblings' `#String` |
-| CAPTURE(=) | `io/net/BrokenPipeException.cajeta` | `BrokenPipeException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/ConnectionAbortedException.cajeta` | `ConnectionAbortedException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/ConnectionRefusedException.cajeta` | `ConnectionRefusedException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/ConnectionResetException.cajeta` | `ConnectionResetException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/HostUnreachableException.cajeta` | `HostUnreachableException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/MalformedAddressException.cajeta` | `MalformedAddressException` | `String` | migrate:#String param | `(message, position)` ctor stores the message in a field that outlives the throw |
-| CAPTURE(=) | `io/net/NetException.cajeta` | `NetException` | `String` | migrate:#String param | two-arg `(message, kind)` ctor, same capture |
-| CAPTURE(=) | `io/net/NetworkUnreachableException.cajeta` | `NetworkUnreachableException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/TimedOutException.cajeta` | `TimedOutException` | `String` | migrate:#String param | same §2.4 capture |
-| CAPTURE(=) | `io/net/TooManyConnectionsException.cajeta` | `TooManyConnectionsException` | `String` | migrate:#String param | `(message, cap)` ctor stores the message beyond the call |
-| CAPTURE(=) | `io/net/WouldBlockException.cajeta` | `WouldBlockException` | `String` | migrate:#String param | same §2.4 capture even on the value-surfaced hot path |
-| CAPTURE(=) | `io/net/tls/CertificateInvalidException.cajeta` | `CertificateInvalidException` | `String` | migrate:#String param | `(message, reason)` ctor stores the message beyond the call |
-| CAPTURE(=) | `io/net/tls/TlsException.cajeta` | `TlsException` | `String` | migrate:#String param | same §2.4 capture as the net roots |
-| CAPTURE(=) | `io/net/uri/MalformedUriException.cajeta` | `MalformedUriException` | `String` | migrate:#String param | `(message, position)` ctor stores the message beyond the call |
-| CAPTURE(=) | `math/BroadcastException.cajeta` | `BroadcastException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `math/PlacementException.cajeta` | `PlacementException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `math/distance/DistanceException.cajeta` | `DistanceException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `math/linalg/LinAlgException.cajeta` | `LinAlgException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `math/optim/OptimException.cajeta` | `OptimException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `math/stats/StatsException.cajeta` | `StatsException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `nucleo/column/ColumnTypeException.cajeta` | `ColumnTypeException` | `String` | migrate:#String param | plain capture of a message held for the throwable's life; base `RecoverableException(#String)` already spells it (§2.4) |
-| CAPTURE(=) | `nucleo/frame/DynFrame.cajeta` | `setSpatial` | `String` | migrate:#= store | same call, y-axis name field, carried across `alias` (§2.4→§2.3) |
-| CAPTURE(=) | `nucleo/frame/FrameException.cajeta` | `FrameException` | `String` | migrate:#String param | plain capture into `message`; diverges from the `#String` base ctor (§2.4) |
-| CAPTURE(=) | `nucleo/sparse/SparseException.cajeta` | `SparseException` | `String` | migrate:#String param | plain capture into `message`; diverges from the `#String` base ctor (§2.4) |
-| CAPTURE(=) | `search/fuzzy/Match.cajeta` | `Match` | `String` | migrate:#String key (+#= store) | §2.4 and a live defect — `Matcher` passes `#kc` into a plain formal that frees at ctor exit |
-| CAPTURE(=) | `time/DateTimeException.cajeta` | `DateTimeException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `time/DateTimeFormatter.cajeta` | `DateTimeFormatter` | `String` | migrate:copy | §2.5 — the formatter keeps a pattern it was only shown; copy is the safe unmarked spelling |
-| CAPTURE(=) | `time/DateTimeParseException.cajeta` | `DateTimeParseException` | `String` | migrate:#String message | §2.4 capture; diverges from `Throwable(#String message)` |
-| CAPTURE(=) | `time/ZoneId.cajeta` | `ZoneId` | `String` | migrate:copy + ofBorrowed alias | §2.5 — doc's "strings are process-lifetime" holds only for literals, so copy by default and name the alias |
 | CAPTURE(elem) | `collection/ArrayList.cajeta` | `add` | `T` | conforming | the canonical §2.3 sink: plain formal, `#=` slot store, per-slot mode |
 | CAPTURE(elem) | `collection/ArrayList.cajeta` | `insert` | `T` | conforming | same plain-formal `#=` store, shifts forward each slot's bit (§2.3) |
 | CAPTURE(elem) | `collection/ArrayList.cajeta` | `set` | `T` | conforming | `#=` store with displaced release only when the old slot held title (§2.3) |
 | CAPTURE(elem) | `collection/Heap.cajeta` | `push` | `T` | conforming | plain formal, `#=` store, bits ride the sift-up swaps (§2.3) |
-| CAPTURE(elem) | `math/Storage.cajeta` | `set` | `T` | migrate:#= element store | §2.3 sink stores per-slot mode; `this.host[i] = v` diverges from `ArrayList`'s `this.data[i] #= v` |
+| CAPTURE(elem) | `math/Storage.cajeta` | `set` | `T` | conforming | Storage<T> is numeric tensor backing (primitive/boolean at every instantiation) — an element store is a bit copy, no title exists |
 | CAPTURE(elem) | `nucleo/frame/DynFrame.cajeta` | `addIndexed` | `String` | conforming | already `#=` per element with the mode recorded in the slot (§2.3) |
-| CONDITIONAL | `codec/json/JsonValue.cajeta` | `setString` | `JsonValue` | migrate:copy + setStringBorrowed alias | branches on `s.root()`/`byteOffset()` — invisible to caller (§2.6); safe spelling becomes unmarked (§2.5, plan 4.2.1) |
+| CONDITIONAL | `codec/json/JsonValue.cajeta` | `setStringBorrowed` | `JsonValue` | conforming | the SHARP variant added by 4.2.1: caller contract is uniform (source outlives value); the root branch only makes the bound unnecessary, never changes it — not the §2.6 shape |
 | PRODUCER? | `codec/json/JsonValue.cajeta` | `asArray` | `JsonArray` | migrate:lifetime doc + §2.7 name review | body is a pure interior read (view) but `as...` reads as producer (§2.7); rename vs doc-only decided in 4.2.3 |
 | PRODUCER? | `codec/json/JsonValue.cajeta` | `asObject` | `JsonObject` | migrate:lifetime doc + §2.7 name review | same as asArray |
 | VIEW-RETURN | `buildtool/plugin/ActionResult.cajeta` | `errorMessage` | `String` | conforming | body is a bare field read; caller copies to outlive the result (§2.2) |
@@ -188,25 +165,3 @@ Dispositions: `conforming` | `migrate:<target>` | `exception:<reason>`.
 | VIEW-RETURN | `time/ZoneId.cajeta` | `getId` | `String` | conforming | §2.2 — body is `return this.id` only |
 | VIEW-RETURN | `xpu/PageCache.cajeta` | `evictedKey` | `K` | conforming | §2.2/§2.7 — interior read, and the doc states the validity bound |
 | VIEW-RETURN | `xpu/PageCache.cajeta` | `getOrDefault` | `V` | conforming | §2.2 — returns either the caller's own `fallback` or an interior slot read |
-| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `Encoder<K>` | migrate:#= store | tree keeps the encoder for its life; `#=` records the caller's lend/transfer choice (§2.4→§2.3) |
-| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `Encoder<V>` | migrate:#= store | same strategy-object hold |
-| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `BufferEncoder<K>` | migrate:#= store | same hold, buffer-encoder form |
-| CAPTURE(=) | `collection/ltm/LtmBPlusTree.cajeta` | `LtmBPlusTree` | `BufferEncoder<V>` | migrate:#= store | same hold, buffer-encoder form |
-| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `LtmPager` | `Encoder<K>` | migrate:#= store | pager keeps the encoder; same class as the tree's hold |
-| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `LtmPager` | `Encoder<V>` | migrate:#= store | same |
-| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `setBufferEncoders` | `BufferEncoder<K>` | migrate:#= store | post-construction setter, same hold |
-| CAPTURE(=) | `collection/ltm/LtmPager.cajeta` | `setBufferEncoders` | `BufferEncoder<V>` | migrate:#= store | same |
-| CAPTURE(=) | `lang/EncodingException.cajeta` | `EncodingException` | `String` | migrate:#String param | plain store of message AND reason past the throw (§2.4); align with `#String` bases |
-| CAPTURE(#=) | `math/TensorProtocol.cajeta` | `TensorProtocol` | `Object` | conforming | already migrated (3.3.3): `#=` records lend-vs-transfer of the producer's storage (§2.3) |
-| CAPTURE(#=) | `math/TensorProtocol.cajeta` | `TensorProtocol` | `DType` | conforming | same ctor, dtype slot |
-| CAPTURE(#=) | `math/optim/OptimResult.cajeta` | `OptimResult` | `Tensor<float64>` | conforming | result carrier holds the solution tensor; `#=` sink model (§2.3) |
-| CAPTURE(super) | `io/file/AlreadyExistsException.cajeta` | `AlreadyExistsException` | `String` | migrate:#String param | plain formal laundered through super into the `#String` base store (§2.4) |
-| CAPTURE(super) | `io/file/CrossDeviceException.cajeta` | `CrossDeviceException` | `String` | migrate:#String param | same super-forward chain |
-| CAPTURE(super) | `io/file/DiskFullException.cajeta` | `DiskFullException` | `String` | migrate:#String param | same |
-| CAPTURE(super) | `io/file/EndOfFileException.cajeta` | `EndOfFileException` | `String` | migrate:#String param | same |
-| CAPTURE(super) | `io/file/IoException.cajeta` | `IoException` | `String` | migrate:#String param | the chain's hinge: forwards plain into RecoverableException(#String) |
-| CAPTURE(super) | `io/file/IsDirectoryException.cajeta` | `IsDirectoryException` | `String` | migrate:#String param | same super-forward chain |
-| CAPTURE(super) | `io/file/NotDirectoryException.cajeta` | `NotDirectoryException` | `String` | migrate:#String param | same |
-| CAPTURE(super) | `io/file/NotFoundException.cajeta` | `NotFoundException` | `String` | migrate:#String param | same |
-| CAPTURE(super) | `io/file/PermissionException.cajeta` | `PermissionException` | `String` | migrate:#String param | same |
-| CONDITIONAL | `codec/json/JsonValue.cajeta` | `setStringBorrowed` | `JsonValue` | conforming | the SHARP variant added by 4.2.1: caller contract is uniform (source outlives value); the root branch only makes the bound unnecessary, never changes it — not the §2.6 shape |

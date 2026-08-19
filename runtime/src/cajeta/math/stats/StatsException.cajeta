@@ -14,7 +14,7 @@ import cajeta.lang.String;
  * (mirrors {@link cajeta.math.linalg.LinAlgException}).
  */
 public class StatsException extends RecoverableException {
-    public StatsException(String message) {
+    public StatsException(#String message) {
         this.message = message;
         this.cause = 0;
     }

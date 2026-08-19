@@ -216,7 +216,8 @@ def audit(path, rel):
                                  'stores it'))
 
         # --- CONDITIONAL --------------------------------------------
-        if 'setStringOwned' in body and 'setString(' in body:
+        if 'setStringOwned' in body and 'setString(' in body \
+                and re.search(r'\bif\s*\(', body):
             findings.append(('CONDITIONAL', rel, name, rtype,
                              'branches between owned and borrowed paths'))
         elif body.count('#=') and re.search(r'\bif\s*\(', body) \

@@ -14,7 +14,7 @@ import cajeta.lang.String;
  * cajeta.nucleo.column.ColumnTypeException}'s discipline.
  */
 public class FrameException extends RecoverableException {
-    public FrameException(String message) {
+    public FrameException(#String message) {
         this.message = message;
         this.cause = 0;
     }

@@ -108,8 +108,10 @@ public class LtmPager<K, V> {
      */
     public LtmPager(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                     int32 order, int32 pageSize, int32 capacity) {
-        this.keyEnc = keyEnc;
-        this.valEnc = valEnc;
+        // `#=`: the pager keeps its encoders for its life; the slot
+        // records the caller's lend/transfer choice (§2.3).
+        this.keyEnc #= keyEnc;
+        this.valEnc #= valEnc;
         this.keyFast = null;
         this.valFast = null;
         this.pageSize = pageSize;
@@ -189,8 +191,9 @@ public class LtmPager<K, V> {
      */
     public void setBufferEncoders(BufferEncoder<K> keyFast,
             BufferEncoder<V> valFast) {
-        this.keyFast = keyFast;
-        this.valFast = valFast;
+        // `#=`: same slot model as the ctor's encoder holds (§2.3).
+        this.keyFast #= keyFast;
+        this.valFast #= valFast;
     }
 
     /**

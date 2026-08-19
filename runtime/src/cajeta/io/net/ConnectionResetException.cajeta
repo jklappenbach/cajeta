@@ -10,7 +10,7 @@ import cajeta.lang.String;
  * See [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
  */
 public class ConnectionResetException extends NetException {
-    public ConnectionResetException(String message) {
+    public ConnectionResetException(#String message) {
         this.message = message;
         this.cause = 0;
         this.kind = 3;   // NetException.KIND_CONNECTION_RESET

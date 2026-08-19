@@ -27,7 +27,7 @@ public class EndOfFileException extends IoException {
      * throw EndOfFileException("unexpected EOF in header");
      * ```
      */
-    public EndOfFileException(String message) {
-        super(message);
+    public EndOfFileException(#String message) {
+        super(#message);
     }
 }

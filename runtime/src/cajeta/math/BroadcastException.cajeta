@@ -14,7 +14,7 @@ import cajeta.lang.String;
  * (mirrors {@link cajeta.codec.Base64Exception}'s discipline).
  */
 public class BroadcastException extends RecoverableException {
-    public BroadcastException(String message) {
+    public BroadcastException(#String message) {
         this.message = message;
         this.cause = 0;
     }

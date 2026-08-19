@@ -27,7 +27,7 @@ public class NotDirectoryException extends IoException {
      * throw heap NotDirectoryException("not a directory: " + path.name());
      * ```
      */
-    public NotDirectoryException(String message) {
-        super(message);
+    public NotDirectoryException(#String message) {
+        super(#message);
     }
 }

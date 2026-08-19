@@ -11,7 +11,7 @@ import cajeta.lang.String;
  * {@link TerminationReason#NONFINITE} results.
  */
 public class OptimException extends RecoverableException {
-    public OptimException(String message) {
+    public OptimException(#String message) {
         this.message = message;
         this.cause = 0;
     }

@@ -16,7 +16,7 @@ import cajeta.lang.String;
  * [`docs/specification/io/net/Errors.md`](../../../../../docs/specification/io/net/Errors.md).
  */
 public class TimedOutException extends NetException {
-    public TimedOutException(String message) {
+    public TimedOutException(#String message) {
         this.message = message;
         this.cause = 0;
         this.kind = 10;   // NetException.KIND_TIMED_OUT

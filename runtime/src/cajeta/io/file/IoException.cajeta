@@ -28,7 +28,7 @@ public class IoException extends RecoverableException {
      * throw IoException("could not open " + path);
      * ```
      */
-    public IoException(String message) {
-        super(message);
+    public IoException(#String message) {
+        super(#message);
     }
 }

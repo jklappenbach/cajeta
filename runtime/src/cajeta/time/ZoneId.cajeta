@@ -28,7 +28,9 @@ public class ZoneId {
      * ```
      */
     public ZoneId(String id) {
-        this.id = id;
+        // Copies (§2.5): a ZoneId outlives most sources of its id, and
+        // ids are tiny — no aliasing variant is worth its sharp edge.
+        this.id = "" + id;
     }
 
     /**

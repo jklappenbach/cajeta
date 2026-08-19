@@ -86,8 +86,12 @@ public final class LtmBPlusTree<K, V> {
     public LtmBPlusTree(String path, Encoder<K> keyEnc, Encoder<V> valEnc,
                         int32 order, int32 capacity) {
         this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
-        this.keyEncB = keyEnc;
-        this.valEncB = valEnc;
+        // `#=`: the tree keeps its encoders for its life; the slot
+        // records the caller's lend/transfer choice (§2.3). The pager
+        // above was handed a LEND of the same encoders and its own
+        // slots record that — it never outlives this tree.
+        this.keyEncB #= keyEnc;
+        this.valEncB #= valEnc;
         this.keyFastB = null;
         this.valFastB = null;
         this.pathStr = "" + path;
@@ -106,10 +110,11 @@ public final class LtmBPlusTree<K, V> {
                         int32 order, int32 capacity) {
         this.pager = heap LtmPager<K, V>(path, keyEnc, valEnc, order, 4096, capacity);
         this.pager.setBufferEncoders(keyFast, valFast);
-        this.keyEncB = keyEnc;
-        this.valEncB = valEnc;
-        this.keyFastB = keyFast;
-        this.valFastB = valFast;
+        // Same `#=` slot model as the allocating ctor above.
+        this.keyEncB #= keyEnc;
+        this.valEncB #= valEnc;
+        this.keyFastB #= keyFast;
+        this.valFastB #= valFast;
         this.pathStr = "" + path;
         this.orderN = order;
         this.capacityN = capacity;

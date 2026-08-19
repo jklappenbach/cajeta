@@ -13,7 +13,7 @@ import cajeta.lang.String;
  * cajeta.math.BroadcastException}'s discipline.
  */
 public class ColumnTypeException extends RecoverableException {
-    public ColumnTypeException(String message) {
+    public ColumnTypeException(#String message) {
         this.message = message;
         this.cause = 0;
     }

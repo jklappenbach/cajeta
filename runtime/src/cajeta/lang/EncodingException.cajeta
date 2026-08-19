@@ -72,9 +72,9 @@ public class EncodingException extends RecoverableException {
      *     "codepoint U+1F600 not representable in ASCII");
      * ```
      */
-    public EncodingException(String message, int64 offset, int32 codepoint,
+    public EncodingException(#String message, int64 offset, int32 codepoint,
                              int32 sourceEncoding, int32 targetEncoding,
-                             String reason) {
+                             #String reason) {
         this.message = message;
         this.cause = 0;
         this.offset = offset;

@@ -19,7 +19,7 @@ import cajeta.lang.String;
  * the same discipline as {@link BroadcastException}.
  */
 public class PlacementException extends RecoverableException {
-    public PlacementException(String message) {
+    public PlacementException(#String message) {
         this.message = message;
         this.cause = 0;
     }
