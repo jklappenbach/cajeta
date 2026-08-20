@@ -65,12 +65,42 @@ object CocoDeadCode {
 
         val reach = CocoReachability(edges, entryKeys + executed)
 
+        // Class liveness — coco's SECOND condition for calling anything dead,
+        // and the one this originally missed. Its own words:
+        //
+        //   "A 'dead' claim on any member of a class with executed methods
+        //    would be wrong with confidence — this is the guard that prevents
+        //    it."
+        //
+        // Compile-time DI and reflection construct components through
+        // synthesized paths that bypass source constructors, so a static graph
+        // can miss every edge into a class whose instances demonstrably exist.
+        // A class with ANY executed method is evidence its other members may be
+        // reached the same invisible way.
+        //
+        // Found by diffing against a real coco run (plan 6.1.e): coco said
+        // "untested", this said "delete", and coco was right.
+        val liveOwners = coverage.sites
+            .filter { it.kind == CocoSiteKind.FUNCTION && coverage.profile.countOf(it.id) > 0 }
+            .map { it.owner }
+            .toSet()
+
         return byMethod.entries
             .filter { (_, sites) -> sites.none { coverage.profile.countOf(it.id) > 0 } }
             .map { (id, sites) ->
                 val (file, owner, method) = id
                 val key = CocoKeys.ofSite(owner, method)
-                val verdict = if (indexReason != null) Reachability.UNKNOWN else reach.of(key)
+                // coco's rule is a CONJUNCTION: dead iff unreachable AND the
+                // class is not alive. Applying liveness earlier would swallow
+                // the UNDETERMINED signal too — an unknown reachability on a
+                // live class is still unknown, not a claim of reachability.
+                val static = if (indexReason != null) Reachability.UNKNOWN else reach.of(key)
+                val verdict =
+                    if (static == Reachability.UNREACHABLE && owner in liveOwners) {
+                        Reachability.REACHABLE
+                    } else {
+                        static
+                    }
                 UncoveredMethod(
                     key = key,
                     owner = owner,
@@ -80,7 +110,10 @@ object CocoDeadCode {
                     // line is what navigation can actually land on.
                     line = sites.filter { it.isSourceLine }.minOfOrNull { it.line } ?: 0,
                     verdict = verdictOf(verdict),
-                    reason = reasonFor(verdict, key, indexReason),
+                    reason = reasonFor(
+                        verdict, key, indexReason,
+                        sparedByLiveClass = static == Reachability.UNREACHABLE,
+                    ),
                 )
             }
             .sortedWith(compareBy({ it.file }, { it.line }, { it.method }))
@@ -92,10 +125,19 @@ object CocoDeadCode {
         Reachability.UNKNOWN -> Verdict.UNDETERMINED
     }
 
-    private fun reasonFor(r: Reachability, key: String?, indexReason: String?): String = when {
+    private fun reasonFor(
+        r: Reachability,
+        key: String?,
+        indexReason: String?,
+        sparedByLiveClass: Boolean = false,
+    ): String = when {
         indexReason != null -> indexReason
         r == Reachability.UNREACHABLE ->
             "no call path reaches it from the entry point or from any executed method"
+        r == Reachability.REACHABLE && sparedByLiveClass ->
+            "no static call path reaches it, but its class has executed methods — " +
+                "reflection and DI reach members a static graph cannot see, so this " +
+                "is reported as untested rather than dead"
         r == Reachability.REACHABLE ->
             "reachable from live code but never executed — a test is the fix"
         key == null -> "its signature could not be keyed, so reachability was not attempted"

@@ -61,19 +61,49 @@ class CocoDeadCodeTest {
     }
 
     @Test
-    fun anUncalledMethodIsADeletionCandidate() {
+    fun anUncalledMethodOnALiveClassIsSparedAndSaysWhy() {
+        // This test used to assert DELETION_CANDIDATE. That was wrong, and
+        // diffing against a real coco run is what proved it (6.1.e): nothing on
+        // a class with executed methods may be called dead. The verdict is
+        // spared, and the reason states the actual basis rather than implying a
+        // call path was found.
         val n = CocoDeadCode.classify(coverage(), realisticEdges())
             .single { it.method.startsWith("neverCalled") }
-        assertEquals(Verdict.DELETION_CANDIDATE, n.verdict)
-        assertTrue("explains the absence of any path: ${n.reason}", n.reason.contains("no call path"))
+        assertEquals(Verdict.NEEDS_A_TEST, n.verdict)
+        assertTrue(
+            "names the liveness basis, not a fictitious call path: ${n.reason}",
+            n.reason.contains("class has executed methods"),
+        )
+        assertTrue("and names why that matters: ${n.reason}", n.reason.contains("reflection"))
     }
 
     @Test
-    fun theTwoAreClassifiedDIFFERENTLYOnTheSameRun() {
+    fun theTwoVerdictsAreDistinguishableOnOneRun() {
         // 6.3.b in miniature, and the whole point of the unit: an lcov report
-        // shows these as identical red.
-        val out = CocoDeadCode.classify(coverage(), realisticEdges())
-        assertEquals(2, out.map { it.verdict }.toSet().size)
+        // shows these as identical red. Needs a genuinely dead CLASS, since a
+        // dead method on a live class is spared by the liveness guard — which
+        // is itself the finding that makes this test's shape non-obvious.
+        val sites = coverage().sites + listOf(
+            CocoSite(900, CocoSiteKind.FUNCTION, 0, -1L, "Z.cajeta", "p.Zombie", "gone()", "", ""),
+            CocoSite(901, CocoSiteKind.LINE, 4, -1L, "Z.cajeta", "p.Zombie", "gone()", "", ""),
+        )
+        val edges = Edges(
+            calls = realisticEdges().calls + mapOf("p.Zombie::gone/0" to emptyList()),
+            known = realisticEdges().known + setOf("p.Zombie::gone/0"),
+        )
+        val out = CocoDeadCode.classify(
+            CocoCoverage(sites, coverage().profile), edges,
+        )
+        val verdicts = out.map { it.verdict }.toSet()
+        assertTrue("both kinds of finding present: $verdicts", verdicts.size >= 2)
+        assertEquals(
+            Verdict.DELETION_CANDIDATE,
+            out.single { it.owner == "p.Zombie" }.verdict,
+        )
+        assertEquals(
+            Verdict.NEEDS_A_TEST,
+            out.single { it.method.startsWith("guarded") }.verdict,
+        )
     }
 
     // --- 6.1.c  undeterminable is stated, never defaulted --------------------
@@ -111,6 +141,48 @@ class CocoDeadCodeTest {
         // loop() executed in the fixture, so it seeds as a root.
         val n = CocoDeadCode.classify(coverage(), edges).single { it.method.startsWith("neverCalled") }
         assertEquals(Verdict.NEEDS_A_TEST, n.verdict)
+    }
+
+    // --- 6.1.e  the class-liveness guard, from coco's own policy -------------
+
+    @Test
+    fun noMemberOfALiveClassIsEverCalledDead() {
+        // coco requires TWO conditions for dead: statically unreachable AND the
+        // owning class had no method execute. Its own words: "A 'dead' claim on
+        // any member of a class with executed methods would be wrong with
+        // confidence — this is the guard that prevents it." Compile-time DI and
+        // reflection reach members through synthesized paths a static graph
+        // cannot see, so a live class is evidence its members may be reachable.
+        //
+        // This was found by running the real coco against the same project and
+        // diffing: coco said "untested", this said "delete". coco was right.
+        val out = CocoDeadCode.classify(coverage(), realisticEdges())
+        val n = out.single { it.method.startsWith("neverCalled") }
+        assertEquals(
+            "probe.Cond has executed methods, so nothing in it may be called dead",
+            Verdict.NEEDS_A_TEST,
+            n.verdict,
+        )
+    }
+
+    @Test
+    fun aMethodOnAWhollyDeadClassIsStillADeletionCandidate() {
+        // The guard must not swallow the capability: when NOTHING in the class
+        // ran, the static verdict stands and the deletion candidate survives.
+        val sites = listOf(
+            CocoSite(0, CocoSiteKind.FUNCTION, 0, -1L, "Z.cajeta", "p.Zombie", "gone()", "", ""),
+            CocoSite(1, CocoSiteKind.LINE, 4, -1L, "Z.cajeta", "p.Zombie", "gone()", "", ""),
+        )
+        val edges = Edges(
+            calls = mapOf("p.Zombie::gone/0" to emptyList()),
+            known = setOf("p.Zombie::gone/0", "p.Live::main/0"),
+        )
+        val out = CocoDeadCode.classify(
+            CocoCoverage(sites, CocoProfile(2, null, emptyMap())),
+            edges,
+            entryKeys = setOf("p.Live::main/0"),
+        )
+        assertEquals(Verdict.DELETION_CANDIDATE, out.single().verdict)
     }
 
     // --- 6.1.d  navigation needs a real target --------------------------------
