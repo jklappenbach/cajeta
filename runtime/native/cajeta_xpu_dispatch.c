@@ -286,10 +286,31 @@ static int cajeta_xpu_backend_available_locked(int id) {
     }
 }
 
+// In-process backend force (Device.force — cajeta-llama 11.2): observed by
+// select_locked ahead of the env var. -1 = not forced.
+static int g_xpu_forced_api = -1;
+
+// Returns 1 when the force landed before selection, 0 when selection has
+// already cached a backend (too late — the caller reports it).
+int32_t __cajeta_xpu_force_backend(int32_t id) {
+    int ok;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    if (g_xpu_active != -2) {
+        ok = 0;
+    } else {
+        g_xpu_forced_api = (id >= 0 && id < CAJ_XPU_COUNT) ? id : -1;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return ok;
+}
+
 // Caller holds g_xpu_cuda_lock. Picks + caches the active backend.
 static int cajeta_xpu_select_locked(void) {
     if (g_xpu_active != -2) return g_xpu_active;
-    int forced = cajeta_xpu_backend_id_by_name(getenv("CAJETA_XPU_BACKEND"));
+    int forced = g_xpu_forced_api >= 0
+        ? g_xpu_forced_api
+        : cajeta_xpu_backend_id_by_name(getenv("CAJETA_XPU_BACKEND"));
     for (int id = 0; id < CAJ_XPU_COUNT; ++id) {
         if (forced != CAJ_XPU_NONE && id != forced) continue;
         if (!(g_xpu_bundled & (1u << id))) continue;     // not bundled in
