@@ -289,6 +289,7 @@ jobs:
             libgtest-dev \
             libgoogle-glog-dev \
             libzstd-dev \
+            libzmq3-dev \
             vim-common \
             libxxhash-dev \
             libssl-dev \
@@ -347,6 +348,7 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-zeromq
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-antlr4-runtime-cpp
             mingw-w64-x86_64-zstd
@@ -442,6 +444,7 @@ jobs:
             googletest \
             glog \
             zstd \
+            zeromq \
             xxhash \
             coreutils
           # Apple's system clang doesn't know about the brew llvm headers/libs
@@ -475,7 +478,10 @@ jobs:
           # so CMake would auto-pick clang++, which on mingw doesn't auto-link
           # winpthreads and fails the LLVM/libstdc++ pthread_* symbols at link. The
           # fork still supplies the LLVM libs/headers + clang for the bitcode step.
-          CMAKE_EXTRA=()
+          # The kernel transport is a RELEASE capability: fail configure if
+          # libzmq is missing rather than shipping a kernel-less binary
+          # (v0.21.0/v0.21.1 both did, silently).
+          CMAKE_EXTRA=("-DCAJETA_REQUIRE_ZMQ=ON")
           if [ "${{ runner.os }}" = "Windows" ]; then
             export CC=gcc CXX=g++
             # This self-hosted runner reuses build/ across runs, and CMake
