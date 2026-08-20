@@ -677,7 +677,7 @@ struct cajeta_exception_frame {
     struct cajeta_drop_entry* drop_watermark;
     // Line-info shadow-stack depth at try-entry (diagnostic-exceptions U3). A
     // throw doesn't run __cajeta_line_leave for the frames it unwinds, so on
-    // catch __cajeta_throw restores __cajeta_shadow_top to this value.
+    // catch __cajeta_throw restores the live shadow top to this value.
     int32_t shadow_watermark;
     // Debug frame-chain head at try-entry (resident-debug-server 9.1). Same
     // problem, same cure: a throw runs no __cajeta_dbg_frame_leave for the
@@ -720,7 +720,7 @@ void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     // Snapshot the current drop-chain top so a throw can unwind back to here.
     f->drop_watermark = *dropTop;
     // Snapshot the shadow line-stack depth so a caught throw restores it (U3).
-    f->shadow_watermark = __cajeta_shadow_top;
+    f->shadow_watermark = __cajeta_shadow_get_top();
     // Snapshot the debug frame-chain head (9.1) — see the field's comment.
     f->dbg_watermark = *__cajeta_dbg_top_ptr();
     *top = f;

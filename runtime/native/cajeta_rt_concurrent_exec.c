@@ -356,6 +356,14 @@ struct cajeta_fiber {
     // Same aliasing rationale as scope_top/drop_top; selected by
     // __cajeta_dbg_top_ptr based on fiber-vs-main context.
     struct cajeta_dbg_frame* dbg_top;
+    // cajeta-profiler Unit 2: per-fiber line-info shadow stack. Same aliasing
+    // rationale as scope_top/drop_top/dbg_top — a carrier hosts many fibers on
+    // one OS thread, so the old single __thread stack interleaved their frames
+    // and left stale entries across a yield. Inline (not a pointer) to preserve
+    // the shadow stack's never-mallocs property on the enter/mark/leave hot
+    // path; 8 KB against this fiber's 1 MB stack. Selected by
+    // __cajeta_shadow_ptr.
+    CajetaShadowStack shadow;
     // Per-fiber frame arena (cajeta_rt_core.c). Same aliasing rationale as
     // scope_top/drop_top/exc_top: the arena's LIFO mark/reset discipline holds
     // per logical stack, and a carrier interleaves many fiber stacks — a
@@ -631,6 +639,15 @@ struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void) {
         return &__cajeta_current_fiber->dbg_top;
     }
     return &__cajeta_main_dbg_top;
+}
+
+// cajeta-profiler Unit 2: selector for the live line-info shadow stack,
+// mirroring __cajeta_dbg_top_ptr. Forward-declared in cajeta_rt_core.c.
+CajetaShadowStack* __cajeta_shadow_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->shadow;
+    }
+    return &__cajeta_main_shadow;
 }
 
 // Debugger CP3: id of the fiber running on this carrier thread, or 0 when not
@@ -1101,6 +1118,12 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->cancel_with = NULL;
     f->slot_ptr = fiber_slot;   // C2: so the carrier can null it before free
     f->dbg_top = NULL;
+    // Unit 2: a fresh fiber starts at depth 0. It does NOT inherit the
+    // spawner's frames — the shadow stack answers "where is THIS fiber
+    // executing", and a spawner's live frames are not the child's callers.
+    // Only `top` needs clearing; entries below it are written by line_enter
+    // before they are ever read.
+    f->shadow.top = 0;
     // Inherit-on-spawn (FiberLocal Layer 2): a deep-copied snapshot of the
     // SPAWNER's binding chain. __cajeta_task_run runs on the spawner's context,
     // so __cajeta_current_fiber (read inside snapshot_current) is the spawner
