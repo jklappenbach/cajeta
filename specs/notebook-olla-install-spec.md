@@ -1,6 +1,6 @@
 # notebook-olla-install — installing Olla libraries from the notebook prompt
 
-Spec status: **draft, decisions settled** (jupyter-kernel plan Unit 8;
+Spec status: **approved 2026-08-19** (jupyter-kernel plan Unit 8;
 walked through with Julian 2026-08-19: stdlib API in
 `cajeta.session.Packages`; `installAndSave` as a separate method;
 checksums always + opportunistic signatures with a `require-signatures`
