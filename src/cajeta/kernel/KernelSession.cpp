@@ -40,6 +40,7 @@
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
+#include "cajeta/compile/CajetaArchive.h"
 #include "cajeta/jit/CajetaDefinitionGenerator.h"
 #include "cajeta/jit/CajetaLazyEmitter.h"
 #include "cajeta/jit/LazyCodegen.h"
@@ -273,6 +274,15 @@ struct KernelSession::Impl {
     // ingest, so a cell's verify pass can tell "our IR is malformed" from
     // "a dependency we did not compile is malformed".
     std::set<llvm::Module*> prebuilt;
+    // notebook-olla-install U1: canonical paths of archives spliced
+    // mid-session — the idempotence key (spec 2.4's substrate).
+    std::set<std::string> installedArchives;
+    // A splice runs compiler passes a half-executed cell's context cannot
+    // host (measured: mid-cell ingest failed resolving int32). Mid-cell
+    // requests queue here and drain at the cell boundary — same-cell
+    // imports are impossible anyway (spec 2.3), so nothing is lost.
+    bool cellExecuting = false;
+    std::vector<std::string> pendingInstalls;
     // lazy-codegen 4.2.4 — ctor functions already delivered in an
     // init-extract. Accumulating modules (the stdlib above all) are never
     // delivered whole under lazy; each cell delivers the ctor DELTA and the
@@ -527,6 +537,26 @@ CellResult KernelSession::execute(const std::string& source,
     CellResult result;
     result.file = cellName;
     Impl& impl = *impl_;
+    // Deferred-splice bracket: see Impl::pendingInstalls.
+    struct ExecGuard {
+        KernelSession* s;
+        Impl& impl;
+        ExecGuard(KernelSession* s, Impl& impl) : s(s), impl(impl) {
+            impl.cellExecuting = true;
+        }
+        ~ExecGuard() {
+            impl.cellExecuting = false;
+            auto pending = std::move(impl.pendingInstalls);
+            impl.pendingInstalls.clear();
+            for (auto& path : pending) {
+                std::string err;
+                if (!s->installArchive(path, &err)) {
+                    cajeta::logLine("warn",
+                        "[session] deferred install failed: " + err + "\n");
+                }
+            }
+        }
+    } execGuard(this, impl);
     ++impl.execCount;
     // Stamped before anything can fail: the counter advances on a failed cell
     // too (spec 2.2), so `In[N]`/`Out[N]` never reuse a number.
@@ -1555,6 +1585,102 @@ void KernelSession::describeThrow(void* thrown, const std::string& cellName,
         f.text = cellName;
         result->traceback.push_back(std::move(f));
     }
+}
+
+bool KernelSession::installArchive(const std::string& cjaPath,
+                                   std::string* error) {
+    Impl& impl = *impl_;
+    auto fail = [&](const std::string& m) {
+        if (error) *error = m;
+        return false;
+    };
+    if (!impl.compiler) return fail("installArchive: no live session");
+    std::error_code ec;
+    auto canon = std::filesystem::weakly_canonical(cjaPath, ec);
+    if (ec || !std::filesystem::exists(canon)) {
+        return fail("installArchive: no such archive: " + cjaPath);
+    }
+    const std::string key = canon.string();
+    if (impl.installedArchives.count(key)) return true;   // idempotent
+    if (impl.cellExecuting) {
+        impl.pendingInstalls.push_back(key);   // spliced at the cell boundary
+        return true;
+    }
+
+    bool ok = false;
+    std::string failMsg;
+    // The splice is compiler-side work and may re-enter from JIT'd code
+    // mid-cell (the host-hook shape) — same gate, same same-thread
+    // recursion discipline as the lazy generator.
+    cajeta::CompilerGate::instance().run([&] {
+        try {
+            // Collision scan BEFORE any mutation (spec 4.3): every class the
+            // archive declares must be new to the session. Entry names are
+            // path-like ("depx/Answer.cajeta"); the canonical is the dotted
+            // stem. find(), never operator[] (registry-poisoning rule).
+            auto archive = CajetaArchive::readFrom(key);
+            auto& cmap = CajetaType::getCanonicalMap();
+            for (const auto& e : archive.getEntries()) {
+                if (e.kindTag != CajetaArchive::EntryKind::ClassSource)
+                    continue;
+                std::string canonical = e.name;
+                const std::string suffix = ".cajeta";
+                if (canonical.size() > suffix.size()
+                    && canonical.compare(canonical.size() - suffix.size(),
+                                         suffix.size(), suffix) == 0) {
+                    canonical.resize(canonical.size() - suffix.size());
+                }
+                std::replace(canonical.begin(), canonical.end(), '/', '.');
+                if (cmap.find(canonical) != cmap.end()) {
+                    failMsg = "installArchive: '" + canonical
+                            + "' is already loaded in this session — an "
+                              "install never shadows session state";
+                    return;
+                }
+            }
+
+            // Snapshot so only the archive's OWN modules get prebuilt-marked
+            // (the create path marks "everything present now"; mid-session
+            // the world is full of session work).
+            std::set<llvm::Module*> before;
+            for (auto& m : impl.compiler->getModules()) {
+                if (m && m->getLlvmModule()) before.insert(m->getLlvmModule());
+            }
+
+            impl.compiler->addClasspath(key);
+            impl.compiler->ingestClasspath();
+            impl.compiler->linkClasspathModules();
+
+            for (auto& m : impl.compiler->getModules()) {
+                if (!m || !m->getLlvmModule()) continue;
+                llvm::Module* lm = m->getLlvmModule();
+                if (before.count(lm)) continue;
+                if (lm->getModuleIdentifier() == "cajeta.runtime.__stdlib__")
+                    continue;
+                impl.prebuilt.insert(lm);
+            }
+            impl.installedArchives.insert(key);
+            if (std::getenv("CAJETA_INSTALL_DEBUG")) {
+                auto& cm = CajetaType::getCanonicalMap();
+                std::fprintf(stderr,
+                             "[install] modules=%zu cmapHasDep=%d "
+                             "archiveHasDep=%d\n",
+                             impl.compiler->getModules().size(),
+                             cm.find("depx.Answer") != cm.end() ? 1 : 0,
+                             CajetaType::getArchive().count("depx.Answer")
+                                 ? 1 : 0);
+            }
+            ok = true;
+        } catch (cajeta::Exception& e) {
+            failMsg = std::string("installArchive: ") + e.getErrorId() + ": "
+                    + e.getMessage();
+        } catch (std::exception& e) {
+            failMsg = std::string("installArchive: ") + e.what();
+        }
+    });
+    if (!ok) return fail(failMsg.empty()
+                             ? std::string("installArchive: failed") : failMsg);
+    return true;
 }
 
 void KernelSession::shutdown() {

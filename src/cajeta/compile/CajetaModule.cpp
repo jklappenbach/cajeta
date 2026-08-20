@@ -86,7 +86,18 @@ namespace cajeta {
         this->targetTriple = targetTriple;
         this->targetMachine = targetMachine;
 
-        int suffixIndex = sourcePath.find(CAJETA_EXTENSION);
+        // The extension must match at the TAIL: find() takes the FIRST
+        // ".cajeta" in the path, so any directory containing that substring
+        // (a project under ~/.cajeta/versions/..., a scratch dir named
+        // *.cajeta-*) made the package math run off a mid-path index and
+        // ship the extension inside the canonical ("depx.Answer.cajeta").
+        const std::string kExt = CAJETA_EXTENSION;
+        int suffixIndex = -1;
+        if (sourcePath.size() > kExt.size()
+            && sourcePath.compare(sourcePath.size() - kExt.size(),
+                                  kExt.size(), kExt) == 0) {
+            suffixIndex = (int) (sourcePath.size() - kExt.size());
+        }
         if (suffixIndex >= 0) {
             // `temp` is sourcePath stripped of sourceRoot prefix and ".cajeta"
             // suffix. Whether it starts with PATH_SEPARATOR depends on whether

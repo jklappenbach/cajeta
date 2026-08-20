@@ -250,6 +250,14 @@ namespace cajeta::kernel {
         // the dylibs. Idempotent; the destructor calls it.
         void shutdown();
 
+        // notebook-olla-install U1 (spec 4.1-4.4): splice a local .cja into
+        // the LIVE session — collision-checked ingest + link against the
+        // accumulating world. Its packages become importable by cells
+        // compiled afterwards. Safe to call from the session thread while a
+        // cell executes (the host-hook shape). False + *error on rejection.
+        bool installArchive(const std::string& cjaPath,
+                            std::string* error = nullptr);
+
         const SessionStats& stats() const;
 
     private:
