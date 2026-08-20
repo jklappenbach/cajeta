@@ -3501,7 +3501,7 @@ bool cajetaRhsCarriesRedundantSharp(
         if (isSharpStore() && !runtimeTitleFlag) {
             if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
                 runtimeTitleFlag = module->getBuilder()->getInt64(
-                    mceInner->isResolvedReturnsOwnership() ? 1 : 0);
+                    mceInner->bindingTakesTitle() ? 1 : 0);
             }
         }
         return value;

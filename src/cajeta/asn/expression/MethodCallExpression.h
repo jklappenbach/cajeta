@@ -116,12 +116,51 @@ namespace cajeta {
         // Stays false on intrinsic paths that never resolve a user
         // method — conservative (no reclamation).
         bool resolvedReturnsOwnership = false;
+        // Whether the line above is an ANSWER or merely its default.
+        //
+        // The two meanings were conflated and it cost a release. `false` was
+        // documented as conservative-for-reclamation ("don't reclaim"), and
+        // 8.2.22 then read the same field as "definitely a borrow" when
+        // deciding whether a `#=` bind takes a title. For intrinsic-lowered
+        // calls — which emit their IR and return from generateCode before any
+        // method is resolved — false meant neither: it meant nobody had looked.
+        // An owned intrinsic result therefore arrived with no title, and
+        // forwarding one across a return boundary died (FileReader.readString,
+        // File.readAllBytes, Command.run all measured; released in 0.21.0).
+        //
+        // Set only where a declared stance was actually determined, so
+        // "unknown" is answerable and each consumer can pick its own safe
+        // default instead of inheriting someone else's.
+        bool resolvedReturnsOwnershipKnown = false;
         // 6.2.2 — the method this call resolved to (set beside
         // resolvedReturnsOwnership); lets statement-position consumers ask
         // shape questions (returnsClassPointer) without re-resolving.
         MethodPtr resolvedMethod;
     public:
         bool isResolvedReturnsOwnership() const { return resolvedReturnsOwnership; }
+
+        /** True when [isResolvedReturnsOwnership] reflects a real declaration. */
+        bool hasKnownReturnStance() const { return resolvedReturnsOwnershipKnown; }
+
+        /**
+         * "Does binding this call's result take a title?"
+         *
+         * Unknown answers OWNED, which is what every consumer assumed before
+         * 8.2.22 made the question answerable. Intrinsic lowerings are the only
+         * paths that reach here unknown, and they overwhelmingly produce fresh
+         * allocations — the stdlib's `#`-returning intrinsics are exactly the
+         * file, process and socket constructors.
+         *
+         * Not a complete answer, and deliberately not dressed as one: a
+         * borrow-returning intrinsic would still over-claim here. Closing that
+         * needs the intrinsic families to declare their stance (the seeding
+         * block in generateCode does it for those with a resolved target class);
+         * until then this restores the pre-regression behaviour for the paths
+         * that never resolve, without touching the ones that do.
+         */
+        bool bindingTakesTitle() const {
+            return resolvedReturnsOwnershipKnown ? resolvedReturnsOwnership : true;
+        }
         llvm::Value* getFlaggedTitleValue() const { return flaggedTitleValue; }
         MethodPtr getResolvedMethod() const { return resolvedMethod; }
 

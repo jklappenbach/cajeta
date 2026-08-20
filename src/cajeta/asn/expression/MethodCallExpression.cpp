@@ -468,7 +468,7 @@ namespace cajeta {
                 && isLangString(bop->getResolvedType());
         }
         if (auto amce = dynamic_pointer_cast<MethodCallExpression>(e)) {
-            return amce->isResolvedReturnsOwnership()
+            return amce->bindingTakesTitle()
                 && isLangString(amce->getResolvedType());
         }
         return false;
@@ -10547,6 +10547,7 @@ namespace cajeta {
             if (tempTarget && strDropFn
                     && entries.size() == parameters.size()) {
                 resolvedReturnsOwnership = tempTarget->isReturnsOwnership();
+                resolvedReturnsOwnershipKnown = true;
                 resolvedMethod = tempTarget;
                 auto fpl = tempTarget->getParameterList();
                 bool isStaticT = tempTarget->getModifiers().find(STATIC)
@@ -10698,6 +10699,7 @@ namespace cajeta {
                 /*explicitMethodTypeArgs=*/explicitMethodTypeArgs);
             if (resolved) {
                 resolvedReturnsOwnership = resolved->isReturnsOwnership();
+                resolvedReturnsOwnershipKnown = true;
                 resolvedMethod = resolved;
             }
             if (resolved && resolved->getReturnType()) {

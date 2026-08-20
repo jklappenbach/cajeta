@@ -2869,7 +2869,7 @@ namespace cajeta {
                             } else if (auto rc = dynamic_pointer_cast<
                                            MethodCallExpression>(rhsAst)) {
                                 fobOwnedSpelling =
-                                    rc->isResolvedReturnsOwnership();
+                                    rc->bindingTakesTitle();
                             } else if (auto ri = dynamic_pointer_cast<
                                            IdentifierExpression>(rhsAst)) {
                                 if (auto sc = module->getScopeStack().peek()) {
@@ -3089,7 +3089,7 @@ namespace cajeta {
                             } else if (auto rc = dynamic_pointer_cast<
                                            MethodCallExpression>(rhsAst)) {
                                 ownedVal = llvm::ConstantInt::get(tsI64,
-                                    rc->isResolvedReturnsOwnership() ? 1 : 0);
+                                    rc->bindingTakesTitle() ? 1 : 0);
                             } else {
                                 ownedVal = llvm::ConstantInt::get(tsI64, 0);
                             }
@@ -3538,7 +3538,7 @@ namespace cajeta {
                         rhsIsFreshOwner = !rhsNew->getStackAlloc();
                     } else if (auto rhsCall =
                             dynamic_pointer_cast<MethodCallExpression>(rhsAst)) {
-                        rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
+                        rhsIsFreshOwner = rhsCall->bindingTakesTitle();
                     }
                     if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {
                     if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
