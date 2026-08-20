@@ -272,8 +272,18 @@ jobs:
             exit 1
           fi
 
+      # continue-on-error: losing the artifact must not turn a green device
+      # sweep red. Everything that decides pass/fail already happened in the
+      # step above, which hard-fails on a missing log or an all-skipped run;
+      # this step only DELIVERS diagnostics. Run 32425463145 failed exactly
+      # this way — both legs passed all 7 coop-matrix pins, then PHOENIX hit
+      # `Failed to CreateArtifact: ECONNRESET` and the run reported failure.
+      # A nightly that goes red on a transient upload blip is a nightly people
+      # learn to ignore. Keep `if: always()` — a truncated log from a killed
+      # run is what made the 2026-08-13 diagnosis possible at all.
       - name: Upload test log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: device-tests-${{ matrix.name }}
