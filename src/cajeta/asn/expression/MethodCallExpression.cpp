@@ -468,7 +468,18 @@ namespace cajeta {
                 && isLangString(bop->getResolvedType());
         }
         if (auto amce = dynamic_pointer_cast<MethodCallExpression>(e)) {
-            return amce->bindingTakesTitle()
+            // NOT bindingTakesTitle(). This is the RECLAMATION question — does
+            // the enclosing statement free this temporary — and its
+            // false-on-unresolved default is deliberate: the field's own
+            // comment calls it "conservative (no reclamation)". Answering
+            // OWNED here would make the statement free a temporary it does not
+            // own, which is a different failure from the missing title
+            // bindingTakesTitle exists to supply.
+            //
+            // The two questions share a field; that conflation is what caused
+            // the regression in the first place, so they must not share an
+            // accessor as well.
+            return amce->isResolvedReturnsOwnership()
                 && isLangString(amce->getResolvedType());
         }
         return false;

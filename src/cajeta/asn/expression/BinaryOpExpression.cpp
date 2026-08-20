@@ -2868,8 +2868,13 @@ namespace cajeta {
                                 fobOwnedSpelling = !rn->getStackAlloc();
                             } else if (auto rc = dynamic_pointer_cast<
                                            MethodCallExpression>(rhsAst)) {
+                                // Left on the raw accessor. The regression being
+                                // repaired is the TITLE FLAG below; this is a
+                                // fresh-owner spelling question, and answering
+                                // it from an unresolved call would be a guess
+                                // rather than a restored default.
                                 fobOwnedSpelling =
-                                    rc->bindingTakesTitle();
+                                    rc->isResolvedReturnsOwnership();
                             } else if (auto ri = dynamic_pointer_cast<
                                            IdentifierExpression>(rhsAst)) {
                                 if (auto sc = module->getScopeStack().peek()) {
@@ -3538,7 +3543,8 @@ namespace cajeta {
                         rhsIsFreshOwner = !rhsNew->getStackAlloc();
                     } else if (auto rhsCall =
                             dynamic_pointer_cast<MethodCallExpression>(rhsAst)) {
-                        rhsIsFreshOwner = rhsCall->bindingTakesTitle();
+                        // Raw accessor, as above: not the title flag.
+                        rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
                     }
                     if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {
                     if (auto lhsId = dynamic_pointer_cast<IdentifierExpression>(lhsAst)) {
