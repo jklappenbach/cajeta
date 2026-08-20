@@ -684,6 +684,12 @@ namespace cajeta {
         // calls this at its entry; the frame collects every owned local
         // declared inside the block until the matching pop.
         void pushDropFrame() { dropFrameStack.emplace_back(); }
+        size_t dropFrameCount() const { return dropFrameStack.size(); }
+        // break/continue: emit pop_run for every frame deeper than `keep`
+        // (inner->outer), leaving the compile-time stack untouched — the
+        // enclosing blocks' own emitTopFrameDrops sit on the (now
+        // unreachable) normal path.
+        void emitFrameDropsToDepth(CajetaModulePtr module, size_t keep);
 
         // Pop the top frame without emitting any IR. Use after the
         // matching emitTopFrameDrops (or after a terminator made the
