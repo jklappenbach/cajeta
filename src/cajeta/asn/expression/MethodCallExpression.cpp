@@ -5798,7 +5798,159 @@ namespace cajeta {
                         llvm::Type::getInt32Ty(builder->getContext()),
                         "eqmask.i32");
                 }
-                // SIMD: compressStore(dst, mask) -> int32. Pack the lanes of this
+                // ── cajeta-llama Unit 17: tableLookup / widen / narrow /
+                // convert / bitcast — the quantized-unpack toolkit. ──────
+
+                // tableLookup(indices) — pshufb semantics: result lane i =
+                // table[idx & 0x0F], 0 when the index's high bit is set.
+                // Receiver is the 16-entry byte table. x86 emits the pshufb
+                // intrinsic, AArch64 NEON tbl1, everything else (or
+                // CAJETA_SIMD_SCALAR_FALLBACK=1) the scalar-equivalent
+                // extract/select chain (vecops::tableLookup).
+                if (methodCallName == "tableLookup") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Vector.tableLookup expects (indices)",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto* svt =
+                        llvm::cast<llvm::FixedVectorType>(self->getType());
+                    if (svt->getNumElements() != 16 ||
+                            svt->getElementType()->getIntegerBitWidth() != 8) {
+                        throw Exception(
+                            "Vector.tableLookup requires a 16-lane 8-bit "
+                            "receiver (the table): Vector<int8,16> / "
+                            "Vector<uint8,16>", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* idxV = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    if (idxV->getType() != self->getType()) {
+                        throw Exception(
+                            "Vector.tableLookup indices must match the "
+                            "table's Vector shape",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    const char* fs = std::getenv("CAJETA_SIMD_SCALAR_FALLBACK");
+                    bool forceScalar = fs && fs[0] && fs[0] != '0';
+                    llvm::Module* tlm =
+                        builder->GetInsertBlock()->getParent()->getParent();
+                    resolvedType = std::static_pointer_cast<CajetaType>(vecT);
+                    return vecops::tableLookup(*builder, tlm, self, idxV,
+                                               forceScalar);
+                }
+                // widenLo()/widenHi() — one rung up the integer ladder over
+                // half the lanes: Vector<i8,16>.widenLo() -> Vector<i16,8>.
+                // sext for signed elements, zext for unsigned; the ladder
+                // caps at 64-bit elements and a 1-lane result is legal.
+                if (methodCallName == "widenLo" || methodCallName == "widenHi") {
+                    if (!parameters.empty()) {
+                        throw Exception("Vector.widenLo/widenHi take no "
+                                        "arguments", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto elemT = vecT->getElementType();
+                    if (isFloat) {
+                        throw Exception("Vector.widen* requires an integer "
+                                        "element type", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    unsigned w = elemT->getLlvmType()->getIntegerBitWidth();
+                    unsigned n = vecT->getLanes();
+                    if (w >= 64 || n < 2) {
+                        throw Exception("Vector.widen*: element width must be "
+                                        "< 64 and lane count >= 2",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    bool sgn = (elemT->getTypeFlags() & SIGNED_FLAG) != 0;
+                    std::string next = (sgn ? "int" : "uint")
+                        + std::to_string(w * 2);
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of(next), n / 2);
+                    return vecops::widenHalf(*builder, self,
+                        methodCallName == "widenLo", sgn);
+                }
+                // narrow(other) — the ladder inverse: two Vector<i2W,N>
+                // truncate into one Vector<iW,2N>, receiver's lanes first.
+                if (methodCallName == "narrow") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Vector.narrow expects (other) — the "
+                                        "high half's source",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto elemT = vecT->getElementType();
+                    if (isFloat) {
+                        throw Exception("Vector.narrow requires an integer "
+                                        "element type", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    unsigned w = elemT->getLlvmType()->getIntegerBitWidth();
+                    if (w <= 8) {
+                        throw Exception("Vector.narrow: element width must be "
+                                        "> 8", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    if (other->getType() != self->getType()) {
+                        throw Exception("Vector.narrow: other must have the "
+                                        "receiver's Vector type",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    bool sgn = (elemT->getTypeFlags() & SIGNED_FLAG) != 0;
+                    std::string prev = (sgn ? "int" : "uint")
+                        + std::to_string(w / 2);
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of(prev), vecT->getLanes() * 2);
+                    return vecops::narrowPair(*builder, self, other);
+                }
+                // toF32() / toI32() — lane-wise VALUE conversion (17.1.4).
+                if (methodCallName == "toF32") {
+                    if (!parameters.empty() || isFloat) {
+                        throw Exception("Vector.toF32 takes no arguments and "
+                                        "an integer-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    bool sgn = (vecT->getElementType()->getTypeFlags()
+                                & SIGNED_FLAG) != 0;
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("float32"), vecT->getLanes());
+                    return vecops::convertToF32(*builder, self, sgn);
+                }
+                if (methodCallName == "toI32") {
+                    if (!parameters.empty() || !isFloat) {
+                        throw Exception("Vector.toI32 takes no arguments and "
+                                        "a float-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("int32"), vecT->getLanes());
+                    return vecops::convertToI32(*builder, self);
+                }
+                // bitcastF32() / bitcastI32() — lane REINTERPRETATION, the
+                // vector twins of Cajeta.bitsToF32/f32ToBits (17.1.4).
+                if (methodCallName == "bitcastF32") {
+                    auto* svt =
+                        llvm::cast<llvm::FixedVectorType>(self->getType());
+                    if (!parameters.empty() || isFloat ||
+                            svt->getElementType()->getIntegerBitWidth() != 32) {
+                        throw Exception("Vector.bitcastF32 takes no arguments "
+                                        "and a 32-bit-integer-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("float32"), vecT->getLanes());
+                    return vecops::bitcastLanes(*builder, self,
+                        llvm::Type::getFloatTy(builder->getContext()));
+                }
+                if (methodCallName == "bitcastI32") {
+                    if (!parameters.empty() || !isFloat) {
+                        throw Exception("Vector.bitcastI32 takes no arguments "
+                                        "and a float32-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("int32"), vecT->getLanes());
+                    return vecops::bitcastLanes(*builder, self,
+                        llvm::Type::getInt32Ty(builder->getContext()));
+                }
+                                // SIMD: compressStore(dst, mask) -> int32. Pack the lanes of this
                 // vector whose `mask` bit is set into contiguous memory starting
                 // at `dst` (an array-element l-value, e.g. `out[w]`), low lane
                 // first — AVX-512 vpcompress* (vpcompressq for 64-bit lanes). The

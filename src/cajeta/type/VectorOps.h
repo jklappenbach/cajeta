@@ -21,6 +21,9 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/IntrinsicsX86.h"
+#include "llvm/IR/IntrinsicsAArch64.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace cajeta {
 namespace vecops {
@@ -336,6 +339,120 @@ namespace vecops {
             lanes, b.CreateFCmpOLT(k, zero), "vec.refract.tir");
         return b.CreateSelect(tir, llvm::Constant::getNullValue(i->getType()),
                               res, "vec.refract.sel");
+    }
+
+
+    // ── cajeta-llama Unit 17: tableLookup / widen / narrow / convert ────
+
+    // tableLookup — the per-byte classifier engine (pshufb semantics):
+    // result lane i = table[indices[i] & 0x0F], and 0 whenever the index's
+    // high bit is set. On x86 this IS `@llvm.x86.ssse3.pshuf.b.128`; on
+    // AArch64 it is NEON `tbl1` with indices masked to idx & 0x8F (tbl1
+    // zeroes out-of-range indices 16..255, so high-bit lanes land in
+    // 0x80..0x8F and zero — pshufb's contract exactly). Elsewhere — or when
+    // CAJETA_SIMD_SCALAR_FALLBACK=1 forces it — a 16-lane extract/select
+    // chain with identical semantics. Table and indices are <16 x i8>.
+    inline llvm::Value* tableLookup(llvm::IRBuilderBase& b, llvm::Module* m,
+                                    llvm::Value* table, llvm::Value* indices,
+                                    bool forceScalar) {
+        llvm::LLVMContext& ctx = b.getContext();
+        auto* i8 = llvm::Type::getInt8Ty(ctx);
+        auto* v16 = llvm::FixedVectorType::get(i8, 16);
+        const llvm::Triple& triple = m->getTargetTriple();
+        if (!forceScalar && (triple.getArch() == llvm::Triple::x86_64
+                             || triple.getArch() == llvm::Triple::x86)) {
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                m, llvm::Intrinsic::x86_ssse3_pshuf_b_128);
+            return b.CreateCall(fn, {table, indices}, "tbl.pshufb");
+        }
+        if (!forceScalar && triple.isAArch64()) {
+            llvm::Value* masked = b.CreateAnd(indices,
+                llvm::ConstantVector::getSplat(
+                    llvm::ElementCount::getFixed(16),
+                    llvm::ConstantInt::get(i8, 0x8F)), "tbl.maskidx");
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                m, llvm::Intrinsic::aarch64_neon_tbl1, {v16});
+            return b.CreateCall(fn, {table, masked}, "tbl.neon");
+        }
+        // Scalar fallback: per lane, select(high-bit, 0, table[idx & 15]).
+        llvm::Value* out = llvm::UndefValue::get(v16);
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        for (unsigned i = 0; i < 16; ++i) {
+            llvm::Value* idx = b.CreateExtractElement(indices,
+                llvm::ConstantInt::get(i32, i), "tbl.idx");
+            llvm::Value* lo = b.CreateAnd(idx,
+                llvm::ConstantInt::get(i8, 15), "tbl.lo");
+            llvm::Value* elem = b.CreateExtractElement(table,
+                b.CreateZExt(lo, i32, "tbl.lo32"), "tbl.elem");
+            llvm::Value* hi = b.CreateICmpSLT(idx,
+                llvm::ConstantInt::get(i8, 0), "tbl.hibit");
+            llvm::Value* sel = b.CreateSelect(hi,
+                llvm::ConstantInt::get(i8, 0), elem, "tbl.sel");
+            out = b.CreateInsertElement(out, sel,
+                llvm::ConstantInt::get(i32, i), "tbl.out");
+        }
+        return out;
+    }
+
+    // widen — one rung up the integer ladder over one half of the lanes:
+    // <N x iW> -> <N/2 x i2W>, sext when the element is signed, zext when
+    // unsigned. `lo` picks lanes [0, N/2) vs [N/2, N).
+    inline llvm::Value* widenHalf(llvm::IRBuilderBase& b, llvm::Value* v,
+                                  bool lo, bool isSigned) {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(v->getType());
+        unsigned n = vt->getNumElements();
+        unsigned half = n / 2;
+        std::vector<int> lanes;
+        for (unsigned i = 0; i < half; ++i) {
+            lanes.push_back((int) (lo ? i : half + i));
+        }
+        llvm::Value* sub = b.CreateShuffleVector(v, lanes, "widen.half");
+        auto* wide = llvm::FixedVectorType::get(
+            llvm::IntegerType::get(b.getContext(),
+                vt->getElementType()->getIntegerBitWidth() * 2), half);
+        return isSigned ? b.CreateSExt(sub, wide, "widen.sext")
+                        : b.CreateZExt(sub, wide, "widen.zext");
+    }
+
+    // narrow — one rung down over a PAIR: two <N x iW> -> <2N x iW/2>,
+    // truncating each lane (modular, the ladder inverse of widenHalf: the
+    // receiver's lanes land first). Bit-exact round trip for values that fit.
+    inline llvm::Value* narrowPair(llvm::IRBuilderBase& b, llvm::Value* loV,
+                                   llvm::Value* hiV) {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(loV->getType());
+        unsigned n = vt->getNumElements();
+        auto* nar = llvm::FixedVectorType::get(
+            llvm::IntegerType::get(b.getContext(),
+                vt->getElementType()->getIntegerBitWidth() / 2), n);
+        llvm::Value* a = b.CreateTrunc(loV, nar, "narrow.lo");
+        llvm::Value* c = b.CreateTrunc(hiV, nar, "narrow.hi");
+        std::vector<int> lanes;
+        for (unsigned i = 0; i < 2 * n; ++i) lanes.push_back((int) i);
+        return b.CreateShuffleVector(a, c, lanes, "narrow.cat");
+    }
+
+    // int<->float convert and lane bitcast (17.1.4).
+    inline llvm::Value* convertToF32(llvm::IRBuilderBase& b, llvm::Value* v,
+                                     bool isSigned) {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(v->getType());
+        auto* fv = llvm::FixedVectorType::get(
+            llvm::Type::getFloatTy(b.getContext()), vt->getNumElements());
+        return isSigned ? b.CreateSIToFP(v, fv, "conv.sitofp")
+                        : b.CreateUIToFP(v, fv, "conv.uitofp");
+    }
+
+    inline llvm::Value* convertToI32(llvm::IRBuilderBase& b, llvm::Value* v) {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(v->getType());
+        auto* iv = llvm::FixedVectorType::get(
+            llvm::Type::getInt32Ty(b.getContext()), vt->getNumElements());
+        return b.CreateFPToSI(v, iv, "conv.fptosi");
+    }
+
+    inline llvm::Value* bitcastLanes(llvm::IRBuilderBase& b, llvm::Value* v,
+                                     llvm::Type* elemTo) {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(v->getType());
+        auto* tv = llvm::FixedVectorType::get(elemTo, vt->getNumElements());
+        return b.CreateBitCast(v, tv, "vec.bitcast");
     }
 
 } // namespace vecops
