@@ -16,6 +16,14 @@ identically in any session host, is testable like any API, and preserves
 the jupyter-kernel spec §1.4 non-goal ("no magics"). A directive form, if
 ever wanted, is later sugar that desugars to this API.
 
+- **1.0 Model.** Two layers, the same ones compiled projects have.
+  *Acquisition* puts an archive on the classpath: declared in
+  `cajeta.json`'s `settings.dependencies` (resolved at session start —
+  still the source of truth and the reproducible record for a notebook
+  project), or performed mid-session by `Packages.install`, the dynamic
+  shorthand. *Binding* is `import`, unchanged: it names packages from
+  archives already acquired, however they were acquired. `install` makes
+  libraries importable; it never imports anything itself.
 - **1.1 Scope.** Session hosts (the Jupyter kernel today). The API exists
   everywhere the stdlib does; in a host with no live session it throws a
   located recoverable error rather than crashing or silently no-opping.
