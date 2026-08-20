@@ -4658,8 +4658,11 @@ namespace cajeta {
                             bool dvSimple = dvRecv
                                 && (dynamic_pointer_cast<IdentifierExpression>(dvRecv)
                                     || dynamic_pointer_cast<DotExpression>(dvRecv));
-                            if (dvSimple && CajetaClass::arrayElementCarriesSlotBits(
-                                    dvAix->getResolvedType())) {
+                            bool dvArrElem = dvSimple
+                                && CajetaClass::arrayElementCarriesArraySlotBits(
+                                       dvAix->getResolvedType());
+                            if (dvSimple && (CajetaClass::arrayElementCarriesSlotBits(
+                                    dvAix->getResolvedType()) || dvArrElem)) {
                                 llvm::Type* dvI64 =
                                     llvm::Type::getInt64Ty(*module->getLlvmContext());
                                 llvm::Value* dvSlot = dvAix->generateCode(module);
@@ -4682,7 +4685,18 @@ namespace cajeta {
                                             builder->CreatePtrToInt(dvHdr, dvI64)),
                                         llvm::ConstantInt::get(dvI64, dvHs)),
                                     llvm::ConstantInt::get(dvI64, dvEs));
-                                if (llvm::Function* dvFn = module->getRuntimeFunction(
+                                if (dvArrElem) {
+                                    if (llvm::Function* dvFn = module->getRuntimeFunction(
+                                            "__cajeta_tail_arrelem_drop_one")) {
+                                        builder->CreateCall(dvFn, {dvHdr,
+                                            llvm::ConstantInt::get(dvI64, dvHs),
+                                            llvm::ConstantInt::get(dvI64, dvEs), dvIdx,
+                                            llvm::ConstantInt::get(dvI64,
+                                                CajetaClass::arrayElementInnerDropKind(
+                                                    dvAix->getResolvedType()))});
+                                        return nullptr;
+                                    }
+                                } else if (llvm::Function* dvFn = module->getRuntimeFunction(
                                         "__cajeta_tail_elem_drop_one")) {
                                     builder->CreateCall(dvFn, {dvHdr,
                                         llvm::ConstantInt::get(dvI64, dvHs),

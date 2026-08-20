@@ -619,6 +619,18 @@ namespace cajeta {
         // carry no per-slot title.
         static bool arrayElementCarriesSlotBits(const CajetaTypePtr& elem);
 
+        // title-stores §3.4 — jagged arrays: true when the ELEMENT is itself
+        // a heap array (int8[][]'s element int8[]), whose slot owns a whole
+        // inner buffer. Served by the __cajeta_tail_arrelem_* runtime family
+        // (the class family drops through a vtable arrays don't have).
+        static bool arrayElementCarriesArraySlotBits(const CajetaTypePtr& elem);
+
+        // The inner drop kind for an array-typed element, depth-1: 0 = plain
+        // free; 1 = the inner array carries a class-element tail bitmap
+        // (walk-then-free). A T[][][]'s middle level would need its own kind
+        // one level down — no such type exists in-tree; this is the cap.
+        static int arrayElementInnerDropKind(const CajetaTypePtr& elem);
+
         // title-stores §3.3.2 (Unit 4) — per-MEMBER ownership bits for an
         // inline value-struct element (the MapEntry shape). True when
         // `elem` is a value-type class whose layout already appends the

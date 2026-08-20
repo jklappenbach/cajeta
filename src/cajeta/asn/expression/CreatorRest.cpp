@@ -692,8 +692,13 @@ namespace cajeta {
         // level can qualify: outer levels' elements are arrays, which the
         // predicate rejects. Arena arrays are primitive-only, so the two
         // never collide.
+        // title-stores §3.4 — OUTER levels qualify too now: their elements
+        // are arrays, and a jagged slot owns its inner buffer, so the outer
+        // header needs the tail bitmap the arrelem family reads. Fetch the
+        // allocator whenever any level could need it (per-level pick below).
         llvm::Function* bitsAllocFn = nullptr;
-        if (!useArena && CajetaClass::arrayElementCarriesSlotBits(targetType)) {
+        if (!useArena && (CajetaClass::arrayElementCarriesSlotBits(targetType)
+                || totalBracketPairs > 1)) {
             bitsAllocFn = module->getRuntimeFunction("__cajeta_new_array_header_bits");
         }
         llvm::Function* parentFn = builder->GetInsertBlock()->getParent();
@@ -734,7 +739,9 @@ namespace cajeta {
             llvm::Value* elemSize = llvm::ConstantInt::get(i64Ty,
                 arr->elementStrideBytes(dl, &ctx));
             bool levelHasBits = bitsAllocFn
-                && CajetaClass::arrayElementCarriesSlotBits(arr->getElementType());
+                && (CajetaClass::arrayElementCarriesSlotBits(arr->getElementType())
+                    || CajetaClass::arrayElementCarriesArraySlotBits(
+                           arr->getElementType()));
             llvm::Value* hdrPtr = builder->CreateCall(
                 levelHasBits ? bitsAllocFn : allocFn,
                 {headerSize, elemSize, count});

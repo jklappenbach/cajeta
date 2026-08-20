@@ -3160,6 +3160,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     }
                     if (mvElemT
                             && !CajetaClass::arrayElementCarriesSlotBits(
+                                   mvElemT)
+                            && !CajetaClass::arrayElementCarriesArraySlotBits(
                                    mvElemT)) {
                         value = loadIfLValue(module, value, aixInner);
                         resolvedType = mvElemT;
@@ -3171,8 +3173,10 @@ bool cajetaRhsCarriesRedundantSharp(
                         && (dynamic_pointer_cast<IdentifierExpression>(recvT)
                             || dynamic_pointer_cast<DotExpression>(recvT));
                     if (recvSimple
-                            && CajetaClass::arrayElementCarriesSlotBits(
-                                   aixInner->getResolvedType())) {
+                            && (CajetaClass::arrayElementCarriesSlotBits(
+                                    aixInner->getResolvedType())
+                                || CajetaClass::arrayElementCarriesArraySlotBits(
+                                    aixInner->getResolvedType()))) {
                         auto* b = module->getBuilder();
                         auto& tctx = *module->getLlvmContext();
                         llvm::Type* ti64 = llvm::Type::getInt64Ty(tctx);

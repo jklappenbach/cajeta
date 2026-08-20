@@ -1407,11 +1407,13 @@ namespace cajeta {
                         fwdMv->getChildren()[0]);
                     if (fwdL && !fwdL->getResolvedType()) fwdL->resolveTypes(module);
                     if (fwdS && !fwdS->getResolvedType()) fwdS->resolveTypes(module);
+                    auto fwdBits = [](const CajetaTypePtr& t) {
+                        return CajetaClass::arrayElementCarriesSlotBits(t)
+                            || CajetaClass::arrayElementCarriesArraySlotBits(t);
+                    };
                     if (fwdL && fwdS
-                            && CajetaClass::arrayElementCarriesSlotBits(
-                                   fwdL->getResolvedType())
-                            && CajetaClass::arrayElementCarriesSlotBits(
-                                   fwdS->getResolvedType())) {
+                            && fwdBits(fwdL->getResolvedType())
+                            && fwdBits(fwdS->getResolvedType())) {
                         fwdMv->setForwardingSlotMove(true);
                     }
                 }
@@ -2943,6 +2945,27 @@ namespace cajeta {
                                                              fobADl,
                                                              module->getLlvmContext()))});
                                             }
+                                        } else if (CajetaClass::
+                                                arrayElementCarriesArraySlotBits(
+                                                    fobArr->getElementType())) {
+                                            // title-stores §3.4 — jagged.
+                                            if (llvm::Function* fobAw =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_tail_arrelem_drop_walk")) {
+                                                builder->CreateCall(fobAw,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext())),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         CajetaClass::arrayElementInnerDropKind(
+                                                             fobArr->getElementType()))});
+                                            }
                                         } else if ([&]{
                                             auto sc = dynamic_pointer_cast<
                                                 CajetaClass>(
@@ -3049,9 +3072,13 @@ namespace cajeta {
                         // MoveExpression's captured runtime flag forwards
                         // verbatim (`#=` of a formal stores what the caller
                         // did); static spellings classify as before.
+                        bool elemArrayTitled =
+                            CajetaClass::arrayElementCarriesArraySlotBits(
+                                lhsAst->getResolvedType());
                         bool elemTitled =
                             CajetaClass::arrayElementCarriesSlotBits(
-                                lhsAst->getResolvedType());
+                                lhsAst->getResolvedType())
+                            || elemArrayTitled;
                         // The tail helper needs the array HEADER. Regenerate
                         // the receiver only for side-effect-free shapes
                         // (identifier / field path) — the container-author
@@ -3116,7 +3143,25 @@ namespace cajeta {
                                     builder->CreateSub(slotInt, hdrInt),
                                     llvm::ConstantInt::get(tsI64, tsHs)),
                                 llvm::ConstantInt::get(tsI64, tsEs));
-                            if (llvm::Function* storeFn =
+                            if (elemArrayTitled) {
+                                // title-stores §3.4 — jagged slot: release
+                                // any displaced occupant through the ARRAY
+                                // drop path (no vtable to drop through).
+                                if (llvm::Function* storeFn =
+                                        module->getRuntimeFunction(
+                                            "__cajeta_tail_arrelem_store")) {
+                                    builder->CreateCall(storeFn,
+                                        {tailHdr,
+                                         llvm::ConstantInt::get(tsI64, tsHs),
+                                         llvm::ConstantInt::get(tsI64, tsEs),
+                                         tsIdx, rhsVal, ownedVal,
+                                         llvm::ConstantInt::get(tsI64,
+                                             CajetaClass::arrayElementInnerDropKind(
+                                                 lhsAst->getResolvedType()))});
+                                    storedViaElemOwn = true;
+                                    storedViaClassElem = true;
+                                }
+                            } else if (llvm::Function* storeFn =
                                     module->getRuntimeFunction(
                                         "__cajeta_tail_elem_store")) {
                                 builder->CreateCall(storeFn,

@@ -234,12 +234,16 @@ namespace cajeta {
     // STRUCT's alloc size (a pre-existing class-element array layout
     // convention), so the stride is a per-type constant the one-arg
     // drop-entry ABI can't carry — synthesize a tiny fn per (hs, es).
+    // `arrKind` < 0: class elements (__cajeta_tail_elem_drop_walk).
+    // `arrKind` >= 0: ARRAY elements (title-stores §3.4) — the jagged walk
+    // with that inner drop kind.
     static llvm::Function* getOrCreateTailDropFree(CajetaModulePtr module,
-            uint64_t hs, uint64_t es) {
+            uint64_t hs, uint64_t es, int arrKind = -1) {
         llvm::Module* m =
             module->getBuilder()->GetInsertBlock()->getParent()->getParent();
         std::string name = "cajeta_tail_dropfree_hs" + std::to_string(hs)
-            + "_es" + std::to_string(es);
+            + "_es" + std::to_string(es)
+            + (arrKind >= 0 ? "_ak" + std::to_string(arrKind) : "");
         if (llvm::Function* f = m->getFunction(name)) return f;
         auto& fctx = m->getContext();
         auto* fptrTy = llvm::PointerType::get(fctx, 0);
@@ -249,14 +253,21 @@ namespace cajeta {
             llvm::Function::InternalLinkage, name, m);
         auto* bb = llvm::BasicBlock::Create(fctx, "entry", f);
         llvm::IRBuilder<> fb(bb);
-        llvm::Function* walk = module->getRuntimeFunction(
-            "__cajeta_tail_elem_drop_walk");
+        llvm::Function* walk = module->getRuntimeFunction(arrKind >= 0
+            ? "__cajeta_tail_arrelem_drop_walk"
+            : "__cajeta_tail_elem_drop_walk");
         llvm::Function* freeA = module->getRuntimeFunction(
             "__cajeta_free_array");
         auto* fi64 = llvm::Type::getInt64Ty(fctx);
-        if (walk) fb.CreateCall(walk, {f->getArg(0),
-            llvm::ConstantInt::get(fi64, hs),
-            llvm::ConstantInt::get(fi64, es)});
+        if (walk) {
+            std::vector<llvm::Value*> wargs = {f->getArg(0),
+                llvm::ConstantInt::get(fi64, hs),
+                llvm::ConstantInt::get(fi64, es)};
+            if (arrKind >= 0) {
+                wargs.push_back(llvm::ConstantInt::get(fi64, arrKind));
+            }
+            fb.CreateCall(walk, wargs);
+        }
         if (freeA) fb.CreateCall(freeA, {f->getArg(0)});
         fb.CreateRetVoid();
         return f;
@@ -1692,16 +1703,23 @@ namespace cajeta {
                 bool lvdElemTitled = arrT0 && !arrT0->isInlineArray()
                     && CajetaClass::arrayElementCarriesSlotBits(
                            arrT0->getElementType());
+                bool lvdArrElem = arrT0 && !arrT0->isInlineArray()
+                    && CajetaClass::arrayElementCarriesArraySlotBits(
+                           arrT0->getElementType());
                 bool lvdMemberBits = arrT0 && !arrT0->isInlineArray()
                     && CajetaClass::arrayElementCarriesMemberBits(
                            arrT0->getElementType());
-                if (lvdElemTitled) {
+                if (lvdElemTitled || lvdArrElem) {
                     const llvm::DataLayout& ldl =
                         module->getLlvmModule()->getDataLayout();
                     llvm::Function* wf = getOrCreateTailDropFree(module,
                         ldl.getTypeAllocSize(arrT0->getLlvmType()),
                         arrT0->elementStrideBytes(ldl,
-                            module->getLlvmContext()));
+                            module->getLlvmContext()),
+                        lvdArrElem
+                            ? CajetaClass::arrayElementInnerDropKind(
+                                  arrT0->getElementType())
+                            : -1);
                     emitDropEntryForFn(module, field, wf, getSourceLine());
                 } else if (lvdMemberBits) {
                     // title-stores §3.3.2 — value-struct elements: ONE
