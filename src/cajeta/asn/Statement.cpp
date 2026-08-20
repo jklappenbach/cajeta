@@ -791,7 +791,8 @@ namespace cajeta {
         if (scope) preBodyNYA = scope->snapshotNotYetAssigned();
 
         builder->SetInsertPoint(bodyBB);
-        module->pushLoopContext(headBB, exitBB);
+        module->pushLoopContext(headBB, exitBB,
+            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -843,7 +844,8 @@ namespace cajeta {
         builder->SetInsertPoint(bodyBB);
         // continue jumps to the update block, not the head — so the update fires
         // before the next condition test. Matches Java semantics.
-        module->pushLoopContext(updateBB, exitBB);
+        module->pushLoopContext(updateBB, exitBB,
+            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -881,7 +883,8 @@ namespace cajeta {
         builder->SetInsertPoint(bodyBB);
         // continue jumps to the condition test (the tail), which then branches back
         // to body or out. break exits.
-        module->pushLoopContext(tailBB, exitBB);
+        module->pushLoopContext(tailBB, exitBB,
+            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -1001,7 +1004,8 @@ namespace cajeta {
             builder->CreateStore(idxCast, iterSlot);
         }
 
-        module->pushLoopContext(updateBB, exitBB);
+        module->pushLoopContext(updateBB, exitBB,
+            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
         if (body) body->generateCode(module);
         module->popLoopContext();
         if (!builder->GetInsertBlock()->hasTerminator()) {
@@ -1467,7 +1471,8 @@ namespace cajeta {
             module->hasLoopContext()
                 ? module->currentLoopContext().continueTarget
                 : afterBB;
-        module->pushLoopContext(enclosingCont, afterBB);
+        module->pushLoopContext(enclosingCont, afterBB,
+            (module->getCurrentMethod() ? module->getCurrentMethod()->dropFrameCount() : 0));
         bool anyArmMerged = false;
         for (size_t i = 0; i < groups.size(); i++) {
             auto& g = groups[i];
@@ -3391,6 +3396,12 @@ namespace cajeta {
         // C1 follow-up: run + pop the finallys of any try bodies entered inside
         // the loop before jumping out past them.
         emitTryFinallyUnwind(module, lc->tryFinallyDepth);
+        // Unlink + drop the owners of every block opened inside the loop —
+        // their end-of-block pop_runs are on the normal path this branch
+        // skips, and a stale entry poisons the next throw's chain walk.
+        if (auto m = module->getCurrentMethod()) {
+            m->emitFrameDropsToDepth(module, lc->dropFrameDepth);
+        }
         builder->CreateBr(lc->breakTarget);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
             *module->getLlvmContext(), "after_break",
@@ -3409,6 +3420,12 @@ namespace cajeta {
         if (!lc) lc = &module->currentLoopContext();
         // C1 follow-up: run + pop in-loop try finallys before jumping to the latch.
         emitTryFinallyUnwind(module, lc->tryFinallyDepth);
+        // Same owner unwind as break: the latch re-enters the body from the
+        // top, and a skipped pop_run leaves this iteration's entries linked —
+        // the next iteration's push then self-links the same stack slot.
+        if (auto m = module->getCurrentMethod()) {
+            m->emitFrameDropsToDepth(module, lc->dropFrameDepth);
+        }
         builder->CreateBr(lc->continueTarget);
         llvm::BasicBlock* deadBB = llvm::BasicBlock::Create(
             *module->getLlvmContext(), "after_continue",
