@@ -905,6 +905,85 @@ public final class Ewise {
     }
 
     /**
+     * Tiled **int8 → int32** GEMM (cajeta-llama 18.2.3): int8 A/B operand
+     * tiles with an int32 accumulator — the quantized-weight compute shape
+     * (spec §10: sub-byte formats unpack to int8 and multiply THERE). Native
+     * on RDNA3 (`v_wmma_i32_16x16x16_iu8`); the portable software tier runs
+     * it everywhere else, bit-identically — integer accumulation has no
+     * rounding to diverge on, so tiers agree EXACTLY, not within tolerance.
+     * `rows`/`cols`/`depth` multiples of 16.
+     */
+    @Kernel
+    public static void matmulI8(KernelBuffer<int32> c, KernelBuffer<int8> a,
+                                KernelBuffer<int8> b, uint32 rows, uint32 cols, uint32 depth) {
+        uint32 ntiles = cols / 16;
+        uint32 wid = Workgroup.x();
+        uint32 mi = wid / ntiles;
+        uint32 nj = wid % ntiles;
+        uint32 ktiles = depth / 16;
+        CooperativeMatrix<int32,16,16,2> mc;
+        mc.splat(0);
+        CooperativeMatrix<int8,16,16,0> ma;
+        CooperativeMatrix<int8,16,16,1> mb;
+        uint32 kk = 0;
+        while (kk < ktiles) {
+            ma.load(a, mi * 16 * depth + kk * 16, 0, depth);
+            mb.load(b, kk * 16 * cols + nj * 16, 0, cols);
+            mc.mma(ma, mb);
+            kk = kk + 1;
+        }
+        mc.store(c, mi * 16 * cols + nj * 16, 0, cols);
+    }
+
+    /**
+     * 2-D int8 matrix product returning **int32**, routed on placement:
+     * both on-device and 16-aligned → the {@link #matmulI8} coop GEMM;
+     * otherwise the CPU triple-loop floor at int32. Integer math: floor and
+     * every tier agree bit-for-bit (cajeta-llama 18.1.8).
+     */
+    public static #Tensor<int32> matmulI8Op(Tensor<int8> a, Tensor<int8> b) {
+        int64 m = a.shapeAt(0);
+        int64 k = a.shapeAt(1);
+        int64 n = b.shapeAt(1);
+        int64[] shp = heap int64[2];
+        shp[0] = m;
+        shp[1] = n;
+        Tensor<int32> out #= Tensor.zeros<int32>(shp);
+        boolean aligned = (m % 16 == 0) && (n % 16 == 0) && (k % 16 == 0);
+        boolean onDevice = Placement.pair("matmulI8", "a", a.isOnGpu(), "b", b.isOnGpu());
+        if (onDevice && aligned) {
+            out.gpu();
+            uint32 um = (uint32) m;
+            uint32 un = (uint32) n;
+            uint32 uk = (uint32) k;
+            KernelStream s #= KernelStream.current();
+            matmulI8.launch(s, grid: [(um / 16) * (un / 16)], block: [64])
+                (out.deviceBuffer(), a.deviceBuffer(), b.deviceBuffer(), um, un, uk);
+            s.sync();
+        } else {
+            boolean staged = onDevice;   // ragged int8 stays on the floor (no pad family yet)
+            if (staged) { a.cpu(); b.cpu(); }
+            int64 i = 0;
+            while (i < m) {
+                int64 j = 0;
+                while (j < n) {
+                    int32 acc = 0;
+                    int64 p = 0;
+                    while (p < k) {
+                        acc = acc + (int32) a.get2(i, p) * (int32) b.get2(p, j);
+                        p = p + 1;
+                    }
+                    out.flatSet(i * n + j, acc);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+            if (staged) { a.gpu(); b.gpu(); }
+        }
+        return #out;
+    }
+
+    /**
      * Elementwise narrow, float32 → bfloat16 — the wide GEMM's device result
      * back to the storage dtype (cajeta-llama 2.2.6): ONE rounding at the
      * store, the same numerics as the CPU floor's accumulate-wide/narrow-once.
