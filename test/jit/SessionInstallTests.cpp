@@ -24,7 +24,15 @@ namespace {
 
 std::string compilerBinary() {
     if (const char* env = std::getenv("CAJETA_BINARY")) return env;
-    return (fs::current_path() / "src" / "cajeta").string();
+    // The suite runs from build/ under an IDE/gtest launch but from the
+    // REPO ROOT under cajeta_tests.sh — probe both, else the fixture
+    // archive silently fails to build and every test here goes red in
+    // the sweep while passing solo (v0.21.1 release-gate find).
+    auto direct = fs::current_path() / "src" / "cajeta";
+    if (fs::is_regular_file(direct)) return direct.string();
+    auto fromRoot = fs::current_path() / "build" / "src" / "cajeta";
+    if (fs::is_regular_file(fromRoot)) return fromRoot.string();
+    return direct.string();
 }
 
 void writeFile(const fs::path& p, const std::string& text) {

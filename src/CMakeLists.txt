@@ -140,6 +140,16 @@ else()
                 "brew install zeromq (macOS), or pacman -S mingw-w64-x86_64-zeromq.")
     endif()
 endif()
+# Release builds pass -DCAJETA_REQUIRE_ZMQ=ON: the quiet fallback above is
+# right for a dev box, but it let v0.21.0 AND v0.21.1 ship Linux artifacts
+# with the notebook kernel silently compiled out (the CI image lacked the
+# package and nothing failed). A missing capability in a RELEASE must be a
+# configure error, not a warning.
+option(CAJETA_REQUIRE_ZMQ "Fail configure when libzmq is absent" OFF)
+if(CAJETA_REQUIRE_ZMQ AND NOT CAJETA_ZMQ_TARGET)
+    message(FATAL_ERROR "CAJETA_REQUIRE_ZMQ=ON but libzmq was not found — "
+            "`cajeta kernel` would be missing from this build.")
+endif()
 
 # The major cajeta's codegen is written against. Pinned, and REQUESTED rather
 # than merely checked afterwards: a bare `find_package(LLVM CONFIG)` accepts

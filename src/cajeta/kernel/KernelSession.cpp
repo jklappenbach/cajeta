@@ -1660,16 +1660,6 @@ bool KernelSession::installArchive(const std::string& cjaPath,
                 impl.prebuilt.insert(lm);
             }
             impl.installedArchives.insert(key);
-            if (std::getenv("CAJETA_INSTALL_DEBUG")) {
-                auto& cm = CajetaType::getCanonicalMap();
-                std::fprintf(stderr,
-                             "[install] modules=%zu cmapHasDep=%d "
-                             "archiveHasDep=%d\n",
-                             impl.compiler->getModules().size(),
-                             cm.find("depx.Answer") != cm.end() ? 1 : 0,
-                             CajetaType::getArchive().count("depx.Answer")
-                                 ? 1 : 0);
-            }
             ok = true;
         } catch (cajeta::Exception& e) {
             failMsg = std::string("installArchive: ") + e.getErrorId() + ": "

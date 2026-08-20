@@ -369,6 +369,15 @@ namespace cajeta {
             // those tries' finallys (and pop their frames) down to this watermark,
             // just like a return does for all enclosing tries.
             size_t tryFinallyDepth;
+            // drop-chain unwind (repro: continue past a block-scoped owner):
+            // the method's dropFrameStack depth at loop entry. A break/continue
+            // jumps out of every block opened inside the loop WITHOUT running
+            // those blocks' end-of-block pop_runs, so the jump site must emit
+            // pop_run for every frame deeper than this watermark — otherwise
+            // the runtime chain keeps entries whose stack slots are re-pushed
+            // next iteration (self-link) or die with the frame, and the next
+            // throw walks garbage.
+            size_t dropFrameDepth;
         };
 
     private:
@@ -1069,9 +1078,11 @@ namespace cajeta {
         // § Source-tagged drop-chain entries.
         llvm::Constant* getOrCreateSourceFileConstant(const std::string& path);
 
-        void pushLoopContext(llvm::BasicBlock* cont, llvm::BasicBlock* brk) {
+        void pushLoopContext(llvm::BasicBlock* cont, llvm::BasicBlock* brk,
+                             size_t dropFrameDepth = 0) {
             loopContextStack.push_back(
-                {cont, brk, pendingLoopLabel, tryFinallyStack.size()});
+                {cont, brk, pendingLoopLabel, tryFinallyStack.size(),
+                 dropFrameDepth});
             pendingLoopLabel.clear();
         }
         // Set by IdentifierLabel; consumed by the next pushLoopContext.

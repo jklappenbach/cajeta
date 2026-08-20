@@ -1175,6 +1175,23 @@ namespace cajeta {
         }
     }
 
+    void Method::emitFrameDropsToDepth(CajetaModulePtr module, size_t keep) {
+        if (dropFrameStack.size() <= keep) return;
+        llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
+        if (!popRun) return;
+        auto* b = module->getBuilder();
+        // Every entry in these frames has provably executed its runtime
+        // push on any path reaching this statement: codegen is linear, so
+        // a frame only holds entries whose declarations precede the jump,
+        // and enclosing blocks executed sequentially to get here.
+        for (size_t fi = dropFrameStack.size(); fi > keep; --fi) {
+            auto& frame = dropFrameStack[fi - 1];
+            for (auto it = frame.rbegin(); it != frame.rend(); ++it) {
+                b->CreateCall(popRun, {*it});
+            }
+        }
+    }
+
     void Method::emitOwnerDrops(CajetaModulePtr module) {
         if (dropFrameStack.empty()) return;
         llvm::Function* popRun = module->getRuntimeFunction("__cajeta_drop_pop_run");
