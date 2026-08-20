@@ -1,7 +1,10 @@
 # notebook-olla-install — installing Olla libraries from the notebook prompt
 
-Spec status: **draft** (jupyter-kernel plan Unit 8; surface decided with
-Julian 2026-08-19: stdlib API, session-only with explicit save).
+Spec status: **draft, decisions settled** (jupyter-kernel plan Unit 8;
+walked through with Julian 2026-08-19: stdlib API in
+`cajeta.session.Packages`; `installAndSave` as a separate method;
+checksums always + opportunistic signatures with a `require-signatures`
+floor; strict on version conflicts and name collisions).
 
 ## 1. Definition
 
@@ -109,16 +112,17 @@ ever wanted, is later sugar that desugars to this API.
 
 - **5.1** Default: an install affects only the running session. A restart
   loses it; the manifest is the reproducibility record.
-- **5.2** When `Packages.install(name, constraint, /*persist=*/true)` is
-  called under a governing project, the dependency is also written to
-  that project's `cajeta.json` (`settings.dependencies`) with the same
-  comment-and-format-preserving editor `cajeta add` uses, and the return
-  value is unchanged.
-- **5.3** When persist is requested with no governing project, the call
+- **5.2** When `Packages.installAndSave(name, constraint)` is called
+  under a governing project, the install proceeds as 2.1 and the
+  dependency is also written to that project's `cajeta.json`
+  (`settings.dependencies`) with the same comment-and-format-preserving
+  editor `cajeta add` uses. The manifest write is a separate named act at
+  the call site on purpose — no boolean to misread.
+- **5.3** When `installAndSave` runs with no governing project, the call
   throws a located recoverable error suggesting `cajeta init notebook`.
-- **5.4** When the manifest already pins the dependency, persist rewrites
-  the constraint only if it differs, and says so in the session's stream
-  output.
+- **5.4** When the manifest already pins the dependency, `installAndSave`
+  rewrites the constraint only if it differs, and says so in the
+  session's stream output.
 
 ## 6. Feedback
 
