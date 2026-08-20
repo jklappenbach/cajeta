@@ -22,7 +22,7 @@ import cajeta.lang.String;
  *
  * ## Usage
  * ```cajeta
- * JsonObject cfg = value.asObject();
+ * JsonObject cfg = value.object();
  * Optional<String> name = cfg.getString("name");
  * if (name.isPresent()) {
  *     String n = name.get();
@@ -368,7 +368,7 @@ public final class JsonObject {
         if (v == null || v.kind() != 4) {
             return stack Optional<JsonArray>(false, #null);
         }
-        return stack Optional<JsonArray>(true, v.asArray());
+        return stack Optional<JsonArray>(true, v.array());
     }
 
     /** Nested `JsonObject` at `key`, or empty if the key is missing / not an object. */
@@ -377,7 +377,7 @@ public final class JsonObject {
         if (v == null || v.kind() != 5) {
             return stack Optional<JsonObject>(false, #null);
         }
-        return stack Optional<JsonObject>(true, v.asObject());
+        return stack Optional<JsonObject>(true, v.object());
     }
 
     /**

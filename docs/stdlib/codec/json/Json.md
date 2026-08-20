@@ -44,7 +44,7 @@ Tier-3 builder ownership: `JsonValue.setString(String)` COPIES its argument
 (the value is self-contained; the source may drop freely). The aliasing
 variant is `setStringBorrowed(s)` — sharp, source must outlive the value —
 and `setStringOwned(#bytes, len)` transfers a byte buffer in.
-`asArray()` / `asObject()` are VIEWS of the held nodes (borrows, valid while
+`array()` / `object()` are VIEWS of the held nodes (borrows, valid while
 the `JsonValue` lives), and `asString()` is a producer returning an owned
 copy.
 | `static T parse<T>(int8[] bytes, int64 length)` ⚑ | Tier 1: parse JSON bytes into a `T` by synthesizing per-`T` parse code at the call site |

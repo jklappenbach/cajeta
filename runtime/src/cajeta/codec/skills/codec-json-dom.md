@@ -51,7 +51,7 @@ import cajeta.lang.String;
 
 JsonValue root #= Json.parse("{\"name\":\"alice\",\"tags\":[\"a\",\"b\"]}");   // owned — the factory returns `#JsonValue`
 if (root.kind() == JsonValue.OBJECT) {
-    JsonObject obj = root.asObject();          // borrowed, owned by root
+    JsonObject obj = root.object();          // borrowed, owned by root
 
     // Typed getters return Optional.empty() on missing key OR kind mismatch
     Optional<String> name = obj.getString("name");
@@ -60,7 +60,7 @@ if (root.kind() == JsonValue.OBJECT) {
     // Raw get() returns the borrowed JsonValue, or null on miss
     JsonValue tags = obj.get("tags");
     if (tags != null && tags.kind() == JsonValue.ARRAY) {
-        JsonArray a = tags.asArray();
+        JsonArray a = tags.array();
         int32 i = 0;
         while (i < a.count()) {
             String s #= a.get(i).asString();   // owned; null if elem not STRING

@@ -166,17 +166,19 @@ public final class JsonValue {
         return heap String(#copy, n);
     }
 
-    @Inline
     /** VIEW of the held array — borrow, valid while this JsonValue
-     *  lives; never a materialized copy despite the `as` name. */
-    public JsonArray asArray() {
+     *  lives. (Renamed from `asArray` — `as...` reads as a producer,
+     *  and `asString` on this class IS one; the view gets a view name,
+     *  stdlib-ownership-convention §2.7.) */
+    @Inline
+    public JsonArray array() {
         return this.arrVal;
     }
 
-    @Inline
     /** VIEW of the held object — borrow, valid while this JsonValue
-     *  lives; never a materialized copy despite the `as` name. */
-    public JsonObject asObject() {
+     *  lives. (Renamed from `asObject`, same §2.7 rationale.) */
+    @Inline
+    public JsonObject object() {
         return this.objVal;
     }
 

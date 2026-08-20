@@ -117,7 +117,7 @@ public class Server {
             Server.writeError(out, null, -32600, "Invalid Request");
             return;
         }
-        JsonObject obj = req.asObject();
+        JsonObject obj = req.object();
         JsonValue id = obj.get("id");
         JsonValue methodV = obj.get("method");
         if (methodV == null || methodV.kind() != JsonValue.STRING) {
@@ -395,7 +395,7 @@ public class Server {
         if (root == null || root.kind() != JsonValue.OBJECT) {
             return;
         }
-        Optional<JsonObject> co = root.asObject().getObject("cache");
+        Optional<JsonObject> co = root.object().getObject("cache");
         if (co.isPresent() == false) {
             return;
         }
@@ -692,7 +692,7 @@ public class Server {
             Server.writeError(out, id, -32602, "tools/call requires params");
             return;
         }
-        JsonObject p = params.asObject();
+        JsonObject p = params.object();
         JsonValue nameV = p.get("name");
         if (nameV == null || nameV.kind() != JsonValue.STRING) {
             Server.writeError(out, id, -32602, "tools/call requires a name");
@@ -702,7 +702,7 @@ public class Server {
         JsonValue argsV = p.get("arguments");
         JsonObject toolArgs = null;
         if (argsV != null && argsV.kind() == JsonValue.OBJECT) {
-            toolArgs = argsV.asObject();
+            toolArgs = argsV.object();
         }
 
         if (name.equals("searchSkills")) {
@@ -737,7 +737,7 @@ public class Server {
             }
             String[] a = heap String[3];
             a[0] = "get-skills";
-            a[1] = Server.joinUris(uv.asArray());
+            a[1] = Server.joinUris(uv.array());
             a[2] = "--json";
             Server.runSkill(out, id, a, 3, "skills");
         } else if (name.equals("compile")) {
@@ -1170,7 +1170,7 @@ public class Server {
             Server.writeError(out, id, -32602, "compile requires a 'files' object");
             return;
         }
-        JsonObject files = filesV.asObject();
+        JsonObject files = filesV.object();
         if (files.count() == 0) {
             Server.writeError(out, id, -32602, "compile 'files' must be non-empty");
             return;
@@ -1260,7 +1260,7 @@ public class Server {
             Server.writeError(out, id, -32602, "jit_execute requires a 'files' object");
             return;
         }
-        JsonObject files = filesV.asObject();
+        JsonObject files = filesV.object();
         if (files.count() == 0) {
             Server.writeError(out, id, -32602, "jit_execute 'files' must be non-empty");
             return;

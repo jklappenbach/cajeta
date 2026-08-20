@@ -69,7 +69,7 @@ public class BannedImports {
         while (i < arr.count()) {
             JsonValue v = arr.get(i);
             if (v.kind() == JsonValue.OBJECT) {
-                out.add(#parseTypedEntry(v.asObject(), i));
+                out.add(#parseTypedEntry(v.object(), i));
             } else if (v.kind() == JsonValue.STRING) {
                 String pat = v.asString();
                 if (pat.count() == 0) {

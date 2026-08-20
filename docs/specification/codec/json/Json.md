@@ -207,8 +207,8 @@ public class JsonValue {
     public int8[]    asBytes();          // STRING — borrowed slice (escapes verbatim)
     public int32     asBytesLength();    // STRING — slice length
     public #String   asString();         // STRING → materialized String, or null
-    public JsonArray  asArray();         // ARRAY
-    public JsonObject asObject();         // OBJECT
+    public JsonArray  array();         // ARRAY
+    public JsonObject object();         // OBJECT
 
     // Builders mutate `this` and return it for chaining. The #-typed
     // overloads (setArray/setObject/setStringOwned) take ownership.
@@ -568,12 +568,12 @@ root value, so top-level primitives go through Tier 2
 ## Tier 3 — value tree (the `JsonValue` API)
 
 For ad-hoc work where convenience beats throughput. Parse a full
-document into a tree, walk it with `.asObject().get("k").asArray()...`
+document into a tree, walk it with `.object().get("k").array()...`
 chains, mutate, then serialize:
 
 ```cajeta
 JsonValue v #= Json.parse(input, (int64) input.count());
-JsonObject root = v.asObject();
+JsonObject root = v.object();
 int32 id = root.get("id").asInt32();
 root.put(#keyBytes, keyLen, heap JsonValue().setBoolean(true));
 #int8[] out = Json.toBytes(v);
