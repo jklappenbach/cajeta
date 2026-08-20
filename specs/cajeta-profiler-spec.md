@@ -1,6 +1,6 @@
 # cajeta-profiler — whole-run CPU + GPU profiling (spec)
 
-> Status: **draft, pending approval**. Authored with the **design** skill.
+> Status: **approved 2026-08-20**. Authored with the **design** skill.
 > The actionable *how* lives in `agents/cajeta-profiler-plan.md`.
 >
 > The GPU half of §5–§7 and §11–§12 is grounded in a research pass across CUDA,
@@ -38,7 +38,8 @@ backend serializes every dispatch.
 3. **Fiber-accurate attribution** — time attributed to the logical fiber, not the
    carrier thread.
 4. **GPU device kernel timing** — real device-side start/end per kernel dispatch,
-   correlated to the host call site that launched it.
+   correlated to the host call site that launched it, published through a seam
+   with more than one consumer (§5.6).
 5. **A merged trace** in Perfetto protobuf, with host threads, fibers, and GPU
    queues on one timeline in one clock domain.
 6. **An interactive viewer** in the IntelliJ plugin.
@@ -61,8 +62,15 @@ backend serializes every dispatch.
    `{type, method, file, line}` frames. Sampling reads it; no unwinding, no
    DWARF, no frame pointers, and it survives inlining because the probe inlines
    with the body.
-2. **All GPU dispatch funnels through one function.** `__cajeta_xpu_launch` →
-   `_v2` is the single instrumentation point for every backend.
+2. **All GPU dispatch funnels through one function.** `__cajeta_xpu_launch_v3`
+   is the single instrumentation point for every backend; `_v2` and the original
+   `__cajeta_xpu_launch` are forwarding shims onto it
+   (`runtime/native/cajeta_xpu_launch.c:985`). **Corrected 2026-08-20** — this
+   read "`__cajeta_xpu_launch` → `_v2`", which was true when the spec was
+   authored and is not now. Instrumenting `_v2` would silently miss every caller
+   that reaches `_v3` directly. The file's own convention is that a new field
+   arrives as a new version rather than by repurposing an argument, so the
+   innermost version is the only durable seam.
 3. **Vendor libraries are loaded dynamically.** Every GPU profiling dependency
    must be `dlopen`-ed and absent-tolerant.
 4. **Profiling must not require privileges** for its baseline tier on any
@@ -173,6 +181,16 @@ Each backend needs a different mechanism; in every case the obvious one is wrong
 The seam is a backend-neutral event record, not a shared vendor API — the vendor
 APIs are structurally incompatible and cannot be unified below that level.
 
+That record has **more than one consumer**. The trace writer (§7) is the first and
+this spec's own client. The second is the XPU scheduler's feedback loop
+([`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md) §3, §8), which classifies
+each kernel by bottleneck and then corrects that classification from achieved
+versus predicted latency — a signal nothing else in the runtime produces per
+launch. §5.6 states what serving both costs: publication to a sink rather than a
+direct call into the writer. It is stated here, before the writer exists, because
+splitting a wired-in writer back out later is a rewrite of the collection path in
+every backend.
+
 ### 5.1 Common requirements
 - **5.1.1** When a kernel is dispatched on any backend, a record is emitted
   carrying a launch id, device start and end times, the launching host thread, and
@@ -186,6 +204,12 @@ APIs are structurally incompatible and cannot be unified below that level.
   each measurement.
 - **5.1.5** When timing is enabled, the per-launch overhead is bounded and
   reported.
+- **5.1.6** When a record is complete, it is published to a **record sink** rather
+  than written directly to the trace writer; the writer is one sink implementation
+  among others (§5.6).
+- **5.1.7** When a record is published, it is already in the host clock domain
+  (§6), so every sink sees correlated times and no consumer repeats the
+  correlation — or gets it differently wrong.
 
 ### 5.2 ROCm / HIP
 rocprofiler-sdk buffered dispatch tracing is both the cheapest and the most
@@ -247,6 +271,42 @@ because its markers carry system-scope fences.
 - **5.5.7** When device timestamps are non-monotonic — as happens on AMD APUs,
   which reset the timestamp register on low-power entry — the condition is
   detected and the affected spans are flagged rather than rendered as fact.
+
+### 5.6 Record consumers
+
+The trace writer is a sink, not the seam. The second known consumer needs the same
+per-launch records **in-process and while the program runs**, not as a file after
+it exits.
+
+- **5.6.1** When a consumer registers a sink, it receives dispatch records as they
+  are collected, with no trace file written and no change to the capture or
+  dispatch path.
+- **5.6.2** When more than one sink is registered, each receives every record, and
+  no sink can observe or mutate what another receives.
+- **5.6.3** When a sink is armed, it is armed independently of trace output. A live
+  consumer does not imply `.pftrace` emission, and emitting a trace does not imply
+  a live consumer.
+- **5.6.4** When a sink is slow or fails, it cannot stall the dispatch path or the
+  collection thread. Delivery is bounded; records that cannot be delivered are
+  dropped, and the drop is counted and reported — never silently absorbed, and
+  never converted into backpressure on the program under test.
+- **5.6.5** When a sink faults, the profiler isolates the failure, disables that
+  sink and reports it; the remaining sinks and the run continue.
+- **5.6.6** When records are delivered live, they carry the same tier and
+  confidence marking §5.1.4 and §7.8 require, so a consumer can tell a real device
+  measurement from a degraded host-side one and weight it accordingly. A consumer
+  that acts on a degraded measurement as though it were exact is a consumer bug,
+  but the seam must give it the means not to.
+- **5.6.7** When a consumer wants only some backends or kernels, filtering is the
+  consumer's business. The seam delivers every record and does not grow a query
+  language.
+
+This spec defines the seam and the record, **not scheduling policy** — what a
+scheduler does with achieved-versus-predicted latency belongs to
+`xpu-kernel-scheduling` §3 and §8. §1.4.1's exclusion of hardware counters is
+unchanged by this: the live sink carries timing, identity and geometry, not SM or
+bandwidth counters, and a consumer wanting those degrades to latency-only signals,
+which that spec's §12.4 already requires of it.
 
 ## 6. Clock correlation
 
@@ -407,6 +467,9 @@ afterthought.
   already carried.
 - **13.5** When any budget is exceeded on a supported configuration, that is a
   defect.
+- **13.6** When a live sink is registered, its delivery cost is bounded and stated
+  separately from trace writing, because its consumer sits on the program's
+  critical path where the trace writer does not.
 
 ---
 
@@ -442,6 +505,18 @@ developer's direction.
   hand — then NVIDIA once §12.4 is settled, then Vulkan once its device-creation
   and queue-family prerequisites are fixed.
 - **14.8 Hardware counters.** Excluded (§1.4.1).
+- **14.9 The record seam is dual-consumer (decided 2026-08-20).** The dispatch
+  record publishes to sinks; the Perfetto writer is one of them (§5.6). The second
+  known consumer is the XPU scheduler's feedback loop
+  ([`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md) §3, §8), which needs
+  per-launch achieved latency live and in-process. That spec assumed these signals
+  would come from `xpu-device-profile`'s counter tier, which is opt-in, in-memory
+  and built to calibrate a launch-config picker — it does not produce a per-launch
+  stream. This seam does. A sink interface costs one indirection now; discovering
+  the second consumer after the writer is wired in costs a rewrite of the
+  collection path in every backend, which is why the decision is taken before the
+  seam is built rather than when the scheduler needs it. **v1 ships the seam and
+  the writer sink**; the scheduler's sink ships with the scheduler, not here.
 
 ## 15. Open questions
 
@@ -453,3 +528,8 @@ developer's direction.
 - **15.3** Whether `--profiler=instrument` should imply a specific optimization
   level, given that instrumented builds at `-O3` measure a different program than
   the one shipped.
+- **15.4** Whether a live sink is handed each record as it is collected or drains
+  batches, which trades a consumer's reaction latency against per-record delivery
+  cost. It does not change the seam, and the answer is likely per-sink rather than
+  global; a scheduler correcting a classification over the first few executions may
+  well tolerate batches that a deadline-class policy would not.
