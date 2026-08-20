@@ -1,0 +1,7 @@
+module	srcLine	mutation	verdict	method
+probe/Guard.ll	13	sge->sgt	SURVIVED	probe.Guard::atLeast(n:int32,limit:int32)
+probe/Guard.ll	19	sgt->sge	killed	probe.Guard::isPositive(n:int32)
+probe/Guard.ll	34	eq->ne	killed	probe.Guard::main()
+probe/Guard.ll	36	eq->ne	killed	probe.Guard::main()
+probe/Guard.ll	39	ule->ult	SURVIVED	probe.Guard::main()
+probe/Guard.ll	39	ule->ult	SURVIVED	probe.Guard::main()
