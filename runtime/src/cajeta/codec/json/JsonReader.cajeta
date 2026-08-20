@@ -1025,8 +1025,15 @@ public final class JsonReader {
             this.readArrayBody(a);
             v.setArray(#a);
         } else if (t == JsonToken.STRING) {
-            int8[] bytes #= this.currentBytes();
-            int32 len = (int32) (this.tokenEnd - this.tokenStart);
+            // DECODED bytes: the tree API materializes VALUES, and a
+            // value's bytes are the characters the JSON denotes —
+            // `"a\nb"` is a-newline-b, not backslash-n. The verbatim
+            // span stays the SAX/index layers' contract
+            // (currentBytes); a tree holding escapes leaked wrong
+            // bytes into every consumer that read a parsed string
+            // (found by cajeta-jinja's tojson fixtures).
+            int8[] bytes #= this.currentDecodedBytes();
+            int32 len = (int32) bytes.count();
             v.setStringOwned(#bytes, len);
         } else if (t == JsonToken.NUMBER) {
             // Integer literals keep the exact int64 path; a fraction or
@@ -1066,8 +1073,11 @@ public final class JsonReader {
                     "expected key in object body",
                     this.pos);
             }
-            int8[] keyBytes #= this.currentBytes();
-            int32 keyLen = (int32) (this.tokenEnd - this.tokenStart);
+            // Keys decode for the same reason as string values above —
+            // JsonObject.get compares against caller Strings holding
+            // real characters, not escape spellings.
+            int8[] keyBytes #= this.currentDecodedBytes();
+            int32 keyLen = (int32) keyBytes.count();
             JsonToken vt = this.next();
             JsonValue child #= this.readValueAfter(vt);
             o.put(#keyBytes, keyLen, #child);
