@@ -899,6 +899,12 @@ the recommendation they were filed with; both are marked.
   still on the table. The `llama.cpp` baseline for that exact configuration is
   measured and recorded as a plan task before Unit 11; the fractions are
   meaningless against an unmeasured denominator.
+  **Measured 2026-08-20** (tools/baseline/results/BASELINE-20260820.md,
+  llama.cpp 5306f4b, ROCm 7.2.53150, gfx1151): prefill pp4096
+  **794.24 tok/s**, decode tg128 **39.57 tok/s** at batch 1; batched
+  4×(512pp+128tg): PP 1291.85 / TG 107.40 tok/s; peak RSS **5,201,728 kB**.
+  The §12.8/12.9/12.11 denominators are therefore: decode ≥ 23.7 tok/s,
+  prefill ≥ 397 tok/s, RSS ≤ 6,502,160 kB at this configuration.
 
 - **13.21 §12.1 pins the parity metric; Unit 11 derives the threshold.**
   *(Resolves §14.4.)* Measured against Hugging Face `transformers` at **fp32
@@ -943,6 +949,15 @@ the recommendation they were filed with; both are marked.
   calls concrete f32/f16 paths, so the engine never depends on the generic
   surface routing. Lifting this needs a compiler change — carrying a concrete
   element type across a generic boundary — which is out of scope here.
+
+- **13.24 No CI runs the gate today; the gate is manual and recorded.**
+  *(Recorded 2026-08-20, plan 15.3.1.)* The repository has no workflow files:
+  nothing runs `run-tests.sh` or the §12 parity/throughput instruments on
+  push. The gate is operated by hand — `run-tests.sh` for the unit suite,
+  `tools/baseline/run-baseline.sh` for the denominator,
+  `tools/parity/run-parity.sh` for §12.1 — and each run leaves its record
+  under `tools/baseline/results/` (dated) or the plan. When CI lands, it
+  should run exactly these three entry points.
 
 ## 14. Open questions
 
