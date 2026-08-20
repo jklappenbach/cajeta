@@ -3547,6 +3547,15 @@ namespace cajeta {
                                     llvm::ConstantInt::get(i64Ty, 0),
                                     builder->CreateStructGEP(structTy, inst, 2,
                                         "reader.pos_slot"));
+                                // The intercept mallocs a FRESH instance —
+                                // the call IS an allocation, and the declared
+                                // `#` return must survive the bypass of
+                                // normal resolution, or `f #= open(...)`
+                                // records a borrow and the handle never
+                                // frees (measured: 1 leaked File per
+                                // open/close cycle, via cajeta-llama
+                                // 15.1.11's load/free gate).
+                                resolvedReturnsOwnership = true;
                                 resolvedType = readerCls;
                                 return inst;
                             }
@@ -3611,6 +3620,8 @@ namespace cajeta {
                                     llvm::ConstantInt::get(i64Ty, 0),
                                     builder->CreateStructGEP(structTy, inst, 2,
                                         "file.pos_slot"));
+                                // Fresh instance — see the openRead note.
+                                resolvedReturnsOwnership = true;
                                 resolvedType = fileClass;
                                 return inst;
                             }
@@ -3671,6 +3682,8 @@ namespace cajeta {
                                     llvm::ConstantInt::get(i64Ty, 0),
                                     builder->CreateStructGEP(structTy, inst, 2,
                                         "writer.pos_slot"));
+                                // Fresh instance — see the openRead note.
+                                resolvedReturnsOwnership = true;
                                 resolvedType = writerCls;
                                 return inst;
                             }
