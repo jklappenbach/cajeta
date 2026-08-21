@@ -917,6 +917,22 @@ the recommendation they were filed with; both are marked.
   The numeric bar is set from an observed run in Unit 11 and written back
   here. Inventing a tolerance before anything has been measured is guessing,
   and a guessed gate is either vacuous or spuriously red.
+
+  **MEASURED 2026-08-21** — Llama-3.1-8B-Instruct, f32 on CPU, 24-token
+  prompt, against the pinned `transformers` fp32 reference
+  (`tools/parity/run-parity.sh`):
+
+  | detector | observed | THRESHOLD |
+  |---|---|---|
+  | cosine similarity | 1.0 | **>= 0.99999** |
+  | softmax KL | 1.87e-10 | **<= 1e-6** |
+  | top-1 agreement | agree | **required, exact** |
+  | greedy agreement (32 tokens) | 1.0, 0 divergences | **>= 0.99, divergences only where the top-2 gap < 1e-3 (13.22)** |
+
+  The thresholds sit four-plus orders above the observed noise and well
+  below anything a real defect would produce: a wrong weight, a transposed
+  projection or a mis-decoded block moves these by orders of magnitude, not
+  by 1e-10. They gate the UNQUANTIZED path only — see the paragraph below.
   This gates the **unquantized** f16/bf16 path. Quantized execution cannot
   meet the same bar by construction and is gated separately, by perplexity
   delta against the unquantized engine — `llama.cpp`'s own methodology.
