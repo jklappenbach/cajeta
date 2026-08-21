@@ -409,6 +409,39 @@ continuous batching) — they are the highest-leverage first additions.
    first; sequence the plan so the scheduler is useful before the feedback loop
    closes, rather than blocked behind it.
 
+## 14. Resolved decisions
+
+Closed with the developer 2026-08-21.
+
+- **14.1 v1 ships all five QoS classes, with two of them unverified on available
+  hardware.** `SCIENTIFIC`, `ML_TRAIN`, `ML_INFER`, `GFX` and `CONTROL` all ship,
+  so §7.2's policy table lands whole and mixed-session composition is exercised
+  across the full range. **`GFX` and `CONTROL` are the deadline classes and their
+  guarantees cannot be verified here.** Unit 7.3.a requires a deadline-class
+  request to meet its deadline with best-effort work running concurrently, and
+  §12.2 warns that commodity GPUs preempt coarsely enough to need REEF-style
+  reset and cooperative yield-points for µs deadlines. gfx1151 is an APU with
+  limited preemption granularity and the RTX 4090 sits behind CI. Those two
+  classes therefore ship implemented and **explicitly marked unverified**, on the
+  same terms as §14.2 — never as a silent gap. A deadline guarantee that has
+  never been measured must not read like one that has.
+- **14.2 The MIG path is built and marked untested.** Neither reference device
+  exposes MIG, so tier 2's top rung ships without ever having run against real
+  hardware. It sits behind the same degradation ladder as everything else
+  (§6.2), so consumer GPUs take MPS or streams regardless and cannot silently
+  select it. The plan and the trace both record that it is unverified. Rejected:
+  deferring MIG entirely, which would leave §4.2.2's partitioning story
+  incomplete on paper; and gating it behind a flag, which adds a switch whose
+  only purpose is to quarantine untested code.
+- **14.3 Implementation starts after `cajeta-profiler` Unit 7.** §3's offline
+  classification is unblocked today — it reuses the shipped `DeviceProfile`
+  roofline and occupancy budgets — but starting now would put two half-finished
+  plans in one working copy and a context switch in every session. §8's online
+  half needs the dual-consumer record seam regardless (§12.6). Rejected: running
+  the offline half in parallel, and running it in a sibling clone, which the
+  per-clone focus state would have supported but which still splits attention
+  across two plans.
+
 ## 13. References
 
 Full PDFs + markers in [`research/xpu-scheduling/papers/`](../research/xpu-scheduling/papers/):

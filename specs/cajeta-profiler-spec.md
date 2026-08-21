@@ -117,6 +117,14 @@ binary can be profiled with no recompilation.
   complete.
 - **2.9** When profiling is not armed, a profiled-capable binary pays no cost
   beyond the line-info instrumentation it already carries.
+- **2.10** When sampling runs, it applies **no package or class selection**. Its
+  cost is per sample interval, not per method, so narrowing the selection would
+  save nothing; and the frames it reads are emitted by `--line-info` for the
+  whole program, which is not this capability's facility — the same probes
+  resolve every exception stack trace (§1.5.1). Scoping them to a package would
+  punch holes in every trace in the program to make one profile quieter.
+  Narrowing a sampled view is a display concern (§8.9), where excluded frames are
+  re-attributed rather than discarded.
 
 ## 3. Exact instrumentation
 
@@ -157,6 +165,31 @@ with the GPU timeline, and on every target the language supports*.
 - **3.6** When a method is inlined, its instrumentation still records the call.
 - **3.7** When the flag set changes, the compile cache key changes, so an
   instrumented and non-instrumented build never alias.
+- **3.8** When a build supplies an include or exclude selection over packages and
+  classes, probes are emitted **only** for the selected code. The selection is a
+  codegen decision, never a runtime predicate: excluded code carries no probe to
+  skip, and the runtime collects every probe that exists without filtering any.
+  This is what makes a narrow selection an overhead *reduction* rather than a
+  display preference — the alternative, emitting everywhere and discarding at
+  runtime, pays the full cost to show less.
+- **3.9** When both an include and an exclude selection are given, the include set
+  defines the universe and the exclude set subtracts from it. One rule, so a
+  class's membership never depends on ordering or on which pattern is more
+  specific.
+- **3.10** When a selection is supplied, its **contents** participate in the
+  compile cache key — not the path it was read from. §3.7 keeps an instrumented
+  build from aliasing a non-instrumented one; without this, a selection edited in
+  place aliases the previous probe set and the build silently hands back objects
+  probed to the old selection.
+- **3.11** When an included method is inlined into an excluded one, its probe
+  travels with the body and still records the call (§3.6), and the record states
+  that its caller was outside the selection. It is not attributed to the nearest
+  probed ancestor, which would be a fabricated call edge.
+- **3.12** When a selection was in force, the trace records it. A profile that
+  silently omits code reads as though that code were free.
+- **3.13** When an instrumented build runs, the optimization level it was built
+  at is recorded in the trace. The flag pins no level (§14.11), so the level is
+  part of what a number means and is never inferred by the reader.
 
 ## 4. Fiber attribution
 
@@ -268,6 +301,9 @@ because its markers carry system-scope fences.
   reports as available carrying the previous use's value.
 - **5.5.6** When timestamps wrap at the device's valid-bit width, the wrap is
   handled without undefined behavior at 64 bits.
+- **5.5.8** When the host blocks on `vkQueueWaitIdle`, an explicit "host blocked
+  on GPU" span is emitted for the blocked interval (§14.13), rather than leaving
+  the stall to be read out of a gap in the timeline.
 - **5.5.7** When device timestamps are non-monotonic — as happens on AMD APUs,
   which reset the timestamp register on low-power entry — the condition is
   detected and the affected spans are flagged rather than rendered as fact.
@@ -297,6 +333,9 @@ it exits.
   measurement from a degraded host-side one and weight it accordingly. A consumer
   that acts on a degraded measurement as though it were exact is a consumer bug,
   but the seam must give it the means not to.
+- **5.6.8** When a sink registers, it declares its delivery granularity —
+  per-record or batched — and the seam honors it per sink rather than globally
+  (§14.12). A sink that does not declare gets batched, the cheaper default.
 - **5.6.7** When a consumer wants only some backends or kernels, filtering is the
   consumer's business. The seam delivers every record and does not grow a query
   language.
@@ -317,7 +356,9 @@ plausible, badly incorrect numbers.
 - **6.1** When any device timestamp is emitted, it is expressed in the same host
   clock domain as CPU samples.
 - **6.2** When the CUDA backend is used, CUPTI is given the profiler's own clock
-  reader so records arrive already in the host domain with no conversion step.
+  reader so records arrive already in the host domain with no conversion step —
+  **where the callback is actually honored. Measured 2026-08-21: acceptance does
+  not imply adoption, and the shortfall is silent (§6.9).**
 - **6.3** When the ROCm backend is used, the device domain's offset from the host
   clock is measured rather than assumed. **[measured]** the domain originates as
   `CLOCK_BOOTTIME`; it tracks `CLOCK_MONOTONIC` to under a microsecond but
@@ -339,6 +380,16 @@ plausible, badly incorrect numbers.
 - **6.8** When the host platform is Windows, the host clock is the platform's
   high-resolution counter rather than a POSIX clock, and correlation works
   identically.
+- **6.9** When CUPTI accepts the timestamp callback but delivers records in its
+  own domain anyway, that is detected and the records are converted, rather than
+  trusted. **[measured]** run 32439821390, 2026-08-21, RTX 4090, driver 13030:
+  `t4_timestamp_callback_accepted=YES` on both paths, but
+  `t4_records_in_our_clock_domain` was **YES on Windows and NO under WSL**. §6.2
+  assumed acceptance implied adoption; it does not. Note the confound — the two
+  paths ran CUPTI API 28 / runtime 12090 and API 18 / runtime 12000
+  respectively, so this may track the CUPTI version rather than the OS. Either
+  way the profiler cannot take adoption on trust, because the failure is silent:
+  the callback returns success and the timestamps are simply someone else's.
 
 ## 7. Trace format
 
@@ -386,6 +437,11 @@ directly rather than through a Cajeta library; the format is the contract.
   cost breakdown.
 - **8.8** When a developer prefers an external viewer, the same file opens in
   Perfetto with no export step.
+- **8.9** When a trace is displayed, frames may be folded — by role
+  (`FrameRole.Stdlib` against `User`, a distinction the runtime already carries)
+  or by package — into the nearest surviving caller. Folding **re-attributes**
+  time, never discards it, and is reversible, so a quieter view and a complete
+  one are the same trace. This is where a sampled profile is narrowed (§2.10).
 
 ## 9. Activation and configuration
 
@@ -402,6 +458,10 @@ directly rather than through a Cajeta library; the format is the contract.
 - **9.6** When profiling is armed for a program that will use the GPU, arming
   happens early enough to satisfy every backend's initialization ordering
   requirement.
+- **9.7** When an instrumentation selection is supplied, it is supplied at build
+  time alongside `--profiler=instrument`, for the same reason the flag itself is
+  (§9.3): it changes what codegen emits. There is no runtime equivalent, and
+  adding one would reintroduce the cost §3.8 exists to avoid.
 
 ## 10. Capability detection and degradation
 
@@ -499,8 +559,14 @@ developer's direction.
   capturing a Cajeta stack at an allocation site is a memcpy of the shadow stack —
   no unwinding, real Cajeta frames, and it works with no sanitizer build and on
   device targets.
-- **14.6 Interactive client.** IntelliJ tool window in v1, reading `.pftrace`
-  directly in Kotlin. Perfetto's own UI remains available for the same file.
+- **14.6 Interactive client.** IntelliJ tool window reading `.pftrace` directly in
+  Kotlin; Perfetto's own UI remains available for the same file. **Revised
+  2026-08-20: it trails the runtime capture by one release** (was "in v1", which
+  contradicted the then-open §15.2). Capture ships first and the format gets
+  exercised by real runs before a viewer is built on it; §8.8 means there is no
+  interval without a way to read a trace, because the same file opens in
+  `ui.perfetto.dev` with no export step. The trace format is the contract either
+  way, so this is a sequencing choice and not an architectural one.
 - **14.7 Backend order.** AMD and CPU first — both fully measured on hardware at
   hand — then NVIDIA once §12.4 is settled, then Vulkan once its device-creation
   and queue-family prerequisites are fixed.
@@ -517,19 +583,48 @@ developer's direction.
   collection path in every backend, which is why the decision is taken before the
   seam is built rather than when the scheduler needs it. **v1 ships the seam and
   the writer sink**; the scheduler's sink ships with the scheduler, not here.
+- **14.11 `--profiler=instrument` pins no optimization level (decided
+  2026-08-20, was §15.3).** An instrumented build uses whatever level the project
+  builds with, and the trace records that level beside the overhead figure §3.5
+  already reports. Pinning `-O0` would buy unambiguous probe pairing at the cost
+  of measuring a program nobody ships — at `-O0` the ratios between methods are
+  not the ratios in production, and ratios are what a profile is read for. The
+  consequence accepted: numbers vary with the build, so comparing across levels
+  is the developer's job, which is why the level is recorded rather than assumed.
+- **14.12 A live sink chooses its own delivery granularity (decided 2026-08-20,
+  was §15.4).** Per-sink, not global. The Perfetto writer takes batches — it is
+  writing a file and latency is irrelevant — while the scheduler's feedback loop
+  picks what its policy needs. A global per-record rule would tax the one sink
+  that provably does not need it; a global batched rule would put an invisible
+  floor under every consumer's reaction time, discovered only by whoever first
+  needed to react faster.
+- **14.13 Vulkan host-blocked stalls are an explicit span (decided 2026-08-20,
+  was §15.1).** When the host blocks on `vkQueueWaitIdle`, a "host blocked on
+  GPU" span is emitted rather than left to be inferred from a gap. Unit 13's
+  acceptance already requires that backend's per-dispatch serialization be
+  visible in a trace and filed as a separate performance issue; a labelled span
+  makes it unmissable, where a gap asks the reader to notice an absence and rule
+  out its other causes.
+- **14.10 Instrumentation is selectable by package or class; sampling is not
+  (decided 2026-08-20).** The two tiers differ in what a selection can act on.
+  Instrumentation emits a probe per method, so a selection scopes **emission**
+  (§3.8) and is a genuine overhead reduction. Sampling emits nothing of its own —
+  it reads the `--line-info` shadow stack, a shared facility that also resolves
+  every exception stack trace — so there is nothing to scope without degrading an
+  unrelated feature, and its cost does not scale with how many methods are of
+  interest. A sampled profile is therefore narrowed in the **view** (§8.9), by
+  folding frames into their nearest surviving caller so time is re-attributed
+  rather than lost. Rejected on the way: filtering at capture, which pays full
+  price to show less and silently drops the time of every excluded frame instead
+  of charging it to a caller.
 
 ## 15. Open questions
 
-- **15.1** Whether the sampling tier should also capture on Vulkan's `vkQueueWaitIdle`
-  stalls as an explicit "host blocked on GPU" span, or leave that to be inferred
-  from the timeline. Cheap either way; affects only presentation.
-- **15.2** Whether the IntelliJ viewer ships in the same release as the runtime
-  capture, or trails it by one. The trace format is the contract either way.
-- **15.3** Whether `--profiler=instrument` should imply a specific optimization
-  level, given that instrumented builds at `-O3` measure a different program than
-  the one shipped.
-- **15.4** Whether a live sink is handed each record as it is collected or drains
-  batches, which trades a consumer's reaction latency against per-record delivery
-  cost. It does not change the seam, and the answer is likely per-sink rather than
-  global; a scheduler correcting a classification over the first few executions may
-  well tolerate batches that a deadline-class policy would not.
+**None outstanding as of 2026-08-20.** All four closed with the developer and
+recorded as §14.11–§14.13 and §14.6; the requirements they imply are §3.13,
+§5.5.8 and §5.6.8.
+
+One item remains *unproven* rather than undecided, and is tracked as a risk
+rather than a question: **§5.4.4**, that unprivileged users get baseline CUPTI
+kernel timing under NVIDIA's profiling gate. §12.4 requires it be measured before
+v1 depends on it; Unit 1 is the audit that measures it.
