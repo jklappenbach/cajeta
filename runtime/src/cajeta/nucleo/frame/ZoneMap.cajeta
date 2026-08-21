@@ -3,7 +3,7 @@ package cajeta.nucleo.frame;
 /**
  * ZoneMap — the first concrete index (nucleo-frame U13; spec §6, §9.5.3): a
  * per-chunk min/max summary of ONE numeric source column. It advertises
- * {@link Capability#CHUNK_SKIP}: a pushed range predicate over the column asks
+ * {@link IndexCapability#CHUNK_SKIP}: a pushed range predicate over the column asks
  * each chunk "could any row match?" and a chunk whose [min, max] lies entirely
  * outside the predicate is SKIPPED — its cells are never read. Zone-maps PRUNE,
  * they do not filter: an overlapping chunk is read and the predicate applied
@@ -39,7 +39,7 @@ public class ZoneMap {
         this.nChunks = nChunks;
     }
 
-    public int32 capability() { return Capability.CHUNK_SKIP; }
+    public int32 capability() { return IndexCapability.CHUNK_SKIP; }
     public int32 column() { return this.col; }
     public int32 chunkCount() { return this.nChunks; }
 
