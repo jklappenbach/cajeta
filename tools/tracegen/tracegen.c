@@ -94,8 +94,48 @@ static int profile_mode(const char* out) {
     return 0;
 }
 
+// A synthetic GPU run: two kernels on one device, on two queues, launched from
+// two host threads. Drives __cajeta_prof_gpu_emit — the runtime's real
+// transform — so trace_processor judges the device/context/queue hierarchy
+// (§7.2) and the launch->execution flow (§7.3) that ship.
+//
+// Only a real reader can settle these. A flow whose two ends do not agree on an
+// id, or a queue track parented to nothing, produces a file that is valid
+// protobuf, loads without complaint, and shows no arrows and no hierarchy.
+static int gpu_mode(const char* out) {
+    static CajetaFrameDesc site = { "test.App", "dispatchAll", "App.cajeta" };
+    static CajetaGpuEvent evs[4];
+    const char* names[4] = { "test.K.saxpy", "test.K.reduce",
+                             "test.K.saxpy", "test.K.transpose" };
+    for (int i = 0; i < 4; i++) {
+        CajetaGpuEvent* e = &evs[i];
+        memset(e, 0, sizeof(*e));
+        e->launch_id = 100 + i;
+        e->host_launch_ns = 1000000 + (int64_t) i * 200000;
+        e->dev_start_ns   = e->host_launch_ns + 5000;
+        e->dev_end_ns     = e->dev_start_ns + 120000;
+        e->host_return_ns = e->dev_end_ns + 2000;
+        e->kernel_name = names[i];
+        e->call_site = &site;
+        e->call_site_line = 30 + i;
+        e->backend = 3;                       // cpu emulation
+        e->device_id = 0;
+        e->tier = CAJETA_PROF_TIER_HOST;
+        e->queue = i % 2;                     // two queues under one context
+        e->host_thread = (void*) (uintptr_t) (0x3000 + (i % 2) * 0x80);
+        e->grid_x = 64; e->grid_y = 1; e->grid_z = 1;
+        e->block_x = 32; e->block_y = 1; e->block_z = 1;
+    }
+    int64_t packets = __cajeta_prof_gpu_events_to_trace(evs, 4, out);
+    printf("tracegen: gpu mode wrote %lld packets to %s\n",
+           (long long) packets, out);
+    if (packets <= 0) { fprintf(stderr, "tracegen: gpu transform wrote nothing\n"); return 5; }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 2 && strcmp(argv[1], "--profile") == 0) return profile_mode(argv[2]);
+    if (argc > 2 && strcmp(argv[1], "--gpu") == 0) return gpu_mode(argv[2]);
     const char* out = (argc > 1) ? argv[1] : "cajeta-min.pftrace";
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, out)) {

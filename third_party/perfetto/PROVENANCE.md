@@ -44,8 +44,21 @@ explicitly outside Perfetto's stability guarantee.
 | `TrackEvent` | `name_iid` | 10 |
 | `TrackEvent` | `track_uuid` | 11 |
 | `TrackEvent` | `name` | 23 |
+| `TrackEvent` | `source_location_iid` | 34 |
+| `TrackEvent` | `debug_annotations` | 4 |
+| `TrackEvent` | `flow_ids` (**fixed64**) | 47 |
+| `TrackEvent` | `terminating_flow_ids` (**fixed64**) | 48 |
+| `DebugAnnotation` | `int_value` / `string_value` / `name` | 4 / 6 / 10 |
 | `InternedData` | `event_names` | 2 |
+| `InternedData` | `source_locations` | 4 |
 | `EventName` | `iid` / `name` | 1 / 2 |
+| `SourceLocation` | `iid` / `file_name` / `function_name` / `line_number` | 1 / 2 / 3 / 4 |
+
+The two flow fields are the only **fixed64** entries in the table — eight
+little-endian bytes, wire type 1, not a varint. Their deprecated varint twins
+(`flow_ids_old` = 36, `terminating_flow_ids_old` = 42) still exist in the
+schema, so encoding a flow as a varint under field 47 produces a packet that
+parses cleanly and a flow that never appears.
 
 `TrackEvent.Type`: `TYPE_SLICE_BEGIN` = 1, `TYPE_SLICE_END` = 2,
 `TYPE_INSTANT` = 3.

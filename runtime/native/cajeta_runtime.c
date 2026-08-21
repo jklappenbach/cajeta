@@ -114,6 +114,7 @@ typedef void (*cajeta_ctor_fn)(void* self);
 // ===========================================================================
 #include "cajeta_rt_core.c"
 #include "cajeta_rt_prof_trace.c"
+#include "cajeta_rt_prof_gpu.c"
 #include "cajeta_rt_shared.c"
 #include "cajeta_rt_utf8.c"
 #include "cajeta_rt_string.c"

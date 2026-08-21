@@ -21,6 +21,7 @@
 // Wire types: 0 varint, 2 length-delimited. Those are the only two needed —
 // every field this writer emits is an integer, a string, or a submessage.
 #define CAJ_PB_WIRE_VARINT 0
+#define CAJ_PB_WIRE_FIXED64 1
 #define CAJ_PB_WIRE_BYTES  2
 
 // Base-128 varint, little-endian groups, high bit = continuation. Returns the
@@ -67,6 +68,15 @@ int32_t __cajeta_pb_uint64(uint8_t* out, uint32_t field, uint64_t v) {
 // field: length-delimited payload (string or submessage — identical on the
 // wire, which is why a submessage can be built in a scratch buffer and then
 // appended without re-encoding).
+// A fixed64 field (wire type 1): eight little-endian bytes, no varint. Needed
+// because TrackEvent.flow_ids is `repeated fixed64` — writing it as a varint
+// yields a packet that parses and a flow that never appears.
+int32_t __cajeta_pb_fixed64(uint8_t* out, uint32_t field, uint64_t v) {
+    int32_t n = __cajeta_pb_tag(out, field, CAJ_PB_WIRE_FIXED64);
+    for (int32_t i = 0; i < 8; i++) out[n + i] = (uint8_t) ((v >> (i * 8)) & 0xFF);
+    return n + 8;
+}
+
 int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
                           const uint8_t* data, int32_t len) {
     int32_t n = __cajeta_pb_tag(out, field, CAJ_PB_WIRE_BYTES);
@@ -101,6 +111,8 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 #define CAJ_PB_TE_TRACK_UUID      11    /* TrackEvent.track_uuid               */
 #define CAJ_PB_TE_NAME            23    /* TrackEvent.name                     */
 #define CAJ_PB_TE_SOURCE_LOC_IID  34    /* TrackEvent.source_location_iid      */
+#define CAJ_PB_TE_FLOW_IDS        47    /* TrackEvent.flow_ids (fixed64)       */
+#define CAJ_PB_TE_TERM_FLOW_IDS   48    /* TrackEvent.terminating_flow_ids     */
 #define CAJ_PB_TE_DEBUG_ANNOS      4    /* TrackEvent.debug_annotations        */
 #define CAJ_PB_DA_NAME            10    /* DebugAnnotation.name                */
 #define CAJ_PB_DA_INT_VALUE        4    /* DebugAnnotation.int_value           */
@@ -202,10 +214,11 @@ int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
 
 // One TrackEvent. `name_iid` references an interned name; pass 0 with a literal
 // `name` only for one-off events.
-int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
-                                 uint64_t track_uuid, int32_t type,
-                                 uint64_t name_iid, const char* name,
-                                 uint64_t source_iid) {
+int32_t __cajeta_prof_emit_slice_flow(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
+                                      uint64_t track_uuid, int32_t type,
+                                      uint64_t name_iid, const char* name,
+                                      uint64_t source_iid, uint64_t flow_id,
+                                      int32_t terminating) {
     uint8_t te[512];
     int32_t n = __cajeta_pb_uint64(te, CAJ_PB_TE_TYPE, (uint64_t) type);
     n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_TRACK_UUID, track_uuid);
@@ -216,6 +229,13 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
         n += __cajeta_pb_bytes(te + n, CAJ_PB_TE_NAME, (const uint8_t*) name, ln);
     }
     if (source_iid) n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_SOURCE_LOC_IID, source_iid);
+    // A flow needs BOTH ends: the launch site lists the id, the device slice
+    // terminates it. Listing an id on only one event draws no arrow at all,
+    // and the trace still loads (spec §7.3).
+    if (flow_id)
+        n += __cajeta_pb_fixed64(te + n,
+                                 terminating ? CAJ_PB_TE_TERM_FLOW_IDS
+                                             : CAJ_PB_TE_FLOW_IDS, flow_id);
     uint8_t pkt[700];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, seq_id);
@@ -226,6 +246,16 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
         p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS, CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
     return caj_pb_packet(out, pkt, p);
+}
+
+// The flow-free form every non-GPU caller uses. One implementation, so a fix to
+// the sequence flags cannot land in only one of them.
+int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
+                                 uint64_t track_uuid, int32_t type,
+                                 uint64_t name_iid, const char* name,
+                                 uint64_t source_iid) {
+    return __cajeta_prof_emit_slice_flow(out, seq_id, ts, track_uuid, type,
+                                         name_iid, name, source_iid, 0, 0);
 }
 
 // ── streaming writer + interning table (5.2.c, 5.2.d) ─────────────────────
@@ -615,6 +645,145 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
     int64_t packets = __cajeta_prof_trace_packets(&w);
     __cajeta_prof_trace_close(&w);
     return packets;
+}
+
+// ── GPU dispatch records -> trace (Unit 7; spec §7.2, §7.3) ───────────────
+//
+// Lives here, beside the sample transform and on the same side of
+// CAJETA_PROF_TRACE_STANDALONE, for the reason the sample transform does: this
+// is what tools/tracegen drives under a plain `cc`, so CI's trace_processor
+// judges the emitter that ships. A GPU transform that could only run with a GPU
+// attached would be checked by nobody.
+
+// Track uuids. The top nibble is set so a synthetic track can never collide
+// with a HOST track, whose uuid is a thread handle's address — no pointer on
+// any supported platform reaches bit 60.
+#define CAJ_GPU_UUID_DEVICE  (0xD000ULL << 48)
+#define CAJ_GPU_UUID_CONTEXT (0xC000ULL << 48)
+#define CAJ_GPU_UUID_QUEUE   (0x9000ULL << 48)
+
+static uint64_t caj_gpu_uuid(uint64_t base, int32_t backend, int32_t device,
+                             int64_t queue) {
+    return base
+         | ((uint64_t) (backend & 0xF) << 40)
+         | ((uint64_t) (device & 0xFF) << 32)
+         | (uint64_t) ((uint32_t) queue);
+}
+
+// Mirrors the backend enum in cajeta_xpu_dispatch.c, which is included LATER in
+// the single-TU build and so cannot be referenced from here. Presentation only:
+// a wrong name here mislabels a track and breaks nothing else.
+static const char* caj_gpu_backend_name(int32_t backend) {
+    switch (backend) {
+        case 0:  return "cuda";
+        case 1:  return "hip";
+        case 2:  return "vulkan";
+        case 3:  return "cpu";
+        default: return "xpu";
+    }
+}
+
+#define CAJ_GPU_MAX_TRACKS 64
+
+// Which track descriptors this writer has already emitted. Held by the caller
+// rather than inside CajProfWriter so the streaming sink can emit across many
+// batches without re-declaring a track it already named.
+typedef struct {
+    uint64_t uuid[CAJ_GPU_MAX_TRACKS];
+    int32_t  n;
+} CajGpuTracks;
+
+int32_t __cajeta_prof_gpu_tracks_size(void) { return (int32_t) sizeof(CajGpuTracks); }
+
+static int32_t caj_gpu_track_seen(CajGpuTracks* t, uint64_t uuid) {
+    for (int32_t i = 0; i < t->n; i++) if (t->uuid[i] == uuid) return 1;
+    if (t->n < CAJ_GPU_MAX_TRACKS) t->uuid[t->n++] = uuid;
+    return 0;
+}
+
+// Emit `n` dispatch records into an open writer. Returns packets written.
+int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
+                               const CajetaGpuEvent* evs, int32_t n) {
+    if (!w || !seen || !evs || n <= 0) return 0;
+    int64_t before = __cajeta_prof_trace_packets(w);
+    for (int32_t i = 0; i < n; i++) {
+        const CajetaGpuEvent* e = &evs[i];
+        const char* bname = caj_gpu_backend_name(e->backend);
+        uint64_t dev = caj_gpu_uuid(CAJ_GPU_UUID_DEVICE,  e->backend, e->device_id, 0);
+        uint64_t ctx = caj_gpu_uuid(CAJ_GPU_UUID_CONTEXT, e->backend, e->device_id, 0);
+        uint64_t que = caj_gpu_uuid(CAJ_GPU_UUID_QUEUE,   e->backend, e->device_id, e->queue);
+        char nm[128];
+
+        // device -> context -> queue, a real hierarchy (§7.2). A flat set of
+        // three roots would render identically in a one-device trace and wrongly
+        // the moment there are two.
+        if (!caj_gpu_track_seen(seen, dev)) {
+            snprintf(nm, sizeof(nm), "cajeta.xpu.%s device %d", bname, e->device_id);
+            __cajeta_prof_trace_track(w, dev, 0, nm);
+        }
+        if (!caj_gpu_track_seen(seen, ctx)) {
+            snprintf(nm, sizeof(nm), "context %d", e->device_id);
+            __cajeta_prof_trace_track(w, ctx, dev, nm);
+        }
+        if (!caj_gpu_track_seen(seen, que)) {
+            snprintf(nm, sizeof(nm), "queue %lld", (long long) e->queue);
+            __cajeta_prof_trace_track(w, que, ctx, nm);
+        }
+        // The launching thread's track. Named from the handle rather than from
+        // the sampler's registry index, which this transform cannot see — when
+        // Unit 9 merges the sampled and dispatched halves into one trace the two
+        // namings must be reconciled; the UUID (the handle address) already
+        // agrees, so the merge is a naming fix, not a re-identification.
+        uint64_t host = (uint64_t) (uintptr_t) e->host_thread;
+        if (host && !caj_gpu_track_seen(seen, host)) {
+            snprintf(nm, sizeof(nm), "cajeta.thread.%llu", (unsigned long long) host);
+            __cajeta_prof_trace_track(w, host, 0, nm);
+        }
+
+        const char* kn = e->kernel_name ? e->kernel_name : "?";
+        // Host launch site: an instant on the launching thread, carrying the
+        // flow id and the source location, so "which line launched this" is one
+        // click from the device slice (§5.1.2, §7.3).
+        if (host) {
+            const CajetaFrameDesc* d = e->call_site;
+            uint64_t iid = __cajeta_prof_intern(w, kn);
+            uint64_t src = (d && d->fileName)
+                ? __cajeta_prof_intern_source(w, d->fileName,
+                                              d->methodName ? d->methodName : kn,
+                                              e->call_site_line)
+                : 0;
+            CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+            __cajeta_prof_emit_slice_flow(&b, w->seq_id, (uint64_t) e->host_launch_ns,
+                                          host, CAJ_TE_INSTANT, iid, iid ? NULL : kn,
+                                          src, (uint64_t) e->launch_id, 0);
+            caj_prof_flush(w, &b);
+        }
+        // Device execution: a slice on the queue track, terminating the flow.
+        {
+            uint64_t iid = __cajeta_prof_intern(w, kn);
+            CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+            __cajeta_prof_emit_slice_flow(&b, w->seq_id, (uint64_t) e->dev_start_ns,
+                                          que, CAJ_TE_SLICE_BEGIN, iid, iid ? NULL : kn,
+                                          0, (uint64_t) e->launch_id, 1);
+            caj_prof_flush(w, &b);
+        }
+        __cajeta_prof_trace_slice(w, (uint64_t) e->dev_end_ns, que,
+                                  CAJ_TE_SLICE_END, NULL);
+    }
+    return __cajeta_prof_trace_packets(w) - before;
+}
+
+// One-shot form: open, emit, close. What tracegen drives.
+int64_t __cajeta_prof_gpu_events_to_trace(const CajetaGpuEvent* evs, int64_t n,
+                                          const char* path) {
+    if (!evs || n <= 0) return 0;
+    static CajProfWriter w;
+    static CajGpuTracks seen;
+    seen.n = 0;
+    if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    __cajeta_prof_gpu_emit(&w, &seen, evs, (int32_t) n);
+    __cajeta_prof_trace_close(&w);
+    return __cajeta_prof_trace_packets(&w);
 }
 
 int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
