@@ -408,4 +408,87 @@ namespace cajeta::buildtool {
         return result;
     }
 
+    namespace {
+
+        llvm::Error substituteJsonObject(llvm::json::Object& obj,
+                                         const ResolvedProperties& props,
+                                         const std::string& where);
+
+        // Recursive ${...} rewrite over one JSON value. Strings are
+        // substituted; objects and arrays are walked; everything else is
+        // left alone.
+        llvm::Error substituteJsonValue(llvm::json::Value& v,
+                                        const ResolvedProperties& props,
+                                        const std::string& where) {
+            if (auto* obj = v.getAsObject()) {
+                return substituteJsonObject(*obj, props, where);
+            }
+            if (auto* arr = v.getAsArray()) {
+                for (size_t i = 0; i < arr->size(); ++i) {
+                    if (auto e = substituteJsonValue(
+                            (*arr)[i], props,
+                            where + "[" + std::to_string(i) + "]")) {
+                        return e;
+                    }
+                }
+                return llvm::Error::success();
+            }
+            if (auto str = v.getAsString()) {
+                auto out = substitute(str->str(), props, where);
+                if (!out) return out.takeError();
+                v = llvm::json::Value(*out);
+            }
+            return llvm::Error::success();
+        }
+
+        llvm::Error substituteJsonObject(llvm::json::Object& obj,
+                                         const ResolvedProperties& props,
+                                         const std::string& where) {
+            for (auto& kv : obj) {
+                if (auto e = substituteJsonValue(
+                        kv.second, props, where + "." + kv.first.str())) {
+                    return e;
+                }
+            }
+            return llvm::Error::success();
+        }
+
+    } // namespace
+
+    llvm::Error substituteManifestProperties(
+        Manifest& m, const ResolvedProperties& props) {
+        // `settings` and `plugins` ONLY, deliberately.
+        //
+        // BuildTool.md says substitution reaches "any string in the
+        // manifest", and until this existed it reached exactly one place:
+        // a task's action params, rewritten by TaskContext as each action
+        // runs. Everything else took `${...}` literally, so
+        // `"dev.cajeta.unit": "${unit-version}"` under
+        // settings.dependencies failed resolution with the property name
+        // quoted back as if it were a version constraint —
+        //
+        //   no version of 'dev.cajeta.unit' satisfies constraints
+        //   [${unit-version}]
+        //
+        // — and a plugin's `config` block reached the plugin verbatim,
+        // which is worse: the plugin has no property table and no way to
+        // know it was handed a placeholder rather than a path.
+        //
+        // `tasks` is NOT substituted here and must not be. Action params
+        // carry late-bound references a property table cannot answer —
+        // `${ci.path}` is another action's output, `${params.profile}` is
+        // an invocation argument — and both resolve at run time against
+        // TaskContext, which layers them over these same properties.
+        // Rewriting them eagerly would turn every one into "references
+        // undefined property".
+        //
+        // `details` is skipped because the built-ins (${package.name},
+        // ${package.version}) are derived FROM it; substituting it would
+        // be circular.
+        if (auto e = substituteJsonObject(m.settingsRaw, props, "settings")) {
+            return e;
+        }
+        return substituteJsonObject(m.pluginsRaw, props, "plugins");
+    }
+
 } // namespace cajeta::buildtool

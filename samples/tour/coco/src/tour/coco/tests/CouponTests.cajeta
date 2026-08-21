@@ -1,0 +1,32 @@
+package tour.coco.tests;
+
+import dev.cajeta.unit.Assert;
+import tour.coco.Coupon;
+
+/**
+ * FINDING 5 — a test that costs time and buys no coverage.
+ *
+ * `Coupon.applyTo` is straight-line: every call runs the same lines. So the
+ * second test below covers exactly what the first already covered and nothing
+ * else — its unique-coverage set is empty. That is not automatically a reason
+ * to delete it (a second input can still be worth asserting), but it IS the
+ * question worth asking, and per-test attribution is the only thing that can
+ * raise it.
+ *
+ * IDE: the **Tests** tab. Select a test to see the lines it uniquely covers
+ * (spec 6.2.2); a test with none is flagged as a redundancy candidate
+ * (spec 6.2.3).
+ */
+public class CouponTests {
+
+    @Test
+    public void appliesTheDiscount() {
+        Assert.that(Coupon.applyTo(1000, 250)).isEqualTo(750);
+    }
+
+    @Test
+    public void appliesTheDiscountToAnotherAmount() {
+        // Same lines, different numbers: zero unique coverage.
+        Assert.that(Coupon.applyTo(2000, 250)).isEqualTo(1750);
+    }
+}

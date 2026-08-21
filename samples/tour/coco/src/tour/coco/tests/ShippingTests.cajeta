@@ -1,0 +1,34 @@
+package tour.coco.tests;
+
+import dev.cajeta.unit.Assert;
+import tour.coco.Shipping;
+
+/**
+ * The under-asserted suite — green, passing, and blind.
+ *
+ * Both assertions hold. `Shipping.rateCents` is 100% line-covered. And the
+ * threshold's inclusivity is untested, because neither input is 5000. coco
+ * reports the surviving mutant; coverage reports nothing, because there is
+ * nothing about this that coverage can see.
+ *
+ * The fix is one line, and it is commented out below rather than deleted so
+ * the tour can be turned green: uncomment it, re-run, and the survivor
+ * disappears from the Mutants tab.
+ */
+public class ShippingTests {
+
+    @Test
+    public void smallOrdersPayFlatShipping() {
+        Assert.that(Shipping.rateCents(100)).isEqualTo(599);
+    }
+
+    @Test
+    public void largeOrdersShipFree() {
+        Assert.that(Shipping.rateCents(9000)).isZero();
+    }
+
+    // @Test
+    // public void theThresholdItselfShipsFree() {
+    //     Assert.that(Shipping.rateCents(5000)).isZero();
+    // }
+}

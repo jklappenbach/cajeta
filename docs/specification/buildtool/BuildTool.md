@@ -1027,6 +1027,16 @@ the cajeta stdlib that depends on it.
   Make and shell, and we don't repeat it.
 - `$$` is the literal `$` escape — needed only when a literal
   `${` would otherwise be misread.
+- **Where it applies.** `settings` and `plugins` are rewritten when
+  the manifest loads, before anything parses them — so a
+  `${...}` version under `settings.dependencies`, or a path in a
+  plugin's `config` block, resolves. `tasks` is NOT rewritten
+  then: a task's action params carry late-bound references a
+  property table cannot answer (`${id.field}` is another
+  action's output, `${params.x}` an invocation argument), and
+  those resolve at run time against the task context, which
+  layers them over these same properties. `details` is skipped
+  because the `${package.*}` built-ins are derived from it.
 
 ### Built-in properties
 
@@ -3931,106 +3941,130 @@ actions that published `findings` outputs). Two plugins flagging
 the same line at different severities both appear; consumers
 (CI, IDE) decide which to surface.
 
-### Code coverage (canonical first-party plugin)
+### Code coverage: the `dev.cajeta.coverage` plugin
 
-`cajeta.coverage` ships as a first-party plugin. The user
-explicitly asked for "lines of code or areas of code not touched
-by tests" — this is the implementation.
+Coverage ships as `dev.cajeta.coverage`, a thin build-tool
+adapter over `dev.cajeta.coco` (cajeta-coco), which is the
+engine. The user guide chapter
+[23 — Code coverage](../../guide/23-code-coverage.md) is the
+task-oriented reference; this section places it in the action
+catalog. A worked project with one class per finding is
+`samples/tour/coco`.
 
 ```jsonc
+"settings": {
+    // Required: the plugin declares `process` (it drives the
+    // compiler) and `filesystem` (it writes reports), and a
+    // plugin cannot widen its own reach.
+    "plugins-allowed-capabilities": ["process", "filesystem"]
+},
+
 "plugins": {
-    "cajeta.coverage": {
-        "version": "1.0.*",
+    "dev.cajeta.coverage": {
+        "version": "0.4.*",
         "config": {
-            "grain":        "line",     // "line" | "branch" | "region"
-            "min":          80,          // overall percentage; CI gate
-            "min-per-file": 50,          // per-file floor (optional)
-            "exclude":      ["**/*_generated.cajeta", "**/Mock*.cajeta"],
-            "report":       ["html", "sarif", "console"]
+            "src":     "src/main/cajeta",
+            "entry":   "com.example.Tests.main",   // DOTTED, not `::`
+            "out":     "build/coco",
+            "exclude": ["src/test/", "dev/cajeta/unit/"],
+            "min":     80
         }
     }
 }
 ```
 
-The plugin ships three actions:
+The plugin ships **three** actions:
 
-| Action                          | Purpose                                                             |
-|---------------------------------|---------------------------------------------------------------------|
-| `cajeta.coverage.instrument`    | Build the project with coverage probes enabled.                     |
-| `cajeta.coverage.collect`       | Run during/after tests to reduce probe hits into a coverage map.    |
-| `cajeta.coverage.report`        | Emit configured reports (html/sarif/lcov/console); enforce `min`.   |
+| Action                       | Purpose                                                                                                                        |
+|------------------------------|--------------------------------------------------------------------------------------------------------------------------------|
+| `cajeta.coverage.instrument` | The whole measured pipeline: compile, instrument, link, run the suite, merge per-test profiles. Fails the task if the suite fails. |
+| `cajeta.coverage.report`     | Render HTML / lcov / SARIF / CRAP ranking from the run's artifacts, then apply the `min` gate.                                    |
+| `cajeta.coverage.mutate`     | Mutation-test a completed run: one `icmp` predicate swapped at a time, relinked and re-run; applies the `min-score` gate.         |
 
-Wired into the default `test` task:
+There is no separate `collect` action: instrumenting and
+running are one step, because the probe dump is written by the
+measured program itself when the entry method returns.
 
 ```jsonc
 "tasks": {
-    "test": {
-        "depends-on": ["build"],
+    // NOT named "coverage": `cajeta coverage` is a built-in
+    // subcommand, so a task by that name needs `cajeta -- coverage`.
+    "cover": {
         "actions": [
             { "action": "cajeta.coverage.instrument", "id": "ci" },
-            { "action": "test",
-              "instrumented-by": "${ci.path}",
-              "id": "tr" },
-            { "action": "cajeta.coverage.collect",
-              "input": "${tr.coverage-data}",
-              "id": "cov" },
-            { "action": "cajeta.coverage.report",
-              "input": "${cov.path}",
-              "min":   80 }
-        ]
+            { "action": "cajeta.coverage.report",     "id": "cov" }
+        ],
+        "outputs": { "percent": "${cov.percent}" }
     }
 }
 ```
 
-Mechanism:
+Config keys, all of which a task may override per-action:
 
-1. `cajeta.coverage.instrument` invokes the compiler with
-   `--instrument=coverage`, which emits probe-points at every
-   line / branch / region.
-2. The test runner records probe hits during each test.
-3. `cajeta.coverage.collect` reduces hits across all tests into
-   a per-file / per-line / per-branch / per-region execution
-   map.
-4. `cajeta.coverage.report` emits one or more of:
-   - **`console`** — overall percentage + bottom-N files by
-     coverage, printed at end of `cajeta test`.
-   - **`html`** — per-file annotated source: green (covered) /
-     red (uncovered) / yellow (partial), with a file index and
-     a project-wide summary. Output at `build/coverage/html/`.
-   - **`sarif`** — machine-readable for CI integration (GitHub
-     Code Scanning, etc.).
-   - **`lcov`** — Coveralls / Codecov-compatible.
+| Key         | Default      | Meaning                                                                                       |
+|-------------|--------------|-----------------------------------------------------------------------------------------------|
+| `src`       | — (required) | Source root to measure.                                                                        |
+| `entry`     | — (required) | Method whose return dumps the profile, as `pkg.Class.method`. Must return normally.             |
+| `out`       | `build/coco` | Artifact root.                                                                                 |
+| `exclude`   | `[]`         | Path fragments left **uninstrumented** — still compiled, still linked.                          |
+| `classpath` | derived      | Dependency archives, comma-separated. Defaults to the project's resolved dependencies (`context.classpath`); set it only to override. |
+| `profile`   | `""`         | `@Profile` for both front-end passes; they must match or DI wires two different programs.       |
+| `min`       | `0` (off)    | Line-percentage gate on `report`. JaCoCo `check` semantics — 79.9% fails a `min` of 80.          |
+| `min-score` | `0` (off)    | Mutation-score gate on `mutate`. Same semantics.                                                |
 
-Granularity:
+**Instrument once, report many times.** coco persists the probe
+map beside the instrumented IR, so `cajeta.coverage.report`
+never rebuilds or re-runs: switching a threshold, re-rendering,
+or an IDE re-reading the run are all cheap.
 
-- **`line`** — was each statement executed at least once? The
-  default; fastest, lowest probe overhead, easiest to read.
-- **`branch`** — for each `if` / `else` / `switch` arm, was each
-  taken? Catches "the condition was always true in tests."
-- **`region`** — for each basic block as the compiler sees it,
-  was it entered? The most granular, catches dead-code patterns
-  that `line` and `branch` miss (compiler-generated paths,
-  early-return shortcuts).
+**`exclude` removes code from measurement, not from the
+program.** An excluded module is still lowered and still
+linked. (It was not always: dropping excluded modules from the
+link built a *different program* than the one under
+measurement, and `samples/tour/coco` — which excludes its own
+test package — lost nine of twelve tests to it and reported a
+plausible-looking 12%. Nothing failed, which is what made it
+dangerous.)
 
-The `min` threshold is a CI gate — falling below it fails the
-build with a citation of which files dragged the number down.
-The threshold applies to project source only; deps and test files
-are excluded by default. `min-per-file` applies a floor to each
-individual file so the aggregate can't hide one badly-tested
-file.
+**`classpath` is derived from the project's dependencies.** The
+plugin request's `context.classpath` carries the same
+comma-joined resolved-dependency string `BuildAction` passes as
+`--classpath`, so a plugin that compiles the consumer's sources
+sees the consumer's dependencies. It is omitted when the project
+has none or resolution fails — a plugin that compiles nothing
+should not stop working because a dependency is unreachable.
 
-`exclude` patterns drop files from both the numerator and the
-denominator — generated code, mocks, and explicitly-opted-out
-declarations aren't expected to be tested. Cajeta source can
-also use `@nocoverage` on a class or method:
+**`mutate` replays the link line rather than rebuilding it.**
+`instrument` records every link input, in order, as `link.tsv`
+(`coco-link v1`); a mutant is that line with exactly one object
+swapped. A mutant must be the measured program and not a
+near-miss of it, and a separate invocation cannot otherwise know
+whether per-test attribution applied or which classpath archives
+contributed objects.
 
-```cajeta
-@nocoverage("trivial accessor; tested implicitly via every use")
-public int32 getCount() { return this.count; }
-```
+Beyond a percentage, coco reports what the percentage cannot:
+uncovered code split into statically-unreachable (delete) versus
+reachable-but-untested (test), per-test attribution, a CRAP risk
+ranking, and mutation survivors. Those surface in the IDE's coco
+tool window; see the guide chapter.
 
-The reason string is mandatory; `cajeta lint` warns if it's
-missing or generic ("WIP", "todo", "skip").
+#### Not yet built
+
+The following were specified for a `cajeta.coverage` 1.0 that
+was never implemented, and are recorded here as design intent
+rather than as available configuration:
+
+- **`grain`** (`line` / `branch` / `region`). coco instruments
+  line and branch sites; there is no knob to select among them.
+- **`min-per-file`** — a per-file floor under the aggregate.
+- **`report: ["html","sarif","lcov","console"]`** — coco emits
+  HTML, annotated HTML, lcov and SARIF unconditionally.
+- **`cajeta.coverage.collect`** as a separate action.
+- **`@nocoverage("reason")`** on a class or method, and the
+  `cajeta lint` check for a missing or generic reason. The CLI
+  half of this does exist: `cajeta coverage ignore|list|remove`
+  edits typed exclude entries in the manifest, preserving JSONC
+  comments and indentation.
 
 ### Plugin capabilities and sandboxing
 

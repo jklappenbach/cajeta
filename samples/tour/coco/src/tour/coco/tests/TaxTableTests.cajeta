@@ -1,0 +1,17 @@
+package tour.coco.tests;
+
+import dev.cajeta.unit.Assert;
+import tour.coco.TaxTable;
+
+/**
+ * One path through eleven decisions — which is how a rate table ends up at the
+ * top of the CRAP queue while the project's overall percentage still looks
+ * respectable. The aggregate number hides it; the ranking does not.
+ */
+public class TaxTableTests {
+
+    @Test
+    public void californiaStandardRate() {
+        Assert.that(TaxTable.rateBasisPoints("US-CA", false, false)).isEqualTo(725);
+    }
+}

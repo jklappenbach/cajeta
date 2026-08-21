@@ -1,0 +1,29 @@
+package tour.coco;
+
+/**
+ * THE CONTROL — green everywhere, and it has to be.
+ *
+ * A tour of findings is worthless without one class that produces none: it is
+ * what proves the other five are findings rather than noise. `Pricing` is
+ * fully covered, its CRAP score is the floor, and every mutant coco generates
+ * for it dies, because `PricingTests` asserts the boundary itself (items == 10)
+ * rather than only values comfortably either side of it.
+ *
+ * IDE: green gutter on every line. Absent from Dead Code, absent from Mutants,
+ * bottom of the Risk queue.
+ */
+public class Pricing {
+
+    /** Volume discount: 10% off once the order reaches ten items. */
+    public static int64 discountCents(int64 subtotalCents, int64 items) {
+        if (items >= 10) {
+            return subtotalCents / 10;
+        }
+        return 0;
+    }
+
+    /** What the customer pays. */
+    public static int64 payableCents(int64 subtotalCents, int64 items) {
+        return subtotalCents - Pricing.discountCents(subtotalCents, items);
+    }
+}

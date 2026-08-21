@@ -1,0 +1,49 @@
+package tour.coco;
+
+/**
+ * FINDING 3 — uncovered, and UNREACHABLE. Delete it.
+ *
+ * Nothing in this project names `LegacyPricing`. No test calls it, no
+ * production method calls it, and the compiler's own cross-reference index
+ * has no call path to it from the entry point or from any method the suite
+ * executed. Every method on it is uncovered, so no evidence of a reflective
+ * or dependency-injected caller exists either.
+ *
+ * An lcov report shows this class in exactly the same red as `Coupon.isExpired`
+ * above, and that equivalence is the busywork machine: it demands tests for
+ * code whose correct treatment is `git rm`. coco separates them because the
+ * inputs are different — dynamic coverage answers "did it run", static
+ * reachability answers "could it run", and only the intersection is
+ * actionable.
+ *
+ * IDE: red gutter, and a row in the **Dead Code** tab classified
+ * `DELETION CANDIDATE` (spec 6.1.2) with a Safe Delete action on it.
+ *
+ * Superseded by `Pricing` in the 2.0 rewrite; kept here on purpose, because a
+ * tour of coverage findings needs one piece of code that should not exist.
+ */
+public class LegacyPricing {
+
+    /** The pre-2.0 tier ladder. Replaced by Pricing.discountCents. */
+    public static int64 tierPrice(int64 tier, int64 baseCents) {
+        if (tier <= 1) {
+            return baseCents;
+        }
+        if (tier == 2) {
+            return (baseCents * 90) / 100;
+        }
+        if (tier == 3) {
+            return (baseCents * 80) / 100;
+        }
+        return (baseCents * 75) / 100;
+    }
+
+    /** Banker's-ish rounding to the nearest 5 cents. Nothing calls this. */
+    public static int64 legacyRound(int64 cents) {
+        int64 rem = cents % 5;
+        if (rem < 3) {
+            return cents - rem;
+        }
+        return cents + (5 - rem);
+    }
+}

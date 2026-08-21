@@ -1,0 +1,33 @@
+package tour.coco;
+
+/**
+ * FINDING 2 — uncovered, and REACHABLE. Write a test.
+ *
+ * `applyTo` runs under two tests. `isExpired` runs under none, and nothing in
+ * the suite reaches it — but its class is demonstrably live, so coco refuses
+ * to call it dead. That refusal is the whole point of separating the two
+ * causes: telling a developer to delete a method that a caller is one commit
+ * away from needing is worse advice than telling them nothing.
+ *
+ * IDE: red gutter on `isExpired`, and a row in the coco tool window's
+ * **Dead Code** tab classified `NEEDS A TEST`, with the reason stated
+ * (spec 6.1.3, 6.1.5) rather than left for the reader to infer.
+ */
+public class Coupon {
+
+    /** Straight-line: two tests exercise exactly these lines, and no others. */
+    public static int64 applyTo(int64 cents, int64 offCents) {
+        return cents - offCents;
+    }
+
+    /**
+     * Reachable from live code, executed by nothing.
+     * A test is the fix — this is not dead code.
+     */
+    public static boolean isExpired(int64 nowDays, int64 expiresDays) {
+        if (nowDays > expiresDays) {
+            return true;
+        }
+        return false;
+    }
+}

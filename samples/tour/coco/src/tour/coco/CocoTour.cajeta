@@ -1,0 +1,36 @@
+package tour.coco;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+import dev.cajeta.unit.Runner;
+
+/**
+ * Entry point of the coco tour — the method coco measures.
+ *
+ * Everything here is deliberately ordinary: `Runner.runAll()` discovers every
+ * `@Test` in the binary, runs it, and returns 0 when the suite is green. What
+ * makes this a tour is the *shape of the code it runs over*, one class per
+ * finding coco can report (see README.md).
+ *
+ * The suite is green. That is the point: a green suite is exactly the
+ * situation where coverage analysis has something to say, and every finding in
+ * this project is reachable without a single failing test.
+ */
+public class CocoTour {
+
+    public static int32 main(String[] args) {
+        System.stdout.println("== coco tour — the suite the coverage report is about ==");
+        // Deliberately BRANCH-FREE below the runner call. coco mutates `icmp`
+        // predicates, and an `if (code == 0)` here would have produced a
+        // second surviving mutant — in the tour's own closing message, which
+        // no test asserts on and none should. It was written that way, the
+        // Mutants tab grew a finding about a print statement, and the entry
+        // point went back to a straight line. The runner's own report already
+        // says whether the suite passed.
+        int32 code = Runner.runAll();
+        System.stdout.println("");
+        System.stdout.println("Now read build/coco/coverage.html — or open the");
+        System.stdout.println("coco tool window in the IDE.");
+        return code;
+    }
+}

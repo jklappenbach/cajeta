@@ -19,13 +19,19 @@ import org.junit.Test
  */
 class CocoProjectTest {
 
+    /**
+     * The shape a real manifest has: a TOP-LEVEL `plugins` block whose entries
+     * are objects carrying `version` and `config`, under the id the resolver
+     * actually publishes (`dev.cajeta.coverage`). Taken from
+     * `samples/tour/coco/cajeta.json`, which is a manifest the build tool runs.
+     */
     private val withCoverage = """
         {
             // A comment, because the manifest is JSONC.
-            "settings": {
-                "plugins": { "cajeta.coverage": "1.0.*" },
-                "plugin-config": {
-                    "cajeta.coverage": { "min": 80, "out": "build/coco" }
+            "plugins": {
+                "dev.cajeta.coverage": {
+                    "version": "0.3.*",
+                    "config": { "min": 80, "out": "build/coco" }
                 }
             },
             "tasks": {
@@ -180,5 +186,79 @@ class CocoProjectTest {
             }
         """.trimIndent()
         assertTrue(CocoProject.parse(text).isConfigured)
+    }
+
+    // --- the id and config shape the build tool actually implements ---------
+
+    @Test
+    fun theShippingPluginIdIsRecognised() {
+        // `dev.cajeta.coverage` is what the resolver publishes and what
+        // samples/tour/coco declares. Matching only the first-party
+        // `cajeta.coverage` spelling reported that project as not using coco.
+        val text = """
+            {
+                "plugins": { "dev.cajeta.coverage": { "version": "0.3.*" } },
+                "tasks": { "build": { "actions": [ { "action": "build" } ] } }
+            }
+        """.trimIndent()
+        val s = CocoProject.parse(text)
+        assertTrue("the shipping id counts as declared", s.pluginDeclared)
+    }
+
+    @Test
+    fun theOutDirectoryIsReadFromPluginsIdConfig() {
+        // `plugins.<id>.config` is the ONLY config shape the build tool
+        // implements (Plugin.cpp reads `config`; the key `plugin-config`
+        // appears nowhere in src/cajeta/buildtool). Reading only the latter
+        // silently reported every custom `out` as the default.
+        val text = """
+            {
+                "plugins": {
+                    "dev.cajeta.coverage": {
+                        "version": "0.3.*",
+                        "config": { "out": "target/coverage" }
+                    }
+                },
+                "tasks": { "test": { "actions": [ { "action": "cajeta.coverage.instrument" } ] } }
+            }
+        """.trimIndent()
+        assertEquals("target/coverage", CocoProject.parse(text).outDir)
+    }
+
+    @Test
+    fun anActionLevelOutStillBeatsPluginsIdConfig() {
+        val text = """
+            {
+                "plugins": {
+                    "dev.cajeta.coverage": {
+                        "version": "0.3.*",
+                        "config": { "out": "target/coverage" }
+                    }
+                },
+                "tasks": {
+                    "test": {
+                        "actions": [
+                            { "action": "cajeta.coverage.instrument", "out": "target/cov" }
+                        ]
+                    }
+                }
+            }
+        """.trimIndent()
+        assertEquals("target/cov", CocoProject.parse(text).outDir)
+    }
+
+    @Test
+    fun aStringValuedPluginEntryDeclaresWithoutConfig() {
+        // `"plugins": { "id": "1.0.*" }` is the shorthand form. It carries no
+        // config, and asking it for one must not throw.
+        val text = """
+            {
+                "plugins": { "dev.cajeta.coverage": "0.3.*" },
+                "tasks": { "test": { "actions": [ { "action": "cajeta.coverage.instrument" } ] } }
+            }
+        """.trimIndent()
+        val s = CocoProject.parse(text)
+        assertTrue(s.pluginDeclared)
+        assertEquals(CocoProject.DEFAULT_OUT_DIR, s.outDir)
     }
 }

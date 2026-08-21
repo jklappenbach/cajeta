@@ -1,0 +1,72 @@
+package tour.coco;
+
+import cajeta.lang.String;
+
+/**
+ * FINDING 4 — the top of the risk queue.
+ *
+ * `rateBasisPoints` is the branchiest method in the project and the least
+ * covered: one test walks one path through it. `Coupon.isExpired` is also
+ * uncovered, and a flat list of uncovered methods ranks the two as equal work.
+ * They are not equal work — an untested two-line predicate is cheap to carry,
+ * an untested eleven-branch rate table is where the next defect lives.
+ *
+ * CRAP (Change Risk Anti-Patterns) says so with one number:
+ *
+ *     CRAP(m) = complexity(m)^2 * (1 - coverage(m))^3 + complexity(m)
+ *
+ * Complexity squared against the coverage gap cubed, so complex-and-untested
+ * rises and simple-and-untested sinks. The conventional threshold is 30.
+ * `Pricing.discountCents` scores near the floor; this scores far above it.
+ *
+ * IDE: the **Risk** tab, worst first, with complexity and coverage shown
+ * beside the score (spec 6.3.3) so the ranking is explicable rather than
+ * an oracle.
+ */
+public class TaxTable {
+
+    /**
+     * The fallback rate. Reachable — `rateBasisPoints` calls it — and never
+     * executed, because the one test takes the `US-CA` path. coco names the
+     * call site in the report, which is the difference between "write a test"
+     * and "write a test, and here is what would have to reach it".
+     */
+    public static int64 flatRateBasisPoints() {
+        return 700;
+    }
+
+    /** Eleven decisions; the suite takes one of them. */
+    public static int64 rateBasisPoints(String region, boolean digital, boolean reduced) {
+        if (region.equals("US-CA")) {
+            if (digital) {
+                return 0;
+            }
+            if (reduced) {
+                return 375;
+            }
+            return 725;
+        }
+        if (region.equals("US-NY")) {
+            if (reduced) {
+                return 400;
+            }
+            return 800;
+        }
+        if (region.equals("DE")) {
+            if (reduced) {
+                return 700;
+            }
+            return 1900;
+        }
+        if (region.equals("IE")) {
+            if (digital) {
+                return 2300;
+            }
+            return 1350;
+        }
+        if (region.equals("JP")) {
+            return 1000;
+        }
+        return TaxTable.flatRateBasisPoints();
+    }
+}

@@ -14,7 +14,15 @@
 //         "workdir":         "<abs path to project root>",
 //         "project-name":    "<consumer's details.name>",
 //         "project-version": "<consumer's details.version>",
-//         "capabilities":    [ ... allowlist intersection ... ]
+//         "capabilities":    [ ... allowlist intersection ... ],
+//         "classpath":       "<consumer's resolved dep .cja paths, comma-
+//                             joined; the same string BuildAction passes
+//                             as --classpath. Absent when the project has
+//                             no dependencies or resolution failed.>",
+//         "toolchain":       { "cajeta": ..., "llc": ..., "llvm-dis": ...,
+//                              "cc": ... },
+//         "plugin":          { "artifact": "<this plugin's .cja>",
+//                              "deps": [ ... its own closure ... ] }
 //       }
 //     }
 //
@@ -64,6 +72,7 @@
 
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
@@ -347,6 +356,41 @@ namespace cajeta::buildtool {
             toolchain["llvm-dis"] = resolveLlvmTool("llvm-dis");
             toolchain["cc"] = std::string("cc");
             context["toolchain"] = std::move(toolchain);
+
+            // The CONSUMER's resolved dependency classpath.
+            //
+            // A plugin that compiles the consumer's sources — a coverage
+            // instrumenter, a doc generator, a linter with a type view —
+            // needs exactly what BuildAction passes as `--classpath`, and
+            // until this existed the context carried everything EXCEPT
+            // that: the toolchain paths, the plugin's own archive, its own
+            // dependency closure. So `cajeta.coverage.instrument` compiled
+            // a project that used a test framework and died on
+            // `unknown type 'Runner'`, and the only workaround was to
+            // hand-write `~/.olla/<name>/<version>/<name>-<version>.cja`
+            // into the task and keep it in step with the manifest by hand.
+            //
+            // Same source as BuildAction's `--classpath`, same comma-joined
+            // shape, so a plugin can forward it to the compiler verbatim.
+            // Resolution failure is NOT fatal here: a plugin that does not
+            // compile anything should not stop working because a dependency
+            // is unreachable, so the key is omitted and the plugin reports
+            // whatever it reports.
+            if (m) {
+                std::string projectRoot = projectRootFromManifest(*m);
+                if (auto deps = resolveProjectDependencies(*m, projectRoot)) {
+                    std::string joined;
+                    for (const auto& d : *deps) {
+                        if (!joined.empty()) joined += ",";
+                        joined += d.artifactPath;
+                    }
+                    if (!joined.empty()) {
+                        context["classpath"] = std::move(joined);
+                    }
+                } else {
+                    llvm::consumeError(deps.takeError());
+                }
+            }
 
             // The plugin's own resolved artifacts — its archive and its
             // dependency closure — so it can extract bundled bitcode

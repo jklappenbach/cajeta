@@ -13,6 +13,7 @@
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/repo/FilesystemRepository.h"
 #include "cajeta/buildtool/Properties.h"
 #include "cajeta/buildtool/Provenance.h"
 #include "cajeta/buildtool/Reproducibility.h"
@@ -958,6 +959,14 @@ namespace cajeta::buildtool {
             if (!manifest) return manifest.takeError();
             auto props = resolveProperties(*manifest, overrides);
             if (!props) return props.takeError();
+            // Rewrite ${...} in `settings` and `plugins` before anything
+            // reads them. parseDependencies / parseRepositories /
+            // parsePlugins all consume the raw JSON, so a placeholder that
+            // survives to here reaches the resolver as if it were a version
+            // constraint, or reaches a plugin as if it were a path.
+            if (auto e = substituteManifestProperties(*manifest, *props)) {
+                return std::move(e);
+            }
             auto tasks = parseTasks(*manifest);
             if (!tasks) return tasks.takeError();
             // Cycle / undefined-dep validation up front. Catches
@@ -1226,6 +1235,17 @@ namespace cajeta::buildtool {
                     .string();
             auto repos = buildRepositories(*repoSpecs, downloadStage);
             if (!repos) return repos.takeError();
+
+            // Local-first, exactly as dependency resolution does it
+            // (Resolver.cpp): prepend the implicit ~/.olla store as the
+            // highest-priority source. Without this, `cajeta install` of a
+            // plugin produced an artifact nothing could consume — the store
+            // held 0.4.0 and resolution still reported "no repository has a
+            // satisfying version (tried: central)", so the only way to test a
+            // plugin change was to publish it to a remote registry first.
+            repos->insert(repos->begin(),
+                std::make_shared<FilesystemRepository>(
+                    "olla", OllaStore::resolveRoot()));
 
             auto allowed = parsePluginsAllowedCapabilities(m);
             if (!allowed) return allowed.takeError();

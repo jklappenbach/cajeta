@@ -1,0 +1,37 @@
+package tour.coco.tests;
+
+import dev.cajeta.unit.Assert;
+import tour.coco.Pricing;
+
+/**
+ * The control's tests — what a suite looks like when it actually verifies.
+ *
+ * Three cases, and the middle one is the one that matters: `items == 10` is
+ * the boundary itself. Testing 9 and 11 alone would leave `>=` versus `>`
+ * unverified and coco would report a surviving mutant, exactly as it does for
+ * `Shipping`. Asserting the boundary is what kills it.
+ */
+public class PricingTests {
+
+    @Test
+    public void noDiscountBelowTheThreshold() {
+        Assert.that(Pricing.discountCents(10000, 9)).isZero();
+    }
+
+    @Test
+    public void discountAppliesAtTheThreshold() {
+        // The boundary case. Removing this line is what turns Pricing into
+        // Shipping: still 100% covered, and no longer verified.
+        Assert.that(Pricing.discountCents(10000, 10)).isEqualTo(1000);
+    }
+
+    @Test
+    public void discountAppliesAboveTheThreshold() {
+        Assert.that(Pricing.discountCents(10000, 11)).isEqualTo(1000);
+    }
+
+    @Test
+    public void payableSubtractsTheDiscount() {
+        Assert.that(Pricing.payableCents(10000, 10)).isEqualTo(9000);
+    }
+}

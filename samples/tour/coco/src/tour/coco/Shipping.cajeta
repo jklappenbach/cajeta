@@ -1,0 +1,30 @@
+package tour.coco;
+
+/**
+ * FINDING 1 — covered, but not verified. A surviving mutant.
+ *
+ * `ShippingTests` calls `rateCents` twice and both assertions pass, so every
+ * line here is GREEN in the coverage gutter. Coverage has nothing to report.
+ *
+ * It is still wrong to trust. The threshold below is `>=`, and the suite only
+ * ever passes 100 (well under) and 9000 (well over) — it never passes 5000.
+ * coco mutates `>=` to `>`, relinks, reruns, and the suite still passes: the
+ * mutant SURVIVED. Whether the boundary is inclusive or exclusive is
+ * unverified, and a green line said nothing about it.
+ *
+ * The fix is an assertion, not a test: add `rateCents(5000) == 0`.
+ *
+ * IDE: green gutter — and a row in the coco tool window's **Mutants** tab
+ * (spec 6.4.3: a covered line whose mutants survive is a different problem
+ * from an uncovered line, and is shown as one).
+ */
+public class Shipping {
+
+    /** Flat rate, waived once the order reaches the free-shipping threshold. */
+    public static int64 rateCents(int64 subtotalCents) {
+        if (subtotalCents >= 5000) {
+            return 0;
+        }
+        return 599;
+    }
+}
