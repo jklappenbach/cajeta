@@ -460,7 +460,7 @@ namespace cajeta {
         // the class's auto-field-drop walk where it belongs.
         os << "            int32 sz_" << fieldName << " = tmp_"
            << fieldName << ".count();\n";
-        os << "            out." << fieldName << " = heap " << etcanon
+        os << "            out." << fieldName << " #= heap " << etcanon
            << "[sz_" << fieldName << "];\n";
         os << "            int32 ii_" << fieldName << " = 0;\n";
         os << "            while (ii_" << fieldName << " < sz_"
@@ -494,7 +494,7 @@ namespace cajeta {
         // JsonWriter.writeRaw is byte-stable on primitives.
         if (isJsonRaw(prop)) {
             return "t = r.next();\n            out." + fieldName +
-                   " = r.currentRawBytes();\n";
+                   " #= r.currentRawBytes();\n";
         }
         // Optional<T> field. Distinguishes "key absent" (handled
         // by the per-field arm NOT firing — field stays at null,
@@ -550,12 +550,12 @@ namespace cajeta {
             os << "t = r.next();\n"
                << "            if (t == JsonToken.NULL) {\n"
                << "                out." << fieldName
-               << " = heap cajeta.lang.Optional<" << innerCanon
+               << " #= heap cajeta.lang.Optional<" << innerCanon
                << ">(false, " << defaultInner << ");\n"
                << "            } else {\n"
                << "                " << readInner << "\n"
                << "                out." << fieldName
-               << " = heap cajeta.lang.Optional<" << innerCanon
+               << " #= heap cajeta.lang.Optional<" << innerCanon
                << ">(true, " << presentArg << ");\n"
                << "            }\n";
             return os.str();
@@ -597,7 +597,7 @@ namespace cajeta {
                    "            int32 vlen_" + fieldName +
                        " = (int32) vbytes_" + fieldName + ".count();\n"
                    "            out." + fieldName +
-                       " = heap cajeta.lang.String("
+                       " #= heap cajeta.lang.String("
                        "#vbytes_" + fieldName +
                        ", vlen_" + fieldName + ");\n";
         }
@@ -610,7 +610,7 @@ namespace cajeta {
         // chain since `cajeta`/`codec`/`json` aren't classes.
         if (auto nestedClass = std::dynamic_pointer_cast<CajetaClass>(ty)) {
             return "out." + fieldName +
-                   " = Json.parseObjectFromReader<" +
+                   " #= Json.parseObjectFromReader<" +
                    tcanon + ">(r);\n";
         }
         return "";
@@ -896,7 +896,7 @@ namespace cajeta {
             return "int32 vp_" + f + " = idx[ci];\n"
                    "            int8[] sb_" + f + " #= JsonIndex.decodeStrBytes(b, (int64) vp_" + f + ");\n"
                    "            int32 sl_" + f + " = (int32) sb_" + f + ".count();\n"
-                   "            out." + f + " = heap cajeta.lang.String(#sb_" + f + ", sl_" + f + ");\n"
+                   "            out." + f + " #= heap cajeta.lang.String(#sb_" + f + ", sl_" + f + ");\n"
                    "            ci = ci + 1;\n";
         }
         // Nested class — recurse via walkValue(jc) (single class-ptr arg,
@@ -1001,7 +1001,7 @@ namespace cajeta {
     std::string emitWalkCore(const CajetaClassPtr& T) {
         const std::string& Tc = T->getQName()->toCanonical();
         std::ostringstream os;
-        os << "    " << Tc << " out = heap " << Tc << "();\n";
+        os << "    " << Tc << " out #= heap " << Tc << "();\n";
         os << "    int8[] b = jc.b;\n";
         os << "    int32[] idx = jc.idx;\n";
         os << "    int32 ci = jc.ci;\n";
@@ -1053,7 +1053,11 @@ namespace cajeta {
            << " " << methodName << "(int8[] bytes, int64 length) {\n";
         // Stage 1: SIMD sparse structural index. jc owns the idx scratch
         // (allocated in its ctor) so `parse` holds no array local.
-        os << "    JsonCursor jc = heap JsonCursor(bytes, length);\n";
+        // #=, not =: the cursor is a fresh heap allocation and owns its
+        // index array. Binding it as a borrow abandoned both on every
+        // parse — 2 live objects per document, the leak that turned
+        // cajeta-llama's ownership probes red.
+        os << "    JsonCursor jc #= heap JsonCursor(bytes, length);\n";
         os << "    int32 cnt = JsonIndex.build(bytes, length, jc.idx);\n";
         // Stage 2: INLINE the walk core directly into parse (rather than
         // calling walkValue<T>). This keeps the top-level instantiation
@@ -1076,7 +1080,7 @@ namespace cajeta {
         std::ostringstream os;
         os << "public static #" << Tcanon
            << " " << methodName << "(JsonReader r) {\n";
-        os << "    " << Tcanon << " out = heap " << Tcanon << "();\n";
+        os << "    " << Tcanon << " out #= heap " << Tcanon << "();\n";
         os << emitObjectLoopBody(T, "    ");
         os << "}\n";
         return os.str();
