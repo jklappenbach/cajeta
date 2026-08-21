@@ -127,7 +127,13 @@ else()
                 /usr/lib
                 /usr/local/lib)
     if(ZMQ_INCLUDE_DIR AND ZMQ_LIBRARY)
-        add_library(cajeta::zmq SHARED IMPORTED)
+        # UNKNOWN, not SHARED: find_library returns whatever file it found,
+        # and a SHARED imported target additionally requires IMPORTED_IMPLIB
+        # on DLL platforms — the mingw cross-build failed configure with
+        # "IMPORTED_IMPLIB not set for imported target cajeta::zmq". UNKNOWN
+        # is the form meant for a found-by-path library and links the same
+        # everywhere.
+        add_library(cajeta::zmq UNKNOWN IMPORTED)
         set_target_properties(cajeta::zmq PROPERTIES
                 IMPORTED_LOCATION ${ZMQ_LIBRARY}
                 INTERFACE_INCLUDE_DIRECTORIES ${ZMQ_INCLUDE_DIR})

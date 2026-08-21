@@ -27,6 +27,13 @@ package cajeta.xpu;
  * the end so the ordinals stay stable.
  */
 public enum Capability {
-    RayQueryNative,  // 0 — hardware INLINE ray query (VK_KHR_ray_query / equivalent)
-    RayQueryRtCore   // 1 — pipeline-based RT-core ray query (NVIDIA OptiX on CUDA)
+    RayQueryNative,      // 0 — hardware INLINE ray query (VK_KHR_ray_query / equivalent)
+    RayQueryRtCore,      // 1 — pipeline-based RT-core ray query (NVIDIA OptiX on CUDA)
+    CoopMatrixBf16F32Acc // 2 — a LAUNCHABLE bf16-operand / f32-accumulator
+                         //     cooperative-matrix GEMM path on the active backend
+                         //     (cajeta-llama 2.2.6). Launchable, not necessarily
+                         //     native: CPU answers true (software tier runs the
+                         //     mix); Vulkan answers false (no bf16 coop config —
+                         //     the kernel is compile-skipped there); CUDA needs
+                         //     sm_80+, HIP needs RDNA3+ (gfx11xx/gfx12xx).
 }

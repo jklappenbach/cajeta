@@ -44,6 +44,10 @@ struct cajeta_cuda_api {
     int (*cuInit)(unsigned);
     int (*cuDeviceGetCount)(int*);
     int (*cuDeviceGet)(int*, int);
+    // Optional (bound non-fatally): device attribute query, used by the
+    // capability probes (__cajeta_xpu_device_supports) — e.g. compute
+    // capability for the bf16 tensor-core gate. Null on exotic stubs.
+    int (*cuDeviceGetAttribute)(int*, int, int);
     int (*cuDevicePrimaryCtxRetain)(void**, int);  // R4: share the per-device PRIMARY
                                      // ctx (a process-wide singleton) so the runtime,
                                      // the JIT-embedded runtime, and the OptiX glue
@@ -139,6 +143,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuInit, "cuInit");
     CAJ_BIND(cuDeviceGetCount, "cuDeviceGetCount");
     CAJ_BIND(cuDeviceGet, "cuDeviceGet");
+    *(void**) (&g_xpu_cuda.cuDeviceGetAttribute) =            // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceGetAttribute");
     CAJ_BIND(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");  // NO _v2 suffix
     CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");

@@ -1407,11 +1407,13 @@ namespace cajeta {
                         fwdMv->getChildren()[0]);
                     if (fwdL && !fwdL->getResolvedType()) fwdL->resolveTypes(module);
                     if (fwdS && !fwdS->getResolvedType()) fwdS->resolveTypes(module);
+                    auto fwdBits = [](const CajetaTypePtr& t) {
+                        return CajetaClass::arrayElementCarriesSlotBits(t)
+                            || CajetaClass::arrayElementCarriesArraySlotBits(t);
+                    };
                     if (fwdL && fwdS
-                            && CajetaClass::arrayElementCarriesSlotBits(
-                                   fwdL->getResolvedType())
-                            && CajetaClass::arrayElementCarriesSlotBits(
-                                   fwdS->getResolvedType())) {
+                            && fwdBits(fwdL->getResolvedType())
+                            && fwdBits(fwdS->getResolvedType())) {
                         fwdMv->setForwardingSlotMove(true);
                     }
                 }
@@ -2948,6 +2950,27 @@ namespace cajeta {
                                                              fobADl,
                                                              module->getLlvmContext()))});
                                             }
+                                        } else if (CajetaClass::
+                                                arrayElementCarriesArraySlotBits(
+                                                    fobArr->getElementType())) {
+                                            // title-stores §3.4 — jagged.
+                                            if (llvm::Function* fobAw =
+                                                    module->getRuntimeFunction(
+                                                        "__cajeta_tail_arrelem_drop_walk")) {
+                                                builder->CreateCall(fobAw,
+                                                    {oldVal,
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty, fobHs),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         fobArr->elementStrideBytes(
+                                                             fobADl,
+                                                             module->getLlvmContext())),
+                                                     llvm::ConstantInt::get(
+                                                         i64Ty,
+                                                         CajetaClass::arrayElementInnerDropKind(
+                                                             fobArr->getElementType()))});
+                                            }
                                         } else if ([&]{
                                             auto sc = dynamic_pointer_cast<
                                                 CajetaClass>(
@@ -3054,9 +3077,13 @@ namespace cajeta {
                         // MoveExpression's captured runtime flag forwards
                         // verbatim (`#=` of a formal stores what the caller
                         // did); static spellings classify as before.
+                        bool elemArrayTitled =
+                            CajetaClass::arrayElementCarriesArraySlotBits(
+                                lhsAst->getResolvedType());
                         bool elemTitled =
                             CajetaClass::arrayElementCarriesSlotBits(
-                                lhsAst->getResolvedType());
+                                lhsAst->getResolvedType())
+                            || elemArrayTitled;
                         // The tail helper needs the array HEADER. Regenerate
                         // the receiver only for side-effect-free shapes
                         // (identifier / field path) — the container-author
@@ -3121,7 +3148,25 @@ namespace cajeta {
                                     builder->CreateSub(slotInt, hdrInt),
                                     llvm::ConstantInt::get(tsI64, tsHs)),
                                 llvm::ConstantInt::get(tsI64, tsEs));
-                            if (llvm::Function* storeFn =
+                            if (elemArrayTitled) {
+                                // title-stores §3.4 — jagged slot: release
+                                // any displaced occupant through the ARRAY
+                                // drop path (no vtable to drop through).
+                                if (llvm::Function* storeFn =
+                                        module->getRuntimeFunction(
+                                            "__cajeta_tail_arrelem_store")) {
+                                    builder->CreateCall(storeFn,
+                                        {tailHdr,
+                                         llvm::ConstantInt::get(tsI64, tsHs),
+                                         llvm::ConstantInt::get(tsI64, tsEs),
+                                         tsIdx, rhsVal, ownedVal,
+                                         llvm::ConstantInt::get(tsI64,
+                                             CajetaClass::arrayElementInnerDropKind(
+                                                 lhsAst->getResolvedType()))});
+                                    storedViaElemOwn = true;
+                                    storedViaClassElem = true;
+                                }
+                            } else if (llvm::Function* storeFn =
                                     module->getRuntimeFunction(
                                         "__cajeta_tail_elem_store")) {
                                 builder->CreateCall(storeFn,
@@ -3931,6 +3976,32 @@ namespace cajeta {
                     builder->CreateStore(llvm::ConstantInt::get(i32Ty, -1),
                         builder->CreateStructGEP(stringStructTy, sPtr, 4,
                             "concat.s_cachedCpLength"));
+
+                    // element-ownership 3.4.3 — reclaim INTERIOR chain temps.
+                    // `a + b + c` parses as `((a + b) + c)`: the inner node is
+                    // an anonymous concat whose wrapper nobody owns (the arena
+                    // pre-pass routes only the top-level node of a name-bound
+                    // concat, and a declarator's drop entry covers only the
+                    // value the name binds). Its bytes have just been copied
+                    // into this result, so it is dead here. Dropping it is the
+                    // same reclamation MethodCallExpression does for a concat
+                    // argument, keyed on the same classifier — which excludes
+                    // arena-routed nodes (the arena reset owns those) and every
+                    // lvalue shape. Without this, every chained concat in the
+                    // program leaked one wrapper per interior `+`, plus that
+                    // wrapper's byte buffer when its text exceeded the 12-byte
+                    // inline capacity.
+                    if (llvm::Function* interiorDrop =
+                            module->getRuntimeFunction("__cajeta_string_drop")) {
+                        if (MethodCallExpression::freshOwnedStringTemp(lhsAst)
+                                && l && l->getType()->isPointerTy()) {
+                            builder->CreateCall(interiorDrop, {l});
+                        }
+                        if (MethodCallExpression::freshOwnedStringTemp(rhsAst)
+                                && r && r->getType()->isPointerTy()) {
+                            builder->CreateCall(interiorDrop, {r});
+                        }
+                    }
 
                     // Pin resolvedType so a caller using this concat as a ctor /
                     // method argument recovers the class type (mirrors

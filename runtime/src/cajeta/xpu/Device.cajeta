@@ -1,5 +1,6 @@
 package cajeta.xpu;
 
+import cajeta.error.RecoverableException;
 import cajeta.xpu.Capability;
 
 /**
@@ -32,8 +33,36 @@ public final class Device {
         return Device.nativeSupports(cap) != 0;
     }
 
+    /**
+     * Force the backend BEFORE the first device touch (cajeta-llama 11.2 —
+     * the CLI's `--device`): "cuda", "hip", "vulkan" or "cpu". Equivalent to
+     * launching with `CAJETA_XPU_BACKEND=<name>` but settable in-process;
+     * after the first touch the selection is already cached and this throws.
+     * A forced backend that is not available at selection time degrades
+     * exactly like the env route (the precise once-only stderr note).
+     */
+    public static void force(String name) {
+        int32 id = -1;
+        if (name.equals("cuda")) { id = 0; }
+        else if (name.equals("hip")) { id = 1; }
+        else if (name.equals("vulkan")) { id = 2; }
+        else if (name.equals("cpu")) { id = 3; }
+        if (id < 0) {
+            throw heap RecoverableException("Device.force: unknown "
+                + "backend '" + name + "' (cuda, hip, vulkan, cpu)");
+        }
+        if (Device.nativeForce(id) == 0) {
+            throw heap RecoverableException("Device.force: the backend is "
+                + "already selected - force before the first device touch");
+        }
+    }
+
     // The active backend probes its device features by capability ordinal (the
     // stable Capability contract). Returns 0 / 1.
     @Native("__cajeta_xpu_device_supports")
     private static int32 nativeSupports(int32 capability);
+
+    // Sets the forced backend id; returns 0 when selection already ran.
+    @Native("__cajeta_xpu_force_backend")
+    private static int32 nativeForce(int32 id);
 }

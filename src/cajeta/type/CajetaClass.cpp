@@ -975,6 +975,23 @@ namespace cajeta {
         return cls->hasVtablePointerAtSlotZero();
     }
 
+    bool CajetaClass::arrayElementCarriesArraySlotBits(const CajetaTypePtr& elem) {
+        if (!elem) return false;
+        if (dynamic_pointer_cast<CajetaView>(elem)) return false;
+        auto arr = dynamic_pointer_cast<CajetaArray>(elem);
+        if (!arr) return false;
+        // Inline arrays live in the slot itself — nothing separable to own.
+        if (arr->isInlineArray()) return false;
+        return true;
+    }
+
+    int CajetaClass::arrayElementInnerDropKind(const CajetaTypePtr& elem) {
+        auto arr = dynamic_pointer_cast<CajetaArray>(elem);
+        if (!arr) return 0;
+        return CajetaClass::arrayElementCarriesSlotBits(arr->getElementType())
+            ? 1 : 0;
+    }
+
     // A member's release family inside a value-struct slot. Mirrors the
     // class drop body: bit-carrying members release under their word bit;
     // String members are always-owned (§5.1.6 — both put spellings leave
@@ -3631,6 +3648,24 @@ namespace cajeta {
                                 wdl.getTypeAllocSize(arrField->getLlvmType())),
                             llvm::ConstantInt::get(wi64,
                                 arrField->elementStrideBytes(wdl, &ctx))});
+                    }
+                }
+                // title-stores §3.4 — jagged field arrays (JsonObject.keys):
+                // release owned inner buffers before the outer frees.
+                if (CajetaClass::arrayElementCarriesArraySlotBits(
+                        arrField->getElementType())) {
+                    if (llvm::Function* walkFn = cajModule->getRuntimeFunction(
+                            "__cajeta_tail_arrelem_drop_walk", bodyModule)) {
+                        const llvm::DataLayout& wdl = bodyModule->getDataLayout();
+                        llvm::Type* wi64 = llvm::Type::getInt64Ty(ctx);
+                        b.CreateCall(walkFn, {arrPtr,
+                            llvm::ConstantInt::get(wi64,
+                                wdl.getTypeAllocSize(arrField->getLlvmType())),
+                            llvm::ConstantInt::get(wi64,
+                                arrField->elementStrideBytes(wdl, &ctx)),
+                            llvm::ConstantInt::get(wi64,
+                                CajetaClass::arrayElementInnerDropKind(
+                                    arrField->getElementType()))});
                     }
                 }
                 // title-stores Unit 5 — String elements: every resident

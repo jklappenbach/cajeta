@@ -3905,9 +3905,21 @@ namespace cajeta {
                 false);
             llvm::FunctionCallee argsMakeFn =
                 lmod->getOrInsertFunction("__cajeta_args_make", argsMakeTy);
+            // Java-style args: argv[0] is the program name, not a user
+            // argument — the JIT host already passes program args only, so
+            // the exe shim must slice it off or the two disagree on args[0].
             llvm::Value* argcI64 = b.CreateSExt(mainFn->getArg(0), i64Ty);
+            llvm::Value* argcLess = b.CreateSub(
+                argcI64, llvm::ConstantInt::get(i64Ty, 1));
+            llvm::Value* argcNeg = b.CreateICmpSLT(
+                argcLess, llvm::ConstantInt::get(i64Ty, 0));
+            llvm::Value* argcUser = b.CreateSelect(argcNeg,
+                llvm::ConstantInt::get(i64Ty, 0), argcLess);
+            llvm::Value* argvUser = b.CreateGEP(
+                ptrTy, mainFn->getArg(1),
+                llvm::ConstantInt::get(i64Ty, 1));
             llvm::Value* argsArray = b.CreateCall(argsMakeFn,
-                {argcI64, mainFn->getArg(1), vtableRef, strSize,
+                {argcUser, argvUser, vtableRef, strSize,
                  offBytes, offByteLen, offMode, offCpLen});
             callArgs.push_back(argsArray);
         }

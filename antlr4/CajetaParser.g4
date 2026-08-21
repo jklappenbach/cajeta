@@ -871,7 +871,7 @@ expression
     | expression bop=('+'|'-') expression
     | expression ('<' '<' | '>' '>' '>' | '>' '>') expression
     | expression bop=('<=' | '>=' | '>' | '<') expression
-    | expression bop=INSTANCEOF (typeType | pattern)
+    | expression bop=INSTANCEOF (pattern | typeType)
     | expression bop=('==' | '!=') expression
     | expression bop='&' expression
     | expression bop='^' expression
