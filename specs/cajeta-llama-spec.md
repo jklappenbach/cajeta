@@ -1031,6 +1031,43 @@ the recommendation they were filed with; both are marked.
   That is an argument for keeping these seams open, not for building them
   yet.
 
+  **13.25.8 METATUNING is a distinct phase, and the seams above serve it
+  too.** Editing weights is the least interesting form of adaptation
+  available here. A model's behaviour is also determined by what is
+  RETRIEVED and how the retrieved evidence is turned into a distribution,
+  and both are intervenable at inference time without touching a weight:
+
+  - **Moderated KV.** A learned network sits over the KV cache and
+    conditions what is written, kept, or returned — biasing key match,
+    scaling or gating value contributions, re-weighting by position or
+    provenance. The paged KV cache and block store (13.25.7) are already
+    the state store this would moderate.
+  - **Moderated output distribution.** A learned network biases the
+    logits before sampling — the last point where behaviour is decided
+    and the cheapest place to intervene, since it touches one vector per
+    token rather than any weight.
+
+  Both are meta-level: a small network adapting how a frozen LLM is USED,
+  rather than what it contains. Three properties make this attractive.
+  The adapted parameters are tiny and separate from the base weights, so
+  13.25.2 holds trivially. The base model is untouched, so rollback is
+  discarding a side model rather than restoring a checkpoint. And the
+  intervention points — KV write/read and pre-sampling logits — are places
+  the engine already owns, not new plumbing.
+
+  Sequencing: metatuning is a PHASE AFTER the multiplexed harness, because
+  every form of it needs the same thing — a learning job sharing the
+  serving runtime, with versioned state a request can pin (13.25.4) and a
+  step that is not a generation step (13.25.5). It gets its own spec; this
+  entry exists so the seams are not closed before it is written.
+
+  Open, to settle in that spec: what supplies the training signal (the
+  same label problem as any online tuning); whether a metatuner may change
+  outputs during the request that trained it or only after a promotion
+  boundary; and how to evaluate a system whose whole purpose is to change
+  outputs, given the expert cache's much easier "outputs must not change"
+  guarantee does not apply.
+
 ## 14. Open questions
 
 **All items resolved 2026-08-08.** §13 records the decisions; this section is
