@@ -1,0 +1,105 @@
+# cajeta-profiler 5.1.f — a real Perfetto reader judges our trace.
+#
+# WHY THIS EXISTS
+# The profiler emits Perfetto protobuf by hand: no SDK, no generated code, no
+# build dependency (spec §7.7, plan 5.3.b). That leaves one failure mode nothing
+# local can catch. Round-trip tests verify the wire layer against itself, and
+# third_party/perfetto/perfetto_trace.proto verifies the field NUMBERS — but a
+# structurally wrong trace is valid protobuf carrying correct field numbers, so
+# every local check passes and the file still does not load. Only a reader can
+# say otherwise.
+#
+# Deliberately cheap: a plain `cc` over one standalone generator that textually
+# includes the real emitter. No LLVM, no toolchain build, no GPU, no self-hosted
+# runner. A check that took an hour would not run on every change to the writer,
+# and this one has to.
+name: trace-validate
+
+on:
+  push:
+    paths:
+      - 'runtime/native/cajeta_rt_prof_trace.c'
+      - 'tools/tracegen/**'
+      - 'third_party/perfetto/**'
+      - '.github/workflows/trace-validate.yml'
+  pull_request:
+    paths:
+      - 'runtime/native/cajeta_rt_prof_trace.c'
+      - 'tools/tracegen/**'
+      - '.github/workflows/trace-validate.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the generator
+        run: |
+          cc -O1 -Wall -Wextra -o tracegen tools/tracegen/tracegen.c
+          ./tracegen min.pftrace
+          ls -l min.pftrace
+          test -s min.pftrace
+
+      - name: Fetch trace_processor
+        run: |
+          curl -sSL -o trace_processor https://get.perfetto.dev/trace_processor
+          chmod +x trace_processor
+          ./trace_processor --version || true
+
+      # Each query asserts something the generator deliberately put in. A trace
+      # that merely PARSES is not the bar — an empty trace parses.
+      - name: Trace loads and carries what was written
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin min.pftrace; }
+
+          echo "== slices =="
+          echo "select count(*) as slice_count from slice;" | q | tee slices.txt
+          grep -qE '(^|[^0-9])3([^0-9]|$)' slices.txt \
+            || { echo "FAIL: expected 3 slices (2 nested on one track, 1 overlapping on a child)"; exit 1; }
+
+          echo "== interned name resolved =="
+          echo "select distinct name from slice;" | q | tee names.txt
+          grep -q 'test.App.run' names.txt \
+            || { echo "FAIL: interned event name did not resolve (spec 7.4)"; exit 1; }
+
+          echo "== track hierarchy =="
+          echo "select count(*) as parented from track where parent_id is not null;" | q | tee tracks.txt
+          grep -qE '(^|[^0-9])1([^0-9]|$)' tracks.txt \
+            || { echo "FAIL: parent/child track hierarchy did not survive (spec 7.2)"; exit 1; }
+
+      # "without warnings" is the actual requirement, not "without crashing".
+      # trace_processor records its own complaints in the stats table; an
+      # unparseable packet or a dropped field shows up there rather than as a
+      # non-zero exit.
+      - name: No error-severity stats
+        run: |
+          set -euo pipefail
+          echo "select name, value from stats where severity = 'error' and value > 0;" \
+            | ./trace_processor -q /dev/stdin min.pftrace | tee stats.txt
+          if grep -qE '^[a-z_]+ +[1-9]' stats.txt; then
+            echo "FAIL: trace_processor reported error-severity stats"
+            exit 1
+          fi
+
+      # 7.6: a trace cut mid-write must still read up to the cut. Truncation is
+      # the normal end of a profiled run that was killed, so this is the common
+      # case, not the edge case.
+      - name: Truncated trace still loads
+        run: |
+          set -euo pipefail
+          full=$(stat -c%s min.pftrace)
+          head -c $((full * 2 / 3)) min.pftrace > cut.pftrace
+          echo "select count(*) as n from slice;" | ./trace_processor -q /dev/stdin cut.pftrace
+          echo "truncated trace loaded ($((full * 2 / 3)) of $full bytes)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pftrace
+          path: |
+            min.pftrace
+            cut.pftrace
