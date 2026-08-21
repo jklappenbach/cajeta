@@ -21,7 +21,7 @@
     // params at run time — so the version below is written once and the
     // dependency picks it up.
     "properties": {
-        "unit-version": "0.2.0"
+        "unit-version": "0.2.3"
     },
 
     "details": {

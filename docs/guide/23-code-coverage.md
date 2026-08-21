@@ -312,15 +312,17 @@ A mutant is one `llc` plus one relink plus one suite run. The relink replays
 the link line `instrument` recorded in `link.tsv`, with exactly one object
 swapped, so a mutant is the measured program and not a near-miss of it.
 
-> **Known: a killed verdict can be a crash.** With per-test attribution
-> enabled, a build whose suite FAILS can die with SIGSEGV instead of reporting
-> the failure — measured 3/3, and 3/3 clean with the attribution hook removed
-> from the same objects. The fault is in `dev.cajeta.unit`'s `Runner.runOne`,
-> which keeps `msg = e.message` — a borrow of the caught exception's message —
-> past the catch scope that owns it; the hook's allocation and file write turn
-> that latent use-after-free into a fault. Verdicts stay correct (the exit code
-> moved, which is what "killed" means) but the signal is weaker than it looks,
-> and a green suite never executes the path at all.
+> **Fixed, and worth knowing about.** With per-test attribution enabled, a
+> build whose suite FAILED used to die with SIGSEGV instead of reporting the
+> failure — measured 3/3, and 3/3 clean with the attribution hook removed from
+> the same objects. The fault was in `dev.cajeta.unit`'s `Runner.runOne`, which
+> kept `msg = e.message` — a borrow of the caught exception's message — past
+> the catch scope that owns it; the hook's allocation and file write turned
+> that latent use-after-free into a fault. **cajeta-unit 0.2.3** copies the
+> message; pin at or above it when you enable attribution. A green suite never
+> executes that path, which is why it first appeared as "mutation kills produce
+> SIGSEGV". After the fix a killed mutant dies with a `✗ FAIL` line and exit 1,
+> so the verdict and the signal finally agree.
 
 ---
 

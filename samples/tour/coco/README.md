@@ -254,23 +254,32 @@ report alongside this project's tests. It is excluded from *measurement*
 (`dev/cajeta/unit/` is in `config.exclude`), so it affects no number here —
 its three tests show `covered=0 unique=0` in `attribution.tsv`.
 
-Separately, and now diagnosed: both killed mutants died by **segfaulting**
-rather than by a failed assertion. The verdict is right either way — "killed"
-means the exit code moved — but a crash and a caught `AssertionFailure` are not
-the same signal.
+Separately, and now **fixed**: both killed mutants used to die by
+**segfaulting** rather than by a failed assertion.
 
-It is **not** the mutation and **not** the probes. Measured on identical
-objects with only the attribution hook swapped in and out, 3/3 each way: hooked
+It was not the mutation and not the probes. Measured on identical objects with
+only coco's per-test attribution hook swapped in and out, 3/3 each way: hooked
 → SIGSEGV at the first failing test; unhooked → both failures reported, exit 1.
-`addr2line` puts the fault inside `dev.cajeta.unit`'s `Runner.runOne`, walking
-its own drop chain on the path where an exception was caught. `runOne` keeps
+`addr2line` put the fault inside `dev.cajeta.unit`'s `Runner.runOne`, walking
+its own drop chain on the path where an exception was caught. `runOne` kept
 `msg = e.message` — a **borrow** of the caught exception's message — past the
-catch scope that owns `e`; coco's hook allocates and writes a file, which
-perturbs the allocator enough to turn a latent use-after-free into a fault.
+catch scope that owns `e`; the hook's allocation and file write turned that
+latent use-after-free into a fault.
 
-A green suite never executes that path, which is why this tour is unaffected
-and why it first surfaced as "mutation kills produce SIGSEGV". The fix belongs
-in cajeta-unit — the runner has to own that message rather than borrow it.
+Fixed in **cajeta-unit 0.2.3**, which copies the message instead of borrowing
+it. This project pins that version as its floor. Verified: a coverage run over
+a suite with one deliberately-failing assertion now reports `11 passed,
+1 failed`, merges all 12 per-test profiles, and returns a suite-failed error —
+where before it wrote no profile at all.
+
+Confirmed on the other side too: a killed mutant now dies the way it should —
+`✗ FAIL … expected <1000> but was <0>`, exit 1 — instead of SIGSEGV. The
+verdict was always right (the exit code moved either way), but now the signal
+means what it says.
+
+The lesson generalises past this bug: a green suite never executes the failure
+path, so nothing about a passing run could have found it. It took a *consumer*
+that allocates inside the framework's own code to make it observable.
 
 ## See also
 
