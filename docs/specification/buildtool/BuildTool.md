@@ -4006,7 +4006,7 @@ Config keys, all of which a task may override per-action:
 | `src`       | — (required) | Source root to measure.                                                                        |
 | `entry`     | — (required) | Method whose return dumps the profile, as `pkg.Class.method`. Must return normally.             |
 | `out`       | `build/coco` | Artifact root.                                                                                 |
-| `exclude`   | `[]`         | Path fragments left **uninstrumented** — still compiled, still linked.                          |
+| `exclude`   | `[]`         | Entries left **uninstrumented** — still compiled, still linked. Typed `{kind, pattern, reason}` (`file` glob / `package` dotted / `symbol` per-function), or a bare string meaning `kind=file` matched as a substring. |
 | `classpath` | derived      | Dependency archives, comma-separated. Defaults to the project's resolved dependencies (`context.classpath`); set it only to override. |
 | `profile`   | `""`         | `@Profile` for both front-end passes; they must match or DI wires two different programs.       |
 | `min`       | `0` (off)    | Line-percentage gate on `report`. JaCoCo `check` semantics — 79.9% fails a `min` of 80.          |
@@ -4019,7 +4019,15 @@ or an IDE re-reading the run are all cheap.
 
 **`exclude` removes code from measurement, not from the
 program.** An excluded module is still lowered and still
-linked. (It was not always: dropping excluded modules from the
+linked. Three kinds: `file` (glob over the source path),
+`package` (`a.b.c`, or `a.b.c.*` for subpackages) and `symbol`
+(`owner.method`, dropped per FUNCTION since a module holds
+many). `reason` is mandatory and checked against the same
+generic list `cajeta coverage ignore` refuses to write. A bare
+string still means `kind=file` with no reason, but matches as a
+SUBSTRING rather than a glob — an anchored glob would match
+nothing and silently un-exclude every project using the old
+spelling. (It was not always: dropping excluded modules from the
 link built a *different program* than the one under
 measurement, and cajeta-coco's `samples/tour` — which excludes its own
 test package — lost nine of twelve tests to it and reported a

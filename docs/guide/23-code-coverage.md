@@ -17,6 +17,22 @@ class per finding.
 
 ---
 
+## Toolchain floor: cajeta 0.21.1
+
+The plugin ships as a `.cja` and is **AOT-compiled by the toolchain that runs
+it** (see "What the plugin is" below). That makes the compiler part of coco's
+runtime, not just its build: cajeta **0.21.0 miscompiles coco's file reads** —
+an intrinsic `#`-return losing its title across a return boundary — so every
+verb throws before doing any work:
+
+```
+cajeta: uncaught exception (value=0x3)
+  at cajeta.coco.plugin.Pipeline.moduleFiles(...)
+```
+
+Publishing a fixed plugin cannot help; the bytes are already correct and the
+compile of them is not. `cajeta --version` first.
+
 ## Quick start
 
 ```jsonc
@@ -158,23 +174,56 @@ public static int32 main(String[] args) { return Runner.runAll(); }
 ### `exclude` — measurement, not the link
 
 An excluded path is **not instrumented**. It is still compiled and still
-linked: excluding a package must never change which program runs. Excluded
-code is removed from both the numerator and the denominator — opting out does
-not round the percentage up, it takes the code out of measurement entirely.
+linked: excluding a package must never change which program runs. Excluded code
+leaves both the numerator and the denominator, so opting out does not round the
+percentage up.
 
-Two exclusions are worth making in nearly every project:
+Two forms. The **typed** one is what `cajeta coverage ignore` writes and what
+you should use:
 
 ```jsonc
-"exclude": ["src/test/", "dev/cajeta/unit/"]
+"exclude": [
+    { "kind": "package", "pattern": "com.example.tests.*",
+      "reason": "the suite itself — its lines are executed by definition" },
+    { "kind": "file",    "pattern": "**Generated.cajeta",
+      "reason": "machine-generated; covered through integration tests" },
+    { "kind": "symbol",  "pattern": "com.example.Foo.getCount",
+      "reason": "trivial accessor, exercised by every caller" }
+]
 ```
 
-- **Your tests.** Their lines are executed by definition, so leaving them in
-  inflates the percentage with code that cannot fail to be covered. Less
-  obvious: an instrumented test body owns lines nothing else touches, so
-  *every* test looks like it contributes unique coverage and the per-test
-  redundancy signal (below) is destroyed.
-- **The framework.** `dev.cajeta.unit` is somebody else's tested code;
-  leaving it in measures the library instead of your project.
+| Kind | Pattern | Matched against | Granularity |
+|---|---|---|---|
+| `file` | glob — `*`, `**`, `?` | source path | whole module |
+| `package` | `a.b.c` (that package) or `a.b.c.*` (and subpackages) | source path, dots → slashes | whole module |
+| `symbol` | glob over `owner.method` | each function | **one function** |
+
+`symbol` is per-function because a module holds many symbols; the others skip
+the module's probes entirely. Either way the module is still compiled and
+linked.
+
+`reason` is mandatory and is checked against the same generic list the CLI
+refuses to write (`wip`, `todo`, `skip`, `fixme`, `tbd`, empty). It shows up on
+every diff that touches the list, so it has to justify itself.
+
+The **bare-string** form still works and means `kind=file` with no reason — but
+it is matched as a **substring**, not a glob, and warns once per run. That
+difference is deliberate: a glob is anchored, so re-reading `"src/test/"` as one
+would match nothing and silently un-exclude every project still using the old
+spelling.
+
+Two exclusions are worth making in nearly every project — your tests, and the
+test framework:
+
+```jsonc
+{ "kind": "package", "pattern": "com.example.tests.*", "reason": "..." },
+{ "kind": "package", "pattern": "dev.cajeta.unit.*",  "reason": "somebody else's tested code" }
+```
+
+Excluding your tests matters for a reason beyond the percentage: an
+instrumented test body owns lines nothing else touches, so *every* test looks
+like it contributes unique coverage and the per-test redundancy signal is
+destroyed.
 
 ### `classpath` — derived, and overridable
 

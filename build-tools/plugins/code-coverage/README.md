@@ -16,7 +16,7 @@ anyone copying config out of this directory:
 | three actions — `instrument`, `collect`, `report` | **two** — `instrument`, `report`. Instrumenting and running are one step; the probe dump is written by the measured program when the entry method returns. |
 | `grain`, `min-per-file`, `report[]` | not implemented |
 | — | `src`, `entry`, `out`, `exclude`, `classpath`, `profile`, `min` |
-| `@nocoverage("reason")` in source | not implemented. The typed-exclude CLI (`cajeta coverage ignore\|list\|remove`) does exist. |
+| `@nocoverage("reason")` in source | not implemented — but `{kind: "symbol", pattern: "…", reason: "…"}` in the exclude list does the same job from the manifest, dropping probes for that one function. |
 
 coco also reports what a percentage cannot: uncovered code split into
 statically-unreachable (delete) versus reachable-but-untested (test), per-test
