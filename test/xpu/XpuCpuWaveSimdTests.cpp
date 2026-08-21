@@ -277,8 +277,21 @@ unsigned runWaveDriver(const char* method) {
                      << " (< 8: setup; 100+i: wrong result at lane i-100)";
     EXPECT_TRUE(isPowerOfTwo(w)) << "wave width " << w << " not a power of two";
 #if defined(__x86_64__)
-    if (__builtin_cpu_supports("avx512f")) EXPECT_EQ(w, 16u);
-    else if (__builtin_cpu_supports("avx2")) EXPECT_EQ(w, 8u);
+    // These couple the expectation to HOST CPU FEATURES, which is not the
+    // same thing as the width LLVM's vectorizer chooses — it may cap at
+    // 256-bit (prefer-vector-width) on parts where 512-bit costs clock. So
+    // when this trips, the interesting facts are the width we got and what
+    // the host advertises; report both rather than a bare 16 != 8.
+    const char* isa = __builtin_cpu_supports("avx512f") ? "avx512f"
+                    : __builtin_cpu_supports("avx2")    ? "avx2"
+                                                        : "sse-only";
+    if (__builtin_cpu_supports("avx512f")) {
+        EXPECT_EQ(w, 16u) << method << ": host advertises " << isa
+                          << " but the vectorizer chose width " << w;
+    } else if (__builtin_cpu_supports("avx2")) {
+        EXPECT_EQ(w, 8u) << method << ": host advertises " << isa
+                         << " but the vectorizer chose width " << w;
+    }
 #endif
     return w;
 }
