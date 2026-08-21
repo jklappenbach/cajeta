@@ -144,14 +144,47 @@ while a small head tracks the current session.
 - **5.3.3** When adaptation is restricted to the head, the backbone weights
   are unchanged.
 
-### 5.4 Features and target
-- **5.4.1** When a prediction is made, its inputs are drawn only from
+### 5.4 Execution — in process, on cajeta-ml
+SPELA is already implemented in cajeta as
+`dev.cajeta.ml.train.SpelaTrainer` (`dev.cajeta.ml` 0.10.0), with the
+serving surface this design needs and nothing to port. The Python
+`spela-training` repository is the REFERENCE implementation; the cajeta
+one carries sections A–D1 of that reference's API roadmap. The policy
+therefore runs in the engine's own process, in the engine's own language.
+
+The mapping is direct, and each requirement below names what implements it:
+
+- **5.4.1** When routing is observed, it is recorded through
+  `SpelaTrainer.observe(x, label)`, which buffers to `onlineBufferSize`
+  and steps only when a step is due — the non-blocking property §5.2.1
+  requires, rather than a step per token.
+- **5.4.2** When the serving loop ends, `flush()` steps on a partial
+  buffer, so the tail of a session is not discarded.
+- **5.4.3** When cold-start is evaluated, `observedCount()` is the counter
+  §5.2.4 gates on.
+- **5.4.4** When head-only adaptation is configured, `freezeBackbone()` /
+  `setLayerTrainable(layer, trainable)` implement §5.3.3.
+- **5.4.5** When a prediction's confidence is needed, `confidenceOf(x)`
+  supplies it, so a low-confidence prefetch can be declined rather than
+  issued blindly.
+- **5.4.6** When labels are considered: this system's labels are FREE and
+  exact — the next step's routing IS the label — so the labelled
+  `observe` path is used. `observeUnlabeled`'s confidence-gated
+  self-distillation is NOT needed and must not be enabled, since a
+  pseudo-label would be strictly worse than the ground truth already in
+  hand.
+- **5.4.7** When cajeta-llama adopts this, it takes a `dev.cajeta.ml`
+  dependency it does not have today, and that dependency is runtime, not
+  dev-only.
+
+### 5.5 Features and target
+- **5.5.1** When a prediction is made, its inputs are drawn only from
   information available before the FFN executes: recent per-expert
   request history, current-step router scores, layer index, position, and
   per-expert recency and frequency.
-- **5.4.2** When a feature would require the answer being predicted, it is
+- **5.5.2** When a feature would require the answer being predicted, it is
   not used.
-- **5.4.3** When the target is expressed, it is the set of experts required
+- **5.5.3** When the target is expressed, it is the set of experts required
   at the next step, so prediction and eviction share one model.
 
 ## 6. Per-model weights
@@ -168,7 +201,9 @@ must never be applied to another.
   weights are refused, not adapted.
 - **6.1.4** When two models run in one process, each has its own policy
   instance and neither observes the other's routing.
-- **6.1.5** When a run ends, updated weights are persisted for that identity.
+- **6.1.5** When a run ends, updated weights are persisted for that identity
+  through `dev.cajeta.ml.io.Checkpoints.save`/`load` over the trainer's
+  modules, so the format is the one cajeta-ml already reads and writes.
 - **6.1.6** When persisting fails, inference is unaffected and the failure
   is reported.
 - **6.1.7** When weights are stored, they are versioned by feature-schema,
@@ -217,13 +252,16 @@ The cache is a performance mechanism. It has no licence to change results.
 
 ## 10. Open questions
 
-- **10.1 Where does the policy execute?** SPELA today is PyTorch, and the
-  engine is cajeta. Options: implement on `dev.cajeta.ml` and run in
-  process; run offline and ship read-only weights, losing online adaptation;
-  or a sidecar. In-process on cajeta-ml is the only option that satisfies
-  §5.2.1 and §5.3.2, and it is the largest. **Recommendation: in-process on
-  cajeta-ml, with an offline trace-replay harness (§8.3) used to develop the
-  model before it is wired live.**
+- **10.1 Where does the policy execute?** **RESOLVED 2026-08-21 — in
+  process, on `dev.cajeta.ml` 0.10.0 (§5.4).** SPELA is already implemented
+  in cajeta with the streaming surface this needs
+  (`observe`/`flush`/`freezeBackbone`/`confidenceOf`), so there is nothing
+  to port and no sidecar. An earlier draft of this spec recorded SPELA as
+  PyTorch-only and treated in-process execution as the largest open risk;
+  that was wrong — the Python repository is the reference implementation,
+  not the only one. The offline trace-replay harness (§8.3) stays useful
+  for developing the model against a fixed trace before wiring it live,
+  but it is a convenience now, not a workaround.
 - **10.2 What is "model identity" (§6.1.1)?** GGUF metadata name plus
   architecture and expert counts is human-meaningful but collides across
   quantizations; a hash of the tensor directory is exact but opaque.
