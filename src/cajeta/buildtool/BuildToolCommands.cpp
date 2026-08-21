@@ -1445,12 +1445,32 @@ namespace cajeta::buildtool {
         // empty vector when the plugin isn't declared (callers print
         // the "no entries" message). Each entry is the JSON value as
         // parsed — typed objects or back-compat strings.
+        // Plugin ids that mean coverage, newest first.
+        //
+        // `dev.cajeta.coverage` is what the resolver publishes and what real
+        // manifests declare; `cajeta.coverage` is the first-party name
+        // BuildTool.md documented for a 1.0 that was never built. Matching only
+        // the latter made `cajeta coverage list` report "no exclude entries
+        // declared" for a project that had two — the same id mismatch that made
+        // the IDE read a configured project as not using coverage at all.
+        const char* const kCoveragePluginIds[] = {
+            "dev.cajeta.coverage", "cajeta.coverage"
+        };
+
+        const llvm::json::Object*
+        findCoveragePlugin(const llvm::json::Object& root) {
+            const auto* plugins = root.getObject("plugins");
+            if (!plugins) return nullptr;
+            for (const char* id : kCoveragePluginIds) {
+                if (const auto* cov = plugins->getObject(id)) return cov;
+            }
+            return nullptr;
+        }
+
         std::vector<llvm::json::Value>
         readCoverageExcludes(const llvm::json::Object& root) {
             std::vector<llvm::json::Value> out;
-            const auto* plugins = root.getObject("plugins");
-            if (!plugins) return out;
-            const auto* cov = plugins->getObject("cajeta.coverage");
+            const auto* cov = findCoveragePlugin(root);
             if (!cov) return out;
             const auto* config = cov->getObject("config");
             if (!config) return out;
@@ -2856,11 +2876,60 @@ namespace cajeta::buildtool {
             return 1;
         }
 
+        // True for the global flags BuildTool.md says EVERY built-in accepts.
+        // `wantsValue` reports the separated forms that swallow the next token.
+        bool isGlobalFlag(std::string_view arg, bool& wantsValue) {
+            wantsValue = false;
+            if (arg == "-P" || arg == "--property") { wantsValue = true; return true; }
+            if (arg == "-v" || arg == "--verbose" || arg == "--quiet") return true;
+            if (arg.rfind("--manifest", 0) == 0) return true;
+            if (arg.rfind("--profile", 0) == 0) return true;
+            if (arg.rfind("--property", 0) == 0) return true;
+            return false;
+        }
+
         int coverageCommand(int argc, const char* argv[]) {
-            if (argc < 3 || std::string_view(argv[2]) == "--help" ||
-                std::string_view(argv[2]) == "-h") {
-                std::cout
-                    << "Usage: cajeta coverage <subcommand> [options]\n"
+            // Locate the subcommand PAST any leading global flags.
+            //
+            // BuildTool.md: "Every built-in subcommand and every task accepts
+            // --manifest=<path>, -v/--verbose, --quiet, --profile=<name>,
+            // -P <prop>=<value>". This command took argv[2] as the subcommand
+            // verbatim, so the IDE's build-tool window — which passes
+            // --manifest per that contract — got
+            //
+            //   unknown subcommand '--manifest=/…/cajeta.json'
+            //
+            // naming a flag as if the user had typed it as a verb.
+            std::vector<const char*> rest;   // globals + subcommand args
+            std::string_view sub;
+            int subIndex = -1;
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                bool wantsValue = false;
+                if (isGlobalFlag(arg, wantsValue)) {
+                    rest.push_back(argv[i]);
+                    if (wantsValue && i + 1 < argc) rest.push_back(argv[++i]);
+                    continue;
+                }
+                if (subIndex < 0 && !arg.empty() && arg.front() != '-') {
+                    sub = arg;
+                    subIndex = i;
+                    continue;
+                }
+                rest.push_back(argv[i]);
+            }
+
+            const bool wantsHelp = [&] {
+                for (int i = 2; i < argc; ++i) {
+                    std::string_view a = argv[i];
+                    if (a == "--help" || a == "-h") return true;
+                }
+                return false;
+            }();
+
+            if (subIndex < 0 || wantsHelp) {
+                std::ostream& os = subIndex < 0 ? std::cerr : std::cout;
+                os  << "Usage: cajeta coverage <subcommand> [options]\n"
                     << "\n"
                     << "Subcommands:\n"
                     << "  ignore   Add a typed exclude entry.\n"
@@ -2869,12 +2938,33 @@ namespace cajeta::buildtool {
                     << "\n"
                     << "Run `cajeta coverage <subcommand> --help` for "
                     << "subcommand-specific options.\n";
-                return argc < 3 ? 1 : 0;
+                if (subIndex < 0) {
+                    // `coverage` manages the exclude CONFIG; it does not
+                    // measure anything. Say so, because "Coverage" in a menu
+                    // reads like it should run a coverage pass.
+                    os << "\n"
+                       << "This subcommand edits the exclude list in "
+                          "cajeta.json. To MEASURE coverage, bind the "
+                          "cajeta.coverage.instrument / .report actions to a "
+                          "task and run that task.\n";
+                }
+                return subIndex < 0 ? 1 : 0;
             }
-            std::string_view sub = argv[2];
-            if (sub == "ignore") return coverageIgnoreCommand(argc, argv);
-            if (sub == "list")   return coverageListCommand(argc, argv);
-            if (sub == "remove") return coverageRemoveCommand(argc, argv);
+
+            // Re-lay the argv so the subcommand sits at index 2, which is
+            // where each handler starts scanning its own options.
+            std::vector<const char*> forwarded;
+            forwarded.reserve(rest.size() + 3);
+            forwarded.push_back(argv[0]);
+            forwarded.push_back(argv[1]);
+            forwarded.push_back(argv[subIndex]);
+            for (const char* a : rest) forwarded.push_back(a);
+            const int fargc = static_cast<int>(forwarded.size());
+            const char** fargv = forwarded.data();
+
+            if (sub == "ignore") return coverageIgnoreCommand(fargc, fargv);
+            if (sub == "list")   return coverageListCommand(fargc, fargv);
+            if (sub == "remove") return coverageRemoveCommand(fargc, fargv);
             std::cerr << "cajeta coverage: unknown subcommand '"
                       << sub << "' (expected: ignore, list, remove)\n";
             return 1;
