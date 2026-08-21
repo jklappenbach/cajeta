@@ -31,6 +31,8 @@
 //   Stdout (one JSON object per line; trailing newline required):
 //
 //     {"kind": "log",   "level": "info|warn|debug", "message": "..."}
+//        info/debug -> stdout (progress). warn -> stderr (a problem).
+//        Failure is reported by the `result` record, never by a log.
 //     {"kind": "warn",                              "message": "..."}
 //     {"kind": "write",                             "text":    "..."}
 //     {"kind": "output", "key": "...",              "value":   "..."}
@@ -459,11 +461,31 @@ namespace cajeta::buildtool {
             // record kinds without breaking older build tools).
             std::string k = kind->str();
             if (k == "log") {
-                // Verbose-mode log — write to stderr so it doesn't
-                // pollute structured outputs.
+                // Progress, not a problem — stdout unless the record says
+                // otherwise.
+                //
+                // These went to stderr on the reasoning that logs "pollute
+                // structured outputs". They do not: structured results travel
+                // as `output` and `result` records, and a plugin reports
+                // failure through `result`, never through a log. What the old
+                // routing actually produced was every line of an ordinary
+                // cajeta-coco run —
+                //
+                //   [plugin] coco: [1/6] reference pass
+                //   [plugin] coco: [3/6] instrumenting 6 of 10 modules
+                //
+                // — arriving on the error channel. IntelliJ's Build window
+                // colours by stream and has no third state, so a successful
+                // coverage run rendered as a wall of red and read as failure.
+                //
+                // `level` is honoured: an info/debug log is progress, a
+                // warn-level log is a problem and keeps the error channel.
                 auto msg = obj->getString("message");
                 if (msg) {
-                    std::cerr << "[plugin] " << msg->str() << "\n";
+                    auto level = obj->getString("level");
+                    const bool isWarn = level && level->str() == "warn";
+                    std::ostream& os = isWarn ? std::cerr : std::cout;
+                    os << "[plugin] " << msg->str() << "\n";
                 }
             } else if (k == "warn") {
                 auto msg = obj->getString("message");

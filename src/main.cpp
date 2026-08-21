@@ -5,6 +5,7 @@
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/TargetParser/Host.h>
+#include "cajeta/compile/IrTools.h"
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/compile/LintService.h"
@@ -275,6 +276,20 @@ int main(int argc, const char* argv[]) {
     // claimed by either falls through to the legacy compile flow below.
     if (argc >= 2 && std::string(argv[1]) == "archive") {
         return cajeta::dispatchArchive(argc, argv);
+    }
+
+    // `cajeta lower` / `cajeta disasm` — the LLVM tool surface tools built on
+    // cajeta's IR need, served by the compiler's own linked-in LLVM.
+    //
+    // Dispatched BEFORE the build-tool task probe, so a manifest task of
+    // either name cannot shadow the verb — the same reason `run` sits above
+    // it. See IrTools.h for why these exist rather than telling callers to
+    // install a matching llc.
+    if (argc >= 2 && std::string(argv[1]) == "lower") {
+        return cajeta::irLowerCommand(argc, argv);
+    }
+    if (argc >= 2 && std::string(argv[1]) == "disasm") {
+        return cajeta::irDisasmCommand(argc, argv);
     }
 
     // `cajeta run <file>.cajeta` — compile the file as a script unit and
