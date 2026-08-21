@@ -298,7 +298,7 @@ int main(int argc, char** argv) {
     // must run last, after the CUPTI disables — inherited warm caches from its
     // predecessors and read low, inflating both overhead figures.
     printf("\n--- T5: per-launch overhead ---\n");
-    auto bench = [&](int use_events) -> double {
+    auto bench_once = [&](int use_events) -> double {
         // Warm-up, discarded: same shape as the measured loop.
         for (int i = 0; i < 32; ++i) {
             if (use_events) {
@@ -334,17 +334,44 @@ int main(int argc, char** argv) {
         return (double) (host_ns() - t0) / (double) reps;
     };
 
+    // Repetition with a median (2026-08-21, plan item 1.2.d). A single timed
+    // loop was not precise enough under WSL2's GPU paravirtualization: run
+    // 32485085982 reported a NEGATIVE CUPTI overhead (-1212 ns, the traced run
+    // "faster" than untraced) and a combined events+CUPTI figure BELOW event
+    // bracketing alone. Both are impossible, and both say the same thing —
+    // run-to-run variance exceeded the ~4 us effect being measured.
+    //
+    // The median resists the occasional long run that a mean would absorb
+    // silently. The spread is reported alongside every figure so a measurement
+    // that cannot be trusted announces itself instead of being read as a
+    // finding: a delta smaller than the spread of its own inputs is noise, and
+    // the reader can now see that without re-running anything.
+    const int T5_REPS = 7;
+    auto bench = [&](int use_events, double* spread_out) -> double {
+        double v[T5_REPS];
+        for (int i = 0; i < T5_REPS; ++i) v[i] = bench_once(use_events);
+        for (int i = 1; i < T5_REPS; ++i) {           // insertion sort, N=7
+            double key = v[i];
+            int j = i - 1;
+            while (j >= 0 && v[j] > key) { v[j + 1] = v[j]; --j; }
+            v[j + 1] = key;
+        }
+        if (spread_out) *spread_out = v[T5_REPS - 1] - v[0];
+        return v[T5_REPS / 2];
+    };
+
     // CUPTI on: plain launches, and launches with events on top (the combined
     // cost, reported separately and never confused with either mechanism alone).
-    double traced_plain     = bench(0);
-    double traced_events    = bench(1);
+    double sp_tp = 0, sp_te = 0, sp_up = 0, sp_ue = 0;
+    double traced_plain     = bench(0, &sp_tp);
+    double traced_events    = bench(1, &sp_te);
     cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
     // CUPTI off: the shared baseline, and event bracketing measured ALONE.
     cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DRIVER);
-    double untraced_plain  = bench(0);
-    double untraced_events = bench(1);
+    double untraced_plain  = bench(0, &sp_up);
+    double untraced_events = bench(1, &sp_ue);
 
     printf("RESULT t5_ns_per_launch_untraced=%.1f\n", untraced_plain);
     printf("RESULT t5_ns_per_launch_cupti_traced=%.1f\n", traced_plain);
@@ -363,6 +390,22 @@ int main(int argc, char** argv) {
     // result back, which a real implementation batches. Stated because the
     // number would otherwise look low against published event-timing figures.
     printf("RESULT t5_event_bracket_reads_elapsed=NO\n");
+    // Every figure above is the MEDIAN of T5_REPS runs; these are the observed
+    // spreads (max-min) of the same samples. An overhead smaller than the spread
+    // of either input is not a measurement, and the run says so rather than
+    // leaving the reader to assume precision it does not have.
+    printf("RESULT t5_reps=%d\n", T5_REPS);
+    printf("RESULT t5_spread_untraced_ns=%.1f\n", sp_up);
+    printf("RESULT t5_spread_cupti_traced_ns=%.1f\n", sp_tp);
+    printf("RESULT t5_spread_event_bracketed_ns=%.1f\n", sp_ue);
+    printf("RESULT t5_spread_events_plus_cupti_ns=%.1f\n", sp_te);
+    {
+        double worst = sp_up > sp_tp ? sp_up : sp_tp;
+        double cupti_ovh = traced_plain - untraced_plain;
+        double mag = cupti_ovh < 0 ? -cupti_ovh : cupti_ovh;
+        printf("RESULT t5_cupti_overhead_exceeds_noise=%s\n",
+               mag > worst ? "YES" : "NO");
+    }
 
     // ---- T3: the Profiling API privilege gate ------------------------------
     // THE DECIDING TEST. T1/T2 only prove the exemption if this is REFUSED.
