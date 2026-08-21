@@ -76,9 +76,15 @@ number of experts.
   configuration is rejected at load with the required minimum.
 - **3.1.5** When an expert is evicted, only its residency is dropped; its
   bytes remain available from the mapping.
-- **3.1.6** When the mapping itself is the residency mechanism, eviction is
-  advisory (the page cache owns the pages) and the accounting reports both
-  the advisory intent and the observed resident size.
+- **3.1.6** Residency is an EXPLICIT buffer pool (resolved 2026-08-21,
+  §10.3): admitting copies the expert's bytes out of the mapping into a
+  fixed-size pool, and eviction returns that space. The copy is the price
+  of the policy actually owning residency — under advisory `madvise` the
+  kernel's own replacement is the real policy, and §9.1's comparison
+  against LRU would be measuring the page cache rather than this system.
+- **3.1.6.1** When an expert is admitted, the transient cost is the
+  mapping's pages plus the pool copy, and the accounting reports pool
+  occupancy separately from process resident size.
 - **3.1.7** When experts are shared across layers or tied, they are
   reference-counted so eviction cannot pull an expert still in use.
 
@@ -102,6 +108,14 @@ number of experts.
   hint over the expert's byte range, not a copy.
 
 ## 5. The learned policy
+
+### 5.0 Shape (resolved 2026-08-21, §10.5)
+An offline-trained per-model PRIOR is shipped, and at serving only the
+HEAD adapts (`freezeBackbone()`), so the backbone carries routing
+structure learned across sessions while the head tracks the current one.
+The prior-only arm is retained as a comparison in §9.1: if routing skew
+proves stable per model, it may capture most of the win at no hot-path
+cost, and that must be measured rather than assumed.
 
 ### 5.1 Rationale
 Recency is a weak model of MoE routing. Routing is skewed and correlated:
@@ -194,11 +208,18 @@ Routing structure is a property of a specific model. Weights learned on one
 must never be applied to another.
 
 - **6.1.1** When a policy is created, its weights belong to exactly one LLM,
-  identified by the checkpoint's identity.
+  identified TWO-LEVEL (resolved 2026-08-21, §10.2): the key is the base
+  identity — name, architecture, expert count, layer count — and the
+  tensor-directory hash is recorded alongside it as metadata.
 - **6.1.2** When a model is opened and weights exist for its identity, they
   are loaded; otherwise a fresh policy starts cold (§5.2.4).
-- **6.1.3** When a model's identity does not match the weights on disk, the
-  weights are refused, not adapted.
+- **6.1.3** When a model's base identity does not match the weights on
+  disk, the weights are refused, not adapted.
+- **6.1.3.1** When the base identity matches but the directory hash does
+  not, the weights are ACCEPTED and the difference noted — that is the
+  same model at a different quantization, whose routing decisions are
+  substantially the same, and cold-starting it would discard a valid
+  policy for no gain.
 - **6.1.4** When two models run in one process, each has its own policy
   instance and neither observes the other's routing.
 - **6.1.5** When a run ends, updated weights are persisted for that identity
@@ -233,8 +254,9 @@ The cache is a performance mechanism. It has no licence to change results.
 - **8.2** When the learned policy is active, the report adds its
   observation count, update time per step, and its hit rate against the
   baseline's on the same trace.
-- **8.3** When a routing trace is captured, it can be replayed offline
-  against any policy without running the model.
+- **8.3** When a routing trace is captured, it can be replayed against any
+  policy without running the model. Traces are in-memory development
+  artifacts or synthetic; user-derived traces are never persisted (§10.6).
 - **8.4** When a policy is compared to another, the comparison is on the
   same trace and the same budget.
 
@@ -262,24 +284,26 @@ The cache is a performance mechanism. It has no licence to change results.
   not the only one. The offline trace-replay harness (§8.3) stays useful
   for developing the model against a fixed trace before wiring it live,
   but it is a convenience now, not a workaround.
-- **10.2 What is "model identity" (§6.1.1)?** GGUF metadata name plus
-  architecture and expert counts is human-meaningful but collides across
-  quantizations; a hash of the tensor directory is exact but opaque.
-  **Recommendation: hash of the tensor directory, with the human name
-  stored alongside for display.**
-- **10.3 Does eviction mean anything under mmap?** If residency is the page
-  cache, "evict" is advisory and the OS may keep or drop pages regardless
-  (§3.1.6). The alternative is an explicit buffer pool that copies expert
-  bytes out of the mapping, giving exact control at the cost of a copy and
-  double residency. **Recommendation: measure both; start advisory.**
+- **10.2 What is "model identity"?** **RESOLVED 2026-08-21 — two-level
+  (§6.1.1, §6.1.3.1).** Base identity keys the weights; the directory hash
+  is metadata. Two quantizations of one model share a policy; a name
+  collision across genuinely different architectures still refuses.
+- **10.3 Does eviction mean anything under mmap?** **RESOLVED 2026-08-21 —
+  explicit buffer pool (§3.1.6).** Advisory residency would make the kernel
+  the real policy and invalidate the §9.1 comparison. The copy per
+  admission is accepted as the price of measurable control.
 - **10.4 GPU experts.** Device residency has a hard budget and an explicit
   transfer, which suits an exact policy better than mmap does — but adds a
   transfer to every admission. Deferred, and the §5 interface should not
   assume host memory.
-- **10.5 Is per-session adaptation worth it over a per-model prior?** If
-  routing skew is stable per model, an offline-trained prior may capture
-  most of the win with none of the hot-path cost. §9.1's trace comparison
-  should include "prior only, no online updates" as an arm.
-- **10.6 Trace privacy.** A routing trace is derived from user prompts.
-  Whether traces may be persisted, and under what retention, is a policy
-  question before §8.3 ships anything to disk.
+- **10.5 Is per-session adaptation worth it over a per-model prior?**
+  **RESOLVED 2026-08-21 — prior plus head-only online (§5.0).** The
+  prior-only arm stays in §9.1 as the control that decides whether the
+  online half earns its cost.
+- **10.6 Trace privacy.** **RESOLVED 2026-08-21 — weights only, never
+  traces.** Training happens live in process and only the learned weights
+  are persisted; they are already a lossy aggregate. Nothing derived from a
+  user's prompts reaches disk, so retention and consent do not arise. The
+  §8.3 replay harness runs on synthetic or explicitly consented traces,
+  and §8.3 is amended: a captured trace is an in-memory development
+  artifact, not a persisted one.
