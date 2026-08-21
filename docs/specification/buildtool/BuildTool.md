@@ -3949,7 +3949,7 @@ engine. The user guide chapter
 [23 — Code coverage](../../guide/23-code-coverage.md) is the
 task-oriented reference; this section places it in the action
 catalog. A worked project with one class per finding is
-`samples/tour/coco`.
+cajeta-coco's `samples/tour`.
 
 ```jsonc
 "settings": {
@@ -4021,7 +4021,7 @@ or an IDE re-reading the run are all cheap.
 program.** An excluded module is still lowered and still
 linked. (It was not always: dropping excluded modules from the
 link built a *different program* than the one under
-measurement, and `samples/tour/coco` — which excludes its own
+measurement, and cajeta-coco's `samples/tour` — which excludes its own
 test package — lost nine of twelve tests to it and reported a
 plausible-looking 12%. Nothing failed, which is what made it
 dangerous.)

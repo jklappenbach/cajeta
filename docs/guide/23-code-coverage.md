@@ -12,7 +12,7 @@ the run's probe data. On top of that it reports per-test attribution, a CRAP
 risk ranking, and mutation results.
 
 Everything below is demonstrated by a project you can run:
-[`samples/tour/coco`](../../samples/tour/coco/README.md), which contains one
+[cajeta-coco's `samples/tour`](https://github.com/jklappenbach/cajeta-coco/blob/main/samples/tour/README.md), which contains one
 class per finding.
 
 ---
@@ -398,7 +398,7 @@ own results.
 
 ## See also
 
-- [`samples/tour/coco`](../../samples/tour/coco/README.md) — one class per
+- [cajeta-coco's `samples/tour`](https://github.com/jklappenbach/cajeta-coco/blob/main/samples/tour/README.md) — one class per
   finding, and what each looks like in the IDE.
 - [BuildTool.md § Code coverage](../specification/buildtool/BuildTool.md#code-coverage-the-devcajetacoverage-plugin)
   — the plugin in the context of the whole action catalog.

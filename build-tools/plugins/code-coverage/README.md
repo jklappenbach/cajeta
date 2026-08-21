@@ -30,8 +30,8 @@ attribution, a CRAP risk ranking, and mutation survivors.
 - [BuildTool.md § Code coverage](../../../docs/specification/buildtool/BuildTool.md)
   — the plugin in the context of the action catalog, including a "Not yet
   built" list that preserves the design intent recorded here.
-- [`samples/tour/coco`](../../../samples/tour/coco/README.md) — a runnable
-  project with one class per finding.
+- [cajeta-coco's `samples/tour`](https://github.com/jklappenbach/cajeta-coco/blob/main/samples/tour/README.md) — a runnable project with one
+  class per finding.
 
 `cajeta.json` in this directory is kept as the record of the original
 first-party plugin design.
