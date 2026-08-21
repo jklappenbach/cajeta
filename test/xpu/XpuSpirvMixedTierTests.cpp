@@ -49,7 +49,7 @@ const char* PRE =
 
 // Direction 1: native accumulator (f32) consuming software-tier operands
 // (bf16) — the exact `Ewise.matmulBf16` first shape from the spec's 1.7 repro.
-TEST(XpuSpirvMixedTierTests, nativeAccOverSoftwareOperandsSkipsNotAborts) {
+TEST(XpuSpirvMixedTierTests, nativeAccOverSoftwareOperandsDemotesToPortable) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    @Kernel\n"
@@ -70,16 +70,19 @@ TEST(XpuSpirvMixedTierTests, nativeAccOverSoftwareOperandsSkipsNotAborts) {
     int32_t rc = runI32Spirv(src);          // pre-fix: SIGABRT here, in codegen
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "expected the kernel-skipped note for the mixed-tier kernel; stderr was:\n"
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "a straddling kernel must DEMOTE to the portable tier and lower, "
+           "not be skipped; stderr was:\n" << err;
+    EXPECT_NE(err.find("[mma-tiering]"), std::string::npos)
+        << "expected the portable-tier note for the demoted kernel; stderr was:\n"
         << err;
-    EXPECT_NE(err.find("bad"), std::string::npos)
-        << "the note must name the skipped kernel; stderr was:\n" << err;
+    EXPECT_NE(err.find("bfloat16"), std::string::npos)
+        << "the tiering note must name the demoted dtype; stderr was:\n" << err;
 }
 
 // Direction 2: software accumulator (f64 — no SPIR-V coop-matrix config) fed
 // by native-tier operands (f16 — the advertised native config).
-TEST(XpuSpirvMixedTierTests, softwareAccOverNativeOperandsSkipsNotAborts) {
+TEST(XpuSpirvMixedTierTests, softwareAccOverNativeOperandsDemotesToPortable) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    @Kernel\n"
@@ -100,8 +103,11 @@ TEST(XpuSpirvMixedTierTests, softwareAccOverNativeOperandsSkipsNotAborts) {
     int32_t rc = runI32Spirv(src);
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "expected the kernel-skipped note for the mixed-tier kernel; stderr was:\n"
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "a straddling kernel must DEMOTE to the portable tier and lower, "
+           "not be skipped; stderr was:\n" << err;
+    EXPECT_NE(err.find("[mma-tiering]"), std::string::npos)
+        << "expected the portable-tier note for the demoted kernel; stderr was:\n"
         << err;
 }
 

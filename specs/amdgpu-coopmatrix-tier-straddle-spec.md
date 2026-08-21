@@ -1,5 +1,16 @@
 # AMD `coopMatrixTier` classifies tiles in isolation, silently removing the
 # all-f32 and all-bf16 GEMMs from every AMDGPU build
+#
+# **FIXED 2026-08-21.** Tiers are now decided for the KERNEL, not per tile:
+# `KernelLowering::scanCoopMatrixTiers` walks the body before any slot is
+# built and, when the tiles straddle, demotes them all to Portable so the
+# kernel LOWERS on the portable tile instead of being skipped. Verified on
+# gfx1151 with no override: `tools/gpu/run-gpu-parity.sh` reports the f32
+# GEMM on device, 1024/1024 elements exact. The four tests that pinned the
+# old skip-gracefully contract were renamed to `…DemotesToPortable` and now
+# assert no skip note plus the `[mma-tiering]` note; `matmulF16`,
+# `matmulBf16Wide` and `matmulI8` keep the NATIVE path (all-Native, no
+# straddle). Retained below as the record of the defect.
 
 **Filed 2026-08-20** (found by cajeta-llama Unit 15's first attempt to run
 the engine on real silicon; affects any `--xpu-backend=amdgpu` build whose

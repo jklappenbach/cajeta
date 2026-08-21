@@ -46,7 +46,7 @@ const char* PRE =
 
 // The all-bf16 GEMM (bf16 accumulator — `Ewise.matmulBf16`'s shape) is
 // mixed-tier on AMD and must take the graceful skip note, same as on NVPTX.
-TEST(AmdgpuCoopBf16Tests, allBf16MixedTierSkipsGracefully) {
+TEST(AmdgpuCoopBf16Tests, allBf16MixedTierDemotesToPortable) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    @Kernel\n"
@@ -67,8 +67,11 @@ TEST(AmdgpuCoopBf16Tests, allBf16MixedTierSkipsGracefully) {
     int32_t rc = runI32Amdgpu(src);
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "expected the kernel-skipped note for the mixed-tier kernel; stderr was:\n"
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "a straddling kernel must DEMOTE to the portable tier and lower, "
+           "not be skipped; stderr was:\n" << err;
+    EXPECT_NE(err.find("[mma-tiering]"), std::string::npos)
+        << "expected the portable-tier note for the demoted kernel; stderr was:\n"
         << err;
 }
 
