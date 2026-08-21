@@ -17,7 +17,7 @@ class per finding.
 
 ---
 
-## Toolchain floor: cajeta 0.21.1
+## Toolchain floor: cajeta 0.22.2
 
 The plugin ships as a `.cja` and is **AOT-compiled by the toolchain that runs
 it** (see "What the plugin is" below). That makes the compiler part of coco's
@@ -31,7 +31,18 @@ cajeta: uncaught exception (value=0x3)
 ```
 
 Publishing a fixed plugin cannot help; the bytes are already correct and the
-compile of them is not. `cajeta --version` first.
+compile of them is not.
+
+**0.22.2** raises the floor for a second reason. coco lowers IR and reads
+bitcode with `cajeta lower` / `cajeta disasm` rather than a separately
+installed `llc` / `llvm-dis`. Before that it needed an LLVM matching the
+compiler *exactly*, which installing a cajeta package does not give you: the
+package ships LLVM linked into the compiler, not the LLVM command-line tools,
+so `llc` resolved to whatever the distro packaged and could not parse the IR
+cajeta emits. That failure surfaced as `error: unterminated attribute group`
+from LLVM's parser, naming nothing that would lead you here.
+
+`cajeta --version` first.
 
 ## Quick start
 

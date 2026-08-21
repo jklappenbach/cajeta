@@ -62,8 +62,14 @@ object BuildToolPathValidator {
      * from whichever method reads a file first. Publishing a fixed plugin
      * cannot help: the bytes are already right and the compile of them is not.
      * Nothing in that stack names a version, which is why this warning exists.
+     *
+     * Raised to 0.22.2, where coco stopped shelling out to `llc` and started
+     * lowering IR with `cajeta lower`. Below that it needs an LLVM matching the
+     * compiler exactly, which an `apt install cajeta` does not provide — the
+     * package carries LLVM linked into the compiler, not the command-line
+     * tools — so `llc` resolves to the distro's and cannot parse the IR.
      */
-    const val COCO_MIN_TOOLCHAIN: String = "0.21.1"
+    const val COCO_MIN_TOOLCHAIN: String = "0.22.2"
 
     /**
      * `cajeta 0.21.0 (7c0f40f3)` → `0.21.0`; null when the line is not one.

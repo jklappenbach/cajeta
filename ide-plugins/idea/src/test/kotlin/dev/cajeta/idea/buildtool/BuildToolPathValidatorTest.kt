@@ -17,19 +17,31 @@ import org.junit.Test
 
 class BuildToolCoverageFloorTest {
 
+    // Versions are derived from COCO_MIN_TOOLCHAIN rather than written out.
+    // The floor moves — 0.21.1 when coco's plugin was miscompiled by an older
+    // toolchain, 0.22.2 when coco stopped shelling out to llc — and a test
+    // that hardcodes it fails on the bump for no reason anyone learns from.
+    private val floor = BuildToolPathValidator.COCO_MIN_TOOLCHAIN
+    private fun bump(v: String, delta: Int): String {
+        val p = v.split('.').map { it.toInt() }.toMutableList()
+        p[p.size - 1] = p.last() + delta
+        return p.joinToString(".")
+    }
+
     @Test
     fun aVersionBelowTheFloorWarnsAndNamesBothVersions() {
-        val w = BuildToolPathValidator.coverageFloorWarning("cajeta 0.21.0 (7c0f40f3)")
+        val below = bump(floor, -1)
+        val w = BuildToolPathValidator.coverageFloorWarning("cajeta $below (7c0f40f3)")
         assertNotNull(w)
-        assertTrue("names what was found: $w", w!!.contains("0.21.0"))
-        assertTrue("names the floor: $w", w.contains(BuildToolPathValidator.COCO_MIN_TOOLCHAIN))
+        assertTrue("names what was found: $w", w!!.contains(below))
+        assertTrue("names the floor: $w", w.contains(floor))
         assertTrue("names the symptom so the stack is attributable: $w", w.contains("value=0x3"))
     }
 
     @Test
     fun theFloorItselfAndNewerDoNotWarn() {
-        assertNull(BuildToolPathValidator.coverageFloorWarning("cajeta 0.21.1 (d43749d9)"))
-        assertNull(BuildToolPathValidator.coverageFloorWarning("cajeta 0.22.0 (a61fa0ca)"))
+        assertNull(BuildToolPathValidator.coverageFloorWarning("cajeta $floor (d43749d9)"))
+        assertNull(BuildToolPathValidator.coverageFloorWarning("cajeta ${bump(floor, 1)} (a61fa0ca)"))
         assertNull(BuildToolPathValidator.coverageFloorWarning("cajeta 1.0.0 (deadbeef)"))
     }
 
@@ -40,6 +52,7 @@ class BuildToolCoverageFloorTest {
         assertTrue(BuildToolPathValidator.isBelow("0.21.0", "0.21.1"))
         assertFalse(BuildToolPathValidator.isBelow("0.21.1", "0.21.1"))
         assertFalse(BuildToolPathValidator.isBelow("0.100.0", "0.21.1"))
+        // These are fixed on purpose: they pin the COMPARISON, not the floor.
     }
 
     @Test
