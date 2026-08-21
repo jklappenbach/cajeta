@@ -104,12 +104,21 @@ jobs:
           done
 
           echo "== run outlives its callees =="
-          # `run` is on the stack for every sample, so its slice must be the
-          # longest. If the diff closed and reopened frames each tick, all three
-          # would have equal, tick-sized durations instead.
+          # `run` is on the stack for every sample; `inner` leaves after the
+          # third. So run's slice MUST be strictly longer. If the diff closed and
+          # reopened every frame each tick, all three would come out equal and
+          # tick-sized — a trace that still loads and is still wrong.
+          #
+          # Asserted as a strict comparison, not as "run appears in the table":
+          # presence is satisfied by exactly the broken transform this is meant
+          # to catch.
           echo "select name, max(dur) as d from slice group by name order by d desc;" | q | tee pdur.txt
-          head -4 pdur.txt
-          test "$(grep -c 'test.App.run' pdur.txt)" -ge 1
+          cat pdur.txt
+          run_d=$(echo "select max(dur) as d from slice where name = 'test.App.run';"                   | q | grep -oE '^[0-9]+$' | head -1)
+          inner_d=$(echo "select max(dur) as d from slice where name = 'test.App.inner';"                     | q | grep -oE '^[0-9]+$' | head -1)
+          echo "run=$run_d inner=$inner_d"
+          test -n "$run_d" -a -n "$inner_d"             || { echo "FAIL: could not read slice durations"; exit 1; }
+          test "$run_d" -gt "$inner_d"             || { echo "FAIL: run ($run_d) did not outlive inner ($inner_d) — the diff is closing frames it should have left open"; exit 1; }
 
           echo "== thread and fiber are distinct tracks (spec 4.3) =="
           echo "select count(distinct track_id) as tracks from slice;" | q | tee ptracks.txt
