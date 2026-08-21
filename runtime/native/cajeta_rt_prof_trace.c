@@ -100,7 +100,13 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 #define CAJ_PB_TE_NAME_IID        10    /* TrackEvent.name_iid                 */
 #define CAJ_PB_TE_TRACK_UUID      11    /* TrackEvent.track_uuid               */
 #define CAJ_PB_TE_NAME            23    /* TrackEvent.name                     */
+#define CAJ_PB_TE_SOURCE_LOC_IID  34    /* TrackEvent.source_location_iid      */
 #define CAJ_PB_ID_EVENT_NAMES      2    /* InternedData.event_names            */
+#define CAJ_PB_ID_SOURCE_LOCS      4    /* InternedData.source_locations       */
+#define CAJ_PB_SL_IID              1    /* SourceLocation.iid                  */
+#define CAJ_PB_SL_FILE             2    /* SourceLocation.file_name            */
+#define CAJ_PB_SL_FUNCTION         3    /* SourceLocation.function_name        */
+#define CAJ_PB_SL_LINE             4    /* SourceLocation.line_number          */
 #define CAJ_PB_EN_IID              1    /* EventName.iid                       */
 #define CAJ_PB_EN_NAME             2    /* EventName.name                      */
 
@@ -194,7 +200,8 @@ int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
 // `name` only for one-off events.
 int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
                                  uint64_t track_uuid, int32_t type,
-                                 uint64_t name_iid, const char* name) {
+                                 uint64_t name_iid, const char* name,
+                                 uint64_t source_iid) {
     uint8_t te[512];
     int32_t n = __cajeta_pb_uint64(te, CAJ_PB_TE_TYPE, (uint64_t) type);
     n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_TRACK_UUID, track_uuid);
@@ -204,13 +211,14 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
         int32_t ln = 0; while (name[ln] && ln < 400) ln++;
         n += __cajeta_pb_bytes(te + n, CAJ_PB_TE_NAME, (const uint8_t*) name, ln);
     }
+    if (source_iid) n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_SOURCE_LOC_IID, source_iid);
     uint8_t pkt[700];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, seq_id);
     // A slice that references an interned name CONSUMES incremental state.
     // Without this the reader skips the association and the slice loads with a
     // null name — the trace still parses, which is the trap.
-    if (name_iid)
+    if (name_iid || source_iid)
         p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS, CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
     return caj_pb_packet(out, pkt, p);
@@ -238,6 +246,15 @@ typedef struct {
     // resolved to the first iid. CI run 32491747115 caught it as a trace
     // containing exactly one distinct name.
     int32_t     name_off[CAJ_PROF_MAX_INTERNED];
+    // Source locations intern in their OWN iid space (Perfetto keys interning
+    // per field, not per sequence). Keeping them separate is what preserves
+    // §7.4: a method sampled at forty lines is still ONE EventName, with forty
+    // SourceLocations beside it. Folding "file:line" into the slice name would
+    // have minted a fresh interned name per line and defeated the whole table.
+    int32_t     n_srcs;
+    int32_t     src_file_off[CAJ_PROF_MAX_INTERNED];
+    int32_t     src_func_off[CAJ_PROF_MAX_INTERNED];
+    int32_t     src_line[CAJ_PROF_MAX_INTERNED];
     int32_t     pool_used;
     char        pool[CAJ_PROF_NAME_POOL];
     int32_t     state_cleared;   // has a CLEARED packet been emitted yet
@@ -262,6 +279,7 @@ int32_t __cajeta_prof_trace_open(CajProfWriter* w, const char* path) {
     if (!w->f) return 0;
     w->seq_id = 1;
     w->n_names = 0;
+    w->n_srcs = 0;
     w->pool_used = 0;
     w->state_cleared = 0;
     w->packets = 0;
@@ -302,6 +320,78 @@ uint64_t __cajeta_prof_intern(CajProfWriter* w, const char* name) {
     return iid;
 }
 
+// Copy a string into the writer's pool, returning its offset or -1. Shared by
+// both interning tables, and the reason neither can be left holding a caller's
+// scratch buffer.
+static int32_t caj_prof_pool_put(CajProfWriter* w, const char* s) {
+    int32_t len = 0;
+    while (s[len]) len++;
+    if (w->pool_used + len + 1 > CAJ_PROF_NAME_POOL) return -1;
+    int32_t off = w->pool_used;
+    for (int32_t k = 0; k <= len; k++) w->pool[off + k] = s[k];
+    w->pool_used += len + 1;
+    return off;
+}
+
+static int32_t caj_prof_streq(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+// SourceLocation packet: file, function, line. Emitted once per distinct triple.
+static int32_t caj_prof_emit_source(CajProfWriter* w, uint64_t iid,
+                                    const char* file, const char* func,
+                                    int32_t line, int32_t first) {
+    uint8_t sl[600];
+    int32_t e = __cajeta_pb_uint64(sl, CAJ_PB_SL_IID, iid);
+    int32_t fl = 0; while (file && file[fl]) fl++;
+    e += __cajeta_pb_bytes(sl + e, CAJ_PB_SL_FILE, (const uint8_t*) file, fl);
+    int32_t nl = 0; while (func && func[nl]) nl++;
+    e += __cajeta_pb_bytes(sl + e, CAJ_PB_SL_FUNCTION, (const uint8_t*) func, nl);
+    e += __cajeta_pb_uint64(sl + e, CAJ_PB_SL_LINE, (uint64_t) (line > 0 ? line : 0));
+    uint8_t id[700];
+    int32_t d = __cajeta_pb_bytes(id, CAJ_PB_ID_SOURCE_LOCS, sl, e);
+    uint8_t pkt[800];
+    int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_SEQ_ID, w->seq_id);
+    p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS,
+                            first ? CAJ_PB_SEQ_FLAG_CLEARED : CAJ_PB_SEQ_FLAG_NEEDS);
+    p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_INTERNED, id, d);
+    CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+    caj_pb_put(&b, pkt, p);
+    return caj_prof_flush(w, &b);
+}
+
+// Intern a (file, function, line) triple. Returns its iid, or 0 if it could not
+// be interned — in which case the caller omits the field rather than pointing a
+// slice at the wrong line.
+uint64_t __cajeta_prof_intern_source(CajProfWriter* w, const char* file,
+                                     const char* func, int32_t line) {
+    if (!w || !file || !func) return 0;
+    for (int32_t i = 0; i < w->n_srcs; i++) {
+        if (w->src_line[i] == line
+            && caj_prof_streq(&w->pool[w->src_file_off[i]], file)
+            && caj_prof_streq(&w->pool[w->src_func_off[i]], func))
+            return (uint64_t) (i + 1);
+    }
+    if (w->n_srcs >= CAJ_PROF_MAX_INTERNED) return 0;
+    int32_t fo = caj_prof_pool_put(w, file);
+    if (fo < 0) return 0;
+    int32_t no = caj_prof_pool_put(w, func);
+    if (no < 0) { w->pool_used = fo; return 0; }
+    w->src_file_off[w->n_srcs] = fo;
+    w->src_func_off[w->n_srcs] = no;
+    w->src_line[w->n_srcs] = line;
+    w->n_srcs++;
+    uint64_t iid = (uint64_t) w->n_srcs;
+    if (!caj_prof_emit_source(w, iid, file, func, line, w->state_cleared ? 0 : 1)) {
+        w->n_srcs--; w->pool_used = fo; return 0;
+    }
+    w->state_cleared = 1;
+    return iid;
+}
+
+int32_t __cajeta_prof_trace_source_count(CajProfWriter* w) { return w ? w->n_srcs : 0; }
+
 int32_t __cajeta_prof_trace_track(CajProfWriter* w, uint64_t uuid,
                                   uint64_t parent_uuid, const char* name) {
     if (!w || !w->f) return 0;
@@ -312,17 +402,32 @@ int32_t __cajeta_prof_trace_track(CajProfWriter* w, uint64_t uuid,
 
 // Interns `name` and emits the slice referencing it. A slice with no name (a
 // SLICE_END) passes name = NULL and carries neither field.
-int32_t __cajeta_prof_trace_slice(CajProfWriter* w, uint64_t ts,
-                                  uint64_t track_uuid, int32_t type,
-                                  const char* name) {
+// `file` and `line` are optional: pass NULL / 0 for a slice with no source
+// position (a SLICE_END, which needs neither).
+//
+// The line recorded is the one observed WHEN THE SLICE OPENED. A frame stays on
+// the stack across many samples at many lines; the slice says where it was first
+// seen, not where it spent its time. Reading it as the latter would be wrong,
+// which is why it is a source_location and not a duration attribution.
+int32_t __cajeta_prof_trace_slice_at(CajProfWriter* w, uint64_t ts,
+                                     uint64_t track_uuid, int32_t type,
+                                     const char* name, const char* file,
+                                     int32_t line) {
     if (!w || !w->f) return 0;
     uint64_t iid = name ? __cajeta_prof_intern(w, name) : 0;
+    uint64_t src = (file && name) ? __cajeta_prof_intern_source(w, file, name, line) : 0;
     CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
     // iid == 0 with a non-NULL name means the table was full or the intern
     // failed; fall back to the inline name rather than dropping it.
     __cajeta_prof_emit_slice(&b, w->seq_id, ts, track_uuid, type,
-                             iid, iid ? NULL : name);
+                             iid, iid ? NULL : name, src);
     return caj_prof_flush(w, &b);
+}
+
+int32_t __cajeta_prof_trace_slice(CajProfWriter* w, uint64_t ts,
+                                  uint64_t track_uuid, int32_t type,
+                                  const char* name) {
+    return __cajeta_prof_trace_slice_at(w, ts, track_uuid, type, name, NULL, 0);
 }
 
 int64_t __cajeta_prof_trace_packets(CajProfWriter* w) { return w ? w->packets : 0; }
@@ -441,7 +546,11 @@ int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
         int32_t n = s->n_frames;
         if (n > CAJ_PROF_MAX_DEPTH) n = CAJ_PROF_MAX_DEPTH;
         const CajetaFrameDesc* cur[CAJ_PROF_MAX_DEPTH];
-        for (int32_t k = 0; k < n; k++) cur[k] = s->frames[n - 1 - k].desc;
+        int32_t curline[CAJ_PROF_MAX_DEPTH];
+        for (int32_t k = 0; k < n; k++) {
+            cur[k] = s->frames[n - 1 - k].desc;
+            curline[k] = s->frames[n - 1 - k].line;
+        }
 
         // Common prefix with what is already open.
         int32_t common = 0;
@@ -457,8 +566,9 @@ int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
         for (int32_t k = common; k < n; k++) {
             char name[256];
             caj_prof_frame_name(name, (int32_t) sizeof(name), cur[k]);
-            __cajeta_prof_trace_slice(&w, (uint64_t) s->host_ns, t->uuid,
-                                      CAJ_TE_SLICE_BEGIN, name);
+            const char* file = (cur[k] && cur[k]->fileName) ? cur[k]->fileName : NULL;
+            __cajeta_prof_trace_slice_at(&w, (uint64_t) s->host_ns, t->uuid,
+                                         CAJ_TE_SLICE_BEGIN, name, file, curline[k]);
             t->open[k] = cur[k];
         }
         t->depth = n;

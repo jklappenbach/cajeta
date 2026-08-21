@@ -254,3 +254,44 @@ TEST(ProfilerTraceWire, internCopiesOutOfCallerScratch) {
     w.close(mem.data());
     std::remove(path.c_str());
 }
+
+// ── 6.1.d: source locations ───────────────────────────────────────────────
+// Locations intern in their OWN iid space, separate from event names. That
+// separation is the whole design: a method sampled at forty lines must stay ONE
+// EventName (spec §7.4) with forty SourceLocations beside it. Folding
+// "file:line" into the slice name would have minted a fresh interned name per
+// line and quietly destroyed the interning table's purpose.
+TEST(ProfilerTraceWire, sourceLocationsInternSeparatelyFromNames) {
+    Writer w = wr();
+    auto& base = wire();
+    auto internSrc = reinterpret_cast<uint64_t (*)(void*, const char*, const char*, int32_t)>(
+        base.jit->lookupRawSymbol("__cajeta_prof_intern_source"));
+    auto srcCount = reinterpret_cast<int32_t (*)(void*)>(
+        base.jit->lookupRawSymbol("__cajeta_prof_trace_source_count"));
+    ASSERT_NE(internSrc, nullptr) << "__cajeta_prof_intern_source unresolved";
+    ASSERT_NE(srcCount, nullptr);
+
+    std::vector<uint8_t> mem(static_cast<size_t>(w.wsize()), 0);
+    std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp")
+                     + "/cajeta-src.pftrace";
+    ASSERT_EQ(w.open(mem.data(), path.c_str()), 1);
+
+    // One method, three lines — the shape a sampler actually produces.
+    uint64_t l10 = internSrc(mem.data(), "App.cajeta", "test.App.run", 10);
+    uint64_t l11 = internSrc(mem.data(), "App.cajeta", "test.App.run", 11);
+    uint64_t l10b = internSrc(mem.data(), "App.cajeta", "test.App.run", 10);
+    EXPECT_NE(l10, l11) << "different lines must be different source locations";
+    EXPECT_EQ(l10, l10b) << "the same triple must dedup";
+    EXPECT_EQ(srcCount(mem.data()), 2);
+
+    // The name table is untouched by any of that — the separation under test.
+    EXPECT_EQ(w.interned(mem.data()), 0)
+        << "interning a source location leaked into the event-name table";
+    uint64_t n = w.intern(mem.data(), "test.App.run");
+    EXPECT_EQ(n, 1u) << "name iids are their own space, starting at 1";
+    EXPECT_EQ(w.interned(mem.data()), 1);
+    EXPECT_EQ(srcCount(mem.data()), 2) << "interning a name disturbed the locations";
+
+    w.close(mem.data());
+    std::remove(path.c_str());
+}

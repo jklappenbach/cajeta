@@ -128,6 +128,22 @@ jobs:
           echo "select count(*) as unfinished from slice where dur < 0;" | q | tee punf.txt
           grep -qE '(^|[^0-9])0([^0-9]|$)' punf.txt             || { echo "FAIL: trace ended with slices left open"; exit 1; }
 
+      # 6.1.d: slices carry file:line, interned separately from names so a
+      # method sampled at many lines stays one EventName. The arg keys are
+      # dumped before the assertion so a mapping change reports what it became
+      # rather than just failing.
+      - name: Slices carry source locations
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin prof.pftrace; }
+          echo "== arg keys present =="
+          echo "select distinct key from args order by key;" | q | tee argkeys.txt
+          echo "== source file reaches the reader =="
+          echo "select count(*) as n from args where string_value like '%App.cajeta%';"             | q | tee srcargs.txt
+          n=$(grep -oE '^[0-9]+$' srcargs.txt | head -1)
+          test -n "$n" -a "$n" != "0"             || { echo "FAIL: no slice carried a source file; see arg keys above"; exit 1; }
+          echo "source locations present in $n arg(s)"
+
       # 7.6: a trace cut mid-write must still read up to the cut. Truncation is
       # the normal end of a profiled run that was killed, so this is the common
       # case, not the edge case.
