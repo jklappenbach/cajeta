@@ -3971,6 +3971,32 @@ namespace cajeta {
                         builder->CreateStructGEP(stringStructTy, sPtr, 4,
                             "concat.s_cachedCpLength"));
 
+                    // element-ownership 3.4.3 — reclaim INTERIOR chain temps.
+                    // `a + b + c` parses as `((a + b) + c)`: the inner node is
+                    // an anonymous concat whose wrapper nobody owns (the arena
+                    // pre-pass routes only the top-level node of a name-bound
+                    // concat, and a declarator's drop entry covers only the
+                    // value the name binds). Its bytes have just been copied
+                    // into this result, so it is dead here. Dropping it is the
+                    // same reclamation MethodCallExpression does for a concat
+                    // argument, keyed on the same classifier — which excludes
+                    // arena-routed nodes (the arena reset owns those) and every
+                    // lvalue shape. Without this, every chained concat in the
+                    // program leaked one wrapper per interior `+`, plus that
+                    // wrapper's byte buffer when its text exceeded the 12-byte
+                    // inline capacity.
+                    if (llvm::Function* interiorDrop =
+                            module->getRuntimeFunction("__cajeta_string_drop")) {
+                        if (MethodCallExpression::freshOwnedStringTemp(lhsAst)
+                                && l && l->getType()->isPointerTy()) {
+                            builder->CreateCall(interiorDrop, {l});
+                        }
+                        if (MethodCallExpression::freshOwnedStringTemp(rhsAst)
+                                && r && r->getType()->isPointerTy()) {
+                            builder->CreateCall(interiorDrop, {r});
+                        }
+                    }
+
                     // Pin resolvedType so a caller using this concat as a ctor /
                     // method argument recovers the class type (mirrors
                     // NewExpression and MethodCallExpression).
