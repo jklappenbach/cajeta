@@ -108,10 +108,24 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 #define CAJ_TE_SLICE_END   2
 #define CAJ_TE_INSTANT     3
 
-// SEQ_INCREMENTAL_STATE_CLEARED — tells a reader the interning table starts
-// fresh here. Emitted on the first packet of a sequence so a trace that begins
-// mid-stream, or one truncated and resumed, is still interpretable.
+// TracePacket.SequenceFlags. The two are a PAIR and the ordering is not
+// cosmetic — established by CI (run 32489238054), which loaded a trace whose
+// every slice name came back [NULL].
+//
+//   CLEARED  goes on the packet that ESTABLISHES incremental state, i.e. the
+//            first InternedData of a sequence. It means "nothing before this
+//            point applies". Putting it on the first slice instead — as this
+//            file originally did — tells the reader to discard the interned
+//            names emitted just before it.
+//   NEEDS    goes on every packet that CONSUMES incremental state. The proto is
+//            explicit that a reader SKIPS such a packet when no CLEARED has been
+//            seen on the sequence, so a slice referencing name_iid without this
+//            flag silently loses its name rather than failing.
+//
+// Both are wire-valid and field-number-correct in either arrangement, which is
+// exactly why only a real reader could catch this.
 #define CAJ_PB_SEQ_FLAG_CLEARED 1
+#define CAJ_PB_SEQ_FLAG_NEEDS   2
 
 typedef struct {
     uint8_t* buf;
@@ -158,7 +172,8 @@ int32_t __cajeta_prof_emit_track(CajPbBuf* out, uint64_t uuid,
 // InternedData carrying one EventName. §7.4: a repeated name is emitted once and
 // referenced by iid thereafter.
 int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
-                                uint64_t iid, const char* name) {
+                                uint64_t iid, const char* name,
+                                int32_t first_in_sequence) {
     int32_t ln = 0; while (name && name[ln] && ln < 400) ln++;
     uint8_t en[512];
     int32_t e = __cajeta_pb_uint64(en, CAJ_PB_EN_IID, iid);
@@ -167,6 +182,10 @@ int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
     int32_t d = __cajeta_pb_bytes(id, CAJ_PB_ID_EVENT_NAMES, en, e);
     uint8_t pkt[700];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_SEQ_ID, seq_id);
+    // The interning table IS the incremental state, so CLEARED belongs here.
+    p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS,
+                            first_in_sequence ? CAJ_PB_SEQ_FLAG_CLEARED
+                                              : CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_INTERNED, id, d);
     return caj_pb_packet(out, pkt, p);
 }
@@ -175,8 +194,7 @@ int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
 // `name` only for one-off events.
 int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
                                  uint64_t track_uuid, int32_t type,
-                                 uint64_t name_iid, const char* name,
-                                 int32_t first_in_sequence) {
+                                 uint64_t name_iid, const char* name) {
     uint8_t te[512];
     int32_t n = __cajeta_pb_uint64(te, CAJ_PB_TE_TYPE, (uint64_t) type);
     n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_TRACK_UUID, track_uuid);
@@ -189,8 +207,11 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
     uint8_t pkt[700];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, seq_id);
-    if (first_in_sequence)
-        p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS, CAJ_PB_SEQ_FLAG_CLEARED);
+    // A slice that references an interned name CONSUMES incremental state.
+    // Without this the reader skips the association and the slice loads with a
+    // null name — the trace still parses, which is the trap.
+    if (name_iid)
+        p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS, CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
     return caj_pb_packet(out, pkt, p);
 }

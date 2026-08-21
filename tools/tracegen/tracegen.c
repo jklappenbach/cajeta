@@ -31,17 +31,19 @@ int main(int argc, char** argv) {
     __cajeta_prof_emit_track(&b, thread_track, 0, "cajeta.main");
     __cajeta_prof_emit_track(&b, child_track, thread_track, "cajeta.fiber.1");
 
-    // One interned name, referenced by both slices below — 5.1.c.
-    __cajeta_prof_emit_name(&b, seq, 1, "test.App.run");
+    // One interned name, referenced by every slice below — 5.1.c. This packet
+    // carries SEQ_INCREMENTAL_STATE_CLEARED because it ESTABLISHES the interning
+    // table; the slices then carry SEQ_NEEDS_INCREMENTAL_STATE to consume it.
+    __cajeta_prof_emit_name(&b, seq, 1, "test.App.run", 1);
 
     // Nested and overlapping slices — 5.1.d. Outer encloses inner on one track;
     // the child track carries an independent slice that spans the boundary.
-    __cajeta_prof_emit_slice(&b, seq, 1000, thread_track, CAJ_TE_SLICE_BEGIN, 1, 0, 1);
-    __cajeta_prof_emit_slice(&b, seq, 1200, child_track,  CAJ_TE_SLICE_BEGIN, 1, 0, 0);
-    __cajeta_prof_emit_slice(&b, seq, 1500, thread_track, CAJ_TE_SLICE_BEGIN, 1, 0, 0);
-    __cajeta_prof_emit_slice(&b, seq, 1800, thread_track, CAJ_TE_SLICE_END,   0, 0, 0);
-    __cajeta_prof_emit_slice(&b, seq, 2200, child_track,  CAJ_TE_SLICE_END,   0, 0, 0);
-    __cajeta_prof_emit_slice(&b, seq, 2500, thread_track, CAJ_TE_SLICE_END,   0, 0, 0);
+    __cajeta_prof_emit_slice(&b, seq, 1000, thread_track, CAJ_TE_SLICE_BEGIN, 1, 0);
+    __cajeta_prof_emit_slice(&b, seq, 1200, child_track,  CAJ_TE_SLICE_BEGIN, 1, 0);
+    __cajeta_prof_emit_slice(&b, seq, 1500, thread_track, CAJ_TE_SLICE_BEGIN, 1, 0);
+    __cajeta_prof_emit_slice(&b, seq, 1800, thread_track, CAJ_TE_SLICE_END,   0, 0);
+    __cajeta_prof_emit_slice(&b, seq, 2200, child_track,  CAJ_TE_SLICE_END,   0, 0);
+    __cajeta_prof_emit_slice(&b, seq, 2500, thread_track, CAJ_TE_SLICE_END,   0, 0);
 
     if (b.overflow) {
         fprintf(stderr, "tracegen: buffer overflow, trace is short\n");
