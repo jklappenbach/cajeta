@@ -357,7 +357,13 @@ static int32_t caj_prof_emit_source(CajProfWriter* w, uint64_t iid,
                             first ? CAJ_PB_SEQ_FLAG_CLEARED : CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_INTERNED, id, d);
     CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
-    caj_pb_put(&b, pkt, p);
+    // caj_pb_packet, NOT caj_pb_put: the payload must be wrapped as
+    // Trace.packet. Writing it raw put unframed bytes in the file, and the
+    // slices then referenced source-location iids that were never emitted. The
+    // trace still LOADED — trace_processor skipped what it could not parse and
+    // reported source_location_iid as an unresolved arg — so nothing failed,
+    // the locations were simply absent.
+    caj_pb_packet(&b, pkt, p);
     return caj_prof_flush(w, &b);
 }
 
