@@ -119,6 +119,12 @@ jobs:
       # dynamically-linked mingw clang/lld, and an older base image's DLLs fail
       # to load them (0xC0000139). Deliberately NO mingw llvm/clang/lld here —
       # a second stock LLVM would mis-resolve at link against the fork's v23.
+      # `vim` is in that list for /usr/bin/xxd, which src/CMakeLists.txt needs to
+      # embed the runtime bitcode. It was missing here and configure passed
+      # anyway only because CAJETA_MSYS_MINGW_ROOT fell back to the system-wide
+      # C:/msys64 on PHOENIX, which has vim. Once 41df9be7 made the build resolve
+      # the ACTIVE (runner-local) msys2 prefix, that accident stopped covering
+      # the gap and every Windows leg died at configure with "xxd not found".
       - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@v2
@@ -137,6 +143,7 @@ jobs:
             mingw-w64-x86_64-gtest
             mingw-w64-x86_64-vulkan-headers
             tar
+            vim
 
       # Report the hardware before building, so a skipped-everything run is
       # diagnosable from the log rather than looking like a pass. Non-fatal:
@@ -265,8 +272,18 @@ jobs:
             exit 1
           fi
 
+      # continue-on-error: losing the artifact must not turn a green device
+      # sweep red. Everything that decides pass/fail already happened in the
+      # step above, which hard-fails on a missing log or an all-skipped run;
+      # this step only DELIVERS diagnostics. Run 32425463145 failed exactly
+      # this way — both legs passed all 7 coop-matrix pins, then PHOENIX hit
+      # `Failed to CreateArtifact: ECONNRESET` and the run reported failure.
+      # A nightly that goes red on a transient upload blip is a nightly people
+      # learn to ignore. Keep `if: always()` — a truncated log from a killed
+      # run is what made the 2026-08-13 diagnosis possible at all.
       - name: Upload test log
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: device-tests-${{ matrix.name }}

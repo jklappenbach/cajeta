@@ -2870,6 +2870,11 @@ namespace cajeta {
                                 fobOwnedSpelling = !rn->getStackAlloc();
                             } else if (auto rc = dynamic_pointer_cast<
                                            MethodCallExpression>(rhsAst)) {
+                                // Left on the raw accessor. The regression being
+                                // repaired is the TITLE FLAG below; this is a
+                                // fresh-owner spelling question, and answering
+                                // it from an unresolved call would be a guess
+                                // rather than a restored default.
                                 fobOwnedSpelling =
                                     rc->isResolvedReturnsOwnership();
                             } else if (auto ri = dynamic_pointer_cast<
@@ -3116,7 +3121,7 @@ namespace cajeta {
                             } else if (auto rc = dynamic_pointer_cast<
                                            MethodCallExpression>(rhsAst)) {
                                 ownedVal = llvm::ConstantInt::get(tsI64,
-                                    rc->isResolvedReturnsOwnership() ? 1 : 0);
+                                    rc->bindingTakesTitle() ? 1 : 0);
                             } else {
                                 ownedVal = llvm::ConstantInt::get(tsI64, 0);
                             }
@@ -3583,6 +3588,7 @@ namespace cajeta {
                         rhsIsFreshOwner = !rhsNew->getStackAlloc();
                     } else if (auto rhsCall =
                             dynamic_pointer_cast<MethodCallExpression>(rhsAst)) {
+                        // Raw accessor, as above: not the title flag.
                         rhsIsFreshOwner = rhsCall->isResolvedReturnsOwnership();
                     }
                     if (rhsIsMove || (lhsWasMoved && rhsIsFreshOwner)) {

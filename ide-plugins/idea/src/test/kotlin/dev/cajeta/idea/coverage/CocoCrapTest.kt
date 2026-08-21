@@ -103,6 +103,40 @@ class CocoCrapTest {
         assertEquals(3, CocoCrap.beside(profile)!!.size)
     }
 
+    // --- 7.1.e  agreement with coco's OWN output -----------------------------
+
+    @Test
+    fun theReaderParsesWhatCocoActuallyEmitted() {
+        // Not a hand-made document: this is `coco crap` run over the same
+        // conformance fixture the other formats come from. Until the engine
+        // could run, this unit's agreement claim was untestable.
+        val real = javaClass.getResourceAsStream("/coco/conformance/crap.tsv")!!
+            .bufferedReader().readText()
+        val e = CocoCrap.parse(real)
+
+        assertEquals("one row per method with a function probe", 7, e.size)
+        assertEquals(
+            "the file's order IS the ranking, preserved not re-sorted",
+            e.map { it.scoreTenths },
+            e.map { it.scoreTenths }.sortedDescending(),
+        )
+
+        // The contrast the metric exists for: two methods, both 0% covered,
+        // ranked far apart because one is complex and one is a one-liner.
+        val worst = e.first()
+        assertEquals("probe.Cond.neverCalled(n:int32)", worst.method)
+        assertEquals(0, worst.coveragePercent)
+        assertEquals("6.0", worst.score)
+
+        val trivial = e.single { it.method.startsWith("probe.Cond.guarded") }
+        assertEquals("also 0% covered", 0, trivial.coveragePercent)
+        assertEquals(1, trivial.complexity)
+        assertTrue(
+            "an untested one-liner ranks below an untested branchy method",
+            trivial.scoreTenths < worst.scoreTenths,
+        )
+    }
+
     // --- the formula is NOT reimplemented here -------------------------------
 
     @Test

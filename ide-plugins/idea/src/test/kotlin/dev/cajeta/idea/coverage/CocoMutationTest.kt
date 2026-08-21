@@ -114,6 +114,44 @@ class CocoMutationTest {
         assertTrue(e!!.message!!.contains("line 2"))
     }
 
+    // --- 8.3.a  a real run: covered line, surviving mutant -------------------
+
+    @Test
+    fun aRealRunShowsACoveredLineWhoseMutantSurvived() {
+        // Not hand-made. `coco mutate` over a project that deliberately
+        // under-asserts one boundary (see PROVENANCE.md).
+        //
+        // The row that matters is `atLeast` line 13, `if (n >= limit)`. Its
+        // coverage run reports 2 line hits with BOTH branch arms taken — 100%
+        // line AND branch coverage — and the sge->sgt mutant survived anyway.
+        // Every coverage metric calls that line fully tested; nobody pinned its
+        // behaviour. That gap is the whole argument for this tab.
+        val real = javaClass.getResourceAsStream("/coco/mutation/mutation.tsv")!!
+            .bufferedReader().readText()
+        val all = CocoMutation.parse(real)
+        assertEquals(6, all.size)
+
+        val survivor = CocoMutation.survivors(all)
+            .single { it.method.contains("atLeast") }
+        assertEquals(13, survivor.srcLine)
+        assertEquals("sge->sgt", survivor.mutation)
+        assertEquals("probe/Guard.cajeta", survivor.sourceFile)
+
+        // The control: the same SHAPE of comparison, properly asserted, dies.
+        val killed = all.single { it.method.contains("isPositive") }
+        assertEquals(MutationVerdict.KILLED, killed.verdict)
+        assertEquals("sgt->sge", killed.mutation)
+
+        // 6.4.3 — and none of this is the uncovered case. coco reported
+        // "0 skipped as uncovered": every mutant ran, so a survivor here means
+        // execution without verification, not absence of execution.
+        assertTrue(
+            "nothing was skipped for lack of coverage",
+            all.none { it.verdict == MutationVerdict.SKIPPED_UNCOVERED },
+        )
+        assertTrue(CocoMutation.summarize(all).contains("3/6 killed"))
+    }
+
     // --- 8.1.d  absent data says why -----------------------------------------
 
     @Test

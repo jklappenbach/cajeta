@@ -1,0 +1,8 @@
+coco-crap v1
+probe.Cond.neverCalled(n:int32)	2	0	60
+probe.Cond.both(b:int32,a:int32)	3	666	33
+probe.Cond.either(b:int32,a:int32)	3	666	33
+probe.Helper.twice(n:int32)	2	500	25
+probe.Cond.guarded(n:int32)	1	0	20
+probe.Cond.loop(n:int32)	2	1000	20
+probe.Cond.main()	2	800	20

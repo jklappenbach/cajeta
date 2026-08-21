@@ -69,3 +69,39 @@ that; the 79 s runtime is worth a look on its own, but it is not this defect.
 - **2.4** A run killed this way stays diagnosable: `device-tests.log` is
   uploaded even when truncated (it was — `if: always()` on the upload step is
   what made §1.1 readable at all). Keep it.
+
+## 3. Resolution — 2026-08-20
+
+**3.1 Acceptance 2.3 is MET, and it was the load-bearing one.** PHOENIX now
+starts the WSL subsystem at *machine* start rather than on interactive logon.
+Nothing in this repo changed; the host was doing exactly what it had been
+configured to do, which was to wait for a human.
+
+**3.2 §1.5 was not a secondary annoyance — it was the whole failure mode after
+Aug 15.** Every `wsl-nvidia` attempt from Aug 16 through Aug 20 failed at
+**exactly 600 s** (601/601/600/600/601), never completing `Set up job` — no
+checkout, no build, no log. That constant is the tell: there is no 10-minute
+timeout anywhere in the workflow (`timeout-minutes: 360`), so 600 s is
+GitHub's grace period for a job assigned to a runner that never reports. The
+VM was simply down — after each host restart it stayed down until someone
+logged in — while GitHub still held a registration for `phoenix-wsl` and kept
+handing it work. The jobs were never running and dying; they were never
+running at all.
+
+This is why the §1.3 reboot diagnosis, though correct for the 2026-08-13 run,
+did not stop the bleeding: moving the cron into Active Hours prevents the
+*reboot*, but any reboot at all (or any shutdown) left the runner unstartable,
+and Aug 16 failed at 16:06 local — nowhere near the reboot window.
+
+**3.3 Verified green.** With the boot trigger in place, `wsl-nvidia` passed
+twice on 2026-08-20: standalone (run 32412895281, 65 tests on hardware, 0
+failures) and again under the nightly's own wider filter with both legs
+running concurrently on PHOENIX (run 32416638186). The concurrent pass also
+retires the hypothesis that the two legs contend fatally for the box.
+
+**3.4 Coverage gap noted, not a defect.** On the same 4090, the WSL leg
+executes **65** tests against the Windows leg's **118** — the Vulkan and
+several vendor suites gate themselves off inside the VM. Both legs report
+green, so this is exactly the silent-skip blind spot the workflow exists to
+surface (see its header comment). Worth a look on its own; it is not this
+defect.
