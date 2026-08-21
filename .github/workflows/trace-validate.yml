@@ -144,6 +144,23 @@ jobs:
           test -n "$n" -a "$n" != "0"             || { echo "FAIL: no slice carried a source file; see arg keys above"; exit 1; }
           echo "source locations present in $n arg(s)"
 
+      # 6.2.c / 7.8: the trace states what produced it and what it LOST. The
+      # sampler drops on ring overflow rather than blocking — correct, since
+      # blocking perturbs the program — but a trace that lost a third of its
+      # samples must not be byte-identical to a complete one.
+      - name: Trace records its own configuration and losses
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin prof.pftrace; }
+          echo "select key, coalesce(string_value, cast(int_value as text)) as v
+                from args where key like '%tier%' or key like '%rate_hz%'
+                   or key like '%dropped%' or key like '%samples%';" | q | tee meta.txt
+          grep -q 'sampling' meta.txt             || { echo "FAIL: trace does not say which tier produced it"; exit 1; }
+          # The drop count specifically: it is the number that decides whether a
+          # flame graph can be trusted, and it lived only in memory until now.
+          grep -qE '(^|[^0-9])8([^0-9]|$)' meta.txt             || { echo "FAIL: samples_dropped=8 did not reach the trace"; exit 1; }
+          echo "configuration and drop count present"
+
       # 7.6: a trace cut mid-write must still read up to the cut. Truncation is
       # the normal end of a profiled run that was killed, so this is the common
       # case, not the edge case.

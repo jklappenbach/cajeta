@@ -101,6 +101,10 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 #define CAJ_PB_TE_TRACK_UUID      11    /* TrackEvent.track_uuid               */
 #define CAJ_PB_TE_NAME            23    /* TrackEvent.name                     */
 #define CAJ_PB_TE_SOURCE_LOC_IID  34    /* TrackEvent.source_location_iid      */
+#define CAJ_PB_TE_DEBUG_ANNOS      4    /* TrackEvent.debug_annotations        */
+#define CAJ_PB_DA_NAME            10    /* DebugAnnotation.name                */
+#define CAJ_PB_DA_INT_VALUE        4    /* DebugAnnotation.int_value           */
+#define CAJ_PB_DA_STRING_VALUE     6    /* DebugAnnotation.string_value        */
 #define CAJ_PB_ID_EVENT_NAMES      2    /* InternedData.event_names            */
 #define CAJ_PB_ID_SOURCE_LOCS      4    /* InternedData.source_locations       */
 #define CAJ_PB_SL_IID              1    /* SourceLocation.iid                  */
@@ -525,18 +529,39 @@ static void caj_prof_frame_name(char* out, int32_t cap, const CajetaFrameDesc* d
 }
 
 // Convert an ordered run of samples into a trace at `path`. Returns packets
-// written, or 0.
+// written, or 0. The `_meta` form additionally stamps §7.8's run metadata.
 //
 // Takes the samples as a parameter rather than reading the ring, so the exact
 // code CI validates is the code the runtime runs: tools/tracegen builds
 // synthetic samples and calls this under a plain `cc`. A transform that reached
 // into globals could only ever be tested by building the whole toolchain, which
 // is expensive enough that it would not be tested on every change.
-int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
-                                       int64_t n, const char* path) {
+// Defined below, next to the annotation helpers it uses.
+int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
+                                     const char* tier, int32_t rate_hz,
+                                     int32_t ring_cap, int64_t samples,
+                                     int64_t dropped, int64_t frames);
+
+typedef struct {
+    const char* tier;
+    int32_t     rate_hz;
+    int32_t     ring_cap;
+    int64_t     samples;
+    int64_t     dropped;
+    int64_t     frames;
+} CajProfMeta;
+
+int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
+                                            int64_t n, const char* path,
+                                            const CajProfMeta* meta) {
     if (!samples || n <= 0) return 0;
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    // First packet, so it survives a trace truncated moments later.
+    if (meta)
+        __cajeta_prof_trace_metadata(&w, (uint64_t) samples[0].host_ns,
+                                     meta->tier, meta->rate_hz, meta->ring_cap,
+                                     meta->samples, meta->dropped, meta->frames);
 
     static CajProfTrack tracks[CAJ_PROF_MAX_TRACKS];
     int32_t n_tracks = 0;
@@ -592,6 +617,77 @@ int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
     return packets;
 }
 
+int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
+                                       int64_t n, const char* path) {
+    return __cajeta_prof_samples_to_trace_meta(samples, n, path, NULL);
+}
+
+// ── 6.2.c / spec §7.8: what produced this trace ──────────────────────────
+// An INSTANT event on its own track, carrying the run's configuration and its
+// losses as debug annotations. Emitted first so it is present even in a trace
+// truncated seconds later.
+//
+// The drop count is the reason this exists. The sampler drops on ring overflow
+// rather than blocking — the right call, since blocking would perturb the
+// program it measures — but until now that number lived only in memory. A trace
+// that lost a third of its samples was byte-for-byte indistinguishable from one
+// that lost none, so a flame graph built from a starved ring looked exactly as
+// authoritative as a complete one. §7.8 requires the trace state which tier
+// produced each measurement, and "how much did we miss" is the same question.
+//
+// DebugAnnotation rather than a bespoke packet: it lives on TrackEvent, which
+// §7.7 confines us to, and Perfetto surfaces it in the UI as arguments on the
+// event.
+static int32_t caj_prof_anno_int(uint8_t* out, const char* name, int64_t v) {
+    uint8_t da[128];
+    int32_t ln = 0; while (name[ln]) ln++;
+    int32_t d = __cajeta_pb_bytes(da, CAJ_PB_DA_NAME, (const uint8_t*) name, ln);
+    d += __cajeta_pb_uint64(da + d, CAJ_PB_DA_INT_VALUE, (uint64_t) v);
+    return __cajeta_pb_bytes(out, CAJ_PB_TE_DEBUG_ANNOS, da, d);
+}
+static int32_t caj_prof_anno_str(uint8_t* out, const char* name, const char* v) {
+    uint8_t da[256];
+    int32_t ln = 0; while (name[ln]) ln++;
+    int32_t vl = 0; while (v[vl]) vl++;
+    int32_t d = __cajeta_pb_bytes(da, CAJ_PB_DA_NAME, (const uint8_t*) name, ln);
+    d += __cajeta_pb_bytes(da + d, CAJ_PB_DA_STRING_VALUE, (const uint8_t*) v, vl);
+    return __cajeta_pb_bytes(out, CAJ_PB_TE_DEBUG_ANNOS, da, d);
+}
+
+int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
+                                     const char* tier, int32_t rate_hz,
+                                     int32_t ring_cap, int64_t samples,
+                                     int64_t dropped, int64_t frames) {
+    if (!w || !w->f) return 0;
+    const uint64_t meta_uuid = 0x1;
+    __cajeta_prof_trace_track(w, meta_uuid, 0, "cajeta.profiler");
+
+    uint8_t te[1024];
+    int32_t n = __cajeta_pb_uint64(te, CAJ_PB_TE_TYPE, CAJ_TE_INSTANT);
+    n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_TRACK_UUID, meta_uuid);
+    const char* label = "cajeta.profiler.run";
+    int32_t ll = 0; while (label[ll]) ll++;
+    n += __cajeta_pb_bytes(te + n, CAJ_PB_TE_NAME, (const uint8_t*) label, ll);
+    n += caj_prof_anno_str(te + n, "tier", tier ? tier : "sampling");
+    n += caj_prof_anno_int(te + n, "rate_hz", rate_hz);
+    n += caj_prof_anno_int(te + n, "ring_capacity", ring_cap);
+    n += caj_prof_anno_int(te + n, "samples_taken", samples);
+    n += caj_prof_anno_int(te + n, "samples_dropped", dropped);
+    n += caj_prof_anno_int(te + n, "frames_captured", frames);
+    // Stated as a rate so a reader does not have to divide to learn whether the
+    // profile is trustworthy. Parts per thousand: integer, no float on the wire.
+    int64_t total = samples + dropped;
+    n += caj_prof_anno_int(te + n, "dropped_per_mille",
+                           total > 0 ? (dropped * 1000) / total : 0);
+    uint8_t pkt[1200];
+    int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
+    p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, w->seq_id);
+    p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
+    CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+    caj_pb_packet(&b, pkt, p);
+    return caj_prof_flush(w, &b);
+}
+
 // Everything above is free of the sampler's globals, so tools/tracegen can
 // compile it standalone and CI can validate the real transform. The ring drain
 // below is the one part that cannot be — it reads the sampler's ring — so it is
@@ -616,7 +712,16 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
     if (!ordered) return 0;
     for (int64_t i = 0; i < n; i++)
         ordered[i] = __cajeta_prof_ring[(tail + i) % __cajeta_prof_ring_cap];
-    int64_t packets = __cajeta_prof_samples_to_trace(ordered, n, path);
+    // The drain is the only place that can see BOTH the ring's contents and the
+    // sampler's counters, so it is where §7.8's metadata is stamped.
+    CajProfMeta meta;
+    meta.tier = "sampling";
+    meta.rate_hz = __cajeta_prof_interval > 0 ? 1000000 / __cajeta_prof_interval : 0;
+    meta.ring_cap = __cajeta_prof_ring_cap;
+    meta.samples = __cajeta_prof_samples;
+    meta.dropped = __cajeta_prof_drops;
+    meta.frames = __cajeta_prof_frames;
+    int64_t packets = __cajeta_prof_samples_to_trace_meta(ordered, n, path, &meta);
     free(ordered);
     __cajeta_prof_tail = head;
     return packets;

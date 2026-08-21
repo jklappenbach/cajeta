@@ -78,7 +78,16 @@ static int profile_mode(const char* out) {
         f->frames[0].desc = &run;
     }
 
-    int64_t packets = __cajeta_prof_samples_to_trace(samples, n, out);
+    // 6.2.c: stamp what produced this run, including what it LOST. A trace
+    // whose ring overflowed must not look identical to a complete one.
+    CajProfMeta meta;
+    meta.tier = "sampling";
+    meta.rate_hz = 2000;
+    meta.ring_cap = 4096;
+    meta.samples = 40;
+    meta.dropped = 8;          // deliberately non-zero: CI asserts it survives
+    meta.frames = 96;
+    int64_t packets = __cajeta_prof_samples_to_trace_meta(samples, n, out, &meta);
     printf("tracegen: profile mode wrote %lld packets to %s\n",
            (long long) packets, out);
     if (packets <= 0) { fprintf(stderr, "tracegen: transform wrote nothing\n"); return 4; }
