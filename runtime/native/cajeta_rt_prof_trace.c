@@ -503,16 +503,13 @@ int32_t __cajeta_prof_trace_close(CajProfWriter* w) {
 //
 // The diff is also why interning matters: a frame that persists across a
 // thousand ticks is named once, not a thousand times.
-// Defined in cajeta_rt_concurrent_exec.c, later in this TU — same forward
-// declaration pattern core.c uses for __cajeta_currentTimeNanos.
-long __cajeta_dbg_fiber_id_of(void* fiber);
-
 #define CAJ_PROF_MAX_TRACKS 256
 #define CAJ_PROF_MAX_DEPTH  CAJETA_PROF_MAX_FRAMES
 
 typedef struct {
     void*   owner;
     int32_t kind;
+    int64_t id;                                 // captured at SAMPLE time
     uint64_t uuid;
     int32_t depth;                              // frames currently open
     const CajetaFrameDesc* open[CAJ_PROF_MAX_DEPTH];   // outermost -> innermost
@@ -524,21 +521,23 @@ typedef struct {
 static void caj_prof_track_name(char* out, int32_t cap, const CajProfTrack* t,
                                 int32_t index) {
     const char* kind = (t->kind == CAJETA_PROF_OWNER_FIBER) ? "fiber" : "thread";
-    long id = (t->kind == CAJETA_PROF_OWNER_FIBER)
-                  ? __cajeta_dbg_fiber_id_of(t->owner)
-                  : (long) index;
+    // A fiber's id comes from the SAMPLE, not from the handle. Reading it here
+    // meant dereferencing a fiber that a drain-at-exit finds long dead; the
+    // handle is only known live at the moment it was sampled.
+    long id = (t->kind == CAJETA_PROF_OWNER_FIBER) ? (long) t->id : (long) index;
     snprintf(out, (size_t) cap, "cajeta.%s.%ld", kind, id);
 }
 
 static CajProfTrack* caj_prof_track_for(CajProfTrack* tracks, int32_t* n,
                                         CajProfWriter* w, void* owner,
-                                        int32_t kind) {
+                                        int32_t kind, int64_t id) {
     for (int32_t i = 0; i < *n; i++)
         if (tracks[i].owner == owner) return &tracks[i];
     if (*n >= CAJ_PROF_MAX_TRACKS) return NULL;
     CajProfTrack* t = &tracks[*n];
     t->owner = owner;
     t->kind = kind;
+    t->id = id;
     t->depth = 0;
     // uuid must be stable and non-zero; the handle's address is both, and it is
     // never dereferenced here.
@@ -599,7 +598,8 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
     for (int64_t i = 0; i < n; i++) {
         const CajetaProfSample* s = &samples[i];
         CajProfTrack* t = caj_prof_track_for(tracks, &n_tracks, &w,
-                                             s->owner, s->owner_kind);
+                                             s->owner, s->owner_kind,
+                                             s->owner_id);
         if (!t) continue;
         last_ts = s->host_ns;
 
@@ -895,5 +895,36 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
     __cajeta_prof_tail = head;
     return packets;
 }
+
+
+// ── 4.2.d: drain-and-flush on normal exit ─────────────────────────────────
+//
+// Until this existed, §9.1's promise — "when CAJETA_PROFILER is set, the run is
+// profiled" — was only half true: the sampler filled the ring and the program
+// exited without writing it. A profiled run produced nothing unless the caller
+// knew to drain by hand, which no user of a default-built binary does.
+//
+// Idempotent, and deliberately so: it is reached from main's epilogue, from
+// System.exit, and from tests, and two of those can happen in one run. A second
+// call must not truncate the file the first one wrote.
+int32_t __cajeta_prof_gpu_trace_detach(void);   // cajeta_rt_prof_gpu.c, later in this TU
+
+static volatile int __cajeta_prof_shutdown_done = 0;
+
+int64_t __cajeta_prof_shutdown(void) {
+    if (__atomic_exchange_n(&__cajeta_prof_shutdown_done, 1, __ATOMIC_ACQ_REL))
+        return 0;
+    // Stop the sampler BEFORE reading the ring. Draining under a live producer
+    // races head against the copy loop and hands the transform a torn sample —
+    // the kind of corruption that shows up as one impossible stack in a thousand
+    // and gets blamed on the program under test.
+    __cajeta_prof_disarm();
+    __cajeta_prof_gpu_trace_detach();           // flush any attached GPU trace
+    return __cajeta_prof_drain_to_trace(__cajeta_prof_out_path());
+}
+
+// Tests arm and drain repeatedly in one process; without this the second run in
+// a process would find shutdown already spent and write nothing.
+void __cajeta_prof_shutdown_reset(void) { __cajeta_prof_shutdown_done = 0; }
 
 #endif  /* CAJETA_PROF_TRACE_STANDALONE */

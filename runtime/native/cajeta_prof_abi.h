@@ -37,6 +37,12 @@ typedef struct {
                                     // cannot say, so Unit 6 would otherwise have
                                     // to guess when naming tracks (spec §4.3
                                     // wants fibers distinct from carriers).
+    // The owner's DISPLAY id, captured when the sample was taken. The transform
+    // used to call __cajeta_dbg_fiber_id_of(owner) at drain time, which
+    // dereferences the fiber struct — long after a short-lived fiber has been
+    // freed. Sampling is the only moment the handle is known live, so the id is
+    // read there. Threads carry 0 and are named by registry index.
+    int64_t          owner_id;
     int32_t          n_frames;      // innermost-first, as snapshot returns them
     int32_t          truncated;     // source stack was deeper than capacity
     CajetaShadowFrame frames[CAJETA_PROF_MAX_FRAMES];

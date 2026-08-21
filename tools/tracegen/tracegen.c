@@ -25,12 +25,10 @@
 #include "../../runtime/native/cajeta_prof_abi.h"
 #include "../../runtime/native/cajeta_rt_prof_trace.c"
 
-// The transform names a fiber track by its debugger id, which lives in the
-// fiber scheduler — not compiled here. A stub keeps the standalone build honest:
-// the id is cosmetic (it appears in the track NAME), so substituting a
-// deterministic one changes what the track is called and nothing about the
-// structure CI checks.
-long __cajeta_dbg_fiber_id_of(void* fiber) { return (long) (uintptr_t) fiber; }
+// No fiber-scheduler stub is needed any more: the transform reads the fiber's
+// display id out of the SAMPLE (captured when the sample was taken) rather than
+// dereferencing the handle at drain time, so nothing here has to fake the
+// scheduler.
 
 // A synthetic profile: two tracks, a stack that grows and shrinks the way a
 // sampler actually observes one. Drives __cajeta_prof_samples_to_trace — the
@@ -74,6 +72,7 @@ static int profile_mode(const char* out) {
         *f = *s;
         f->owner = fiber_owner;
         f->owner_kind = CAJETA_PROF_OWNER_FIBER;
+        f->owner_id = 8192;
         f->n_frames = 1;
         f->frames[0].desc = &run;
     }

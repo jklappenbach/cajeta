@@ -3859,6 +3859,24 @@ namespace cajeta {
             b.SetInsertPoint(afterLoop);
         }
 
+        // cajeta-profiler 4.2.d / spec §9.1, §9.6 — arm here and drain before
+        // main returns. This is what makes "set CAJETA_PROFILER and run" true
+        // for a default-built binary: `__cajeta_prof_arm` is a no-op when the
+        // variable is unset, so an unprofiled program pays one getenv.
+        //
+        // In main rather than a global ctor because the profile has to be
+        // WRITTEN as well as collected, and a ctor has no matching exit hook
+        // that is safe here: libc atexit would capture a function pointer that,
+        // in a JIT'd run, is freed with the module that registered it (see the
+        // at-exit registry note in cajeta_rt_process.c). main's epilogue is a
+        // point that exists in exactly the builds this feature ships for.
+        // System.exit is covered separately, inside __cajeta_exit.
+        {
+            llvm::FunctionType* armTy =
+                llvm::FunctionType::get(i32Ty, {}, false);
+            b.CreateCall(lmod->getOrInsertFunction("__cajeta_prof_arm", armTy));
+        }
+
         // For `main(String[] args)`, materialize the cajeta String[] from
         // (argc, argv) and pass it. __cajeta_args_make takes the String class's
         // total size + field byte offsets (from DataLayout) and its vtable, so
@@ -3913,6 +3931,15 @@ namespace cajeta {
         }
 
         llvm::Value* ret = b.CreateCall(entryExtern, callArgs);
+        // Drain before the return translation below, so every one of its four
+        // exit paths is covered by one call rather than by four that have to be
+        // kept in step.
+        {
+            llvm::FunctionType* shutdownTy = llvm::FunctionType::get(
+                llvm::Type::getInt64Ty(ctx), {}, false);
+            b.CreateCall(lmod->getOrInsertFunction("__cajeta_prof_shutdown",
+                                                   shutdownTy));
+        }
         // Translate the cajeta return into a C exit code.
         //   int32  → cast (identity) to i32 and return.
         //   void   → return 0.

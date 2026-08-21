@@ -9,6 +9,7 @@
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "../../runtime/native/cajeta_prof_abi.h"
+#include "ProfilerTraceRead.h"
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -404,77 +405,19 @@ TEST(ProfilerGpuSeam, deliveryGranularityIsHonoredPerSink) {
 
 // ── 7.1.c: the device lane is a real track, not a synthetic thread ─────────
 //
-// This one reads the emitted BYTES. Asserting that the writer's uuid helper
-// returns different numbers would only test arithmetic; §7.2 is a claim about
-// what lands in the file, and 6.1.d already cost a round of CI proving that a
-// table can be perfect while its output is malformed.
+// This one reads the emitted BYTES, via the shared reader in
+// ProfilerTraceRead.h. Asserting that the writer's uuid helper returns different
+// numbers would only test arithmetic; §7.2 is a claim about what lands in the
+// file, and 6.1.d already cost a round of CI proving that a table can be perfect
+// while its output is malformed.
 namespace {
-struct Desc { uint64_t uuid = 0, parent = 0; std::string name; };
+using cajeta_test_prof::TrackDesc;
 
-// Minimal Trace walker: enough to pull TrackDescriptor{uuid,name,parent_uuid}
-// out of a file. Uses the runtime's own varint reader, so a disagreement about
-// the encoding shows up here rather than being papered over by a second one.
-std::vector<Desc> readTracks(const char* path) {
-    std::vector<Desc> out;
-    FILE* f = fopen(path, "rb");
-    if (!f) return out;
-    std::vector<uint8_t> b;
-    uint8_t chunk[4096];
-    size_t n;
-    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) b.insert(b.end(), chunk, chunk + n);
-    fclose(f);
-
+std::vector<TrackDesc> readTracks(const char* path) {
     auto& s = seam();
-    auto rd = reinterpret_cast<uint64_t (*)(const uint8_t*, int32_t, int32_t*)>(
-        s.jit->lookupRawSymbol("__cajeta_pb_varint_read"));
-    if (!rd) return out;
-
-    // Walk fields at a given nesting level, invoking `visit(field, wire, ptr, len)`.
-    std::function<void(const uint8_t*, size_t,
-                       const std::function<void(uint32_t, uint32_t, const uint8_t*, uint64_t)>&)> walk =
-        [&](const uint8_t* p, size_t len,
-            const std::function<void(uint32_t, uint32_t, const uint8_t*, uint64_t)>& visit) {
-            size_t i = 0;
-            while (i < len) {
-                int32_t used = 0;
-                uint64_t key = rd(p + i, static_cast<int32_t>(len - i), &used);
-                if (used <= 0) return;
-                i += static_cast<size_t>(used);
-                uint32_t field = static_cast<uint32_t>(key >> 3), wire = static_cast<uint32_t>(key & 7);
-                if (wire == 2) {
-                    uint64_t l = rd(p + i, static_cast<int32_t>(len - i), &used);
-                    if (used <= 0 || i + static_cast<size_t>(used) + l > len) return;
-                    i += static_cast<size_t>(used);
-                    visit(field, wire, p + i, l);
-                    i += static_cast<size_t>(l);
-                } else if (wire == 0) {
-                    uint64_t v = rd(p + i, static_cast<int32_t>(len - i), &used);
-                    if (used <= 0) return;
-                    i += static_cast<size_t>(used);
-                    visit(field, wire, reinterpret_cast<const uint8_t*>(&v), v);
-                } else if (wire == 1) {
-                    if (i + 8 > len) return;
-                    i += 8;
-                } else {
-                    return;   // wire types we do not emit
-                }
-            }
-        };
-
-    walk(b.data(), b.size(), [&](uint32_t f, uint32_t w, const uint8_t* p, uint64_t l) {
-        if (f != 1 /*Trace.packet*/ || w != 2) return;
-        walk(p, static_cast<size_t>(l), [&](uint32_t pf, uint32_t pw, const uint8_t* pp, uint64_t pl) {
-            if (pf != 60 /*track_descriptor*/ || pw != 2) return;
-            Desc d;
-            walk(pp, static_cast<size_t>(pl), [&](uint32_t df, uint32_t dw, const uint8_t* dp, uint64_t dl) {
-                if (df == 1 && dw == 0) d.uuid = dl;
-                else if (df == 2 && dw == 2) d.name.assign(reinterpret_cast<const char*>(dp), dl);
-                else if (df == 5 && dw == 0) d.parent = dl;
-            });
-            out.push_back(d);
-        });
-    });
-    return out;
+    return cajeta_test_prof::readTracks(
+        path, reinterpret_cast<cajeta_test_prof::VarintRead>(
+                  s.jit->lookupRawSymbol("__cajeta_pb_varint_read")));
 }
 } // namespace
 
@@ -493,12 +436,12 @@ TEST(ProfilerGpuSeam, deviceLaneIsATrackHierarchyDistinctFromHostThreads) {
     ASSERT_EQ(c.got.size(), 1u);
     const uint64_t hostUuid = reinterpret_cast<uint64_t>(c.got[0].host_thread);
 
-    std::vector<Desc> tracks = readTracks(path);
+    std::vector<TrackDesc> tracks = readTracks(path);
     remove(path);
     ASSERT_GE(tracks.size(), 4u)
         << "expected host + device + context + queue tracks, got " << tracks.size();
 
-    const Desc *device = nullptr, *context = nullptr, *queue = nullptr, *host = nullptr;
+    const TrackDesc *device = nullptr, *context = nullptr, *queue = nullptr, *host = nullptr;
     for (const auto& d : tracks) {
         if (d.uuid == hostUuid) host = &d;
         else if (d.name.find("device") != std::string::npos) device = &d;

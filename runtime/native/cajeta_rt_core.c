@@ -591,6 +591,7 @@ int32_t __cajeta_prof_stack_snapshot(void* handle, CajetaShadowFrame* out,
 // Defined in cajeta_rt_concurrent_exec.c, later in this TU — same forward-
 // declaration pattern as __cajeta_dbg_top_ptr / __cajeta_shadow_ptr above.
 int64_t __cajeta_currentTimeNanos(void);
+long __cajeta_dbg_fiber_id_of(void* fiber);   // cajeta_rt_concurrent_exec.c
 
 #define CAJETA_PROF_DEFAULT_HZ 1000
 #define CAJETA_PROF_DEFAULT_RING 4096
@@ -646,6 +647,9 @@ static void __cajeta_prof_push(void* owner, int32_t owner_kind) {
     slot->host_ns = __cajeta_currentTimeNanos();
     slot->owner = owner;
     slot->owner_kind = owner_kind;
+    slot->owner_id = (owner_kind == CAJETA_PROF_OWNER_FIBER)
+                         ? (int64_t) __cajeta_dbg_fiber_id_of(owner)
+                         : 0;
     slot->n_frames = n;
     slot->truncated = trunc;
     for (int32_t i = 0; i < n; i++) slot->frames[i] = tmp[i];

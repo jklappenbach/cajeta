@@ -1,0 +1,127 @@
+# 23 — Profiling
+
+Cajeta ships a sampling profiler in the runtime. It needs no rebuild, no
+recompile, and no agent: set one environment variable and run the binary you
+already have.
+
+```bash
+$ CAJETA_PROFILER=1 ./build/exe/myapp
+$ # -> ./cajeta.pftrace, in the current directory
+```
+
+Open the result at [ui.perfetto.dev](https://ui.perfetto.dev) — drag the file
+in. Nothing is uploaded; the UI runs the trace processor in your browser.
+
+## Why no rebuild is needed
+
+Every Cajeta build already carries **line-info probes**: small runtime calls at
+each method prologue and statement boundary that maintain a shadow stack. They
+are what produces a semantic stack trace from a `Throwable`, and they are what
+the debugger reads. The profiler samples that same shadow stack from a
+background thread.
+
+So the frames are already there — profiling just starts reading them. With
+`CAJETA_PROFILER` unset, nothing is armed, no thread starts, and the cost is
+exactly zero.
+
+The one build flag that matters is the one that takes the probes *away*:
+
+```bash
+$ cajeta build --line-info=off      # no shadow stack -> nothing to sample
+```
+
+A binary built that way refuses to profile, loudly, rather than producing an
+empty trace:
+
+```
+cajeta.profiler: refusing to arm — this binary was built with --line-info=off,
+so there are no frames to sample. Rebuild without it (line-info is on by default).
+```
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `CAJETA_PROFILER` | unset | Set to anything to profile the run. Unset = off. |
+| `CAJETA_PROFILER_HZ` | `1000` | Samples per second. |
+| `CAJETA_PROFILER_RING` | `4096` | Samples buffered between the sampler and the writer. |
+| `CAJETA_PROFILER_OUT` | `cajeta.pftrace` | Where to write the trace. |
+
+The trace is written when `main` returns, and also when a program ends through
+`System.exit`. A run killed part-way still leaves a **readable** trace of
+everything up to the moment it died — every packet carries its own length, so a
+truncated file is a short trace rather than a corrupt one.
+
+## Reading the trace
+
+Each host thread and each fiber is its own track, named `cajeta.thread.N` and
+`cajeta.fiber.N`. A fiber's number is its **debugger** id, so a profile and a
+debug session call the same fiber the same thing.
+
+Slices carry their source position: click one and the file and line are in the
+argument panel.
+
+### Check the drop count first
+
+The trace opens with an instant on a `cajeta.profiler` track holding the run's
+own configuration — sample rate, ring capacity, samples taken, **samples
+dropped**, and `dropped_per_mille`.
+
+Read that before trusting the shape. The sampler drops samples when the ring
+fills rather than blocking, because blocking would perturb the very program it
+is measuring — but a profile that lost a third of its samples looks exactly as
+authoritative as a complete one. If `dropped_per_mille` is not near zero, raise
+`CAJETA_PROFILER_RING` or lower `CAJETA_PROFILER_HZ` and run again.
+
+### What sampling can and cannot tell you
+
+A sampling profiler answers *where did the time go*, not *how many times was
+this called*. Every slice boundary lands on a sample tick, so a slice's
+duration is "this frame was on the stack across these ticks" — not a
+measurement of one call. Two consequences worth internalizing:
+
+- **Durations are statistical.** A function that appears for 30 ms was on the
+  stack for about 30 ms worth of samples. It is not 30 ms of one invocation.
+- **Short calls may not appear at all.** Anything that never happens to be on
+  the stack at a tick is invisible. Raising `CAJETA_PROFILER_HZ` narrows the
+  gap; it does not close it.
+
+Exact call counts are what the instrumentation tier is for; it is a build-time
+mode, because it changes what codegen emits.
+
+## Optimized builds still show your source
+
+Attribution follows the program's **source** structure, not its machine frames:
+
+```bash
+$ cajeta --emit=exe --opt=O3 -o myapp com.example.Main::main src arch
+$ CAJETA_PROFILER=1 ./myapp
+```
+
+Optimization level and line-info are independent: `--opt` does not turn the
+probes off, and the release flavors leave `--debug-info=line` (the default) in
+place. Only `--debug-info=off` / `--line-info=off` removes them.
+
+A one-line forwarder that `-O3` inlines out of existence still appears in the
+profile, because the probes are calls with side effects — inlining carries them
+into the caller rather than deleting them. A profiler reading DWARF or frame
+pointers loses that function; this one keeps it.
+
+`tools/profiler/attribution-check.sh` re-checks this end to end against a built
+toolchain.
+
+## GPU work
+
+When a program dispatches kernels, each device, context, and queue is its own
+track, and an arrow runs from the host call site that launched a kernel to the
+kernel's execution on the device — click through to see which line started
+which piece of GPU work.
+
+Device timing degrades rather than disappearing when a vendor profiler is
+absent: the trace records which timing tier produced each measurement, so a
+host-side estimate is never presented as an exact device measurement.
+
+## See also
+
+- [05 Debugging](05-debugging.md) — the shadow stack this reads, from the other side.
+- `specs/cajeta-profiler-spec.md` — the requirements this implements.

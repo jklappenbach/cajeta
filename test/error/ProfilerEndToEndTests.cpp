@@ -12,6 +12,7 @@
 // for.
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "ProfilerTraceRead.h"
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -28,6 +29,12 @@ struct E2E {
     void    (*disarm)(void) = nullptr;
     int64_t (*drain)(const char*) = nullptr;
     int64_t (*samples)(void) = nullptr;
+    int64_t (*shutdown)(void) = nullptr;
+    void    (*shutdownReset)(void) = nullptr;
+    const char* (*outPath)(void) = nullptr;
+    void    (*threadRegister)(void) = nullptr;
+    void    (*threadUnregister)(void) = nullptr;
+    uint64_t (*varintRead)(const uint8_t*, int32_t, int32_t*) = nullptr;
     int64_t (*frames)(void) = nullptr;
     int32_t (*hot)(int32_t) = nullptr;
 };
@@ -51,6 +58,13 @@ E2E& e2e() {
         e.disarm  = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_disarm"));
         e.drain   = reinterpret_cast<int64_t (*)(const char*)>(s("__cajeta_prof_drain_to_trace"));
         e.samples = reinterpret_cast<int64_t (*)(void)>(s("__cajeta_prof_sample_count"));
+        e.shutdown = reinterpret_cast<int64_t (*)(void)>(s("__cajeta_prof_shutdown"));
+        e.shutdownReset = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_shutdown_reset"));
+        e.outPath = reinterpret_cast<const char* (*)(void)>(s("__cajeta_prof_out_path"));
+        e.threadRegister = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_thread_register"));
+        e.threadUnregister = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_thread_unregister"));
+        e.varintRead = reinterpret_cast<uint64_t (*)(const uint8_t*, int32_t, int32_t*)>(
+            s("__cajeta_pb_varint_read"));
         e.frames  = reinterpret_cast<int64_t (*)(void)>(s("__cajeta_prof_frame_count"));
         e.hot     = e.jit->lookup<int32_t (*)(int32_t)>("hot");
         return e;
@@ -147,5 +161,140 @@ TEST(ProfilerEndToEnd, unarmedDrainWritesNothing) {
     // never profiled.
     long sz = fileSize(path);
     EXPECT_LE(sz, 0) << "unarmed drain produced a non-empty trace";
+    std::remove(path.c_str());
+}
+
+// ── 4.2.d: drain-and-flush on normal exit ─────────────────────────────────
+//
+// The gap this closes: until now the sampler filled the ring and the program
+// exited without writing it, so §9.1's "set CAJETA_PROFILER and the run is
+// profiled" produced nothing at all unless the caller knew to drain by hand.
+// The compiler now emits `__cajeta_prof_arm` at main's entry and
+// `__cajeta_prof_shutdown` before its return; these tests cover the runtime
+// half, and `samples/tour` (6.3.a) covers the emitted half end to end.
+TEST(ProfilerEndToEnd, shutdownDrainsToTheConfiguredPathWithoutAnExplicitDrain) {
+    auto& e = e2e();
+    ASSERT_NE(e.shutdown, nullptr) << "__cajeta_prof_shutdown unresolved";
+    ASSERT_NE(e.outPath, nullptr);
+    std::string path = tmpPath("cajeta-e2e-shutdown.pftrace");
+    std::remove(path.c_str());
+
+    setenv("CAJETA_PROFILER", "1", 1);
+    setenv("CAJETA_PROFILER_HZ", "2000", 1);
+    setenv("CAJETA_PROFILER_OUT", path.c_str(), 1);
+    e.shutdownReset();
+    ASSERT_EQ(e.arm(), 0);
+    EXPECT_STREQ(e.outPath(), path.c_str())
+        << "the configured output path did not reach the shutdown drain";
+    e.hot(6000000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+
+    // No disarm and no drain call: shutdown is the whole exit path.
+    int64_t packets = e.shutdown();
+    unsetenv("CAJETA_PROFILER");
+    unsetenv("CAJETA_PROFILER_HZ");
+    unsetenv("CAJETA_PROFILER_OUT");
+
+    EXPECT_GT(packets, 0) << "exit-time shutdown wrote no packets";
+    EXPECT_GT(fileSize(path), 0) << "no trace at the configured path";
+    std::remove(path.c_str());
+}
+
+// Shutdown is reached from main's epilogue AND from System.exit, and both can
+// run in one program. The second must not truncate the file the first wrote —
+// which is what a non-idempotent implementation does, silently, leaving a
+// zero-byte trace exactly where a complete one had been.
+TEST(ProfilerEndToEnd, shutdownIsIdempotentAndDoesNotTruncateTheFirstTrace) {
+    auto& e = e2e();
+    ASSERT_NE(e.shutdown, nullptr);
+    std::string path = tmpPath("cajeta-e2e-shutdown-twice.pftrace");
+    std::remove(path.c_str());
+
+    setenv("CAJETA_PROFILER", "1", 1);
+    setenv("CAJETA_PROFILER_HZ", "2000", 1);
+    setenv("CAJETA_PROFILER_OUT", path.c_str(), 1);
+    e.shutdownReset();
+    ASSERT_EQ(e.arm(), 0);
+    e.hot(4000000);
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+
+    int64_t first = e.shutdown();
+    long sizeAfterFirst = fileSize(path);
+    int64_t second = e.shutdown();
+    long sizeAfterSecond = fileSize(path);
+    unsetenv("CAJETA_PROFILER");
+    unsetenv("CAJETA_PROFILER_HZ");
+    unsetenv("CAJETA_PROFILER_OUT");
+
+    EXPECT_GT(first, 0);
+    EXPECT_EQ(second, 0) << "the second shutdown re-ran the drain";
+    EXPECT_GT(sizeAfterFirst, 0);
+    EXPECT_EQ(sizeAfterSecond, sizeAfterFirst)
+        << "a second shutdown reopened the trace and truncated it";
+    std::remove(path.c_str());
+}
+
+// An unarmed program reaches main's epilogue too. Shutdown must be silent
+// there — no file, no thread join, nothing — because every unprofiled binary
+// now runs this code on the way out.
+TEST(ProfilerEndToEnd, shutdownOnAnUnprofiledRunWritesNothing) {
+    auto& e = e2e();
+    ASSERT_NE(e.shutdown, nullptr);
+    std::string path = tmpPath("cajeta-e2e-shutdown-unarmed.pftrace");
+    std::remove(path.c_str());
+    unsetenv("CAJETA_PROFILER");
+    setenv("CAJETA_PROFILER_OUT", path.c_str(), 1);
+    e.shutdownReset();
+    ASSERT_EQ(e.arm(), 0) << "arm with CAJETA_PROFILER unset must be a quiet no-op";
+    EXPECT_EQ(e.shutdown(), 0);
+    unsetenv("CAJETA_PROFILER_OUT");
+    EXPECT_LE(fileSize(path), 0) << "an unprofiled run left a trace file behind";
+    std::remove(path.c_str());
+}
+
+// ── 6.1.b: host threads appear as distinct tracks, past two ───────────────
+//
+// The earlier version of this claim was carried by a one-thread/one-fiber
+// assertion, which proves the track keying works and nothing about whether it
+// scales. Four threads running the same hot function must land on four tracks:
+// a transform keyed on anything coarser than the thread handle — the frame
+// descriptor, say — collapses them into one and still emits a loadable trace.
+TEST(ProfilerEndToEnd, severalHostThreadsLandOnSeveralTracks) {
+    auto& e = e2e();
+    ASSERT_NE(e.drain, nullptr);
+    std::string path = tmpPath("cajeta-e2e-threads.pftrace");
+    std::remove(path.c_str());
+
+    ASSERT_NE(e.threadRegister, nullptr);
+    setenv("CAJETA_PROFILER", "1", 1);
+    setenv("CAJETA_PROFILER_HZ", "4000", 1);
+    e.shutdownReset();
+    ASSERT_EQ(e.arm(), 0);
+    constexpr int kThreads = 4;
+    std::vector<std::thread> ts;
+    for (int i = 0; i < kThreads; i++)
+        ts.emplace_back([&] {
+            // The sampler walks the REGISTRY, not every OS thread — a raw
+            // std::thread is invisible to it. Registering here is what a
+            // runtime-spawned carrier does for itself (cajeta_rt_core.c:714).
+            e.threadRegister();
+            e.hot(6000000);
+            e.threadUnregister();
+        });
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    for (auto& t : ts) t.join();
+    e.disarm();
+    int64_t packets = e.drain(path.c_str());
+    unsetenv("CAJETA_PROFILER");
+    unsetenv("CAJETA_PROFILER_HZ");
+
+    ASSERT_GT(packets, 0) << "drain wrote nothing";
+    int threadTracks = 0;
+    for (const auto& t : cajeta_test_prof::readTracks(path.c_str(), e.varintRead))
+        if (t.name.rfind("cajeta.thread.", 0) == 0) threadTracks++;
+    EXPECT_GE(threadTracks, 3)
+        << "samples from " << kThreads << " registered threads produced only "
+        << threadTracks << " thread tracks — the transform is keying on "
+           "something coarser than the thread handle";
     std::remove(path.c_str());
 }
