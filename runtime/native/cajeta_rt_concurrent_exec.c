@@ -839,7 +839,18 @@ static void __cajeta_fiber_park_locked(void) {
 // condvar until a pusher signals. R8.3 — the carrier struct comes in via
 // the pthread_create arg so each carrier knows its own deque, mutex, and
 // id without TLS-init plumbing.
+// cajeta-profiler Unit 3: this thread publishes its shadow stack for the
+// duration of its life. A wrapper rather than a register/unregister pair
+// inside the loop body, so every return path unregisters — the carrier loop
+// returns from more than one place.
+static void* __cajeta_carrier_loop_body(void* arg);
 static void* __cajeta_carrier_loop(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = __cajeta_carrier_loop_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+static void* __cajeta_carrier_loop_body(void* arg) {
     struct cajeta_carrier* self = (struct cajeta_carrier*) arg;
     __cajeta_my_carrier = self;
     for (;;) {
@@ -1369,7 +1380,18 @@ static int __cajeta_parked_remove_locked(struct cajeta_fiber* f) {
 
 // Timer thread. Sleeps on __cajeta_timer_cond until the next deadline (or
 // a register/cancel/shutdown signal), wakes expired fibers, sleeps again.
+// cajeta-profiler Unit 3: this thread publishes its shadow stack for the
+// duration of its life. A wrapper rather than a register/unregister pair
+// inside the loop body, so every return path unregisters — the timer loop
+// returns from more than one place.
+static void* __cajeta_timer_loop_body(void* arg);
 static void* __cajeta_timer_loop(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = __cajeta_timer_loop_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+static void* __cajeta_timer_loop_body(void* arg) {
     (void) arg;
     pthread_mutex_lock(&__cajeta_task_mutex);
     for (;;) {
@@ -1618,7 +1640,18 @@ static int __cajeta_io_events_to_epoll(int events) {
 // the shutdown flag is observed even when no I/O is in flight. On each
 // ready event, walks the waiter list under task_mutex, detaches matched
 // fibers from __cajeta_parked_head, and publishes them.
+// cajeta-profiler Unit 3: this thread publishes its shadow stack for the
+// duration of its life. A wrapper rather than a register/unregister pair
+// inside the loop body, so every return path unregisters — the reactor loop
+// returns from more than one place.
+static void* __cajeta_reactor_loop_body(void* arg);
 static void* __cajeta_reactor_loop(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = __cajeta_reactor_loop_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+static void* __cajeta_reactor_loop_body(void* arg) {
     (void) arg;
     for (;;) {
         if (__cajeta_reactor_shutdown_requested) return NULL;

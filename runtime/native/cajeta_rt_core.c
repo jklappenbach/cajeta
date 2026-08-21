@@ -467,6 +467,120 @@ int32_t __cajeta_shadow_get_top(void) { return __cajeta_shadow_ptr()->top; }
 void __cajeta_shadow_set_top(int32_t watermark) {
     if (watermark >= 0) __cajeta_shadow_ptr()->top = watermark;
 }
+// ── cajeta-profiler Unit 3: live-thread registry ──────────────────────────
+// Publishes each live PROGRAM THREAD's shadow stack so a sampler thread can
+// read a stack it does not own. A thread registers at its entry (§2.7 wants it
+// sampled from creation, so this is not lazy — a lazy check would also put a
+// branch on the enter/mark/leave hot path) and unregisters before it exits.
+//
+// FIBERS ARE DELIBERATELY ABSENT. The debugger's live-fiber registry above
+// already enumerates them under a single-lock snapshot, and since Unit 2 every
+// fiber carries its shadow stack inline, so a fiber handle is all a sampler
+// needs. A second registry over the same fibers would drift from that one.
+//
+// The mutex is taken on register/unregister/snapshot — never on the sampled
+// thread's enter/mark/leave path, which touches no shared state at all (3.3.a).
+static pthread_mutex_t __cajeta_prof_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
+static CajetaShadowStack** __cajeta_prof_threads = NULL;
+static int __cajeta_prof_thread_n = 0;
+static int __cajeta_prof_thread_cap = 0;
+
+// This thread's own shadow-stack handle — always the PROGRAM-thread slot, never
+// a fiber's: fibers are enumerated through the fiber registry, and a carrier
+// asked for "its" stack means the carrier's, not whichever fiber it is hosting.
+void* __cajeta_prof_thread_self(void) {
+    return (void*) &__cajeta_main_shadow;
+}
+
+void __cajeta_prof_thread_register(void) {
+    CajetaShadowStack* self = &__cajeta_main_shadow;
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    for (int i = 0; i < __cajeta_prof_thread_n; i++) {
+        if (__cajeta_prof_threads[i] == self) {   // idempotent
+            pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+            return;
+        }
+    }
+    if (__cajeta_prof_thread_n == __cajeta_prof_thread_cap) {
+        int cap = __cajeta_prof_thread_cap ? __cajeta_prof_thread_cap * 2 : 16;
+        CajetaShadowStack** grown = (CajetaShadowStack**) realloc(
+            __cajeta_prof_threads, (size_t) cap * sizeof(CajetaShadowStack*));
+        if (!grown) { pthread_mutex_unlock(&__cajeta_prof_thread_mutex); return; }
+        __cajeta_prof_threads = grown;
+        __cajeta_prof_thread_cap = cap;
+    }
+    __cajeta_prof_threads[__cajeta_prof_thread_n++] = self;
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+}
+
+void __cajeta_prof_thread_unregister(void) {
+    CajetaShadowStack* self = &__cajeta_main_shadow;
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    for (int i = 0; i < __cajeta_prof_thread_n; i++) {
+        if (__cajeta_prof_threads[i] != self) continue;
+        // Order-preserving removal, matching the fiber registry: a sampler's
+        // view stays in registration order rather than shuffling on every exit.
+        for (int j = i + 1; j < __cajeta_prof_thread_n; j++)
+            __cajeta_prof_threads[j - 1] = __cajeta_prof_threads[j];
+        __cajeta_prof_thread_n--;
+        break;
+    }
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+}
+
+int __cajeta_prof_thread_count(void) {
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    int n = __cajeta_prof_thread_n;
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+    return n;
+}
+
+// Copy up to `max` live handles under a SINGLE lock hold and return the live
+// count at that instant. Same rationale as __cajeta_dbg_fiber_snapshot:
+// count() followed by a loop of at(i) is a TOCTOU against threads registering
+// and exiting concurrently. Returning the full count (which may exceed `max`)
+// lets a caller grow its buffer and re-snapshot.
+int __cajeta_prof_thread_snapshot(void** out, int max) {
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    int n = __cajeta_prof_thread_n;
+    if (out && max > 0) {
+        int copy = n < max ? n : max;
+        for (int i = 0; i < copy; i++) out[i] = (void*) __cajeta_prof_threads[i];
+    }
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+    return n;
+}
+
+// Snapshot the frames behind a handle from ANOTHER thread — the sampler's entry
+// point. `handle` is a thread handle from __cajeta_prof_thread_snapshot or a
+// fiber handle from __cajeta_dbg_fiber_snapshot; a fiber's shadow stack is the
+// first member of struct cajeta_fiber's slot, so both resolve to the same
+// CajetaShadowStack shape.
+//
+// `truncated` (spec §2.8) reports that the source stack was DEEPER than
+// capacity, so a caller never reads a capped stack as a complete one. The signal
+// costs nothing: __cajeta_line_enter deliberately counts `top` past the cap to
+// keep `leave` balanced, so an over-cap depth is already recorded.
+//
+// Lock-free by construction: it reads a live stack that its owner is still
+// mutating. A sample can therefore tear — a frame written while it is copied —
+// which is inherent to sampling a running thread and is why §11 verifies sample
+// plausibility rather than trusting it. Never blocks the sampled thread.
+int32_t __cajeta_prof_stack_snapshot(void* handle, CajetaShadowFrame* out,
+                                     int32_t max, int32_t* truncated) {
+    CajetaShadowStack* s = (CajetaShadowStack*) handle;
+    if (!s) { if (truncated) *truncated = 0; return 0; }
+    int32_t n = s->top;
+    int32_t trunc = 0;
+    if (n > CAJETA_SHADOW_MAX) { n = CAJETA_SHADOW_MAX; trunc = 1; }
+    if (n < 0) n = 0;
+    if (truncated) *truncated = trunc;
+    if (!out || max <= 0) return n;   // count-only query
+    int32_t w = 0;
+    for (int32_t i = n - 1; i >= 0 && w < max; i--) out[w++] = s->frames[i];
+    return w;
+}
+
 // Snapshot the live shadow frames innermost-first into `out` (caller-sized to
 // `max`), returning the number copied. `out[0]` is the throw-site frame.
 int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
