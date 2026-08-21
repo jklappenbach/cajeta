@@ -927,23 +927,87 @@ int __cajeta_dbg_frame_contains(void* top, void* node) {
 // wins and subsequent calls (auto-drop and chain pop racing on the same
 // aliased field, e.g. ArrayStream.data and ArrayList.data) no-op safely.
 //
-// Implementation: single global open-addressed hash table, fixed power-of-2
-// capacity, pointer-shifted hash. Cross-fiber correctness needs the global
+// Implementation: single global open-addressed hash table, power-of-2 capacity
+// that GROWS, pointer-shifted hash. Cross-fiber correctness needs the global
 // (allocations may be freed on a different carrier than they were made on).
-// Capacity is fixed; no resize — at 75% load we warn and start leaking the
-// excess (correctness-preserving — leaked entries just mean future double-
-// frees on those addresses won't be caught).
+//
+// The capacity used to be fixed, and at 75% load the table warned and simply
+// stopped recording. That was documented two contradictory ways — the comment
+// here called it "correctness-preserving", the warning it printed said it
+// "may double-free" — and neither was right. The claim protocol fails CLOSED
+// (__cajeta_class_virtual_drop returns early when the claim misses), so an
+// untracked allocation is never double-freed; it is never FREED at all. The
+// real consequence was a silent leak of everything past the cap, plus a
+// liveCount() that saturates and so reads clean while leaking — the blind
+// instrument CLAUDE.md 5 warns about. Binding a real Llama-3.1-8B Q4_K_M
+// crosses the cap during load (cajeta-llama plan 15.1.15), which is what
+// surfaced it; every earlier test ran on fixtures far below it.
 // ============================================================================
-#define CAJETA_LIVE_SET_CAPACITY (1 << 18)   // 256K slots; 2MB total. Sized for the
+#define CAJETA_LIVE_SET_INITIAL_CAPACITY (1 << 18)
+                                             // 256K slots; 2MB. Sized for the
                                              // peak working set of a large owned-key
                                              // map (e.g. a 30K-entry HashMap<String,V>
                                              // holds ~60K live allocations — wrapper +
-                                             // byte buffer per key — simultaneously).
-#define CAJETA_LIVE_SET_LOAD_CAP ((CAJETA_LIVE_SET_CAPACITY * 3) / 4)
+                                             // byte buffer per key — simultaneously),
+                                             // so typical programs never rehash.
 #define CAJETA_LIVE_SET_TOMBSTONE ((void*) 1)  // page 0 unmapped; safe sentinel
 
-static void* __cajeta_live_set[CAJETA_LIVE_SET_CAPACITY];
+static void** __cajeta_live_set = NULL;
+static size_t __cajeta_live_set_cap = 0;
 static int __cajeta_live_set_count = 0;
+// Slots holding a tombstone. Counted because they occupy probe sequence just
+// as live entries do: a churn-heavy program can fill the table with them while
+// `count` stays low, and without this the probe loop degrades to a full scan.
+static size_t __cajeta_live_set_tombstones = 0;
+// Set once if a growth allocation fails. The table then behaves as the old
+// fixed one did — warn once, stop recording — because refusing to allocate is
+// better than aborting a program that is merely large.
+static int __cajeta_live_set_frozen = 0;
+
+// Insert into `table` with no bookkeeping and no growth check. Used by both the
+// normal add path and the rehash, which is why it takes the table explicitly:
+// during a rehash the global still points at the OLD table.
+static int __cajeta_live_set_insert_into(void** table, size_t cap, void* p) {
+    size_t mask = cap - 1;
+    size_t bucket = ((uintptr_t) p >> 3) & mask;
+    for (size_t i = 0; i < cap; i++) {
+        size_t idx = (bucket + i) & mask;
+        void* cur = table[idx];
+        if (cur == NULL || cur == CAJETA_LIVE_SET_TOMBSTONE) {
+            table[idx] = p;
+            return 1;
+        }
+        if (cur == p) return 0;  // already present (alloc gave a fresh address)
+    }
+    return 0;
+}
+
+// Grow to `want` slots (or rehash in place at the same size when tombstones,
+// not live entries, are what filled the table). Caller holds the lock in mt
+// mode. Returns 1 on success; on failure the old table is untouched and the
+// set freezes.
+static int __cajeta_live_set_rehash(size_t want) {
+    void** old = __cajeta_live_set;
+    size_t oldCap = __cajeta_live_set_cap;
+    void** fresh = (void**) calloc(want, sizeof(void*));
+    if (fresh == NULL) {
+        __cajeta_live_set_frozen = 1;
+        return 0;
+    }
+    if (old != NULL) {
+        for (size_t i = 0; i < oldCap; i++) {
+            void* cur = old[i];
+            if (cur != NULL && cur != CAJETA_LIVE_SET_TOMBSTONE) {
+                __cajeta_live_set_insert_into(fresh, want, cur);
+            }
+        }
+        free(old);
+    }
+    __cajeta_live_set = fresh;
+    __cajeta_live_set_cap = want;
+    __cajeta_live_set_tombstones = 0;   // rehash drops every tombstone
+    return 1;
+}
 static pthread_mutex_t __cajeta_live_set_mu = PTHREAD_MUTEX_INITIALIZER;
 
 // Current live-object population. Test-only introspection (Cajeta.liveCount()):
@@ -972,45 +1036,57 @@ int64_t __cajeta_total_allocated_bytes(void) {
 
 static void __cajeta_live_set_add_locked(void* p) {
     if (!p || p == CAJETA_LIVE_SET_TOMBSTONE) return;
-    if (__cajeta_live_set_count >= CAJETA_LIVE_SET_LOAD_CAP) {
+    if (__cajeta_live_set == NULL) {
+        if (!__cajeta_live_set_rehash(CAJETA_LIVE_SET_INITIAL_CAPACITY)) return;
+    }
+    // Grow at 75% OCCUPANCY — live entries plus tombstones, since both consume
+    // probe sequence. When live entries alone are under half the table the
+    // tombstones are what filled it, so rehash at the same size rather than
+    // doubling: churn must not grow the table without bound.
+    size_t used = (size_t) __cajeta_live_set_count + __cajeta_live_set_tombstones;
+    if (!__cajeta_live_set_frozen
+            && used >= (__cajeta_live_set_cap * 3) / 4) {
+        size_t want = ((size_t) __cajeta_live_set_count
+                           >= __cajeta_live_set_cap / 2)
+            ? __cajeta_live_set_cap * 2
+            : __cajeta_live_set_cap;
+        __cajeta_live_set_rehash(want);
+    }
+    if (__cajeta_live_set_frozen
+            && (size_t) __cajeta_live_set_count
+                   >= (__cajeta_live_set_cap * 3) / 4) {
         static int warned = 0;
         if (!warned) {
             fprintf(stderr,
-                "cajeta: live-allocation set reached load cap (%d / %d). "
-                "Subsequent allocations won't be tracked; field auto-drop "
-                "may double-free aliased addresses past this point. "
-                "Raise CAJETA_LIVE_SET_CAPACITY in runtime/native/cajeta_runtime.c "
-                "(see docs/FieldOwnership.md).\n",
-                __cajeta_live_set_count, CAJETA_LIVE_SET_CAPACITY);
+                "cajeta: live-allocation set could not grow past %zu slots "
+                "(out of memory). Subsequent allocations won't be tracked, so "
+                "they will never be reclaimed — expect a leak proportional to "
+                "how far past this point the program runs.\n",
+                __cajeta_live_set_cap);
             warned = 1;
         }
         return;
     }
-    size_t mask = CAJETA_LIVE_SET_CAPACITY - 1;
-    size_t bucket = ((uintptr_t) p >> 3) & mask;
-    for (size_t i = 0; i < CAJETA_LIVE_SET_CAPACITY; i++) {
-        size_t idx = (bucket + i) & mask;
-        void* cur = __cajeta_live_set[idx];
-        if (cur == NULL || cur == CAJETA_LIVE_SET_TOMBSTONE) {
-            __cajeta_live_set[idx] = p;
-            __cajeta_live_set_count++;
-            return;
-        }
-        if (cur == p) return;  // already present (shouldn't happen — alloc gave a fresh address)
+    if (__cajeta_live_set_insert_into(__cajeta_live_set,
+                                      __cajeta_live_set_cap, p)) {
+        __cajeta_live_set_count++;
     }
 }
 
 static int __cajeta_live_set_remove_locked(void* p) {
     if (!p || p == CAJETA_LIVE_SET_TOMBSTONE) return 0;
-    size_t mask = CAJETA_LIVE_SET_CAPACITY - 1;
+    if (__cajeta_live_set == NULL) return 0;
+    size_t cap = __cajeta_live_set_cap;
+    size_t mask = cap - 1;
     size_t bucket = ((uintptr_t) p >> 3) & mask;
-    for (size_t i = 0; i < CAJETA_LIVE_SET_CAPACITY; i++) {
+    for (size_t i = 0; i < cap; i++) {
         size_t idx = (bucket + i) & mask;
         void* cur = __cajeta_live_set[idx];
         if (cur == NULL) return 0;  // empty slot — search ends
         if (cur == p) {
             __cajeta_live_set[idx] = CAJETA_LIVE_SET_TOMBSTONE;
             __cajeta_live_set_count--;
+            __cajeta_live_set_tombstones++;
             return 1;
         }
     }
