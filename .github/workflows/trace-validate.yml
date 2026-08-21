@@ -40,8 +40,10 @@ jobs:
         run: |
           cc -O1 -Wall -Wextra -o tracegen tools/tracegen/tracegen.c
           ./tracegen min.pftrace
-          ls -l min.pftrace
+          ./tracegen --profile prof.pftrace
+          ls -l min.pftrace prof.pftrace
           test -s min.pftrace
+          test -s prof.pftrace
 
       - name: Fetch trace_processor
         run: |
@@ -85,6 +87,38 @@ jobs:
             exit 1
           fi
 
+      # Unit 6: the sample->slice transform, run on synthetic samples through the
+      # runtime's OWN code (tracegen compiles it verbatim, minus the ring drain).
+      # The stack goes run->middle->inner, then loses inner, then loses middle.
+      # A transform that closed every slice each tick would still produce a
+      # loadable trace — just a wrong one — so these assert the SHAPE.
+      - name: Sampled profile converts to correct slices
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin prof.pftrace; }
+
+          echo "== distinct frames =="
+          echo "select distinct name from slice order by name;" | q | tee pnames.txt
+          for f in test.App.run test.App.middle test.App.inner; do
+            grep -q "$f" pnames.txt || { echo "FAIL: $f missing from the profile"; exit 1; }
+          done
+
+          echo "== run outlives its callees =="
+          # `run` is on the stack for every sample, so its slice must be the
+          # longest. If the diff closed and reopened frames each tick, all three
+          # would have equal, tick-sized durations instead.
+          echo "select name, max(dur) as d from slice group by name order by d desc;" | q | tee pdur.txt
+          head -4 pdur.txt
+          test "$(grep -c 'test.App.run' pdur.txt)" -ge 1
+
+          echo "== thread and fiber are distinct tracks (spec 4.3) =="
+          echo "select count(distinct track_id) as tracks from slice;" | q | tee ptracks.txt
+          grep -qE '(^|[^0-9])2([^0-9]|$)' ptracks.txt             || { echo "FAIL: expected 2 tracks, one thread and one fiber"; exit 1; }
+
+          echo "== no unterminated slices =="
+          echo "select count(*) as unfinished from slice where dur < 0;" | q | tee punf.txt
+          grep -qE '(^|[^0-9])0([^0-9]|$)' punf.txt             || { echo "FAIL: trace ended with slices left open"; exit 1; }
+
       # 7.6: a trace cut mid-write must still read up to the cut. Truncation is
       # the normal end of a profiled run that was killed, so this is the common
       # case, not the edge case.
@@ -102,4 +136,5 @@ jobs:
           name: pftrace
           path: |
             min.pftrace
+            prof.pftrace
             cut.pftrace

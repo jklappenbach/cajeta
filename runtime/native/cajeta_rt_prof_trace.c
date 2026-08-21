@@ -322,3 +322,171 @@ int32_t __cajeta_prof_trace_close(CajProfWriter* w) {
     w->f = NULL;
     return r;
 }
+
+// ── Unit 6: samples become slices ─────────────────────────────────────────
+// A sampler produces periodic STACKS; Perfetto's TrackEvent model wants
+// SLICES. The conversion is a per-track diff against the previously open stack:
+// frames still present are left open, frames that vanished are closed innermost
+// first, frames that appeared are opened outermost first. Everything still open
+// is closed at drain.
+//
+// WHAT THIS COSTS, stated because a flame graph invites the opposite reading:
+// every slice boundary lands on a SAMPLE TICK, not on a real call boundary. A
+// slice says "this frame was on the stack at these ticks", never "this call
+// started here". At the 1 kHz default a call shorter than a millisecond may not
+// appear at all, and one that does appear has its edges quantized to the
+// interval. That is inherent to sampling — §3's instrumentation tier exists for
+// exact enter/exit — and §7.8 requires the trace record which tier produced a
+// measurement so a reader can tell the two apart.
+//
+// The diff is also why interning matters: a frame that persists across a
+// thousand ticks is named once, not a thousand times.
+// Defined in cajeta_rt_concurrent_exec.c, later in this TU — same forward
+// declaration pattern core.c uses for __cajeta_currentTimeNanos.
+long __cajeta_dbg_fiber_id_of(void* fiber);
+
+#define CAJ_PROF_MAX_TRACKS 256
+#define CAJ_PROF_MAX_DEPTH  CAJETA_PROF_MAX_FRAMES
+
+typedef struct {
+    void*   owner;
+    int32_t kind;
+    uint64_t uuid;
+    int32_t depth;                              // frames currently open
+    const CajetaFrameDesc* open[CAJ_PROF_MAX_DEPTH];   // outermost -> innermost
+} CajProfTrack;
+
+// Stable, readable track names. A fiber gets its debugger id, which is the same
+// id the DAP fibers view shows, so a profile and a debug session name the same
+// fiber the same way.
+static void caj_prof_track_name(char* out, int32_t cap, const CajProfTrack* t,
+                                int32_t index) {
+    const char* kind = (t->kind == CAJETA_PROF_OWNER_FIBER) ? "fiber" : "thread";
+    long id = (t->kind == CAJETA_PROF_OWNER_FIBER)
+                  ? __cajeta_dbg_fiber_id_of(t->owner)
+                  : (long) index;
+    snprintf(out, (size_t) cap, "cajeta.%s.%ld", kind, id);
+}
+
+static CajProfTrack* caj_prof_track_for(CajProfTrack* tracks, int32_t* n,
+                                        CajProfWriter* w, void* owner,
+                                        int32_t kind) {
+    for (int32_t i = 0; i < *n; i++)
+        if (tracks[i].owner == owner) return &tracks[i];
+    if (*n >= CAJ_PROF_MAX_TRACKS) return NULL;
+    CajProfTrack* t = &tracks[*n];
+    t->owner = owner;
+    t->kind = kind;
+    t->depth = 0;
+    // uuid must be stable and non-zero; the handle's address is both, and it is
+    // never dereferenced here.
+    t->uuid = (uint64_t) (uintptr_t) owner;
+    char name[64];
+    caj_prof_track_name(name, (int32_t) sizeof(name), t, *n);
+    __cajeta_prof_trace_track(w, t->uuid, 0, name);
+    (*n)++;
+    return t;
+}
+
+// One frame's display name: "Type.method". Built into a caller buffer so the
+// interning table sees a stable content string.
+static void caj_prof_frame_name(char* out, int32_t cap, const CajetaFrameDesc* d) {
+    const char* t = (d && d->typeName) ? d->typeName : "?";
+    const char* m = (d && d->methodName) ? d->methodName : "?";
+    snprintf(out, (size_t) cap, "%s.%s", t, m);
+}
+
+// Convert an ordered run of samples into a trace at `path`. Returns packets
+// written, or 0.
+//
+// Takes the samples as a parameter rather than reading the ring, so the exact
+// code CI validates is the code the runtime runs: tools/tracegen builds
+// synthetic samples and calls this under a plain `cc`. A transform that reached
+// into globals could only ever be tested by building the whole toolchain, which
+// is expensive enough that it would not be tested on every change.
+int64_t __cajeta_prof_samples_to_trace(const CajetaProfSample* samples,
+                                       int64_t n, const char* path) {
+    if (!samples || n <= 0) return 0;
+    static CajProfWriter w;
+    if (!__cajeta_prof_trace_open(&w, path)) return 0;
+
+    static CajProfTrack tracks[CAJ_PROF_MAX_TRACKS];
+    int32_t n_tracks = 0;
+    int64_t last_ts = 0;
+    for (int64_t i = 0; i < n; i++) {
+        const CajetaProfSample* s = &samples[i];
+        CajProfTrack* t = caj_prof_track_for(tracks, &n_tracks, &w,
+                                             s->owner, s->owner_kind);
+        if (!t) continue;
+        last_ts = s->host_ns;
+
+        // The snapshot is innermost-first; slices nest outermost-first.
+        int32_t n = s->n_frames;
+        if (n > CAJ_PROF_MAX_DEPTH) n = CAJ_PROF_MAX_DEPTH;
+        const CajetaFrameDesc* cur[CAJ_PROF_MAX_DEPTH];
+        for (int32_t k = 0; k < n; k++) cur[k] = s->frames[n - 1 - k].desc;
+
+        // Common prefix with what is already open.
+        int32_t common = 0;
+        while (common < n && common < t->depth && cur[common] == t->open[common])
+            common++;
+
+        // Close what vanished, innermost first — Perfetto requires SLICE_END in
+        // reverse order of SLICE_BEGIN on a track.
+        for (int32_t k = t->depth - 1; k >= common; k--)
+            __cajeta_prof_trace_slice(&w, (uint64_t) s->host_ns, t->uuid,
+                                      CAJ_TE_SLICE_END, NULL);
+        // Open what appeared, outermost first.
+        for (int32_t k = common; k < n; k++) {
+            char name[256];
+            caj_prof_frame_name(name, (int32_t) sizeof(name), cur[k]);
+            __cajeta_prof_trace_slice(&w, (uint64_t) s->host_ns, t->uuid,
+                                      CAJ_TE_SLICE_BEGIN, name);
+            t->open[k] = cur[k];
+        }
+        t->depth = n;
+    }
+
+    // Close every slice still open, or the trace ends with unterminated slices
+    // and a reader has to guess where they stopped.
+    for (int32_t i = 0; i < n_tracks; i++)
+        for (int32_t k = tracks[i].depth - 1; k >= 0; k--)
+            __cajeta_prof_trace_slice(&w, (uint64_t) last_ts, tracks[i].uuid,
+                                      CAJ_TE_SLICE_END, NULL);
+
+    int64_t packets = __cajeta_prof_trace_packets(&w);
+    __cajeta_prof_trace_close(&w);
+    return packets;
+}
+
+// Everything above is free of the sampler's globals, so tools/tracegen can
+// compile it standalone and CI can validate the real transform. The ring drain
+// below is the one part that cannot be — it reads the sampler's ring — so it is
+// excluded from that build rather than duplicated for it.
+#ifndef CAJETA_PROF_TRACE_STANDALONE
+
+// Drain the sampler ring into `path`, consuming tail..head. This is the drain
+// half of 4.2.d: a run that ends normally flushes what it holds, and one that is
+// killed leaves a shorter but still readable trace (§7.6).
+//
+// The ring is contiguous only modulo its capacity, so it is copied into order
+// before conversion. That copy is at drain time, off the sampling path.
+int64_t __cajeta_prof_drain_to_trace(const char* path) {
+    if (!__cajeta_prof_ring || __cajeta_prof_ring_cap <= 0) return 0;
+    int64_t head = __atomic_load_n(&__cajeta_prof_head, __ATOMIC_ACQUIRE);
+    int64_t tail = __cajeta_prof_tail;
+    int64_t n = head - tail;
+    if (n <= 0) return 0;
+    if (n > __cajeta_prof_ring_cap) n = __cajeta_prof_ring_cap;
+    CajetaProfSample* ordered =
+        (CajetaProfSample*) malloc((size_t) n * sizeof(CajetaProfSample));
+    if (!ordered) return 0;
+    for (int64_t i = 0; i < n; i++)
+        ordered[i] = __cajeta_prof_ring[(tail + i) % __cajeta_prof_ring_cap];
+    int64_t packets = __cajeta_prof_samples_to_trace(ordered, n, path);
+    free(ordered);
+    __cajeta_prof_tail = head;
+    return packets;
+}
+
+#endif  /* CAJETA_PROF_TRACE_STANDALONE */

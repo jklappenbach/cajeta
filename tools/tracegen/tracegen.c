@@ -14,11 +14,79 @@
 // numbers, so every local check passes and the artifact is still useless.
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
+// Excludes only the ring drain, which reads the sampler's globals. Everything
+// the trace actually depends on — the wire layer, the writer, the interning
+// table, and the sample->slice transform — is the runtime's own code, compiled
+// here verbatim.
+#define CAJETA_PROF_TRACE_STANDALONE 1
+#include "../../runtime/native/cajeta_prof_abi.h"
 #include "../../runtime/native/cajeta_rt_prof_trace.c"
 
+// The transform names a fiber track by its debugger id, which lives in the
+// fiber scheduler — not compiled here. A stub keeps the standalone build honest:
+// the id is cosmetic (it appears in the track NAME), so substituting a
+// deterministic one changes what the track is called and nothing about the
+// structure CI checks.
+long __cajeta_dbg_fiber_id_of(void* fiber) { return (long) (uintptr_t) fiber; }
+
+// A synthetic profile: two tracks, a stack that grows and shrinks the way a
+// sampler actually observes one. Drives __cajeta_prof_samples_to_trace — the
+// runtime's real transform — so CI judges the code that ships.
+//
+// The shape matters. Samples 0-2 sit in run->middle->inner, sample 3 leaves
+// `inner`, sample 4 leaves `middle` too. A correct diff closes exactly what
+// vanished and leaves `run` open throughout; a transform that closed everything
+// each tick would still produce a loadable trace, just a wrong one.
+static int profile_mode(const char* out) {
+    static CajetaFrameDesc run    = { "test.App", "run",    "App.cajeta" };
+    static CajetaFrameDesc middle = { "test.App", "middle", "App.cajeta" };
+    static CajetaFrameDesc inner  = { "test.App", "inner",  "App.cajeta" };
+    const CajetaFrameDesc* stacks[5][3] = {
+        { &inner, &middle, &run },   // innermost-first, as the sampler stores it
+        { &inner, &middle, &run },
+        { &inner, &middle, &run },
+        { &middle, &run, 0 },
+        { &run, 0, 0 },
+    };
+    const int32_t depths[5] = { 3, 3, 3, 2, 1 };
+
+    static CajetaProfSample samples[10];
+    int64_t n = 0;
+    void* thread_owner = (void*) 0x1000;
+    void* fiber_owner  = (void*) 0x2000;
+    for (int i = 0; i < 5; i++) {
+        CajetaProfSample* s = &samples[n++];
+        s->host_ns = 1000000 + (int64_t) i * 500000;
+        s->owner = thread_owner;
+        s->owner_kind = CAJETA_PROF_OWNER_THREAD;
+        s->n_frames = depths[i];
+        s->truncated = 0;
+        for (int32_t k = 0; k < depths[i]; k++) {
+            s->frames[k].desc = stacks[i][k];
+            s->frames[k].line = 10 + k;
+        }
+        // A fiber sampled at the same instants, so §4.3's "fibers are tracks
+        // distinct from their carrier" has something to show.
+        CajetaProfSample* f = &samples[n++];
+        *f = *s;
+        f->owner = fiber_owner;
+        f->owner_kind = CAJETA_PROF_OWNER_FIBER;
+        f->n_frames = 1;
+        f->frames[0].desc = &run;
+    }
+
+    int64_t packets = __cajeta_prof_samples_to_trace(samples, n, out);
+    printf("tracegen: profile mode wrote %lld packets to %s\n",
+           (long long) packets, out);
+    if (packets <= 0) { fprintf(stderr, "tracegen: transform wrote nothing\n"); return 4; }
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc > 2 && strcmp(argv[1], "--profile") == 0) return profile_mode(argv[2]);
     const char* out = (argc > 1) ? argv[1] : "cajeta-min.pftrace";
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, out)) {

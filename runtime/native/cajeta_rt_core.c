@@ -416,18 +416,11 @@ void __cajeta_dbg_frame_leave(void* node) {
 // this keeps its never-mallocs property on the enter/mark/leave hot path. It
 // costs CAJETA_SHADOW_MAX * sizeof(CajetaShadowFrame) = 8 KB per fiber against
 // a CAJETA_FIBER_STACK_SIZE of 1 MB — 0.8% of what a fiber already reserves.
-typedef struct {
-    const char* typeName;    // "test.App"
-    const char* methodName;  // "run"
-    const char* fileName;    // "App.cajeta"
-} CajetaFrameDesc;
+// CajetaFrameDesc / CajetaShadowFrame / CajetaProfSample and their bounds live
+// in the profiler ABI header, so the trace writer's transform can be driven by a
+// synthetic sample array in CI without dragging in the whole runtime.
+#include "cajeta_prof_abi.h"
 
-typedef struct {
-    const CajetaFrameDesc* desc;
-    int32_t line;
-} CajetaShadowFrame;
-
-#define CAJETA_SHADOW_MAX 512
 
 // One shadow stack. The program thread owns the __thread instance below; each
 // fiber owns one inline in `struct cajeta_fiber`.
@@ -599,17 +592,9 @@ int32_t __cajeta_prof_stack_snapshot(void* handle, CajetaShadowFrame* out,
 // declaration pattern as __cajeta_dbg_top_ptr / __cajeta_shadow_ptr above.
 int64_t __cajeta_currentTimeNanos(void);
 
-#define CAJETA_PROF_MAX_FRAMES 128
 #define CAJETA_PROF_DEFAULT_HZ 1000
 #define CAJETA_PROF_DEFAULT_RING 4096
 
-typedef struct {
-    int64_t          host_ns;       // when the sample was taken
-    void*            owner;         // thread or fiber handle it came from
-    int32_t          n_frames;
-    int32_t          truncated;     // source stack was deeper than capacity
-    CajetaShadowFrame frames[CAJETA_PROF_MAX_FRAMES];
-} CajetaProfSample;
 
 static pthread_t        __cajeta_prof_thread;
 static volatile int     __cajeta_prof_armed = 0;
@@ -645,7 +630,7 @@ const char* __cajeta_prof_out_path(void) {
 
 // Copy one stack into the ring. Producer-only; the sampler thread is the sole
 // writer, so head moves without a CAS.
-static void __cajeta_prof_push(void* owner) {
+static void __cajeta_prof_push(void* owner, int32_t owner_kind) {
     int32_t trunc = 0;
     CajetaShadowFrame tmp[CAJETA_PROF_MAX_FRAMES];
     int32_t n = __cajeta_prof_stack_snapshot(owner, tmp,
@@ -660,6 +645,7 @@ static void __cajeta_prof_push(void* owner) {
     CajetaProfSample* slot = &__cajeta_prof_ring[head % __cajeta_prof_ring_cap];
     slot->host_ns = __cajeta_currentTimeNanos();
     slot->owner = owner;
+    slot->owner_kind = owner_kind;
     slot->n_frames = n;
     slot->truncated = trunc;
     for (int32_t i = 0; i < n; i++) slot->frames[i] = tmp[i];
@@ -675,10 +661,12 @@ static void* __cajeta_prof_loop(void* arg) {
         void* handles[256];
         int n = __cajeta_prof_thread_snapshot(handles, 256);
         if (n > 256) n = 256;
-        for (int i = 0; i < n; i++) __cajeta_prof_push(handles[i]);
+        for (int i = 0; i < n; i++)
+            __cajeta_prof_push(handles[i], CAJETA_PROF_OWNER_THREAD);
         int fn = __cajeta_dbg_fiber_snapshot(handles, 256);
         if (fn > 256) fn = 256;
-        for (int i = 0; i < fn; i++) __cajeta_prof_push(handles[i]);
+        for (int i = 0; i < fn; i++)
+            __cajeta_prof_push(handles[i], CAJETA_PROF_OWNER_FIBER);
         struct timespec ts;
         ts.tv_sec  = __cajeta_prof_interval / 1000000;
         ts.tv_nsec = (long) (__cajeta_prof_interval % 1000000) * 1000L;
