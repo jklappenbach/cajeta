@@ -346,7 +346,12 @@ int main(int argc, char** argv) {
     // that cannot be trusted announces itself instead of being read as a
     // finding: a delta smaller than the spread of its own inputs is noise, and
     // the reader can now see that without re-running anything.
-    const int T5_REPS = 7;
+    // An ENUM, not `const int`. MSVC captures a const local into the lambda and
+    // then rejects `double v[T5_REPS]` as a non-constant array bound (C2131,
+    // "read of a variable outside its lifetime", pointing at `this`). nvcc on
+    // Linux accepts the const-int form, so this broke only the Windows job and
+    // only in CI. Enumerators are not variables and are not captured.
+    enum { T5_REPS = 7 };
     auto bench = [&](int use_events, double* spread_out) -> double {
         double v[T5_REPS];
         for (int i = 0; i < T5_REPS; ++i) v[i] = bench_once(use_events);
@@ -394,7 +399,7 @@ int main(int argc, char** argv) {
     // spreads (max-min) of the same samples. An overhead smaller than the spread
     // of either input is not a measurement, and the run says so rather than
     // leaving the reader to assume precision it does not have.
-    printf("RESULT t5_reps=%d\n", T5_REPS);
+    printf("RESULT t5_reps=%d\n", (int) T5_REPS);
     printf("RESULT t5_spread_untraced_ns=%.1f\n", sp_up);
     printf("RESULT t5_spread_cupti_traced_ns=%.1f\n", sp_tp);
     printf("RESULT t5_spread_event_bracketed_ns=%.1f\n", sp_ue);
