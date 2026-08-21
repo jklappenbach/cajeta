@@ -12,6 +12,7 @@
 #include "gtest/gtest.h"
 
 #include <array>
+#include <algorithm>   // std::replace, used only in the _WIN32 branch below
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
