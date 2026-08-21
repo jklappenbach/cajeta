@@ -280,10 +280,40 @@ int main(int argc, char** argv) {
     }
 
     // ---- T5: overhead ------------------------------------------------------
-    // Measured with activity tracing still ON, then again with it disabled, so
-    // the delta is attributable. Small kernels keep launch cost visible.
+    // Each mechanism is measured against the SAME untraced baseline, with the
+    // other mechanism OFF. Small kernels keep launch cost visible.
+    //
+    // Corrected 2026-08-21 after the first shakedown run (32439821390). The
+    // original measured event bracketing while CUPTI activity tracing was still
+    // enabled, and then reported `traced_events - traced_plain` as
+    // "event_overhead" — which is the MARGINAL cost of adding events on top of
+    // CUPTI, not the cost of event bracketing. It understated event bracketing
+    // against an untraced program by 4-5x (WSL reported 3258 ns where the true
+    // delta from untraced was 16490 ns), and it made the two mechanisms
+    // non-comparable, which is the one thing this test exists to do: the
+    // research claim is that CUPTI is the CHEAPER mechanism, and that claim
+    // cannot rest on a measurement of one taken while the other is running.
+    //
+    // A warm-up pass is discarded per bench. Without it the untraced run — which
+    // must run last, after the CUPTI disables — inherited warm caches from its
+    // predecessors and read low, inflating both overhead figures.
     printf("\n--- T5: per-launch overhead ---\n");
     auto bench = [&](int use_events) -> double {
+        // Warm-up, discarded: same shape as the measured loop.
+        for (int i = 0; i < 32; ++i) {
+            if (use_events) {
+                CUevent w0, w1;
+                cuEventCreate(&w0, CU_EVENT_DEFAULT);
+                cuEventCreate(&w1, CU_EVENT_DEFAULT);
+                cuEventRecord(w0, 0);
+                spin_kernel<<<1, 32>>>(d_out, 1);
+                cuEventRecord(w1, 0);
+                cuEventDestroy(w0);
+                cuEventDestroy(w1);
+            } else {
+                spin_kernel<<<1, 32>>>(d_out, 1);
+            }
+        }
         cudaDeviceSynchronize();
         uint64_t t0 = host_ns();
         for (int i = 0; i < reps; ++i) {
@@ -304,19 +334,35 @@ int main(int argc, char** argv) {
         return (double) (host_ns() - t0) / (double) reps;
     };
 
-    double traced_plain  = bench(0);
-    double traced_events = bench(1);
+    // CUPTI on: plain launches, and launches with events on top (the combined
+    // cost, reported separately and never confused with either mechanism alone).
+    double traced_plain     = bench(0);
+    double traced_events    = bench(1);
     cuptiActivityFlushAll(CUPTI_ACTIVITY_FLAG_FLUSH_FORCED);
 
+    // CUPTI off: the shared baseline, and event bracketing measured ALONE.
     cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
     cuptiActivityDisable(CUPTI_ACTIVITY_KIND_DRIVER);
-    double untraced_plain = bench(0);
+    double untraced_plain  = bench(0);
+    double untraced_events = bench(1);
 
     printf("RESULT t5_ns_per_launch_untraced=%.1f\n", untraced_plain);
     printf("RESULT t5_ns_per_launch_cupti_traced=%.1f\n", traced_plain);
-    printf("RESULT t5_ns_per_launch_event_bracketed=%.1f\n", traced_events);
+    printf("RESULT t5_ns_per_launch_event_bracketed=%.1f\n", untraced_events);
+    printf("RESULT t5_ns_per_launch_events_plus_cupti=%.1f\n", traced_events);
+    // Both overheads are against the SAME untraced baseline, so they compare.
     printf("RESULT t5_cupti_overhead_ns=%.1f\n", traced_plain - untraced_plain);
-    printf("RESULT t5_event_overhead_ns=%.1f\n", traced_events - traced_plain);
+    printf("RESULT t5_event_overhead_ns=%.1f\n", untraced_events - untraced_plain);
+    // Kept explicit rather than left to be derived: the marginal cost of adding
+    // events to an already-CUPTI-traced run, which is what the pre-2026-08-21
+    // probe mislabelled as t5_event_overhead_ns.
+    printf("RESULT t5_event_marginal_over_cupti_ns=%.1f\n", traced_events - traced_plain);
+    // The event bracket here records and destroys; it does not call
+    // cuEventElapsedTime. That is deliberate — this measures the LAUNCH-PATH
+    // cost a profiler pays per dispatch, not the host-side cost of reading the
+    // result back, which a real implementation batches. Stated because the
+    // number would otherwise look low against published event-timing figures.
+    printf("RESULT t5_event_bracket_reads_elapsed=NO\n");
 
     // ---- T3: the Profiling API privilege gate ------------------------------
     // THE DECIDING TEST. T1/T2 only prove the exemption if this is REFUSED.
