@@ -959,6 +959,62 @@ the recommendation they were filed with; both are marked.
   under `tools/baseline/results/` (dated) or the plan. When CI lands, it
   should run exactly these three entry points.
 
+- **13.25 Architectural constraints for future weight editing and
+  multiplexed training.** *(Recorded 2026-08-21. Not scope for the current
+  release — these are the choices that are cheap NOW and expensive to
+  retrofit, so they weigh on decisions taken before then.)*
+
+  The intended direction: behaviour change at token granularity does not
+  need every parameter updated. The addressable surface is the FFN's
+  key/value memory — up/gate as pattern keys, down as the values summed
+  and softmaxed into the output distribution — plus attention's K/V. Both
+  are small relative to the model and both are already structurally
+  separate in this engine. A separate design will cover it; these are the
+  properties the engine must not lose in the meantime.
+
+  - **13.25.1 One multiplication seam.** Every projection multiplies
+    through `Linear.matvecInto` and nothing bypasses it. It exists today
+    to dispatch packed-vs-f32; it is also the single place a delta, an
+    adapter, or an edited key matrix can be applied. A call site that
+    reaches into `.weight` directly forfeits that, so none may.
+  - **13.25.2 Base weights are read-only; edits live in a separate
+    layer.** The packed/quantized path (and mmap-backed storage after it)
+    makes base weights compact and shared, so they cannot be mutated in
+    place. Any edit is a distinct, small, mutable object applied at
+    13.25.1's seam. This is forced by the memory design and is also what
+    makes rollback and shadow-promotion possible at all.
+  - **13.25.3 Weights are addressable by name at runtime.** An edit
+    targets "layer N's FFN value matrix", so modules must be enumerable
+    and nameable, not anonymous fields. `dev.cajeta.ml`'s
+    `Module`/`Parameter`/`StateDict` shape is the obvious target, and it
+    would also let ml's optimizers operate on engine weights without a
+    conversion layer.
+  - **13.25.4 The weight set carries a version.** A request pins a
+    version for its whole generation, so concurrent editing cannot make a
+    single response incoherent mid-stream. A counter costs nothing now
+    and is invasive to add once requests are in flight against mutable
+    weights.
+  - **13.25.5 A step is not necessarily a generation step.** `stepSeq`
+    and the scheduler must not assume every admitted unit of work
+    produces a sampled token. Training, evaluation and distillation are
+    additional JOB CLASSES for the same continuous-batching machinery —
+    the scheduler already arbitrates competing sequences with preemption
+    and resumption, which is the hard part.
+  - **13.25.6 The arena must permit pinning.** Activations are recycled
+    aggressively (6.1.6). Any learning step needs specific activations to
+    outlive the step that produced them, so the pool's design must not
+    make pinning impossible, even though nothing pins today.
+  - **13.25.7 The KV cache is the key/value store.** Paged KV plus the
+    prefix block store already separate key/value STATE from weights, and
+    already support adoption across requests. Interventions in key space
+    belong there rather than in a new subsystem.
+
+  Rationale for recording it now: the reuse that makes serving-plus-training
+  worthwhile — a training step riding the KV cache and activations a served
+  request already computed — is only available to a runtime that owns both.
+  That is an argument for keeping these seams open, not for building them
+  yet.
+
 ## 14. Open questions
 
 **All items resolved 2026-08-08.** §13 records the decisions; this section is
