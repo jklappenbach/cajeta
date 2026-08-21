@@ -676,6 +676,19 @@ long __cajeta_dbg_fiber_id_of(void* fiber) {
     return fiber ? (long) ((struct cajeta_fiber*) fiber)->dbg_id : 0;
 }
 
+// The fiber's shadow stack, for the sampler (cajeta-profiler 6.4).
+//
+// This accessor exists because a fiber handle is NOT a CajetaShadowStack*.
+// `shadow` sits well inside struct cajeta_fiber, behind a ucontext_t; the
+// sampler used to cast the handle straight across on the strength of a comment
+// claiming the stack was the first member. It is not, and the cast read
+// whatever lay 8 KB into the struct — which came back as a non-positive depth,
+// so every fiber sampled as "idle, no frames" and the fiber lane was silently
+// empty in every profile.
+void* __cajeta_dbg_fiber_shadow_of(void* fiber) {
+    return fiber ? (void*) &((struct cajeta_fiber*) fiber)->shadow : NULL;
+}
+
 void* __cajeta_dbg_fiber_frame_top(void* fiber) {
     return fiber ? ((struct cajeta_fiber*) fiber)->dbg_top : NULL;
 }

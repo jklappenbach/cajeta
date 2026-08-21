@@ -298,3 +298,100 @@ TEST(ProfilerEndToEnd, severalHostThreadsLandOnSeveralTracks) {
            "something coarser than the thread handle";
     std::remove(path.c_str());
 }
+
+// ── 6.4: fibers are sampled at all ────────────────────────────────────────
+//
+// They were not. `__cajeta_prof_stack_snapshot` cast a fiber handle straight to
+// `CajetaShadowStack*` on the strength of a comment claiming the shadow stack
+// was the first member of `struct cajeta_fiber`. It is not — it sits behind a
+// `ucontext_t` and a dozen pointers — so the read landed ~8 KB into the struct,
+// came back as a non-positive depth, and every fiber sampled as "idle, no
+// frames". The fiber lane was absent from every profile ever produced, and
+// nothing anywhere reported a problem.
+//
+// Why no existing test caught it: the two callers of the snapshot in
+// ProfilerThreadRegistryTests both pass THREAD handles, which genuinely are
+// shadow stacks. The fiber path had exactly one caller — the sampler — and no
+// test asserted what came out of it.
+namespace {
+struct FiberE2E {
+    std::unique_ptr<CajetaJit> jit;
+    int32_t (*arm)(void) = nullptr;
+    void    (*disarm)(void) = nullptr;
+    int64_t (*drain)(const char*) = nullptr;
+    void    (*shutdownReset)(void) = nullptr;
+    uint64_t (*varintRead)(const uint8_t*, int32_t, int32_t*) = nullptr;
+    int32_t (*run)(void) = nullptr;
+};
+FiberE2E& fiberE2e() {
+    static FiberE2E x = [] {
+        FiberE2E e;
+        // Two fibers, each spinning for tens of milliseconds — hundreds of ticks
+        // at the rate below. Short-lived workers would prove nothing: their
+        // absence from a profile is just sampling.
+        e.jit = CajetaJit::compile(
+            "package test;\n"
+            "public final class F {\n"
+            "    public static int32 spin(int32 n) {\n"
+            "        int32 acc = 0;\n"
+            "        int32 i = 0;\n"
+            "        while (i < n) { acc = acc + (i % 7); i = i + 1; }\n"
+            "        return acc;\n"
+            "    }\n"
+            "    public static async int32 worker(int32 n) { return F.spin(n); }\n"
+            "    public static int32 run() {\n"
+            "        int32 total = 0;\n"
+            "        scope {\n"
+            "            Task<int32> a = spawn worker(6000000);\n"
+            "            Task<int32> b = spawn worker(6000000);\n"
+            "            total = (await a) + (await b);\n"
+            "        }\n"
+            "        return total;\n"
+            "    }\n"
+            "}\n", "test.F");
+        auto s = [&](const char* n) { return e.jit->lookupRawSymbol(n); };
+        e.arm    = reinterpret_cast<int32_t (*)(void)>(s("__cajeta_prof_arm"));
+        e.disarm = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_disarm"));
+        e.drain  = reinterpret_cast<int64_t (*)(const char*)>(s("__cajeta_prof_drain_to_trace"));
+        e.shutdownReset = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_shutdown_reset"));
+        e.varintRead = reinterpret_cast<uint64_t (*)(const uint8_t*, int32_t, int32_t*)>(
+            s("__cajeta_pb_varint_read"));
+        e.run = e.jit->lookup<int32_t (*)()>("run");
+        return e;
+    }();
+    return x;
+}
+} // namespace
+
+TEST(ProfilerEndToEnd, longLivedFibersAreSampledOntoTheirOwnTracks) {
+    auto& e = fiberE2e();
+    ASSERT_NE(e.run, nullptr) << "run() unresolved";
+    ASSERT_NE(e.drain, nullptr);
+    std::string path = tmpPath("cajeta-e2e-fibers.pftrace");
+    std::remove(path.c_str());
+
+    setenv("CAJETA_PROFILER", "1", 1);
+    setenv("CAJETA_PROFILER_HZ", "4000", 1);
+    e.shutdownReset();
+    ASSERT_EQ(e.arm(), 0);
+    ASSERT_GT(e.run(), 0) << "the spawned work did not run";
+    e.disarm();
+    int64_t packets = e.drain(path.c_str());
+    unsetenv("CAJETA_PROFILER");
+    unsetenv("CAJETA_PROFILER_HZ");
+
+    ASSERT_GT(packets, 0) << "drain wrote nothing";
+    int fiberTracks = 0, threadTracks = 0;
+    for (const auto& t : cajeta_test_prof::readTracks(path.c_str(), e.varintRead)) {
+        if (t.name.rfind("cajeta.fiber.", 0) == 0) fiberTracks++;
+        else if (t.name.rfind("cajeta.thread.", 0) == 0) threadTracks++;
+    }
+    std::remove(path.c_str());
+
+    EXPECT_GE(threadTracks, 1) << "the program thread was not sampled either";
+    // The assertion that was missing. Before the fix this was 0, for every
+    // profile of every program that has ever used a fiber.
+    EXPECT_GE(fiberTracks, 1)
+        << "two fibers spun for tens of milliseconds and produced no fiber track — "
+           "the sampler is reading the wrong offset behind a fiber handle";
+}

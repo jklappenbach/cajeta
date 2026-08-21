@@ -544,11 +544,17 @@ int __cajeta_prof_thread_snapshot(void** out, int max) {
     return n;
 }
 
-// Snapshot the frames behind a handle from ANOTHER thread — the sampler's entry
-// point. `handle` is a thread handle from __cajeta_prof_thread_snapshot or a
-// fiber handle from __cajeta_dbg_fiber_snapshot; a fiber's shadow stack is the
-// first member of struct cajeta_fiber's slot, so both resolve to the same
-// CajetaShadowStack shape.
+// Snapshot the frames behind a shadow stack from ANOTHER thread — the sampler's
+// entry point. `handle` is a CajetaShadowStack*, full stop: a thread handle from
+// __cajeta_prof_thread_snapshot already is one, and a FIBER handle must be put
+// through __cajeta_dbg_fiber_shadow_of first.
+//
+// This comment used to claim a fiber's shadow stack was the first member of
+// struct cajeta_fiber, so both handles resolved to the same shape. That was
+// false — `shadow` sits behind a ucontext_t and a dozen pointers — and it was
+// load-bearing, because it was the justification for casting a fiber handle
+// straight across. Every fiber then sampled as empty. Nothing failed; the fiber
+// lane was just never in any trace.
 //
 // `truncated` (spec §2.8) reports that the source stack was DEEPER than
 // capacity, so a caller never reads a capped stack as a complete one. The signal
@@ -592,6 +598,7 @@ int32_t __cajeta_prof_stack_snapshot(void* handle, CajetaShadowFrame* out,
 // declaration pattern as __cajeta_dbg_top_ptr / __cajeta_shadow_ptr above.
 int64_t __cajeta_currentTimeNanos(void);
 long __cajeta_dbg_fiber_id_of(void* fiber);   // cajeta_rt_concurrent_exec.c
+void* __cajeta_dbg_fiber_shadow_of(void* fiber);   // ditto
 
 #define CAJETA_PROF_DEFAULT_HZ 1000
 #define CAJETA_PROF_DEFAULT_RING 4096
@@ -634,7 +641,16 @@ const char* __cajeta_prof_out_path(void) {
 static void __cajeta_prof_push(void* owner, int32_t owner_kind) {
     int32_t trunc = 0;
     CajetaShadowFrame tmp[CAJETA_PROF_MAX_FRAMES];
-    int32_t n = __cajeta_prof_stack_snapshot(owner, tmp,
+    // A THREAD handle IS its shadow stack (the registry stores
+    // &__cajeta_main_shadow). A FIBER handle is a struct cajeta_fiber*, whose
+    // shadow stack is a member well inside it — resolve it rather than casting
+    // across. Getting this wrong is silent: the bogus depth reads non-positive,
+    // the sample is dropped as "idle", and the fiber lane is simply absent from
+    // every trace with nothing anywhere reporting a problem.
+    void* stack = (owner_kind == CAJETA_PROF_OWNER_FIBER)
+                      ? __cajeta_dbg_fiber_shadow_of(owner)
+                      : owner;
+    int32_t n = __cajeta_prof_stack_snapshot(stack, tmp,
                                              CAJETA_PROF_MAX_FRAMES, &trunc);
     __cajeta_prof_samples++;
     if (n <= 0) return;               // idle context: a tick, but no frames
