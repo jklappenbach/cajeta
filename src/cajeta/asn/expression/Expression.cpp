@@ -2984,6 +2984,28 @@ bool cajetaRhsCarriesRedundantSharp(
             }
         }
         llvm::Value* value = inner ? inner->generateCode(module) : nullptr;
+        // title-tracking — `dst #= call()`: the callee's RETURN FLAG is the
+        // only truth about whether that result carried a title. A plain (non-
+        // `#`) return is NOT statically a borrow (CLAUDE.md §2.1 / spec §2.1):
+        // a plain-return wrapper that tail-calls a `#` method rides the inner
+        // flag through, and `Json.parse<T>(String)` is exactly that shape.
+        // Baking `bindingTakesTitle()` into a constant below therefore
+        // disarmed the assignee's drop entry for every such call and leaked
+        // the whole result graph. Read the TLS HERE, immediately after the
+        // call, while it still holds this call's bit — anything later is
+        // stale. Gated on emitsReturnFlag(): raw-IR synthesized bodies and
+        // intrinsics never store the flag, so those keep the static answer.
+        llvm::Value* innerCallReturnFlag = nullptr;
+        if (auto mceIn = dynamic_pointer_cast<MethodCallExpression>(inner)) {
+            MethodPtr rm = mceIn->getResolvedMethod();
+            if (rm && rm->emitsReturnFlag() && rm->returnsClassPointer()) {
+                if (llvm::Function* gf = module->getRuntimeFunction(
+                        "__cajeta_return_flag_get")) {
+                    innerCallReturnFlag = module->getBuilder()->CreateCall(
+                        gf, {}, "mv_ret_flag");
+                }
+            }
+        }
         // The wrapped expression typically yields an l-value (an alloca). The
         // consumer of a moved value wants the r-value — the pointer to the
         // owned heap block, not the address of the local slot that holds it.
@@ -3504,8 +3526,12 @@ bool cajetaRhsCarriesRedundantSharp(
         }
         if (isSharpStore() && !runtimeTitleFlag) {
             if (auto mceInner = dynamic_pointer_cast<MethodCallExpression>(inner)) {
-                runtimeTitleFlag = module->getBuilder()->getInt64(
-                    mceInner->bindingTakesTitle() ? 1 : 0);
+                // Prefer the flag captured at the call above; fall back to the
+                // declared stance only for callees that never store one.
+                runtimeTitleFlag = innerCallReturnFlag
+                    ? innerCallReturnFlag
+                    : (llvm::Value*) module->getBuilder()->getInt64(
+                          mceInner->bindingTakesTitle() ? 1 : 0);
             }
         }
         return value;

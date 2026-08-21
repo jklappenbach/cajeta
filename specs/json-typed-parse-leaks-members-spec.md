@@ -1,4 +1,7 @@
-# `Json.parse<T>` leaks every owned member it deserializes
+# `dst #= call()` disarms the assignee's drop entry for plain-return callees
+
+*(Filed as "`Json.parse<T>` leaks every owned member it deserializes" — that
+is the symptom. The cause is general; see Root cause below.)*
 
 **Filed 2026-08-21** (found converting cajeta-llama's `ModelConfig` to
 annotation-driven config binding, which is the idiomatic way to keep
@@ -122,24 +125,83 @@ all leaked **0**:
    `Json.parse<T>` to declare `#T` changed nothing — still 3 per parse.
    Reverted, since it alters a public signature for no benefit.
 
-### Where to look next
+### Root cause (MEASURED 2026-08-21) — and it is not a JSON bug
 
-The caller's `#=` on the synthesized call is not arming a drop for the
-result, even though every equivalent hand-written shape does. Per
-CLAUDE.md §2.1 a plain return's drop entry is armed from the ARRIVING
-RETURN FLAG (`LocalVariableDeclaration.cpp:251`), so the question is
-whether the synthesized instantiation SETS that flag on return. Instrument
-the flag at the boundary — `__cajeta_return_flag_get` after the call —
-rather than inferring from source shape, which is what refuted 1–5.
+Hypothesis 6, *"the caller's `#=` is not arming a drop for the result"*, is
+also REFUTED. It arms one. A compiler trace of the drop decision
+(`[localdrop]`) reports `dropEntry=yes` for the assignee, and a runtime
+trace of the live set plus every drop-chain transition shows what
+actually happens to it:
 
-## Fix
+```
+[live+]     0x...f75820 sz=264                      the result object
+[droppush]  e=0x...e90 obj=0x...f75820  D.cajeta:25 pushed ARMED
+[setflag]   e=0x...e90 obj=0x...f75820  flag=0      immediately DISARMED
+[droppop]   e=0x...e90 obj=0x...f75820  active=0    never runs -> leak
+```
 
-The JSON synthesizer (`src/cajeta/codec/JsonSynthesizer.cpp`) must store
-deserialized reference members with the mode-carrying store that records
-a title (`#=` semantics), so the DTO's drop walks and frees them. The CSV
-synthesizer shares the shape and should be checked in the same pass, as
-should `Json.parse<T>`'s siblings (`parseObjectFromReader<T>`,
-`walkValue<T>`, `walkElement<T>`).
+The disarm is `src/cajeta/asn/expression/Expression.cpp` (MoveExpression,
+sharp-store tail): for `dst #= call()` the runtime title flag was a
+COMPILE-TIME CONSTANT, `bindingTakesTitle() ? 1 : 0`. `bindingTakesTitle()`
+answers from the declared return stance, and `Json.parse<T>(String)`
+declares a plain `T` — so the constant is 0, and every assignee's drop
+entry is armed and then switched off.
+
+This is precisely the error CLAUDE.md §2.1 documents: **a plain return is
+not statically a borrow.** `Json.parse<T>(String)` is the canonical
+counter-example — it declares `T` and tail-calls the synthesized
+`Json.parse<T>(bytes, len)`, riding that method's title out through a
+plain signature.
+
+So the defect is general, not JSON-specific: `dst #= f()` leaked for ANY
+callee that declares a plain class-pointer return and returns a title at
+runtime. JSON was where it was noticed because `Json.parse<T>` is the
+stdlib's most-used method of that exact shape.
+
+The measured law before the fix — **leak = 1 + one per owned member,
+per call** — falls straight out: the result object is abandoned, and
+everything reachable only through it is abandoned with it.
+
+### Why the earlier hand-written equivalents all measured 0
+
+Every control in 1-5 bound its local from `heap X(...)` (a NewExpression)
+or from a `#`-declared return. Neither reaches the constant-folding
+branch: the first is not a call at all, and for the second the static
+stance and the runtime flag AGREE. The one shape that discriminates —
+`#=` from a call whose declared return is plain — was the one shape no
+control covered. Controls must vary the mechanism under test, not just
+the payload.
+
+## Fix (SHIPPED)
+
+`MoveExpression::generateCode` captures `__cajeta_return_flag_get()`
+immediately after the inner call — while the TLS still holds that call's
+bit — and feeds THAT to the assignee's drop entry. The compile-time
+`bindingTakesTitle()` constant survives only as the fallback for callees
+that never store a flag (raw-IR synthesized bodies, intrinsics), gated on
+`Method::emitsReturnFlag() && returnsClassPointer()`.
+
+The capture is at the call, not at the store: anything later reads a
+stale TLS. That placement is the whole correctness argument.
+
+### Sibling site inspected, deliberately unchanged
+
+`BinaryOpExpression.cpp` (array element title-store, `arr[i] = rhs`) uses
+the same `bindingTakesTitle()` constant, but only on its BARE-call branch
+— a plain `=` store. Its `#=` branch already delegates to
+`MoveExpression::getRuntimeTitleFlag()`, so `arr[i] #= call()` and
+`this.f #= call()` are both fixed by this change with no edit there.
+
+The bare branch stays static on purpose: a plain `=` records a borrow by
+design, and a plain `=` from a `#`-returning call is already a compile
+error (`CAJETA_ERROR_OWNED_RESULT_NEEDS_TRANSFER`). Making it consult the
+runtime flag would let a plain store claim a title, which is a double-free
+in exactly the cases the plain spelling exists to avoid.
+
+The earlier owned-member binding corrections in
+`src/cajeta/codec/JsonSynthesizer.cpp` (6 sites, `=` -> `#=`) stay — they
+were necessary but not sufficient, and with the root cause fixed they are
+what makes the members drop once their owner does.
 
 ## Acceptance
 
