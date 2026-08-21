@@ -20,39 +20,42 @@
 
 int main(int argc, char** argv) {
     const char* out = (argc > 1) ? argv[1] : "cajeta-min.pftrace";
-    static uint8_t buf[1 << 16];
-    CajPbBuf b = { buf, (int32_t) sizeof(buf), 0, 0 };
+    static CajProfWriter w;
+    if (!__cajeta_prof_trace_open(&w, out)) {
+        fprintf(stderr, "tracegen: cannot open %s\n", out);
+        return 1;
+    }
 
-    const uint32_t seq = 1;
     const uint64_t thread_track = 0x1000;
     const uint64_t child_track  = 0x1001;
 
     // A track, and a child of it — 5.1.e's hierarchy.
-    __cajeta_prof_emit_track(&b, thread_track, 0, "cajeta.main");
-    __cajeta_prof_emit_track(&b, child_track, thread_track, "cajeta.fiber.1");
-
-    // One interned name, referenced by every slice below — 5.1.c. This packet
-    // carries SEQ_INCREMENTAL_STATE_CLEARED because it ESTABLISHES the interning
-    // table; the slices then carry SEQ_NEEDS_INCREMENTAL_STATE to consume it.
-    __cajeta_prof_emit_name(&b, seq, 1, "test.App.run", 1);
+    __cajeta_prof_trace_track(&w, thread_track, 0, "cajeta.main");
+    __cajeta_prof_trace_track(&w, child_track, thread_track, "cajeta.fiber.1");
 
     // Nested and overlapping slices — 5.1.d. Outer encloses inner on one track;
-    // the child track carries an independent slice that spans the boundary.
-    __cajeta_prof_emit_slice(&b, seq, 1000, thread_track, CAJ_TE_SLICE_BEGIN, 1, 0);
-    __cajeta_prof_emit_slice(&b, seq, 1200, child_track,  CAJ_TE_SLICE_BEGIN, 1, 0);
-    __cajeta_prof_emit_slice(&b, seq, 1500, thread_track, CAJ_TE_SLICE_BEGIN, 1, 0);
-    __cajeta_prof_emit_slice(&b, seq, 1800, thread_track, CAJ_TE_SLICE_END,   0, 0);
-    __cajeta_prof_emit_slice(&b, seq, 2200, child_track,  CAJ_TE_SLICE_END,   0, 0);
-    __cajeta_prof_emit_slice(&b, seq, 2500, thread_track, CAJ_TE_SLICE_END,   0, 0);
+    // the child track carries an independent slice spanning the boundary. Names
+    // are interned by the writer: "test.App.run" is passed three times and must
+    // be emitted once (5.1.c), with the first InternedData packet carrying
+    // CLEARED and every consuming slice carrying NEEDS.
+    __cajeta_prof_trace_slice(&w, 1000, thread_track, CAJ_TE_SLICE_BEGIN, "test.App.run");
+    __cajeta_prof_trace_slice(&w, 1200, child_track,  CAJ_TE_SLICE_BEGIN, "test.App.run");
+    __cajeta_prof_trace_slice(&w, 1500, thread_track, CAJ_TE_SLICE_BEGIN, "test.App.run");
+    __cajeta_prof_trace_slice(&w, 1800, thread_track, CAJ_TE_SLICE_END,   NULL);
+    __cajeta_prof_trace_slice(&w, 2200, child_track,  CAJ_TE_SLICE_END,   NULL);
+    __cajeta_prof_trace_slice(&w, 2500, thread_track, CAJ_TE_SLICE_END,   NULL);
 
-    if (b.overflow) {
-        fprintf(stderr, "tracegen: buffer overflow, trace is short\n");
-        return 2;
+    int32_t interned = __cajeta_prof_trace_interned(&w);
+    int64_t packets = __cajeta_prof_trace_packets(&w);
+    int64_t bytes = __cajeta_prof_trace_bytes(&w);
+    __cajeta_prof_trace_close(&w);
+
+    printf("tracegen: wrote %lld bytes, %lld packets, %d interned name(s) to %s\n",
+           (long long) bytes, (long long) packets, interned, out);
+    // One name passed three times must intern once, or 5.1.c is not met.
+    if (interned != 1) {
+        fprintf(stderr, "tracegen: expected 1 interned name, got %d\n", interned);
+        return 3;
     }
-    FILE* f = fopen(out, "wb");
-    if (!f) { fprintf(stderr, "tracegen: cannot open %s\n", out); return 1; }
-    fwrite(buf, 1, (size_t) b.len, f);
-    fclose(f);
-    printf("tracegen: wrote %d bytes to %s\n", b.len, out);
     return 0;
 }

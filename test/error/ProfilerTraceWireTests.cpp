@@ -139,3 +139,81 @@ TEST(ProfilerTraceWire, lengthDelimitedCarriesPayloadVerbatim) {
     int32_t consumed = 0;
     EXPECT_EQ(w.rd(u + 1, 2, &consumed), 300u);
 }
+
+// ── 5.2.d: the interning table ────────────────────────────────────────────
+namespace {
+struct Writer {
+    int32_t  (*wsize)(void) = nullptr;
+    int32_t  (*open)(void*, const char*) = nullptr;
+    uint64_t (*intern)(void*, const char*) = nullptr;
+    int32_t  (*close)(void*) = nullptr;
+    int64_t  (*packets)(void*) = nullptr;
+    int32_t  (*interned)(void*) = nullptr;
+};
+Writer wr() {
+    auto& w = wire();
+    Writer x;
+    auto s = [&](const char* n) { return w.jit->lookupRawSymbol(n); };
+    x.wsize    = reinterpret_cast<int32_t (*)(void)>(s("__cajeta_prof_trace_writer_size"));
+    x.open     = reinterpret_cast<int32_t (*)(void*, const char*)>(s("__cajeta_prof_trace_open"));
+    x.intern   = reinterpret_cast<uint64_t (*)(void*, const char*)>(s("__cajeta_prof_intern"));
+    x.close    = reinterpret_cast<int32_t (*)(void*)>(s("__cajeta_prof_trace_close"));
+    x.packets  = reinterpret_cast<int64_t (*)(void*)>(s("__cajeta_prof_trace_packets"));
+    x.interned = reinterpret_cast<int32_t (*)(void*)>(s("__cajeta_prof_trace_interned"));
+    return x;
+}
+} // namespace
+
+// A repeated name is emitted ONCE (spec §7.4). Asserted on the packet count,
+// not just the returned iid: an interning table that hands back a stable iid
+// while re-emitting the name every time satisfies the weaker check and defeats
+// the entire purpose.
+TEST(ProfilerTraceWire, repeatedNameIsEmittedOnce) {
+    Writer w = wr();
+    ASSERT_NE(w.open, nullptr) << "__cajeta_prof_trace_open unresolved";
+    std::vector<uint8_t> mem(static_cast<size_t>(w.wsize()), 0);
+    std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp")
+                     + "/cajeta-intern-test.pftrace";
+    ASSERT_EQ(w.open(mem.data(), path.c_str()), 1);
+
+    uint64_t a = w.intern(mem.data(), "test.App.run");
+    int64_t afterFirst = w.packets(mem.data());
+    uint64_t b = w.intern(mem.data(), "test.App.run");
+    int64_t afterSecond = w.packets(mem.data());
+
+    EXPECT_EQ(a, 1u) << "iids are 1-based; 0 means not-interned";
+    EXPECT_EQ(b, a) << "same name must return the same iid";
+    EXPECT_EQ(afterSecond, afterFirst) << "repeated name re-emitted a packet";
+    EXPECT_EQ(w.interned(mem.data()), 1);
+
+    uint64_t c = w.intern(mem.data(), "test.App.other");
+    EXPECT_NE(c, a);
+    EXPECT_EQ(w.packets(mem.data()), afterFirst + 1) << "a new name must emit";
+    w.close(mem.data());
+    std::remove(path.c_str());
+}
+
+// Equal strings at DIFFERENT addresses must intern to one iid. Codegen emits a
+// frame descriptor per method, so two methods with the same name in different
+// modules carry equal strings at different addresses — pointer identity would
+// silently emit the name repeatedly and defeat the interning while every other
+// assertion here still passed.
+TEST(ProfilerTraceWire, internComparesContentNotAddress) {
+    Writer w = wr();
+    ASSERT_NE(w.open, nullptr);
+    std::vector<uint8_t> mem(static_cast<size_t>(w.wsize()), 0);
+    std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp")
+                     + "/cajeta-intern-addr.pftrace";
+    ASSERT_EQ(w.open(mem.data(), path.c_str()), 1);
+
+    std::string s1 = "cajeta.lang.String.substring";
+    std::string s2 = "cajeta.lang.String.substring";   // equal, distinct storage
+    ASSERT_NE(s1.c_str(), s2.c_str());
+
+    uint64_t a = w.intern(mem.data(), s1.c_str());
+    uint64_t b = w.intern(mem.data(), s2.c_str());
+    EXPECT_EQ(a, b) << "interning compared addresses, not content";
+    EXPECT_EQ(w.interned(mem.data()), 1);
+    w.close(mem.data());
+    std::remove(path.c_str());
+}

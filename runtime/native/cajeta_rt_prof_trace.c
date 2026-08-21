@@ -215,3 +215,110 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
     return caj_pb_packet(out, pkt, p);
 }
+
+// ── streaming writer + interning table (5.2.c, 5.2.d) ─────────────────────
+// Packets are appended to the file as they are built, never accumulated. A
+// profiled run can be killed at any moment (§7.6), and a writer that buffered
+// the whole trace would lose everything it had — the opposite of the property
+// the packet framing exists to provide. One scratch buffer is reused per packet
+// so the writer allocates nothing after open.
+#define CAJ_PROF_MAX_INTERNED 4096
+#define CAJ_PROF_SCRATCH 4096
+
+typedef struct {
+    FILE*       f;
+    uint32_t    seq_id;
+    int32_t     n_names;
+    const char* names[CAJ_PROF_MAX_INTERNED];
+    int32_t     state_cleared;   // has a CLEARED packet been emitted yet
+    int64_t     packets;
+    int64_t     bytes;
+    uint8_t     scratch[CAJ_PROF_SCRATCH];
+} CajProfWriter;
+
+static int32_t caj_prof_flush(CajProfWriter* w, CajPbBuf* b) {
+    if (b->overflow) return 0;      // never write a half packet
+    if (b->len <= 0) return 0;
+    size_t n = fwrite(b->buf, 1, (size_t) b->len, w->f);
+    if (n != (size_t) b->len) return 0;
+    w->packets++;
+    w->bytes += b->len;
+    return b->len;
+}
+
+int32_t __cajeta_prof_trace_open(CajProfWriter* w, const char* path) {
+    if (!w || !path) return 0;
+    w->f = fopen(path, "wb");
+    if (!w->f) return 0;
+    w->seq_id = 1;
+    w->n_names = 0;
+    w->state_cleared = 0;
+    w->packets = 0;
+    w->bytes = 0;
+    return 1;
+}
+
+// Returns the iid for `name`, emitting an InternedData packet the first time it
+// is seen (§7.4: a repeated name is emitted once). iids are 1-based; 0 means
+// "not interned", which is what TrackEvent.name_iid treats as absent.
+//
+// Linear scan with strcmp rather than pointer identity: the frame descriptors
+// codegen emits are per-method, so two methods of the same name in different
+// modules carry equal strings at different addresses. Pointer identity would
+// silently emit the same name repeatedly and defeat the interning.
+uint64_t __cajeta_prof_intern(CajProfWriter* w, const char* name) {
+    if (!w || !name) return 0;
+    for (int32_t i = 0; i < w->n_names; i++) {
+        const char* c = w->names[i];
+        const char* d = name;
+        while (*c && *c == *d) { c++; d++; }
+        if (*c == 0 && *d == 0) return (uint64_t) (i + 1);
+    }
+    if (w->n_names >= CAJ_PROF_MAX_INTERNED) return 0;   // fall back to inline
+    w->names[w->n_names++] = name;
+    uint64_t iid = (uint64_t) w->n_names;
+
+    CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+    __cajeta_prof_emit_name(&b, w->seq_id, iid, name, w->state_cleared ? 0 : 1);
+    w->state_cleared = 1;
+    if (!caj_prof_flush(w, &b)) { w->n_names--; return 0; }
+    return iid;
+}
+
+int32_t __cajeta_prof_trace_track(CajProfWriter* w, uint64_t uuid,
+                                  uint64_t parent_uuid, const char* name) {
+    if (!w || !w->f) return 0;
+    CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+    __cajeta_prof_emit_track(&b, uuid, parent_uuid, name);
+    return caj_prof_flush(w, &b);
+}
+
+// Interns `name` and emits the slice referencing it. A slice with no name (a
+// SLICE_END) passes name = NULL and carries neither field.
+int32_t __cajeta_prof_trace_slice(CajProfWriter* w, uint64_t ts,
+                                  uint64_t track_uuid, int32_t type,
+                                  const char* name) {
+    if (!w || !w->f) return 0;
+    uint64_t iid = name ? __cajeta_prof_intern(w, name) : 0;
+    CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+    // iid == 0 with a non-NULL name means the table was full or the intern
+    // failed; fall back to the inline name rather than dropping it.
+    __cajeta_prof_emit_slice(&b, w->seq_id, ts, track_uuid, type,
+                             iid, iid ? NULL : name);
+    return caj_prof_flush(w, &b);
+}
+
+int64_t __cajeta_prof_trace_packets(CajProfWriter* w) { return w ? w->packets : 0; }
+int64_t __cajeta_prof_trace_bytes(CajProfWriter* w)   { return w ? w->bytes : 0; }
+int32_t __cajeta_prof_trace_interned(CajProfWriter* w){ return w ? w->n_names : 0; }
+int32_t __cajeta_prof_trace_writer_size(void)         { return (int32_t) sizeof(CajProfWriter); }
+
+int32_t __cajeta_prof_trace_close(CajProfWriter* w) {
+    if (!w || !w->f) return 0;
+    // No footer: there is nothing to write at the end, which is the same
+    // property that makes a killed run's partial trace readable.
+    int r = fflush(w->f) == 0;
+    fclose(w->f);
+    w->f = NULL;
+    return r;
+}
