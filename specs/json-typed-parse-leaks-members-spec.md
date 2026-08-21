@@ -96,11 +96,41 @@ rules — a `heap` result bound with `=` is what
 `JsonSynthesizerTests` stays 64/64 with them. But the leak is unchanged,
 so the mechanism is elsewhere.
 
-**Leading hypothesis, untested:** locals in SYNTHESIZED methods may not
-get scope-drop entries emitted at all, which would explain the
-field-independent cursor leak surviving a correct `#=`. Check whether the
-synthesized body participates in normal drop-chain emission before
-chasing binding modes further.
+### What leaks: the DTO OBJECT itself
+
+A DTO with TWO `String` fields leaks **3 per parse**, not 2. That
+discriminates cleanly: the result object is never dropped, and it takes
+its owned members down with it. So the earlier "1 field-independent + 1
+per String" reading is really "1 object + 1 per owned member it holds",
+and every member-binding fix above was necessary-but-not-sufficient —
+the members are correctly owned BY an object nobody frees.
+
+### Five hypotheses tested and REFUTED (do not re-run these)
+
+Each was checked with a hand-written equivalent measured the same way;
+all leaked **0**:
+
+1. *Synthesized-method locals don't drop.* A hand-written method with an
+   owned local plus an owned return drops the local. 0.
+2. *Template instantiations don't drop locals.* A generic
+   `#Bar makeGeneric<T>()` with an owned local drops it. 0.
+3. *`JsonCursor` leaks.* Allocated and dropped in isolation. 0.
+4. *A fully-qualified `#test.T` return doesn't transfer* (the synthesizer
+   emits FQN returns). Short-name and qualified returns behave
+   identically. 0.
+5. *The declaration's plain `T` return is the problem.* Changing
+   `Json.parse<T>` to declare `#T` changed nothing — still 3 per parse.
+   Reverted, since it alters a public signature for no benefit.
+
+### Where to look next
+
+The caller's `#=` on the synthesized call is not arming a drop for the
+result, even though every equivalent hand-written shape does. Per
+CLAUDE.md §2.1 a plain return's drop entry is armed from the ARRIVING
+RETURN FLAG (`LocalVariableDeclaration.cpp:251`), so the question is
+whether the synthesized instantiation SETS that flag on return. Instrument
+the flag at the boundary — `__cajeta_return_flag_get` after the call —
+rather than inferring from source shape, which is what refuted 1–5.
 
 ## Fix
 
