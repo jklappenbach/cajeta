@@ -55,13 +55,25 @@ fs::path freshTempDir() {
     return base;
 }
 
+// popen/pclose are _popen/_pclose in the MSVCRT, the null device is NUL,
+// and cmd.exe hands back CRLF — normalize so the assertions below compare
+// the same bytes on every platform.
 std::string capture(const std::string& cmd) {
     std::string out;
+#ifdef _WIN32
+    FILE* p = _popen((cmd + " 2>NUL").c_str(), "r");
+#else
     FILE* p = popen((cmd + " 2>/dev/null").c_str(), "r");
+#endif
     if (!p) return out;
     std::array<char, 512> buf;
     while (fgets(buf.data(), (int) buf.size(), p)) out += buf.data();
+#ifdef _WIN32
+    _pclose(p);
+    out.erase(std::remove(out.begin(), out.end(), '\r'), out.end());
+#else
     pclose(p);
+#endif
     return out;
 }
 
@@ -96,7 +108,14 @@ EchoExe buildEchoExe() {
         + (e.base / "src").string() + " " + (e.base / "build").string()
         + " > /dev/null 2>&1";
     e.bin = e.base / "build" / "echo";
-    e.ok = std::system(cmd.c_str()) == 0 && fs::exists(e.bin);
+    bool built = std::system(cmd.c_str()) == 0;
+    if (built && !fs::exists(e.bin)) {
+        // Windows toolchains append the executable suffix.
+        fs::path withExe = e.bin;
+        withExe += ".exe";
+        if (fs::exists(withExe)) e.bin = withExe;
+    }
+    e.ok = built && fs::exists(e.bin);
     return e;
 }
 

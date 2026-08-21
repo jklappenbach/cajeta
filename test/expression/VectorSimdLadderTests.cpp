@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // setenv/unsetenv are POSIX; MinGW has neither
 
 #include <cstdint>
 #include <cstdlib>
