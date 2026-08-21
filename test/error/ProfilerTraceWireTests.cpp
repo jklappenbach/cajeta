@@ -217,3 +217,40 @@ TEST(ProfilerTraceWire, internComparesContentNotAddress) {
     w.close(mem.data());
     std::remove(path.c_str());
 }
+
+// The table must OWN its names. A caller that builds a name into a scratch
+// buffer — which Unit 6's transform does for every slice — otherwise leaves the
+// table holding a dangling pointer, and the next call's reused buffer compares
+// EQUAL to it. The failure is silent and total: every frame resolves to the
+// first iid and the trace carries one distinct name.
+//
+// Regression for CI run 32491747115.
+TEST(ProfilerTraceWire, internCopiesOutOfCallerScratch) {
+    Writer w = wr();
+    ASSERT_NE(w.open, nullptr);
+    std::vector<uint8_t> mem(static_cast<size_t>(w.wsize()), 0);
+    std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp")
+                     + "/cajeta-intern-scratch.pftrace";
+    ASSERT_EQ(w.open(mem.data(), path.c_str()), 1);
+
+    char scratch[64];
+    std::snprintf(scratch, sizeof(scratch), "test.App.run");
+    uint64_t a = w.intern(mem.data(), scratch);
+    std::snprintf(scratch, sizeof(scratch), "test.App.middle");   // same buffer
+    uint64_t b = w.intern(mem.data(), scratch);
+    std::snprintf(scratch, sizeof(scratch), "test.App.inner");
+    uint64_t c = w.intern(mem.data(), scratch);
+
+    EXPECT_NE(a, b) << "second name collided with the first via the reused buffer";
+    EXPECT_NE(b, c);
+    EXPECT_NE(a, c);
+    EXPECT_EQ(w.interned(mem.data()), 3) << "distinct names did not all intern";
+
+    // And the first name still matches itself after the buffer moved on.
+    char again[64];
+    std::snprintf(again, sizeof(again), "test.App.run");
+    EXPECT_EQ(w.intern(mem.data(), again), a);
+    EXPECT_EQ(w.interned(mem.data()), 3);
+    w.close(mem.data());
+    std::remove(path.c_str());
+}

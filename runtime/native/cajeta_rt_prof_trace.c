@@ -224,12 +224,22 @@ int32_t __cajeta_prof_emit_slice(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
 // so the writer allocates nothing after open.
 #define CAJ_PROF_MAX_INTERNED 4096
 #define CAJ_PROF_SCRATCH 4096
+#define CAJ_PROF_NAME_POOL (256 * 1024)
 
 typedef struct {
     FILE*       f;
     uint32_t    seq_id;
     int32_t     n_names;
-    const char* names[CAJ_PROF_MAX_INTERNED];
+    // The table OWNS its names. It used to keep the caller's pointer, which is
+    // a dangling reference the moment a caller passes a scratch buffer — and
+    // Unit 6's transform does exactly that, building "Type.method" into a local
+    // before each slice. The failure was silent and total: on the next call the
+    // reused buffer held the NEXT name, strcmp matched it, and every frame
+    // resolved to the first iid. CI run 32491747115 caught it as a trace
+    // containing exactly one distinct name.
+    int32_t     name_off[CAJ_PROF_MAX_INTERNED];
+    int32_t     pool_used;
+    char        pool[CAJ_PROF_NAME_POOL];
     int32_t     state_cleared;   // has a CLEARED packet been emitted yet
     int64_t     packets;
     int64_t     bytes;
@@ -252,6 +262,7 @@ int32_t __cajeta_prof_trace_open(CajProfWriter* w, const char* path) {
     if (!w->f) return 0;
     w->seq_id = 1;
     w->n_names = 0;
+    w->pool_used = 0;
     w->state_cleared = 0;
     w->packets = 0;
     w->bytes = 0;
@@ -269,19 +280,25 @@ int32_t __cajeta_prof_trace_open(CajProfWriter* w, const char* path) {
 uint64_t __cajeta_prof_intern(CajProfWriter* w, const char* name) {
     if (!w || !name) return 0;
     for (int32_t i = 0; i < w->n_names; i++) {
-        const char* c = w->names[i];
+        const char* c = &w->pool[w->name_off[i]];
         const char* d = name;
         while (*c && *c == *d) { c++; d++; }
         if (*c == 0 && *d == 0) return (uint64_t) (i + 1);
     }
     if (w->n_names >= CAJ_PROF_MAX_INTERNED) return 0;   // fall back to inline
-    w->names[w->n_names++] = name;
+    int32_t len = 0;
+    while (name[len]) len++;
+    if (w->pool_used + len + 1 > CAJ_PROF_NAME_POOL) return 0;  // fall back
+    int32_t off = w->pool_used;
+    for (int32_t k = 0; k <= len; k++) w->pool[off + k] = name[k];
+    w->pool_used += len + 1;
+    w->name_off[w->n_names++] = off;
     uint64_t iid = (uint64_t) w->n_names;
 
     CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
     __cajeta_prof_emit_name(&b, w->seq_id, iid, name, w->state_cleared ? 0 : 1);
     w->state_cleared = 1;
-    if (!caj_prof_flush(w, &b)) { w->n_names--; return 0; }
+    if (!caj_prof_flush(w, &b)) { w->n_names--; w->pool_used = off; return 0; }
     return iid;
 }
 
