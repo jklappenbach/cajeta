@@ -581,6 +581,164 @@ int32_t __cajeta_prof_stack_snapshot(void* handle, CajetaShadowFrame* out,
     return w;
 }
 
+// ── cajeta-profiler Unit 4: the sampler ───────────────────────────────────
+// A dedicated thread walks the Unit 3 thread registry and the debugger's
+// live-fiber registry on an interval, copying each live shadow stack into a
+// ring. Nothing is added to the sampled program's path: arming starts a thread,
+// it does not emit a probe. That is what makes §2.2 true — a binary built with
+// default flags is profilable with no rebuild, because the frames the sampler
+// reads are the line-info probes every build already carries. Unarmed cost is
+// therefore exactly zero (§2.9, §13.4): no thread, no allocation, no branch.
+//
+// The ring is fixed-capacity and the producer is the sampler thread alone, so
+// there is no allocation on the sampling path. On overflow it DROPS and counts
+// the drop rather than blocking or growing: the alternative is a sampler that
+// perturbs the program it measures, and a silent drop is indistinguishable from
+// a correct run from outside — hence the counter, which the trace reports.
+// Defined in cajeta_rt_concurrent_exec.c, later in this TU — same forward-
+// declaration pattern as __cajeta_dbg_top_ptr / __cajeta_shadow_ptr above.
+int64_t __cajeta_currentTimeNanos(void);
+
+#define CAJETA_PROF_MAX_FRAMES 128
+#define CAJETA_PROF_DEFAULT_HZ 1000
+#define CAJETA_PROF_DEFAULT_RING 4096
+
+typedef struct {
+    int64_t          host_ns;       // when the sample was taken
+    void*            owner;         // thread or fiber handle it came from
+    int32_t          n_frames;
+    int32_t          truncated;     // source stack was deeper than capacity
+    CajetaShadowFrame frames[CAJETA_PROF_MAX_FRAMES];
+} CajetaProfSample;
+
+static pthread_t        __cajeta_prof_thread;
+static volatile int     __cajeta_prof_armed = 0;
+static volatile int     __cajeta_prof_stop  = 0;
+static int32_t          __cajeta_prof_interval = 0;
+static CajetaProfSample* __cajeta_prof_ring = NULL;
+static int32_t          __cajeta_prof_ring_cap = 0;
+static volatile int64_t __cajeta_prof_head = 0;   // producer index, monotonic
+static volatile int64_t __cajeta_prof_tail = 0;   // consumer index (Unit 5)
+static volatile int64_t __cajeta_prof_samples = 0;
+static volatile int64_t __cajeta_prof_drops = 0;
+static volatile int64_t __cajeta_prof_frames = 0;
+static const char*      __cajeta_prof_out = NULL;
+
+// 4.2.e: codegen registers that line-info probes were emitted, via a global
+// ctor — NOT a weak extern. See cajeta_rt_core.c's loc-table note above: the
+// runtime bitcode is linked into each module long before codegen emits its
+// definition, so a weak default here and a strong one there collide in one
+// module and LLVM silently renames the second.
+static volatile int __cajeta_line_info_present_flag = 0;
+void __cajeta_line_info_register(void) { __cajeta_line_info_present_flag = 1; }
+int32_t __cajeta_line_info_is_present(void) { return __cajeta_line_info_present_flag; }
+
+int32_t __cajeta_prof_interval_us(void)  { return __cajeta_prof_interval; }
+int32_t __cajeta_prof_ring_capacity(void){ return __cajeta_prof_ring_cap; }
+int32_t __cajeta_prof_is_armed(void)     { return __cajeta_prof_armed; }
+int64_t __cajeta_prof_sample_count(void) { return __cajeta_prof_samples; }
+int64_t __cajeta_prof_drop_count(void)   { return __cajeta_prof_drops; }
+int64_t __cajeta_prof_frame_count(void)  { return __cajeta_prof_frames; }
+const char* __cajeta_prof_out_path(void) {
+    return __cajeta_prof_out ? __cajeta_prof_out : "cajeta.pftrace";
+}
+
+// Copy one stack into the ring. Producer-only; the sampler thread is the sole
+// writer, so head moves without a CAS.
+static void __cajeta_prof_push(void* owner) {
+    int32_t trunc = 0;
+    CajetaShadowFrame tmp[CAJETA_PROF_MAX_FRAMES];
+    int32_t n = __cajeta_prof_stack_snapshot(owner, tmp,
+                                             CAJETA_PROF_MAX_FRAMES, &trunc);
+    __cajeta_prof_samples++;
+    if (n <= 0) return;               // idle context: a tick, but no frames
+    int64_t head = __cajeta_prof_head;
+    if (head - __cajeta_prof_tail >= __cajeta_prof_ring_cap) {
+        __cajeta_prof_drops++;        // full: drop, never block the sampler
+        return;
+    }
+    CajetaProfSample* slot = &__cajeta_prof_ring[head % __cajeta_prof_ring_cap];
+    slot->host_ns = __cajeta_currentTimeNanos();
+    slot->owner = owner;
+    slot->n_frames = n;
+    slot->truncated = trunc;
+    for (int32_t i = 0; i < n; i++) slot->frames[i] = tmp[i];
+    __cajeta_prof_frames += n;
+    __atomic_store_n(&__cajeta_prof_head, head + 1, __ATOMIC_RELEASE);
+}
+
+static void* __cajeta_prof_loop(void* arg) {
+    (void) arg;
+    // The sampler does NOT register itself in the thread registry: it would
+    // sample its own stack, which is not the program's work.
+    while (!__cajeta_prof_stop) {
+        void* handles[256];
+        int n = __cajeta_prof_thread_snapshot(handles, 256);
+        if (n > 256) n = 256;
+        for (int i = 0; i < n; i++) __cajeta_prof_push(handles[i]);
+        int fn = __cajeta_dbg_fiber_snapshot(handles, 256);
+        if (fn > 256) fn = 256;
+        for (int i = 0; i < fn; i++) __cajeta_prof_push(handles[i]);
+        struct timespec ts;
+        ts.tv_sec  = __cajeta_prof_interval / 1000000;
+        ts.tv_nsec = (long) (__cajeta_prof_interval % 1000000) * 1000L;
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+// Returns 0 on success; negative on refusal. -1 already armed, -2 line-info is
+// off (§2.5 — fail loudly rather than produce an empty trace), -3 out of
+// memory, -4 the sampler thread could not start.
+int32_t __cajeta_prof_arm(void) {
+    if (__cajeta_prof_armed) return -1;
+    if (!getenv("CAJETA_PROFILER")) return 0;   // unset: arm nothing (§9.1)
+    if (!__cajeta_line_info_is_present()) {
+        fprintf(stderr,
+                "cajeta.profiler: refusing to arm — this binary was built with "
+                "--line-info=off, so there are no frames to sample. Rebuild "
+                "without it (line-info is on by default).\n");
+        return -2;
+    }
+    const char* hz_s = getenv("CAJETA_PROFILER_HZ");
+    int hz = hz_s ? atoi(hz_s) : CAJETA_PROF_DEFAULT_HZ;
+    if (hz <= 0) hz = CAJETA_PROF_DEFAULT_HZ;
+    __cajeta_prof_interval = 1000000 / hz;
+    if (__cajeta_prof_interval <= 0) __cajeta_prof_interval = 1;
+
+    const char* ring_s = getenv("CAJETA_PROFILER_RING");
+    int cap = ring_s ? atoi(ring_s) : CAJETA_PROF_DEFAULT_RING;
+    if (cap <= 0) cap = CAJETA_PROF_DEFAULT_RING;
+    __cajeta_prof_ring_cap = cap;
+    __cajeta_prof_ring = (CajetaProfSample*) calloc((size_t) cap,
+                                                    sizeof(CajetaProfSample));
+    if (!__cajeta_prof_ring) { __cajeta_prof_ring_cap = 0; return -3; }
+    __cajeta_prof_out = getenv("CAJETA_PROFILER_OUT");
+    __cajeta_prof_head = __cajeta_prof_tail = 0;
+    __cajeta_prof_stop = 0;
+    // The arming thread is the program thread; register it here so §2.1's
+    // "every host thread" holds without a lazy check on the enter/mark/leave
+    // hot path (plan 3.2.d).
+    __cajeta_prof_thread_register();
+    if (pthread_create(&__cajeta_prof_thread, NULL, __cajeta_prof_loop, NULL) != 0) {
+        free(__cajeta_prof_ring);
+        __cajeta_prof_ring = NULL;
+        __cajeta_prof_ring_cap = 0;
+        return -4;
+    }
+    __cajeta_prof_armed = 1;
+    return 0;
+}
+
+void __cajeta_prof_disarm(void) {
+    if (!__cajeta_prof_armed) return;
+    __cajeta_prof_stop = 1;
+    pthread_join(__cajeta_prof_thread, NULL);
+    __cajeta_prof_armed = 0;
+    // The ring is NOT freed here: Unit 5's writer drains it on the way out, and
+    // freeing under it would lose the tail of every run that ends normally.
+}
+
 // Snapshot the live shadow frames innermost-first into `out` (caller-sized to
 // `max`), returning the number copied. `out[0]` is the throw-site frame.
 int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {

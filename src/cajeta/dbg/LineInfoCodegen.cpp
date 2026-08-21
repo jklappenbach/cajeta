@@ -1,6 +1,7 @@
 #include "cajeta/dbg/LineInfoCodegen.h"
 
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 namespace cajeta::dbg {
 
@@ -13,6 +14,39 @@ namespace cajeta::dbg {
             llvm::BasicBlock* bb = builder->GetInsertBlock();
             if (!bb || bb->hasTerminator()) return nullptr;
             return builder;
+        }
+
+        // cajeta-profiler 4.2.e (spec §2.5). The profiler must refuse to arm on
+        // a --line-info=off binary rather than produce an empty trace, and the
+        // runtime cannot infer the flag: an empty shadow stack is what an idle
+        // program looks like too, and counting probe calls would put a cost on
+        // the hot path §2.9 forbids. So codegen says so, once per module.
+        //
+        // A ctor, NOT a weak extern. cajeta_rt_core.c's loc-table note has the
+        // reason: the runtime bitcode is linked into each module long before
+        // codegen emits its definition, so a weak default there and a strong one
+        // here collide in one module and LLVM silently renames the second. A
+        // ctor behaves identically under LLJIT and a native link — the shape the
+        // loc table and the XPU kernel registry both already use.
+        //
+        // Idempotent by construction: emitLineEnter runs per method, and the
+        // presence of the ctor function is the "already done" flag.
+        void ensureLineInfoRegistered(llvm::Module* mod,
+                                      const cajeta::CajetaModulePtr& module) {
+            static const char* kCtorName = "__cajeta.lineinfo.register";
+            if (!mod || mod->getFunction(kCtorName)) return;
+            llvm::Function* regFn =
+                module->getRuntimeFunction("__cajeta_line_info_register");
+            if (!regFn) return;
+            auto& ctx = mod->getContext();
+            llvm::FunctionType* ctorTy =
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
+            llvm::Function* ctor = llvm::Function::Create(
+                ctorTy, llvm::GlobalValue::InternalLinkage, kCtorName, mod);
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", ctor));
+            b.CreateCall(regFn, {});
+            b.CreateRetVoid();
+            llvm::appendToGlobalCtors(*mod, ctor, /*priority=*/65535);
         }
     }
 
@@ -32,6 +66,8 @@ namespace cajeta::dbg {
         llvm::Constant* fC = builder->CreateGlobalString(fileName);
         llvm::StructType* descTy = llvm::StructType::get(ctx, {ptrTy, ptrTy, ptrTy});
         llvm::Module* mod = builder->GetInsertBlock()->getModule();
+        // First probe in this module also records that probes exist at all.
+        ensureLineInfoRegistered(mod, module);
         auto* desc = new llvm::GlobalVariable(
             *mod, descTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
             llvm::ConstantStruct::get(descTy, {tC, mC, fC}), ".cajeta.framedesc");
