@@ -495,29 +495,45 @@ namespace cajeta {
             this->builder = builder;
         }
 
-        /** simd-fused-integer-madd 1.2.1 — true when the target advertises an
-         *  int8 dot-product accumulate (x86 AVX512-VNNI / AVX-VNNI). The SIMD
-         *  lowerings read this to pick a tier. Tier selection only; every tier is
-         *  bit-identical, so a wrong answer here costs speed, never results. */
-        bool targetHasIntDotAccum() const {
+        /** simd-fused-integer-madd 1.2.1 / 2.2 — which fused int8 dot units the
+         *  target has. Tier selection only; every tier is bit-identical, so a
+         *  wrong answer costs speed and never results.
+         *
+         *  Each asks the SUBTARGET, not TargetMachine::getTargetFeatureString(),
+         *  which returns only what was passed in explicitly and is EMPTY for a
+         *  named cpu that implies the feature (measured: znver4, znver5,
+         *  cascadelake).
+         *
+         *  Each also checks the TRIPLE first, and that is not defensive
+         *  tidiness: MCSubtargetInfo::checkFeatures does NOT return false for a
+         *  feature name the target does not know — it calls report_fatal_error
+         *  and takes the process down. Asking an x86 subtarget about
+         *  '+dotprod' aborts the compiler. Measured, by doing it.
+         */
+        bool targetHasIntDotAccum() const {     // x86 AVX512-VNNI / AVX-VNNI
             if (targetMachine == nullptr) return false;
-            // Ask the SUBTARGET, not the feature STRING. getTargetFeatureString()
-            // returns only what was explicitly passed in, so it is empty for a
-            // named CPU (`--cpu=znver5`) even though that CPU implies VNNI —
-            // which would silently drop every VNNI build to the portable tier
-            // and read as a clean run. checkFeatures() tests the expanded
-            // FeatureBits the CPU name resolved to.
+            if (!targetMachine->getTargetTriple().isX86()) return false;
             const llvm::MCSubtargetInfo& sti = targetMachine->getMCSubtargetInfo();
             return sti.checkFeatures("+avx512vnni")
                 || sti.checkFeatures("+avxvnni");
         }
-        /** True when the target has AVX2, which is what the pre-VNNI x86 tier
-         *  needs for a 256-bit `vpmaddwd`. Same subtarget query as above and
-         *  for the same reason — a named cpu's explicit feature string is
-         *  empty. */
-        bool targetHasAvx2() const {
+        bool targetHasAvx2() const {            // x86 AVX2, the pre-VNNI tier
             if (targetMachine == nullptr) return false;
+            if (!targetMachine->getTargetTriple().isX86()) return false;
             return targetMachine->getMCSubtargetInfo().checkFeatures("+avx2");
+        }
+        bool targetHasArmDotProd() const {      // AArch64 sdot / udot
+            if (targetMachine == nullptr) return false;
+            if (!targetMachine->getTargetTriple().isAArch64()) return false;
+            return targetMachine->getMCSubtargetInfo().checkFeatures("+dotprod");
+        }
+        /** AArch64 `usdot`, the mixed unsigned x signed form. Gated separately
+         *  from dotprod: measured on an AArch64-capable llc, a target with
+         *  +dotprod but no +i8mm cannot select usdot and dies. */
+        bool targetHasArmI8mm() const {
+            if (targetMachine == nullptr) return false;
+            if (!targetMachine->getTargetTriple().isAArch64()) return false;
+            return targetMachine->getMCSubtargetInfo().checkFeatures("+i8mm");
         }
 
         llvm::IRBuilder<>* getBuilder() {

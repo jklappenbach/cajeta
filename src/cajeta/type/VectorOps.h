@@ -365,10 +365,25 @@ namespace vecops {
     // Tiers: x86 VNNI (`vpdpbusd`, one instruction) -> the portable
     // `llvm.vector.partial.reduce.add` (lowers to fused ops on every target
     // LLVM supports) -> a scalar lane loop. Callers NEVER branch on target.
+    /** Which fused-int-dot units the target actually has. A named set rather
+     *  than a row of bools, because every one of them is a silent-speed knob:
+     *  get one wrong and the answer stays correct while the kernel quietly
+     *  loses its instruction. */
+    struct DotAccumTargets {
+        bool vnni        = false;   // x86 AVX512-VNNI / AVX-VNNI
+        bool avx2        = false;   // x86 AVX2, the pre-VNNI tier
+        bool armDotProd  = false;   // AArch64 ARMv8.2 dotprod: sdot / udot
+        bool armI8mm     = false;   // AArch64 i8mm: usdot, the mixed form
+        bool forceScalar = false;   // CAJETA_SIMD_SCALAR_FALLBACK=1
+    };
+
     inline llvm::Value* dotAccum(llvm::IRBuilderBase& b, llvm::Module* m,
                                  llvm::Value* w, llvm::Value* a,
                                  llvm::Value* acc, bool wUnsigned,
-                                 bool hasVnni, bool hasAvx2, bool forceScalar) {
+                                 const DotAccumTargets& tgt) {
+        const bool hasVnni     = tgt.vnni;
+        const bool hasAvx2     = tgt.avx2;
+        const bool forceScalar = tgt.forceScalar;
         llvm::LLVMContext& ctx = b.getContext();
         auto* i32 = llvm::Type::getInt32Ty(ctx);
         auto* accTy = llvm::cast<llvm::FixedVectorType>(acc->getType());
@@ -458,6 +473,66 @@ namespace vecops {
                 quads = next;
             }
             return b.CreateAdd(acc, quads[0], "dotacc.pre");
+        }
+
+        // Tier 1.6 — AArch64. `usdot`/`sdot` are one instruction per 16 bytes,
+        // the same shape as vpdpbusd, and NEON is 128-bit so this chunks into
+        // 4-lane groups exactly as the pre-VNNI x86 tier does.
+        //
+        // UNVERIFIED BY EXECUTION. This LLVM registers only amdgcn / r600 /
+        // x86 / x86-64, so no cajeta build can target AArch64 and no test here
+        // can reach this branch — it stands exactly as Unit 17's NEON `tbl1`
+        // path does. What HAS been checked, on an AArch64-capable llc 21: this
+        // IR shape selects `usdot v0.4s, v1.16b, v2.16b` and `sdot` likewise,
+        // one instruction each. So the shape and the operand layout are
+        // measured; only the runtime answer is not.
+        //
+        // The two features are separate on purpose. Measured on that same llc:
+        // a target with +dotprod but no +i8mm CANNOT SELECT usdot and dies, so
+        // the mixed unsigned x signed form needs its own gate rather than
+        // riding dotprod's.
+        {
+            bool armOk = wUnsigned ? tgt.armI8mm : tgt.armDotProd;
+            if (!forceScalar && triple.isAArch64() && armOk && lanes == n * 4
+                    && (lanes % 16) == 0) {
+                auto* i8Ty = llvm::Type::getInt8Ty(ctx);
+                auto* v16i8 = llvm::FixedVectorType::get(i8Ty, 16);
+                auto* v4i32 = llvm::FixedVectorType::get(i32, 4);
+                llvm::Intrinsic::ID id = wUnsigned
+                    ? llvm::Intrinsic::aarch64_neon_usdot
+                    : llvm::Intrinsic::aarch64_neon_sdot;
+                llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                    m, id, {v4i32, v16i8});
+                unsigned chunks = lanes / 16;
+                llvm::SmallVector<llvm::Value*, 4> quads;
+                for (unsigned c = 0; c < chunks; ++c) {
+                    llvm::SmallVector<int, 16> mb(16);
+                    for (unsigned i = 0; i < 16; ++i) mb[i] = (int) (c * 16 + i);
+                    llvm::SmallVector<int, 4> ma(4);
+                    for (unsigned i = 0; i < 4; ++i) ma[i] = (int) (c * 4 + i);
+                    llvm::Value* ws = b.CreateShuffleVector(w, w, mb,
+                                                            "dotacc.w16b");
+                    llvm::Value* as = b.CreateShuffleVector(a, a, mb,
+                                                            "dotacc.a16b");
+                    llvm::Value* ac = b.CreateShuffleVector(acc, acc, ma,
+                                                            "dotacc.acc4");
+                    quads.push_back(b.CreateCall(fn, {ac, ws, as},
+                                                 "dotacc.neon"));
+                }
+                while (quads.size() > 1) {
+                    llvm::SmallVector<llvm::Value*, 4> next;
+                    for (unsigned i = 0; i + 1 < quads.size(); i += 2) {
+                        unsigned half = llvm::cast<llvm::FixedVectorType>(
+                            quads[i]->getType())->getNumElements();
+                        llvm::SmallVector<int, 32> cat(half * 2);
+                        for (unsigned k = 0; k < half * 2; ++k) cat[k] = (int) k;
+                        next.push_back(b.CreateShuffleVector(
+                            quads[i], quads[i + 1], cat, "dotacc.cat"));
+                    }
+                    quads = next;
+                }
+                return quads[0];
+            }
         }
 
         // Tier 2 — portable partial reduction. The CORRECTNESS fallback for

@@ -121,6 +121,14 @@ quantized inference is why they exist.
 - **4.6** Six lowering paths against `tableLookup`'s three is the real cost of
   this primitive, and the scalar fallback is what makes it verifiable — every
   path must produce bit-identical results.
+- **4.6.2** A tier check must test the TRIPLE before asking about a feature.
+  `MCSubtargetInfo::checkFeatures` does not answer false for a feature name the
+  target does not know — it calls `report_fatal_error` and takes the process
+  down. Measured: asking an x86 subtarget about `+dotprod` aborts the compiler
+  outright, so adding the AArch64 tier broke every x86 `dotAccum` compile until
+  the queries were triple-gated. The gate is required for correctness, not
+  tidiness, and it is symmetric — asking an AArch64 target about `+avx512vnni`
+  would abort just the same, which is a latent break in any cross-compile.
 - **4.6.1** Tier selection asks the SUBTARGET whether a feature is present, not
   the TargetMachine's explicit feature string. Measured 2026-08-22: `znver4`,
   `znver5` and `cascadelake` each report an EMPTY feature string while implying
@@ -191,12 +199,18 @@ quantized inference is why they exist.
   and is a deliberate decision, not an oversight. Measured for one 32-pair
   `dotAccum` on haswell: 15 instructions exact, 3 saturating, 57 portable.
 - **4.12** LIMIT OF TODAY'S EVIDENCE: this LLVM build registers only
-  `amdgcn`, `r600`, `x86`, `x86-64`. The AArch64 and RISC-V lowerings cannot be
-  compiled here, let alone run — they would be written blind, exactly as Unit
-  17's NEON `tbl1` path is today ("compile-level only until an ARM runner
-  exists"). The x86 claims in this spec are measured; the ARM and RISC-V ones
-  are read from LLVM's intrinsic tables and must be marked unverified until a
-  runner exists.
+  `amdgcn`, `r600`, `x86`, `x86-64`, so no cajeta build can target AArch64 or
+  RISC-V and no test can reach those branches — they stand exactly as Unit 17's
+  NEON `tbl1` path does. Partially lifted for AArch64 2026-08-22: a system
+  `llc 21` DOES have AArch64 registered, and the emitted IR shape selects
+  `usdot v0.4s, v1.16b, v2.16b` and `sdot` likewise, one instruction each. So
+  the AArch64 shape and operand layout are measured; only the runtime answer is
+  not. RISC-V remains entirely unverified. Nothing here may be described as
+  tested without saying which of the two it means.
+- **4.12.1** `usdot` needs its own feature gate, not `dotprod`'s. Measured: a
+  target with `+dotprod` but no `+i8mm` CANNOT SELECT it and dies. This is the
+  same failure shape as the AMD arch gate — a wrong "yes" is a build failure,
+  a wrong "no" only costs speed — so both gates answer NO when unsure.
 
 ## 5. Use cases
 

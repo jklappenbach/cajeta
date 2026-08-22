@@ -5806,10 +5806,15 @@ namespace cajeta {
                     resolvedType = CajetaVector::validateAndCreate(
                         module, CajetaType::of("int32"),
                         avt->getNumElements());
+                    vecops::DotAccumTargets dtgt;
+                    dtgt.vnni        = module->targetHasIntDotAccum();
+                    dtgt.avx2        = module->targetHasAvx2();
+                    dtgt.armDotProd  = module->targetHasArmDotProd();
+                    dtgt.armI8mm     = module->targetHasArmI8mm();
+                    dtgt.forceScalar = forceScalarDot;
                     return vecops::dotAccum(*builder,
                         builder->GetInsertBlock()->getModule(), self, other,
-                        accv, wUnsigned, module->targetHasIntDotAccum(),
-                        module->targetHasAvx2(), forceScalarDot);
+                        accv, wUnsigned, dtgt);
                 }
                 if (methodCallName == "dot") {
                     if (isFloat) {
