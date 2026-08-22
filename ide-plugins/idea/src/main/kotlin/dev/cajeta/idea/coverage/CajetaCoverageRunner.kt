@@ -5,7 +5,6 @@ import com.intellij.coverage.CoverageRunner
 import com.intellij.coverage.CoverageSuite
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.rt.coverage.data.ProjectData
 import java.io.File
 
@@ -48,6 +47,18 @@ class CajetaCoverageRunner : CoverageRunner() {
                 return null
             }
             val resolver = CocoPathResolver.forProfile(sessionDataFile, sourceRoots(project))
+            // A site path that resolves to nothing keys ClassData by a relative
+            // string, which the platform's annotator never matches — so the run
+            // loads, reports its percentage, and paints NOTHING. That is the
+            // failure this warning exists to name; it is invisible otherwise.
+            val unresolved = coverage.files.filterNot { File(resolver.resolve(it)).isAbsolute }
+            if (unresolved.isNotEmpty()) {
+                LOG.warn(
+                    "coco: ${unresolved.size} of ${coverage.files.size} measured files did not " +
+                        "resolve against the project's source roots (first: ${unresolved.first()}); " +
+                        "those files will show no gutters. Check \"src\" in cajeta.json."
+                )
+            }
             CocoProjectData.toProjectData(coverage, resolver::resolve)
         } catch (e: CocoFormatException) {
             // Refusing is the whole point: probe ids are positional against the
@@ -61,12 +72,7 @@ class CajetaCoverageRunner : CoverageRunner() {
         }
     }
 
-    private fun sourceRoots(project: Project?): List<File> {
-        if (project == null || project.isDisposed) return emptyList()
-        return ProjectRootManager.getInstance(project).contentSourceRoots
-            .mapNotNull { it.canonicalPath }
-            .map { File(it) }
-    }
+    private fun sourceRoots(project: Project?): List<File> = CocoSourceRoots.of(project)
 
     companion object {
         const val ID: String = "cajeta-coco"

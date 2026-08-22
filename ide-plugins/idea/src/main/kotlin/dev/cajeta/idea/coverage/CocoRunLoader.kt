@@ -61,8 +61,20 @@ object CocoRunLoader {
         // this at load rather than lazily is what makes "changed after the run"
         // detectable at all (spec §5).
         val resolver = CocoPathResolver.forProfile(profile, sourceRootsOf(project))
+        val resolved = coverage.files.map(resolver::resolve)
+        // An unresolved path is not an error anywhere downstream — it just
+        // annotates no file. That silence is exactly how a loaded run came to
+        // paint nothing, so say it once, with a name to grep for.
+        val unresolved = coverage.files.filterIndexed { i, _ -> !File(resolved[i]).isAbsolute }
+        if (unresolved.isNotEmpty()) {
+            LOG.warn(
+                "coco: ${unresolved.size} of ${coverage.files.size} measured files did not resolve " +
+                    "to a path on disk (first: ${unresolved.first()}); those files will show no " +
+                    "coverage. Check the source root in cajeta.json."
+            )
+        }
         CocoFreshness.getInstance(project)
-            .observeRun(profile, coverage.files.map(resolver::resolve))
+            .observeRun(profile, resolved)
 
         // Classify while still off the EDT — this queries the xref index.
         CocoAnalysis.getInstance(project).update(coverage)
@@ -117,9 +129,7 @@ object CocoRunLoader {
             "Coverage at ${outcome.profile.path} could not be read: ${outcome.reason}"
     }
 
-    private fun sourceRootsOf(project: Project): List<File> =
-        com.intellij.openapi.roots.ProjectRootManager.getInstance(project)
-            .contentSourceRoots.mapNotNull { it.canonicalPath }.map(::File)
+    private fun sourceRootsOf(project: Project): List<File> = CocoSourceRoots.of(project)
 
     private val LOG = logger<CocoRunLoader>()
 }
