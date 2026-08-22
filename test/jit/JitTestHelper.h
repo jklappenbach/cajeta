@@ -171,6 +171,12 @@ private:
     // Mapping short method name -> full mangled name in the JIT'd module. Built
     // once at compile time so per-test lookups don't have to rescan.
     std::map<std::string, std::string> nameMap;
+    // Temp source/archive roots the multi-source compile path created for this
+    // test, removed on destruction. The lifetime is the JIT's rather than the
+    // compile call's so nothing that reads back through a recorded path (debug
+    // info, the archive root) can find the tree gone while the module is live.
+    // Set CAJETA_KEEP_TEMP to leave them for inspection.
+    std::vector<std::string> tempRoots;
 };
 
 } // namespace cajeta_test

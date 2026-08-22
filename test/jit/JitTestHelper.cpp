@@ -556,6 +556,16 @@ CajetaJit::~CajetaJit() {
         if (auto err = sharedJit->getExecutionSession().removeJITDylib(*userDylib))
             cajeta::jittest::consumeError(std::move(err));
     }
+    // The multi-source path's temp source/archive roots. Removed LAST, after
+    // the module is done with them. Nothing removed these before: a full suite
+    // run left ~7,800 dirs behind and they accumulated across runs until the
+    // per-user tmpfs quota broke unrelated builds. See JitTempDirCleanupTests.
+    if (!std::getenv("CAJETA_KEEP_TEMP")) {
+        for (const auto& root : tempRoots) {
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+        }
+    }
 }
 
 // 5.1.11 / 5.2.8 — diagnostics collected by the last compile (see the header).
@@ -712,6 +722,24 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                     / ("cajeta_multi_" + std::to_string(rng()));
     std::filesystem::create_directories(sourceRoot);
 
+    // Own the temp roots from the moment they exist, so a throw anywhere below
+    // (a CajetaException surfaced out of compile(), a failed JIT) still takes
+    // them with it. On the success path ownership TRANSFERS to the returned
+    // CajetaJit (see the release just before `return jitState`), whose
+    // destructor removes them once the module is done.
+    struct TempRootGuard {
+        std::vector<std::filesystem::path> roots;
+        bool armed = true;
+        ~TempRootGuard() {
+            if (!armed || std::getenv("CAJETA_KEEP_TEMP")) return;
+            for (const auto& r : roots) {
+                std::error_code ec;
+                std::filesystem::remove_all(r, ec);
+            }
+        }
+    } tempRootGuard;
+    tempRootGuard.roots.push_back(sourceRoot);
+
     std::vector<std::filesystem::path> sourcePaths;
     sourcePaths.reserve(sources.size());
     for (auto& [fqClass, source] : sources) {
@@ -746,6 +774,7 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     auto archiveRoot = std::filesystem::temp_directory_path()
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);
+    tempRootGuard.roots.push_back(archiveRoot);
 
     // (The just-written sources are pre-scanned into the archive INSIDE the
     // retry loop below — after the Compiler ctor's resetGlobals() / the reuse
@@ -1320,6 +1349,11 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (reuseStdlib) {
         stdlibCache.clearTransientStructNames(llvmModule);
     }
+
+    // Hand the temp roots to the JIT: they outlive this call, but not the
+    // module that was built from them.
+    for (const auto& r : tempRootGuard.roots) jitState->tempRoots.push_back(r.string());
+    tempRootGuard.armed = false;
 
     return jitState;
 }

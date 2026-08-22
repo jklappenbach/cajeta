@@ -17,6 +17,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -103,6 +104,11 @@ std::string compilerPath() {
 struct TmpProject {
     fs::path sourceRoot;
     fs::path buildRoot;
+    // Each test below removes its tree explicitly on the way out, which leaves
+    // it behind whenever an assertion fails or throws first. This removes it on
+    // every path; the explicit calls stay and are simply idempotent. Set
+    // CAJETA_KEEP_TEMP to leave the tree for inspection. (Profiler plan 6.5.)
+    std::shared_ptr<void> cleanup;
 };
 
 TmpProject makeTmpProject(const std::string& tag) {
@@ -118,7 +124,14 @@ TmpProject makeTmpProject(const std::string& tag) {
         << "public final class Hello {\n"
         << "    public static int32 run() { return 0; }\n"
         << "}\n";
-    return TmpProject{base / "src", build};
+    std::shared_ptr<void> cleanup;
+    if (!std::getenv("CAJETA_KEEP_TEMP")) {
+        cleanup = std::shared_ptr<void>(nullptr, [base](void*) {
+            std::error_code ec;
+            fs::remove_all(base, ec);
+        });
+    }
+    return TmpProject{base / "src", build, std::move(cleanup)};
 }
 
 } // namespace
