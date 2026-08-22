@@ -38,6 +38,34 @@ One 4096x4096 projection, one token, `--release`, on a box with avx512f.
 - **2.3** So the gap is not width, not memory, and not the activation format.
   It is that every integer multiply must be preceded by a widen and followed
   by a reduction, and each of those is a separate instruction.
+- **2.4** REFUTED 2026-08-22, by building the thing §2.3 asked for and
+  measuring it. The Q4_K mat-vec rewritten on `dotAccum` against q8_K
+  activations, 4096x4096, medians of five runs:
+
+  | kernel | portable tier (57 instr) | VNNI tier (`vpdpbusd`, 1 instr) |
+  |---|---|---|
+  | f32 activations | 23.62 ms | 23.00 ms |
+  | q8_K integer | 21.85 ms | **20.77 ms** |
+
+  The integer rewrite is worth ~10% and the fused instruction ~5%. Collapsing
+  the entire widen-multiply-reduce ladder into ONE instruction moves the kernel
+  by a twentieth — so the ladder was never what held Q4_K ~100x above its
+  memory floor. Whatever does is the per-block SCALAR bookkeeping the kernel
+  still carries: `scaleMinK4`'s bit-twiddling into heap `int32[8]`s, the
+  lane-by-lane reduce, the eight-iteration `dmins` loop over two arrays, and
+  the bounds checks on all of it. That is the next spec, and this one should
+  not be read as having found the bottleneck.
+
+  The primitive earns its place regardless — it is correct, it is the right
+  abstraction, every ISA provides it, and it is a real 5%. But §2.3 named the
+  wrong cause, and a 5% answer to a 100x question has to say so plainly.
+- **2.5** Discovered while measuring the above: NOTHING in cajeta-llama builds
+  with `--cpu=native`. The compiler's default is `generic` — SSE2 baseline — so
+  every benchmark in this spec, and the 61x engine gap that motivated it, was
+  measured against an ISA-handicapped build. For these kernels it turns out to
+  cost only a few percent (they are not ISA-bound), but no number taken on a
+  default build should be compared against `llama.cpp`, which is built
+  `-march=native`, without saying which target it used.
 
 ## 3. What `llama.cpp` does that we cannot
 
