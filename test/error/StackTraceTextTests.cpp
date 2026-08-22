@@ -1,6 +1,8 @@
 // diagnostic-exceptions Unit 3 (3.1.3): an uncaught throw prints a semantic text
-// trace — `Package.Class.method(File.cajeta:NN)` with real line numbers — driven
-// end-to-end through the built binary via `cajeta jit-run`. The runtime text
+// trace — `Package.Class.method(File.cajeta:NN)` — driven end-to-end through
+// the built binary via `cajeta jit-run`. The `:NN` is a `-g` feature since the
+// per-statement mark was measured at 3.5-9.4x; the frame's type/method/file is
+// free and stays on by default. See runJitCapturingStderr. The runtime text
 // path (__cajeta_print_trace over the shadow snapshot) is identical for
 // --emit=exe; a true AOT-exe trace is attached to the plan separately (lld).
 
@@ -96,11 +98,22 @@ fs::path writeProjectClass(const fs::path& root, const std::string& classBody) {
     return root;
 }
 
-int runJitCapturingStderr(const fs::path& proj, std::string& err) {
+// `withLines` passes -g, which is jit-run's spelling of --debug-info=full.
+//
+// It has to be a parameter now. Per-statement line marks became a
+// full-debug-info feature when they were measured at 3.5-9.4x (see
+// LineInfoCodegen::emitLineMark), so a DEFAULT build resolves a frame to
+// Type.method(File.cajeta) and carries no line — `:0`, which StackFrame
+// documents as "line-info unavailable". Both halves are asserted below rather
+// than one being dropped: the semantic frame is what these tests are named
+// for and it is still free, and the exact line is still available on request.
+int runJitCapturingStderr(const fs::path& proj, std::string& err,
+                          bool withLines = false) {
     auto bin = compilerBinary();
     if (!fs::exists(bin)) return -1;
     auto errFile = proj / "stderr.txt";
-    std::string cmd = bin + " jit-run " + proj.string() + " test.App.run"
+    std::string cmd = bin + " jit-run " + (withLines ? "-g " : "")
+                      + proj.string() + " test.App.run"
                       " > " CAJETA_ST_DEVNULL " 2> " + errFile.string();
     int rc = std::system(cmd.c_str());
     std::ifstream in(errFile);
@@ -111,8 +124,10 @@ int runJitCapturingStderr(const fs::path& proj, std::string& err) {
 
 } // namespace
 
-// 3.1.3 — the uncaught trace prints test.App.run(App.cajeta:NN) with a real
-// (positive) line number.
+// 3.1.3 — the uncaught trace prints a SEMANTIC frame,
+// test.App.run(App.cajeta:...), rather than an address. This is the half that
+// every build gets: the per-CALL probe that carries type/method/file measured
+// at parity with an uninstrumented build, so it stays on by default.
 TEST(StackTraceText, uncaughtPrintsSemanticFrame) {
     auto proj = writeProject(freshTempDir("sem"),
                              "throw heap Exception(\"boom\");");
@@ -121,9 +136,28 @@ TEST(StackTraceText, uncaughtPrintsSemanticFrame) {
     if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
 
     EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // >= 0 rather than > 0: frameLine returns -1 when the frame is ABSENT, so
+    // this still asserts the frame is there and well-formed. The default build
+    // carries no line (see runJitCapturingStderr).
+    EXPECT_GE(frameLine(err, "test.App.run(App.cajeta:"), 0)
+        << "expected a semantic frame naming type, method and file; stderr:\n" << err;
+}
+
+// The other half, on request. Asserted as a PAIR with the test above so the
+// trade stays pinned from both sides: dropping per-statement marks entirely
+// would pass the default-build test alone, and turning them back on
+// everywhere would pass this one alone.
+TEST(StackTraceText, debugInfoFullAddsTheExactLine) {
+    auto proj = writeProject(freshTempDir("semg"),
+                             "throw heap Exception(\"boom\");");
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
     // e.g. "  at test.App.run(App.cajeta:5)"
     EXPECT_GT(frameLine(err, "test.App.run(App.cajeta:"), 0)
-        << "expected a semantic frame with a positive line number; stderr:\n" << err;
+        << "expected a positive line number under -g; stderr:\n" << err;
 }
 
 // ExceptionReview 5.7 — printStackTrace() prints the throwable's own message
@@ -147,7 +181,7 @@ TEST(StackTraceText, printStackTracePrintsMessageThenFrames) {
     EXPECT_EQ(rc, 0) << "the throw is caught; the run must succeed. stderr:\n" << err;
     EXPECT_NE(err.find("outer failure"), std::string::npos)
         << "message line missing; stderr:\n" << err;
-    EXPECT_GT(frameLine(err, "test.App.deep(App.cajeta:"), 0)
+    EXPECT_GE(frameLine(err, "test.App.deep(App.cajeta:"), 0)
         << "expected a semantic frame for the throw site; stderr:\n" << err;
     // Message precedes frames.
     EXPECT_LT(err.find("outer failure"), err.find("at test.App.deep"))
@@ -183,7 +217,7 @@ TEST(StackTraceText, printStackTracePrintsCauseChain) {
         << "cause chain not printed; stderr:\n" << err;
     // The top throwable was thrown, so it carries semantic frames. The cause was
     // constructed but never thrown -> no frames, per throw-site capture (3.1).
-    EXPECT_GT(frameLine(err, "test.App.deep(App.cajeta:"), 0)
+    EXPECT_GE(frameLine(err, "test.App.deep(App.cajeta:"), 0)
         << "expected a semantic frame for the throw site; stderr:\n" << err;
     // Ordering: the cause link must follow the top throwable's message.
     EXPECT_LT(err.find("outer failure"), err.find("Caused by: root cause"))

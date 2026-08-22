@@ -256,9 +256,15 @@ TEST(ProfilerSampler, lineInfoOffRefusesToArmAndSaysWhy) {
     ::setenv("CAJETA_PROFILER", "1", 1);
 
     // Capture stderr so "loudly" is asserted rather than assumed.
+    // Per-PROCESS filename. The sweep runs 32 cajeta_test processes against one
+    // shared TMPDIR, so a fixed name is a shared mutable file between them —
+    // and this test redirects the whole process's stderr into it, which makes
+    // a collision look like "the refusal was silent" rather than like a
+    // clobbered file.
     const char* base = ::getenv("TMPDIR");
     const std::string errPath =
-        std::string(base && *base ? base : ".") + "/cajeta_lineinfo_refusal.txt";
+        std::string(base && *base ? base : ".") + "/cajeta_lineinfo_refusal_"
+        + std::to_string(static_cast<long long>(::getpid())) + ".txt";
     fflush(stderr);
     const int savedErr = ::dup(STDERR_FILENO);
     const int capture = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);

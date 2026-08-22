@@ -103,7 +103,19 @@ namespace cajeta::dbg {
         // samples; `full` adds the exact line. This is what the flag's own
         // note in CompilerMode.h asked for: "measure before relying on
         // default-on in release."
-        if (!module->getFlags().debugInfo) return;
+        //
+        // EITHER flag, derived at the USE site — the same rule Block.cpp
+        // applies to `__cajeta_dbg_safepoint`, and for the same reason. A mark
+        // and a safepoint are both per-statement, so a consumer that has
+        // already accepted the per-statement cost should not then have to
+        // discover that its line numbers went missing. Gating on `debugInfo`
+        // alone did exactly that to the Jupyter kernel, which asks for
+        // `safepoints` (and deliberately NOT `debugInfo`, whose keep-all class
+        // retention broke the first cell — see KernelSession): every notebook
+        // traceback silently lost its line and reported `cell:0`, which is the
+        // one thing `everyDiagnosticNamesTheCellAndLine` exists to prevent.
+        const auto& f = module->getFlags();
+        if (!f.debugInfo && !f.safepoints) return;
         llvm::IRBuilder<>* builder = lineGuard(module);
         if (!builder || line <= 0) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_line_mark");
