@@ -1992,6 +1992,23 @@ private:
         // seam already emits SPIR-V's OpSDot/OpUDot on Vulkan
         // (spv_dot4add_*_packed) and falls back to the portable widening
         // reduce elsewhere.
+        // asUnsigned()/asSigned() on device — the same pure reinterpretation
+        // as on the host: no instruction, only a change of what the element is
+        // called. Device signedness is tracked per NAMED local (the map is
+        // keyed by name and filled from the declared type), so the signedness
+        // that reaches integerDot4x8 comes from how the result is DECLARED:
+        //
+        //   Vector<uint8,64> wu = w.vload<64>(0).asUnsigned();
+        //
+        // That is the same constraint `dot` already carries, not a new one.
+        if (name == "asUnsigned" || name == "asSigned") {
+            if (isFloat)
+                unsupported("Vector.asUnsigned/asSigned require an integer "
+                            "element type");
+            if (!args.empty())
+                unsupported("Vector.asUnsigned/asSigned take no arguments");
+            return self;
+        }
         if (name == "dotAccum") {
             if (isFloat)
                 unsupported("Vector.dotAccum is integer-only");

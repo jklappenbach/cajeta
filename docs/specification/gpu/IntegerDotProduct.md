@@ -95,6 +95,21 @@ different answers — `Vector<uint8,4>[0,5,10,15]` against
 `int8`. Use `dotAccum` for quantized weights against signed activations, which
 is the case that motivates it.
 
+Packed weights normally live in an `int8[]`, so a nibble extraction
+`raw.vload<64>(o) & 15` has type `Vector<int8,64>` even though the values are
+0..15. Since the tier keys off the element type, that would quietly miss
+`vpdpbusd`. `asUnsigned()` / `asSigned()` reinterpret the same bits as the
+other signedness — no instruction, purely a change of what the element is
+called:
+
+```cajeta
+Vector<uint8,64> w = packed.vload<64>(o).asUnsigned() & 15;
+acc = w.dotAccum(x.vload<64>(i), acc);
+```
+
+On a device the signedness that reaches the hardware comes from how the result
+is DECLARED, because device signedness is tracked per named local.
+
 | target | what it becomes |
 |---|---|
 | x86 AVX512-VNNI / AVX-VNNI | `vpdpbusd` — one instruction |

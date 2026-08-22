@@ -211,6 +211,50 @@ const char* DOT_DIFFERS =
     "    }\n"
     "}\n";
 
+// 1.2.3 — packed data lives in int8[] arrays, so `raw & 15` is a
+// Vector<int8,N> even though nibbles are 0..15. Without a signedness
+// reinterpretation the VNNI tier is UNREACHABLE from idiomatic cajeta: the
+// tier keys off the receiver's element type, so a real Q4_K kernel would take
+// the exact-but-slower pre-VNNI path and nothing would say so.
+//
+// asUnsigned()/asSigned() are pure type reinterpretation — no instruction, the
+// same bits read the other way.
+const char* AS_UNSIGNED =
+    "package test;\n"
+    "public final class D {\n"
+    "    public static int32 run() {\n"
+    "        int8[] w #= heap int8[64];\n"
+    "        int8[] a #= heap int8[64];\n"
+    "        int32[] z #= heap int32[16];\n"
+    "        int32 i = 0;\n"
+    "        while (i < 64) {\n"
+    "            w[i] = (int8) ((i * 5) % 16);\n"
+    "            a[i] = (int8) (((i * 37) % 255) - 127);\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        i = 0;\n"
+    "        while (i < 16) { z[i] = 0; i = i + 1; }\n"
+    "        Vector<uint8,64> wu = w.vload<64>(0).asUnsigned();\n"
+    "        Vector<int32,16> r = wu.dotAccum(a.vload<64>(0), z.vload<16>(0));\n"
+    "        int32 lane = 0;\n"
+    "        while (lane < 16) {\n"
+    "            int32 want = 0;\n"
+    "            int32 k = 0;\n"
+    "            while (k < 4) {\n"
+    "                want = want + (int32) w[lane * 4 + k]\n"
+    "                             * (int32) a[lane * 4 + k];\n"
+    "                k = k + 1;\n"
+    "            }\n"
+    "            if (r[lane] != want) { return 600 + lane; }\n"
+    "            lane = lane + 1;\n"
+    "        }\n"
+    "        // round-trips, and the bits never move\n"
+    "        Vector<int8,64> back = wu.asSigned();\n"
+    "        if (back[7] != w[7]) { return 700; }\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n";
+
 }  // namespace
 
 // 1.1.1 — matches a scalar reference, with a non-zero accumulator.
@@ -302,6 +346,17 @@ TEST(VectorDotAccumTests, dotIsDotAccumOverAZeroAccumulator) {
 // 3.1.1 — and the mixed-sign case, where they deliberately differ.
 TEST(VectorDotAccumTests, dotAndDotAccumDifferOnAnUnsignedReceiver) {
     EXPECT_EQ(runI32(DOT_DIFFERS), 1);
+}
+
+// 1.2.3 — the reinterpretation that makes the VNNI tier reachable.
+TEST(VectorDotAccumTests, asUnsignedReachesTheVnniTier) {
+    std::string ir;
+    EXPECT_EQ(runI32(AS_UNSIGNED, true, &ir, namedVnniCpu()), 1);
+    if (hostHasVnni()) {
+        EXPECT_NE(ir.find("vpdpbusd"), std::string::npos)
+            << "int8[]-held nibbles reinterpreted unsigned must reach VNNI; "
+               "this is the shape every packed-weight kernel actually has";
+    }
 }
 
 // 2.1.1 — the pre-VNNI x86 tier agrees bit-for-bit with the VNNI one.

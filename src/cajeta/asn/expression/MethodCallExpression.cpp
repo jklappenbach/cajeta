@@ -5953,6 +5953,39 @@ namespace cajeta {
                     return vecops::widenHalf(*builder, self,
                         methodCallName == "widenLo", sgn);
                 }
+                // asUnsigned() / asSigned() — read the SAME bits with the
+                // other signedness. No instruction: LLVM integer types carry
+                // no signedness, so this only changes what cajeta calls the
+                // element, and therefore what the lowerings decide from it.
+                //
+                // Not cosmetic. Packed quantized data lives in int8[] arrays,
+                // so a nibble extraction `raw & 15` is Vector<int8,N> even
+                // though the values are 0..15 — and dotAccum's VNNI tier keys
+                // off the receiver's element type, because `vpdpbusd` is
+                // unsigned x signed. Without this, the fastest tier is
+                // unreachable from the exact code that needs it, and silently
+                // so.
+                if (methodCallName == "asUnsigned"
+                        || methodCallName == "asSigned") {
+                    if (!parameters.empty()) {
+                        throw Exception(
+                            "Vector.asUnsigned/asSigned take no arguments",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (isFloat) {
+                        throw Exception(
+                            "Vector.asUnsigned/asSigned require an integer "
+                            "element type", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    unsigned w = vecT->getElementType()
+                        ->getLlvmType()->getIntegerBitWidth();
+                    bool want = methodCallName == "asUnsigned";
+                    std::string next = (want ? "uint" : "int")
+                        + std::to_string(w);
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of(next), vecT->getLanes());
+                    return self;   // same bits, same register
+                }
                 // narrow(other) — the ladder inverse: two Vector<i2W,N>
                 // truncate into one Vector<iW,2N>, receiver's lanes first.
                 if (methodCallName == "narrow") {
