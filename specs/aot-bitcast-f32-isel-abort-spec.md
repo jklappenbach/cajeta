@@ -34,6 +34,22 @@ LLVM ERROR: Cannot select: f32 = bitcast <i32 or/shl/zext-load chain>
 In function: probe.Q::run()
 ```
 
+**Not the CPU.** Retested 2026-08-22 after `--cpu` changed default from
+`generic` to `native`: the repro still aborts identically. The spec's
+"target/feature configuration" hypothesis is therefore refuted for the CPU
+dimension — a host cpu advertising the full AVX-512 feature set selects this no
+better than the SSE2 baseline did. Whatever differs between the AOT and JIT
+pipelines is elsewhere.
+
+**Why this is worth scheduling.** Measured 2026-08-22 by ablation, the
+workaround this defect forces — `GgufFile.halfBitsToF32`, an arithmetic decode
+whose `pow2()` is a repeated-squaring loop in float64 — is **38% of
+cajeta-llama's Q4_K mat-vec** (7.99 ms of 21.30 at 4096x4096). Two f16 reads
+per 256-element block means 131,072 loop-driven float64 conversions per
+projection, for what is a bit-shuffle and a bitcast. The same workaround
+appears in `ParityRun` and in `GgufFile.singleBits`. This is not a cosmetic
+defect; it is one of the two largest costs in the engine's hot kernel.
+
 Aborts under BOTH default and `--release` exe emission; the identical
 intrinsic is GREEN under the JIT (`NumpyOpsTests.floatBitsIntrinsicRoundTrip`
 pins the round trip), so the divergence is in the AOT pipeline's
