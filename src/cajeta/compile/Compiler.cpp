@@ -209,7 +209,15 @@ namespace cajeta {
         // lets the optimizer's loop/SLP vectorizers use the host's wide vectors.
         std::string effectiveCpu = cpu;
         std::string effectiveFeatures = features;
-        if (cpu == "native") {
+        // `native` is the DEFAULT, so it has to degrade sanely when the target
+        // is not this machine: getHostCPUName() answers with an x86 cpu name
+        // whatever the triple says, and handing "znver5" to an AArch64 target
+        // is nonsense. Cross-compiles fall back to generic unless the caller
+        // named a cpu explicitly.
+        if (cpu == "native"
+                && targetTriple != llvm::sys::getDefaultTargetTriple()) {
+            effectiveCpu = "generic";
+        } else if (cpu == "native") {
             effectiveCpu = llvm::sys::getHostCPUName().str();
             llvm::SubtargetFeatures feats(features); // seed with any explicit --features
             for (const auto& f : llvm::sys::getHostCPUFeatures())

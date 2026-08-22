@@ -159,7 +159,23 @@ namespace cajeta {
         // Armed only during a JIT-harness stdlib-reuse attempt; see
         // setReuseHazardArmed / ReuseHazardAbort. Always false in production.
         static thread_local bool s_reuseHazardArmed;
-        string cpu = "generic";
+        // Default target CPU. `native` resolves to the host's cpu name plus its
+        // detected features (rebuildTargetMachine), which is what every kernel
+        // in the stdlib and every JIT compile actually wants — the code is
+        // built and run on the same machine.
+        //
+        // It was `generic` (an SSE2 baseline) until 2026-08-22, and nothing
+        // overrode it: measured, no build script in cajeta-llama passed
+        // --cpu, so the whole engine and every benchmark behind it ran without
+        // AVX2/AVX-512/VNNI, including the numbers compared against a
+        // `llama.cpp` built -march=native.
+        //
+        // Safe by construction for LIBRARIES: a .cja carries bitcode, so the
+        // cpu binds only at final --emit=exe/obj. An executable built here does
+        // require a host of the same class to run; --cpu=generic (or any named
+        // cpu) opts out, and cross-compiling to a non-host triple falls back to
+        // generic automatically since a host cpu name means nothing there.
+        string cpu = "native";
         string features = "";
         llvm::TargetMachine* targetMachine;
         llvm::TargetOptions opt;

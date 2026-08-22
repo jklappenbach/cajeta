@@ -255,6 +255,38 @@ const char* AS_UNSIGNED =
     "    }\n"
     "}\n";
 
+// 2.1.1b — where the saturating pre-VNNI tier STOPS being exact.
+//
+// §4.8 was narrowed to "exact within the quantized range" on 2026-08-22 so the
+// pre-VNNI x86 tier could use llama.cpp's 3-instruction vpmaddubsw sequence
+// instead of the 15-instruction exact one. vpmaddubsw clamps each adjacent
+// u8 x i8 pair sum to int16, so the guarantee holds for weights 0..128 and
+// breaks above that. This pins the break so it stays a KNOWN boundary.
+//
+// w = 255, a = -128: each pair is 255*-128 * 2 = -65280, clamped to -32768,
+// and the second stage sums two clamped lanes to -65536. Exact would be
+// 4 * 255 * -128 = -130560.
+const char* SATURATES =
+    "package test;\n"
+    "public final class D {\n"
+    "    public static int32 run() {\n"
+    "        uint8[] w #= heap uint8[32];\n"
+    "        int8[] a #= heap int8[32];\n"
+    "        int32[] z #= heap int32[8];\n"
+    "        int32 i = 0;\n"
+    "        while (i < 32) {\n"
+    "            w[i] = (uint8) 255;\n"
+    "            a[i] = (int8) -128;\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        i = 0;\n"
+    "        while (i < 8) { z[i] = 0; i = i + 1; }\n"
+    "        Vector<int32,8> r =\n"
+    "            w.vload<32>(0).dotAccum(a.vload<32>(0), z.vload<8>(0));\n"
+    "        return r[0];\n"
+    "    }\n"
+    "}\n";
+
 }  // namespace
 
 // 1.1.1 — matches a scalar reference, with a non-zero accumulator.
@@ -286,7 +318,10 @@ TEST(VectorDotAccumTests, scalarFallbackIsBitIdentical) {
 // requirement above, that would have shipped.
 TEST(VectorDotAccumTests, genericTargetUsesThePortablePartialReduction) {
     std::string ir;
-    EXPECT_EQ(runI32(DOTACC, true, &ir), 1);
+    // Names the cpu rather than relying on the default, which became `native`
+    // on 2026-08-22. A test that depends on the default being a baseline ISA
+    // silently stops testing anything the day that default moves.
+    EXPECT_EQ(runI32(DOTACC, true, &ir, "x86-64"), 1);
     EXPECT_NE(ir.find("vector.partial.reduce.add"), std::string::npos)
         << "expected the portable partial reduction on a generic target";
     EXPECT_EQ(ir.find("vpdpbusd"), std::string::npos)
@@ -375,6 +410,21 @@ TEST(VectorDotAccumTests, preVnniX86IsBitIdentical) {
     EXPECT_NE(ir.find("pmadd"), std::string::npos)
         << "expected the pre-VNNI pmadd reduce, not the portable partial "
            "reduction — measured at 57 instructions against 3 on haswell";
+}
+
+// 2.1.1b — the saturating tier clamps ABOVE the quantized range, and the
+// exact tiers do not. Both halves asserted: this is an authorized narrowing of
+// §4.8, so its boundary has to be a tested fact rather than a comment.
+TEST(VectorDotAccumTests, preVnniSaturatesOnlyAboveTheQuantizedRange) {
+    // haswell: no VNNI, so the 3-instruction saturating sequence.
+    EXPECT_EQ(runI32(SATURATES, false, nullptr, "haswell"), -65536)
+        << "vpmaddubsw clamps each pair sum to int16 min";
+    // The scalar tier is exact, and stays the correctness floor INSIDE the
+    // range — outside it, the tiers legitimately disagree.
+    setenv("CAJETA_SIMD_SCALAR_FALLBACK", "1", 1);
+    int32_t exact = runI32(SATURATES, false, nullptr, "haswell");
+    unsetenv("CAJETA_SIMD_SCALAR_FALLBACK");
+    EXPECT_EQ(exact, -130560) << "4 * 255 * -128, unclamped";
 }
 
 // 1.1.4 — the floor: a zero accumulator, and all-zero weights. `dot` (Unit 3)

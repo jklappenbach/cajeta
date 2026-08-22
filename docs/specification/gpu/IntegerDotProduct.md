@@ -117,7 +117,12 @@ is DECLARED, because device signedness is tracked per named local.
 | `CAJETA_SIMD_SCALAR_FALLBACK=1` | a scalar lane loop |
 | device (`@Kernel`) | the same DP4a unit `dot` uses, per accumulator lane |
 
-Every tier is **bit-identical**. The operation is integer, so there is no
+Every tier is **bit-identical for weight values 0..128** against any int8
+activation — which covers every K-quant field (Q4_K's nibbles 0..15, Q5_K's
+0..31, Q6_K's 0..63) with room to spare. Above 128 the pre-VNNI x86 tier
+clamps, because it uses `vpmaddubsw`, which saturates each adjacent pair sum to
+int16; that buys 3 instructions instead of 15 and is the one place a tier can
+disagree. Inside the range the operation is integer, so there is no
 reassociation hazard the way float accumulation has one: a faster tier changes
 speed and never the answer, which is what lets the scalar tier stand as the
 correctness floor. Callers never branch on target — `w.dotAccum(a, acc)` is the

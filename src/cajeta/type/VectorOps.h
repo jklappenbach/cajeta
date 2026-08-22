@@ -409,7 +409,66 @@ namespace vecops {
             return b.CreateCall(fn, {acc, w, a}, "dotacc.vnni");
         }
 
-        // Tier 1.5 — pre-VNNI x86 (AVX2). Load-bearing, not a nicety: the
+        // Tier 1.5a — pre-VNNI x86 (AVX2), the THREE-instruction form:
+        // vpmaddubsw + vpmaddwd + vpaddd, which is what llama.cpp emits.
+        //
+        // It SATURATES, and that is a deliberate, authorized narrowing of §4.8
+        // (decided 2026-08-22). vpmaddubsw sums two adjacent u8 x i8 products
+        // into an i16 lane with clamping, so it is exact iff every adjacent
+        // pair satisfies |w0*a0 + w1*a1| <= 32767. That holds for all weight
+        // values 0..128 against any int8 activation — 128 * 128 * 2 = 32768
+        // lands exactly on i16 MIN, and 128 * 127 * 2 = 32512 is inside — which
+        // covers every K-quant field there is: Q4_K's nibbles 0..15, Q5_K's
+        // 0..31, Q6_K's 0..63. Above 128 it clamps and disagrees with the other
+        // tiers, and that boundary is pinned by test rather than left to be
+        // discovered.
+        //
+        // 3 instructions against the exact form's 15 and the portable tier's
+        // 57, for one 32-pair dotAccum on haswell.
+        if (!forceScalar && isX86 && !hasVnni && hasAvx2 && wUnsigned
+                && lanes == n * 4 && (lanes % 32) == 0) {
+            auto* i16Ty = llvm::Type::getInt16Ty(ctx);
+            auto* v32i8 = llvm::FixedVectorType::get(
+                llvm::Type::getInt8Ty(ctx), 32);
+            auto* v16i16 = llvm::FixedVectorType::get(i16Ty, 16);
+            llvm::Value* ones = llvm::ConstantVector::getSplat(
+                llvm::ElementCount::getFixed(16),
+                llvm::ConstantInt::get(i16Ty, 1));
+            llvm::Function* maddubs = llvm::Intrinsic::getOrInsertDeclaration(
+                m, llvm::Intrinsic::x86_avx2_pmadd_ub_sw);
+            llvm::Function* maddwd = llvm::Intrinsic::getOrInsertDeclaration(
+                m, llvm::Intrinsic::x86_avx2_pmadd_wd);
+            unsigned chunks = lanes / 32;      // 8 accumulator lanes each
+            llvm::SmallVector<llvm::Value*, 4> octs;
+            for (unsigned c = 0; c < chunks; ++c) {
+                llvm::SmallVector<int, 32> mb(32);
+                for (unsigned i = 0; i < 32; ++i) mb[i] = (int) (c * 32 + i);
+                llvm::Value* ws = b.CreateShuffleVector(w, w, mb, "dotacc.w32");
+                llvm::Value* as = b.CreateShuffleVector(a, a, mb, "dotacc.a32");
+                llvm::Value* p16 = b.CreateCall(maddubs,
+                    {b.CreateBitCast(ws, v32i8), b.CreateBitCast(as, v32i8)},
+                    "dotacc.ubsw");
+                octs.push_back(b.CreateCall(maddwd,
+                    {b.CreateBitCast(p16, v16i16), ones}, "dotacc.wd"));
+            }
+            while (octs.size() > 1) {
+                llvm::SmallVector<llvm::Value*, 4> next;
+                for (unsigned i = 0; i + 1 < octs.size(); i += 2) {
+                    unsigned half = llvm::cast<llvm::FixedVectorType>(
+                        octs[i]->getType())->getNumElements();
+                    llvm::SmallVector<int, 32> cat(half * 2);
+                    for (unsigned k = 0; k < half * 2; ++k) cat[k] = (int) k;
+                    next.push_back(b.CreateShuffleVector(
+                        octs[i], octs[i + 1], cat, "dotacc.cat"));
+                }
+                octs = next;
+            }
+            return b.CreateAdd(acc, octs[0], "dotacc.sat");
+        }
+
+        // Tier 1.5b — the EXACT pre-VNNI form, for the shapes 1.5a cannot take:
+        // signed weights (vpmaddubsw's first operand is unsigned) and lane
+        // counts under 32. Load-bearing, not a nicety: the
         // portable tier below reaches NO vpdp* instruction on x86 in this
         // LLVM, measured through llc on the exact IR emitted here, and costs
         // 57 instructions on haswell against vpdpbusd's 1.

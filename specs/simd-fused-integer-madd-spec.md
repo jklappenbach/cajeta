@@ -182,15 +182,30 @@ quantized inference is why they exist.
   selection happens INSIDE the lowering, never in the caller — the shape
   `tableLookup` already uses (x86 `pshufb` / AArch64 `tbl1` / scalar select
   chain, one call site). No kernel branches on target, ever.
-- **4.8** Every path is BIT-IDENTICAL, and this is a guarantee rather than an
-  aspiration: the operation is integer, so there is no reassociation hazard of
-  the kind float accumulation has. Taking the fast path can change speed and
-  never the answer, which is what lets the scalar fallback stand as the
-  correctness floor.
-- **4.9** Use the NON-saturating encodings (`vpdpbusd`, not `vpdpbusds`) so
-  §4.8 holds exactly. For the quantized case the range is safe regardless —
-  nibbles 0..15 against activations -127..127 give at most 1905 per product and
-  7620 per 4-way group, far inside int32.
+- **4.8** REVISED 2026-08-22 — every path is BIT-IDENTICAL **within the
+  quantized range**, defined in §4.8.1. Inside it this is a guarantee rather
+  than an aspiration: the operation is integer, so there is no reassociation
+  hazard of the kind float accumulation has, and taking a faster tier changes
+  speed and never the answer — which is what lets the scalar tier stand as the
+  correctness floor. Outside it, one tier legitimately disagrees, and that is a
+  deliberate trade rather than a defect.
+- **4.8.1** THE RANGE: weight values **0..128** against any int8 activation.
+  Every K-quant field is inside it with room to spare — Q4_K's nibbles 0..15,
+  Q5_K's 0..31, Q6_K's 0..63 — which is the whole reason the narrowing is
+  acceptable. The bound comes from the pre-VNNI x86 tier's `vpmaddubsw`, which
+  clamps each adjacent `u8 x i8` pair sum to int16: exact iff
+  `|w0*a0 + w1*a1| <= 32767`, and `128 * 128 * 2` lands exactly on int16 MIN
+  while `128 * 127 * 2 = 32512` sits inside. Above 128 it clamps.
+
+  The boundary is pinned by TEST, both halves — `w=255, a=-128` gives -65536
+  through the saturating tier and -130560 through the scalar one. A narrowing
+  that lives only in a comment is a narrowing nobody can rely on.
+- **4.9** Use the NON-saturating encodings where a choice exists (`vpdpbusd`,
+  not `vpdpbusds`), so every tier that CAN be exact everywhere is. The
+  saturating `vpmaddubsw` is used only on the pre-VNNI x86 tier, where it is
+  the difference between 3 instructions and 15 and no non-saturating
+  equivalent exists. That was authorized once §4.8.1 showed the range covers
+  every real caller.
 
 ### Do we need our own LLVM branch?
 
@@ -223,16 +238,19 @@ quantized inference is why they exist.
   survive being measured on ours. The portable path is therefore a
   CORRECTNESS fallback, not a performance one, and the hand-written pre-VNNI
   x86 tier is load-bearing rather than a nicety.
-- **4.11.1** The pre-VNNI sequence in the table above SATURATES, and that
-  conflicts with §4.8. `vpmaddubsw` sums two adjacent u8 x i8 products into an
+- **4.11.1** RESOLVED 2026-08-22 by narrowing §4.8 rather than paying for
+  exactness. The pre-VNNI sequence SATURATES, which originally conflicted with
+  §4.8. `vpmaddubsw` sums two adjacent u8 x i8 products into an
   i16 lane with saturation; at the full operand range 255 x -128 twice is
   -65280, which clamps to -32768 and disagrees with every other tier. It is
   exact for the QUANTIZED range only (nibbles 0..15 against -127..127 peak at
   3810, a factor of 8 of headroom), which is why `llama.cpp` can use it — its
   caller is always a K-quant. `dotAccum` is public surface over any
-  `Vector<uint8,4N>`, so it takes the exact widen-multiply-reduce form instead:
-  measured at 3 instructions for the saturating sequence against 15 for the
-  exact one, still far under the portable path's 57. Relaxing
+  `Vector<uint8,4N>`. Measured at 3 instructions for the saturating sequence
+  against 15 for the exact one, still far under the portable path's 57. The
+  3-instruction form is what ships, with the exact form kept for the shapes it
+  cannot take — signed weights (`vpmaddubsw`'s first operand is unsigned) and
+  lane counts under 32. Relaxing
   §4.8 to "exact within the quantized range" would buy those instructions back
   and is a deliberate decision, not an oversight. Measured for one 32-pair
   `dotAccum` on haswell: 15 instructions exact, 3 saturating, 57 portable.
