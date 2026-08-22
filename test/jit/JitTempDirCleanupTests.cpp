@@ -17,6 +17,7 @@
 //
 
 #include "gtest/gtest.h"
+#include "../PortableEnv.h"   // setenv/unsetenv on MinGW
 #include "JitTestHelper.h"
 
 #include <cstdint>

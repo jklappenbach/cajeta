@@ -17,6 +17,7 @@
 #include <string>
 #include <unistd.h>
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // setenv/unsetenv + getpid on MinGW
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -264,7 +265,7 @@ TEST(ProfilerSampler, lineInfoOffRefusesToArmAndSaysWhy) {
     const char* base = ::getenv("TMPDIR");
     const std::string errPath =
         std::string(base && *base ? base : ".") + "/cajeta_lineinfo_refusal_"
-        + std::to_string(static_cast<long long>(::getpid())) + ".txt";
+        + std::to_string(static_cast<long long>(cajeta_getpid())) + ".txt";
     fflush(stderr);
     const int savedErr = ::dup(STDERR_FILENO);
     const int capture = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);

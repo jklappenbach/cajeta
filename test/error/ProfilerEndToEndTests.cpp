@@ -11,6 +11,12 @@
 // are not a thing sampling produces — that is what §3's instrumentation tier is
 // for.
 #include "gtest/gtest.h"
+
+// MinGW has no POSIX setenv/unsetenv; PortableEnv maps them onto
+// _putenv_s. Without it the whole Windows release leg fails to compile
+// this TU — which is exactly what happened the first time the profiler
+// branch reached main and the mingw target built these files at all.
+#include "../PortableEnv.h"
 #include "../jit/JitTestHelper.h"
 #include "ProfilerTraceRead.h"
 #include <chrono>
