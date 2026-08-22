@@ -226,7 +226,11 @@ bool stdlibReusable(const CajetaJit::Options& o) {
     return o.boundsCheckEnabled
         && o.overflowChecksEnabled
         && !o.boundsCheckMode.has_value()
-        && !o.liveSetMode.has_value();
+        && !o.liveSetMode.has_value()
+        // A CPU/feature override changes stdlib codegen too, so the baseline
+        // primed at the default target is not valid for it.
+        && o.cpu.empty()
+        && o.features.empty();
 }
 
 // Process-global cache: the stdlib parsed + codegen'd ONCE into a shared
@@ -794,6 +798,12 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         if (opts.liveSetMode.has_value()) {
             compiler->getMutableFlags().liveSet = *opts.liveSetMode;
+        }
+        if (!opts.cpu.empty()) {
+            compiler->setCpu(opts.cpu);
+        }
+        if (!opts.features.empty()) {
+            compiler->setFeatures(opts.features);
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;

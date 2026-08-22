@@ -1985,6 +1985,61 @@ private:
             bool sgn = signedness.count(recv) ? signedness[recv] : true;
             return target.integerDot4x8(builder, mod, self, other, acc, sgn);
         }
+        // simd-fused-integer-madd 2.2.x — dotAccum on DEVICE routes through the
+        // SAME seam as DP4a `dot`, so one spelling serves host and device. On
+        // a GPU each thread does scalar work, so the natural device form is
+        // N invocations of the 4-lane dot rather than a wide vector op: the
+        // seam already emits SPIR-V's OpSDot/OpUDot on Vulkan
+        // (spv_dot4add_*_packed) and falls back to the portable widening
+        // reduce elsewhere.
+        if (name == "dotAccum") {
+            if (isFloat)
+                unsupported("Vector.dotAccum is integer-only");
+            if (args.size() != 2)
+                unsupported("Vector.dotAccum expects (other, acc)");
+            auto* wvt = llvm::dyn_cast<llvm::FixedVectorType>(self->getType());
+            if (wvt == nullptr
+                    || wvt->getElementType()->getIntegerBitWidth() != 8
+                    || (wvt->getNumElements() % 4) != 0)
+                unsupported("Vector.dotAccum needs an 8-bit vector whose lane "
+                            "count is a multiple of 4");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            llvm::Value* accv = lowerExpr(args[1].expression);
+            auto* avt = llvm::dyn_cast<llvm::FixedVectorType>(accv->getType());
+            auto* ovt = llvm::dyn_cast<llvm::FixedVectorType>(
+                other->getType());
+            if (ovt == nullptr
+                    || ovt->getElementType()->getIntegerBitWidth() != 8
+                    || ovt->getNumElements() != wvt->getNumElements())
+                unsupported("Vector.dotAccum's operands must have the same "
+                            "8-bit lane count");
+            if (avt == nullptr
+                    || !avt->getElementType()->isIntegerTy(32)
+                    || avt->getNumElements() * 4 != wvt->getNumElements())
+                unsupported("Vector.dotAccum's accumulator must be "
+                            "Vector<int32,N> for 4N lanes of int8");
+            bool sgn = signedness.count(recv) ? signedness[recv] : true;
+            llvm::Type* i32d = llvm::Type::getInt32Ty(builder.getContext());
+            unsigned n = avt->getNumElements();
+            llvm::Value* out = accv;
+            for (unsigned lane = 0; lane < n; ++lane) {
+                // Slice the 4 lanes feeding this accumulator lane and hand
+                // them to the seam, which is DP4a-shaped by construction.
+                llvm::SmallVector<int, 4> m4 = {(int) (lane * 4),
+                    (int) (lane * 4 + 1), (int) (lane * 4 + 2),
+                    (int) (lane * 4 + 3)};
+                llvm::Value* ws = builder.CreateShuffleVector(self, self, m4,
+                                                              "dotacc.w4");
+                llvm::Value* as = builder.CreateShuffleVector(other, other, m4,
+                                                              "dotacc.a4");
+                llvm::Value* a0 = builder.CreateExtractElement(out, lane,
+                                                               "dotacc.acc");
+                llvm::Value* r = target.integerDot4x8(builder, mod, ws, as,
+                    builder.CreateIntCast(a0, i32d, true), sgn);
+                out = builder.CreateInsertElement(out, r, lane, "dotacc.ins");
+            }
+            return out;
+        }
         if (name == "length") {
             if (!isFloat) unsupported("Vector.length requires a "
                                       "floating-point element type");

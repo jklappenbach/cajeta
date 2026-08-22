@@ -104,6 +104,16 @@ public:
         // folded to its caller (S4) as well as the flat <N x T> Vector shape
         // (S0). Off by default so the normal test path pays nothing.
         bool captureIr = false;
+        // Target CPU / feature overrides (--cpu / --features). Empty leaves the
+        // compiler default (generic), which is what the whole suite runs on.
+        // Set by tests that must see a SPECIFIC ISA tier in the emitted IR —
+        // a lowering that silently deoptimizes to a portable path is otherwise
+        // indistinguishable from one that works.
+        //
+        // Compiling for a CPU the host does not implement is fine as long as
+        // the test only inspects IR; do not call into the JIT in that case.
+        std::string cpu;
+        std::string features;
     };
 
     // Compile `source` (a Cajeta compilation unit) into a JIT instance. The class

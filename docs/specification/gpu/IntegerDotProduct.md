@@ -65,11 +65,44 @@ bit-field expansion instead — still correct, just not the dedicated unit.
 `a.dot(b, acc)` is one expression that hits the silicon on Vulkan and stays
 correct everywhere else.
 
+## Staying in vector space: `dotAccum`
+
+`dot` collapses four lanes to one scalar. For a wide kernel that is a reduce per
+four elements, and reduce frequency is what costs — the same Q4_K mat-vec
+reducing per sub-block measured 70.7 ms against 24.2 ms reducing once per block.
+
+`dotAccum` is the same operation with the result kept in lanes:
+
+```cajeta
+Vector<uint8,64> w = weights.vload<64>(i);
+Vector<int8,64>  a = acts.vload<64>(i);
+acc = w.dotAccum(a, acc);     // acc is Vector<int32,16>; 4 lanes -> 1 lane
+```
+
+Operands are `4N` lanes of 8-bit against a `Vector<int32,N>` accumulator: lanes
+`4i..4i+3` multiply, sum, and add into accumulator lane `i`. Reduce once at the
+end of the block instead of once per group.
+
+| target | what it becomes |
+|---|---|
+| x86 AVX512-VNNI / AVX-VNNI | `vpdpbusd` — one instruction |
+| anything else LLVM supports | `llvm.vector.partial.reduce.add`, which lowers to the target's fused form |
+| `CAJETA_SIMD_SCALAR_FALLBACK=1` | a scalar lane loop |
+| device (`@Kernel`) | the same DP4a unit `dot` uses, per accumulator lane |
+
+Every tier is **bit-identical**. The operation is integer, so there is no
+reassociation hazard the way float accumulation has one: a faster tier changes
+speed and never the answer, which is what lets the scalar tier stand as the
+correctness floor. Callers never branch on target — `w.dotAccum(a, acc)` is the
+only spelling, everywhere.
+
 ---
 
 **Rules.** Integer `dot` is defined for **4-lane 8-bit** vectors — `Vector<int8,4>`
 and `Vector<uint8,4>` — and yields `int32` (other integer shapes get a clean
 diagnostic for now). `a.dot(b)` is `sum(a[i]*b[i])`; `a.dot(b, acc)` adds the
-int32 accumulator. Signedness is the element type (`OpSDot` vs `OpUDot`). Runnable
+int32 accumulator. `dotAccum` takes `4N` 8-bit lanes against a `Vector<int32,N>`
+accumulator and yields `Vector<int32,N>`; operand lane counts must match.
+Signedness is the element type (`OpSDot` vs `OpUDot`). Runnable
 end to end in `samples/Tour/xpu` (the `DP4a` section). See `MaskSelect.md` for the
 other branchless value-type idiom and `CajetaXPU.md` for the kernel surface.

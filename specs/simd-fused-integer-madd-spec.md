@@ -121,6 +121,14 @@ quantized inference is why they exist.
 - **4.6** Six lowering paths against `tableLookup`'s three is the real cost of
   this primitive, and the scalar fallback is what makes it verifiable — every
   path must produce bit-identical results.
+- **4.6.1** Tier selection asks the SUBTARGET whether a feature is present, not
+  the TargetMachine's explicit feature string. Measured 2026-08-22: `znver4`,
+  `znver5` and `cascadelake` each report an EMPTY feature string while implying
+  AVX512-VNNI, because that string carries only what was passed in explicitly.
+  Only `--cpu=native` populates it, so a string search is right exactly on the
+  one configuration a test is most likely to use and wrong on every named-CPU
+  build — a silent deoptimization that reads as a clean run. `MCSubtargetInfo`
+  answers from the CPU's expanded FeatureBits.
 
 ### One spelling, no caller-side exceptions
 
@@ -168,11 +176,11 @@ quantized inference is why they exist.
 ## 5. Use cases
 
 - **5.1** When a Q4_K sub-block's nibbles multiply int8 activations, the
-  kernel emits one `mulAddPairsU8` rather than two widens and a multiply.
-- **5.2** When per-sub-block scales apply, they apply in integer space via
-  `mulAddPairs16`, so the block converts to float once.
-- **5.3** When a Q6_K, Q5_K or Q8_0 kernel does the same, it uses the same two
-  operations — the formats differ only in how the nibbles are unpacked.
+  kernel emits one `dotAccum` rather than the widen-multiply-reduce ladder.
+- **5.2** When per-sub-block scales apply, the accumulator stays in int32
+  across the whole block, so the block converts to float once.
+- **5.3** When a Q6_K, Q5_K or Q8_0 kernel does the same, it uses the same
+  operation — the formats differ only in how the nibbles are unpacked.
 - **5.4** When `CAJETA_SIMD_SCALAR_FALLBACK=1` is set, every kernel above
   produces byte-identical output, so the fallback is the correctness floor.
 - **5.5** When a device (`@Kernel`) path uses the same helpers, one IR serves
@@ -180,10 +188,11 @@ quantized inference is why they exist.
 
 ## 6. Acceptance
 
-- **6.1** `mulAddPairsU8` and `mulAddPairs16` match a scalar reference across
-  the input range, including the saturating cases.
-- **6.2** Both lower to the named intrinsic on x86, asserted against emitted IR
-  the way `VectorSimdLadderTests` asserts `pshufb`.
+- **6.1** `dotAccum` matches a scalar reference across the input range,
+  including negative activations and a non-zero incoming accumulator.
+- **6.2** It lowers to `vpdpbusd` on a VNNI x86 target, asserted against
+  emitted IR the way `VectorSimdLadderTests` asserts `pshufb` — and asserted
+  through a NAMED cpu, not only `--cpu=native`, per §4.6.1.
 - **6.3** A Q4_K mat-vec rewritten on them measurably beats 23.9 ms on the
   reference shape, and still agrees with `q4kMatVecIntoScalar`.
 - **6.4** The engine-level number moves: decode is 10.91 s/token today against

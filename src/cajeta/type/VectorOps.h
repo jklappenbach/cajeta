@@ -342,6 +342,105 @@ namespace vecops {
     }
 
 
+    // ── simd-fused-integer-madd 1.2.1: dotAccum ────────────────────────
+    //
+    // dotAccum(w, a, acc) -> <N x i32>: multiply four ADJACENT int8 pairs, sum
+    // the four products, accumulate into the corresponding i32 lane. `w` and
+    // `a` are <4N x i8>; `acc` is <N x i32>.
+    //
+    // This is the generalization of the DP4a `dot` above — same operation,
+    // result kept in VECTOR space rather than collapsed to a scalar. Reduce
+    // frequency is what costs in quantized kernels (cajeta-llama 15.1.18a: the
+    // same kernel reducing per sub-block ran 70.7 ms against 24.2 ms reducing
+    // once per block), so a partial reduction that stays in lanes is the whole
+    // point.
+    //
+    // Every tier is BIT-IDENTICAL. That is a guarantee, not an aspiration: the
+    // operation is integer, so there is no reassociation hazard of the kind
+    // float accumulation has, and the non-saturating encoding is used so the
+    // equality holds exactly. Taking a faster tier changes speed, never the
+    // answer — which is what lets the scalar tier stand as the correctness
+    // floor.
+    //
+    // Tiers: x86 VNNI (`vpdpbusd`, one instruction) -> the portable
+    // `llvm.vector.partial.reduce.add` (lowers to fused ops on every target
+    // LLVM supports) -> a scalar lane loop. Callers NEVER branch on target.
+    inline llvm::Value* dotAccum(llvm::IRBuilderBase& b, llvm::Module* m,
+                                 llvm::Value* w, llvm::Value* a,
+                                 llvm::Value* acc, bool wUnsigned,
+                                 bool hasVnni, bool forceScalar) {
+        llvm::LLVMContext& ctx = b.getContext();
+        auto* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* accTy = llvm::cast<llvm::FixedVectorType>(acc->getType());
+        unsigned n = accTy->getNumElements();
+        auto* srcTy = llvm::cast<llvm::FixedVectorType>(w->getType());
+        unsigned lanes = srcTy->getNumElements();
+        const llvm::Triple& triple = m->getTargetTriple();
+        bool isX86 = triple.getArch() == llvm::Triple::x86_64
+                     || triple.getArch() == llvm::Triple::x86;
+
+        // Tier 1 — VNNI. `vpdpbusd` is unsigned x signed, which is exactly the
+        // quantized shape (unsigned weights against signed activations); the
+        // same asymmetry RISC-V chose for `vqdotsu`. Non-saturating variant so
+        // the tiers agree bit-for-bit.
+        if (!forceScalar && isX86 && hasVnni && wUnsigned && lanes == n * 4
+                && (n == 4 || n == 8 || n == 16)) {
+            llvm::Intrinsic::ID id = n == 16
+                ? llvm::Intrinsic::x86_avx512_vpdpbusd_512
+                : (n == 8 ? llvm::Intrinsic::x86_avx512_vpdpbusd_256
+                          : llvm::Intrinsic::x86_avx512_vpdpbusd_128);
+            llvm::Function* fn =
+                llvm::Intrinsic::getOrInsertDeclaration(m, id);
+            return b.CreateCall(fn, {acc, w, a}, "dotacc.vnni");
+        }
+
+        // Tier 2 — portable partial reduction. Widen, multiply, then let LLVM
+        // pick the target's fused form (measured: vpdpwssd on x86 native,
+        // udot/sdot on AArch64 dotprod, vqdot on RISC-V Zvqdotq).
+        if (!forceScalar && lanes == n * 4) {
+            auto* wideTy = llvm::FixedVectorType::get(i32, lanes);
+            llvm::Value* we = wUnsigned ? b.CreateZExt(w, wideTy, "dotacc.w")
+                                        : b.CreateSExt(w, wideTy, "dotacc.w");
+            llvm::Value* ae = b.CreateSExt(a, wideTy, "dotacc.a");
+            llvm::Value* mul = b.CreateMul(we, ae, "dotacc.mul");
+            // llvm.vector.partial.reduce.add reduces STRIDED, not adjacent:
+            // result[i] = acc[i] + in[i] + in[i+N] + in[i+2N] + in[i+3N].
+            // vpdpbusd (and the scalar tier) sum lanes 4i..4i+3. Same count,
+            // different lane mapping -- so deinterleave first, putting lane
+            // 4i+k at position k*N+i. Caught by the bit-identical test, which
+            // is exactly what that requirement is for.
+            llvm::SmallVector<int, 64> mask(lanes);
+            for (unsigned k = 0; k < 4; ++k)
+                for (unsigned i = 0; i < n; ++i)
+                    mask[k * n + i] = (int) (i * 4 + k);
+            llvm::Value* shuf = b.CreateShuffleVector(mul, mul, mask,
+                                                      "dotacc.deint");
+            llvm::Function* fn = llvm::Intrinsic::getOrInsertDeclaration(
+                m, llvm::Intrinsic::vector_partial_reduce_add,
+                {accTy, wideTy});
+            return b.CreateCall(fn, {acc, shuf}, "dotacc.pr");
+        }
+
+        // Tier 3 — scalar. The correctness floor, and what
+        // CAJETA_SIMD_SCALAR_FALLBACK=1 forces.
+        llvm::Value* out = acc;
+        for (unsigned lane = 0; lane < n; ++lane) {
+            llvm::Value* sum = extractLane(b, acc, lane);
+            for (unsigned k = 0; k < 4; ++k) {
+                unsigned idx = lane * 4 + k;
+                if (idx >= lanes) break;
+                llvm::Value* wi = b.CreateIntCast(
+                    extractLane(b, w, idx), i32, !wUnsigned, "dotacc.wi");
+                llvm::Value* ai = b.CreateIntCast(
+                    extractLane(b, a, idx), i32, true, "dotacc.ai");
+                sum = b.CreateAdd(sum, b.CreateMul(wi, ai, "dotacc.m"),
+                                  "dotacc.s");
+            }
+            out = b.CreateInsertElement(out, sum, lane, "dotacc.ins");
+        }
+        return out;
+    }
+
     // ── cajeta-llama Unit 17: tableLookup / widen / narrow / convert ────
 
     // tableLookup — the per-byte classifier engine (pshufb semantics):

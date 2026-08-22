@@ -7,6 +7,8 @@
 #include "../asn/AbstractSyntaxNode.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
+#include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/Target/TargetMachine.h"
 #include "../type/QualifiedName.h"
 #include "../type/CajetaClass.h"
 #include "../method/Method.h"
@@ -491,6 +493,23 @@ namespace cajeta {
 
         void setBuilder(llvm::IRBuilder<>* builder) {
             this->builder = builder;
+        }
+
+        /** simd-fused-integer-madd 1.2.1 — true when the target advertises an
+         *  int8 dot-product accumulate (x86 AVX512-VNNI / AVX-VNNI). The SIMD
+         *  lowerings read this to pick a tier. Tier selection only; every tier is
+         *  bit-identical, so a wrong answer here costs speed, never results. */
+        bool targetHasIntDotAccum() const {
+            if (targetMachine == nullptr) return false;
+            // Ask the SUBTARGET, not the feature STRING. getTargetFeatureString()
+            // returns only what was explicitly passed in, so it is empty for a
+            // named CPU (`--cpu=znver5`) even though that CPU implies VNNI —
+            // which would silently drop every VNNI build to the portable tier
+            // and read as a clean run. checkFeatures() tests the expanded
+            // FeatureBits the CPU name resolved to.
+            const llvm::MCSubtargetInfo& sti = targetMachine->getMCSubtargetInfo();
+            return sti.checkFeatures("+avx512vnni")
+                || sti.checkFeatures("+avxvnni");
         }
 
         llvm::IRBuilder<>* getBuilder() {

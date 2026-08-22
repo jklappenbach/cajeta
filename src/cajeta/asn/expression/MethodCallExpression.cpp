@@ -5741,6 +5741,76 @@ namespace cajeta {
                         "Vector mask has no method '" + methodCallName + "'",
                         "CAJETA_ERROR_VECTOR_METHOD");
                 }
+                // simd-fused-integer-madd 1.2.2 — dotAccum(other, acc):
+                // 4 adjacent int8 pairs multiplied, summed, accumulated into
+                // the matching i32 lane. The generalization of the DP4a `dot`
+                // below, keeping the result in VECTOR space because reduce
+                // frequency is what costs (cajeta-llama 15.1.18a).
+                if (methodCallName == "dotAccum") {
+                    if (isFloat) {
+                        throw Exception(
+                            "Vector.dotAccum is integer-only; use dot for float",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (parameters.size() != 2) {
+                        throw Exception(
+                            "Vector.dotAccum expects (other, acc)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto* wvt = llvm::cast<llvm::FixedVectorType>(
+                        self->getType());
+                    if (wvt->getElementType()->getIntegerBitWidth() != 8
+                            || (wvt->getNumElements() % 4) != 0) {
+                        throw Exception(
+                            "Vector.dotAccum needs an 8-bit vector whose lane "
+                            "count is a multiple of 4 (four lanes reduce to "
+                            "one int32 lane)",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* accv = loadIfLValue(module,
+                        parameters[1].expression->generateCode(module),
+                        parameters[1].expression);
+                    // The activations must match the weights lane-for-lane;
+                    // a narrower operand would build a call the intrinsic
+                    // signature accepts positionally but not semantically.
+                    auto* ovt = llvm::dyn_cast<llvm::FixedVectorType>(
+                        other->getType());
+                    if (ovt == nullptr
+                            || ovt->getElementType()->getIntegerBitWidth() != 8
+                            || ovt->getNumElements() != wvt->getNumElements()) {
+                        throw Exception(
+                            "Vector.dotAccum's operands must have the same "
+                            "8-bit lane count",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto* avt = llvm::dyn_cast<llvm::FixedVectorType>(
+                        accv->getType());
+                    if (avt == nullptr
+                            || avt->getElementType()->getIntegerBitWidth() != 32
+                            || avt->getNumElements() * 4
+                               != wvt->getNumElements()) {
+                        throw Exception(
+                            "Vector.dotAccum's accumulator must be "
+                            "Vector<int32,N> where the operands are 4N lanes "
+                            "of int8",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    const char* fsd = std::getenv(
+                        "CAJETA_SIMD_SCALAR_FALLBACK");
+                    bool forceScalarDot = fsd && fsd[0] && fsd[0] != '0';
+                    bool wUnsigned = (vecT->getElementType()->getTypeFlags()
+                                      & SIGNED_FLAG) == 0;
+                    resolvedType = CajetaVector::validateAndCreate(
+                        module, CajetaType::of("int32"),
+                        avt->getNumElements());
+                    return vecops::dotAccum(*builder,
+                        builder->GetInsertBlock()->getModule(), self, other,
+                        accv, wUnsigned, module->targetHasIntDotAccum(),
+                        forceScalarDot);
+                }
                 if (methodCallName == "dot") {
                     if (isFloat) {
                         if (parameters.size() != 1) {
