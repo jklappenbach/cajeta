@@ -57,7 +57,8 @@ namespace cajeta {
         // per-slot ownership. Same 3-arg signature for all three.
         const char* allocSym = useArena
             ? "__cajeta_new_array_header_arena"
-            : (CajetaClass::arrayElementCarriesSlotBits(elementType)
+            : ((CajetaClass::arrayElementCarriesSlotBits(elementType)
+                    || CajetaClass::arrayElementCarriesArraySlotBits(elementType))
                 ? "__cajeta_new_array_header_bits"
                 : "__cajeta_new_array_header");
         llvm::Function* allocFn = module->getRuntimeFunction(allocSym);

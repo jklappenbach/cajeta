@@ -1770,6 +1770,77 @@ void __cajeta_tail_array_drop_free(void* hdr) {
     __cajeta_free_array(hdr);
 }
 
+// title-stores §3.4 — JAGGED arrays: an ARRAY element is droppable too
+// (the slot owns a whole inner buffer), but the class family above cannot
+// serve it — there is no vtable to drop through. This parallel family
+// releases owned slots through the ARRAY drop path instead. `inner_kind`
+// is compiler-chosen from the inner array's element type, depth-1:
+//   0 — plain free (primitive/String-less elements: int8[], float32[], …)
+//   1 — the inner array itself carries a class-element tail bitmap:
+//       walk it, then free (__cajeta_tail_array_drop_free's shape).
+// A T[][][]'s middle level would need its own kind one level down — no
+// such type exists in-tree; the compiler predicate documents the cap.
+void __cajeta_free_array(void* array);
+
+static void caj_arrelem_release(void* v, int64_t inner_kind) {
+    if (v == NULL) return;
+    if (inner_kind == 1) { __cajeta_tail_array_drop_free(v); return; }
+    __cajeta_free_array(v);
+}
+
+// Store with displaced release — the array-element twin of
+// __cajeta_tail_elem_store.
+void __cajeta_tail_arrelem_store(void* hdr, uint64_t header_size,
+                                 uint64_t elem_size, int64_t idx, void* obj,
+                                 int64_t owned, int64_t inner_kind) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return;
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) idx * elem_size);
+    void* old = *slot;
+    if (old && old != obj && ((bits[idx >> 3] >> (idx & 7)) & 1)) {
+        caj_arrelem_release(old, inner_kind);
+    }
+    if (owned & 1) bits[idx >> 3] |= (uint8_t) (1 << (idx & 7));
+    else           bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    *slot = obj;
+}
+
+// Bit-guarded single drop — the array-element twin of
+// __cajeta_tail_elem_drop_one. (Move-out reuses
+// __cajeta_tail_elem_take_flag unchanged: taking drops nothing.)
+void __cajeta_tail_arrelem_drop_one(void* hdr, uint64_t header_size,
+                                    uint64_t elem_size, int64_t idx,
+                                    int64_t inner_kind) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    if (idx < 0 || idx >= count) return;
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    if (!((bits[idx >> 3] >> (idx & 7)) & 1)) return;
+    void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) idx * elem_size);
+    void* v = *slot;
+    bits[idx >> 3] &= (uint8_t) ~(1 << (idx & 7));
+    *slot = NULL;
+    if (v) caj_arrelem_release(v, inner_kind);
+}
+
+// Teardown walk — the array-element twin of __cajeta_tail_elem_drop_walk.
+void __cajeta_tail_arrelem_drop_walk(void* hdr, uint64_t header_size,
+                                     uint64_t elem_size, int64_t inner_kind) {
+    if (!hdr) return;
+    int64_t count = *(int64_t*) hdr & ~((int64_t) 1 << 63);
+    uint8_t* bits = caj_tail_bits(hdr, header_size, elem_size);
+    for (int64_t i = 0; i < count; i++) {
+        if (!((bits[i >> 3] >> (i & 7)) & 1)) continue;
+        void** slot = (void**) ((uint8_t*) hdr + header_size + (uint64_t) i * elem_size);
+        void* v = *slot;
+        bits[i >> 3] &= (uint8_t) ~(1 << (i & 7));
+        *slot = NULL;
+        if (v) caj_arrelem_release(v, inner_kind);
+    }
+}
+
 // title-stores Unit 5 — String-element arrays: every RESIDENT slot owns
 // its wrapper (dual-role: `#` forwards, a plain store copies), so the
 // teardown walk releases unconditionally. Vacant/taken slots hold NULL.

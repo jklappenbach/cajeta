@@ -101,7 +101,7 @@ TEST(NvptxCoopBf16Tests, bf16OperandSplatPacksRegisterImage) {
 // are native but the only native accumulators are f32/i32 — and must keep
 // taking the graceful `[xpu-kernel-skipped]` note (observed on the WSL/NVIDIA
 // runner 2026-08-10), not regress into the native fragment path.
-TEST(NvptxCoopBf16Tests, allBf16MixedTierStillSkipsGracefully) {
+TEST(NvptxCoopBf16Tests, allBf16MixedTierDemotesToPortable) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
         "    @Kernel\n"
@@ -122,7 +122,10 @@ TEST(NvptxCoopBf16Tests, allBf16MixedTierStillSkipsGracefully) {
     int32_t rc = runI32Nvptx(src);
     std::string err = testing::internal::GetCapturedStderr();
     EXPECT_EQ(rc, 1);
-    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
-        << "expected the kernel-skipped note for the mixed-tier kernel; stderr was:\n"
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "a straddling kernel must DEMOTE to the portable tier and lower, "
+           "not be skipped; stderr was:\n" << err;
+    EXPECT_NE(err.find("[mma-tiering]"), std::string::npos)
+        << "expected the portable-tier note for the demoted kernel; stderr was:\n"
         << err;
 }

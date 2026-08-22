@@ -899,6 +899,12 @@ the recommendation they were filed with; both are marked.
   still on the table. The `llama.cpp` baseline for that exact configuration is
   measured and recorded as a plan task before Unit 11; the fractions are
   meaningless against an unmeasured denominator.
+  **Measured 2026-08-20** (tools/baseline/results/BASELINE-20260820.md,
+  llama.cpp 5306f4b, ROCm 7.2.53150, gfx1151): prefill pp4096
+  **794.24 tok/s**, decode tg128 **39.57 tok/s** at batch 1; batched
+  4×(512pp+128tg): PP 1291.85 / TG 107.40 tok/s; peak RSS **5,201,728 kB**.
+  The §12.8/12.9/12.11 denominators are therefore: decode ≥ 23.7 tok/s,
+  prefill ≥ 397 tok/s, RSS ≤ 6,502,160 kB at this configuration.
 
 - **13.21 §12.1 pins the parity metric; Unit 11 derives the threshold.**
   *(Resolves §14.4.)* Measured against Hugging Face `transformers` at **fp32
@@ -911,6 +917,22 @@ the recommendation they were filed with; both are marked.
   The numeric bar is set from an observed run in Unit 11 and written back
   here. Inventing a tolerance before anything has been measured is guessing,
   and a guessed gate is either vacuous or spuriously red.
+
+  **MEASURED 2026-08-21** — Llama-3.1-8B-Instruct, f32 on CPU, 24-token
+  prompt, against the pinned `transformers` fp32 reference
+  (`tools/parity/run-parity.sh`):
+
+  | detector | observed | THRESHOLD |
+  |---|---|---|
+  | cosine similarity | 1.0 | **>= 0.99999** |
+  | softmax KL | 1.87e-10 | **<= 1e-6** |
+  | top-1 agreement | agree | **required, exact** |
+  | greedy agreement (32 tokens) | 1.0, 0 divergences | **>= 0.99, divergences only where the top-2 gap < 1e-3 (13.22)** |
+
+  The thresholds sit four-plus orders above the observed noise and well
+  below anything a real defect would produce: a wrong weight, a transposed
+  projection or a mis-decoded block moves these by orders of magnitude, not
+  by 1e-10. They gate the UNQUANTIZED path only — see the paragraph below.
   This gates the **unquantized** f16/bf16 path. Quantized execution cannot
   meet the same bar by construction and is gated separately, by perplexity
   delta against the unquantized engine — `llama.cpp`'s own methodology.
@@ -943,6 +965,108 @@ the recommendation they were filed with; both are marked.
   calls concrete f32/f16 paths, so the engine never depends on the generic
   surface routing. Lifting this needs a compiler change — carrying a concrete
   element type across a generic boundary — which is out of scope here.
+
+- **13.24 No CI runs the gate today; the gate is manual and recorded.**
+  *(Recorded 2026-08-20, plan 15.3.1.)* The repository has no workflow files:
+  nothing runs `run-tests.sh` or the §12 parity/throughput instruments on
+  push. The gate is operated by hand — `run-tests.sh` for the unit suite,
+  `tools/baseline/run-baseline.sh` for the denominator,
+  `tools/parity/run-parity.sh` for §12.1 — and each run leaves its record
+  under `tools/baseline/results/` (dated) or the plan. When CI lands, it
+  should run exactly these three entry points.
+
+- **13.25 Architectural constraints for future weight editing and
+  multiplexed training.** *(Recorded 2026-08-21. Not scope for the current
+  release — these are the choices that are cheap NOW and expensive to
+  retrofit, so they weigh on decisions taken before then.)*
+
+  The intended direction: behaviour change at token granularity does not
+  need every parameter updated. The addressable surface is the FFN's
+  key/value memory — up/gate as pattern keys, down as the values summed
+  and softmaxed into the output distribution — plus attention's K/V. Both
+  are small relative to the model and both are already structurally
+  separate in this engine. A separate design will cover it; these are the
+  properties the engine must not lose in the meantime.
+
+  - **13.25.1 One multiplication seam.** Every projection multiplies
+    through `Linear.matvecInto` and nothing bypasses it. It exists today
+    to dispatch packed-vs-f32; it is also the single place a delta, an
+    adapter, or an edited key matrix can be applied. A call site that
+    reaches into `.weight` directly forfeits that, so none may.
+  - **13.25.2 Base weights are read-only; edits live in a separate
+    layer.** The packed/quantized path (and mmap-backed storage after it)
+    makes base weights compact and shared, so they cannot be mutated in
+    place. Any edit is a distinct, small, mutable object applied at
+    13.25.1's seam. This is forced by the memory design and is also what
+    makes rollback and shadow-promotion possible at all.
+  - **13.25.3 Weights are addressable by name at runtime.** An edit
+    targets "layer N's FFN value matrix", so modules must be enumerable
+    and nameable, not anonymous fields. `dev.cajeta.ml`'s
+    `Module`/`Parameter`/`StateDict` shape is the obvious target, and it
+    would also let ml's optimizers operate on engine weights without a
+    conversion layer.
+  - **13.25.4 The weight set carries a version.** A request pins a
+    version for its whole generation, so concurrent editing cannot make a
+    single response incoherent mid-stream. A counter costs nothing now
+    and is invasive to add once requests are in flight against mutable
+    weights.
+  - **13.25.5 A step is not necessarily a generation step.** `stepSeq`
+    and the scheduler must not assume every admitted unit of work
+    produces a sampled token. Training, evaluation and distillation are
+    additional JOB CLASSES for the same continuous-batching machinery —
+    the scheduler already arbitrates competing sequences with preemption
+    and resumption, which is the hard part.
+  - **13.25.6 The arena must permit pinning.** Activations are recycled
+    aggressively (6.1.6). Any learning step needs specific activations to
+    outlive the step that produced them, so the pool's design must not
+    make pinning impossible, even though nothing pins today.
+  - **13.25.7 The KV cache is the key/value store.** Paged KV plus the
+    prefix block store already separate key/value STATE from weights, and
+    already support adoption across requests. Interventions in key space
+    belong there rather than in a new subsystem.
+
+  Rationale for recording it now: the reuse that makes serving-plus-training
+  worthwhile — a training step riding the KV cache and activations a served
+  request already computed — is only available to a runtime that owns both.
+  That is an argument for keeping these seams open, not for building them
+  yet.
+
+  **13.25.8 METATUNING is a distinct phase, and the seams above serve it
+  too.** Editing weights is the least interesting form of adaptation
+  available here. A model's behaviour is also determined by what is
+  RETRIEVED and how the retrieved evidence is turned into a distribution,
+  and both are intervenable at inference time without touching a weight:
+
+  - **Moderated KV.** A learned network sits over the KV cache and
+    conditions what is written, kept, or returned — biasing key match,
+    scaling or gating value contributions, re-weighting by position or
+    provenance. The paged KV cache and block store (13.25.7) are already
+    the state store this would moderate.
+  - **Moderated output distribution.** A learned network biases the
+    logits before sampling — the last point where behaviour is decided
+    and the cheapest place to intervene, since it touches one vector per
+    token rather than any weight.
+
+  Both are meta-level: a small network adapting how a frozen LLM is USED,
+  rather than what it contains. Three properties make this attractive.
+  The adapted parameters are tiny and separate from the base weights, so
+  13.25.2 holds trivially. The base model is untouched, so rollback is
+  discarding a side model rather than restoring a checkpoint. And the
+  intervention points — KV write/read and pre-sampling logits — are places
+  the engine already owns, not new plumbing.
+
+  Sequencing: metatuning is a PHASE AFTER the multiplexed harness, because
+  every form of it needs the same thing — a learning job sharing the
+  serving runtime, with versioned state a request can pin (13.25.4) and a
+  step that is not a generation step (13.25.5). It gets its own spec; this
+  entry exists so the seams are not closed before it is written.
+
+  Open, to settle in that spec: what supplies the training signal (the
+  same label problem as any online tuning); whether a metatuner may change
+  outputs during the request that trained it or only after a promotion
+  boundary; and how to evaluate a system whose whole purpose is to change
+  outputs, given the expert cache's much easier "outputs must not change"
+  guarantee does not apply.
 
 ## 14. Open questions
 

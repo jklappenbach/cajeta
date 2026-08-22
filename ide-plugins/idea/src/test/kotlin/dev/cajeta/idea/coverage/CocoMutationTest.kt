@@ -1,6 +1,7 @@
 package dev.cajeta.idea.coverage
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -99,6 +100,47 @@ class CocoMutationTest {
         assertTrue(e!!.message!!.contains("timed-out"))
     }
 
+    // --- the versioned form the engine's mutate action writes ---------------
+
+    @Test
+    fun aVersionedDocumentParsesTheSameAsTheLegacyOne() {
+        // `cajeta.coverage.mutate` writes `coco-mutation v1` above the column
+        // header; the shell driver's older output starts at the header. Both
+        // describe the same rows and must read identically, or upgrading coco
+        // would silently change what the Mutants tab shows.
+        val versioned = CocoMutation.VERSION + "\n" + doc
+        assertEquals(all().size, CocoMutation.parse(versioned).size)
+        assertEquals(
+            all().map { it.verdict },
+            CocoMutation.parse(versioned).map { it.verdict },
+        )
+        assertEquals(all().map { it.method }, CocoMutation.parse(versioned).map { it.method })
+    }
+
+    @Test
+    fun anUnsupportedMutationVersionIsRefusedNotGuessedAt() {
+        // The rule coco's other three formats follow: a reader that does not
+        // recognise a version refuses the file. Parsing what it recognises and
+        // skipping the rest yields a plausible wrong number, which nothing
+        // downstream can detect.
+        val future = "coco-mutation v2\n" + doc
+        val e = assertThrows(CocoFormatMutationException::class.java) {
+            CocoMutation.parse(future)
+        }
+        assertTrue(
+            "names the version it saw and the one it reads: ${e.message}",
+            e.message!!.contains("v2") && e.message!!.contains(CocoMutation.VERSION),
+        )
+    }
+
+    @Test
+    fun aVersionMarkerWithNoColumnHeaderIsRefused() {
+        val e = assertThrows(CocoFormatMutationException::class.java) {
+            CocoMutation.parse(CocoMutation.VERSION + "\n")
+        }
+        assertTrue("says what is missing: ${e.message}", e.message!!.contains("header"))
+    }
+
     @Test
     fun anUnexpectedHeaderIsRefused() {
         val e = runCatching { CocoMutation.parse("module\tline\n") }.exceptionOrNull()
@@ -163,7 +205,11 @@ class CocoMutationTest {
         assertNull(CocoMutation.beside(profile))
         assertTrue(
             "explains that mutation is a separate pass: ${CocoMutation.NOT_AVAILABLE}",
-            CocoMutation.NOT_AVAILABLE.contains("separate coco"),
+            CocoMutation.NOT_AVAILABLE.contains("separate pass"),
+        )
+        assertTrue(
+            "names the action that produces it: ${CocoMutation.NOT_AVAILABLE}",
+            CocoMutation.NOT_AVAILABLE.contains("cajeta.coverage.mutate"),
         )
     }
 

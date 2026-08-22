@@ -23,6 +23,20 @@ in bounded time; Linux controls (the test + `XpuCpuPoolTeardown`) green.
 Acceptance 2.1/2.3/2.4 met; 2.2 (full-suite Windows sweep) rides the next
 full device-tests run.
 
+**2.2 MET — 2026-08-20, run 32404307651.** The first full Windows device
+sweep since the fix: **118 tests executed on hardware, 0 failures** (95
+skipped, all AMD/HIP suites — correct on a 4090). `bundledVulkanCpuForcedToCpu`
+itself passed in **65.6 s**, against the 4.5 h of silence that opened §1.1,
+and the whole sweep finished in ~105 min rather than dying at the ceiling.
+The WSL leg passed the same test in 43.5 s (run 32412895281). Every
+acceptance criterion is now met; this spec is closed.
+
+Note on what had been hiding it: the Windows leg could not reach the sweep at
+all between 2026-08-18 and 2026-08-20 — `41df9be7` correctly switched the
+build to the ACTIVE msys2 prefix, which stopped masking a missing `vim`
+(hence no `xxd`) in device-tests.yml's install list, and configure hard-failed.
+Fixed in `81aad0e8`.
+
 ## 1. Definition
 
 **1.1 Symptom.** On Windows,

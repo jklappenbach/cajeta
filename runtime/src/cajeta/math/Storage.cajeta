@@ -135,6 +135,30 @@ public class Storage<T> {
         this.onDevice = false;
     }
 
+    /**
+     * The HOST buffer, for the op-dispatch seam's host path — the mirror of
+     * {@link #deviceBuffer}. Faults if device-resident, exactly as
+     * {@link #get} does, so the placement contract is unchanged; the point
+     * is that the check happens ONCE per call instead of once per element.
+     *
+     * VIEW of the host buffer — borrow, valid while this Storage lives, and
+     * NOT the window start: pair it with {@link #hostOffset}. A per-element
+     * `get(i)` through the generic accessor measured ~12x the cost of the
+     * same arithmetic over the raw array, which is the whole reason this
+     * exists (cajeta-llama bench/MatvecProbe).
+     */
+    public T[] hostBuffer() {
+        if (this.onDevice) {
+            throw heap PlacementException("Storage.hostBuffer: the data is device-resident and the host mirror was released — a host read here would return stale bytes. Bring it back with cpu()/toHost() first.");
+        }
+        return this.host;
+    }
+
+    /** Element offset of this Storage's window into {@link #hostBuffer}. */
+    public int64 hostOffset() {
+        return this.offset;
+    }
+
     /** `true` when the live data currently resides on the device. */
     public boolean isOnDevice() {
         return this.onDevice;

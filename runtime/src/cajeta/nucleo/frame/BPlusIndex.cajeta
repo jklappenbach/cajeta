@@ -4,7 +4,7 @@ package cajeta.nucleo.frame;
  * BPlusIndex — the in-memory B+ index (nucleo-frame U14; spec §9.5.1). The
  * second near-term structure after zone-maps: a BULK-LOADED B+ over one numeric
  * key column that answers POINT and RANGE lookups exactly. It advertises
- * {@link Capability#RANGE} and {@link Capability#POINT}; the optimizer routes a
+ * {@link IndexCapability#RANGE} and {@link IndexCapability#POINT}; the optimizer routes a
  * matching pushed predicate to it, and its result EXTENDS the index contract
  * past U13's chunk-mask to a POSITION SET — the row positions a key predicate
  * selects (spec F-INDEX: "richer results added when a structure needs them").
@@ -42,8 +42,8 @@ public class BPlusIndex {
         this.leafCap = 8;
     }
 
-    public boolean advertisesRange() { return true; }   // Capability.RANGE
-    public boolean advertisesPoint() { return true; }   // Capability.POINT
+    public boolean advertisesRange() { return true; }   // IndexCapability.RANGE
+    public boolean advertisesPoint() { return true; }   // IndexCapability.POINT
     public int64 entryCount() { return this.nEntries; }
 
     /** Bulk-load a B+ over column `col` of `src` (valid rows only). */

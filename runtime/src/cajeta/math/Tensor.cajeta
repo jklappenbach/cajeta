@@ -555,6 +555,22 @@ public class Tensor<T> {
      * the handle an op's GPU path binds into a `cajeta.xpu` kernel launch. The
      * host side of the op-dispatch seam.
      */
+    /**
+     * The HOST buffer backing this tensor — the host-path counterpart of
+     * {@link #deviceBuffer}, for kernels-in-cajeta that walk a contiguous
+     * tensor elementwise. Faults if device-resident (once, not per element).
+     *
+     * Borrow; index it from {@link #hostBase}, NOT from 0.
+     */
+    public T[] hostBuffer() {
+        return this.store.hostBuffer();
+    }
+
+    /** First element index of this tensor inside {@link #hostBuffer}. */
+    public int64 hostBase() {
+        return this.store.hostOffset() + this.offsetVal;
+    }
+
     public KernelBuffer<T> deviceBuffer() {
         return this.store.deviceBuffer();
     }

@@ -30,7 +30,7 @@ import cajeta.lang.String;
  *    CORRECT full scan, never a wrong answer. An index only ever accelerates a
  *    correct answer; it never changes it (spec §9.3).
  */
-public class Capability {
+public class IndexCapability {
     /** Per-chunk min/max — a range predicate skips whole chunks (zone-maps). */
     public static int32 CHUNK_SKIP = 1;
     /** Sorted-key range lookup — an in-memory B+ answers a range (U14). */

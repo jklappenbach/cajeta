@@ -23,6 +23,12 @@ reader — the checks are the gate.
 >   headlessly against the Null backend floor. `ifx/run-ifx.sh`.
 > - [`tls/`](tls/README.md) — a TLS handshake + echo over loopback with a
 >   run-time-generated self-signed cert. `tls/run-tls.sh`.
+>
+> The **coverage** tour lives with the library it demonstrates, in
+> [cajeta-coco](https://github.com/jklappenbach/cajeta-coco/blob/main/samples/tour) — one class per finding coco can report (dead code,
+> untested-but-reachable, a surviving mutant, a high-CRAP method, a redundant
+> test) and what each looks like in the IDE. It is a consumer project: it
+> resolves `dev.cajeta.coverage` from Olla rather than from a checkout.
 
 This is a standard cajeta project: a `cajeta.json` manifest at the root and
 sources under `src/main/cajeta/<package>/` (see

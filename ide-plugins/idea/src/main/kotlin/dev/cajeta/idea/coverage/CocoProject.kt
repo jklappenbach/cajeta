@@ -36,7 +36,22 @@ data class CocoProject(
     companion object {
         const val DEFAULT_OUT_DIR: String = "build/coco"
 
-        private const val PLUGIN = "cajeta.coverage"
+        /**
+         * Plugin ids that mean coco, newest first.
+         *
+         * `dev.cajeta.coverage` is what actually ships and what the resolver
+         * publishes; `cajeta.coverage` is the first-party name BuildTool.md
+         * still documents. Both occur in real manifests, and accepting only
+         * one reports a correctly configured project as missing coco.
+         *
+         * The ACTION namespace is `cajeta.coverage.*` under either id — the
+         * plugin declares those action names itself — so there is only one
+         * spelling to match there.
+         */
+        private val PLUGIN_IDS = listOf("dev.cajeta.coverage", "cajeta.coverage")
+
+        /** The id named in the "not configured" message. */
+        private const val PLUGIN = "dev.cajeta.coverage"
         private const val INSTRUMENT = "cajeta.coverage.instrument"
 
         /** Read the project's manifest, or a not-configured result when absent. */
@@ -58,10 +73,14 @@ data class CocoProject(
             } ?: return CocoProject(problem = "cajeta.json is not valid JSON")
 
             val settings = root.opt("settings")
-            // Both spellings occur; accepting only one would report a correctly
-            // configured project as missing coco.
-            val plugins = settings?.opt("plugins") ?: root.opt("plugins")
-            val declared = (plugins as? Json.Obj)?.entries?.containsKey(PLUGIN) == true
+            // Top level is where the build tool actually reads the block
+            // (Manifest.cpp's `plugins` key); `settings.plugins` is accepted
+            // because manifests in the wild carry it and rejecting them would
+            // report a working project as missing coco.
+            val plugins = root.opt("plugins") ?: settings?.opt("plugins")
+            val declaredEntry = (plugins as? Json.Obj)?.entries
+                ?.let { e -> PLUGIN_IDS.firstNotNullOfOrNull { id -> e[id] } }
+            val declared = declaredEntry != null
 
             val tasks = (root.opt("tasks") as? Json.Obj)?.entries.orEmpty()
             val instrumenting = tasks.filter { (_, task) ->
@@ -81,7 +100,7 @@ data class CocoProject(
             return CocoProject(
                 pluginDeclared = declared,
                 coverageTasks = instrumenting.keys.toList(),
-                outDir = outDirOf(settings, root, instrumenting.values.firstOrNull()),
+                outDir = outDirOf(declaredEntry, settings, root, instrumenting.values.firstOrNull()),
                 problem = problem,
             )
         }
@@ -92,8 +111,15 @@ data class CocoProject(
         /**
          * Per-action params override the plugin's config block — BuildTool.md:
          * config "applies unless the task overrides it".
+         *
+         * The config block lives at `plugins.<id>.config`, which is the only
+         * shape the build tool implements. A `plugin-config` sibling block was
+         * read here until the coco tour was written against a real manifest and
+         * nothing matched: the key exists nowhere in `src/cajeta/buildtool`, so
+         * every project that set `out` in the documented place was silently
+         * read as `build/coco`. It stays as a last fallback and nothing more.
          */
-        private fun outDirOf(settings: Json?, root: Json, task: Json?): String {
+        private fun outDirOf(declaredEntry: Json?, settings: Json?, root: Json, task: Json?): String {
             task?.let { t ->
                 actionsOf(t)
                     .firstOrNull { (it.opt("action") as? Json.Str)?.value == INSTRUMENT }
@@ -101,9 +127,13 @@ data class CocoProject(
                     ?.takeIf { it.isNotBlank() }
                     ?.let { return it }
             }
-            val config = (settings?.opt("plugin-config") ?: root.opt("plugin-config"))?.opt(PLUGIN)
-            return (config?.opt("out") as? Json.Str)?.value?.takeIf { it.isNotBlank() }
-                ?: DEFAULT_OUT_DIR
+            outOf(declaredEntry?.opt("config"))?.let { return it }
+            val legacy = (root.opt("plugin-config") ?: settings?.opt("plugin-config"))
+            PLUGIN_IDS.forEach { id -> outOf(legacy?.opt(id))?.let { return it } }
+            return DEFAULT_OUT_DIR
         }
+
+        private fun outOf(config: Json?): String? =
+            (config?.opt("out") as? Json.Str)?.value?.takeIf { it.isNotBlank() }
     }
 }

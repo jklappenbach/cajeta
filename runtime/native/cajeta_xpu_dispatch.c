@@ -286,10 +286,31 @@ static int cajeta_xpu_backend_available_locked(int id) {
     }
 }
 
+// In-process backend force (Device.force — cajeta-llama 11.2): observed by
+// select_locked ahead of the env var. -1 = not forced.
+static int g_xpu_forced_api = -1;
+
+// Returns 1 when the force landed before selection, 0 when selection has
+// already cached a backend (too late — the caller reports it).
+int32_t __cajeta_xpu_force_backend(int32_t id) {
+    int ok;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    if (g_xpu_active != -2) {
+        ok = 0;
+    } else {
+        g_xpu_forced_api = (id >= 0 && id < CAJ_XPU_COUNT) ? id : -1;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    return ok;
+}
+
 // Caller holds g_xpu_cuda_lock. Picks + caches the active backend.
 static int cajeta_xpu_select_locked(void) {
     if (g_xpu_active != -2) return g_xpu_active;
-    int forced = cajeta_xpu_backend_id_by_name(getenv("CAJETA_XPU_BACKEND"));
+    int forced = g_xpu_forced_api >= 0
+        ? g_xpu_forced_api
+        : cajeta_xpu_backend_id_by_name(getenv("CAJETA_XPU_BACKEND"));
     for (int id = 0; id < CAJ_XPU_COUNT; ++id) {
         if (forced != CAJ_XPU_NONE && id != forced) continue;
         if (!(g_xpu_bundled & (1u << id))) continue;     // not bundled in
@@ -349,6 +370,38 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
             // opt-in at AS-build time with CAJETA_GPU_AS_IMPL=optix. True iff the
             // active device is CUDA and the OptiX engine (nvoptix.dll) loaded.
             return (be == CAJ_XPU_CUDA && cajeta_xpu_optix_available()) ? 1 : 0;
+        case 2:  // CoopMatrixBf16F32Acc — a LAUNCHABLE bf16(A/B)+f32(acc)
+            // cooperative-matrix GEMM path on the active backend (cajeta-llama
+            // 2.2.6). "Launchable" is the contract, not "native silicon": the
+            // op layer uses this to decide whether Ewise.matmulBf16Wide can be
+            // dispatched at all, so the CPU backend answers 1 (its software
+            // tier runs any tile-dtype mix) even though nothing about it is
+            // native. Vulkan answers 0 — no driver exposes a bf16 coop-matrix
+            // config, the SPIR-V lowering skips the kernel (mixed-tier), and a
+            // launch would fail on the missing registration. CUDA needs the
+            // bf16 tensor cores (sm_80+); HIP needs RDNA3+ (gfx11xx/gfx12xx —
+            // wmma.f32.16x16x16.bf16; CDNA's MFMA path is not wired in the
+            // AMDGPU lowering, so it stays conservative-false there).
+            switch (be) {
+                case CAJ_XPU_CPU:
+                    return 1;
+                case CAJ_XPU_CUDA: {
+                    int major = 0;
+                    if (!g_xpu_cuda.cuDeviceGetAttribute) return 0;
+                    // 75 = CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR
+                    if (g_xpu_cuda.cuDeviceGetAttribute(&major, 75,
+                            g_xpu_cuda.device) != 0) return 0;
+                    return major >= 8 ? 1 : 0;
+                }
+                case CAJ_XPU_HIP: {
+                    char arch[64];
+                    if (!cajeta_xpu_hip_gfx_arch(arch, sizeof(arch))) return 0;
+                    return (strncmp(arch, "gfx11", 5) == 0 ||
+                            strncmp(arch, "gfx12", 5) == 0) ? 1 : 0;
+                }
+                default:
+                    return 0;
+            }
         default: return 0;
     }
 }

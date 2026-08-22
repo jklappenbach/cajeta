@@ -90,7 +90,11 @@ object CajetaBuildBridge {
         fun emitLine(line: String, stdout: Boolean) {
             val parsed = lineParser.parse(line, buildId)
             if (parsed.isEmpty()) {
-                listener.onEvent(buildId, OutputBuildEventImpl(buildId, line + "\n", stdout))
+                // Render-stream, not arrival-stream: the build tool writes
+                // plugin progress to stderr, which the Build window paints red.
+                // See ConsoleStreamClassifier.
+                val renderStdout = ConsoleStreamClassifier.renderAsStdout(line, stdout)
+                listener.onEvent(buildId, OutputBuildEventImpl(buildId, line + "\n", renderStdout))
                 return
             }
             for (p in parsed) {

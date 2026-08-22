@@ -277,8 +277,36 @@ unsigned runWaveDriver(const char* method) {
                      << " (< 8: setup; 100+i: wrong result at lane i-100)";
     EXPECT_TRUE(isPowerOfTwo(w)) << "wave width " << w << " not a power of two";
 #if defined(__x86_64__)
-    if (__builtin_cpu_supports("avx512f")) EXPECT_EQ(w, 16u);
-    else if (__builtin_cpu_supports("avx2")) EXPECT_EQ(w, 8u);
+    // These couple the expectation to HOST CPU FEATURES, which is not the
+    // same thing as the width LLVM's vectorizer chooses — it may cap at
+    // 256-bit (prefer-vector-width) on parts where 512-bit costs clock. So
+    // when this trips, the interesting facts are the width we got and what
+    // the host advertises; report both rather than a bare 16 != 8.
+    const char* isa = __builtin_cpu_supports("avx512f") ? "avx512f"
+                    : __builtin_cpu_supports("avx2")    ? "avx2"
+                                                        : "sse-only";
+    // An avx512f host may legitimately vectorize to EITHER width: LLVM
+    // prefers 256-bit (prefer-vector-width) on parts where 512-bit costs
+    // clock, so it picks 8 there and 16 elsewhere. Both were observed —
+    // 16 on a Ryzen AI MAX+ 395, 8 on the CI x86_64-linux runner, which
+    // is what failed the v0.22.0 dry-run five times.
+    //
+    // What this pin is FOR is unchanged and still enforced: the guarded
+    // wave call must widen rather than scalarize. EXPECT_GT(w, 2u) above
+    // is the load-bearing half — the width-1 identity stub is the
+    // arm64-darwin bug that failed the v0.21.0 gate, where every active
+    // lane silently received its own value instead of the wave sum.
+    // Pinning 512-bit specifically was never testing that; it was
+    // asserting a codegen preference LLVM is free to make either way.
+    if (__builtin_cpu_supports("avx512f")) {
+        EXPECT_TRUE(w == 16u || w == 8u)
+            << method << ": host advertises " << isa
+            << " but the vectorizer chose width " << w
+            << " (expected 16, or 8 when LLVM caps at 256-bit)";
+    } else if (__builtin_cpu_supports("avx2")) {
+        EXPECT_EQ(w, 8u) << method << ": host advertises " << isa
+                         << " but the vectorizer chose width " << w;
+    }
 #endif
     return w;
 }

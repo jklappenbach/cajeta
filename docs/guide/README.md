@@ -14,6 +14,10 @@ Chapters link to [tour](../../samples/tour/) demos you can run, and to the
 | [03 Your first project](03-your-first-project.md) | init, build, the manifest, every project type |
 | [04 Running](04-running.md) | Direct execution, run tasks, capabilities |
 | [05 Debugging](05-debugging.md) | gdb, the DAP server, IntelliJ, VS Code |
+| [23 Code coverage](23-code-coverage.md) | coco: configuring it, reading it, dead-vs-untested, mutation, the IDE |
+
+*(23 reads with the tooling chapters above; its file number continues the
+sequence rather than renumbering everything after 05.)*
 
 ## Part II — The language
 

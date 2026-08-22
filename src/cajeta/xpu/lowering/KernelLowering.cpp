@@ -435,6 +435,7 @@ public:
         for (auto& [n, t] : valueTypeNames)
             registerCtor(std::dynamic_pointer_cast<CajetaClass>(t));
         registerCtor(method->getParent());
+        scanCoopMatrixTiers(method->getBlock());
         lowerStatement(method->getBlock());
         // Kernels return void; close any open block.
         if (!builder.GetInsertBlock()->hasTerminator()) {
@@ -500,6 +501,16 @@ private:
         uint32_t rows = 0, cols = 0, use = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
+    // Set by scanCoopMatrixTiers when this kernel's tiles STRADDLE tiers —
+    // some Native, some Portable. A tier is a property of the GEMM, not of
+    // one tile, but coopMatrixTier() only sees one (dtype, use) at a time:
+    // on AMD an f32 accumulator is Native (it is the accumulator of the
+    // f16/bf16 WMMA) while f32 A/B operands are Portable, so an all-f32
+    // matmul straddles and the mma guard used to drop the whole kernel.
+    // Demoting a straddling kernel's tiles to Portable runs it correctly on
+    // the portable tile — which is what Ewise.matmulF32 documents as its
+    // behaviour on a backend with no native f32 config.
+    bool coopStraddleDemote = false;
     // (dtype,shape) keys already announced via a software-tier note, so the
     // `note: [mma-tiering]` is emitted once per distinct tile, not per use.
     std::set<std::string> notedCoopTiers;
@@ -3324,6 +3335,48 @@ private:
     // arguments: arg0 = element type, args 1-3 = the Rows/Cols/Use integer
     // constants. Delegates the actual type to the backend seam (Vulkan emits
     // OpTypeCooperativeMatrixKHR at Subgroup scope).
+    // Decide the cooperative-matrix tier for the KERNEL rather than per
+    // tile. Walks the body for CooperativeMatrix declarations, asks the
+    // target for each one's base tier, and records whether they straddle.
+    // Must run before any slot is built: a slot's LLVM type (opaque native
+    // fragment vs `[R*C x elem]` array) is fixed at declaration.
+    void scanCoopMatrixTiers(const AbstractSyntaxNodePtr& root) {
+        bool anyNative = false;
+        bool anyPortable = false;
+        std::function<void(const AbstractSyntaxNodePtr&)> walk =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node) return;
+                if (auto lvd =
+                        std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+                    CajetaTypePtr dt = lvd->getType();
+                    if (isCooperativeMatrixType(dt)) {
+                        if (auto cm = std::dynamic_pointer_cast<CajetaClass>(dt)) {
+                            const auto& ta = cm->getTypeArguments();
+                            if (ta.size() == 4) {
+                                llvm::Type* el = deviceScalarType(ta[0], ctx);
+                                auto r = std::dynamic_pointer_cast<CajetaConstantType>(ta[1]);
+                                auto c = std::dynamic_pointer_cast<CajetaConstantType>(ta[2]);
+                                auto u = std::dynamic_pointer_cast<CajetaConstantType>(ta[3]);
+                                if (el && r && c && u) {
+                                    auto t = target.coopMatrixTier(
+                                        el, (uint32_t) r->getValue(),
+                                        (uint32_t) c->getValue(),
+                                        (uint32_t) u->getValue());
+                                    if (t == LoweringTarget::ImplTier::Native)
+                                        anyNative = true;
+                                    else
+                                        anyPortable = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                node->forEachSubNode(walk);
+            };
+        walk(root);
+        coopStraddleDemote = anyNative && anyPortable;
+    }
+
     CoopMatrixSlot buildCoopMatrixSlot(const CajetaTypePtr& declType,
                                        const std::string& nm) {
         auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
@@ -3348,6 +3401,13 @@ private:
         // "software" runs the portable tile even on a native-capable backend.
         auto baseTier = target.coopMatrixTier(elem, s.rows, s.cols, s.use);
         auto tier = resolveImplTier("COOPMATRIX", baseTier);
+        // Group demotion: one tile cannot decide a tier the whole GEMM has
+        // to agree on (see coopStraddleDemote).
+        bool straddled = false;
+        if (coopStraddleDemote && tier == LoweringTarget::ImplTier::Native) {
+            tier = LoweringTarget::ImplTier::Portable;
+            straddled = true;
+        }
         if (tier == LoweringTarget::ImplTier::Portable) {
             // Portable flat tile: a `[Rows*Cols x elem]` array in Function
             // storage. Dynamic-index GEP (gather/scatter/matmul) is well-formed
@@ -3361,7 +3421,8 @@ private:
             // override took the portable path (so the note stays honest).
             if (s.use == 0)
                 noteSoftwareCoopMatrix(elem, s.rows, s.cols,
-                                       baseTier == LoweringTarget::ImplTier::Native);
+                                       baseTier == LoweringTarget::ImplTier::Native
+                                           && !straddled);
         } else {
             s.software = false;
             s.matrixType = target.coopMatrixType(mod, elem, s.rows, s.cols, s.use);
