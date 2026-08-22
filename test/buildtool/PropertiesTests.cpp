@@ -18,6 +18,7 @@ using cajeta::buildtool::parseCliOverride;
 using cajeta::buildtool::PropertyOverrides;
 using cajeta::buildtool::resolveProperties;
 using cajeta::buildtool::substitute;
+using cajeta::buildtool::substituteManifestProperties;
 
 namespace {
 
@@ -329,4 +330,104 @@ TEST(PropertiesTests, parseCliOverrideRejectsEmptyName) {
     auto r = parseCliOverride("=value");
     ASSERT_FALSE((bool)r);
     if (!r) consumeError(r.takeError());
+}
+
+
+// --- manifest-wide substitution -------------------------------------------
+//
+// BuildTool.md says substitution reaches "any string in the manifest", and
+// until substituteManifestProperties existed it reached exactly one place: a
+// task's action params, rewritten as each action ran. Everything else took
+// `${...}` literally, so a `${...}` dependency version went to the resolver as
+// if it were a version constraint. These pin BOTH halves — what it rewrites
+// and what it must leave alone.
+
+namespace {
+    const char* kSubstManifest = R"({
+        "properties": { "unit-version": "0.2.0", "out-dir": "target/cov" },
+        "details": { "name": "demo", "version": "1.0.0" },
+        "settings": {
+            "dependencies": { "dev.cajeta.unit": "${unit-version}" },
+            "capabilities": []
+        },
+        "plugins": {
+            "dev.cajeta.coverage": {
+                "version": "0.5.*",
+                "config": { "out": "${out-dir}", "min": 30 }
+            }
+        },
+        "tasks": {
+            "cover": { "actions": [
+                { "action": "cajeta.coverage.instrument", "id": "ci" },
+                { "action": "test", "input": "${ci.path}" }
+            ] }
+        }
+    })";
+}
+
+TEST(PropertiesTests, substitutionReachesSettingsDependencies) {
+    auto m = mustLoad(kSubstManifest);
+    auto props = resolveProperties(m, {});
+    ASSERT_TRUE((bool)props);
+    ASSERT_FALSE((bool)substituteManifestProperties(m, *props));
+
+    const auto* deps = m.settingsRaw.getObject("dependencies");
+    ASSERT_NE(deps, nullptr);
+    auto v = deps->getString("dev.cajeta.unit");
+    ASSERT_TRUE(v.has_value());
+    EXPECT_EQ(v->str(), "0.2.0");
+}
+
+TEST(PropertiesTests, substitutionReachesAPluginConfigBlock) {
+    auto m = mustLoad(kSubstManifest);
+    auto props = resolveProperties(m, {});
+    ASSERT_TRUE((bool)props);
+    ASSERT_FALSE((bool)substituteManifestProperties(m, *props));
+
+    const auto* plugin = m.pluginsRaw.getObject("dev.cajeta.coverage");
+    ASSERT_NE(plugin, nullptr);
+    const auto* config = plugin->getObject("config");
+    ASSERT_NE(config, nullptr);
+    auto out = config->getString("out");
+    ASSERT_TRUE(out.has_value());
+    EXPECT_EQ(out->str(), "target/cov");
+    // Non-strings are untouched.
+    EXPECT_EQ(config->getInteger("min").value_or(-1), 30);
+}
+
+TEST(PropertiesTests, substitutionLeavesTaskActionParamsAlone) {
+    // The one that must NOT fire. `${ci.path}` is another action's output;
+    // only the task context can answer it, and rewriting it here would turn
+    // every action-output reference into "references undefined property".
+    auto m = mustLoad(kSubstManifest);
+    auto props = resolveProperties(m, {});
+    ASSERT_TRUE((bool)props);
+    ASSERT_FALSE((bool)substituteManifestProperties(m, *props));
+
+    const auto* task = m.tasksRaw.getObject("cover");
+    ASSERT_NE(task, nullptr);
+    const auto* actions = task->getArray("actions");
+    ASSERT_NE(actions, nullptr);
+    ASSERT_EQ(actions->size(), 2u);
+    const auto* second = (*actions)[1].getAsObject();
+    ASSERT_NE(second, nullptr);
+    auto input = second->getString("input");
+    ASSERT_TRUE(input.has_value());
+    EXPECT_EQ(input->str(), "${ci.path}");
+}
+
+TEST(PropertiesTests, anUndefinedPropertyInSettingsIsAnErrorNotAPassThrough) {
+    // Silent pass-through is what sent `${unit-version}` to the resolver as a
+    // version constraint. The reference site is named.
+    auto m = mustLoad(R"({
+        "details": { "name": "demo", "version": "1.0.0" },
+        "settings": { "dependencies": { "a.b": "${nope}" } }
+    })");
+    auto props = resolveProperties(m, {});
+    ASSERT_TRUE((bool)props);
+    auto err = substituteManifestProperties(m, *props);
+    ASSERT_TRUE((bool)err);
+    std::string msg = errorText(std::move(err));
+    EXPECT_NE(msg.find("nope"), std::string::npos);
+    EXPECT_NE(msg.find("dependencies"), std::string::npos);
 }

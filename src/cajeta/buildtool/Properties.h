@@ -77,6 +77,20 @@ namespace cajeta::buildtool {
         const ResolvedProperties& props,
         const std::string& whereContext = "<unknown>");
 
+    // Rewrite ${NAME} references in the manifest's `settings` and
+    // `plugins` blocks in place, using the resolved property table.
+    //
+    // Call this immediately after resolveProperties and before anything
+    // parses those blocks — parseDependencies, parseRepositories,
+    // parsePlugins all read the raw JSON and would otherwise see the
+    // placeholder text.
+    //
+    // `tasks` is deliberately NOT rewritten: action params carry
+    // late-bound references (${id.field} action outputs, ${params.x}
+    // invocation arguments) that only TaskContext can answer at run time.
+    llvm::Error substituteManifestProperties(
+        Manifest& manifest, const ResolvedProperties& props);
+
     // Helper to populate PropertyOverrides::env from the process
     // environment. Looks for variables prefixed with CAJETA_PROPERTY_
     // and converts the suffix back to dotted lowercase form

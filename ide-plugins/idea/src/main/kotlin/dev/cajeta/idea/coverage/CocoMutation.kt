@@ -49,32 +49,57 @@ class CocoFormatMutationException(message: String) : Exception(message)
 /**
  * Reader for coco's `mutation.tsv`.
  *
- * NOTE: unlike coco's other artifacts this file carries **no version marker** —
- * it is written by the shell driver rather than the engine, and its first line
- * is a plain column header. That header is treated as the version signal, which
- * is weaker than the other three formats deserve and is worth fixing on coco's
- * side; it is recorded rather than silently relied on.
+ * **Two shapes, both accepted.** The engine's `cajeta.coverage.mutate` action
+ * writes a version marker (`coco-mutation v1`) followed by the column header,
+ * matching the versioning coco's other three formats already carry. The shell
+ * driver's older output starts straight at the column header and carries no
+ * version at all.
+ *
+ * The unversioned form is read as legacy rather than refused, because refusing
+ * it would break every run produced before the action existed. But it is a
+ * weaker contract by exactly the amount the marker is worth: an incompatible
+ * change to the legacy shape is undetectable, which is the whole reason the
+ * marker was added.
  */
 object CocoMutation {
 
     const val FILE_NAME: String = "mutation.tsv"
+    const val VERSION: String = "coco-mutation v1"
     const val HEADER: String = "module\tsrcLine\tmutation\tverdict\tmethod"
 
     const val NOT_AVAILABLE: String =
-        "This run has no mutation results. Mutation testing is a separate coco " +
-            "pass (`coco mutation`), not part of an ordinary coverage run."
+        "This run has no mutation results. Mutation testing is a separate pass " +
+            "(the `cajeta.coverage.mutate` action, or `coco mutate`), not part " +
+            "of an ordinary coverage run."
 
     fun parse(text: String): List<MutantResult> {
         val lines = text.split('\n')
-        val header = lines.firstOrNull()
+        val first = lines.firstOrNull()
             ?: throw CocoFormatMutationException("mutation.tsv: empty document")
+
+        // A version line, when present, precedes the column header. Anything
+        // that looks like a coco-mutation marker but is not v1 is REFUSED
+        // rather than parsed hopefully — the rule the other three formats
+        // follow, and for the same reason: a plausible wrong number is not
+        // recoverable, a refusal is.
+        val versioned = first.trim().startsWith("coco-mutation ")
+        if (versioned && first.trim() != VERSION) {
+            throw CocoFormatMutationException(
+                "mutation.tsv: unsupported version \"${first.trim()}\"; " +
+                    "this build reads \"$VERSION\""
+            )
+        }
+        val headerAt = if (versioned) 1 else 0
+        val header = lines.getOrNull(headerAt)
+            ?: throw CocoFormatMutationException(
+                "mutation.tsv: $VERSION with no column header")
         if (header.trim() != HEADER) {
             throw CocoFormatMutationException(
                 "mutation.tsv: unexpected header \"$header\"; this build reads \"$HEADER\""
             )
         }
         val out = ArrayList<MutantResult>()
-        for (i in 1 until lines.size) {
+        for (i in (headerAt + 1) until lines.size) {
             val line = lines[i]
             if (line.isEmpty()) continue
             val f = line.split('\t')

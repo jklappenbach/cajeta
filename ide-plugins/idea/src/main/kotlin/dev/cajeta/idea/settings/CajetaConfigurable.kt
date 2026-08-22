@@ -75,7 +75,18 @@ class CajetaConfigurable : Configurable {
         // Build-tool tool window controls (spec §14).
         val btPath = JBTextField(settings.buildToolPath, 40).also { buildToolPathField = it }
         val btProblem = JBLabel().apply { foreground = JBColor.RED }.also { buildToolPathProblem = it }
-        fun refreshBtProblem() { btProblem.text = BuildToolPathValidator.problem(btPath.text) ?: "" }
+        // An invalid path is an error; a valid path that is too old for coco is
+        // a WARNING in a different colour. Conflating them would either shout
+        // about a working toolchain or bury the one line that explains an
+        // otherwise unattributable `value=0x3` stack from a coverage run.
+        val btVersionNote = JBLabel().apply { foreground = JBColor.ORANGE }
+        fun refreshBtProblem() {
+            val invalid = BuildToolPathValidator.problem(btPath.text)
+            btProblem.text = invalid ?: ""
+            btVersionNote.text =
+                if (invalid != null) ""
+                else BuildToolPathValidator.coverageFloorWarningFor(btPath.text) ?: ""
+        }
         refreshBtProblem()
         btPath.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent) = refreshBtProblem()
@@ -124,6 +135,7 @@ class CajetaConfigurable : Configurable {
             .addComponent(JBLabel("Build tool:"), 1)
             .addLabeledComponent(JBLabel("Build-tool path:"), btPath, 1, false)
             .addComponent(btProblem, 1)
+            .addComponent(btVersionNote, 1)
             .addLabeledComponent(JBLabel("Auto-reload on manifest change:"), reloadCombo, 1, false)
             .addLabeledComponent(JBLabel("Default profile:"), profileField, 1, false)
             .addLabeledComponent(JBLabel("Default flavor:"), flavorField, 1, false)

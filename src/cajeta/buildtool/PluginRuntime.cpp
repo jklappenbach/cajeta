@@ -14,7 +14,15 @@
 //         "workdir":         "<abs path to project root>",
 //         "project-name":    "<consumer's details.name>",
 //         "project-version": "<consumer's details.version>",
-//         "capabilities":    [ ... allowlist intersection ... ]
+//         "capabilities":    [ ... allowlist intersection ... ],
+//         "classpath":       "<consumer's resolved dep .cja paths, comma-
+//                             joined; the same string BuildAction passes
+//                             as --classpath. Absent when the project has
+//                             no dependencies or resolution failed.>",
+//         "toolchain":       { "cajeta": ..., "llc": ..., "llvm-dis": ...,
+//                              "cc": ... },
+//         "plugin":          { "artifact": "<this plugin's .cja>",
+//                              "deps": [ ... its own closure ... ] }
 //       }
 //     }
 //
@@ -23,6 +31,8 @@
 //   Stdout (one JSON object per line; trailing newline required):
 //
 //     {"kind": "log",   "level": "info|warn|debug", "message": "..."}
+//        info/debug -> stdout (progress). warn -> stderr (a problem).
+//        Failure is reported by the `result` record, never by a log.
 //     {"kind": "warn",                              "message": "..."}
 //     {"kind": "write",                             "text":    "..."}
 //     {"kind": "output", "key": "...",              "value":   "..."}
@@ -64,6 +74,7 @@
 
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
 #include <llvm/Support/JSON.h>
@@ -348,6 +359,41 @@ namespace cajeta::buildtool {
             toolchain["cc"] = std::string("cc");
             context["toolchain"] = std::move(toolchain);
 
+            // The CONSUMER's resolved dependency classpath.
+            //
+            // A plugin that compiles the consumer's sources — a coverage
+            // instrumenter, a doc generator, a linter with a type view —
+            // needs exactly what BuildAction passes as `--classpath`, and
+            // until this existed the context carried everything EXCEPT
+            // that: the toolchain paths, the plugin's own archive, its own
+            // dependency closure. So `cajeta.coverage.instrument` compiled
+            // a project that used a test framework and died on
+            // `unknown type 'Runner'`, and the only workaround was to
+            // hand-write `~/.olla/<name>/<version>/<name>-<version>.cja`
+            // into the task and keep it in step with the manifest by hand.
+            //
+            // Same source as BuildAction's `--classpath`, same comma-joined
+            // shape, so a plugin can forward it to the compiler verbatim.
+            // Resolution failure is NOT fatal here: a plugin that does not
+            // compile anything should not stop working because a dependency
+            // is unreachable, so the key is omitted and the plugin reports
+            // whatever it reports.
+            if (m) {
+                std::string projectRoot = projectRootFromManifest(*m);
+                if (auto deps = resolveProjectDependencies(*m, projectRoot)) {
+                    std::string joined;
+                    for (const auto& d : *deps) {
+                        if (!joined.empty()) joined += ",";
+                        joined += d.artifactPath;
+                    }
+                    if (!joined.empty()) {
+                        context["classpath"] = std::move(joined);
+                    }
+                } else {
+                    llvm::consumeError(deps.takeError());
+                }
+            }
+
             // The plugin's own resolved artifacts — its archive and its
             // dependency closure — so it can extract bundled bitcode
             // (e.g. a probe runtime) from the packages it shipped in,
@@ -415,11 +461,31 @@ namespace cajeta::buildtool {
             // record kinds without breaking older build tools).
             std::string k = kind->str();
             if (k == "log") {
-                // Verbose-mode log — write to stderr so it doesn't
-                // pollute structured outputs.
+                // Progress, not a problem — stdout unless the record says
+                // otherwise.
+                //
+                // These went to stderr on the reasoning that logs "pollute
+                // structured outputs". They do not: structured results travel
+                // as `output` and `result` records, and a plugin reports
+                // failure through `result`, never through a log. What the old
+                // routing actually produced was every line of an ordinary
+                // cajeta-coco run —
+                //
+                //   [plugin] coco: [1/6] reference pass
+                //   [plugin] coco: [3/6] instrumenting 6 of 10 modules
+                //
+                // — arriving on the error channel. IntelliJ's Build window
+                // colours by stream and has no third state, so a successful
+                // coverage run rendered as a wall of red and read as failure.
+                //
+                // `level` is honoured: an info/debug log is progress, a
+                // warn-level log is a problem and keeps the error channel.
                 auto msg = obj->getString("message");
                 if (msg) {
-                    std::cerr << "[plugin] " << msg->str() << "\n";
+                    auto level = obj->getString("level");
+                    const bool isWarn = level && level->str() == "warn";
+                    std::ostream& os = isWarn ? std::cerr : std::cout;
+                    os << "[plugin] " << msg->str() << "\n";
                 }
             } else if (k == "warn") {
                 auto msg = obj->getString("message");
