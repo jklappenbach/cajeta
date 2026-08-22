@@ -122,6 +122,49 @@ quantized inference is why they exist.
   this primitive, and the scalar fallback is what makes it verifiable — every
   path must produce bit-identical results.
 
+### One spelling, no caller-side exceptions
+
+- **4.7** A kernel writes `acc = w.dotAccum(a, acc)` unconditionally. Target
+  selection happens INSIDE the lowering, never in the caller — the shape
+  `tableLookup` already uses (x86 `pshufb` / AArch64 `tbl1` / scalar select
+  chain, one call site). No kernel branches on target, ever.
+- **4.8** Every path is BIT-IDENTICAL, and this is a guarantee rather than an
+  aspiration: the operation is integer, so there is no reassociation hazard of
+  the kind float accumulation has. Taking the fast path can change speed and
+  never the answer, which is what lets the scalar fallback stand as the
+  correctness floor.
+- **4.9** Use the NON-saturating encodings (`vpdpbusd`, not `vpdpbusds`) so
+  §4.8 holds exactly. For the quantized case the range is safe regardless —
+  nibbles 0..15 against activations -127..127 give at most 1905 per product and
+  7620 per 4-way group, far inside int32.
+
+### Do we need our own LLVM branch?
+
+- **4.10** NO, and the measurement says why. A fork would be for a MISSING
+  backend feature — a target, a calling convention, an addressing mode.
+  Everything needed here already exists as an intrinsic in stock LLVM 22
+  (§4.4), and emitting an intrinsic directly BYPASSES the DAG combiner, so the
+  auto-fusion weakness that decided §7.2 is irrelevant to us: we never depend
+  on the combiner. Improving a combine is upstreamable work, not fork work, and
+  a fork's cost — rebasing a fast-moving upstream, CI, every contributor
+  needing it — is permanent. The toolchain already sits on a patched ROCm LLVM
+  (`AMD clang 22.0.0git ... +PATCHED`); cajeta-specific patches on top would
+  compound that stack for no capability gained.
+- **4.11** `llvm.vector.partial.reduce.add` (present in this LLVM) is the
+  target-independent partial reduction, and it does lower to VNNI — measured
+  `vpdpwssd` x4 on x86 native. That is the WORD variant, so it widens bytes to
+  words first and spends four fused ops where `vpdpbusd` spends one. Good
+  enough as the PORTABLE fallback for targets with no hand-written path, which
+  cuts the real cost from six hand-written lowerings to two (x86 VNNI, AArch64
+  dotprod) plus portable plus scalar.
+- **4.12** LIMIT OF TODAY'S EVIDENCE: this LLVM build registers only
+  `amdgcn`, `r600`, `x86`, `x86-64`. The AArch64 and RISC-V lowerings cannot be
+  compiled here, let alone run — they would be written blind, exactly as Unit
+  17's NEON `tbl1` path is today ("compile-level only until an ARM runner
+  exists"). The x86 claims in this spec are measured; the ARM and RISC-V ones
+  are read from LLVM's intrinsic tables and must be marked unverified until a
+  runner exists.
+
 ## 5. Use cases
 
 - **5.1** When a Q4_K sub-block's nibbles multiply int8 activations, the
