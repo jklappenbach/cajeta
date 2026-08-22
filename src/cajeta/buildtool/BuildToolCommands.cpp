@@ -2927,8 +2927,18 @@ namespace cajeta::buildtool {
                 return false;
             }();
 
-            if (subIndex < 0 || wantsHelp) {
-                std::ostream& os = subIndex < 0 ? std::cerr : std::cout;
+            // Only a --help with NO subcommand is answered here. A --help that
+            // follows one belongs to that subcommand and is forwarded below, so
+            // `coverage list --help` documents `list` instead of reprinting the
+            // list of verbs. Getting this wrong is how the whole family of
+            // subcommand helps became unreachable in 0.22.2 — the short-circuit
+            // fired on any --help anywhere in argv.
+            if (subIndex < 0) {
+                // An explicit --help is a REQUEST: stdout, exit 0. A bare
+                // `coverage` is a usage ERROR: stderr, exit 1. The two differ in
+                // both stream and status, and a caller that pipes stdout (the
+                // IDE does) sees nothing at all when help goes to stderr.
+                std::ostream& os = wantsHelp ? std::cout : std::cerr;
                 os  << "Usage: cajeta coverage <subcommand> [options]\n"
                     << "\n"
                     << "Subcommands:\n"
@@ -2937,18 +2947,16 @@ namespace cajeta::buildtool {
                     << "  remove   Remove entries by pattern.\n"
                     << "\n"
                     << "Run `cajeta coverage <subcommand> --help` for "
-                    << "subcommand-specific options.\n";
-                if (subIndex < 0) {
-                    // `coverage` manages the exclude CONFIG; it does not
-                    // measure anything. Say so, because "Coverage" in a menu
-                    // reads like it should run a coverage pass.
-                    os << "\n"
-                       << "This subcommand edits the exclude list in "
-                          "cajeta.json. To MEASURE coverage, bind the "
-                          "cajeta.coverage.instrument / .report actions to a "
-                          "task and run that task.\n";
-                }
-                return subIndex < 0 ? 1 : 0;
+                    << "subcommand-specific options.\n"
+                    // `coverage` manages the exclude CONFIG; it does not measure
+                    // anything. Say so, because "Coverage" in a menu reads like
+                    // it should run a coverage pass.
+                    << "\n"
+                    << "This subcommand edits the exclude list in cajeta.json. "
+                       "To MEASURE coverage, bind the "
+                       "cajeta.coverage.instrument / .report actions to a task "
+                       "and run that task.\n";
+                return wantsHelp ? 0 : 1;
             }
 
             // Re-lay the argv so the subcommand sits at index 2, which is
