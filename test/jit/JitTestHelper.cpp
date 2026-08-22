@@ -233,7 +233,21 @@ bool stdlibReusable(const CajetaJit::Options& o) {
         // baseline mutation verifyPristine exists to catch, and it would
         // land on the next test rather than this one. Instrumented compiles
         // take the fresh path.
-        && o.profiler == cajeta::Profiler::Off;
+        && o.profiler == cajeta::Profiler::Off
+        // ...and so must a --line-info=off compile, for the same reason with
+        // the sign flipped. Reuse shares ONE runtime copy, and line-info
+        // presence is published into it by a global ctor
+        // (__cajeta.lineinfo.register). A reusing lineInfo=off test therefore
+        // borrows a runtime where an EARLIER lineInfo=on test already set the
+        // flag, and __cajeta_line_info_is_present answers 1 for a build that
+        // emitted no probes at all.
+        //
+        // That is not cosmetic: it is the exact state §2.5's refusal exists to
+        // detect, so the test that pins the refusal was the one it broke —
+        // and only under the sweep, which exports CAJETA_STDLIB_REUSE=1 while
+        // a bare run does not. Found by the full suite; a targeted run and
+        // even 24-way contention both pass.
+        && o.lineInfoEnabled;
 }
 
 // Process-global cache: the stdlib parsed + codegen'd ONCE into a shared
