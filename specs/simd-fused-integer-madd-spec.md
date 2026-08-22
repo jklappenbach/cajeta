@@ -83,9 +83,19 @@ operation, not the two originally proposed, and it is a GENERALIZATION of the
   reducing per sub-block ran 70.7 ms against 24.2 ms for the same kernel
   reducing once per block.
 
-- **4.2** The existing `Vector<int8,4>.dot -> int32` is this operation at N=1
-  with the accumulator dropped and the lane collapsed to a scalar. It should
-  generalize rather than gain a sibling family.
+- **4.2** CORRECTED 2026-08-22 — the existing `Vector<int8,4>.dot -> int32` is
+  this operation at N=1 with the accumulator dropped and the lane collapsed to
+  a scalar ONLY when both operands share a signedness. `dot` is a SAME-SIGN
+  operation: it takes both operands' signedness from the receiver, because
+  `OpSDot`/`OpUDot` are same-sign instructions. `dotAccum` is the MIXED
+  unsigned x signed shape of §4.3 — weights take the receiver's signedness,
+  activations are always signed.
+
+  So `uint8.dot(int8)` reads the activations as unsigned and `uint8.dotAccum`
+  does not, and they disagree. Measured on [0,5,10,15] against
+  [-127,-90,-53,-16]: `dotAccum` gives -1220, `dot` gives 6460. They agree for
+  `int8 x int8`. This is a trap for anyone reading "dotAccum generalizes dot",
+  so both halves are pinned by test — the agreement AND the difference.
 
 - **4.3** Two sign variants, not four: `uint8 x int8` (quantized weights
   against signed activations — the case every K-quant needs) and

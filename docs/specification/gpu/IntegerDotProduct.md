@@ -83,6 +83,18 @@ Operands are `4N` lanes of 8-bit against a `Vector<int32,N>` accumulator: lanes
 `4i..4i+3` multiply, sum, and add into accumulator lane `i`. Reduce once at the
 end of the block instead of once per group.
 
+**`dotAccum` is not simply a wider `dot`.** `dot` is SAME-SIGN — it reads both
+operands with the receiver's signedness, because the hardware ops behind it
+(`OpSDot`/`OpUDot`) are same-sign. `dotAccum` is MIXED unsigned x signed, the
+shape quantized inference actually needs and the one `vpdpbusd`, `usdot`,
+`sudot4` and `vqdotsu` all provide: the weights take the receiver's signedness,
+the activations are always signed. So for an unsigned receiver the two give
+different answers — `Vector<uint8,4>[0,5,10,15]` against
+`Vector<int8,4>[-127,-90,-53,-16]` is -1220 through `dotAccum` and 6460 through
+`dot`, which reads those bytes as 129/166/203/240. They agree for `int8` x
+`int8`. Use `dotAccum` for quantized weights against signed activations, which
+is the case that motivates it.
+
 | target | what it becomes |
 |---|---|
 | x86 AVX512-VNNI / AVX-VNNI | `vpdpbusd` — one instruction |

@@ -142,6 +142,75 @@ const char* DOTACC_ZERO =
     "    }\n"
     "}\n";
 
+// 3.1.1 — `dot` and `dotAccum` are the same operation. dot(w4, a4) collapses
+// one 4-lane group to a scalar; dotAccum keeps N of them in lanes. Lane k of
+// dotAccum over a zero accumulator must equal dot() of the k-th group, or the
+// two spellings mean different things and Unit 3's rewrite is unsound.
+const char* DOT_AGREES =
+    "package test;\n"
+    "public final class D {\n"
+    "    public static int32 run() {\n"
+    "        int8[] w #= heap int8[64];\n"
+    "        int8[] a #= heap int8[64];\n"
+    "        int32[] z #= heap int32[16];\n"
+    "        int32 i = 0;\n"
+    "        while (i < 64) {\n"
+    "            w[i] = (int8) ((i * 5) % 16);\n"
+    "            a[i] = (int8) (((i * 37) % 255) - 127);\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        i = 0;\n"
+    "        while (i < 16) { z[i] = 0; i = i + 1; }\n"
+    "        Vector<int32,16> r =\n"
+    "            w.vload<64>(0).dotAccum(a.vload<64>(0), z.vload<16>(0));\n"
+    "        int32 lane = 0;\n"
+    "        while (lane < 16) {\n"
+    "            Vector<int8,4> wg = w.vload<4>((int64) (lane * 4));\n"
+    "            Vector<int8,4>  ag = a.vload<4>((int64) (lane * 4));\n"
+    "            if (r[lane] != wg.dot(ag)) { return 400 + lane; }\n"
+    "            lane = lane + 1;\n"
+    "        }\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n";
+
+// 3.1.1, the other half. The two spellings deliberately DIFFER when the
+// receiver is unsigned, and that must be pinned rather than left to be
+// discovered. `dot` takes BOTH operands' signedness from the receiver
+// (OpSDot / OpUDot are same-sign instructions), so uint8.dot(int8) reads the
+// activations as unsigned. `dotAccum` is the mixed unsigned x signed shape
+// every ISA chose for quantized work (vpdpbusd, usdot, sudot4, vqdotsu — spec
+// §4.3/§4.5): weights take the receiver's signedness, activations are always
+// signed.
+//
+// Lane 0 here is w = [0,5,10,15] against a = [-127,-90,-53,-16]:
+//   dotAccum  0*-127 + 5*-90 + 10*-53 + 15*-16          = -1220
+//   dot       the same bytes read unsigned, 129/166/203/240 = 6460
+const char* DOT_DIFFERS =
+    "package test;\n"
+    "public final class D {\n"
+    "    public static int32 run() {\n"
+    "        uint8[] w #= heap uint8[64];\n"
+    "        int8[] a #= heap int8[64];\n"
+    "        int32[] z #= heap int32[16];\n"
+    "        int32 i = 0;\n"
+    "        while (i < 64) {\n"
+    "            w[i] = (uint8) ((i * 5) % 16);\n"
+    "            a[i] = (int8) (((i * 37) % 255) - 127);\n"
+    "            i = i + 1;\n"
+    "        }\n"
+    "        i = 0;\n"
+    "        while (i < 16) { z[i] = 0; i = i + 1; }\n"
+    "        Vector<int32,16> r =\n"
+    "            w.vload<64>(0).dotAccum(a.vload<64>(0), z.vload<16>(0));\n"
+    "        if (r[0] != -1220) { return 500; }\n"
+    "        Vector<uint8,4> wg = w.vload<4>(0);\n"
+    "        Vector<int8,4>  ag = a.vload<4>(0);\n"
+    "        if (wg.dot(ag) != 6460) { return 501; }\n"
+    "        return 1;\n"
+    "    }\n"
+    "}\n";
+
 }  // namespace
 
 // 1.1.1 — matches a scalar reference, with a non-zero accumulator.
@@ -223,6 +292,16 @@ TEST(VectorDotAccumTests, namedCpuStillReachesTheVnniTier) {
         << "a named VNNI cpu (" << namedVnniCpu() << ") must reach the VNNI "
            "tier; its explicit feature string is empty, so the tier check has "
            "to ask the subtarget";
+}
+
+// 3.1.1 — the two spellings are one operation.
+TEST(VectorDotAccumTests, dotIsDotAccumOverAZeroAccumulator) {
+    EXPECT_EQ(runI32(DOT_AGREES), 1);
+}
+
+// 3.1.1 — and the mixed-sign case, where they deliberately differ.
+TEST(VectorDotAccumTests, dotAndDotAccumDifferOnAnUnsignedReceiver) {
+    EXPECT_EQ(runI32(DOT_DIFFERS), 1);
 }
 
 // 2.1.1 — the pre-VNNI x86 tier agrees bit-for-bit with the VNNI one.
