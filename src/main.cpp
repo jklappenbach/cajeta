@@ -1,5 +1,7 @@
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <llvm/Support/InitLLVM.h>
@@ -9,6 +11,7 @@
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/compile/LintService.h"
+#include "cajeta/prof/ProfileSelection.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/DiagnosticEngine.h"
@@ -120,6 +123,16 @@ void printUsage(const char* progname) {
               << "                                       line = shadow stack, so traces resolve to\n"
               << "                                       Type.method(File.cajeta:NN). full = adds\n"
               << "                                       safepoints + locals for an external debugger.\n"
+              << "  --profiler=off|instrument            Exact call counts + inclusive time (default off).\n"
+              << "                                       A separate tier from sampling: probes are emitted\n"
+              << "                                       into the build, so it needs a rebuild and costs\n"
+              << "                                       nothing when off.\n"
+              << "  --profiler-select=<file>             Limit instrumentation to the classes this file\n"
+              << "                                       selects. One `include <pattern>` or\n"
+              << "                                       `exclude <pattern>` per line; `**` crosses package\n"
+              << "                                       boundaries, `*` does not. Include defines the\n"
+              << "                                       universe, exclude subtracts. Unselected code carries\n"
+              << "                                       NO probe, so a narrow selection is an overhead cut.\n"
               << "\n"
               << "Lint / IDE (compiler-lint-mode-spec, lint-server-spec):\n"
               << "  --lint <file>                        Diagnostics-only: run the semantic passes over one\n"
@@ -500,6 +513,35 @@ int main(int argc, const char* argv[]) {
             if (!cajeta::applyDebugInfo(value, compiler.getMutableFlags(), &diErr)) {
                 std::cerr << "cajeta: " << diErr << "\n";
                 printUsage(argv[0]); return 1;
+            }
+        } else if (match(arg, "profiler", value)) {
+            std::string pErr;
+            if (!cajeta::applyProfiler(value, compiler.getMutableFlags(), &pErr)) {
+                std::cerr << "cajeta: " << pErr << "\n";
+                printUsage(argv[0]); return 1;
+            }
+        } else if (match(arg, "profiler-select", value)) {
+            // The FILE's CONTENTS land in the flags, not its path
+            // (cajeta-profiler §3.10). The path is kept only for the trace
+            // record and diagnostics, so two build roots that read the same
+            // selection from different paths still share cached objects, and
+            // an in-place edit of one cannot alias the previous probe set.
+            std::ifstream selIn(value, std::ios::binary);
+            if (!selIn) {
+                std::cerr << "cajeta: cannot read --profiler-select file: "
+                          << value << "\n";
+                return 1;
+            }
+            std::ostringstream selBuf;
+            selBuf << selIn.rdbuf();
+            compiler.getMutableFlags().profilerSelect = selBuf.str();
+            compiler.getMutableFlags().profilerSelectOrigin = value;
+            std::vector<std::string> selErrors;
+            cajeta::prof::ProfileSelection::parse(
+                compiler.getFlags().profilerSelect, &selErrors);
+            if (!selErrors.empty()) {
+                for (const auto& e : selErrors) std::cerr << "cajeta: " << e << "\n";
+                return 1;
             }
         } else if (match(arg, "diag-format", value)) {
             if (!setEnumFlag<DiagFormat>("diag-format", value,

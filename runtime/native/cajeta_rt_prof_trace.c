@@ -595,6 +595,7 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
                                      const char* tier, int32_t rate_hz,
                                      int32_t ring_cap, int64_t samples,
                                      int64_t dropped, int64_t frames);
+int64_t __cajeta_prof_instr_to_trace(CajProfWriter* w, uint64_t ts);
 
 typedef struct {
     const char* tier;
@@ -667,6 +668,31 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
             __cajeta_prof_trace_slice(&w, (uint64_t) last_ts, tracks[i].uuid,
                                       CAJ_TE_SLICE_END, NULL);
 
+    // §3.4 — if this build also carries instrumentation probes, its per-method
+    // records go in the SAME trace, on their own track. Two files would make
+    // "which tier produced this number" a question about provenance the reader
+    // has to keep track of by hand.
+    __cajeta_prof_instr_to_trace(&w, (uint64_t) last_ts);
+
+    int64_t packets = __cajeta_prof_trace_packets(&w);
+    __cajeta_prof_trace_close(&w);
+    return packets;
+}
+
+// An INSTRUMENTED run with no sampler still has a profile to write, and until
+// this existed it wrote nothing: the drain returns early on an empty ring, so
+// `--profiler=instrument` without CAJETA_PROFILER produced exact counts that
+// never left memory.
+int64_t __cajeta_prof_instr_only_to_trace(const char* path) {
+    if (!__cajeta_prof_instr_is_present()) return 0;
+    if (__cajeta_prof_instr_method_count() <= 0) return 0;
+    static CajProfWriter w;
+    if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    // Timestamp 0: the counters are totals over the run, not events at a
+    // moment, and stamping them with "now" would put them after work they
+    // summarize. The run record carries the same stamp for the same reason.
+    __cajeta_prof_trace_metadata(&w, 0, "instrumentation", 0, 0, 0, 0, 0);
+    __cajeta_prof_instr_to_trace(&w, 0);
     int64_t packets = __cajeta_prof_trace_packets(&w);
     __cajeta_prof_trace_close(&w);
     return packets;
@@ -985,6 +1011,91 @@ static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
     return n;
 }
 
+// §3.5 / §3.12 / §3.13 — what an INSTRUMENTED build cost, what it left out,
+// and what it was optimized at. Emitted only when instrumentation probes
+// actually exist: a sampled run must not carry a zero-valued instrumentation
+// record, because "no probes were built" and "the probes recorded nothing" are
+// different facts and only one of them means the developer should look again.
+//
+// The overhead is pairs x a CALIBRATED per-pair cost, not a constant. §3.5
+// exists so the developer can judge how much the measurement distorted the
+// program, and a figure this file guessed at would read exactly like a measured
+// one.
+static int32_t caj_prof_instr_annos(uint8_t* out, int32_t cap) {
+    if (!__cajeta_prof_instr_is_present()) return 0;
+    if (cap < 512) return 0;
+    int32_t n = 0;
+    n += caj_prof_anno_str(out + n, "instr_tier", "instrumentation");
+    n += caj_prof_anno_int(out + n, "instr_methods",
+                           __cajeta_prof_instr_method_count());
+    n += caj_prof_anno_int(out + n, "instr_calls",
+                           __cajeta_prof_instr_total_calls());
+    n += caj_prof_anno_int(out + n, "instr_probe_pairs",
+                           __cajeta_prof_instr_probe_pairs());
+    n += caj_prof_anno_int(out + n, "instr_probe_ns",
+                           __cajeta_prof_instr_probe_ns());
+    n += caj_prof_anno_int(out + n, "instr_overhead_ns",
+                           __cajeta_prof_instr_overhead_ns());
+    // §3.13 — the flag pins no optimization level, so the level is part of what
+    // every number here means and is never left for the reader to infer.
+    n += caj_prof_anno_int(out + n, "instr_opt_level",
+                           __cajeta_prof_instr_opt_level());
+    // §3.12 — a profile that silently omits code reads as though that code were
+    // free, so the selection travels with the run.
+    const char* sel = __cajeta_prof_instr_selection();
+    n += caj_prof_anno_str(out + n, "instr_selection",
+                           (sel && sel[0]) ? sel : "all");
+    return n;
+}
+
+// §3.4 — the per-method records, on a track of their own. Sampling lands as
+// nested SLICE_BEGIN/END on per-thread tracks; instrumentation lands here as
+// one INSTANT per method, and each carries `source` explicitly as well. Both
+// live in one trace and a consumer can always say which produced a number,
+// which is the whole requirement — a merged timeline whose provenance is a
+// guess is worse than two separate files.
+#define CAJ_INSTR_TRACK_UUID (0x1A000ULL << 44)
+
+int64_t __cajeta_prof_instr_to_trace(CajProfWriter* w, uint64_t ts) {
+    if (!w || !w->f) return 0;
+    const int32_t n_methods = __cajeta_prof_instr_method_count();
+    if (n_methods <= 0) return 0;
+    const int64_t before = __cajeta_prof_trace_packets(w);
+    __cajeta_prof_trace_track(w, CAJ_INSTR_TRACK_UUID, 0, "cajeta.instrumentation");
+
+    for (int32_t i = 0; i < n_methods; i++) {
+        char name[256];
+        const char* ty = __cajeta_prof_instr_method_type(i);
+        const char* mn = __cajeta_prof_instr_method_name(i);
+        const char* fl = __cajeta_prof_instr_method_file(i);
+        snprintf(name, sizeof(name), "%s%s%s(%s)",
+                 ty ? ty : "", (ty && ty[0]) ? "." : "", mn ? mn : "?",
+                 fl ? fl : "");
+        uint64_t iid = __cajeta_prof_intern(w, name);
+        uint64_t src = (fl && fl[0] && mn) ? __cajeta_prof_intern_source(w, fl, mn, 0) : 0;
+
+        uint8_t extra[512];
+        int32_t e = 0;
+        e += caj_prof_anno_str(extra + e, "source", "instrumentation");
+        e += caj_prof_anno_int(extra + e, "calls",
+                               __cajeta_prof_instr_method_calls(i));
+        e += caj_prof_anno_int(extra + e, "inclusive_ns",
+                               __cajeta_prof_instr_method_inclusive_ns(i));
+        // §3.11 — entries reached with no probed frame beneath them. Recorded
+        // as a fact about this method rather than attributed to the nearest
+        // probed ancestor, which would be a fabricated call edge.
+        e += caj_prof_anno_int(extra + e, "outside_selection_calls",
+                               __cajeta_prof_instr_method_outside_calls(i));
+
+        CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+        __cajeta_prof_emit_slice_anno(&b, w->seq_id, ts, CAJ_INSTR_TRACK_UUID,
+                                      CAJ_TE_INSTANT, iid, NULL, src, 0, 0,
+                                      extra, e);
+        caj_prof_flush(w, &b);
+    }
+    return __cajeta_prof_trace_packets(w) - before;
+}
+
 int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
                                      const char* tier, int32_t rate_hz,
                                      int32_t ring_cap, int64_t samples,
@@ -1015,6 +1126,8 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     // not whether it was produced WELL — a 12-confidence fit and a
     // 99-confidence fit render identically.
     n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);
+    // §3.5/§3.12/§3.13 — present only on a build that actually carries probes.
+    n += caj_prof_instr_annos(te + n, (int32_t) sizeof(te) - n);
     uint8_t pkt[2048];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, w->seq_id);
@@ -1087,7 +1200,12 @@ int64_t __cajeta_prof_shutdown(void) {
     // and gets blamed on the program under test.
     __cajeta_prof_disarm();
     __cajeta_prof_gpu_trace_detach();           // flush any attached GPU trace
-    return __cajeta_prof_drain_to_trace(__cajeta_prof_out_path());
+    int64_t packets = __cajeta_prof_drain_to_trace(__cajeta_prof_out_path());
+    // Nothing sampled — but an instrumented build still has exact counts, and
+    // §3.1 promises them whether or not anyone armed the sampler.
+    if (packets == 0)
+        packets = __cajeta_prof_instr_only_to_trace(__cajeta_prof_out_path());
+    return packets;
 }
 
 // Tests arm and drain repeatedly in one process; without this the second run in

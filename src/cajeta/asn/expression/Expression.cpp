@@ -5,6 +5,7 @@
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
+#include "cajeta/prof/ProfileCodegen.h"
 #include "cajeta/compile/ExcFrameSetjmp.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/type/CajetaClass.h"
@@ -4488,6 +4489,9 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::IRBuilder<>* lambdaBuilder = new llvm::IRBuilder<>(entryBB);
         module->setBuilder(lambdaBuilder);
 
+        // U10: the lambda's instrumentation probe pair, closed alongside the
+        // shadow frame in the `ret` walk below.
+        prof::ProfileFrame lambdaProfFrame;
         // cajeta-profiler 6.4.C: push a line-info shadow frame for the lambda,
         // exactly as Method::generateCode's prologue does for an ordinary
         // method (no-op unless --line-info). This body is codegen'd inline
@@ -4510,6 +4514,13 @@ bool cajetaRhsCarriesRedundantSharp(
                                                : std::string();
             if (fileName.empty()) fileName = module->remappedSourcePath();
             dbg::emitLineEnter(module, typeName, "<lambda>", fileName);
+            // U10 (spec §3.1): the lambda gets its own instrumentation probe
+            // for the same reason it gets its own shadow frame — a callback is
+            // the user's code, and a profile that folds it into the terminal
+            // operation reports the wrong method. Selection is by the
+            // DECLARING class, so a lambda is in or out with its owner.
+            lambdaProfFrame = prof::emitProfileEnter(module, typeName,
+                                                     "<lambda>", fileName);
         }
 
         // Open a fresh scope for the lambda's parameters + captures. After
@@ -4776,6 +4787,10 @@ bool cajetaRhsCarriesRedundantSharp(
                 }
             }
         }
+        // U10: and close the instrumentation span at the same `ret`s, for the
+        // same reason — a lambda's exits are not reachable from
+        // emitScopeExitToWatermark.
+        prof::emitProfileExitAtReturns(module, fn, lambdaProfFrame);
 
         module->setBuilder(outerBuilder);
         module->setCurrentMethod(outerMethod);

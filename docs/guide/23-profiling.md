@@ -137,6 +137,102 @@ pointers loses that function; this one keeps it.
 `tools/profiler/attribution-check.sh` re-checks this end to end against a built
 toolchain.
 
+## Exact counts: `--profiler=instrument`
+
+Sampling answers *where does wall time go*. It cannot answer *how many times* —
+a method called four million times for a nanosecond each may not appear in a
+single sample. When that is the question, build with instrumentation:
+
+```console
+$ cajeta build --profiler=instrument
+$ ./build/exe/myapp
+$ # -> ./cajeta.pftrace, with a cajeta.instrumentation track
+```
+
+Each selected method gets an enter/exit probe pair, and the trace carries its
+exact entry count and inclusive time. This is a **separate tier**, not a better
+sampler: the two coexist in one trace and stay distinguishable — sampling as
+nested slices on per-thread tracks, instrumentation as records on
+`cajeta.instrumentation`, each stating `source` outright.
+
+Unlike sampling, this **needs a rebuild** and it is not free. That is the
+trade: the probe is inside the callee's body, so it counts calls the machine
+actually made — including calls into methods the optimizer inlined away, which
+a profiler reading DWARF or frame pointers cannot see at all.
+
+The run reports what it cost itself. `instr_probe_ns` on the run record is the
+per-pair cost **measured on the machine that ran**, and `instr_overhead_ns` is
+that times the number of pairs — so you can judge how much the measurement
+distorted what it measured instead of guessing.
+
+### What it costs
+
+Measured 2026-08-22, `-O3` native build, 20 M calls:
+
+| | uninstrumented | instrumented |
+|---|---|---|
+| tight loop over a one-line callee | 0.06 s | 1.18 s |
+
+The useful form of that number is not the ratio. **A probe pair costs a fixed
+~57 ns per call**, so the overhead is entirely a function of how often you call,
+and nothing else:
+
+| calls/second in the hot path | added wall time |
+|---|---|
+| 100 K | 0.6 % |
+| 1 M | 6 % |
+| 10 M | 57 % |
+
+Pick the tier from that table, not from a rule of thumb. The 19x above is what
+20 M calls/second of a method that does almost nothing looks like; a method
+doing a microsecond of real work pays 6 % at the same call count.
+
+Two independent measurements agree on the 57 ns, which is why it is quoted
+rather than estimated: the run's own `instr_probe_ns` self-calibration reported
+57, and timing the same program with and against the flag gave 56.
+
+About three quarters of it is the two timestamps — `clock_gettime(CLOCK_MONOTONIC)`
+measures 21 ns/call on this machine, and a span needs one at each end. The rest
+is two relaxed atomic adds and the calls themselves. So if you need counts and
+not durations, that is where the saving would come from; today the tier always
+measures both.
+
+The direct lever is `--profiler-select`: probes are emitted only for selected
+code, so narrowing the selection removes the cost rather than hiding it.
+
+### Instrument part of a program
+
+Probes are emitted only for selected code. This is a compile-time decision, so
+unselected code carries nothing to skip — a narrow selection is a real
+reduction in overhead, not a display filter.
+
+```console
+$ cat prof.select
+# the codec, but not its logging
+include dev.myapp.codec.**
+exclude dev.myapp.codec.Trace
+
+$ cajeta build --profiler=instrument --profiler-select=prof.select
+```
+
+`**` crosses package boundaries, `*` stays within one name. Include defines the
+universe (no `include` lines means everything) and `exclude` subtracts from it.
+That is the whole rule — membership never depends on line order or on which
+pattern is more specific, so a file can be read in any order and mean the same
+thing.
+
+Two things the trace records so you do not have to remember them:
+
+- **The selection in force.** A profile that silently omits code otherwise
+  reads as though that code were free.
+- **The optimization level the build used.** `--profiler=instrument` pins no
+  level, so the level is part of what every number means.
+
+A method entered with no probed frame beneath it — called from excluded code,
+or from the runtime at the program's root — records that as
+`outside_selection_calls` rather than being attributed to the nearest probed
+ancestor, which would draw a call edge that never happened.
+
 ## GPU work
 
 When a program dispatches kernels, each device, context, and queue is its own

@@ -104,6 +104,16 @@ namespace cajeta {
         // shadow stack) but would share a cache key under onOff(debugInfo),
         // so one's artifact would be re-published for the other.
         pairs.emplace_back("debug-info", debugInfoName(f.debugInfoLevel));
+        // cajeta-profiler §3.7 — an instrumented build and a plain one must
+        // never alias, because the difference is a probe pair in every
+        // selected method.
+        pairs.emplace_back("profiler", profilerName(f.profiler));
+        // §3.10 — the selection's CONTENTS, not the path it was read from.
+        // Keying on the path passes every other test in this area and then
+        // hands back objects probed to a selection the user edited in place.
+        // The origin string is deliberately absent: two build roots that read
+        // the same selection from different paths must share objects.
+        pairs.emplace_back("profiler-select", f.profilerSelect);
 
         pairs.emplace_back("opt",
             f.opt == OptLevel::O0 ? "0"

@@ -427,6 +427,13 @@ void __cajeta_dbg_frame_leave(void* node) {
 typedef struct {
     CajetaShadowFrame frames[CAJETA_SHADOW_MAX];
     int32_t top;
+    // cajeta-profiler Unit 10 (spec §3.11): how many INSTRUMENTATION probes are
+    // live on this fiber's stack. Lives here, and not in a __thread of its own,
+    // for the same reason the frames do — a carrier hosts many fibers, so a
+    // per-thread depth would be shared by every fiber that ever ran on it and
+    // a yield would leave the next one believing it had a probed ancestor.
+    // Zero at entry means the caller was outside the selection.
+    int32_t instr_depth;
 } CajetaShadowStack;
 
 // Program/main-thread slot — used by any thread that is not running a fiber

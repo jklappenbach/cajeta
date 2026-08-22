@@ -108,6 +108,15 @@ namespace cajeta {
     //          debugger needs.
     enum class DebugInfo { Off, Line, Full };
 
+    // --profiler=off|instrument (specs/cajeta-profiler-spec.md §3). A separate
+    // TIER from sampling, not a replacement: sampling answers "where does wall
+    // time go", instrumentation answers "how many times, and how long exactly".
+    //   Off        — no probes emitted, no residual cost (§3.2).
+    //   Instrument — a per-method enter/exit probe pair, so counts are EXACT.
+    // Deliberately not a bool and deliberately not `profileCounters`, which is
+    // the PGO-collection instrumentation and answers a different question.
+    enum class Profiler { Off, Instrument };
+
     struct CompilerFlags {
         // ----- safety nets (runtime checks) -----
         BoundsCheck     bounds              = BoundsCheck::On;
@@ -130,6 +139,28 @@ namespace cajeta {
 
         // ----- profiling -----
         bool            profileCounters     = false;  // PGO-collection instrumentation
+
+        // --profiler=instrument: emit exact-count/exact-time probes (spec §3).
+        // Off by default in every mode — an instrumented build is a build the
+        // developer asked for, and §3.2 promises the un-asked-for build is
+        // byte-identical to one compiled before this flag existed.
+        Profiler        profiler            = Profiler::Off;
+
+        // --profiler-select=<file>: the CONTENTS of the selection, never the
+        // path. Probes are emitted only for selected code (§3.8) — the runtime
+        // filters nothing, which is what makes a narrow selection an overhead
+        // reduction rather than a display preference.
+        //
+        // The contents live here, and the cache key hashes THESE BYTES (§3.10).
+        // Keying on the path passes every other test in this area and then
+        // silently serves objects probed to a selection the user has since
+        // edited in place.
+        std::string     profilerSelect      = "";
+
+        // Where the selection came from, for the trace record (§3.12) and for
+        // diagnostics. Deliberately OUT of the cache key: two build roots that
+        // read the same selection from different paths must share objects.
+        std::string     profilerSelectOrigin = "";
 
         // ----- optimization -----
         OptLevel        opt                 = OptLevel::O0;  // IR opt for --emit=obj/exe
@@ -321,6 +352,25 @@ namespace cajeta {
         f.safepoints     = f.debugInfo;
         f.lineInfo       = (level != DebugInfo::Off);
         return true;
+    }
+
+    // --profiler=off|instrument. Returns false on an unknown value, leaving
+    // `f` untouched and (when given) filling `error` with the accepted set.
+    inline bool applyProfiler(const std::string& value, CompilerFlags& f,
+                              std::string* error) {
+        if      (value == "off")        f.profiler = Profiler::Off;
+        else if (value == "instrument") f.profiler = Profiler::Instrument;
+        else {
+            if (error)
+                *error = "unrecognized value for --profiler: " + value +
+                         " (expected off|instrument)";
+            return false;
+        }
+        return true;
+    }
+
+    inline const char* profilerName(Profiler p) {
+        return p == Profiler::Instrument ? "instrument" : "off";
     }
 
     inline const char* debugInfoName(DebugInfo level) {

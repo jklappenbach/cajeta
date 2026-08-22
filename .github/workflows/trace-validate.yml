@@ -43,10 +43,14 @@ jobs:
           ./tracegen min.pftrace
           ./tracegen --profile prof.pftrace
           ./tracegen --gpu gpu.pftrace
-          ls -l min.pftrace prof.pftrace gpu.pftrace
+          ./tracegen --instr instr.pftrace
+          ./tracegen --both both.pftrace
+          ls -l min.pftrace prof.pftrace gpu.pftrace instr.pftrace both.pftrace
           test -s min.pftrace
           test -s prof.pftrace
           test -s gpu.pftrace
+          test -s instr.pftrace
+          test -s both.pftrace
 
       - name: Fetch trace_processor
         run: |
@@ -112,6 +116,74 @@ jobs:
           # ingestibility was verified with a probe trace that does reference
           # the clock (2 rows). See third_party/perfetto/PROVENANCE.md.
 
+      # Unit 10 — exact instrumentation (spec 3.4, 3.5, 3.11, 3.12, 3.13).
+      #
+      # Every assertion here is about a number a reader would otherwise have to
+      # infer. A trace that reports counts without saying what was EXCLUDED
+      # reads as though the excluded code were free; one that reports timings
+      # without saying what the probes cost, or what optimization level the
+      # build used, hands over figures whose meaning is a guess.
+      - name: Instrumentation records its counts, its cost and its selection
+        run: |
+          set -euo pipefail
+          i() { ./trace_processor -q /dev/stdin instr.pftrace; }
+
+          echo "== run record: cost (3.5), selection (3.12), opt level (3.13) =="
+          echo "select distinct key from args where key like 'debug.%';" | i | tee ikeys.txt
+          for k in debug.instr_tier debug.instr_methods debug.instr_calls \
+                   debug.instr_probe_pairs debug.instr_probe_ns \
+                   debug.instr_overhead_ns debug.instr_opt_level \
+                   debug.instr_selection; do
+            grep -q "$k" ikeys.txt || { echo "FAIL: $k missing"; exit 1; }
+          done
+
+          echo "== the selection travels VERBATIM, not as a boolean =="
+          echo "select string_value from args where key='debug.instr_selection';" \
+            | i | tee sel.txt
+          grep -q 'exclude test.Noisy' sel.txt \
+            || { echo "FAIL: the selection in force did not reach the trace (3.12)"; exit 1; }
+
+          echo "== overhead is pairs x measured cost, not a guess =="
+          echo "select int_value from args where key='debug.instr_overhead_ns';" \
+            | i | tee oh.txt
+          # Anchored, not a substring search: 7938 is 441 x 18 exactly, and a
+          # loose match would also accept 79380 or 17938.
+          grep -qE '^"?7938"?$' oh.txt \
+            || { echo "FAIL: 441 pairs x 18 ns did not survive (3.5)"; exit 1; }
+
+          echo "== per-method counts and inclusive time (10.2.f) =="
+          echo "select s.name, a.key, a.int_value from slice s
+                join args a on s.arg_set_id = a.arg_set_id
+                where a.key in ('debug.calls','debug.inclusive_ns',
+                                'debug.outside_selection_calls')
+                order by s.name, a.key;" | i | tee per.txt
+          grep -q 'test.App.leaf(App.cajeta)","debug.calls",400' per.txt \
+            || { echo "FAIL: exact call counts did not reach the trace"; exit 1; }
+          grep -q 'test.App.run(App.cajeta)","debug.outside_selection_calls",1' per.txt \
+            || { echo "FAIL: a call from outside the selection was not recorded (3.11)"; exit 1; }
+
+      # 3.4 — both tiers in ONE trace, still distinguishable. The failure this
+      # catches is a merge that makes provenance a guess: an instrumented count
+      # rendered as though it were a sampled slice is not a better profile, it
+      # is a profile nobody can check.
+      - name: Sampling and instrumentation coexist and stay distinguishable
+        run: |
+          set -euo pipefail
+          b() { ./trace_processor -q /dev/stdin both.pftrace; }
+
+          echo "select t.name, count(*) from slice s
+                join track t on s.track_id = t.id group by t.name;" | b | tee tracks.txt
+          grep -q 'cajeta.instrumentation' tracks.txt \
+            || { echo "FAIL: no instrumentation track in the merged trace"; exit 1; }
+          grep -q 'cajeta.thread' tracks.txt \
+            || { echo "FAIL: no sampled thread track in the merged trace"; exit 1; }
+
+          echo "== and each instrumented record names its source outright =="
+          echo "select distinct string_value from args where key='debug.source';" \
+            | b | tee src.txt
+          grep -q 'instrumentation' src.txt \
+            || { echo "FAIL: an instrumented record does not say what produced it"; exit 1; }
+
       # "without warnings" is the actual requirement, not "without crashing".
       # trace_processor records its own complaints in the stats table; an
       # unparseable packet or a dropped field shows up there rather than as a
@@ -119,12 +191,15 @@ jobs:
       - name: No error-severity stats
         run: |
           set -euo pipefail
-          echo "select name, value from stats where severity = 'error' and value > 0;" \
-            | ./trace_processor -q /dev/stdin min.pftrace | tee stats.txt
-          if grep -qE '^[a-z_]+ +[1-9]' stats.txt; then
-            echo "FAIL: trace_processor reported error-severity stats"
-            exit 1
-          fi
+          for t in min.pftrace prof.pftrace gpu.pftrace instr.pftrace both.pftrace; do
+            echo "== $t =="
+            echo "select name, value from stats where severity = 'error' and value > 0;" \
+              | ./trace_processor -q /dev/stdin "$t" | tee stats.txt
+            if grep -qE '^[a-z_]+ +[1-9]' stats.txt; then
+              echo "FAIL: trace_processor reported error-severity stats for $t"
+              exit 1
+            fi
+          done
 
       # Unit 6: the sample->slice transform, run on synthetic samples through the
       # runtime's OWN code (tracegen compiles it verbatim, minus the ring drain).

@@ -226,7 +226,14 @@ bool stdlibReusable(const CajetaJit::Options& o) {
     return o.boundsCheckEnabled
         && o.overflowChecksEnabled
         && !o.boundsCheckMode.has_value()
-        && !o.liveSetMode.has_value();
+        && !o.liveSetMode.has_value()
+        // cajeta-profiler U10: an instrumented compile adds a #ProfMethod
+        // global and a registration ctor to whatever module the builder is
+        // in — including the SHARED stdlib module. That is exactly the
+        // baseline mutation verifyPristine exists to catch, and it would
+        // land on the next test rather than this one. Instrumented compiles
+        // take the fresh path.
+        && o.profiler == cajeta::Profiler::Off;
 }
 
 // Process-global cache: the stdlib parsed + codegen'd ONCE into a shared
@@ -881,6 +888,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
+        compiler->getMutableFlags().profiler = opts.profiler;
+        compiler->getMutableFlags().profilerSelect = opts.profilerSelect;
         if (opts.session || !opts.sessionHostName.empty()) {
             compiler->setSessionState(opts.session, opts.sessionHostName);
         }

@@ -17,6 +17,7 @@
 #include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
+#include "cajeta/prof/ProfileCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../field/ParameterField.h"
@@ -1594,6 +1595,12 @@ namespace cajeta {
         // so the pairing has to be decided here.
         auto m = module->getCurrentMethod();
         if (m && m->hasLineFrame()) dbg::emitLineLeave(module);
+        // cajeta-profiler U10: close the instrumentation span on this return
+        // path. Gated on the FRAME, not on the flag, for the 6.4.B reason
+        // above — a lambda body running under the enclosing method's
+        // getCurrentMethod() must not close the enclosing method's span. The
+        // frame is empty for anything the prologue did not probe.
+        if (m) prof::emitProfileExit(module, m->getProfileFrame());
         if (!m) return;
         llvm::AllocaInst* mark = m->getScopeWatermark();
         if (!mark) return;

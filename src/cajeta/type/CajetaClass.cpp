@@ -3436,7 +3436,15 @@ namespace cajeta {
         return n == "__cajeta_line_enter" || n == "__cajeta_line_mark"
             || n == "__cajeta_line_leave" || n == "__cajeta_dbg_frame_enter"
             || n == "__cajeta_dbg_frame_leave" || n == "__cajeta_dbg_local"
-            || n == "__cajeta_dbg_safepoint";
+            || n == "__cajeta_dbg_safepoint"
+            // cajeta-profiler §3.3: the exact-instrumentation probe pair is
+            // balanced and reclaims nothing, so a drop that only calls it is
+            // still a no-op drop. Without this, `--profiler=instrument` would
+            // silently switch off trivial-stack-drop elision and charge the
+            // ~230x value-type drop tax on top of the probes — the measurement
+            // changing the program in the one way a profiler must not.
+            || n == "__cajeta_prof_instr_enter"
+            || n == "__cajeta_prof_instr_exit";
     }
 
     static bool isNoOpDropFn(llvm::Function* f,

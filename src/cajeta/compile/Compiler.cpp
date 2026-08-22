@@ -1056,6 +1056,11 @@ namespace cajeta {
             {"lineInfo", flags.lineInfo ? "1" : "0"},
             {"lazyScope", flags.lazyScope ? "1" : "0"},
             {"profileCounters", flags.profileCounters ? "1" : "0"},
+            // §3.7 / §3.10 — the stdlib module's IR carries probes too, and a
+            // selection edited in place must not alias the primed module built
+            // under the previous one.
+            {"profiler", std::to_string((int) flags.profiler)},
+            {"profilerSelect", flags.profilerSelect},
         };
         PrimeCacheKey key;
         key.discriminator = std::string("jitprime-")

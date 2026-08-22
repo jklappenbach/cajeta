@@ -32,6 +32,10 @@
 // runtime's OWN code, so a stub here would validate the stub.
 #include "../../runtime/native/cajeta_rt_prof_clock.c"
 #include "../../runtime/native/cajeta_rt_prof_integrity.c"
+// Unit 10: the exact-instrumentation counters + their run-record annotations.
+// Its probe pair needs the runtime's per-fiber shadow stack and is excluded
+// from this build; everything the TRACE sees is compiled verbatim.
+#include "../../runtime/native/cajeta_rt_prof_instr.c"
 #include "../../runtime/native/cajeta_rt_prof_trace.c"
 
 // No fiber-scheduler stub is needed any more: the transform reads the fiber's
@@ -47,7 +51,20 @@
 // `inner`, sample 4 leaves `middle` too. A correct diff closes exactly what
 // vanished and leaves `run` open throughout; a transform that closed everything
 // each tick would still produce a loadable trace, just a wrong one.
-static int profile_mode(const char* out) {
+// §3.4 — the two tiers in ONE trace. Registering the instrumentation
+// descriptors before the sample transform runs is exactly what an instrumented
+// build that also armed the sampler looks like at drain time, and it is the
+// only way to check that a consumer can still tell the two apart: sampling is
+// nested slices on per-owner tracks, instrumentation is instants on
+// `cajeta.instrumentation`, and each instant says `source` outright.
+static void instr_register_synthetic(void);
+
+static int profile_mode_impl(const char* out, int with_instr);
+
+static int profile_mode(const char* out) { return profile_mode_impl(out, 0); }
+static int both_mode(const char* out)    { return profile_mode_impl(out, 1); }
+
+static int profile_mode_impl(const char* out, int with_instr) {
     static CajetaFrameDesc run    = { "test.App", "run",    "App.cajeta" };
     static CajetaFrameDesc middle = { "test.App", "middle", "App.cajeta" };
     static CajetaFrameDesc inner  = { "test.App", "inner",  "App.cajeta" };
@@ -95,6 +112,7 @@ static int profile_mode(const char* out) {
     meta.samples = 40;
     meta.dropped = 8;          // deliberately non-zero: CI asserts it survives
     meta.frames = 96;
+    if (with_instr) instr_register_synthetic();
     int64_t packets = __cajeta_prof_samples_to_trace_meta(samples, n, out, &meta);
     printf("tracegen: profile mode wrote %lld packets to %s\n",
            (long long) packets, out);
@@ -165,9 +183,39 @@ static int gpu_mode(const char* out) {
     return 0;
 }
 
+// Unit 10 — a synthetic INSTRUMENTED run: three methods with known counts, a
+// known probe cost, and a selection that omits something. The descriptors are
+// built here exactly as ProfileCodegen emits them and registered without a
+// probe, because the probe pair needs the runtime's per-fiber shadow stack and
+// this build has none. Everything downstream of the descriptor — the run
+// record's §3.5/§3.12/§3.13 annotations and the per-method §3.4 track — is the
+// shipping code, which is the only way trace_processor gets to judge it.
+static void instr_register_synthetic(void) {
+    static CajetaProfMethod methods[3] = {
+        { "test.App", "run",  "App.cajeta", 1,   4200000, 1, 0, 0, NULL },
+        { "test.App", "mid",  "App.cajeta", 40,  3900000, 0, 0, 0, NULL },
+        { "test.App", "leaf", "App.cajeta", 400, 1200000, 0, 0, 0, NULL },
+    };
+    for (int i = 0; i < 3; i++) __cajeta_prof_instr_add(&methods[i]);
+    __cajeta_prof_instr_register_build("include test.**; exclude test.Noisy", 2);
+    __cajeta_prof_instr_set_probe_pairs(441);
+    __cajeta_prof_instr_set_probe_ns(18);
+}
+
+static int instr_mode(const char* out) {
+    instr_register_synthetic();
+    int64_t packets = __cajeta_prof_instr_only_to_trace(out);
+    printf("tracegen: instr mode wrote %lld packets to %s\n",
+           (long long) packets, out);
+    if (packets <= 0) { fprintf(stderr, "tracegen: instr transform wrote nothing\n"); return 6; }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc > 2 && strcmp(argv[1], "--profile") == 0) return profile_mode(argv[2]);
     if (argc > 2 && strcmp(argv[1], "--gpu") == 0) return gpu_mode(argv[2]);
+    if (argc > 2 && strcmp(argv[1], "--instr") == 0) return instr_mode(argv[2]);
+    if (argc > 2 && strcmp(argv[1], "--both") == 0) return both_mode(argv[2]);
     const char* out = (argc > 1) ? argv[1] : "cajeta-min.pftrace";
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, out)) {
