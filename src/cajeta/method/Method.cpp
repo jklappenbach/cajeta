@@ -2783,6 +2783,7 @@ namespace cajeta {
         // 9.1: node-paired — the enter's node lands in an entry slot and
         // every leave unlinks exactly it, immune to fiber-context changes.
         dbgFrameSlot = nullptr;
+        lineFrameEmitted = false;   // 6.4.B: re-decided by the prologue below
         if (llvm::Value* dbgNode =
                 dbg::emitDbgFrameEnter(module, getLlvmSymbolName())) {
             llvm::IRBuilder<>* b = module->getBuilder();
@@ -2821,6 +2822,10 @@ namespace cajeta {
                 }
             }
             dbg::emitLineEnter(module, typeName, frameMethod, fileName);
+            // 6.4.B: record that this method HAS a shadow frame, so the leave
+            // sites can tell a real method apart from an inline-codegen'd
+            // lambda body that never pushed one.
+            lineFrameEmitted = true;
         }
 
         // Register the parameters as locals in the debug frame. Materializing
@@ -3343,7 +3348,8 @@ namespace cajeta {
             // U3: pop the line-info shadow frame on this fall-through return too
             // (else a fall-through method — e.g. a constructor — leaks its frame
             // and pollutes the next throw's trace). No-op unless --line-info.
-            dbg::emitLineLeave(module);
+            // 6.4.B: only if the prologue actually pushed one.
+            if (lineFrameEmitted) dbg::emitLineLeave(module);
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);

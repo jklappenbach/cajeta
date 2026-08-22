@@ -1580,8 +1580,20 @@ namespace cajeta {
         }
         // diagnostic-exceptions U3: pop the line-info shadow frame on this return
         // path (no-op unless --line-info). Same every-return coverage as above.
-        dbg::emitLineLeave(module);
+        //
+        // cajeta-profiler 6.4.B — ONLY when the prologue pushed one. A lambda
+        // body is codegen'd inline by LambdaExpression::generateCode, which
+        // never runs Method::generateCode's prologue, so it has no shadow
+        // frame; its `return`s still funnel through here, and this leave takes
+        // no argument, so an unpaired one pops the ENCLOSING method's frame.
+        // Repeated lambda calls then erode the stack a frame at a time — in
+        // samples/tour that ate Stream.forEach and then tour.Tour.main, after
+        // which every demo profiled at depth 0. The dbg leave immediately
+        // above is immune because it is node-paired (a lambda passes a null
+        // slot); the shadow stack, an index into an array, has no equivalent,
+        // so the pairing has to be decided here.
         auto m = module->getCurrentMethod();
+        if (m && m->hasLineFrame()) dbg::emitLineLeave(module);
         if (!m) return;
         llvm::AllocaInst* mark = m->getScopeWatermark();
         if (!mark) return;
