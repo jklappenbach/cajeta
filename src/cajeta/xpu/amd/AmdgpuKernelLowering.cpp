@@ -169,6 +169,64 @@ public:
         return !arches.empty();
     }
 
+    // simd-fused-integer-madd 2.2.3 — the native int8 dot unit
+    // (`v_dot4_i32_iu8` / `v_dot4_u32_u8`). Only SPIR-V overrode this seam
+    // before, so every AMD kernel took the base portable widen and left the
+    // instruction unused on hardware that has it.
+    //
+    // MEASURED against llc across the arch list, because the failure mode is a
+    // hard ISel error rather than a slow path — an unsupporting arch in a
+    // multi-arch bundle takes the kernel down with it. llvm.amdgcn.sdot4
+    // selects on gfx906/908/90a/942/950, gfx1011/1012, gfx103x, gfx11xx and
+    // gfx12xx, and FAILS on gfx900, gfx902, gfx940 and gfx1010. Note gfx940
+    // fails while gfx942 works and gfx1010 fails while gfx1011 works, so this
+    // is not a clean numeric threshold — hence the explicit exclusions.
+    //
+    // Unknown arches answer NO. A wrong no costs speed; a wrong yes fails the
+    // build.
+    static bool archHasDot4(llvm::StringRef arch) {
+        unsigned num = 0;
+        if (!arch.starts_with("gfx") || arch.drop_front(3).getAsInteger(10, num))
+            return false;
+        if (num == 940) return false;            // early MI300; gfx942 has it
+        if (num >= 900 && num < 1000) return num >= 906;
+        if (num >= 1000 && num < 1100) return num >= 1011;   // gfx1010 lacks it
+        return num >= 1100 && num < 1300;
+    }
+
+    // Same bundle rule as bundleHasVmemToLds: lowered once, codegen'd for every
+    // arch in the bundle, so the unit is usable only when EVERY arch has it.
+    static bool bundleHasDot4(llvm::Module& m) {
+        auto readFlag = [&](const char* name) -> llvm::StringRef {
+            if (auto* f = m.getModuleFlag(name))
+                if (auto* s = llvm::dyn_cast<llvm::MDString>(f)) return s->getString();
+            return {};
+        };
+        llvm::StringRef list = readFlag("cajeta.amdgpu.archlist");
+        if (list.empty()) return archHasDot4(readFlag("cajeta.amdgpu.arch"));
+        llvm::SmallVector<llvm::StringRef, 4> arches;
+        list.split(arches, ',', -1, /*KeepEmpty=*/false);
+        for (auto a : arches)
+            if (!archHasDot4(a.trim())) return false;
+        return !arches.empty();
+    }
+
+    llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
+                               llvm::Value* a, llvm::Value* c, llvm::Value* acc,
+                               bool isSigned) override {
+        if (!bundleHasDot4(m))
+            return LoweringTarget::integerDot4x8(b, m, a, c, acc, isSigned);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
+        llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
+        llvm::Intrinsic::ID id = isSigned ? llvm::Intrinsic::amdgcn_sdot4
+                                          : llvm::Intrinsic::amdgcn_udot4;
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
+        // clamp=false: the non-saturating encoding, so this tier stays
+        // bit-identical with the portable widen it replaces (spec §4.8/§4.9).
+        return b.CreateCall(f, {x, y, acc, b.getFalse()}, "dp4a");
+    }
+
     void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
                    llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
                    llvm::Type* srcElem, llvm::Value* srcOffset,

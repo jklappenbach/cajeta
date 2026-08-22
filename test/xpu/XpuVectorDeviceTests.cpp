@@ -865,6 +865,122 @@ using IDotFn = void (*)(int32_t*, uint32_t,
                         int32_t, int32_t, int32_t,
                         int32_t, int32_t, int32_t);
 
+// simd-fused-integer-madd 2.2.3 — AMD has a native int8 dot unit and was not
+// using it. Only SPIR-V overrode LoweringTarget::integerDot4x8, so every AMD
+// kernel fell through to the base portable widen — the instruction unused on
+// the one GPU actually attached here.
+//
+// gfx1151 is this machine's iGPU (RDNA 3.5). Measured against llc across the
+// arch list, llvm.amdgcn.sdot4 selects on gfx906/908/90a/942/950,
+// gfx1011/1012, gfx103x, gfx11xx, gfx12xx — and HARD-ERRORS on gfx900, gfx902,
+// gfx940 and gfx1010. A wrong "yes" is an ISel failure that drops the kernel
+// from a multi-arch bundle, so the gate has to be right in the safe direction.
+TEST(XpuVectorDeviceTests, integerDotEmitsAmdDot4) {
+    using namespace cajeta::xpu::amd;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kDp4aSource);
+    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dp4a_amd_emit", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("amdgcn.sdot4"), std::string::npos)
+        << "gfx1151 has the dot4 unit; the signed dot must reach it";
+    EXPECT_NE(ir.find("amdgcn.udot4"), std::string::npos)
+        << "gfx1151 has the dot4 unit; the unsigned dot must reach it";
+}
+
+// The other half: an arch WITHOUT the unit must not reach for it. gfx1010 is
+// RDNA1, measured to hard-error on sdot4 — so a gate that always answered yes
+// would turn this into a build failure rather than a slow kernel.
+TEST(XpuVectorDeviceTests, integerDotSkipsAmdDot4WithoutTheUnit) {
+    using namespace cajeta::xpu::amd;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kDp4aSource);
+    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1010");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dp4a_amd_nodot", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_EQ(ir.find("amdgcn.sdot4"), std::string::npos)
+        << "gfx1010 has no dot4 unit; emitting it fails instruction selection";
+    EXPECT_EQ(ir.find("amdgcn.udot4"), std::string::npos)
+        << "gfx1010 has no dot4 unit; emitting it fails instruction selection";
+}
+
+// 2.2.3 on silicon. The emit assertions above prove the intrinsic is reached;
+// only running it proves the operand layout and the clamp=false encoding are
+// right. kDp4aSource mixes signed and unsigned dots, so this exercises
+// v_dot4_i32_iu8 and v_dot4_u32_u8 in one kernel.
+TEST(XpuVectorDeviceTests, integerDotRunsOnAmdDevice) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no HIP device";
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kDp4aSource);
+    auto k = findMethod(module->getStructures()["test.DP"], "dp4a");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_dp4a_amddevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    const uint32_t n = 1u << 12;
+    std::vector<int32_t> out(n, -1);
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "dp4a");
+    ASSERT_NE(fn, nullptr);
+
+    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+
+    void* params[] = { &dOut, (void*) &n };
+    const unsigned block = 256;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(hip.launch(fn, grid, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<int32_t> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (result[i] != kDp4aExpected) {
+            if (mismatches < 5)
+                ADD_FAILURE() << "i=" << i << " got " << result[i]
+                              << " expected " << kDp4aExpected;
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(mismatches, 0u);
+}
+
 TEST(XpuVectorDeviceTests, integerDotRunsOnCpu) {
     Compiler compiler;
     auto module = compileForInspection(compiler, kDp4aSource);
