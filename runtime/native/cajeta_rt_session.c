@@ -277,6 +277,7 @@ static void session_unwind_to_guard(void* marker) {
     // __cajeta_throw performs, and for the same reason: a leaked frame makes
     // every later stack trace and step depth wrong.
     __cajeta_shadow_set_top(outer->shadow_watermark);
+    __cajeta_prof_instr_set_depth(outer->instr_watermark);   // U10, §3.11
     {
         struct cajeta_dbg_frame** dbgTop = __cajeta_dbg_top_ptr();
         struct cajeta_dbg_frame* mark = outer->dbg_watermark;

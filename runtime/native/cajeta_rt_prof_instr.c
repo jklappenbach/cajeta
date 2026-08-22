@@ -117,6 +117,21 @@ void __cajeta_prof_instr_exit(void* handle, int64_t t0) {
     __atomic_fetch_add(&caj_instr_pairs, (int64_t) 1, __ATOMIC_RELAXED);
 }
 
+// §3.11's depth, exposed the way the shadow stack's `top` is, so the exception
+// machinery can restore it. An unwound frame never runs its exit probe, so
+// without this a throw across N probed frames leaves the depth N too high FOR
+// THE REST OF THE FIBER — and since depth 0 is what "my caller was outside the
+// selection" means, every later root call silently stops being counted. It
+// grows with each throw, so the error compounds rather than washing out. Same
+// shape as the 6.4.B lambda leave that eroded the shadow stack a frame per
+// call; the fix is the same watermark the drop, shadow and debug chains use.
+int32_t __cajeta_prof_instr_depth(void) {
+    return __cajeta_shadow_ptr()->instr_depth;
+}
+void __cajeta_prof_instr_set_depth(int32_t depth) {
+    if (depth >= 0) __cajeta_shadow_ptr()->instr_depth = depth;
+}
+
 #endif  /* CAJETA_PROF_TRACE_STANDALONE */
 
 // Register a descriptor without running a probe. The standalone build's way in

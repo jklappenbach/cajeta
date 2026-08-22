@@ -85,6 +85,20 @@ const char* kTrivialDrop =
     "    }\n"
     "}\n";
 
+// A throw ACROSS probed frames. `mid` is entered from `run` and never returns
+// normally, so its exit probe never runs — the unwind is the only way out.
+const char* kThrows =
+    "package test;\n"
+    "import cajeta.error.Exception;\n"
+    "public final class X {\n"
+    "    public static int32 deep() { throw heap Exception(\"x\"); }\n"
+    "    public static int32 mid() { return X.deep(); }\n"
+    "    public static int32 run() {\n"
+    "        try { return X.mid(); }\n"
+    "        catch (Exception e) { return 7; }\n"
+    "    }\n"
+    "}\n";
+
 CajetaJit::Options instrumented(const std::string& selection = "") {
     CajetaJit::Options o;
     o.profiler = Profiler::Instrument;
@@ -571,4 +585,45 @@ TEST(ProfilerInstrumentation, anInstrumentedRunWritesItsCountsToATrace) {
         << "the trace has no instrumentation track; §3.4 wants the tier "
            "identifiable, and a consumer identifies it by where the records live";
     std::remove(path.c_str());
+}
+
+// ── §3.11 — a throw must not leave the probe depth high ──────────────────
+//
+// An unwound frame never runs its exit probe, so the depth the enter raised is
+// only ever brought back down by the exception machinery's watermark. Without
+// that restore, `run()` returns fine and everything LOOKS right — and then
+// every subsequent root call is quietly no longer counted as arriving from
+// outside the selection, because the depth never came back to 0. It grows with
+// each throw, so the error compounds instead of washing out.
+//
+// This is the same shape as the 6.4.C lambda leave that eroded the shadow
+// stack a frame per call: an unbalanced counter whose symptom appears far from
+// its cause, and long after.
+TEST(ProfilerInstrumentation, aThrowRestoresTheProbeDepth) {
+    auto jit = CajetaJit::compile(kThrows, "test.X", instrumented("include test.**\n"));
+    ASSERT_TRUE(jit);
+    Instr i = bind(jit.get());
+    ASSERT_TRUE(i.reset && i.methodOutsideCalls);
+    auto run = jit->lookup<int32_t (*)()>("run");
+    ASSERT_TRUE(run);
+
+    i.reset();
+    ASSERT_EQ(run(), 7) << "the throw must be caught; this tests the unwind path";
+    ASSERT_EQ(run(), 7);
+    ASSERT_EQ(run(), 7);
+
+    // Every one of the three calls came from the test harness — outside the
+    // selection by definition. A leaked depth makes calls 2 and 3 look nested.
+    const int32_t runAt = indexOf(i, "run", "test.X");
+    ASSERT_GE(runAt, 0);
+    EXPECT_EQ(i.methodCalls(runAt), 3);
+    EXPECT_EQ(i.methodOutsideCalls(runAt), 3)
+        << "the probe depth was not restored on unwind, so a root call after a "
+           "throw looks as though it had a probed ancestor — the fabricated "
+           "call edge §3.11 exists to forbid";
+
+    // And `deep`, which only ever exits by throwing, still records its calls:
+    // the ENTER ran even though the exit never did.
+    EXPECT_EQ(callsOf(i, "deep", "test.X"), 3)
+        << "a method that only ever exits by throwing lost its entry count";
 }

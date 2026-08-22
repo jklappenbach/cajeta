@@ -370,6 +370,11 @@ void __cajeta_throw(void* value) {
     // shadow line-stack depth to the catching try-frame's watermark before we
     // resume in its catch block. Snapshot already taken in __cajeta_trace_record.
     __cajeta_shadow_set_top((*excTop)->shadow_watermark);
+    // U10 (§3.11): and the instrumentation depth, for the same reason — the
+    // unwound frames never ran __cajeta_prof_instr_exit either. Leaving it
+    // high makes every later root call look as though it had a probed
+    // ancestor, which is exactly the fabricated call edge §3.11 forbids.
+    __cajeta_prof_instr_set_depth((*excTop)->instr_watermark);
     // 9.1: same for the DEBUG frame chain — the unwound frames never ran
     // __cajeta_dbg_frame_leave, so free every node between the current head
     // and the catching try-frame's watermark. Only nodes owned by THIS chain
