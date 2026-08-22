@@ -64,18 +64,63 @@ acc  = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);  // ONE convert per 2
   activations (`block_q8_K.bsums`), it is integer throughout. The cajeta kernel
   keeps f32 group sums and a separate float pass.
 
-## 4. Required operations
+## 4. Required operation
 
-- **4.1** `mulAddPairsU8(Vector<uint8,N> a, Vector<int8,N> b) -> Vector<int16,N/2>`
-  — adjacent products summed pairwise. Lowers to `vpmaddubsw` (x86),
-  `vmull`+`vpadd` (NEON). Saturating, matching the hardware.
-- **4.2** `mulAddPairs16(Vector<int16,N> a, Vector<int16,N> b) -> Vector<int32,N/2>`
-  — lowers to `vpmaddwd` (x86), `vmull`+`vpadal` (NEON).
-- **4.3** Both have a scalar fallback that produces bit-identical results, on
-  the `CAJETA_SIMD_SCALAR_FALLBACK=1` discipline Unit 17 established.
-- **4.4** The saturation semantics of `vpmaddubsw` are observable (0..15 x
-  -127..127 cannot saturate, but the operation is defined for inputs that can),
-  so the fallback must saturate identically rather than widen to int32.
+Revised 2026-08-22 after checking what the ISAs actually provide: this is ONE
+operation, not the two originally proposed, and it is a GENERALIZATION of the
+`Vector<int8,4>.dot` that already exists.
+
+- **4.1** `dotAccum(w, a, acc)` — multiply 4 adjacent int8 pairs, sum the four
+  products, and accumulate into the corresponding int32 lane:
+
+  ```
+  Vector<int32,N> dotAccum(Vector<uint8,4N> w, Vector<int8,4N> a,
+                           Vector<int32,N> acc)
+  ```
+
+  The result stays in VECTOR space. That is the whole point: 15.1.18(a)
+  measured that reduce frequency, not width, is what costs — a Q4_K kernel
+  reducing per sub-block ran 70.7 ms against 24.2 ms for the same kernel
+  reducing once per block.
+
+- **4.2** The existing `Vector<int8,4>.dot -> int32` is this operation at N=1
+  with the accumulator dropped and the lane collapsed to a scalar. It should
+  generalize rather than gain a sibling family.
+
+- **4.3** Two sign variants, not four: `uint8 x int8` (quantized weights
+  against signed activations — the case every K-quant needs) and
+  `int8 x int8`. RISC-V exposes all four combinations; the other two have no
+  caller here and would be surface without use.
+
+### Lowering
+
+Every modern ISA has this, and the RISC/CISC split does not predict who: ARM is
+the textbook RISC and shipped it in ARMv8.2-A (2016). These are single-uop,
+fully pipelined ops — `vpdpbusd` is ~5-cycle latency, like an FMA — not
+microcoded CISC leftovers. They are domain-specific ML accelerators, and
+quantized inference is why they exist.
+
+| target | instruction | ops |
+|---|---|---|
+| x86 AVX512-VNNI / AVX-VNNI | `vpdpbusd` (`x86_avx512_vpdpbusd_512`) | 1 |
+| x86 AVX2, pre-VNNI | `vpmaddubsw` + `vpmaddwd` + `vpaddd` | 3 |
+| AArch64 ARMv8.2 dotprod | `udot` / `sdot` (`aarch64_neon_udot`) | 1 |
+| AArch64 base | `umull`/`smull` + `uadalp` | 3 |
+| RISC-V Zvqdotq | `vqdotsu` / `vqdot` (`riscv_vqdotsu`) | 1 |
+| WASM SIMD | `wasm_dot` (2-way i16) plus a widen | 3 |
+| elsewhere, or `CAJETA_SIMD_SCALAR_FALLBACK=1` | scalar loop | — |
+
+- **4.4** All of the above are present in the LLVM the toolchain builds against
+  (22.0.0git), verified in `IntrinsicsX86.h`, `IntrinsicsAArch64.h` and
+  `IntrinsicsRISCV.h`. `tableLookup` is the in-repo precedent for emitting a
+  target intrinsic with a NEON path and a scalar fallback
+  (`src/cajeta/type/VectorOps.h`), and this follows its shape exactly.
+- **4.5** Note the mixed-sign asymmetry is not an x86 quirk: RISC-V's
+  `vqdotsu` is the same signed x unsigned form. Two independent ISAs converged
+  on it because that is the shape quantized inference needs.
+- **4.6** Six lowering paths against `tableLookup`'s three is the real cost of
+  this primitive, and the scalar fallback is what makes it verifiable — every
+  path must produce bit-identical results.
 
 ## 5. Use cases
 
@@ -101,10 +146,14 @@ acc  = _mm256_fmadd_ps(vd, _mm256_cvtepi32_ps(sumi), acc);  // ONE convert per 2
 - **6.4** The engine-level number moves: decode is 10.91 s/token today against
   `llama.cpp`'s 0.177 s (5.64 t/s single-threaded), a 61x gap.
 
-## 7. Open question
+## 7. Open questions
 
-- **7.1** Whether the existing DP4a `dot` on `Vector<int8,4>` should generalize
-  to wider lane counts instead of adding a separate family. It has the right
-  shape (integer multiply plus reduction) but the wrong width and the wrong
-  reduction granularity — DP4a reduces 4 lanes to 1 scalar, while these reduce
-  pairwise and stay in vector space.
+- **7.1** CLOSED 2026-08-22 — the DP4a `dot` DOES generalize, and that is the
+  design (§4.2). The original two-primitive proposal (`mulAddPairsU8` +
+  `mulAddPairs16`) modelled llama.cpp's AVX2 path, which predates VNNI. On a
+  VNNI/dotprod/Zvqdotq target the 4-way accumulate is one instruction and the
+  pairwise pair is two, so the pair is the FALLBACK, not the interface.
+- **7.2** Whether the accumulator argument should be explicit (as above,
+  matching `vpdpbusd`'s destructive-accumulate form) or implied by `a + b.dot(c)`
+  with the backend fusing. Explicit is honest about the instruction and cannot
+  silently deoptimize; implied reads better. Not decided.
