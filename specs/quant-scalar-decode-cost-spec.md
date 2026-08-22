@@ -24,6 +24,17 @@ three. Cumulative ablation: each variant strips one piece, so the delta between
 neighbours attributes that piece. The variants compute WRONG answers by
 construction; only their timings are meaningful.
 
+**Measurement hygiene, and it is not boilerplate.** Every timing here must be
+taken on a VERIFIED IDLE machine — `pgrep -c cajeta_test` at zero and a load
+average near zero, checked immediately before the run, not assumed from the
+last thing anyone said. Measured 2026-08-22: the same binary and the same code
+timed **23.03 ms idle and 38.49 ms against a running sweep**, a 67% swing that
+looks exactly like a regression. A single contaminated control nearly reversed
+this spec's conclusion about the f16 rewrite. Ratios taken under identical load
+are somewhat better than absolutes but still drift, because load varies second
+to second. Re-confirm the table above on a verified-idle box before anyone
+optimizes against it.
+
 | variant | time | piece removed | cost | share |
 |---|---|---|---|---|
 | v0 full | 21.30 ms | — | — | — |
@@ -111,7 +122,9 @@ construction; only their timings are meaningful.
   tests. This spec changes no numerics; that is what separates it from the
   q8_K activation work, which does.
 - **5.3** The ablation is re-run after the change and published in the same
-  form, so the next person sees where the time went rather than being told.
+  form, so the next person sees where the time went rather than being told —
+  on a verified-idle machine, per §2's hygiene note, with the idle check shown
+  alongside the numbers.
 - **5.4** No claim in this spec is repeated without its measurement. §2.3 of
   the previous spec named a cause it had not measured and cost a unit; the
   numbers above are ablations, they are labelled as ablations, and their
