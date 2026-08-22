@@ -2927,8 +2927,13 @@ namespace cajeta::buildtool {
                 return false;
             }();
 
-            if (subIndex < 0 || wantsHelp) {
-                std::ostream& os = subIndex < 0 ? std::cerr : std::cout;
+            // Only the NO-SUBCOMMAND case is answered here. `coverage list
+            // --help` must reach coverageListCommand so it prints ITS usage —
+            // intercepting every --help made all three subcommands answer with
+            // the generic text, and made `coverage --help` exit 1 because the
+            // return folded the two cases together.
+            if (subIndex < 0) {
+                std::ostream& os = wantsHelp ? std::cout : std::cerr;
                 os  << "Usage: cajeta coverage <subcommand> [options]\n"
                     << "\n"
                     << "Subcommands:\n"
@@ -2938,17 +2943,16 @@ namespace cajeta::buildtool {
                     << "\n"
                     << "Run `cajeta coverage <subcommand> --help` for "
                     << "subcommand-specific options.\n";
-                if (subIndex < 0) {
-                    // `coverage` manages the exclude CONFIG; it does not
-                    // measure anything. Say so, because "Coverage" in a menu
-                    // reads like it should run a coverage pass.
-                    os << "\n"
-                       << "This subcommand edits the exclude list in "
-                          "cajeta.json. To MEASURE coverage, bind the "
-                          "cajeta.coverage.instrument / .report actions to a "
-                          "task and run that task.\n";
-                }
-                return subIndex < 0 ? 1 : 0;
+                // `coverage` manages the exclude CONFIG; it does not measure
+                // anything. Say so, because "Coverage" in a menu reads like it
+                // should run a coverage pass.
+                os << "\n"
+                   << "This subcommand edits the exclude list in "
+                      "cajeta.json. To MEASURE coverage, bind the "
+                      "cajeta.coverage.instrument / .report actions to a "
+                      "task and run that task.\n";
+                // Asking for help is a success; omitting the verb is not.
+                return wantsHelp ? 0 : 1;
             }
 
             // Re-lay the argv so the subcommand sits at index 2, which is
