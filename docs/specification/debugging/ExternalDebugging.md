@@ -33,7 +33,7 @@ The bridge script reads that encoding and gives gdb a set of `cj*` commands.
 | Level  | What the binary carries |
 |--------|--------------------------|
 | `off`  | Nothing. |
-| `line` | The shadow stack and frame descriptors, so an exception trace still resolves to `Type.method(File.cajeta:NN)`. No safepoints, no local records. |
+| `line` | The shadow stack and frame descriptors, so an exception trace still resolves to `Type.method(File.cajeta)`. No line number (`StackFrame.line` is 0), no safepoints, no local records. |
 | `full` | Everything above, plus per-statement safepoints, local records, the embedded location table, and forced RTTI retention. This is what the debugger needs. |
 
 `line` is the default, and what the `release` flavor uses. The `debug` flavor
