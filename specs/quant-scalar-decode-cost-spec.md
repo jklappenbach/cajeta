@@ -55,6 +55,14 @@ construction; only their timings are meaningful.
 - **3.3** That spec has **no INDEX row and no plan** — filed and never
   scheduled. It reads as a niche codegen defect. It is 38% of the engine's hot
   kernel.
+- **3.3.1** ROOT CAUSE FOUND 2026-08-22, and it is much smaller than it
+  looked. The emitted IR is `bitcast i64 %46 to float` — a 64-to-32 bitcast,
+  which is malformed LLVM IR, so isel is right to refuse it. `h << 16` promotes
+  to int64 and the `bitsToF32` lowering bitcasts its operand without coercing
+  to i32. The AOT/JIT divergence is a red herring: the JIT test passes a
+  genuine int32, so the promotion never happens there. The fix is a coercion in
+  the lowering, not backend work — which answers §6.1: this does not need its
+  own arc.
 - **3.4** MEASURED 2026-08-22: `--cpu=native` does NOT fix it. The repro aborts
   identically under a host cpu advertising the full AVX-512 feature set, which
   refutes the CPU dimension of that spec's "target/feature configuration"
@@ -111,10 +119,11 @@ construction; only their timings are meaningful.
 
 ## 6. Open questions
 
-- **6.1** Is the AOT bitcast defect fixed here, or is it scheduled as its own
-  work first? It is 38% of the kernel and it blocks `--emit=exe` for any code
-  using `bitsToF32`, so it may deserve its own plan rather than riding this
-  one.
+- **6.1** CLOSED 2026-08-22 — it rides this plan. The root cause turned out to
+  be a missing operand coercion in the `bitsToF32` lowering (§3.3.1), not
+  backend or pipeline work, so it is a small unit rather than its own arc. It
+  still blocks `--emit=exe` for any code passing a promoted operand, so it goes
+  FIRST: fixing it is what lets `halfBitsToF32` drop `pow2` at all.
 - **6.2** Does `scaleMinK4` want a vector decode (the 12 fields are a shuffle
   and two shifts away from a `Vector<int32,8>`) or just registers? The vector
   form is more work and may not be needed to hit §5.1.
