@@ -28,10 +28,32 @@ Spec §7.7 limits the writer to the stable `TrackEvent` / `TrackDescriptor`
 schema; anything GPU-specific is an optional addition, because those are
 explicitly outside Perfetto's stability guarantee.
 
+**`clock_snapshot` is materialized lazily** (measured against trace_processor
+v57.2, 2026-08-21). A well-formed `ClockSnapshot` packet does NOT produce rows
+in the `clock_snapshot` table on its own: the table is populated only when some
+packet actually references the sequence-scoped clock through
+`timestamp_clock_id`. Bisected with hand-built traces — snapshot alone: 0 rows;
+snapshot + a track descriptor: 0; snapshot + a slice timestamped in the device
+clock: **2**. `cajeta-profiler` converts device timestamps into the host domain
+at the seam (spec §5.1.7), so its traces never reference the device clock and
+the table stays empty even though the snapshot is present and correct. Do not
+read an empty `clock_snapshot` as a missing or malformed snapshot.
+
+**Clock ids carry a scoping rule, not just a number** (verified 2026-08-21, from
+this file's `ClockSnapshot.Clock` comment): `[1, 63]` are builtin — `MONOTONIC`
+is **3** — and `[64, 127]` are user-defined and **sequence-scoped**, valid only
+within the packet sequence that emitted the snapshot. `cajeta-profiler` numbers
+a device domain `64 + domain` (Unit 9, spec §7.5), which is only correct because
+the writer keeps one `trusted_packet_sequence_id` for the whole file. Splitting
+the writer across sequences would silently unbind every device clock from its
+snapshot — the trace would still load.
+
 | Message | Field | No. |
 |---|---|---|
 | `Trace` | `packet` | 1 |
 | `TracePacket` | `clock_snapshot` | 6 |
+| `ClockSnapshot` | `clocks` | 1 |
+| `ClockSnapshot.Clock` | `clock_id` / `timestamp` / `is_incremental` / `unit_multiplier_ns` | 1 / 2 / 3 / 4 |
 | `TracePacket` | `timestamp` | 8 |
 | `TracePacket` | `trusted_packet_sequence_id` | 10 |
 | `TracePacket` | `track_event` | 11 |

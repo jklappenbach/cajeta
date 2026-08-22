@@ -117,6 +117,12 @@ int32_t __cajeta_pb_bytes(uint8_t* out, uint32_t field,
 #define CAJ_PB_DA_NAME            10    /* DebugAnnotation.name                */
 #define CAJ_PB_DA_INT_VALUE        4    /* DebugAnnotation.int_value           */
 #define CAJ_PB_DA_STRING_VALUE     6    /* DebugAnnotation.string_value        */
+#define CAJ_PB_PKT_CLOCK_SNAP      6    /* TracePacket.clock_snapshot          */
+#define CAJ_PB_CS_CLOCKS           1    /* ClockSnapshot.clocks                */
+#define CAJ_PB_CLK_ID              1    /* ClockSnapshot.Clock.clock_id        */
+#define CAJ_PB_CLK_TIMESTAMP       2    /* ClockSnapshot.Clock.timestamp       */
+#define CAJ_PB_CLK_UNIT_MULT       4    /* ClockSnapshot.Clock.unit_multiplier_ns */
+#define CAJ_BUILTIN_CLOCK_MONOTONIC 3   /* ClockSnapshot.Clock.BuiltinClocks   */
 #define CAJ_PB_ID_EVENT_NAMES      2    /* InternedData.event_names            */
 #define CAJ_PB_ID_SOURCE_LOCS      4    /* InternedData.source_locations       */
 #define CAJ_PB_SL_IID              1    /* SourceLocation.iid                  */
@@ -214,12 +220,17 @@ int32_t __cajeta_prof_emit_name(CajPbBuf* out, uint32_t seq_id,
 
 // One TrackEvent. `name_iid` references an interned name; pass 0 with a literal
 // `name` only for one-off events.
-int32_t __cajeta_prof_emit_slice_flow(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
+// `extra` is pre-encoded TrackEvent bytes appended verbatim — today the
+// debug annotations §10.6 wants on every device measurement. Passed as bytes
+// rather than as a struct so the annotation vocabulary can grow without this
+// signature moving again; NULL for the common case.
+int32_t __cajeta_prof_emit_slice_anno(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
                                       uint64_t track_uuid, int32_t type,
                                       uint64_t name_iid, const char* name,
                                       uint64_t source_iid, uint64_t flow_id,
-                                      int32_t terminating) {
-    uint8_t te[512];
+                                      int32_t terminating,
+                                      const uint8_t* extra, int32_t extraLen) {
+    uint8_t te[768];
     int32_t n = __cajeta_pb_uint64(te, CAJ_PB_TE_TYPE, (uint64_t) type);
     n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_TRACK_UUID, track_uuid);
     if (name_iid) {
@@ -236,7 +247,11 @@ int32_t __cajeta_prof_emit_slice_flow(CajPbBuf* out, uint32_t seq_id, uint64_t t
         n += __cajeta_pb_fixed64(te + n,
                                  terminating ? CAJ_PB_TE_TERM_FLOW_IDS
                                              : CAJ_PB_TE_FLOW_IDS, flow_id);
-    uint8_t pkt[700];
+    if (extra && extraLen > 0 && n + extraLen <= (int32_t) sizeof(te)) {
+        memcpy(te + n, extra, (size_t) extraLen);
+        n += extraLen;
+    }
+    uint8_t pkt[1024];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, seq_id);
     // A slice that references an interned name CONSUMES incremental state.
@@ -246,6 +261,16 @@ int32_t __cajeta_prof_emit_slice_flow(CajPbBuf* out, uint32_t seq_id, uint64_t t
         p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_FLAGS, CAJ_PB_SEQ_FLAG_NEEDS);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);
     return caj_pb_packet(out, pkt, p);
+}
+
+int32_t __cajeta_prof_emit_slice_flow(CajPbBuf* out, uint32_t seq_id, uint64_t ts,
+                                      uint64_t track_uuid, int32_t type,
+                                      uint64_t name_iid, const char* name,
+                                      uint64_t source_iid, uint64_t flow_id,
+                                      int32_t terminating) {
+    return __cajeta_prof_emit_slice_anno(out, seq_id, ts, track_uuid, type,
+                                         name_iid, name, source_iid, flow_id,
+                                         terminating, NULL, 0);
 }
 
 // The flow-free form every non-GPU caller uses. One implementation, so a fix to
@@ -702,10 +727,70 @@ static int32_t caj_gpu_track_seen(CajGpuTracks* t, uint64_t uuid) {
 }
 
 // Emit `n` dispatch records into an open writer. Returns packets written.
+// Defined with the metadata writer below; declared here so the GPU emitter can
+// annotate a device slice with the tier and confidence §10.6 requires.
+static int32_t caj_prof_anno_int(uint8_t* out, const char* name, int64_t v);
+
+// §7.5 — one ClockSnapshot pairing the host clock with a device domain, so a
+// reader can reproduce the mapping instead of taking the converted timestamps
+// on trust. The device clock id is sequence-scoped (Perfetto reserves [64,127]
+// for user clocks and scopes them to the emitting sequence), which is why the
+// writer keeps one sequence id for the whole file.
+//
+// unit_multiplier_ns is 1: the device timestamp is recorded here in TICKS,
+// with the tick period carried by the correlation, because a snapshot that
+// pre-converted its own device value would be describing the conversion using
+// the conversion.
+int32_t __cajeta_prof_trace_clock_snapshot(CajProfWriter* w, int32_t domain,
+                                           int64_t hostNs, int64_t devTicks) {
+    if (!w) return 0;
+    uint8_t hostClk[32];
+    int32_t hc = __cajeta_pb_uint64(hostClk, CAJ_PB_CLK_ID,
+                                    CAJ_BUILTIN_CLOCK_MONOTONIC);
+    hc += __cajeta_pb_uint64(hostClk + hc, CAJ_PB_CLK_TIMESTAMP,
+                             (uint64_t) hostNs);
+
+    uint8_t devClk[32];
+    int32_t dc = __cajeta_pb_uint64(devClk, CAJ_PB_CLK_ID,
+                                    (uint64_t) (CAJETA_CLOCK_PERFETTO_BASE_ID + domain));
+    dc += __cajeta_pb_uint64(devClk + dc, CAJ_PB_CLK_TIMESTAMP,
+                             (uint64_t) devTicks);
+    dc += __cajeta_pb_uint64(devClk + dc, CAJ_PB_CLK_UNIT_MULT, 1);
+
+    uint8_t cs[96];
+    int32_t c = __cajeta_pb_bytes(cs, CAJ_PB_CS_CLOCKS, hostClk, hc);
+    c += __cajeta_pb_bytes(cs + c, CAJ_PB_CS_CLOCKS, devClk, dc);
+
+    uint8_t pkt[160];
+    int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_SEQ_ID, w->seq_id);
+    p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_CLOCK_SNAP, cs, c);
+
+    CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
+    caj_pb_packet(&b, pkt, p);
+    caj_prof_flush(w, &b);
+    return 1;
+}
+
 int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
                                const CajetaGpuEvent* evs, int32_t n) {
     if (!w || !seen || !evs || n <= 0) return 0;
     int64_t before = __cajeta_prof_trace_packets(w);
+
+    // §7.5 — every calibration this run performed, replayed into the trace
+    // before the spans that depend on it. Emitted here rather than at
+    // calibration time because the writer runs at drain, and a snapshot that
+    // arrived after the spans it explains would be useless to a streaming
+    // reader.
+    {
+        int32_t snaps = __cajeta_prof_clock_snapshot_count();
+        for (int32_t i = 0; i < snaps; i++) {
+            CajetaClockSnapshot cs;
+            if (__cajeta_prof_clock_snapshot_get(i, &cs)) {
+                __cajeta_prof_trace_clock_snapshot(w, cs.domain, cs.hostNs,
+                                                   cs.devTicks);
+            }
+        }
+    }
     for (int32_t i = 0; i < n; i++) {
         const CajetaGpuEvent* e = &evs[i];
         const char* bname = caj_gpu_backend_name(e->backend);
@@ -759,12 +844,27 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
             caj_prof_flush(w, &b);
         }
         // Device execution: a slice on the queue track, terminating the flow.
+        //
+        // §10.6 — the tier and the correlation confidence ride on the
+        // measurement itself, not on a run-level note, because a single run can
+        // mix them: one backend demoted, another not. A developer must never
+        // have to infer that a span in front of them was degraded. §11.3's
+        // integrity flags ride along for the same reason — a flagged span still
+        // renders, and only the annotation says it should not be trusted.
         {
             uint64_t iid = __cajeta_prof_intern(w, kn);
+            uint8_t anno[256];
+            int32_t a = caj_prof_anno_int(anno, "tier", e->tier);
+            a += caj_prof_anno_int(anno + a, "clock_confidence",
+                                   __cajeta_prof_clock_confidence(e->backend));
+            int32_t integrity = __cajeta_prof_check_dispatch(e);
+            if (integrity != CAJETA_SPAN_OK) {
+                a += caj_prof_anno_int(anno + a, "integrity_flags", integrity);
+            }
             CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
-            __cajeta_prof_emit_slice_flow(&b, w->seq_id, (uint64_t) e->dev_start_ns,
+            __cajeta_prof_emit_slice_anno(&b, w->seq_id, (uint64_t) e->dev_start_ns,
                                           que, CAJ_TE_SLICE_BEGIN, iid, iid ? NULL : kn,
-                                          0, (uint64_t) e->launch_id, 1);
+                                          0, (uint64_t) e->launch_id, 1, anno, a);
             caj_prof_flush(w, &b);
         }
         __cajeta_prof_trace_slice(w, (uint64_t) e->dev_end_ns, que,
@@ -781,6 +881,12 @@ int64_t __cajeta_prof_gpu_events_to_trace(const CajetaGpuEvent* evs, int64_t n,
     static CajGpuTracks seen;
     seen.n = 0;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    // §7.8 applies to a device trace exactly as it does to a sampled one, and
+    // this is the run record's only home on this path. The sampler counters are
+    // zero because no sampling happened — which is true, and better than
+    // borrowing the event count to fill a field that means something else.
+    __cajeta_prof_trace_metadata(&w, (uint64_t) evs[0].host_launch_ns,
+                                 "device", 0, 0, 0, 0, 0);
     __cajeta_prof_gpu_emit(&w, &seen, evs, (int32_t) n);
     __cajeta_prof_trace_close(&w);
     return __cajeta_prof_trace_packets(&w);
@@ -823,6 +929,62 @@ static int32_t caj_prof_anno_str(uint8_t* out, const char* name, const char* v) 
     return __cajeta_pb_bytes(out, CAJ_PB_TE_DEBUG_ANNOS, da, d);
 }
 
+// §7.8 — per-domain calibration quality, plus the driver identity and active
+// layers the owning backend registered. Emitted only for domains that actually
+// calibrated: an uncalibrated run must not invent a quality figure, because
+// "there wasn't one" and "it was poor" call for different responses.
+//
+// Drift is integer MILLI-ppm. The wire carries no floats, and rounding to whole
+// ppm would render the reference device's −15 ppm (§6.6) as −15 while a −0.4 ppm
+// device became 0 — erasing precisely the term that unit is about.
+static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
+    int32_t n = 0;
+    int32_t calibrated = 0;
+    for (int32_t d = 0; d < CAJETA_CLOCK_MAX_DOMAINS; d++) {
+        if (__cajeta_prof_clock_valid(d)) calibrated++;
+    }
+    if (cap < 32) return 0;
+    n += caj_prof_anno_int(out + n, "clock_domains_calibrated", calibrated);
+
+    for (int32_t d = 0; d < CAJETA_CLOCK_MAX_DOMAINS; d++) {
+        if (!__cajeta_prof_clock_valid(d)) continue;
+        // Six ints and two strings per domain; stop before the buffer rather
+        // than truncate an annotation mid-field, which would corrupt the packet
+        // instead of shortening it.
+        if (cap - n < 320) break;
+        char key[48];
+        snprintf(key, sizeof(key), "clock%d_confidence", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_clock_confidence(d));
+        snprintf(key, sizeof(key), "clock%d_drift_ppm_milli", d);
+        n += caj_prof_anno_int(out + n, key,
+                               (int64_t) llround(__cajeta_prof_clock_drift_ppm(d) * 1000.0));
+        snprintf(key, sizeof(key), "clock%d_offset_ns", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_clock_offset_ns(d));
+        snprintf(key, sizeof(key), "clock%d_samples", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_clock_samples(d));
+        snprintf(key, sizeof(key), "clock%d_rejected", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_clock_rejected(d));
+        snprintf(key, sizeof(key), "clock%d_recalibrations", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_clock_generation(d));
+        snprintf(key, sizeof(key), "clock%d_tier", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_tier(d));
+        snprintf(key, sizeof(key), "clock%d_demote_reason", d);
+        n += caj_prof_anno_int(out + n, key, __cajeta_prof_tier_reason(d));
+
+        const char* drv = __cajeta_prof_driver_identity(d);
+        if (drv) {
+            snprintf(key, sizeof(key), "clock%d_driver", d);
+            n += caj_prof_anno_str(out + n, key, drv);
+        }
+        const char* lay = __cajeta_prof_active_layers(d);
+        if (lay) {
+            snprintf(key, sizeof(key), "clock%d_layers", d);
+            n += caj_prof_anno_str(out + n, key, lay);
+        }
+    }
+    return n;
+}
+
 int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
                                      const char* tier, int32_t rate_hz,
                                      int32_t ring_cap, int64_t samples,
@@ -831,7 +993,7 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     const uint64_t meta_uuid = 0x1;
     __cajeta_prof_trace_track(w, meta_uuid, 0, "cajeta.profiler");
 
-    uint8_t te[1024];
+    uint8_t te[1792];
     int32_t n = __cajeta_pb_uint64(te, CAJ_PB_TE_TYPE, CAJ_TE_INSTANT);
     n += __cajeta_pb_uint64(te + n, CAJ_PB_TE_TRACK_UUID, meta_uuid);
     const char* label = "cajeta.profiler.run";
@@ -848,7 +1010,12 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     int64_t total = samples + dropped;
     n += caj_prof_anno_int(te + n, "dropped_per_mille",
                            total > 0 ? (dropped * 1000) / total : 0);
-    uint8_t pkt[1200];
+    // §7.8's remaining three: driver identity, active layers, calibration
+    // quality. Without them a reader can see that a timeline was produced but
+    // not whether it was produced WELL — a 12-confidence fit and a
+    // 99-confidence fit render identically.
+    n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);
+    uint8_t pkt[2048];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, w->seq_id);
     p += __cajeta_pb_bytes(pkt + p, CAJ_PB_PKT_TRACK_EVENT, te, n);

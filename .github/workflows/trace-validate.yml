@@ -38,7 +38,8 @@ jobs:
 
       - name: Build the generator
         run: |
-          cc -O1 -Wall -Wextra -o tracegen tools/tracegen/tracegen.c
+          # -lm: Unit 9's correlation uses llround for the tick->ns mapping.
+          cc -O1 -Wall -Wextra -o tracegen tools/tracegen/tracegen.c -lm
           ./tracegen min.pftrace
           ./tracegen --profile prof.pftrace
           ./tracegen --gpu gpu.pftrace
@@ -74,6 +75,42 @@ jobs:
           echo "select count(*) as parented from track where parent_id is not null;" | q | tee tracks.txt
           grep -qE '(^|[^0-9])1([^0-9]|$)' tracks.txt \
             || { echo "FAIL: parent/child track hierarchy did not survive (spec 7.2)"; exit 1; }
+
+      # Unit 9 (spec §7.8, §10.6). The `debug.` prefix on these keys was
+      # MEASURED against trace_processor v57, not assumed.
+      - name: Spans carry their tier, and the run carries its calibration
+        run: |
+          set -euo pipefail
+          g() { ./trace_processor -q /dev/stdin gpu.pftrace; }
+
+          echo "== per-measurement tier and confidence (spec 10.6) =="
+          echo "select distinct key from args where key like 'debug.%';" | g | tee keys.txt
+          for k in debug.tier debug.clock_confidence; do
+            grep -q "$k" keys.txt || { echo "FAIL: $k missing (spec 10.6)"; exit 1; }
+          done
+
+          echo "== run-level calibration record (spec 7.8) =="
+          for k in debug.clock_domains_calibrated debug.clock3_confidence \
+                   debug.clock3_drift_ppm_milli debug.clock3_samples \
+                   debug.clock3_driver debug.clock3_layers; do
+            grep -q "$k" keys.txt || { echo "FAIL: $k missing (spec 7.8)"; exit 1; }
+          done
+
+          echo "== the numbers, not just the keys =="
+          echo "select int_value from args where key='debug.clock3_samples';" | g | tee s.txt
+          grep -qE '(^|[^0-9])8([^0-9]|$)' s.txt \
+            || { echo "FAIL: calibration sample count did not survive"; exit 1; }
+
+          # NOT asserted, deliberately: `select count(*) from clock_snapshot`.
+          # Measured 2026-08-21 — trace_processor materializes that table only
+          # when some packet REFERENCES the sequence-scoped clock via
+          # timestamp_clock_id. Device timestamps here are already in the host
+          # domain (spec 5.1.7), so nothing references clock 64+domain and the
+          # table stays empty even though the snapshot is present and correct.
+          # Asserting 0 would pin an accident; asserting >0 would fail forever.
+          # The snapshot's bytes are covered by ProfilerClockTests, and its
+          # ingestibility was verified with a probe trace that does reference
+          # the clock (2 rows). See third_party/perfetto/PROVENANCE.md.
 
       # "without warnings" is the actual requirement, not "without crashing".
       # trace_processor records its own complaints in the stats table; an

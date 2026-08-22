@@ -22,7 +22,16 @@
 // table, and the sample->slice transform — is the runtime's own code, compiled
 // here verbatim.
 #define CAJETA_PROF_TRACE_STANDALONE 1
+#include <math.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <errno.h>
 #include "../../runtime/native/cajeta_prof_abi.h"
+// Unit 9's correlation and integrity modules, compiled verbatim like the trace
+// writer beside them — the point of this tool is that CI validates the
+// runtime's OWN code, so a stub here would validate the stub.
+#include "../../runtime/native/cajeta_rt_prof_clock.c"
+#include "../../runtime/native/cajeta_rt_prof_integrity.c"
 #include "../../runtime/native/cajeta_rt_prof_trace.c"
 
 // No fiber-scheduler stub is needed any more: the transform reads the fiber's
@@ -101,6 +110,20 @@ static int profile_mode(const char* out) {
 // Only a real reader can settle these. A flow whose two ends do not agree on an
 // id, or a queue track parented to nothing, produces a file that is valid
 // protobuf, loads without complaint, and shows no arrows and no hierarchy.
+// Unit 9 — a calibration the trace can be checked against. Without one the
+// generated trace carries converted device timestamps and no ClockSnapshot, so
+// CI could not tell a correct §7.5 emission from a missing one.
+static int caj_tracegen_clock_read(int64_t* before, int64_t* ticks,
+                                   int64_t* after, void* user) {
+    int* i = (int*) user;
+    int64_t mid = 1000000 + (int64_t) (*i) * 500000;
+    (*i)++;
+    *before = mid - 100;
+    *ticks  = mid / 2;              // a 2 ns/tick device, exactly in phase
+    *after  = mid + 100;
+    return 1;
+}
+
 static int gpu_mode(const char* out) {
     static CajetaFrameDesc site = { "test.App", "dispatchAll", "App.cajeta" };
     static CajetaGpuEvent evs[4];
@@ -125,6 +148,16 @@ static int gpu_mode(const char* out) {
         e->grid_x = 64; e->grid_y = 1; e->grid_z = 1;
         e->block_x = 32; e->block_y = 1; e->block_z = 1;
     }
+    // Calibrate the CPU-emulation domain so the trace carries the ClockSnapshot
+    // (§7.5) and the per-measurement confidence (§10.6) alongside the spans.
+    int reads = 0;
+    __cajeta_prof_clock_snapshot_clear();
+    __cajeta_prof_clock_reset(3);
+    __cajeta_prof_clock_set_period(3, 2.0);
+    // §7.8 — the driver identity a real backend would register at init.
+    __cajeta_prof_set_driver_identity(3, "cpu-emulation 0.1", "none");
+    __cajeta_prof_clock_calibrate(3, &caj_tracegen_clock_read, &reads, 8, 24);
+
     int64_t packets = __cajeta_prof_gpu_events_to_trace(evs, 4, out);
     printf("tracegen: gpu mode wrote %lld packets to %s\n",
            (long long) packets, out);
