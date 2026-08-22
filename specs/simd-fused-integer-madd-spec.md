@@ -158,13 +158,38 @@ quantized inference is why they exist.
   needing it — is permanent. The toolchain already sits on a patched ROCm LLVM
   (`AMD clang 22.0.0git ... +PATCHED`); cajeta-specific patches on top would
   compound that stack for no capability gained.
-- **4.11** `llvm.vector.partial.reduce.add` (present in this LLVM) is the
-  target-independent partial reduction, and it does lower to VNNI — measured
-  `vpdpwssd` x4 on x86 native. That is the WORD variant, so it widens bytes to
-  words first and spends four fused ops where `vpdpbusd` spends one. Good
-  enough as the PORTABLE fallback for targets with no hand-written path, which
-  cuts the real cost from six hand-written lowerings to two (x86 VNNI, AArch64
-  dotprod) plus portable plus scalar.
+- **4.11** CORRECTED 2026-08-22 — `llvm.vector.partial.reduce.add` (present in
+  this LLVM) is the target-independent partial reduction, but it does NOT reach
+  VNNI on x86. Measured through `llc` on the exact IR the lowering emits, no
+  `vpdp*` instruction is selected on ANY x86 cpu tried — `haswell`,
+  `cascadelake`, `znver5` — and dropping the deinterleave shuffle or widening
+  only to i16 does not change that, so the shuffle is not the blocker. The cost
+  of one 32-pair `dotAccum`:
+
+  | form | haswell | cascadelake / znver5 |
+  |---|---|---|
+  | portable partial reduce | 57 | 19 |
+  | same, without the deinterleave | 23 | 15 |
+  | pre-VNNI x86 tier, exact (§4.11.1) | **15** | — |
+  | `vpdpbusd` | — | **1** |
+
+  The earlier `vpdpwssd x4` reading was of a different IR shape and did not
+  survive being measured on ours. The portable path is therefore a
+  CORRECTNESS fallback, not a performance one, and the hand-written pre-VNNI
+  x86 tier is load-bearing rather than a nicety.
+- **4.11.1** The pre-VNNI sequence in the table above SATURATES, and that
+  conflicts with §4.8. `vpmaddubsw` sums two adjacent u8 x i8 products into an
+  i16 lane with saturation; at the full operand range 255 x -128 twice is
+  -65280, which clamps to -32768 and disagrees with every other tier. It is
+  exact for the QUANTIZED range only (nibbles 0..15 against -127..127 peak at
+  3810, a factor of 8 of headroom), which is why `llama.cpp` can use it — its
+  caller is always a K-quant. `dotAccum` is public surface over any
+  `Vector<uint8,4N>`, so it takes the exact widen-multiply-reduce form instead:
+  measured at 3 instructions for the saturating sequence against 15 for the
+  exact one, still far under the portable path's 57. Relaxing
+  §4.8 to "exact within the quantized range" would buy those instructions back
+  and is a deliberate decision, not an oversight. Measured for one 32-pair
+  `dotAccum` on haswell: 15 instructions exact, 3 saturating, 57 portable.
 - **4.12** LIMIT OF TODAY'S EVIDENCE: this LLVM build registers only
   `amdgcn`, `r600`, `x86`, `x86-64`. The AArch64 and RISC-V lowerings cannot be
   compiled here, let alone run — they would be written blind, exactly as Unit

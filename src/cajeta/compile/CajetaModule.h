@@ -511,6 +511,14 @@ namespace cajeta {
             return sti.checkFeatures("+avx512vnni")
                 || sti.checkFeatures("+avxvnni");
         }
+        /** True when the target has AVX2, which is what the pre-VNNI x86 tier
+         *  needs for a 256-bit `vpmaddwd`. Same subtarget query as above and
+         *  for the same reason — a named cpu's explicit feature string is
+         *  empty. */
+        bool targetHasAvx2() const {
+            if (targetMachine == nullptr) return false;
+            return targetMachine->getMCSubtargetInfo().checkFeatures("+avx2");
+        }
 
         llvm::IRBuilder<>* getBuilder() {
             return this->builder;

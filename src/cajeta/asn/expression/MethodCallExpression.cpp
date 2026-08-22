@@ -5809,7 +5809,7 @@ namespace cajeta {
                     return vecops::dotAccum(*builder,
                         builder->GetInsertBlock()->getModule(), self, other,
                         accv, wUnsigned, module->targetHasIntDotAccum(),
-                        forceScalarDot);
+                        module->targetHasAvx2(), forceScalarDot);
                 }
                 if (methodCallName == "dot") {
                     if (isFloat) {

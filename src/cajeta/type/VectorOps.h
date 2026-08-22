@@ -368,7 +368,7 @@ namespace vecops {
     inline llvm::Value* dotAccum(llvm::IRBuilderBase& b, llvm::Module* m,
                                  llvm::Value* w, llvm::Value* a,
                                  llvm::Value* acc, bool wUnsigned,
-                                 bool hasVnni, bool forceScalar) {
+                                 bool hasVnni, bool hasAvx2, bool forceScalar) {
         llvm::LLVMContext& ctx = b.getContext();
         auto* i32 = llvm::Type::getInt32Ty(ctx);
         auto* accTy = llvm::cast<llvm::FixedVectorType>(acc->getType());
@@ -394,9 +394,76 @@ namespace vecops {
             return b.CreateCall(fn, {acc, w, a}, "dotacc.vnni");
         }
 
-        // Tier 2 — portable partial reduction. Widen, multiply, then let LLVM
-        // pick the target's fused form (measured: vpdpwssd on x86 native,
-        // udot/sdot on AArch64 dotprod, vqdot on RISC-V Zvqdotq).
+        // Tier 1.5 — pre-VNNI x86 (AVX2). Load-bearing, not a nicety: the
+        // portable tier below reaches NO vpdp* instruction on x86 in this
+        // LLVM, measured through llc on the exact IR emitted here, and costs
+        // 57 instructions on haswell against vpdpbusd's 1.
+        //
+        // NOT llama.cpp's `vpmaddubsw` sequence, which is 3 instructions but
+        // SATURATES: it sums two adjacent u8 x i8 products into an i16 lane,
+        // and at the full operand range 255 x -128 twice is -65280, clamping
+        // to -32768. llama.cpp can use it because its caller is always a
+        // K-quant (nibbles 0..15 peak at 3810, a factor of 8 of headroom);
+        // dotAccum is public surface over any Vector<uint8,4N>, and §4.8's
+        // bit-identity is what lets the scalar tier stand as the correctness
+        // floor. So: widen to i16 and multiply EXACTLY (|u8 x i8| <= 32640
+        // fits), then reduce through vpmaddwd, which accumulates adjacent
+        // pairs in i32 and cannot saturate.
+        if (!forceScalar && isX86 && !hasVnni && hasAvx2 && lanes == n * 4
+                && (lanes % 16) == 0) {
+            auto* i16Ty = llvm::Type::getInt16Ty(ctx);
+            auto* mulTy = llvm::FixedVectorType::get(i16Ty, lanes);
+            llvm::Value* we = wUnsigned
+                ? b.CreateZExt(w, mulTy, "dotacc.w16")
+                : b.CreateSExt(w, mulTy, "dotacc.w16");
+            llvm::Value* ae = b.CreateSExt(a, mulTy, "dotacc.a16");
+            llvm::Value* mul = b.CreateMul(we, ae, "dotacc.mul16");
+            llvm::Value* ones = llvm::ConstantVector::getSplat(
+                llvm::ElementCount::getFixed(16),
+                llvm::ConstantInt::get(i16Ty, 1));
+            llvm::Function* pmadd = llvm::Intrinsic::getOrInsertDeclaration(
+                m, llvm::Intrinsic::x86_avx2_pmadd_wd);
+            // Each 16-lane chunk yields 8 pair-sums, which are groups 2i and
+            // 2i+1 of four bytes each -- both always land in the same chunk,
+            // so a chunk maps cleanly onto 4 accumulator lanes.
+            unsigned chunks = lanes / 16;
+            llvm::SmallVector<llvm::Value*, 4> quads;
+            for (unsigned c = 0; c < chunks; ++c) {
+                llvm::SmallVector<int, 16> m16(16);
+                for (unsigned i = 0; i < 16; ++i) m16[i] = (int) (c * 16 + i);
+                llvm::Value* piece = b.CreateShuffleVector(mul, mul, m16,
+                                                           "dotacc.chunk");
+                llvm::Value* pairs = b.CreateCall(pmadd, {piece, ones},
+                                                  "dotacc.pairs");
+                // adjacent-2 of the pair sums == adjacent-4 of the bytes
+                llvm::SmallVector<int, 4> ev = {0, 2, 4, 6};
+                llvm::SmallVector<int, 4> od = {1, 3, 5, 7};
+                llvm::Value* e = b.CreateShuffleVector(pairs, pairs, ev,
+                                                       "dotacc.ev");
+                llvm::Value* o = b.CreateShuffleVector(pairs, pairs, od,
+                                                       "dotacc.od");
+                quads.push_back(b.CreateAdd(e, o, "dotacc.q"));
+            }
+            // Concatenate the per-chunk quads into <n x i32>.
+            while (quads.size() > 1) {
+                llvm::SmallVector<llvm::Value*, 4> next;
+                for (unsigned i = 0; i + 1 < quads.size(); i += 2) {
+                    unsigned half = llvm::cast<llvm::FixedVectorType>(
+                        quads[i]->getType())->getNumElements();
+                    llvm::SmallVector<int, 32> cat(half * 2);
+                    for (unsigned k = 0; k < half * 2; ++k) cat[k] = (int) k;
+                    next.push_back(b.CreateShuffleVector(
+                        quads[i], quads[i + 1], cat, "dotacc.cat"));
+                }
+                quads = next;
+            }
+            return b.CreateAdd(acc, quads[0], "dotacc.pre");
+        }
+
+        // Tier 2 — portable partial reduction. The CORRECTNESS fallback for
+        // targets with no hand-written path; measured NOT to reach vpdp* on
+        // x86 (see Tier 1.5), so it is not the performance story it was
+        // originally specified to be.
         if (!forceScalar && lanes == n * 4) {
             auto* wideTy = llvm::FixedVectorType::get(i32, lanes);
             llvm::Value* we = wUnsigned ? b.CreateZExt(w, wideTy, "dotacc.w")

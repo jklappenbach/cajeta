@@ -225,6 +225,24 @@ TEST(VectorDotAccumTests, namedCpuStillReachesTheVnniTier) {
            "to ask the subtarget";
 }
 
+// 2.1.1 — the pre-VNNI x86 tier agrees bit-for-bit with the VNNI one.
+//
+// haswell is AVX2 with no VNNI, and its ISA is a subset of every VNNI x86 cpu,
+// so it compiles AND runs here. The bit-identity is the whole claim: the
+// sequence llama.cpp uses (`vpmaddubsw`) SATURATES — 255 x -128 twice is
+// -65280, which clamps to -32768 — so it is exact only within the quantized
+// range, and `dotAccum` is public surface over any `Vector<uint8,4N>`. The
+// exact widen-multiply-reduce form is what keeps §4.8 true (spec §4.11.1).
+TEST(VectorDotAccumTests, preVnniX86IsBitIdentical) {
+    std::string ir;
+    EXPECT_EQ(runI32(DOTACC, true, &ir, "haswell"), 1);
+    EXPECT_EQ(ir.find("vpdpbusd"), std::string::npos)
+        << "haswell has no VNNI; emitting it would not run";
+    EXPECT_NE(ir.find("pmadd"), std::string::npos)
+        << "expected the pre-VNNI pmadd reduce, not the portable partial "
+           "reduction — measured at 57 instructions against 3 on haswell";
+}
+
 // 1.1.4 — the floor: a zero accumulator, and all-zero weights. `dot` (Unit 3)
 // is defined as dotAccum(w, a, zeros), so this is the case it rests on.
 TEST(VectorDotAccumTests, zeroAccumulatorAndZeroWeights) {
