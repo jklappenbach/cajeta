@@ -179,4 +179,11 @@ private:
     std::vector<std::string> tempRoots;
 };
 
+// Remove any temp source/archive roots still outstanding. The test binary
+// terminates with _Exit to dodge a two-LLVM teardown crash (see test/main.cpp),
+// which skips atexit and every static destructor — so a CajetaJit held in a
+// function-local static never runs its own cleanup, and this has to be called
+// explicitly at each exit point, exactly as the gcov dump already is.
+void sweepTempRoots();
+
 } // namespace cajeta_test
