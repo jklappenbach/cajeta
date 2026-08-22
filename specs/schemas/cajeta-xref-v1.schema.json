@@ -102,6 +102,11 @@
           "type": "array",
           "items": { "type": "string" }
         },
+        "annotations": {
+          "type": "array",
+          "description": "Applied annotations, as canonical FQNs where the annotation type resolves (dev.cajeta.unit.Test), and as written otherwise. NAMES ONLY -- argument values are deliberately not recorded. Absent when the declaration carries none.",
+          "items": { "type": "string" }
+        },
         "signature": {
           "type": "string",
           "description": "Human-readable signature, for methods and constructors."

@@ -662,6 +662,91 @@ TEST(XrefExport, IsDeterministic) {
     EXPECT_EQ(first, second) << "xref export is not byte-identical across runs";
 }
 
+// ---- annotations on declarations (2026-08-22) -------------------------------
+//
+// Added for the IDE's run-line markers: "which methods are @Test" is not
+// answerable from a parse, because the answer depends on resolution. The
+// compiler knows; it now says so.
+//
+// The RESOLUTION is the part worth pinning. A bare `@Marker` canonicalizes to
+// package `code`, so the AST holds `code.Marker` regardless of where Marker is
+// declared. Shipping that would name a package no source declares, and a
+// consumer filtering on the real FQN would match nothing while appearing to
+// work — a silent empty result, which is the failure mode this whole index
+// exists to avoid.
+
+TEST(XrefExport, AnnotationsAreRecordedWithTheirResolvedFqn) {
+    auto proj = makeTmpProject("annotations");
+    writeUnit(proj.sourceRoot, "mark/Marker.cajeta",
+        "package mark;\n"
+        "public annotation Marker { }\n");
+    // NOTE: no `import mark.Marker` — a bare use is the case that canonicalizes
+    // to `code.Marker` and therefore the case resolution has to handle.
+    writeUnit(proj.sourceRoot, "app/Widget.cajeta",
+        "package app;\n"
+        "@Marker\n"
+        "public class Widget {\n"
+        "    @Marker\n"
+        "    int32 tagged;\n"
+        "    @Marker\n"
+        "    public static int32 run() { return 1; }\n"
+        "    public static int32 plain() { return 2; }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    // All three positions an annotation can appear on.
+    for (const char* fqn : {"\"app.Widget\"", "\"app.Widget.tagged\"",
+                            "\"app.Widget.run\""}) {
+        auto rec = recordContaining(doc, fqn);
+        ASSERT_FALSE(rec.empty()) << "no record for " << fqn;
+        EXPECT_TRUE(has(rec, "\"annotations\": [\"mark.Marker\"]"))
+            << fqn << " must carry the RESOLVED annotation name; got: " << rec;
+        EXPECT_FALSE(has(rec, "code.Marker"))
+            << fqn << " shipped the scope-canonical name instead of the declaring"
+               " package, which names a package no source declares: " << rec;
+    }
+}
+
+// The other half of the check. Without this, an implementation that stamped
+// every declaration with the same annotation list would pass the test above.
+
+TEST(XrefExport, AnUnannotatedDeclarationCarriesNoAnnotationsKey) {
+    auto proj = makeTmpProject("noannotations");
+    writeUnit(proj.sourceRoot, "mark/Marker.cajeta",
+        "package mark;\n"
+        "public annotation Marker { }\n");
+    writeUnit(proj.sourceRoot, "app/Widget.cajeta",
+        "package app;\n"
+        "public class Widget {\n"
+        "    @Marker\n"
+        "    public static int32 run() { return 1; }\n"
+        "    public static int32 plain() { return 2; }\n"
+        "}\n");
+
+    auto doc = emitXref(proj);
+    ASSERT_FALSE(doc.empty());
+
+    auto annotated = recordContaining(doc, "\"app.Widget.run\"");
+    ASSERT_FALSE(annotated.empty());
+    EXPECT_TRUE(has(annotated, "\"annotations\""))
+        << "the control is not annotated, so the negative below proves nothing: "
+        << annotated;
+
+    auto plain = recordContaining(doc, "\"app.Widget.plain\"");
+    ASSERT_FALSE(plain.empty()) << "no record for app.Widget.plain";
+    EXPECT_FALSE(has(plain, "\"annotations\""))
+        << "a declaration with no annotations must omit the key entirely, not "
+           "carry an empty array: " << plain;
+
+    // The class itself is unannotated here, unlike in the test above.
+    auto klass = recordContaining(doc, "\"app.Widget\"");
+    ASSERT_FALSE(klass.empty());
+    EXPECT_FALSE(has(klass, "\"annotations\""))
+        << "annotations leaked from a member onto its owner: " << klass;
+}
+
 // ---- 1.1.8 — the flag is opt-in; absent it, nothing changes -------------------
 
 TEST(XrefExport, AbsentFlagEmitsNothing) {

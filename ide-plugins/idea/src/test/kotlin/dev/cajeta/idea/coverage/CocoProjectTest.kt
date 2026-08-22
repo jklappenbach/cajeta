@@ -261,4 +261,69 @@ class CocoProjectTest {
         assertTrue(s.pluginDeclared)
         assertEquals(CocoProject.DEFAULT_OUT_DIR, s.outDir)
     }
+
+    // ── The measured source root ───────────────────────────────────────────
+    //
+    // Added 2026-08-22, after a run that LOADED and painted nothing. coco
+    // records site paths relative to the root it measured, and the plugin
+    // resolved them against `ProjectRootManager.contentSourceRoots` alone — a
+    // list that is EMPTY for a Cajeta project opened as a plain directory,
+    // because its generated `.iml` carries a `<content>` element and no
+    // `<sourceFolder>`. Nothing resolved, nothing matched, nothing reported.
+    // The manifest knew the answer the whole time.
+
+    @Test
+    fun `source root comes from the coverage config`() {
+        val manifest = """
+            {
+                "plugins": {
+                    "dev.cajeta.coverage": {
+                        "config": { "src": "lib/main", "out": "build/coco" }
+                    }
+                },
+                "tasks": {
+                    "cover": { "actions": [ { "action": "cajeta.coverage.instrument" } ] }
+                }
+            }
+        """.trimIndent()
+        assertEquals("lib/main", CocoProject.parse(manifest).srcDir)
+    }
+
+    @Test
+    fun `an instrument action's own src beats the config block`() {
+        val manifest = """
+            {
+                "plugins": {
+                    "dev.cajeta.coverage": { "config": { "src": "from-config" } }
+                },
+                "tasks": {
+                    "cover": {
+                        "actions": [
+                            { "action": "cajeta.coverage.instrument", "src": "from-action" }
+                        ]
+                    }
+                }
+            }
+        """.trimIndent()
+        assertEquals("from-action", CocoProject.parse(manifest).srcDir)
+    }
+
+    @Test
+    fun `settings build source-root is used when coco declares none`() {
+        val manifest = """
+            {
+                "settings": { "build": { "source-root": "sources" } },
+                "plugins": { "dev.cajeta.coverage": { "config": { "min": 80 } } },
+                "tasks": {
+                    "cover": { "actions": [ { "action": "cajeta.coverage.instrument" } ] }
+                }
+            }
+        """.trimIndent()
+        assertEquals("sources", CocoProject.parse(manifest).srcDir)
+    }
+
+    @Test
+    fun `source root falls back to src`() {
+        assertEquals(CocoProject.DEFAULT_SRC_DIR, CocoProject.parse(withCoverage).srcDir)
+    }
 }

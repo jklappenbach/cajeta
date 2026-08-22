@@ -25,6 +25,17 @@ data class CocoProject(
     val coverageTasks: List<String> = emptyList(),
     /** Artifact root, relative to the manifest directory. */
     val outDir: String = DEFAULT_OUT_DIR,
+    /**
+     * The root coco measured, relative to the manifest directory.
+     *
+     * coco records each site's `file` relative to the root it was pointed at,
+     * so this is what turns `tour/coco/Shipping.cajeta` back into a path the
+     * IDE knows. It is NOT derivable from the IDE's module model: a Cajeta
+     * project opened without a `<sourceFolder>` in its `.iml` has NO content
+     * source roots, and every site path then resolves to nothing — silently,
+     * because an unresolvable path annotates no file rather than erroring.
+     */
+    val srcDir: String = DEFAULT_SRC_DIR,
     /** Why coverage cannot be run, or null when it can. */
     val problem: String? = null,
 ) {
@@ -35,6 +46,7 @@ data class CocoProject(
 
     companion object {
         const val DEFAULT_OUT_DIR: String = "build/coco"
+        const val DEFAULT_SRC_DIR: String = "src"
 
         /**
          * Plugin ids that mean coco, newest first.
@@ -101,6 +113,7 @@ data class CocoProject(
                 pluginDeclared = declared,
                 coverageTasks = instrumenting.keys.toList(),
                 outDir = outDirOf(declaredEntry, settings, root, instrumenting.values.firstOrNull()),
+                srcDir = srcDirOf(declaredEntry, settings, instrumenting.values.firstOrNull()),
                 problem = problem,
             )
         }
@@ -135,5 +148,29 @@ data class CocoProject(
 
         private fun outOf(config: Json?): String? =
             (config?.opt("out") as? Json.Str)?.value?.takeIf { it.isNotBlank() }
+
+        /**
+         * The root coco was pointed at, in the same precedence order as [outDirOf]:
+         * the instrument action's own param, then the plugin's config block, then
+         * `settings.build.source-root`, then the conventional `src`.
+         *
+         * Taking coco's `src` in preference to the build block matters when they
+         * differ — the site paths are relative to whatever coco measured, and a
+         * root that is merely plausible resolves half the files and drops the rest.
+         */
+        private fun srcDirOf(declaredEntry: Json?, settings: Json?, task: Json?): String {
+            task?.let { t ->
+                actionsOf(t)
+                    .firstOrNull { (it.opt("action") as? Json.Str)?.value == INSTRUMENT }
+                    ?.let { (it.opt("src") as? Json.Str)?.value }
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { return it }
+            }
+            (declaredEntry?.opt("config")?.opt("src") as? Json.Str)?.value
+                ?.takeIf { it.isNotBlank() }?.let { return it }
+            (settings?.opt("build")?.opt("source-root") as? Json.Str)?.value
+                ?.takeIf { it.isNotBlank() }?.let { return it }
+            return DEFAULT_SRC_DIR
+        }
     }
 }

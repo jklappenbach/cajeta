@@ -5,6 +5,7 @@
 #include "cajeta/type/CajetaView.h"
 #include "cajeta/type/StructureProperty.h"
 #include "cajeta/method/Method.h"
+#include "cajeta/type/Annotatable.h"
 
 #include "antlr4-runtime/antlr4-runtime.h"
 
@@ -154,6 +155,19 @@ namespace cajeta::xref {
                     out << "\"";
                 }
                 out << "]";
+                first = false;
+            }
+            if (!d.annotations.empty()) {
+                if (!first) out << ", ";
+                out << "\"annotations\": [";
+                for (size_t a = 0; a < d.annotations.size(); ++a) {
+                    if (a) out << ", ";
+                    out << "\"";
+                    escapeInto(out, d.annotations[a]);
+                    out << "\"";
+                }
+                out << "]";
+                first = false;
             }
             out << "}";
         }
@@ -349,6 +363,62 @@ namespace cajeta::xref {
                 if (m->getModifiers().count(mod)) out.emplace_back(name);
             }
             return out;
+        }
+
+        // Applied annotations, as canonical FQNs where the annotation type is
+        // known to the compiler.
+        //
+        // The resolution step is LOAD-BEARING, and measured to be so. A bare
+        // `@Test` canonicalizes to package `code` — the compiler's scope for an
+        // unqualified annotation — so what an Annotatable holds is `code.Test`,
+        // not the declaring package. Across the coco tour plus the stdlib that
+        // is 36 rewrites:
+        //
+        //     26  code.Test        -> dev.cajeta.unit.Test
+        //      4  code.Component   -> cajeta.aot.Component
+        //      2  code.BeforeEach  -> dev.cajeta.unit.BeforeEach
+        //      2  code.Disabled    -> dev.cajeta.unit.Disabled
+        //      2  code.Inject      -> cajeta.aot.Inject
+        //
+        // Shipping `code.Test` would be actively misleading: it names a package
+        // no source declares, and a consumer asking "which methods are
+        // dev.cajeta.unit tests" would match nothing while appearing to work.
+        //
+        // COMPILER INTRINSICS (`@Inline`, `@Native`, `@ValueType`, `@Device`)
+        // have no declared type to resolve against and stay as written. They are
+        // also not internally consistent — one index carries both
+        // `code.ValueType` and a bare `ValueType` for the same annotation — so a
+        // consumer matching intrinsics on the string must accept both spellings.
+        // That is the parser's canonicalization, not this export's, and is left
+        // alone here rather than papered over.
+        //
+        // An unresolvable name is emitted AS WRITTEN rather than dropped: an
+        // annotation the index cannot name is still a fact about the
+        // declaration, and silently omitting it would read as "not annotated".
+        std::vector<std::string> annotationNames(Annotatable* a) {
+            std::vector<std::string> out;
+            if (!a) return out;
+            for (auto& qName : a->getAnnotationList()) {
+                if (!qName) continue;
+                const std::string written = qName->toCanonical();
+                if (written.empty()) continue;
+                std::string resolved = written;
+                if (auto type = CajetaType::find(written)) {
+                    if (type->getQName()) resolved = type->getQName()->toCanonical();
+                }
+                out.push_back(resolved);
+            }
+            // Order is the declaration order the parser saw, minus duplicates.
+            // Sorting would be tidier and wrong: `@Order`-style annotations read
+            // top to bottom in the source, and a consumer rendering them back
+            // should show what was written.
+            std::vector<std::string> deduped;
+            for (auto& n : out) {
+                if (std::find(deduped.begin(), deduped.end(), n) == deduped.end()) {
+                    deduped.push_back(n);
+                }
+            }
+            return deduped;
         }
 
         // The part of a canonical key that identifies the METHOD rather than its
@@ -721,8 +791,9 @@ namespace cajeta::xref {
 
             Declaration d;
             d.fqn       = canonical;
-            d.kind      = classKind(klass);
-            d.modifiers = modifierNames(klass.get());
+            d.kind        = classKind(klass);
+            d.modifiers   = modifierNames(klass.get());
+            d.annotations = annotationNames(klass.get());
             d.at        = SourceRef{file, klass->getDeclLine(), klass->getDeclColumn()};
             index.addDeclaration(std::move(d));
 
@@ -755,7 +826,8 @@ namespace cajeta::xref {
                 f.fqn       = canonical + "." + prop->getName();
                 f.kind      = "field";
                 f.owner     = canonical;
-                f.modifiers = modifierNames(prop.get());
+                f.modifiers   = modifierNames(prop.get());
+                f.annotations = annotationNames(prop.get());
                 if (prop->getType()) {
                     f.signature = prop->getType()->toCanonical() + " " + prop->getName();
                 }
@@ -799,6 +871,7 @@ namespace cajeta::xref {
                 m.overloadKey = method->toCanonical(/*labeled=*/false);
                 m.signature   = displaySignature(method, isCtor);
                 m.modifiers   = modifierNames(method.get());
+                m.annotations = annotationNames(method.get());
                 m.at = SourceRef{file, line, col};
                 index.addDeclaration(std::move(m));
             }
