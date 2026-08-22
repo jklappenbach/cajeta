@@ -67,9 +67,28 @@ Consequences for this spec's framing:
   `bitsToF32` (and i64 for `bitsToF64`) before the bitcast — truncating, or
   rejecting a wider operand with a diagnostic rather than emitting invalid IR.
   `f32ToBits`/`f64ToBits` want the same audit in the other direction.
-- A verifier run over emitted modules would have caught this at the point of
-  construction instead of at instruction selection, with a message naming the
-  real problem.
+- **THE JIT ALREADY RUNS THE VERIFIER AND AOT DOES NOT — that is the entire
+  "divergence".** Measured 2026-08-22 with a JIT test passing a promoted
+  operand:
+
+      JIT verify failed: Invalid bitcast
+        %bits_f32 = bitcast i64 %6 to float
+
+  The JIT names the defect exactly, at the point of construction. AOT skips the
+  verifier, so the identical malformed IR survives to instruction selection and
+  emerges as `LLVM ERROR: Cannot select: f32 = bitcast`, three phases from the
+  cause and naming none of it. The bug was never AOT-only; only the DIAGNOSIS
+  differed, and that difference is what sent this spec looking at target and
+  feature configuration for two days.
+
+  So there are two defects here, and the second is the expensive one:
+    (a) the intrinsics do not coerce their operands (fixed);
+    (b) AOT emission does not verify what it built.
+
+  (b) is worth deciding on its own terms — a verifier pass over emitted modules
+  costs compile time proportional to module size, and buys a precise diagnostic
+  in place of an opaque isel abort for every future malformed-IR bug, not just
+  this one. Left open deliberately rather than taken unilaterally.
 
 **Not the CPU.** Retested 2026-08-22 after `--cpu` changed default from
 `generic` to `native`: the repro still aborts identically. The spec's

@@ -4843,6 +4843,13 @@ namespace cajeta {
                 // (little-endian float32 .npy) that the value-cast cannot express.
                 if (ns == "Cajeta" && methodCallName == "f32ToBits" && parameters.size() == 1) {
                     llvm::Value* x = loadValue(0);
+                    // Coerce to the DECLARED width before the bitcast. The
+                    // parameter is float32, but the value that arrives need
+                    // not be — and bitcast requires equal bit widths, so
+                    // casting the operand as handed builds malformed IR. See
+                    // bitsToF32 below for the full account.
+                    x = builder->CreateFPCast(x, builder->getFloatTy(),
+                                              "f32_bits.fit");
                     llvm::Value* b = builder->CreateBitCast(x, i32Ty, "f32_bits");
                     resolvedType = CajetaType::of("int32");
                     return b;
@@ -4853,6 +4860,22 @@ namespace cajeta {
                 if (ns == "Cajeta" && methodCallName == "bitsToF32" && parameters.size() == 1) {
                     auto* f32Ty = llvm::Type::getFloatTy(llvmCtx);
                     llvm::Value* b = loadValue(0);
+                    // Coerce to the DECLARED width first. The parameter is
+                    // int32, but the VALUE need not be: `h << 16` promotes to
+                    // int64, and `bitcast` requires equal bit widths, so
+                    // bitcasting the operand as handed produced
+                    //     bitcast i64 %6 to float
+                    // which is malformed IR. Under the JIT the verifier named
+                    // it ("Invalid bitcast"); AOT does not run the verifier, so
+                    // it survived to instruction selection and surfaced as the
+                    // opaque `LLVM ERROR: Cannot select: f32 = bitcast`. That
+                    // read as an AOT-vs-JIT pipeline divergence for two days
+                    // (specs/aot-bitcast-f32-isel-abort) when the defect was
+                    // here, in both paths, all along — and it cost
+                    // cajeta-llama's GGUF reader an arithmetic f16 decode whose
+                    // pow2() loop measured 38% of the Q4_K mat-vec.
+                    b = builder->CreateIntCast(b, i32Ty, /*isSigned=*/true,
+                                               "bits_f32.fit");
                     llvm::Value* x = builder->CreateBitCast(b, f32Ty, "bits_f32");
                     resolvedType = CajetaType::of("float32");
                     return x;
@@ -4861,6 +4884,8 @@ namespace cajeta {
                 // bits as a 64-bit integer (LLVM bitcast). Inverse of bitsToF64.
                 if (ns == "Cajeta" && methodCallName == "f64ToBits" && parameters.size() == 1) {
                     llvm::Value* x = loadValue(0);
+                    x = builder->CreateFPCast(x, builder->getDoubleTy(),
+                                              "f64_bits.fit");
                     llvm::Value* b = builder->CreateBitCast(x, i64Ty, "f64_bits");
                     resolvedType = CajetaType::of("int64");
                     return b;
@@ -4869,6 +4894,8 @@ namespace cajeta {
                 // double (LLVM bitcast). Inverse of f64ToBits.
                 if (ns == "Cajeta" && methodCallName == "bitsToF64" && parameters.size() == 1) {
                     llvm::Value* b = loadValue(0);
+                    b = builder->CreateIntCast(b, i64Ty, /*isSigned=*/true,
+                                               "bits_f64.fit");
                     llvm::Value* x = builder->CreateBitCast(b, f64Ty, "bits_f64");
                     resolvedType = CajetaType::of("float64");
                     return x;

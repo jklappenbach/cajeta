@@ -411,6 +411,39 @@ TEST(NumpyOpsTests, npyInt64RoundTrip) {
 
 // 10.5 precursor — float<->raw-bits reinterpret intrinsics (Cajeta.f32ToBits/bitsToF32,
 // f64ToBits/bitsToF64): LLVM bitcast, NOT a value conversion. Unblocks binary float .npy.
+// The bit intrinsics declare int32/int64 parameters, but the VALUE that
+// arrives need not match: `h << 16` promotes to int64, and the lowering
+// bitcast whatever it was handed. `bitcast i64 to float` is malformed IR —
+// bitcast requires equal bit widths — so it surfaced three phases later as
+//   LLVM ERROR: Cannot select: f32 = bitcast
+// and was filed as an AOT-vs-JIT pipeline defect
+// (specs/aot-bitcast-f32-isel-abort). It is neither: floatBitsIntrinsicRoundTrip
+// below is green only because every operand it passes is already the declared
+// width, so the promotion never happens there.
+//
+// 0x3F80 << 16 == 0x3F800000 == 1.0f, which is why the shift is the natural
+// way to write this and why real code hit it — cajeta-llama's GGUF reader
+// assembles f16/f32 bits from bytes exactly this way.
+TEST(NumpyOpsTests, bitIntrinsicsCoercePromotedOperands) {
+    const char* src =
+        "package test;\n"
+        "import cajeta.lang.Cajeta;\n"
+        "public final class B {\n"
+        "    public static int32 run() {\n"
+        "        int32 h = 16256;\n"                 // 0x3F80
+        "        float32 v = Cajeta.bitsToF32(h << 16);\n"
+        "        if (v != 1.0f) { return 2; }\n"
+        "        int64 g = 1072693248L;\n"           // high half of 1.0 double
+        "        float64 d = Cajeta.bitsToF64(g << 32);\n"
+        "        if (d != 1.0) { return 3; }\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.B");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    EXPECT_EQ(fn(), 1);
+}
+
 TEST(NumpyOpsTests, floatBitsIntrinsicRoundTrip) {
     std::string src = std::string(PRE) +
         "public final class D {\n"
