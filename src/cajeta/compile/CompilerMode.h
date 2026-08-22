@@ -211,8 +211,12 @@ namespace cajeta {
         // Package.Class.method(File.cajeta:NN) with NO debug info (diagnostic-
         // exceptions §5/§8). Default ON in every flavor (semantic traces are the
         // ergonomic default); --line-info=off drops all of it for zero cost.
-        // Perf: v1 marks each statement with a call — measure before relying on
-        // default-on in release (see the plan's Unit 3 perf note).
+        // Perf: MEASURED 2026-08-22. The per-CALL enter/leave this flag emits
+        // is at parity with an uninstrumented build on ordinary code (0.11 s
+        // vs 0.11 s at -O3). The per-STATEMENT __cajeta_line_mark that used to
+        // ride along with it cost 3.5-9.4x, so it moved to --debug-info=full
+        // (see emitLineMark). `line` therefore resolves a trace to
+        // Type.method(File.cajeta) for free; `full` adds the exact :NN.
         bool            lineInfo            = true;
 
         // ----- experimental perf -----

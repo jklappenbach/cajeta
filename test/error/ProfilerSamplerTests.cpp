@@ -285,6 +285,10 @@ TEST(ProfilerSampler, lineInfoOffRefusesToArmAndSaysWhy) {
     ::remove(errPath.c_str());
     EXPECT_NE(said.find("refusing to arm"), std::string::npos)
         << "the refusal was silent; stderr held: [" << said << "]";
-    EXPECT_NE(said.find("--line-info=off"), std::string::npos)
+    EXPECT_NE(said.find("--debug-info=off"), std::string::npos)
         << "the message does not name the cause; stderr held: [" << said << "]";
+    // ...and the fix, which is the half that makes it actionable. `--line-info`
+    // is not a flag the CLI accepts; the message said so until 2026-08-22.
+    EXPECT_NE(said.find("--debug-info=line"), std::string::npos)
+        << "the message does not name the fix; stderr held: [" << said << "]";
 }

@@ -83,6 +83,27 @@ namespace cajeta::dbg {
     }
 
     void emitLineMark(cajeta::CajetaModulePtr module, int line) {
+        // The per-STATEMENT mark is the entire runtime cost of the shadow
+        // stack, and it is not close. Measured 2026-08-22 at -O3:
+        //
+        //                       off     enter/leave    + marks
+        //   realistic body     0.11 s      0.11 s       0.39 s   (3.5x)
+        //   tiny callee        0.05 s      0.15 s       0.47 s   (9.4x)
+        //
+        // Per-CALL enter/leave is at parity with an uninstrumented build on
+        // ordinary code; per-statement marks cost 3.5-9.4x. And the cost is
+        // NOT the probe's work — with the bodies emptied the figure is
+        // unchanged, because an opaque call at every statement boundary
+        // forbids inlining and folding. There is no cheap version to engineer
+        // toward, only a decision about when to emit them at all.
+        //
+        // So they are now a --debug-info=full feature. `line` (the default,
+        // and what the release flavor selects) keeps the frame identity that
+        // makes a trace name Type.method(File.cajeta) and that the profiler
+        // samples; `full` adds the exact line. This is what the flag's own
+        // note in CompilerMode.h asked for: "measure before relying on
+        // default-on in release."
+        if (!module->getFlags().debugInfo) return;
         llvm::IRBuilder<>* builder = lineGuard(module);
         if (!builder || line <= 0) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_line_mark");

@@ -703,9 +703,10 @@ int32_t __cajeta_prof_arm(void) {
     if (!getenv("CAJETA_PROFILER")) return 0;   // unset: arm nothing (§9.1)
     if (!__cajeta_line_info_is_present()) {
         fprintf(stderr,
-                "cajeta.profiler: refusing to arm — this binary was built with "
-                "--line-info=off, so there are no frames to sample. Rebuild "
-                "without it (line-info is on by default).\n");
+                "cajeta.profiler: refusing to arm — this binary was built "
+                "with --debug-info=off, so there are no frames to sample. "
+                "Rebuild with --debug-info=line (the default) to profile, or "
+                "--debug-info=full to also get exact line numbers.\n");
         return -2;
     }
     const char* hz_s = getenv("CAJETA_PROFILER_HZ");

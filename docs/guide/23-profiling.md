@@ -14,7 +14,7 @@ in. Nothing is uploaded; the UI runs the trace processor in your browser.
 
 ## Why no rebuild is needed
 
-Every Cajeta build already carries **line-info probes**: small runtime calls at
+Every Cajeta build already carries **per-call line-info probes**: runtime calls at
 each method prologue and statement boundary that maintain a shadow stack. They
 are what produces a semantic stack trace from a `Throwable`, and they are what
 the debugger reads. The profiler samples that same shadow stack from a
@@ -27,15 +27,16 @@ exactly zero.
 The one build flag that matters is the one that takes the probes *away*:
 
 ```bash
-$ cajeta build --line-info=off      # no shadow stack -> nothing to sample
+$ cajeta build --debug-info=off     # no shadow stack -> nothing to sample
 ```
 
 A binary built that way refuses to profile, loudly, rather than producing an
 empty trace:
 
 ```
-cajeta.profiler: refusing to arm — this binary was built with --line-info=off,
-so there are no frames to sample. Rebuild without it (line-info is on by default).
+cajeta.profiler: refusing to arm — this binary was built with --debug-info=off,
+so there are no frames to sample. Rebuild with --debug-info=line (the default) to
+profile, or --debug-info=full to also get exact line numbers.
 ```
 
 ## Configuration
@@ -58,7 +59,8 @@ Each host thread and each fiber is its own track, named `cajeta.thread.N` and
 `cajeta.fiber.N`. A fiber's number is its **debugger** id, so a profile and a
 debug session call the same fiber the same thing.
 
-Slices carry their source position: click one and the file and line are in the
+Slices carry their source position: click one and the file (and, under
+`--debug-info=full`, the line) are in the
 argument panel.
 
 ### Check the drop count first
@@ -100,7 +102,32 @@ $ CAJETA_PROFILER=1 ./myapp
 
 Optimization level and line-info are independent: `--opt` does not turn the
 probes off, and the release flavors leave `--debug-info=line` (the default) in
-place. Only `--debug-info=off` / `--line-info=off` removes them.
+place. Only `--debug-info=off` removes them.
+
+### Function-level by default, line-level on request
+
+`--debug-info=line` emits a probe per CALL, which is what gives a slice its
+`Type.method` and `File.cajeta`. Exact line numbers come from a second probe at
+every STATEMENT, and that one is emitted only under `--debug-info=full`.
+
+The split is a measurement, not a preference. At `-O3`, per-call probes are at
+parity with an uninstrumented build; adding the per-statement probe costs
+**3.5x on ordinary code and up to 9.4x on call-dense code** — and not because
+the probe does much work. Emptying its body changes nothing: an opaque call at
+every statement boundary is what forbids inlining and folding.
+
+So a default profile tells you which METHOD is hot, for free. When you need the
+line, rebuild that run with `--debug-info=full` and accept the slowdown for the
+duration of the investigation:
+
+```console
+$ cajeta build --debug-info=full
+$ CAJETA_PROFILER=1 ./build/exe/myapp
+```
+
+Note this makes the profile less representative of production, which is the
+usual bargain with instrumentation — the hot method is the reliable answer, the
+hot line is the expensive one.
 
 A one-line forwarder that `-O3` inlines out of existence still appears in the
 profile, because the probes are calls with side effects — inlining carries them
