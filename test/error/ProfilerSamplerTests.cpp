@@ -11,6 +11,11 @@
 // Driven through JIT-resolved symbols for the same reason as Unit 3: the state
 // lives in the JIT runtime copy, which is where a profiled program runs.
 #include "gtest/gtest.h"
+
+#include <fcntl.h>
+#include <fstream>
+#include <string>
+#include <unistd.h>
 #include "../jit/JitTestHelper.h"
 #include <atomic>
 #include <chrono>
@@ -208,7 +213,78 @@ TEST(ProfilerSampler, lineInfoOffFailsLoudlyAtArm) {
         jit->lookupRawSymbol("__cajeta_line_info_is_present"));
     ASSERT_NE(lineInfoOn, nullptr) << "__cajeta_line_info_is_present unresolved (4.2.e)";
     // Line-info is ON by default, so this compile must report present. The
-    // negative half — an --line-info=off compile refusing to arm — needs the
-    // JIT options surface and is asserted once 4.2.e lands.
+    // negative half is the test below.
     EXPECT_EQ(lineInfoOn(), 1) << "default build did not register line-info presence";
+}
+
+// 4.1.d, the half that matters (spec §2.5). A profiler that armed on a
+// --line-info=off binary would produce a trace that loads, renders, and is
+// entirely empty of frames — indistinguishable from a program that did
+// nothing. Refusing is the requirement, and refusing LOUDLY is the point:
+// a silent -2 satisfies a return-code check and still leaves the developer
+// staring at an empty trace wondering what they did wrong.
+//
+// Both halves are needed. A check with no test that it FIRES is how a
+// silently-disabled check reads as green.
+TEST(ProfilerSampler, lineInfoOffRefusesToArmAndSaysWhy) {
+    CajetaJit::Options opts;
+    opts.lineInfoEnabled = false;
+    auto jit = CajetaJit::compile(
+        "package test;\n"
+        "public final class E2 {\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n", "test.E2", opts);
+    ASSERT_NE(jit, nullptr);
+
+    auto lineInfoOn = reinterpret_cast<int32_t (*)(void)>(
+        jit->lookupRawSymbol("__cajeta_line_info_is_present"));
+    auto armFn = reinterpret_cast<int32_t (*)(void)>(
+        jit->lookupRawSymbol("__cajeta_prof_arm"));
+    auto disarmFn = reinterpret_cast<void (*)(void)>(
+        jit->lookupRawSymbol("__cajeta_prof_disarm"));
+    ASSERT_NE(lineInfoOn, nullptr);
+    ASSERT_NE(armFn, nullptr);
+
+    ASSERT_EQ(lineInfoOn(), 0)
+        << "a --line-info=off build still registered line-info presence, so the "
+           "refusal below would be testing nothing";
+
+    // arm() is a no-op when CAJETA_PROFILER is unset (§9.1), which would make
+    // this pass for the wrong reason.
+    const char* prev = ::getenv("CAJETA_PROFILER");
+    const std::string saved = prev ? prev : "";
+    ::setenv("CAJETA_PROFILER", "1", 1);
+
+    // Capture stderr so "loudly" is asserted rather than assumed.
+    const char* base = ::getenv("TMPDIR");
+    const std::string errPath =
+        std::string(base && *base ? base : ".") + "/cajeta_lineinfo_refusal.txt";
+    fflush(stderr);
+    const int savedErr = ::dup(STDERR_FILENO);
+    const int capture = ::open(errPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    ASSERT_GE(capture, 0);
+    ::dup2(capture, STDERR_FILENO);
+
+    const int32_t rc = armFn();
+
+    fflush(stderr);
+    ::dup2(savedErr, STDERR_FILENO);
+    ::close(savedErr);
+    ::close(capture);
+
+    if (prev) ::setenv("CAJETA_PROFILER", saved.c_str(), 1);
+    else      ::unsetenv("CAJETA_PROFILER");
+    if (rc == 0 && disarmFn) disarmFn();     // it armed anyway; do not leak the thread
+
+    EXPECT_EQ(rc, -2) << "armed on a binary with no frames to sample (spec §2.5)";
+
+    std::ifstream in(errPath);
+    std::string said((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    in.close();
+    ::remove(errPath.c_str());
+    EXPECT_NE(said.find("refusing to arm"), std::string::npos)
+        << "the refusal was silent; stderr held: [" << said << "]";
+    EXPECT_NE(said.find("--line-info=off"), std::string::npos)
+        << "the message does not name the cause; stderr held: [" << said << "]";
 }
