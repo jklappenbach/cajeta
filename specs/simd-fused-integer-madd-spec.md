@@ -153,7 +153,43 @@ quantized inference is why they exist.
   `mulAddPairs16`) modelled llama.cpp's AVX2 path, which predates VNNI. On a
   VNNI/dotprod/Zvqdotq target the 4-way accumulate is one instruction and the
   pairwise pair is two, so the pair is the FALLBACK, not the interface.
-- **7.2** Whether the accumulator argument should be explicit (as above,
-  matching `vpdpbusd`'s destructive-accumulate form) or implied by `a + b.dot(c)`
-  with the backend fusing. Explicit is honest about the instruction and cannot
-  silently deoptimize; implied reads better. Not decided.
+- **7.2** CLOSED 2026-08-22 — EXPLICIT accumulator. Decided by measurement,
+  not preference.
+
+  The implied form (`acc + w.dot(a)`, backend fuses) was tested directly: a
+  six-line C loop of exactly that shape, `-O3 -march=native` on this
+  VNNI-capable box, clang 22. LLVM generated THREE inner loops from it:
+
+  | block | width | instruction |
+  |---|---|---|
+  | `.LBB0_11` | zmm, 512-bit — the wide main loop | `vpmaddwd`, UNFUSED |
+  | `.LBB0_15` | xmm, 128-bit | `vpdpbusd`, fused |
+  | `.LBB0_8` | xmm, 128-bit | `vpmovsxbw` + `vpmaddwd`, UNFUSED |
+
+  The hottest, widest loop did NOT get the fused instruction — LLVM preferred
+  `vpmaddwd` at 512-bit over `vpdpbusd` at 512-bit, and only reached for
+  `vpdpbusd` in a narrow path. Auto-fusion is not merely unreliable here; it
+  declined exactly where it mattered, on the simplest possible input. A kernel
+  built on it would be a coin flip per loop shape, per target, per LLVM
+  version, and the failure is INVISIBLE in the source.
+
+  `dotAccum(w, a, acc)` also maps 1:1 to the hardware: `vpdpbusd`, `udot` and
+  `vqdotsu` all compute `dst += dot(a, b)` destructively, so the accumulator is
+  the instruction's own shape rather than an ergonomic tax.
+
+  That `acc = w.dotAccum(a, acc)` repeats `acc` is a FEATURE. 15.1.18(a)
+  measured that reduce frequency, not width, is what costs — a kernel reducing
+  per sub-block ran 70.7 ms against 24.2 ms reducing once per block. A syntax
+  that hides where accumulation happens hides the one thing that has to be
+  reasoned about.
+
+- **7.3** `dot(w, a)` ships too, defined as `dotAccum(w, a, zeros)` — one extra
+  entry point over the same lowering, so the non-accumulating case has a
+  spelling and nobody is tempted back to `acc + dot(...)`.
+
+- **7.4** Every lowering asserts its emitted intrinsic in test, the way
+  `VectorSimdLadderTests` pins `pshufb` for `tableLookup`. That makes "did we
+  actually get the instruction" a unit-test failure rather than a profiling
+  discovery — which is what would have caught both of 15.1.18's silent
+  regressions (a 512-bit rewrite that ran 2x slower, an int8 rewrite with fewer
+  ops that also ran slower) before they were measured.
