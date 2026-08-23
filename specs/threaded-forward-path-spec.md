@@ -263,18 +263,26 @@ Read from the compiler's own tests, not assumed.
   The untouched control (the host serial path, which the worker cap cannot
   reach) moved **1.06%** across repetitions, so the window was idle.
 
+  RE-MEASURED 2026-08-23 after §7.1.7 (the 4-lane kernel). Control spread
+  1.19%.
+
   | workers | ms | GB/s | vs 1 worker | vs host serial |
   |---|---|---|---|---|
-  | 1 | 7.98 | 1.10 | 1.00x | 1.59x |
-  | 2 | 4.15 | 2.12 | 1.93x | 3.07x |
-  | 4 | 2.33 | 3.77 | 3.43x | 5.46x |
-  | 8 | 1.34 | 6.55 | 5.95x | 9.48x |
-  | 16 | 1.12 | 7.82 | 7.11x | 11.33x |
-  | 32 | 0.804 | 10.93 | **9.92x** | **15.82x** |
-  | host serial | 12.73 | 0.69 | 0.63x | 1.00x |
+  | 1 | 2.142 | 4.10 | 1.00x | 5.87x |
+  | 2 | 1.117 | 7.87 | 1.92x | 11.25x |
+  | 4 | 0.673 | 13.06 | 3.18x | 18.67x |
+  | 8 | 0.374 | 23.47 | 5.72x | 33.56x |
+  | 16 | 0.319 | 27.58 | 6.72x | 39.44x |
+  | 32 | **0.225** | **39.10** | **9.53x** | **55.90x** |
+  | host serial | 12.57 | 0.70 | 0.17x | 1.00x |
 
-  **The knee is between 4 and 8 workers.** Steps: 1.93x, 1.78x, 1.73x,
-  1.20x, 1.40x.
+  The threading factor is essentially unchanged (9.53x against the earlier
+  9.92x — the same shape, the same knee between 4 and 8). What moved is the
+  per-thread constant, and it moved 3.7x.
+
+  SUPERSEDED FIGURES, kept so the two are not confused: before §7.1.7 this
+  table read 7.98 ms at 1 worker and 0.804 at 32, i.e. 10.93 GB/s and
+  15.82x against serial.
 
 - **7.1.1** TWO SEPARATE WINS, and conflating them would overstate
   threading. The 15.8x against the host serial path is 9.92x of threading
@@ -313,10 +321,13 @@ Read from the compiler's own tests, not assumed.
 
   | format | serial ms | kernel@1 ms | kernel@32 ms | GB/s@32 | k@1 vs serial | scaling |
   |---|---|---|---|---|---|---|
-  | Q4_K | 11.85 | 7.99 | 0.873 | 10.1 | **1.48x** | 9.15x |
-  | Q5_K | 26.67 | 2.82 | 0.321 | 33.5 | 9.46x | 8.78x |
-  | Q6_K | 25.51 | 3.10 | 0.349 | 36.7 | 8.23x | 8.87x |
-  | Q8_0 | 25.36 | 1.76 | 0.220 | 75.4 | 14.4x | 8.00x |
+  | Q4_K | 11.67 | 2.12 | 0.230 | 38.2 | 5.49x | 9.23x |
+  | Q5_K | 26.81 | 2.81 | 0.302 | 35.6 | 9.53x | 9.32x |
+  | Q6_K | 25.51 | 3.06 | 0.357 | 35.9 | 8.32x | 8.57x |
+  | Q8_0 | 25.42 | 1.70 | 0.238 | 69.6 | 14.9x | 7.14x |
+
+  Q4_K is no longer the outlier — all four now sit in a 36-70 GB/s band.
+  Its row read `11.85 | 7.99 | 0.873 | 10.1 | 1.48x` before §7.1.7.
 
   Q6_K's flat result under `headK6` (`quant-scalar-decode-cost` §5.1.3) did
   NOT repeat: 8.23x per thread. Different mechanism, as suspected.
@@ -328,7 +339,43 @@ Read from the compiler's own tests, not assumed.
   rate would take the mat-vec total from ~372 ms to ~132 ms. The suspect is
   shape — Q4_K's is the only kernel built on 16-lane vectors and an
   `@Device` helper, the three fast ones are 4-lane straight-line code.
-  Tracked as plan 6.3.3.
+  Tracked as plan 6.3.3, and FIXED — see §7.1.7.
+
+- **7.1.7** THE Q4_K KERNEL IS 4-LANE, NOT 16 (plan 6.3.3, fixed
+  2026-08-23). Two things differed between Q4_K's kernel and the three fast
+  ones — 16-lane vectors and an `@Device` helper — so neither could be
+  blamed from outside. Four shapes, identical grids, verified before timed,
+  arms alternated:
+
+  | variant | @32 workers | GB/s | vs A |
+  |---|---|---|---|
+  | A 16-lane + `@Device` | 0.790 ms | 11.1 | 1.00x |
+  | B 16-lane, hand-inlined | 0.782 ms | 11.2 | 1.00x |
+  | C 4-lane, reduce per sub-block | 0.228 ms | 38.5 | **3.46x** |
+  | D 4-lane, reduce per block | 0.240 ms | 36.6 | 3.29x |
+
+  B ties A, so the `@Device` call was never the cost — it inlines as
+  advertised. The WIDTH is: inside a kernel the CPU backend vectorizes
+  ACROSS work items, and a body already occupying 16 float lanes leaves it
+  no room.
+
+  The two settings therefore want OPPOSITE shapes, which was measured, not
+  assumed: on the HOST, 4 lanes is 2.19x SLOWER (25.76 ms against 11.75),
+  because there is no outer loop to widen there. So `q4kMatVecInto` keeps
+  16 lanes and stays the host path.
+
+  `q4kAcc`'s standing warning — that reducing per sub-block cost more than
+  the width saved — turns out to be specific to 16-lane horizontal sums. At
+  width 4, C beats D.
+
+  THE BIT-IDENTITY BAR DID NOT SOFTEN, IT MOVED. `q4kMatVecIntoLanes4` is
+  the kernel's body on the host in the kernel's order, and exists only to
+  be that oracle; a further test ties the oracle itself to the scalar floor
+  so the two cannot be wrong together. What relaxed is the `Linear`-level
+  routed-vs-serial comparison, where the two now legitimately differ in the
+  last bits — and every plumbing bug those tests exist to catch is wrong by
+  orders of magnitude, not by a last bit. Q6_K and Q8_0 keep hard equality
+  there, since their kernel and host paths do share an order.
 
 - **7.1.6** A MEASUREMENT THE BENCH CAUGHT ON ITSELF, recorded because the
   first version of §7.1 was published without it. Synthetic weights filled
