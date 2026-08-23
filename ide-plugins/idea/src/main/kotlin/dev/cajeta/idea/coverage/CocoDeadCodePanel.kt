@@ -57,6 +57,15 @@ class CocoDeadCodePanel(private val project: Project) : JPanel(BorderLayout()) {
             .createActionToolbar(ActionPlaces.TOOLWINDOW_CONTENT, group, true)
         toolbar.targetComponent = list
 
+        // The SAME actions on right-click. They existed only on the toolbar,
+        // which is not where anyone looks: a list of findings invites a context
+        // menu, and finding nothing there reads as "this list does nothing".
+        // Safe Delete in particular was already implemented and effectively
+        // undiscoverable.
+        com.intellij.ui.PopupHandler.installPopupMenu(
+            list, group, ActionPlaces.TOOLWINDOW_CONTENT,
+        )
+
         add(toolbar.component, BorderLayout.NORTH)
         add(JBScrollPane(list), BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)

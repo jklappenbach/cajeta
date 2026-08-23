@@ -2,7 +2,6 @@ package dev.cajeta.idea.coverage
 
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import java.io.File
@@ -29,9 +28,27 @@ object CocoNavigation {
         val fs = LocalFileSystem.getInstance()
         val direct = File(cocoPath)
         if (direct.isAbsolute) return fs.findFileByIoFile(direct)
-        for (root in ProjectRootManager.getInstance(project).contentSourceRoots) {
-            val candidate = root.findFileByRelativePath(cocoPath)
-            if (candidate != null && candidate.isValid) return candidate
+
+        // The MANIFEST's root first, then the module model — [CocoSourceRoots],
+        // the same order the coverage load uses.
+        //
+        // This used to consult `contentSourceRoots` alone, which is EMPTY for a
+        // Cajeta project opened as a plain directory, and then fall back to
+        // `basePath + cocoPath` — which is wrong whenever sources live under a
+        // source root, i.e. always. `tour/coco/X.cajeta` became
+        // `<project>/tour/coco/X.cajeta` instead of `<project>/src/...`, resolved
+        // to nothing, and every Dead Code / Risk / Tests row silently refused to
+        // navigate. Double-clicking a finding did nothing at all.
+        //
+        // Third site of one bug: the coverage loader and the coverage runner were
+        // fixed for exactly this and this one was missed, because the fix went in
+        // where the symptom was rather than everywhere the root cause was. The
+        // grep worth doing was `contentSourceRoots`, not `gutter`.
+        for (root in CocoSourceRoots.of(project)) {
+            val candidate = File(root, cocoPath)
+            if (candidate.isFile) {
+                fs.findFileByIoFile(candidate)?.takeIf { it.isValid }?.let { return it }
+            }
         }
         return project.basePath
             ?.let { File(it, cocoPath) }
