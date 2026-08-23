@@ -153,6 +153,11 @@ const char* __cajeta_prof_rocm_lib_path(void);
 // (wrong SDK version) are distinguishable without parsing the reason string.
 int32_t     __cajeta_prof_rocm_entry_count(void);
 int32_t     __cajeta_prof_rocm_entries_bound(void);
+// Configure rocprofiler. Must run BEFORE HIP finishes initializing (§5.2.3) —
+// after that the SDK refuses and CAJETA_ROCM_LATE is the honest answer.
+int32_t     __cajeta_prof_rocm_configure(void);
+int32_t     __cajeta_prof_rocm_configured(void);
+int32_t     __cajeta_prof_rocm_tool_init_ran(void);
 
 // ── Unit 9: clock correlation and integrity (spec §6, §11) ────────────────
 //

@@ -69,6 +69,18 @@ typedef caj_rocp_status_t (*caj_rocp_assign_callback_thread_fn)(caj_rocp_buffer_
                                                                caj_rocp_callback_thread_t);
 typedef const char* (*caj_rocp_status_string_fn)(caj_rocp_status_t);
 
+// The tool-registration shapes. `size` is the SDK's own ABI guard: it is set to
+// sizeof(the struct as this code understands it), so an SDK with a longer
+// struct can tell that the trailing fields are not ours to read.
+typedef struct { size_t size; const char* name; const uint32_t handle; } caj_rocp_client_id_t;
+typedef int (*caj_rocp_tool_init_fn)(void* fini_func, void* tool_data);
+typedef struct {
+    size_t size;
+    void*  initialize;   // caj_rocp_tool_init_fn
+    void*  finalize;
+    void*  tool_data;
+} caj_rocp_tool_result_t;
+
 typedef struct {
     caj_rocp_force_configure_fn          force_configure;
     caj_rocp_is_initialized_fn           is_initialized;
@@ -124,6 +136,9 @@ typedef struct {
     void*      lib;
     int32_t    state;
     int32_t    bound;                    // entry points resolved by the last attempt
+    int32_t    configured;               // force_configure succeeded IN THIS PROCESS
+    int32_t    tool_init_ran;            // the SDK called back into us
+    uint32_t   sdk_version;              // (10000*major)+(100*minor)+patch, from the callback
     CajRocmApi api;
     char       path[CAJ_ROCM_PATH_MAX];     // what was tried, or what bound
     char       reason[CAJ_ROCM_REASON_MAX]; // why the state is what it is
@@ -192,6 +207,10 @@ void __cajeta_prof_rocm_reset(void) {
     caj_rocm.state = CAJETA_ROCM_UNATTEMPTED;
     caj_rocm.bound = 0;
     memset(&caj_rocm.api, 0, sizeof(caj_rocm.api));
+    // `configured` is deliberately NOT cleared. Which library is bound is this
+    // module's business and can be forgotten; whether rocprofiler has been
+    // configured belongs to the process and cannot be undone. Clearing it would
+    // make a later configure attempt report a failure that never happened.
     caj_rocm.path[0] = '\0';
     caj_rocm.reason[0] = '\0';
     pthread_mutex_unlock(&caj_rocm_mutex);
@@ -275,11 +294,128 @@ int32_t __cajeta_prof_rocm_init(void) {
     return 1;
 }
 
+// ── 8.2.b — configuration, and the window it has to happen in ────────────
+//
+// rocprofiler intercepts HIP and HSA by installing itself into their dispatch
+// tables while they load. Once the runtime it wants to intercept has finished
+// initializing, that window is shut: force_configure returns
+// CONFIGURATION_LOCKED and no dispatch will ever be traced. §5.2.3 is about
+// exactly that — the failure is silent unless something checks, and a silently
+// unconfigured profiler produces a trace with a GPU track full of host-tier
+// spans that looks like a working device measurement.
+//
+// So configuration is a state transition like binding is, and missing the
+// window lands in CAJETA_ROCM_LATE rather than in a log line nobody reads.
+
+static caj_rocp_tool_result_t caj_rocm_tool_result;
+
+// Called by the SDK from inside force_configure, synchronously. 8.2.c creates
+// the context and the dispatch buffer here; for now it records that the SDK
+// called back, which is the difference between "force_configure returned
+// success" and "the SDK actually adopted us".
+static int caj_rocm_tool_initialize(void* fini_func, void* tool_data) {
+    (void) fini_func;
+    (void) tool_data;
+    caj_rocm.tool_init_ran = 1;
+    return 0;
+}
+
+static caj_rocp_tool_result_t* caj_rocm_tool_configure(uint32_t version,
+                                                      const char* runtime_version,
+                                                      uint32_t priority,
+                                                      caj_rocp_client_id_t* client_id) {
+    (void) runtime_version;
+    (void) priority;
+    caj_rocm.sdk_version = version;
+    if (client_id) client_id->name = "cajeta-profiler";
+    caj_rocm_tool_result.size       = sizeof(caj_rocm_tool_result);
+    caj_rocm_tool_result.initialize = (void*) caj_rocm_tool_initialize;
+    caj_rocm_tool_result.finalize   = NULL;
+    caj_rocm_tool_result.tool_data  = NULL;
+    return &caj_rocm_tool_result;
+}
+
+int32_t __cajeta_prof_rocm_configure(void) {
+    int already = 0;
+    caj_rocp_status_t st;
+
+    pthread_mutex_lock(&caj_rocm_mutex);
+    if (caj_rocm.state != CAJETA_ROCM_READY) {
+        // ABSENT stays ABSENT and LATE stays LATE. Nothing here can improve
+        // either, and calling through the api table would be calling through
+        // nulls.
+        pthread_mutex_unlock(&caj_rocm_mutex);
+        return 0;
+    }
+    if (caj_rocm.configured) {
+        // Configuration is irreversible and process-wide, so having done it
+        // once is success, not lateness. This is why `configured` survives
+        // __cajeta_prof_rocm_reset(): reset can forget which library was bound,
+        // but it cannot un-configure the SDK, and claiming otherwise would make
+        // the second call report a failure that did not happen.
+        pthread_mutex_unlock(&caj_rocm_mutex);
+        return 1;
+    }
+
+    // Ask before acting. The status code for "too late" moves position in the
+    // SDK's error enum as codes are added, and hardcoding its current value
+    // would make this misread a future SDK's unrelated error as lateness.
+    // is_initialized is a stable three-way answer: 0 not yet, 1 done,
+    // -1 in progress — and -1 is just as closed a window as 1.
+    if (caj_rocm.api.is_initialized(&already) != CAJ_ROCP_STATUS_SUCCESS) already = 0;
+    if (already != 0) {
+        caj_rocm_say(CAJETA_ROCM_LATE, NULL,
+                     already < 0
+                         ? "rocprofiler was initializing before the profiler could "
+                           "configure it; device timing degrades to host "
+                           "submit-to-complete"
+                         : "rocprofiler was already initialized before the profiler "
+                           "could configure it — HIP or another ROCm tool started "
+                           "first; device timing degrades to host submit-to-complete");
+        pthread_mutex_unlock(&caj_rocm_mutex);
+        return 0;
+    }
+
+    st = caj_rocm.api.force_configure((void*) caj_rocm_tool_configure);
+    if (st != CAJ_ROCP_STATUS_SUCCESS) {
+        char why[CAJ_ROCM_REASON_MAX];
+        int now = 0;
+        const char* text = caj_rocm.api.status_string ? caj_rocm.api.status_string(st) : NULL;
+        // The window can shut between the question and the call — another
+        // thread bringing HIP up is enough. Re-asking separates that race from
+        // an unrelated configuration error, so the report names the right one.
+        if (caj_rocm.api.is_initialized(&now) != CAJ_ROCP_STATUS_SUCCESS) now = 0;
+        if (now != 0) {
+            snprintf(why, sizeof(why),
+                     "rocprofiler finished initializing while the profiler was "
+                     "configuring it (%s); device timing degrades to host "
+                     "submit-to-complete",
+                     text ? text : "no status text");
+            caj_rocm_say(CAJETA_ROCM_LATE, NULL, why);
+        } else {
+            snprintf(why, sizeof(why),
+                     "rocprofiler_force_configure failed (%s); device timing "
+                     "degrades to host submit-to-complete",
+                     text ? text : "no status text");
+            caj_rocm_say(CAJETA_ROCM_ABSENT, NULL, why);
+        }
+        pthread_mutex_unlock(&caj_rocm_mutex);
+        return 0;
+    }
+
+    caj_rocm.configured = 1;
+    caj_rocm_say(CAJETA_ROCM_READY, NULL, "rocprofiler-sdk bound and configured");
+    pthread_mutex_unlock(&caj_rocm_mutex);
+    return 1;
+}
+
 int32_t     __cajeta_prof_rocm_state(void)         { return caj_rocm.state; }
 const char* __cajeta_prof_rocm_reason(void)        { return caj_rocm.reason; }
 const char* __cajeta_prof_rocm_lib_path(void)      { return caj_rocm.path; }
 int32_t     __cajeta_prof_rocm_entry_count(void)   { return CAJ_ROCM_ENTRY_COUNT; }
 int32_t     __cajeta_prof_rocm_entries_bound(void) { return caj_rocm.bound; }
+int32_t     __cajeta_prof_rocm_configured(void)    { return caj_rocm.configured; }
+int32_t     __cajeta_prof_rocm_tool_init_ran(void) { return caj_rocm.tool_init_ran; }
 
 #else   /* _WIN32 */
 
@@ -300,6 +436,9 @@ const char* __cajeta_prof_rocm_reason(void) {
 const char* __cajeta_prof_rocm_lib_path(void)      { return ""; }
 int32_t     __cajeta_prof_rocm_entry_count(void)   { return 0; }
 int32_t     __cajeta_prof_rocm_entries_bound(void) { return 0; }
+int32_t     __cajeta_prof_rocm_configure(void)     { return 0; }
+int32_t     __cajeta_prof_rocm_configured(void)    { return 0; }
+int32_t     __cajeta_prof_rocm_tool_init_ran(void) { return 0; }
 
 #endif  /* !_WIN32 */
 

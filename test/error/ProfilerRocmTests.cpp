@@ -16,7 +16,14 @@
 #include "gtest/gtest.h"
 
 #include <cstdint>
+#include <cstring>
 #include <string>
+#if !defined(_WIN32)
+#  include <dlfcn.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+#  include <cerrno>
+#endif
 #include "../jit/JitTestHelper.h"
 #include "../PortableEnv.h"
 #include "../../runtime/native/cajeta_prof_abi.h"
@@ -39,6 +46,9 @@ struct Rocm {
     const char* (*vtblName)(int32_t) = nullptr;
     int32_t     (*entryCount)(void)  = nullptr;
     int32_t     (*entriesBound)(void) = nullptr;
+    int32_t     (*configure)(void)   = nullptr;
+    int32_t     (*configured)(void)  = nullptr;
+    int32_t     (*toolInitRan)(void) = nullptr;
 };
 
 Rocm& roc() {
@@ -59,6 +69,9 @@ Rocm& roc() {
         x.vtblName = reinterpret_cast<const char* (*)(int32_t)>(sym("__cajeta_prof_gpu_backend_name"));
         x.entryCount   = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_entry_count"));
         x.entriesBound = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_entries_bound"));
+        x.configure    = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_configure"));
+        x.configured   = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_configured"));
+        x.toolInitRan  = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_tool_init_ran"));
         return x;
     }();
     return r;
@@ -235,4 +248,169 @@ TEST(ProfilerRocm, everyEntryPointResolvesWhenTheRealSdkBinds) {
     EXPECT_EQ(r.entriesBound(), r.entryCount())
         << "READY with " << r.entriesBound() << " of " << r.entryCount()
         << " entry points bound";
+}
+
+// ── 8.1.d / 8.2.b — the configuration window ─────────────────────────────
+//
+// rocprofiler intercepts HIP by installing itself while HIP loads. Once HIP has
+// finished initializing that window is shut, force_configure refuses, and no
+// dispatch is ever traced. §5.2.3 asks for that to be DETECTED, because the
+// failure is otherwise silent: an unconfigured profiler still emits a GPU track,
+// full of host-tier spans, which reads like a working device measurement.
+
+TEST(ProfilerRocm, configuringWithoutABoundSdkDoesNotClaimSuccess) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.state && r.configure);
+
+    ForcedLib forced("/nonexistent/librocprofiler-sdk.so.1");
+    r.reset();
+    r.init();
+    ASSERT_EQ(r.state(), CAJETA_ROCM_ABSENT);
+
+    EXPECT_EQ(r.configure(), 0) << "configured a library that never bound";
+    EXPECT_EQ(r.state(), CAJETA_ROCM_ABSENT)
+        << "configure() overwrote the ABSENT verdict; nothing it can do "
+           "improves on a library that is not there";
+}
+
+#if !defined(_WIN32)
+// Late configuration, reproduced rather than simulated: the child configures
+// rocprofiler itself — standing in for HIP or another ROCm tool getting there
+// first — and only then asks the runtime to configure.
+//
+// It runs in a fork because configuring rocprofiler is process-wide and
+// irreversible. Doing it in the test process would leave every later test
+// looking at a configured SDK, and the state this test is about would be
+// unreachable for the rest of the run.
+//
+// It is also declared BEFORE the success case below, which configures the test
+// process for real. Order is declaration order under gtest; the child checks
+// that assumption and reports kAlreadyConfigured rather than failing obscurely
+// if it is ever violated.
+namespace {
+constexpr int kLateSeen          = 0;   // what the test is here to observe
+constexpr int kNoSdk             = 2;   // nothing to test against; skip
+constexpr int kAlreadyConfigured = 3;   // ordering broke — see the note above
+constexpr int kWrongState        = 4;
+constexpr int kWrongFallback     = 5;
+
+using ConfigureFn = int32_t (*)(void*);
+struct ToolResult { size_t size; void* initialize; void* finalize; void* tool_data; };
+ToolResult g_childResult;
+
+int childToolInit(void*, void*) { return 0; }
+
+ToolResult* childConfigure(uint32_t, const char*, uint32_t, void*) {
+    g_childResult.size       = sizeof(g_childResult);
+    g_childResult.initialize = reinterpret_cast<void*>(&childToolInit);
+    g_childResult.finalize   = nullptr;
+    g_childResult.tool_data  = nullptr;
+    return &g_childResult;
+}
+} // namespace
+
+TEST(ProfilerRocm, configuringAfterSomethingElseAlreadyDidIsReportedAsLate) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.state && r.configure && r.configured);
+
+    // Learn readiness and the library path in the parent. init() binds but does
+    // not configure, so asking does not spend the window this test needs.
+    ForcedLib forced(nullptr);
+    r.reset();
+    r.init();
+    if (r.state() != CAJETA_ROCM_READY) {
+        GTEST_SKIP() << "rocprofiler-sdk not loadable here (" << r.reason()
+                     << ") — the late-configuration window needs a real SDK to "
+                        "be closed against";
+    }
+    const std::string libPath = r.libPath() ? r.libPath() : "";
+    ASSERT_FALSE(libPath.empty());
+
+    const pid_t pid = ::fork();
+    ASSERT_NE(pid, -1) << "fork failed: " << ::strerror(errno);
+
+    if (pid == 0) {
+        if (r.configured()) ::_exit(kAlreadyConfigured);
+        void* lib = ::dlopen(libPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+        if (!lib) ::_exit(kNoSdk);
+        auto force = reinterpret_cast<ConfigureFn>(::dlsym(lib, "rocprofiler_force_configure"));
+        if (!force) ::_exit(kNoSdk);
+        if (force(reinterpret_cast<void*>(&childConfigure)) != 0) ::_exit(kAlreadyConfigured);
+
+        r.reset();
+        r.init();
+        if (r.configure() != 0)                  ::_exit(kWrongState);
+        if (r.state() != CAJETA_ROCM_LATE)       ::_exit(kWrongState);
+        // Detected is only half of it. A run whose profiler missed the window
+        // still has a host submit-to-complete measurement, and must fall back
+        // to it rather than to a rocm backend with no records behind it.
+        if (r.tierFor(kBackendHip) != CAJETA_PROF_TIER_HOST) ::_exit(kWrongFallback);
+        if (std::string(r.vtblName(kBackendHip)) != "cpu")   ::_exit(kWrongFallback);
+        ::_exit(kLateSeen);
+    }
+
+    int status = 0;
+    ASSERT_EQ(::waitpid(pid, &status, 0), pid);
+    ASSERT_TRUE(WIFEXITED(status)) << "the child died rather than reporting";
+    switch (WEXITSTATUS(status)) {
+        case kLateSeen: break;
+        case kNoSdk:
+            GTEST_SKIP() << "the child could not load the SDK the parent bound";
+            break;
+        case kAlreadyConfigured:
+            FAIL() << "rocprofiler was already configured in this process, so the "
+                      "late window could not be closed on purpose — this test must "
+                      "run before the one that configures for real";
+            break;
+        case kWrongState:
+            FAIL() << "configuring after rocprofiler was already initialized was "
+                      "accepted instead of reported as CAJETA_ROCM_LATE (§5.2.3)";
+            break;
+        case kWrongFallback:
+            FAIL() << "a late configuration left GPU timing pointed at the rocm "
+                      "backend, which has no records behind it (§5.2.4)";
+            break;
+        default:
+            FAIL() << "child exited " << WEXITSTATUS(status);
+    }
+}
+#endif  // !_WIN32
+
+TEST(ProfilerRocm, configureRegistersTheToolWithTheSdk) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.state && r.configure && r.configured && r.toolInitRan);
+
+    ForcedLib forced(nullptr);
+    r.reset();
+    r.init();
+    if (r.state() != CAJETA_ROCM_READY) {
+        GTEST_SKIP() << "rocprofiler-sdk not loadable here (" << r.reason() << ")";
+    }
+
+    EXPECT_EQ(r.configure(), 1) << "configure failed: " << r.reason();
+    EXPECT_EQ(r.state(), CAJETA_ROCM_READY);
+    EXPECT_EQ(r.configured(), 1);
+    // force_configure returning success is not the same as the SDK adopting us.
+    // The callback running is what proves the registration took.
+    EXPECT_EQ(r.toolInitRan(), 1)
+        << "force_configure reported success but the SDK never called back";
+}
+
+TEST(ProfilerRocm, configuringAgainIsSuccessNotLateness) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.state && r.configure && r.configured);
+
+    ForcedLib forced(nullptr);
+    r.reset();
+    r.init();
+    if (r.state() != CAJETA_ROCM_READY) {
+        GTEST_SKIP() << "rocprofiler-sdk not loadable here (" << r.reason() << ")";
+    }
+    ASSERT_EQ(r.configure(), 1);
+
+    // The second call finds rocprofiler initialized — by US. Reading that as
+    // lateness would report a failure that did not happen, and would drop a
+    // working device backend on the second trace of a run.
+    EXPECT_EQ(r.configure(), 1) << "reported failure the second time: " << r.reason();
+    EXPECT_EQ(r.state(), CAJETA_ROCM_READY);
 }
