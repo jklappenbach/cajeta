@@ -54,6 +54,8 @@ struct Rocm {
     int32_t     (*tracing)(void)     = nullptr;
     int32_t     (*dispatchKind)(void) = nullptr;
     int64_t     (*rocRecords)(void)  = nullptr;
+    int64_t     (*rocLaunches)(void) = nullptr;
+    int32_t     (*threshold)(void)   = nullptr;
     // seam side
     void    (*launch)(const char*, int32_t, int32_t, int32_t, int32_t, int32_t,
                       int32_t, uint32_t, int64_t, int32_t, int32_t,
@@ -92,6 +94,8 @@ Rocm& roc() {
         x.tracing      = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_tracing"));
         x.dispatchKind = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_dispatch_kind"));
         x.rocRecords   = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_rocm_records"));
+        x.rocLaunches  = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_rocm_launches"));
+        x.threshold    = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_record_threshold"));
         x.launch         = reinterpret_cast<decltype(x.launch)>(sym("__cajeta_prof_gpu_launch"));
         x.sinkRegister   = reinterpret_cast<decltype(x.sinkRegister)>(sym("__cajeta_prof_gpu_sink_register"));
         x.sinkUnregister = reinterpret_cast<decltype(x.sinkUnregister)>(sym("__cajeta_prof_gpu_sink_unregister"));
@@ -657,4 +661,91 @@ TEST(ProfilerRocm, twoLaunchesInFlightKeepTheirOverlap) {
     // running" would have produced.
     EXPECT_LT(b->dev_start_ns, a->dev_end_ns)
         << "two overlapping device spans came back serialized";
+}
+
+// ── 8.1.e / 8.2.d — bound, configured, and delivering nothing (§5.2.5) ───
+//
+// The state that looks most like success from the inside: every SDK call
+// returned SUCCESS and no record ever comes back. It happens when the driver
+// refuses profiling, when a container lacks performance-counter access, or when
+// another rocprofiler tool already owns the dispatch service. Unchecked, the
+// profiler parks every launch, publishes them all at host tier, and goes on
+// describing itself as a working device backend.
+//
+// Reproduced exactly, with no test hook: the seam takes the dispatch as a thunk,
+// so launches with a no-op thunk enqueue nothing on any device and no record can
+// ever exist for them. That IS the failure.
+
+TEST(ProfilerRocm, zeroRecordsPastTheThresholdDisablesDeviceTimingAndSaysWhy) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.launch && r.gpuCollect && r.threshold && r.state && r.pendingReset);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    Caught caught;
+    r.pendingReset();
+    const int32_t sink = r.sinkRegister(catchSink, &caught, CAJETA_GPU_SINK_PER_RECORD);
+    ASSERT_GE(sink, 0);
+
+    const int32_t n = r.threshold();
+    ASSERT_GT(n, 1) << "a threshold of one would disable on a launch still in flight";
+    for (int32_t i = 0; i < n; ++i) hipLaunch(r);
+    ASSERT_EQ(r.rocLaunches(), n);
+    ASSERT_EQ(r.rocRecords(), 0) << "something delivered a record for a no-op thunk";
+
+    r.gpuCollect(kBackendHip);   // flushes, then checks
+    r.gpuFlush();
+    r.sinkUnregister(sink);
+
+    EXPECT_EQ(r.state(), CAJETA_ROCM_NO_RECORDS)
+        << "a backend that delivered nothing still reports itself as READY";
+    EXPECT_EQ(r.tracing(), 0) << "still parking launches no record will ever claim";
+
+    const std::string why = r.reason() ? r.reason() : "";
+    // A count and a cause. "No records" alone leaves the operator with nothing
+    // to change; the usual causes are a driver refusing profiling, a container
+    // without counter access, or another tool owning the dispatch service.
+    EXPECT_NE(why.find("no dispatch records"), std::string::npos) << "got [" << why << "]";
+    EXPECT_NE(why.find("driver"), std::string::npos) << "no actionable cause: [" << why << "]";
+
+    // Disabled means degraded, not dark: backend 1 goes back to the host lane,
+    // which the selector does on its own because it requires READY.
+    EXPECT_STREQ(r.vtblName(kBackendHip), "cpu");
+    EXPECT_EQ(r.tierFor(kBackendHip), CAJETA_PROF_TIER_HOST);
+
+    // And every one of those launches still reached the trace. Disabling device
+    // timing must not cost the host measurement that was always available.
+    EXPECT_EQ(caught.events.size(), static_cast<size_t>(n))
+        << "launches were lost when the device path was disabled";
+    for (const auto& e : caught.events)
+        EXPECT_EQ(e.tier, CAJETA_PROF_TIER_HOST);
+}
+
+TEST(ProfilerRocm, afterDisablingLaterLaunchesGoStraightToTheHostLane) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.launch && r.gpuCollect && r.threshold);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    Caught caught;
+    r.pendingReset();
+    // The sink has to be registered BEFORE the priming launches: the seam
+    // returns early when nothing is listening, so an unarmed launch never
+    // reaches the backend and never counts toward the threshold.
+    const int32_t sink = r.sinkRegister(catchSink, &caught, CAJETA_GPU_SINK_PER_RECORD);
+    ASSERT_GE(sink, 0);
+
+    for (int32_t i = 0; i < r.threshold(); ++i) hipLaunch(r);
+    r.gpuCollect(kBackendHip);
+    r.gpuFlush();
+    ASSERT_EQ(r.state(), CAJETA_ROCM_NO_RECORDS);
+    const size_t before = caught.events.size();
+
+    hipLaunch(r);
+    r.gpuFlush();
+    r.sinkUnregister(sink);
+
+    // Published at the seam, not parked. Parking after the verdict is in would
+    // be paying for a record that is known not to be coming.
+    EXPECT_EQ(r.pendingCount(), 0) << "still parking after the device path was disabled";
+    ASSERT_EQ(caught.events.size(), before + 1);
+    EXPECT_EQ(caught.events.back().tier, CAJETA_PROF_TIER_HOST);
 }

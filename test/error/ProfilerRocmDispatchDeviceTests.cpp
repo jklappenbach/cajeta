@@ -231,6 +231,17 @@ TEST(ProfilerRocmDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
     EXPECT_GT(device->dev_start_ns, device->host_launch_ns - 1000000000LL);
     EXPECT_LT(device->dev_end_ns, device->host_return_ns + 1000000000LL);
 
+    // The positive control for 8.2.d's self-check: records DID arrive, so the
+    // device path must still be enabled. The disable path is reproduced in
+    // ProfilerRocmTests with no-op thunks; without this, a self-check that
+    // fired unconditionally would pass every test there and silently downgrade
+    // every real run.
+    auto rocmState = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_state"));
+    ASSERT_NE(rocmState, nullptr);
+    EXPECT_EQ(rocmState(), CAJETA_ROCM_READY)
+        << "the self-check disabled a backend that was delivering records";
+    EXPECT_EQ(rocmTracing(), 1);
+
     // 8.1.c: the launch id round-tripped as the SDK's external correlation id.
     // Nothing else could have produced this event: resolve publishes only on an
     // exact launch-id match against a parked launch, and drops anything it

@@ -177,10 +177,13 @@ typedef struct {
     caj_rocp_context_id_t ctx;
     caj_rocp_buffer_id_t  buf;
     int32_t    kd_kind;                  // discovered by name, never hardcoded
-    int32_t    tracing;                  // the dispatch service is up
+    int32_t    service_up;               // SDK context + buffer created and started;
+                                         // process-level, since reset cannot undo it
+    int32_t    tracing;                  // this session is willing to use it
     int64_t    boot_minus_mono_ns;       // §5.1.7 device->host clock mapping
     int64_t    records;                  // dispatch records seen (feeds §5.2.5)
     int64_t    unmatched;                // records whose launch we never parked
+    int64_t    launches;                 // launches offered to the SDK (8.2.d)
     CajRocmApi api;
     char       path[CAJ_ROCM_PATH_MAX];     // what was tried, or what bound
     char       reason[CAJ_ROCM_REASON_MAX]; // why the state is what it is
@@ -248,6 +251,16 @@ void __cajeta_prof_rocm_reset(void) {
     if (caj_rocm.lib) { dlclose(caj_rocm.lib); caj_rocm.lib = NULL; }
     caj_rocm.state = CAJETA_ROCM_UNATTEMPTED;
     caj_rocm.bound = 0;
+    // Counters are per-assessment and go back to zero: a NO_RECORDS verdict
+    // from an earlier session must not outlive the session that reached it.
+    caj_rocm.records = 0;
+    caj_rocm.unmatched = 0;
+    caj_rocm.launches = 0;
+    // Willingness is restored to whatever the SDK is actually doing. Reset can
+    // forget this module's verdict; it cannot stop a context the SDK has
+    // already started, and claiming otherwise would leave the service running
+    // with nobody reading it.
+    caj_rocm.tracing = caj_rocm.service_up;
     memset(&caj_rocm.api, 0, sizeof(caj_rocm.api));
     // `configured` is deliberately NOT cleared. Which library is bound is this
     // module's business and can be forgotten; whether rocprofiler has been
@@ -478,6 +491,7 @@ static int caj_rocm_tool_initialize(void* fini_func, void* tool_data) {
     if (st != CAJ_ROCP_STATUS_SUCCESS) return 0;
 
     caj_rocm.boot_minus_mono_ns = caj_rocm_boot_minus_mono();
+    caj_rocm.service_up = 1;
     caj_rocm.tracing = 1;
     // Returning non-zero here aborts the SDK's registration. Setup failures
     // above return 0 too: the tool stays registered but `tracing` stays 0, and
@@ -493,9 +507,13 @@ static int caj_rocm_tool_initialize(void* fini_func, void* tool_data) {
 int32_t __cajeta_prof_rocm_push(int64_t launchId) {
     caj_rocp_user_data_t u;
     uint64_t tid = 0;
+    // `tracing` can outlive a reset (the SDK is still running), but the api
+    // table does not — reset clears it and init rebinds. Both have to be true.
     if (!caj_rocm.tracing || launchId <= 0) return 0;
+    if (!caj_rocm.api.get_thread_id || !caj_rocm.api.push_external) return 0;
     if (caj_rocm.api.get_thread_id(&tid) != CAJ_ROCP_STATUS_SUCCESS) return 0;
     u.value = (uint64_t) launchId;
+    __atomic_add_fetch(&caj_rocm.launches, 1, __ATOMIC_RELAXED);
     return caj_rocm.api.push_external(caj_rocm.ctx, tid, u) == CAJ_ROCP_STATUS_SUCCESS;
 }
 
@@ -503,18 +521,64 @@ int32_t __cajeta_prof_rocm_pop(void) {
     caj_rocp_user_data_t back;
     uint64_t tid = 0;
     if (!caj_rocm.tracing) return 0;
+    if (!caj_rocm.api.get_thread_id || !caj_rocm.api.pop_external) return 0;
     if (caj_rocm.api.get_thread_id(&tid) != CAJ_ROCP_STATUS_SUCCESS) return 0;
     back.value = 0;
     return caj_rocm.api.pop_external(caj_rocm.ctx, tid, &back) == CAJ_ROCP_STATUS_SUCCESS;
+}
+
+// ── 8.2.d — the self-check (§5.2.5) ──────────────────────────────────────
+//
+// Bound, configured, and delivering nothing is a real state, and it is the one
+// that looks most like success from the inside: every call returned SUCCESS.
+// It happens when the driver refuses profiling, when a container lacks the
+// performance-counter capability, or when another rocprofiler tool already owns
+// the dispatch service. Left alone, the profiler parks every launch, publishes
+// them all at host tier, and reports itself as a working device backend.
+//
+// So after enough launches have gone by with a flush and still no record, the
+// device path is HARD DISABLED: tracing off, state NO_RECORDS, and the vtable
+// selector — which requires READY — drops backend 1 back to the host lane. The
+// point of disabling rather than merely reporting is that the parking overhead
+// buys nothing once it is known that no record will ever claim a parked launch.
+//
+// Sixteen, not one: a single launch can legitimately still be in flight when
+// the first flush happens, and disabling on that would turn a timing race into
+// a permanent downgrade.
+#define CAJ_ROCM_RECORD_CHECK_LAUNCHES 16
+
+static void caj_rocm_check_records(void) {
+    char why[CAJ_ROCM_REASON_MAX];
+    if (!caj_rocm.tracing) return;
+    if (__atomic_load_n(&caj_rocm.launches, __ATOMIC_ACQUIRE) < CAJ_ROCM_RECORD_CHECK_LAUNCHES)
+        return;
+    if (__atomic_load_n(&caj_rocm.records, __ATOMIC_ACQUIRE) > 0) return;
+
+    caj_rocm.tracing = 0;
+    snprintf(why, sizeof(why),
+             "rocprofiler-sdk bound and configured but returned no dispatch "
+             "records for %d launches; device timing disabled and degraded to "
+             "host submit-to-complete. Usual causes: the driver is refusing "
+             "profiling, the container lacks performance-counter access, or "
+             "another rocprofiler tool already owns the dispatch service",
+             CAJ_ROCM_RECORD_CHECK_LAUNCHES);
+    caj_rocm_say(CAJETA_ROCM_NO_RECORDS, NULL, why);
 }
 
 // Drain whatever the SDK has buffered. Re-samples the clock mapping first:
 // records completed since the last drain, and a suspend inside that window
 // would otherwise be applied to none of them.
 int32_t __cajeta_prof_rocm_flush(void) {
-    if (!caj_rocm.tracing) return 0;
+    if (!caj_rocm.tracing || !caj_rocm.api.flush_buffer) return 0;
     caj_rocm.boot_minus_mono_ns = caj_rocm_boot_minus_mono();
-    return caj_rocm.api.flush_buffer(caj_rocm.buf) == CAJ_ROCP_STATUS_SUCCESS;
+    {
+        const int32_t ok = caj_rocm.api.flush_buffer(caj_rocm.buf) == CAJ_ROCP_STATUS_SUCCESS;
+        // After the flush, not before: the check asks whether anything HAS come
+        // back, and asking with records still sitting in the SDK's buffer would
+        // disable a backend that was working.
+        caj_rocm_check_records();
+        return ok;
+    }
 }
 
 // The SDK's own clock, mapped into the host domain — the same conversion every
@@ -531,6 +595,8 @@ int32_t __cajeta_prof_rocm_tracing(void)       { return caj_rocm.tracing; }
 int32_t __cajeta_prof_rocm_dispatch_kind(void) { return caj_rocm.kd_kind; }
 int64_t __cajeta_prof_rocm_records(void)   { return __atomic_load_n(&caj_rocm.records, __ATOMIC_ACQUIRE); }
 int64_t __cajeta_prof_rocm_unmatched(void) { return __atomic_load_n(&caj_rocm.unmatched, __ATOMIC_ACQUIRE); }
+int64_t __cajeta_prof_rocm_launches(void)  { return __atomic_load_n(&caj_rocm.launches, __ATOMIC_ACQUIRE); }
+int32_t __cajeta_prof_rocm_record_threshold(void) { return CAJ_ROCM_RECORD_CHECK_LAUNCHES; }
 int64_t __cajeta_prof_rocm_clock_offset_ns(void) { return caj_rocm.boot_minus_mono_ns; }
 
 static caj_rocp_tool_result_t* caj_rocm_tool_configure(uint32_t version,
@@ -561,6 +627,9 @@ int32_t __cajeta_prof_rocm_configure(void) {
         return 0;
     }
     if (caj_rocm.configured) {
+        // The service the first configure started is still running, so this
+        // session may use it.
+        caj_rocm.tracing = caj_rocm.service_up;
         // Configuration is irreversible and process-wide, so having done it
         // once is success, not lateness. This is why `configured` survives
         // __cajeta_prof_rocm_reset(): reset can forget which library was bound,
@@ -661,6 +730,8 @@ int64_t     __cajeta_prof_rocm_records(void)       { return 0; }
 int64_t     __cajeta_prof_rocm_unmatched(void)     { return 0; }
 int64_t     __cajeta_prof_rocm_clock_offset_ns(void) { return 0; }
 int64_t     __cajeta_prof_rocm_device_now_ns(void)   { return 0; }
+int64_t     __cajeta_prof_rocm_launches(void)        { return 0; }
+int32_t     __cajeta_prof_rocm_record_threshold(void) { return 0; }
 
 #endif  /* !_WIN32 */
 

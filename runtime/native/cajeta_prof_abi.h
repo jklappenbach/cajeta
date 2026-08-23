@@ -176,6 +176,8 @@ int64_t     __cajeta_prof_rocm_records(void);
 int64_t     __cajeta_prof_rocm_unmatched(void);
 int64_t     __cajeta_prof_rocm_clock_offset_ns(void);
 int64_t     __cajeta_prof_rocm_device_now_ns(void);
+int64_t     __cajeta_prof_rocm_launches(void);
+int32_t     __cajeta_prof_rocm_record_threshold(void);
 
 // Hand a device record back to the launch that is waiting for it. Declared
 // here because the ROCm backend is compiled BEFORE the GPU seam in the single
