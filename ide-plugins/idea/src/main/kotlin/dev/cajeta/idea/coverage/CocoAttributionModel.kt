@@ -33,6 +33,15 @@ class CocoAttributionModel(private val data: CocoAttribution) {
 
     val tests: List<CocoTestSummary> get() = data.summaries
 
+    /**
+     * The raw per-line attribution, for the cross-tab joins.
+     *
+     * Exposed rather than reached through `data` so callers see the
+     * [CocoAttributedLine.isTruncated] flag on every row: coco caps the test
+     * list per line, and a join that ignores that cap silently under-reports.
+     */
+    fun attributedLines(): List<CocoAttributedLine> = data.lines
+
     /** 6.2.1 — the tests that exercised a line. */
     fun testsCovering(file: String, line: Int): TestsForLine? =
         data.lines.firstOrNull { it.file == file && it.line == line }

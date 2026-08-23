@@ -1,5 +1,11 @@
 package dev.cajeta.idea.coverage
 
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.ui.PopupHandler
 import com.intellij.openapi.project.Project
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
@@ -53,6 +59,16 @@ class CocoRiskPanel(private val project: Project) : JPanel(BorderLayout()) {
                 if (e.clickCount == 2) navigate()
             }
         })
+
+        val group = DefaultActionGroup().apply {
+            add(object : DumbAwareAction("Jump to Source") {
+                override fun actionPerformed(e: AnActionEvent) = navigate()
+            })
+            add(CocoCrossActions.GoToFirstUncoveredLine(project) { list.selectedValue })
+            add(CocoCrossActions.CopyExplanation { list.selectedValue })
+        }
+        PopupHandler.installPopupMenu(list, group, ActionPlaces.TOOLWINDOW_CONTENT)
+
         add(JBScrollPane(list), BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
 

@@ -1,5 +1,11 @@
 package dev.cajeta.idea.coverage
 
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.ui.PopupHandler
 import com.intellij.openapi.project.Project
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
@@ -18,7 +24,7 @@ import javax.swing.JPanel
  * lines — coverage overlap is evidence, not proof, and a view that said
  * "delete this test" on that basis would be wrong often enough to be dangerous.
  */
-class CocoTestImpactPanel(private val project: Project) : JPanel(BorderLayout()) {
+class CocoTestImpactPanel(private val project: Project) : JPanel(BorderLayout()), CocoTabs.Selectable {
 
     private val model = DefaultListModel<CocoTestSummary>()
     private val list = JBList(model)
@@ -37,6 +43,12 @@ class CocoTestImpactPanel(private val project: Project) : JPanel(BorderLayout())
                 append("   ${describe(value)}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
             }
         }
+
+        val group = DefaultActionGroup().apply {
+            add(CocoCrossActions.SurvivorsForTest(project) { list.selectedValue })
+        }
+        PopupHandler.installPopupMenu(list, group, ActionPlaces.TOOLWINDOW_CONTENT)
+
         add(JBScrollPane(list), BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
 
@@ -68,4 +80,17 @@ class CocoTestImpactPanel(private val project: Project) : JPanel(BorderLayout())
                 "(candidates for review, not deletion)"
         }
     }
+    /**
+     * Select the rows a cross-tab action asked for, and scroll the first into
+     * view. Returning the COUNT lets the caller distinguish "found none" from
+     * "could not look" — an action that silently selects nothing reads as
+     * broken.
+     */
+    override fun selectMatching(match: (Any) -> Boolean): Int {
+        val indices = (0 until model.size()).filter { match(model.getElementAt(it) as Any) }
+        list.selectedIndices = indices.toIntArray()
+        indices.firstOrNull()?.let { list.ensureIndexIsVisible(it) }
+        return indices.size
+    }
+
 }

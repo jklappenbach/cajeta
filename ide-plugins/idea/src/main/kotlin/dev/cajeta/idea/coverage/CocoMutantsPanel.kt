@@ -1,5 +1,11 @@
 package dev.cajeta.idea.coverage
 
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionPlaces
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.ui.PopupHandler
 import com.intellij.openapi.project.Project
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.SimpleTextAttributes
@@ -24,7 +30,7 @@ import javax.swing.JPanel
  * complained". That is execution without verification, and it is invisible to
  * coverage alone.
  */
-class CocoMutantsPanel(private val project: Project) : JPanel(BorderLayout()) {
+class CocoMutantsPanel(private val project: Project) : JPanel(BorderLayout()), CocoTabs.Selectable {
 
     private val model = DefaultListModel<MutantResult>()
     private val list = JBList(model)
@@ -54,6 +60,21 @@ class CocoMutantsPanel(private val project: Project) : JPanel(BorderLayout()) {
                 }
             }
         })
+
+        // Context actions. Double-click already navigated but nothing said so;
+        // a list of findings invites a right-click, and finding nothing there
+        // reads as a list that does nothing.
+        val group = DefaultActionGroup().apply {
+            add(object : DumbAwareAction("Jump to Source") {
+                override fun actionPerformed(e: AnActionEvent) {
+                    val m = list.selectedValue ?: return
+                    CocoNavigation.open(project, m.sourceFile, m.srcLine)
+                }
+            })
+            add(CocoCrossActions.TestsCoveringMutant(project) { list.selectedValue })
+        }
+        PopupHandler.installPopupMenu(list, group, ActionPlaces.TOOLWINDOW_CONTENT)
+
         add(JBScrollPane(list), BorderLayout.CENTER)
         add(status, BorderLayout.SOUTH)
 
@@ -72,4 +93,17 @@ class CocoMutantsPanel(private val project: Project) : JPanel(BorderLayout()) {
         CocoMutation.survivors(all).forEach(model::addElement)
         status.text = CocoMutation.summarize(all)
     }
+    /**
+     * Select the rows a cross-tab action asked for, and scroll the first into
+     * view. Returning the COUNT lets the caller distinguish "found none" from
+     * "could not look" — an action that silently selects nothing reads as
+     * broken.
+     */
+    override fun selectMatching(match: (Any) -> Boolean): Int {
+        val indices = (0 until model.size()).filter { match(model.getElementAt(it) as Any) }
+        list.selectedIndices = indices.toIntArray()
+        indices.firstOrNull()?.let { list.ensureIndexIsVisible(it) }
+        return indices.size
+    }
+
 }
