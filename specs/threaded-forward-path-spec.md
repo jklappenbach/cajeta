@@ -398,7 +398,68 @@ Read from the compiler's own tests, not assumed.
   20-35x below anything memory could explain, so the serial path was
   COMPUTE-bound, not bandwidth-bound. Packing wins on footprint; it does
   not arrive at the bandwidth wall until far more cores are pulling.
-- **7.2** End-to-end decode improves against the SERIAL BASELINE
+- **7.2** DISCHARGED 2026-08-23. Meta-Llama-3.1-8B-Instruct-Q4_K_M,
+  prefill(8) then 4 greedy decode steps, arms alternated, both engines run
+  back to back in one session. This desktop never reaches idle (~2.0-2.5
+  from the user's own applications), so the load is REPORTED rather than
+  gated on — at these effect sizes two busy cores out of 32 cannot flip a
+  conclusion, and gating would simply have produced no number at all.
+
+  | engine | config | ms/token | t/s |
+  |---|---|---|---|
+  | cajeta-llama | serial host | ~3155 | 0.32 |
+  | cajeta-llama | routed, CPU, 32 workers | **261.4** | 3.83 |
+  | cajeta-llama | routed, GPU (gfx1151) | ~271 | 3.69 |
+  | llama.cpp | CPU `-t 1` | 163.7 | 6.11 |
+  | llama.cpp | CPU `-t 32` | 92.8 | 10.77 |
+  | llama.cpp | GPU `-ngl 99` | **25.2** | 39.70 |
+
+  **12.1x end to end** on decode against the serial path, and 12.7x on
+  prefill(8) (22.97 s -> 1.80 s). Token sequences are IDENTICAL across every
+  arm (`15 198 334 62 334`), which is §7.1.1's bar.
+
+  THE GAP: we are **2.8x behind llama.cpp on CPU** at equal thread count and
+  **10.8x behind it on GPU**. The arc closed a gap that was ~34x on CPU; it
+  did not close the whole thing.
+
+- **7.2.2** A MEASUREMENT INVALIDATED BY A MERGE, recorded because it
+  nearly shipped. The first end-to-end run gave serial 7336 ms/token and
+  routed 567. Merging 47 commits from origin/main then moved BOTH by ~2.2x
+  (serial 7336 -> 3155, routed 567 -> 261) with no change of ours in
+  between — main had been improving host codegen. The pre-merge figures are
+  superseded, and the §7.2 baseline of 6.72 s/token from the Unit 1 gate is
+  superseded with them. Any comparison that straddles that merge is void:
+  the first GPU-vs-CPU ratio computed here did straddle it, and was wrong
+  by 2.2x in our favour.
+
+- **7.2.3** THE GPU IS NOT FASTER THAN THE CPU FOR US (271 ms against
+  261), and that is the finding rather than a disappointment. The routed
+  path is backend-agnostic, so the packed weights go straight into VRAM at
+  4.5 bits each — RSS drops from 9.40 GB (CPU, host array PLUS device copy)
+  to 5.10 GB (GPU, weights resident on the device), which incidentally
+  answers §8.15 without the dequantize-to-f32 detour. But the mat-vec is no
+  longer what a token costs, so making it faster changes nothing.
+
+- **7.2.4** WHERE A ROUTED TOKEN ACTUALLY GOES (the attribution §7.4 asks
+  for). Capping CPU workers multiplies ONLY the mat-vec share, and the
+  kernels scale 9.06x weighted (9.23x Q4_K at 74.4% of bytes, 8.57x Q6_K at
+  25.6%). Measured, same binary, one variable:
+
+  | workers | ms/token |
+  |---|---|
+  | 32 | 261.4 |
+  | 1 | 1216.6 |
+
+  Solving `261.4 = M + R`, `1216.6 = 9.06M + R` gives **M ~ 119 ms of
+  mat-vec (45%) and R ~ 143 ms of everything else (55%)**. That remainder
+  is the host primitives this arc never touched — `rmsnormRowHost`,
+  `attendRowHost`, `gluRowHost` — which still run single-threaded and
+  already have unused `@Kernel` twins. Routing them is plan 8.1, and it is
+  now the top item: no further mat-vec work can win back more than the 45%
+  it owns, and llama.cpp's CPU figure (92.8 ms) sits BELOW our 143 ms of
+  un-threaded remainder alone.
+
+- **7.2.5** SUPERSEDED. End-to-end decode improves against the SERIAL BASELINE
   re-measured 2026-08-23: **6.72 s/token** (median 6722.92 ms/token). The
   previously-quoted 7.83 predated `headK4` and must not be used — carrying
   it forward would credit threading with a gain `headK4` already delivered.

@@ -742,6 +742,22 @@ namespace cajeta {
             llvm::Value* count = children[level]->generateCode(module);
             auto countAst = dynamic_pointer_cast<Expression>(children[level]);
             count = loadIfLValue(module, count, countAst);
+            // A dimension that did not resolve to a VALUE used to reach
+            // `count->getType()` and segfault on null — the compiler dying
+            // with a raw SIGSEGV and no source location at all. A crash is
+            // never an acceptable diagnostic: it says nothing about which
+            // `heap T[n]` was at fault, and the null comes from an ordinary
+            // authoring or resolution failure in `n`, not from a corrupt
+            // state.
+            if (count == nullptr) {
+                throw Exception(
+                    "array dimension did not resolve to a value at level "
+                        + std::to_string(level)
+                        + " of this `heap` array creation (a sub-expression "
+                          "produced no value — e.g. a static field or member "
+                          "that did not resolve)",
+                    "CAJETA_ERROR_NULL_ARRAY_DIMENSION");
+            }
             if (count->getType() != i64Ty) {
                 count = builder->CreateIntCast(count, i64Ty, /*isSigned=*/true);
             }
