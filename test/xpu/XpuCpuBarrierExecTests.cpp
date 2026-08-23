@@ -744,7 +744,7 @@ TEST(XpuCpuBarrierExecTests, divergentBarrierFallsBackCleanly) {
         "}\n";
     std::string ir = compileToIr(src, "test.M.divergent");
     ASSERT_FALSE(ir.empty());
-    EXPECT_EQ(ir.find("__cajeta_xpu_cpu_block.divergent"), std::string::npos)
+    EXPECT_EQ(ir.find(".divergent("), std::string::npos)
         << "divergent barrier should fall back, not fission\n";
 }
 
@@ -778,7 +778,7 @@ TEST(XpuCpuBarrierExecTests, nestedTidDependentTripCountFallsBack) {
         "}\n";
     std::string ir = compileToIr(src, "test.M.nesttid");
     ASSERT_FALSE(ir.empty());
-    EXPECT_EQ(ir.find("__cajeta_xpu_cpu_block.nesttid"), std::string::npos)
+    EXPECT_EQ(ir.find(".nesttid("), std::string::npos)
         << "tid-dependent inner trip count must fall back, not fission\n";
 }
 
@@ -915,11 +915,16 @@ struct ScopedEnv {
 };
 
 // The body text of `define ... @<name>(...) { ... }`, or "" if absent.
+// Matches a symbol whose name ENDS with `name` — CPU kernel symbols are
+// qualified by the declaring class (`__cajeta_xpu_cpu_block.test.M.foo`) so
+// two classes with a same-named @Kernel don't collide at link. Asserting the
+// unqualified spelling pinned an implementation detail; the suffix is the
+// part these tests actually care about.
 std::string functionBody(const std::string& ir, const std::string& name) {
     auto d = ir.find("define ");
     while (d != std::string::npos) {
         auto open = ir.find('(', d);
-        auto nm = ir.rfind('@' + name + '(', open);
+        auto nm = ir.rfind('.' + name + '(', open);
         if (nm != std::string::npos && nm > d && nm < open) {
             auto brace = ir.find('{', open);
             auto end = ir.find("\n}", brace);
@@ -980,7 +985,7 @@ TEST(XpuCpuBarrierEmitTests, twoStageWrapperHasTwoWorkItemLoops) {
     ScopedEnv noVec("CAJETA_XPU_CPU_NO_VECTORIZE", "1");
     std::string ir = compileToIr(kTwoStageSource, "test.M.twostage");
     ASSERT_FALSE(ir.empty());
-    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.twostage");
+    std::string body = functionBody(ir, "twostage");
     ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
 
     // Two regions, each a well-formed counted work-item loop (ph/head/latch).
@@ -1005,7 +1010,7 @@ TEST(XpuCpuBarrierEmitTests, reductionNestsWorkItemLoopInUniformLoop) {
     ScopedEnv noVec("CAJETA_XPU_CPU_NO_VECTORIZE", "1");
     std::string ir = compileToIr(kReduceSource, "test.M.reduce");
     ASSERT_FALSE(ir.empty());
-    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.reduce");
+    std::string body = functionBody(ir, "reduce");
     ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
 
     // The uniform loop is preserved as exactly one outer scalar loop, NOT
@@ -1035,7 +1040,7 @@ TEST(XpuCpuBarrierEmitTests, reductionNestsWorkItemLoopInUniformLoop) {
 TEST(XpuCpuBarrierEmitTests, shippedVectorizedWrapperKeepsInvariants) {
     std::string ir = compileToIr(kReduceSource, "test.M.reduce");
     ASSERT_FALSE(ir.empty());
-    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.reduce");
+    std::string body = functionBody(ir, "reduce");
     ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
 
     EXPECT_EQ(countSubstr(body, "call void @__cajeta_xpu_cpu_barrier"), 0);
@@ -1051,7 +1056,7 @@ TEST(XpuCpuBarrierEmitTests, multiBarrierLoopBodySplitsAndWidensLocal) {
     ScopedEnv noVec("CAJETA_XPU_CPU_NO_VECTORIZE", "1");
     std::string ir = compileToIr(kLocalCarrySource, "test.M.localcarry");
     ASSERT_FALSE(ir.empty());
-    std::string body = functionBody(ir, "__cajeta_xpu_cpu_block.localcarry");
+    std::string body = functionBody(ir, "localcarry");
     ASSERT_FALSE(body.empty()) << "no fission wrapper emitted";
 
     // One uniform loop, kept as the outer scalar scaffold.

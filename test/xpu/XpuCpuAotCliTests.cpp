@@ -109,7 +109,10 @@ TEST(XpuCpuAotCliTests, multiTargetBundlesVulkanAndCpu) {
     EXPECT_NE(ir.find("xpu.spirv.saxpy"), std::string::npos) << ir;
     // CPU: host kernel + pointer registration.
     EXPECT_NE(ir.find("__cajeta_xpu_register_cpu_kernel"), std::string::npos) << ir;
-    EXPECT_NE(ir.find("__cajeta_xpu_cpu.saxpy"), std::string::npos) << ir;
+    // Class-qualified since kernel symbols must be unique per program
+    // (`__cajeta_xpu_cpu.test.M.saxpy`); assert the suffix, not the
+    // qualification scheme.
+    EXPECT_NE(ir.find(".saxpy("), std::string::npos) << ir;
 
     fs::remove_all(src.parent_path());
 }
