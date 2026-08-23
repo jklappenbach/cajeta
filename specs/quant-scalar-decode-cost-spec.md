@@ -35,6 +35,23 @@ are somewhat better than absolutes but still drift, because load varies second
 to second. Re-confirm the table above on a verified-idle box before anyone
 optimizes against it.
 
+**And ORDER is part of hygiene, not just load.** Measured again 2026-08-23
+on the threaded-forward-path Unit 1 gate, which produced an IMPOSSIBLE
+result: forcing a mutex ON measured FASTER than leaving it off (6668 vs
+7196 ms/token). The box was not idle (`idea` at 407%) and the arm order was
+FIXED — arm A always first — so a monotonically decaying load was absorbed
+almost entirely by A: its three runs fell 7714 -> 7196 -> 6706 while B's sat
+flat at 6730/6668/6658. Interleaving does NOT cancel a one-directional
+drift when the order within each round is constant; it systematically
+favours whichever arm runs second.
+
+Two corrections, both cheap:
+- **Gate on idle, don't check it.** Verify BEFORE the first run and abort
+  rather than emit a number. Checking inside the script after it starts
+  records the contamination without preventing it.
+- **Alternate the arm order per round** (A,B / B,A / A,B). Then a linear
+  drift cancels instead of accumulating on one arm.
+
 | variant | time | piece removed | cost | share |
 |---|---|---|---|---|
 | v0 full | 21.30 ms | — | — | — |

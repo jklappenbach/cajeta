@@ -257,9 +257,65 @@ Read from the compiler's own tests, not assumed.
 
 ## 7. Acceptance
 
-- **7.1** The Q4_K mat-vec at 4096x4096 scales with worker count, reported
-  as a table across 1/2/4/8/16/nproc rather than a single number, so the
-  curve and its knee are visible.
+- **7.1** DISCHARGED 2026-08-23. The Q4_K mat-vec at 4096x4096, [out=4096,
+  in=4096] = 9 MB of weight per call, 32 launches per sample, median of 3,
+  arms ALTERNATED, on a 16-physical-core / 32-thread Ryzen AI MAX+ 395.
+  The untouched control (the host serial path, which the worker cap cannot
+  reach) moved **1.06%** across repetitions, so the window was idle.
+
+  | workers | ms | GB/s | vs 1 worker | vs host serial |
+  |---|---|---|---|---|
+  | 1 | 7.98 | 1.10 | 1.00x | 1.59x |
+  | 2 | 4.15 | 2.12 | 1.93x | 3.07x |
+  | 4 | 2.33 | 3.77 | 3.43x | 5.46x |
+  | 8 | 1.34 | 6.55 | 5.95x | 9.48x |
+  | 16 | 1.12 | 7.82 | 7.11x | 11.33x |
+  | 32 | 0.804 | 10.93 | **9.92x** | **15.82x** |
+  | host serial | 12.73 | 0.69 | 0.63x | 1.00x |
+
+  **The knee is between 4 and 8 workers.** Steps: 1.93x, 1.78x, 1.73x,
+  1.20x, 1.40x.
+
+- **7.1.1** TWO SEPARATE WINS, and conflating them would overstate
+  threading. The 15.8x against the host serial path is 9.92x of threading
+  times **1.59x that one worker already beats the serial path by**. That
+  1.59x is not threading at all: it is Unit 3's header decode into named
+  locals instead of `headK4`'s `int32[8]`/`float32[2]` heap scratch — 16
+  blocks per row x 4096 rows = 65,536 decodes that no longer round-trip 18
+  values through memory. The serial path can have that win too, and should.
+
+- **7.1.2** CACHE RESIDENCY IS NOT WHAT THIS MEASURES, checked rather than
+  assumed. One 9 MB weight fits this box's 64 MiB L3, so a bench that
+  re-reads a single matrix measures a cache-resident mat-vec while real
+  decode streams ~4.5 GB per token. The probe therefore runs the sweep
+  TWICE — one weight re-read (hot) and 16 distinct weights in rotation,
+  150 MB, past L3 (cold). They agree within 5% at every arm (32 workers:
+  0.784 ms hot, 0.804 ms cold). So the shared resource that saturates is
+  not DRAM; both sweeps exceed the 1 MB/core L2 equally and both hit the
+  L3/fabric path.
+
+- **7.1.3** WHY IT IS 9.92x AND NOT 32x (§7.1's gap, attributed):
+
+  | cause | evidence | share |
+  |---|---|---|
+  | not the backend's dispatch | a compute-only kernel on the SAME grid reaches 12.18x at 16 workers and 15.46x at 32 | — |
+  | not launch overhead | measured directly with a nop kernel: 1.9 us serial, 26-41 us parallel = **5%** at 32 workers | 5% |
+  | not SMT placement | pinned to the 16 physical cores (`taskset -c 0-15`), 16 workers gives 7.07x against 7.11x unpinned | 0% |
+  | SMT itself | 32 logical threads on 16 cores; the compute control gains only 1.27x from 16 to 32 | caps the last step |
+  | clock throttling | peak core clock 5026 MHz at 1 core, 4773 at 16, 4596 at 32 | 9% |
+  | **memory traffic beyond L2** | the residual: Q4_K reaches 7.11x where the compute control reaches 12.18x, on identical grids and identical dispatch | the rest |
+
+  The honest reading: **the backend delivers 15.5x and Q4_K takes 9.9x of
+  it.** The shortfall is Q4_K's own 9 MB of streaming per call, not the
+  threading.
+
+- **7.1.4** §8.2's PREDICTION IS REFUTED. It expected ~32 workers to put
+  Q4_K near a 0.242 ms memory floor. Measured 0.804 ms — 3.3x off — and
+  the reason is that the floor was never approached: it assumed ~39 GB/s
+  and the kernel achieves 10.9 GB/s. At one worker Q4_K moves 1.10 GB/s,
+  20-35x below anything memory could explain, so the serial path was
+  COMPUTE-bound, not bandwidth-bound. Packing wins on footprint; it does
+  not arrive at the bandwidth wall until far more cores are pulling.
 - **7.2** End-to-end decode improves against the SERIAL BASELINE
   re-measured 2026-08-23: **6.72 s/token** (median 6722.92 ms/token). The
   previously-quoted 7.83 predated `headK4` and must not be used — carrying

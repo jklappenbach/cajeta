@@ -614,6 +614,44 @@ static void caj_kpool_resolve_spin(void) {
     }
 }
 
+// --- Worker cap + last-launch observability ---------------------------------
+//
+// `nworkers` was min(nblocks, cores) with no way to ask for fewer and no way
+// to find out what was chosen. A scaling curve needs both: a timing whose
+// worker count is unknown is not a data point, and a 1/2/4/8/16 sweep cannot
+// be run without a bound.
+//
+// The cap is settable in-process as well as from the environment, because the
+// measurement discipline here requires ALTERNATING arm order inside one run —
+// a fixed order let a decaying background load read as a speedup once
+// already. A process-lifetime environment variable cannot alternate. 0 means
+// unlimited, and setting it back to 0 must restore that: a one-way cap would
+// silently pin every later launch in the process.
+static int caj_worker_cap = -1;                 /* -1 = not yet resolved */
+static int32_t caj_last_workers = 0;            /* what the last launch used */
+
+static int caj_resolve_worker_cap(void) {
+    int c = __atomic_load_n(&caj_worker_cap, __ATOMIC_ACQUIRE);
+    if (c >= 0) return c;
+    const char* e = getenv("CAJETA_XPU_CPU_WORKERS");
+    c = e ? atoi(e) : 0;
+    if (c < 0) c = 0;
+    __atomic_store_n(&caj_worker_cap, c, __ATOMIC_RELEASE);
+    return c;
+}
+
+void __cajeta_xpu_cpu_set_worker_cap(int32_t n) {
+    __atomic_store_n(&caj_worker_cap, n < 0 ? 0 : (int) n, __ATOMIC_RELEASE);
+}
+
+int32_t __cajeta_xpu_cpu_worker_cap(void) {
+    return (int32_t) caj_resolve_worker_cap();
+}
+
+int32_t __cajeta_xpu_cpu_last_workers(void) {
+    return __atomic_load_n(&caj_last_workers, __ATOMIC_ACQUIRE);
+}
+
 static uint64_t caj_kpool_wait_gen(uint64_t seen) {
     for (int spins = 0; spins < caj_worker_spin; ++spins) {
         uint64_t g = __atomic_load_n(&g_caj_kpool.generation, __ATOMIC_ACQUIRE);
@@ -808,10 +846,16 @@ static void cajeta_xpu_launch_cpu(const char* name,
     if (cores < 1) cores = 1;
     int32_t nworkers = (int32_t) ((long) nblocks < cores ? (long) nblocks : cores);
     if (nworkers > CAJETA_XPU_CPU_MAX_WORKERS) nworkers = CAJETA_XPU_CPU_MAX_WORKERS;
+    // The cap bounds it; 0 leaves it alone.
+    int wcap = caj_resolve_worker_cap();
+    if (wcap > 0 && nworkers > (int32_t) wcap) nworkers = (int32_t) wcap;
 
     // Serial path: forced, tiny launch, single core, or a single block.
     if (force_serial || nblocks <= 1 || nworkers <= 1 ||
         total < CAJETA_XPU_CPU_PARALLEL_THRESHOLD) {
+        // Record 1, not `nworkers`: the caller wants what RAN, and every one
+        // of these conditions means one thread ran the whole grid.
+        __atomic_store_n(&caj_last_workers, 1, __ATOMIC_RELEASE);
         struct cajeta_cpu_grid_slice all = {fn, (void**) argv,
                                             blockX, blockY, blockZ,
                                             gridX, gridY, gridZ,
@@ -824,6 +868,7 @@ static void cajeta_xpu_launch_cpu(const char* name,
     // Parallel fan-out: chunk the nblocks linear block indices across `nworkers`.
     // Dispatch slices[0..nworkers-2] to the persistent pool; the calling thread
     // runs slices[nworkers-1] itself (overlapping the workers), then joins.
+    __atomic_store_n(&caj_last_workers, nworkers, __ATOMIC_RELEASE);
     struct cajeta_cpu_grid_slice slices[CAJETA_XPU_CPU_MAX_WORKERS];
     int32_t base = nblocks / nworkers, rem = nblocks % nworkers, cx = 0;
     for (int32_t i = 0; i < nworkers; ++i) {

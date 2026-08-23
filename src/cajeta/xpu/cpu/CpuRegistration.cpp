@@ -767,10 +767,22 @@ void foldWaveVariants(llvm::Function& f) {
             try {
                 kfn = lowerKernel(method, *mod);
             } catch (cajeta::Exception& e) {
-                if (getenv("CAJETA_XPU_DEBUG_LOWER"))
-                    fprintf(stderr, "[lower-skip] %s: %s (%s)\n", entryName.c_str(),
-                            e.getMessage().c_str(), e.getErrorId().c_str());
-                continue;  // unsupported construct → leave to the host path
+                // Unsupported construct (XPU-N01) — this kernel gets NO CPU
+                // code, and a @Kernel has no host path to fall back to: the
+                // launch finds nothing registered, prints one runtime line,
+                // and every output buffer reads back ZERO. Say so at build
+                // time, unconditionally, exactly as the amdgpu, nvptx and
+                // vulkan backends already do. This was gated behind
+                // CAJETA_XPU_DEBUG_LOWER, which made the DEFAULT backend the
+                // only one that skipped in silence — and that is how the
+                // missing widen/convert ladder read as a working build that
+                // computed zeros (plan 8.10, 8.11).
+                fprintf(stderr,
+                        "cajeta: note: [xpu-kernel-skipped] %s: no cpu device "
+                        "code — %s (%s)\n",
+                        entryName.c_str(), e.getMessage().c_str(),
+                        e.getErrorId().c_str());
+                continue;
             }
             if (!kfn) continue;
             kfn->setName(sym);

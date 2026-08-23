@@ -1855,7 +1855,15 @@ private:
     // nameless (chained) receiver is worth materializing into a slot.
     static bool isVectorMethodName(const std::string& n) {
         return n == "dot" || n == "dotAccum" || n == "length"
-            || n == "normalize";
+            || n == "normalize"
+            // The ladder (8.10). These CHAIN by nature —
+            // `lo.widenLo().toF32()` is the shape the packed mat-vecs are
+            // written in — so they must reach the synthetic-slot path 8.9
+            // added, or a chained rung silently returns zero the way a
+            // chained `dot` did.
+            || n == "widenLo" || n == "widenHi" || n == "narrow"
+            || n == "toF32" || n == "toI32"
+            || n == "asUnsigned" || n == "asSigned";
     }
     unsigned syntheticRecvSeq = 0;
 
@@ -2129,6 +2137,60 @@ private:
             if (name == "distance") return vecops::distance(builder, self, other);
             llvm::Value* eta = vecops::coerceScalar(builder, lowerExpr(args[1].expression), elemTy);
             return vecops::refract(builder, self, other, eta);
+        }
+        // ── The integer LADDER (plan 8.10) ──────────────────────────────
+        // widenLo/widenHi/narrow/toF32/toI32, the rungs the packed mat-vecs
+        // are built on. The lowerings are target-neutral and already lived in
+        // `vecops`; only the kernel-side dispatch to them was missing, so a
+        // `q4kMatVecInto`-shaped body could not be lifted into a @Kernel at
+        // all — it compiled clean, failed to lower, and computed zeros.
+        //
+        // Signedness comes from the RECEIVER's declared element type, exactly
+        // as on the host: the widen is a sext for a signed element and a zext
+        // for an unsigned one, and Q4_K's nibbles depend on that difference.
+        // The result's signedness is carried by the ASSIGNMENT TARGET's
+        // declared type (line ~850 fills the map from it), which is the same
+        // constraint `asUnsigned`/`dot`/`dotAccum` already carry.
+        if (name == "widenLo" || name == "widenHi") {
+            if (isFloat)
+                unsupported("Vector.widenLo/widenHi require an integer "
+                            "element type");
+            if (!args.empty())
+                unsupported("Vector.widenLo/widenHi take no arguments");
+            unsigned w = elemTy->getIntegerBitWidth();
+            unsigned n = vt->getNumElements();
+            if (w >= 64 || n < 2)
+                unsupported("Vector.widen*: element width must be < 64 and "
+                            "lane count >= 2");
+            bool sgn = signedness.count(recv) ? signedness[recv] : true;
+            return vecops::widenHalf(builder, self, name == "widenLo", sgn);
+        }
+        if (name == "narrow") {
+            if (isFloat)
+                unsupported("Vector.narrow requires an integer element type");
+            if (args.size() != 1)
+                unsupported("Vector.narrow expects (other) — the high half's "
+                            "source");
+            if (elemTy->getIntegerBitWidth() <= 8)
+                unsupported("Vector.narrow: element width must be > 8");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            if (other->getType() != self->getType())
+                unsupported("Vector.narrow: other must have the receiver's "
+                            "Vector type");
+            return vecops::narrowPair(builder, self, other);
+        }
+        if (name == "toF32") {
+            if (isFloat || !args.empty())
+                unsupported("Vector.toF32 takes no arguments and an "
+                            "integer-element receiver");
+            bool sgn = signedness.count(recv) ? signedness[recv] : true;
+            return vecops::convertToF32(builder, self, sgn);
+        }
+        if (name == "toI32") {
+            if (!isFloat || !args.empty())
+                unsupported("Vector.toI32 takes no arguments and a "
+                            "float-element receiver");
+            return vecops::convertToI32(builder, self);
         }
         unsupported("unknown Vector method '" + name + "'");
     }
@@ -2709,15 +2771,32 @@ private:
             if ((name == "f32ToBits" || name == "bitsToF32" ||
                  name == "f64ToBits" || name == "bitsToF64") &&
                 cargs.size() == 1) {
+                llvm::LLVMContext& bc = builder.getContext();
                 llvm::Value* v = lowerExpr(cargs[0].expression);
+                // COERCE the operand to the width the bitcast needs, exactly
+                // as the host lowering does. `bitsToF32(bits)` is routinely
+                // handed an int64 — GgufFile.halfBitsToF32 builds its result
+                // in one, because the f32 sign bit does not fit an int32
+                // literal — and a bitcast i64 -> float is not a legal cast,
+                // so without this the whole call fails to lower and the
+                // kernel is skipped. The host comment in halfBitsToF32 says
+                // "the intrinsics coerce their operands now"; the device seam
+                // did not, which is the same host/device divergence the
+                // dot-seam signedness bug was (plan 8.5).
                 llvm::Type* to =
                     name == "f32ToBits"
-                        ? (llvm::Type*) llvm::Type::getInt32Ty(builder.getContext())
+                        ? (llvm::Type*) llvm::Type::getInt32Ty(bc)
                   : name == "bitsToF32"
-                        ? (llvm::Type*) llvm::Type::getFloatTy(builder.getContext())
+                        ? (llvm::Type*) llvm::Type::getFloatTy(bc)
                   : name == "f64ToBits"
-                        ? (llvm::Type*) llvm::Type::getInt64Ty(builder.getContext())
-                        : (llvm::Type*) llvm::Type::getDoubleTy(builder.getContext());
+                        ? (llvm::Type*) llvm::Type::getInt64Ty(bc)
+                        : (llvm::Type*) llvm::Type::getDoubleTy(bc);
+                llvm::Type* from =
+                    name == "f32ToBits"   ? (llvm::Type*) llvm::Type::getFloatTy(bc)
+                  : name == "bitsToF32"   ? (llvm::Type*) llvm::Type::getInt32Ty(bc)
+                  : name == "f64ToBits"   ? (llvm::Type*) llvm::Type::getDoubleTy(bc)
+                                          : (llvm::Type*) llvm::Type::getInt64Ty(bc);
+                v = coerceTo(v, from, /*isSigned=*/true);
                 return builder.CreateBitCast(v, to, "cajeta.bits");
             }
             unsupported("Cajeta." + name + " in a kernel (supported: "
@@ -4908,6 +4987,19 @@ private:
         // reads back as signed, because a call is an "unknown leaf" below and
         // unknown defaults to signed.
         if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e)) {
+            // A ladder rung carries its RECEIVER's signedness, and
+            // asUnsigned/asSigned state it outright. Without this a chained
+            // `w.vload<64>(o).widenLo().toF32()` on a KernelBuffer<uint8>
+            // converts as signed, because a call is an "unknown leaf" below
+            // and unknown defaults to signed.
+            const std::string& mn = mc->getMethodCallName();
+            if (mn == "asUnsigned") return false;
+            if (mn == "asSigned") return true;
+            if ((mn == "widenLo" || mn == "widenHi" || mn == "narrow")
+                    && !mc->getChildren().empty()) {
+                return exprSigned(std::dynamic_pointer_cast<Expression>(
+                    mc->getChildren()[0]));
+            }
             if (mc->getMethodCallName() == "vload"
                     && !mc->getChildren().empty()) {
                 if (auto b = std::dynamic_pointer_cast<IdentifierExpression>(

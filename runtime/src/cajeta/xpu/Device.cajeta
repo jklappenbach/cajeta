@@ -57,10 +57,58 @@ public final class Device {
         }
     }
 
+    /**
+     * Bound how many worker threads a CPU-backend kernel launch may use.
+     * 0 (the default) means unlimited — `min(gridBlocks, cores)`.
+     *
+     * Settable in-process as well as through `CAJETA_XPU_CPU_WORKERS`,
+     * because a scaling measurement has to alternate its arms inside one
+     * run: a fixed arm order lets a drifting background load read as a
+     * speedup. Setting it back to 0 restores unlimited — the cap is not
+     * one-way.
+     *
+     * No effect on any other backend, and none on the fiber carrier pool
+     * (`CAJETA_CARRIERS`), which schedules ordinary cajeta concurrency
+     * rather than kernel grids.
+     *
+     * @EntryPoint
+     */
+    public static void setCpuWorkerCap(int32 n) {
+        Device.nativeSetWorkerCap(n);
+    }
+
+    /** The current cap, 0 for unlimited. */
+    public static int32 cpuWorkerCap() {
+        return Device.nativeWorkerCap();
+    }
+
+    /**
+     * How many worker threads the LAST CPU-backend launch actually used —
+     * 1 whenever it ran serially (forced, single block, or under the
+     * parallel threshold).
+     *
+     * Report it next to any timing. A number without its worker count
+     * cannot be read.
+     *
+     * @EntryPoint
+     */
+    public static int32 lastLaunchWorkers() {
+        return Device.nativeLastWorkers();
+    }
+
     // The active backend probes its device features by capability ordinal (the
     // stable Capability contract). Returns 0 / 1.
     @Native("__cajeta_xpu_device_supports")
     private static int32 nativeSupports(int32 capability);
+
+    @Native("__cajeta_xpu_cpu_set_worker_cap")
+    private static void nativeSetWorkerCap(int32 n);
+
+    @Native("__cajeta_xpu_cpu_worker_cap")
+    private static int32 nativeWorkerCap();
+
+    @Native("__cajeta_xpu_cpu_last_workers")
+    private static int32 nativeLastWorkers();
 
     // Sets the forced backend id; returns 0 when selection already ran.
     @Native("__cajeta_xpu_force_backend")
