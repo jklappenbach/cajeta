@@ -210,8 +210,43 @@ public final class KernelBuffer<T> {
         this.deviceUpload(h, host, bytes);
     }
 
+    /**
+     * Upload only the first `count` elements — the PREFIX form.
+     *
+     * A buffer sized once to the largest payload it will ever hold, then fed
+     * a smaller one, is a common shape: it avoids reallocating device memory
+     * when the size alternates. Without this the whole buffer ships every
+     * time, and the transfer is charged for capacity rather than content —
+     * measured at 17920 bytes against 5120 in cajeta-llama's activation
+     * stage, which is not free on a pageable host copy.
+     *
+     * `count` is clamped to both the host array and this buffer, so a
+     * prefix upload can never read or write past either.
+     */
+    public void upload(T[] host, int64 count) {
+        int64 n = count;
+        if (n > (int64) host.count()) { n = (int64) host.count(); }
+        if (n > (int64) this.elementCount) { n = (int64) this.elementCount; }
+        if (n <= 0) { return; }
+        uint64 bytes = (uint64) n * elementBytes();
+        int64 h = this.deviceHandle;
+        this.deviceUpload(h, host, bytes);
+    }
+
     public void download(T[] host) {
         uint64 bytes = this.elementCount * elementBytes();
+        int64 h = this.deviceHandle;
+        this.deviceDownload(h, host, bytes);
+    }
+
+    /** Download only the first `count` elements — the twin of the prefix
+     *  {@link #upload(T[], int64)}, clamped the same way. */
+    public void download(T[] host, int64 count) {
+        int64 n = count;
+        if (n > (int64) host.count()) { n = (int64) host.count(); }
+        if (n > (int64) this.elementCount) { n = (int64) this.elementCount; }
+        if (n <= 0) { return; }
+        uint64 bytes = (uint64) n * elementBytes();
         int64 h = this.deviceHandle;
         this.deviceDownload(h, host, bytes);
     }
