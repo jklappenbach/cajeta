@@ -309,6 +309,41 @@ Read from the compiler's own tests, not assumed.
   it.** The shortfall is Q4_K's own 9 MB of streaming per call, not the
   threading.
 
+- **7.1.5** PER FORMAT, cold weights, at 1 worker and at 32 (plan 6.3.2):
+
+  | format | serial ms | kernel@1 ms | kernel@32 ms | GB/s@32 | k@1 vs serial | scaling |
+  |---|---|---|---|---|---|---|
+  | Q4_K | 11.85 | 7.99 | 0.873 | 10.1 | **1.48x** | 9.15x |
+  | Q5_K | 26.67 | 2.82 | 0.321 | 33.5 | 9.46x | 8.78x |
+  | Q6_K | 25.51 | 3.10 | 0.349 | 36.7 | 8.23x | 8.87x |
+  | Q8_0 | 25.36 | 1.76 | 0.220 | 75.4 | 14.4x | 8.00x |
+
+  Q6_K's flat result under `headK6` (`quant-scalar-decode-cost` §5.1.3) did
+  NOT repeat: 8.23x per thread. Different mechanism, as suspected.
+
+  **The Q4_K kernel is the outlier, and it is the format that matters.**
+  All four SCALE alike (8.0x-9.2x), so the spread is single-thread codegen,
+  not threading. Q4_K is 74.4% of a Q4_K_M by bytes, so at these rates a
+  token spends ~340 ms in Q4_K against ~32 ms in Q6_K; Q4_K reaching Q6_K's
+  rate would take the mat-vec total from ~372 ms to ~132 ms. The suspect is
+  shape — Q4_K's is the only kernel built on 16-lane vectors and an
+  `@Device` helper, the three fast ones are 4-lane straight-line code.
+  Tracked as plan 6.3.3.
+
+- **7.1.6** A MEASUREMENT THE BENCH CAUGHT ON ITSELF, recorded because the
+  first version of §7.1 was published without it. Synthetic weights filled
+  with a byte pattern put ARBITRARY BITS in every block's f16 scale, which
+  decode to NaN — so the bench was timing NaN arithmetic on both sides.
+  `MatvecProbe`'s standing comment ("timing is data-independent here, so
+  the pattern only has to be well-defined") is wrong for any format with an
+  f16 field: NaN and denormal handling take different paths in scalar and
+  vector code. The fix is one line per block — write a real f16 scale and
+  leave the payload arbitrary — and it was found only because the bench now
+  VERIFIES its own output against the serial path before reporting a
+  speedup. It printed `nan vs nan`. Re-measured, the Q4_K curve moved from
+  9.92x to 10.37x, so the earlier table was not materially wrong; the point
+  is that nothing said so at the time.
+
 - **7.1.4** §8.2's PREDICTION IS REFUTED. It expected ~32 workers to put
   Q4_K near a 0.242 ms memory floor. Measured 0.804 ms — 3.3x off — and
   the reason is that the floor was never approached: it assumed ~39 GB/s
