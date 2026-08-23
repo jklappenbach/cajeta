@@ -184,6 +184,11 @@ typedef struct {
     int64_t    records;                  // dispatch records seen (feeds §5.2.5)
     int64_t    unmatched;                // records whose launch we never parked
     int64_t    launches;                 // launches offered to the SDK (8.2.d)
+    int32_t    offset_seen;              // an offset sample has been taken
+    int64_t    offset_first;             // at trace start
+    int64_t    offset_last;              // most recent
+    int32_t    suspended;                // the gap moved mid-trace (§6.4)
+    int64_t    suspend_ns;               // total movement attributed to suspends
     CajRocmApi api;
     char       path[CAJ_ROCM_PATH_MAX];     // what was tried, or what bound
     char       reason[CAJ_ROCM_REASON_MAX]; // why the state is what it is
@@ -256,6 +261,9 @@ void __cajeta_prof_rocm_reset(void) {
     caj_rocm.records = 0;
     caj_rocm.unmatched = 0;
     caj_rocm.launches = 0;
+    caj_rocm.offset_seen = 0;
+    caj_rocm.suspended = 0;
+    caj_rocm.suspend_ns = 0;
     // Willingness is restored to whatever the SDK is actually doing. Reset can
     // forget this module's verdict; it cannot stop a context the SDK has
     // already started, and claiming otherwise would leave the service running
@@ -391,6 +399,42 @@ static int64_t caj_rocm_ns(clockid_t c) {
     return (int64_t) t.tv_sec * 1000000000LL + (int64_t) t.tv_nsec;
 }
 
+// ── 8.3.c — suspend detection (§6.4) ─────────────────────────────────────
+//
+// BOOTTIME minus MONOTONIC is constant while the machine is awake and jumps by
+// the sleep duration when it suspends. A trace spanning a suspend has device
+// timestamps mapped with one offset and host timestamps taken across two, so
+// everything after the sleep sits in the wrong place on the timeline — by
+// minutes, silently, in a trace that otherwise renders perfectly.
+//
+// The decision is factored out from the sampling so it can be exercised: no
+// test can suspend the machine it runs on, and a detector that can only be
+// checked by sleeping a laptop is a detector nobody checks. The sampler is its
+// only production caller.
+#define CAJ_ROCM_SUSPEND_THRESHOLD_NS 1000000LL   // 1 ms; jitter after the
+                                                  // midpoint fix is ~100 ns
+
+int32_t __cajeta_prof_rocm_note_clock_offset(int64_t offset) {
+    int64_t delta;
+    if (!caj_rocm.offset_seen) {
+        caj_rocm.offset_seen  = 1;
+        caj_rocm.offset_first = offset;
+        caj_rocm.offset_last  = offset;
+        return 0;
+    }
+    delta = offset - caj_rocm.offset_last;
+    caj_rocm.offset_last = offset;
+    if (delta > CAJ_ROCM_SUSPEND_THRESHOLD_NS || delta < -CAJ_ROCM_SUSPEND_THRESHOLD_NS) {
+        caj_rocm.suspended = 1;
+        caj_rocm.suspend_ns += delta;
+        return 1;
+    }
+    return 0;
+}
+
+int32_t __cajeta_prof_rocm_suspended(void)  { return caj_rocm.suspended; }
+int64_t __cajeta_prof_rocm_suspend_ns(void) { return caj_rocm.suspend_ns; }
+
 static int64_t caj_rocm_boot_minus_mono(void) {
     // Monotonic is read either side of boottime and the midpoint taken. Two
     // sequential clock reads are ~100 ns apart, and reading them in a fixed
@@ -491,6 +535,7 @@ static int caj_rocm_tool_initialize(void* fini_func, void* tool_data) {
     if (st != CAJ_ROCP_STATUS_SUCCESS) return 0;
 
     caj_rocm.boot_minus_mono_ns = caj_rocm_boot_minus_mono();
+    __cajeta_prof_rocm_note_clock_offset(caj_rocm.boot_minus_mono_ns);
     caj_rocm.service_up = 1;
     caj_rocm.tracing = 1;
     // Returning non-zero here aborts the SDK's registration. Setup failures
@@ -571,6 +616,7 @@ static void caj_rocm_check_records(void) {
 int32_t __cajeta_prof_rocm_flush(void) {
     if (!caj_rocm.tracing || !caj_rocm.api.flush_buffer) return 0;
     caj_rocm.boot_minus_mono_ns = caj_rocm_boot_minus_mono();
+    __cajeta_prof_rocm_note_clock_offset(caj_rocm.boot_minus_mono_ns);
     {
         const int32_t ok = caj_rocm.api.flush_buffer(caj_rocm.buf) == CAJ_ROCP_STATUS_SUCCESS;
         // After the flush, not before: the check asks whether anything HAS come
@@ -732,6 +778,9 @@ int64_t     __cajeta_prof_rocm_clock_offset_ns(void) { return 0; }
 int64_t     __cajeta_prof_rocm_device_now_ns(void)   { return 0; }
 int64_t     __cajeta_prof_rocm_launches(void)        { return 0; }
 int32_t     __cajeta_prof_rocm_record_threshold(void) { return 0; }
+int32_t     __cajeta_prof_rocm_note_clock_offset(int64_t o) { (void) o; return 0; }
+int32_t     __cajeta_prof_rocm_suspended(void)       { return 0; }
+int64_t     __cajeta_prof_rocm_suspend_ns(void)      { return 0; }
 
 #endif  /* !_WIN32 */
 

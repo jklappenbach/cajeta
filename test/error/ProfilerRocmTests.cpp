@@ -20,6 +20,10 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <cstdio>
 #if !defined(_WIN32)
 #  include <dlfcn.h>
 #  include <sys/wait.h>
@@ -127,6 +131,7 @@ struct ForcedLib {
 };
 
 const int32_t kBackendHip = 1;   // caj_gpu_backend_name(): 0 cuda, 1 hip, 2 vulkan, 3 cpu
+const int32_t kBackendCpu = 3;
 
 } // namespace
 
@@ -748,4 +753,273 @@ TEST(ProfilerRocm, afterDisablingLaterLaunchesGoStraightToTheHostLane) {
     EXPECT_EQ(r.pendingCount(), 0) << "still parking after the device path was disabled";
     ASSERT_EQ(caught.events.size(), before + 1);
     EXPECT_EQ(caught.events.back().tier, CAJETA_PROF_TIER_HOST);
+}
+
+// ── 8.3.b — device timing never comes from HIP events (§13.2) ────────────
+//
+// HIP events measure the gap between two points in a stream. That gap contains
+// the kernel plus whatever queueing and other work sits between the two
+// records, so an event pair reports a number that is not the kernel — and
+// reading it back forces a synchronize, which is the serialization 8.1.f
+// exists to prevent. Dispatch records report the kernel's own span and cost the
+// program nothing.
+//
+// The runtime does bind hipEventCreate/Record/Synchronize, for
+// KernelStream.waitFor — cross-stream ordering, not timing. What it must never
+// bind is hipEventElapsedTime, the one HIP call that turns two events into a
+// duration: it cannot be called if it was never resolved.
+
+namespace {
+
+std::string sourceRoot() {
+    if (const char* env = ::getenv("CAJETA_SOURCE_ROOT")) return env;
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+    return CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+    return "";
+#endif
+}
+
+std::string slurp(const std::string& path) {
+    std::ifstream in(path);
+    if (!in) return "";
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+} // namespace
+
+TEST(ProfilerRocm, deviceTimingNeverComesFromHipEvents) {
+    namespace fs = std::filesystem;
+    const std::string root = sourceRoot();
+    ASSERT_FALSE(root.empty());
+    const fs::path native = fs::path(root) / "runtime" / "native";
+    ASSERT_TRUE(fs::exists(native)) << native;
+
+    int scannedProfilerFiles = 0;
+    for (const auto& e : fs::directory_iterator(native)) {
+        if (!e.is_regular_file()) continue;
+        const std::string name = e.path().filename().string();
+        const std::string body = slurp(e.path().string());
+
+        // Nowhere in the runtime, profiler or not: this is the only HIP API
+        // that yields a duration from a pair of events, and a symbol that is
+        // never resolved cannot be called by accident later.
+        EXPECT_EQ(body.find("hipEventElapsedTime"), std::string::npos)
+            << name << " binds hipEventElapsedTime; device spans come from "
+                       "dispatch records (§5.2, §13.2)";
+
+        if (name.rfind("cajeta_rt_prof_", 0) != 0) continue;
+        ++scannedProfilerFiles;
+        // Comments are allowed to mention events; a call is not. Nothing in the
+        // profiler reaches for one at all, so the simple check is the honest one.
+        EXPECT_EQ(body.find("hipEvent"), std::string::npos)
+            << name << " refers to HIP events";
+    }
+    EXPECT_GT(scannedProfilerFiles, 3) << "the scan found almost no profiler files, "
+                                          "so it was not actually checking anything";
+}
+
+// The invariant behind it: a device-tier span can only have come from a vendor
+// dispatch record, because TIER_DEVICE is written in exactly one place — the
+// function the buffer callback calls. Anything else that wanted to claim device
+// timing would have to add a second assignment, and this test is what notices.
+TEST(ProfilerRocm, deviceTierIsClaimedInExactlyOnePlace) {
+    namespace fs = std::filesystem;
+    const std::string root = sourceRoot();
+    ASSERT_FALSE(root.empty());
+    const std::string body = slurp(
+        (fs::path(root) / "runtime" / "native" / "cajeta_rt_prof_gpu.c").string());
+    ASSERT_FALSE(body.empty());
+
+    int assignments = 0;
+    for (size_t at = body.find("tier = CAJETA_PROF_TIER_DEVICE");
+         at != std::string::npos;
+         at = body.find("tier = CAJETA_PROF_TIER_DEVICE", at + 1))
+        ++assignments;
+
+    EXPECT_EQ(assignments, 1)
+        << "device tier is claimed in " << assignments << " places; it means "
+           "\"a vendor dispatch record supplied this span\" and nothing else "
+           "is entitled to say it";
+}
+
+// ── 8.3.a — what the ROCm backend costs per launch (§13.2) ───────────────
+//
+// Published rather than merely bounded. A profiler whose cost is unstated gets
+// used on the assumption it is free, and the honest comparison is not against
+// zero but against the host lane a run would otherwise have taken: the ROCm
+// path adds an external-correlation push and pop plus a pending-table slot,
+// and that difference is what someone deciding whether to profile a launch-
+// bound workload actually needs.
+//
+// Measured with the seam's thunk, so the number is the seam's own cost with no
+// kernel in it. Batches of 200 keep the pending table (256) from overflowing
+// into its publish-immediately path, which would be measuring something else;
+// draining happens outside the timed region.
+TEST(ProfilerRocm, perLaunchOverheadIsMeasuredAndPublished) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.launch && r.sinkRegister && r.pendingReset && r.gpuFlush);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    auto nowNs = reinterpret_cast<int64_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_currentTimeNanos"));
+    ASSERT_NE(nowNs, nullptr);
+
+    Caught caught;
+    const int32_t sink = r.sinkRegister(catchSink, &caught, CAJETA_GPU_SINK_BATCHED);
+    ASSERT_GE(sink, 0);
+
+    const int kBatches = 25;
+    const int kPerBatch = 200;
+
+    auto timeLane = [&](int32_t backend) {
+        int64_t total = 0;
+        for (int b = 0; b < kBatches; ++b) {
+            const int64_t t0 = nowNs();
+            for (int i = 0; i < kPerBatch; ++i)
+                r.launch("k", 1, 1, 1, 64, 1, 1, 0, 0, 0, backend, noKernel, nullptr);
+            total += nowNs() - t0;
+            r.pendingReset();       // outside the timed region
+            caught.events.clear();
+            r.gpuFlush();
+        }
+        return static_cast<double>(total) / (kBatches * kPerBatch);
+    };
+
+    // Warm both lanes first; the first launch through either pays for page
+    // faults and branch predictors that no later launch does.
+    timeLane(kBackendHip);
+    timeLane(kBackendCpu);
+
+    const double rocm = timeLane(kBackendHip);
+    const double host = timeLane(kBackendCpu);
+
+    std::printf(" RESULT u8_ns_per_launch_rocm=%.1f\n", rocm);
+    std::printf(" RESULT u8_ns_per_launch_host_lane=%.1f\n", host);
+    std::printf(" RESULT u8_rocm_extra_ns_per_launch=%.1f\n", rocm - host);
+
+    // The self-check must not have fired: it runs on flush, and 5000 launches
+    // with no records is exactly its trigger. gpuFlush() drains sinks and does
+    // not flush the SDK, so the lane under measurement stayed the ROCm one.
+    EXPECT_EQ(r.state(), CAJETA_ROCM_READY)
+        << "the lane changed mid-measurement, so the numbers above are a mixture";
+    r.sinkUnregister(sink);
+
+    // Not a performance gate — the bound is loose on purpose, and its job is to
+    // catch a change of ORDER, such as a flush or a syscall creeping into the
+    // launch path.
+    EXPECT_LT(rocm, 20000.0) << "per-launch cost has changed by orders of magnitude";
+}
+
+// ── 8.3.c — a suspend during a trace is detected and recorded (§6.4) ─────
+//
+// BOOTTIME minus MONOTONIC holds still while the machine is awake and jumps by
+// the sleep duration when it suspends. A trace spanning a suspend has device
+// timestamps mapped with one offset and host timestamps taken across two, so
+// everything after the sleep sits minutes out of place — in a file that
+// otherwise renders perfectly, which is what makes it dangerous.
+//
+// No test can suspend the machine it is running on. The decision is therefore
+// separated from the sampling, and these drive the decision with chosen offsets;
+// the sampler is its only production caller and feeds it the measured value at
+// configure and at every drain.
+
+TEST(ProfilerRocm, aSteadyClockGapIsNotMistakenForASuspend) {
+    Rocm& r = roc();
+    auto note = reinterpret_cast<int32_t (*)(int64_t)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_note_clock_offset"));
+    auto suspended = reinterpret_cast<int32_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_suspended"));
+    ASSERT_TRUE(note && suspended);
+    r.reset();
+
+    // Real samples wander by the cost of the clock reads. Calling that a
+    // suspend would put a warning on every trace ever taken.
+    const int64_t base = 30;
+    EXPECT_EQ(note(base), 0);
+    EXPECT_EQ(note(base + 40), 0);
+    EXPECT_EQ(note(base - 55), 0);
+    EXPECT_EQ(note(base + 900000), 0) << "900 us is still below the threshold";
+    EXPECT_EQ(suspended(), 0);
+}
+
+TEST(ProfilerRocm, aJumpInTheClockGapIsRecordedAsASuspend) {
+    Rocm& r = roc();
+    auto note = reinterpret_cast<int32_t (*)(int64_t)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_note_clock_offset"));
+    auto suspended = reinterpret_cast<int32_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_suspended"));
+    auto suspendNs = reinterpret_cast<int64_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_suspend_ns"));
+    ASSERT_TRUE(note && suspended && suspendNs);
+    r.reset();
+
+    ASSERT_EQ(note(30), 0);              // trace start
+    const int64_t slept = 42LL * 1000000000LL;   // 42 seconds asleep
+    EXPECT_EQ(note(30 + slept), 1);
+    EXPECT_EQ(suspended(), 1);
+    // The duration is kept, not just the fact. A reader deciding whether a
+    // trace is salvageable needs to know whether the machine was out for a
+    // second or for an hour.
+    EXPECT_EQ(suspendNs(), slept);
+
+    // It stays recorded: a trace does not become trustworthy again because the
+    // clocks settled down afterwards.
+    EXPECT_EQ(note(30 + slept + 20), 0);
+    EXPECT_EQ(suspended(), 1);
+}
+
+TEST(ProfilerRocm, resetClearsTheSuspendRecordWithTheRestOfTheAssessment) {
+    Rocm& r = roc();
+    auto note = reinterpret_cast<int32_t (*)(int64_t)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_note_clock_offset"));
+    auto suspended = reinterpret_cast<int32_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_suspended"));
+    ASSERT_TRUE(note && suspended);
+
+    r.reset();
+    note(0);
+    ASSERT_EQ(note(5LL * 1000000000LL), 1);
+    ASSERT_EQ(suspended(), 1);
+
+    // A suspend belongs to the trace it happened during. Carrying it into the
+    // next one would mark a clean trace.
+    r.reset();
+    EXPECT_EQ(suspended(), 0);
+}
+
+// The state has to reach the FILE, not just an accessor. §5.2.2 asks for a
+// degraded run to say so, and the only reader that matters is whoever opens the
+// trace later — by which time nobody can ask the process what happened.
+TEST(ProfilerRocm, theTraceCarriesWhatTheRocmBackendDid) {
+    Rocm& r = roc();
+    auto attach = reinterpret_cast<int32_t (*)(const char*)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_gpu_trace_attach"));
+    auto detach = reinterpret_cast<int32_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_gpu_trace_detach"));
+    ASSERT_TRUE(attach && detach && r.launch);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    const std::string path = "cajeta-rocm-annos-test.pftrace";
+    r.pendingReset();
+    ASSERT_EQ(attach(path.c_str()), 0);
+    hipLaunch(r);
+    ASSERT_EQ(detach(), 1);
+
+    const std::string body = slurp(path);
+    if (::getenv("CAJETA_KEEP_TRACE") == nullptr) std::remove(path.c_str());
+    ASSERT_FALSE(body.empty()) << "no trace was written";
+
+    // Annotation keys are plain strings on the wire, so their presence is
+    // checkable without a protobuf reader; CI's trace_processor pass is what
+    // checks they are well-formed.
+    EXPECT_NE(body.find("rocm_state"), std::string::npos)
+        << "the trace does not say which state the ROCm backend reached";
+    EXPECT_NE(body.find("rocm_records"), std::string::npos);
+    EXPECT_NE(body.find("rocm_suspended"), std::string::npos)
+        << "§6.4 wants a suspended trace to say so, which means the field is "
+           "present on every trace rather than only the bad ones";
+    EXPECT_NE(body.find("rocm_clock_offset_ns"), std::string::npos);
 }

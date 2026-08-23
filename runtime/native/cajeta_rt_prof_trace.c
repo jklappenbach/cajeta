@@ -1021,6 +1021,44 @@ static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
 // exists so the developer can judge how much the measurement distorted the
 // program, and a figure this file guessed at would read exactly like a measured
 // one.
+#ifndef CAJETA_PROF_TRACE_STANDALONE
+// ── Unit 8 — what the ROCm backend actually did (§5.2, §6.4) ─────────────
+//
+// Present on every trace from a run that attempted the ROCm backend, including
+// — especially — the runs where it did not work. A degraded trace that looks
+// identical to a device-timed one is the failure §5.2.2 is about, and the state
+// plus the reason are what let a reader tell them apart without being there.
+static int32_t caj_prof_rocm_annos(uint8_t* out, int32_t cap) {
+    int32_t n = 0;
+    const int32_t state = __cajeta_prof_rocm_state();
+    if (state == CAJETA_ROCM_UNATTEMPTED) return 0;   // no GPU run; say nothing
+    if (cap < 640) return 0;
+
+    n += caj_prof_anno_int(out + n, "rocm_state", state);
+    n += caj_prof_anno_int(out + n, "rocm_tracing", __cajeta_prof_rocm_tracing());
+    n += caj_prof_anno_int(out + n, "rocm_launches", __cajeta_prof_rocm_launches());
+    n += caj_prof_anno_int(out + n, "rocm_records", __cajeta_prof_rocm_records());
+    // Records that matched no launch of ours — HIP's own fill and copy kernels.
+    // Reported rather than hidden: a reader comparing launches to records would
+    // otherwise conclude the correlation was leaking.
+    n += caj_prof_anno_int(out + n, "rocm_unmatched_records",
+                           __cajeta_prof_rocm_unmatched());
+    n += caj_prof_anno_int(out + n, "rocm_clock_offset_ns",
+                           __cajeta_prof_rocm_clock_offset_ns());
+    // §6.4 — a trace that spans a suspend has everything after the sleep sitting
+    // minutes out of place while rendering perfectly, so the file has to say so.
+    n += caj_prof_anno_int(out + n, "rocm_suspended", __cajeta_prof_rocm_suspended());
+    if (__cajeta_prof_rocm_suspended())
+        n += caj_prof_anno_int(out + n, "rocm_suspend_ns",
+                               __cajeta_prof_rocm_suspend_ns());
+    if (state != CAJETA_ROCM_READY) {
+        const char* why = __cajeta_prof_rocm_reason();
+        if (why && *why) n += caj_prof_anno_str(out + n, "rocm_degraded_reason", why);
+    }
+    return n;
+}
+#endif
+
 static int32_t caj_prof_instr_annos(uint8_t* out, int32_t cap) {
     if (!__cajeta_prof_instr_is_present()) return 0;
     if (cap < 512) return 0;
@@ -1128,6 +1166,9 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);
     // §3.5/§3.12/§3.13 — present only on a build that actually carries probes.
     n += caj_prof_instr_annos(te + n, (int32_t) sizeof(te) - n);
+#ifndef CAJETA_PROF_TRACE_STANDALONE
+    n += caj_prof_rocm_annos(te + n, (int32_t) sizeof(te) - n);
+#endif
     uint8_t pkt[2048];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, w->seq_id);

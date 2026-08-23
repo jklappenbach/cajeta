@@ -178,6 +178,14 @@ int64_t     __cajeta_prof_rocm_clock_offset_ns(void);
 int64_t     __cajeta_prof_rocm_device_now_ns(void);
 int64_t     __cajeta_prof_rocm_launches(void);
 int32_t     __cajeta_prof_rocm_record_threshold(void);
+// §6.4 — BOOTTIME minus MONOTONIC is constant while the machine is awake and
+// jumps by the sleep duration when it suspends. A trace spanning a suspend has
+// everything after the sleep sitting minutes out of place, in a file that
+// otherwise renders perfectly. The decision is separated from the sampling so
+// it can be exercised without suspending the machine running the test.
+int32_t     __cajeta_prof_rocm_note_clock_offset(int64_t offsetNs);
+int32_t     __cajeta_prof_rocm_suspended(void);
+int64_t     __cajeta_prof_rocm_suspend_ns(void);
 
 // Hand a device record back to the launch that is waiting for it. Declared
 // here because the ROCm backend is compiled BEFORE the GPU seam in the single

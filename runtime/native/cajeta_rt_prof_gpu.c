@@ -623,6 +623,12 @@ int32_t __cajeta_prof_gpu_trace_detach(void) {
     // would leave a hole where a kernel plainly ran.
     __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
     __cajeta_prof_gpu_flush();     // whatever is queued belongs in the file
+    // §7.8's run metadata, and with it the backend's own account of itself
+    // (§5.2.2). A GPU-only trace was previously written with no metadata packet
+    // at all, so a reader opening one had no way to tell a device-timed run
+    // from a degraded one — the two render identically. Written at detach
+    // rather than attach because the counters it carries are only final here.
+    __cajeta_prof_trace_metadata(&g_gpu_writer, 0, "gpu", 0, 0, 0, 0, 0);
     if (g_gpu_writer_sink >= 0) __cajeta_prof_gpu_sink_unregister(g_gpu_writer_sink);
     g_gpu_writer_sink = -1;
     g_gpu_writer_open = 0;
