@@ -222,11 +222,24 @@ TEST(ProfilerIntegrity, missingDeviceNodeIsDistinguishedFromAnInaccessibleOne) {
     const std::string locked = scratch("locked_node");
     { FILE* f = ::fopen(locked.c_str(), "w"); ASSERT_NE(f, nullptr); ::fclose(f); }
     ::chmod(locked.c_str(), 0000);
+    // Both escapes below are the same fact: mode 0000 does not always deny a
+    // read, and where it does not, INACCESSIBLE is unproducible rather than
+    // wrong. Skipping says so; asserting anyway would fail for a reason that
+    // has nothing to do with the probe.
+#ifdef _WIN32
+    // Windows honours only the write bit through chmod — the file stays
+    // readable at 0000, and there is no POSIX effective-uid to consult.
+    // (`geteuid` is one of the calls MinGW's near-POSIX surface does not
+    // carry; it is a compile error there, not a runtime skip.)
+    GTEST_SKIP() << "Windows ignores POSIX read-mode bits, so a 0000 file is "
+                    "still readable and the inaccessible case cannot be produced";
+#else
     if (::geteuid() == 0) {
         GTEST_SKIP() << "running as root: mode 0000 is still readable, so the "
                         "inaccessible case cannot be produced here";
     }
     EXPECT_EQ(itg().probe_node(locked.c_str()), CAJETA_NODE_INACCESSIBLE);
+#endif
 
     ::chmod(locked.c_str(), 0644);
     ::unlink(locked.c_str());
