@@ -696,8 +696,22 @@ namespace cajeta {
         // are arrays, and a jagged slot owns its inner buffer, so the outer
         // header needs the tail bitmap the arrelem family reads. Fetch the
         // allocator whenever any level could need it (per-level pick below).
+        // The condition MUST match the per-level pick below, or the pick
+        // short-circuits on a null and silently allocates a header with no
+        // tail bitmap while the stores and the drop walk both use one.
+        //
+        // `totalBracketPairs > 1` covers a LITERAL nested array. It does not
+        // cover an element type that arrives through a TYPE PARAMETER —
+        // `heap T[cap]` with `T = int8[]` inside a generic container has ONE
+        // bracket pair, and `arrayElementCarriesSlotBits` rejects arrays by
+        // its first line. So `ArrayList<int8[]>` allocated a bitmap-less
+        // header, `data[i] #= v` wrote slot bits past the payload, and the
+        // process died in `free` at teardown (plan 8.13). Asking
+        // `arrayElementCarriesArraySlotBits` here is what the level pick
+        // already asks.
         llvm::Function* bitsAllocFn = nullptr;
         if (!useArena && (CajetaClass::arrayElementCarriesSlotBits(targetType)
+                || CajetaClass::arrayElementCarriesArraySlotBits(targetType)
                 || totalBracketPairs > 1)) {
             bitsAllocFn = module->getRuntimeFunction("__cajeta_new_array_header_bits");
         }
