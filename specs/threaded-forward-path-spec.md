@@ -398,7 +398,37 @@ Read from the compiler's own tests, not assumed.
   20-35x below anything memory could explain, so the serial path was
   COMPUTE-bound, not bandwidth-bound. Packing wins on footprint; it does
   not arrive at the bandwidth wall until far more cores are pulling.
-- **7.2** DISCHARGED 2026-08-23. Meta-Llama-3.1-8B-Instruct-Q4_K_M,
+- **7.2.0** FINAL, re-measured 2026-08-23 after the accessor work, load
+  1.44 before / 1.75 after, all arms back to back in one session:
+
+  | engine | config | ms/token | t/s | samples |
+  |---|---|---|---|---|
+  | cajeta-llama | serial host floor | 2781 | 0.36 | 1 |
+  | cajeta-llama | **routed, CPU 32 workers** | **111.6** | 8.96 | 4, spread 1.4% |
+  | cajeta-llama | **routed, GPU gfx1151** | **100.0** | 10.00 | 5, spread 1.2% |
+  | llama.cpp | CPU `-ngl 0 -t 1` | 177.6 | 5.63 ± 0.03 | 3 |
+  | llama.cpp | CPU `-ngl 0 -t 32` | 71.4 | 14.01 ± 2.30 | 3 |
+  | llama.cpp | GPU `-ngl 99` | 25.4 | 39.36 ± 0.57 | 3 |
+
+  **We are 1.56x behind llama.cpp on CPU and 3.94x on GPU** — and 1.59x
+  AHEAD of it single-threaded (111.6 against 177.6).
+
+  CAVEAT ON THE CPU COMPARISON, stated because it favours us if omitted:
+  llama.cpp's `-t 32` is the noisiest arm anywhere in this spec, ±2.30 on
+  14.01 (16%), and an earlier run the same day gave 10.77 t/s (92.8 ms).
+  Its true figure is somewhere in 71-93 ms, so our CPU gap is 1.2x-1.56x,
+  not a single number. Ours is stable to 1.4%.
+
+  A COLD-START ARTIFACT, recorded so the number is not re-derived: the
+  GPU's FIRST run in a session measured 616.5 ms/token against a steady
+  state of 100. Driver init, VRAM setup and clock ramp land inside a
+  4-token average. Five subsequent samples span 98.8-101.2.
+
+  RESIDENT MEMORY: CPU 9.40 GB, GPU 5.10 GB. The CPU path keeps the host
+  array AND a device copy; the GPU path keeps only the packed weights in
+  VRAM at 4.5 bits each, which is §8.15 answered as a side effect.
+
+- **7.2** SUPERSEDED BY 7.2.0. DISCHARGED 2026-08-23. Meta-Llama-3.1-8B-Instruct-Q4_K_M,
   prefill(8) then 4 greedy decode steps, arms alternated, both engines run
   back to back in one session. This desktop never reaches idle (~2.0-2.5
   from the user's own applications), so the load is REPORTED rather than
