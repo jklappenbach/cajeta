@@ -190,7 +190,14 @@ public class K {
                             KernelBuffer<int8> a) {
         uint32 g = KernelThread.globalIdX();
         if (g < 1) {
-            out[0] = w.vload<4>(0L).dot(a.vload<4>(0L));
+            // Named locals, deliberately. A CHAINED receiver
+            // (`w.vload<4>(0L).dot(...)`) silently produces zero on the
+            // kernel path: the lowering resolves the receiver by VARIABLE
+            // NAME (`values[recv]`), so a temporary has no entry. Filed
+            // separately; this test is about signedness, not that.
+            Vector<uint8,4> wv = w.vload<4>(0L);
+            Vector<int8,4> av = a.vload<4>(0L);
+            out[0] = wv.dot(av);
         }
     }
     public static void run() {
