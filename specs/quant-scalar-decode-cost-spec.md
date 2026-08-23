@@ -115,7 +115,12 @@ optimizes against it.
 
 ## 5. Acceptance
 
-- **5.1** The Q4_K mat-vec at 4096x4096 beats **10 ms**, against 21.30 today —
+- **5.1** PROGRESS 2026-08-22: Q4_K f32 **14.23 ms** and q8_K **11.19 ms**,
+  from 22.90 / 20.98 at the start of the day. End to end, decode is
+  **7.83 s/token** from 10.91, i.e. 61.6x -> 44.2x against `llama.cpp -t 1`.
+  The 10 ms bar is not met yet; `f16At`'s residual ~4 ms is the next item.
+- **5.1.0** The Q4_K mat-vec at 4096x4096 beats **10 ms**, against 21.30 when
+  filed —
   removing `f16At` and `scaleMinK4` alone accounts for 16.5 ms of it, so this
   is the conservative half of what the ablation predicts.
 - **5.2** Every K-quant kernel stays bit-exact against its existing fixture
@@ -137,9 +142,34 @@ optimizes against it.
   backend or pipeline work, so it is a small unit rather than its own arc. It
   still blocks `--emit=exe` for any code passing a promoted operand, so it goes
   FIRST: fixing it is what lets `halfBitsToF32` drop `pow2` at all.
-- **6.2** Does `scaleMinK4` want a vector decode (the 12 fields are a shuffle
-  and two shifts away from a `Vector<int32,8>`) or just registers? The vector
-  form is more work and may not be needed to hit §5.1.
+- **6.2** CLOSED 2026-08-22 — NEITHER. The cost was the per-byte ACCESS, not
+  the arithmetic and not the storage. Twelve `Quant.u8` calls are twelve
+  separately bounds-checked byte reads through an array header, ~600 cycles a
+  call; one `vload<16>` with constant-index extracts replaced them for a 26%
+  (f32) / 34% (q8_K) kernel win.
+
+  Both readings in the original question were tried first and both measured
+  WORSE than the code they replaced:
+
+  | attempt | Q4_K f32 |
+  |---|---|
+  | decode each field on demand, no arrays | 27.96 ms |
+  | decode once into 16 named locals, `h` unrolled | 27.07 ms |
+  | unchanged | 19.29 ms |
+  | **one vector load, arrays kept** | **14.23 ms** |
+
+  Removing the heap `int32[8]` made it worse both ways: register pressure
+  exceeds what the round-trip costs, so the array is effectively a cheap spill
+  slot. The lesson generalises past this helper — a hot loop reading bytes one
+  at a time out of an `int8[]` pays a bounds check and a header indirection per
+  byte, and that is the thing to remove, not the buffer it writes into.
+- **6.2.1** The 40% attribution was re-confirmed by a cleaner ablation than §2's:
+  HOISTING `scaleMinK4` to once per row rather than substituting constants,
+  which changes only call frequency and cannot unlock constant folding.
+  11.87 ms hoisted against 20.01 normal → ~8.68 ms full cost, against the
+  original table's 8.53. Two independent methods agreeing, so the
+  constant-substitution worry was unfounded — but the hoist is the better
+  instrument and should be the pattern for the rest of this spec.
 - **6.3** `--minimal` SIGSEGVs on the matvec probe (stack-looking fault
   address). Unrelated to this spec, found beside it, and filed here so it is
   not lost.
