@@ -329,12 +329,59 @@ static const CajetaGpuBackendVtbl caj_gpu_cpu_vtbl = {
     caj_gpu_cpu_collect, caj_gpu_cpu_calibrate
 };
 
-// Backends that have not landed yet (ROCm is Unit 8, NVIDIA Unit 12, Vulkan
-// Unit 13) degrade to host submit-to-complete rather than to nothing (§5.1.4).
-// The tier says so, so a consumer can weight it (§5.6.6).
+// ROCm (Unit 8, spec §5.2). Selected only once rocprofiler-sdk is actually
+// bound; until then backend 1 takes the host lane below, which is what makes
+// §5.2.2's "degraded and reported" true rather than aspirational. The vtable
+// deliberately does not exist in a half-bound form — a rocm backend answering
+// with zeros would be worse than the host window, because a zero device span
+// is indistinguishable downstream from a measured one.
+static int32_t caj_gpu_rocm_init(void) { return __cajeta_prof_rocm_init(); }
+static int32_t caj_gpu_rocm_begin(CajetaGpuEvent* ev) {
+    // Placeholder timing until 8.2.c lands the buffered dispatch tracing: the
+    // tier stays HOST because that is what these numbers ARE. It is upgraded
+    // to TIER_DEVICE only when a vendor dispatch record supplies the span.
+    ev->dev_start_ns = __cajeta_currentTimeNanos();
+    ev->tier = CAJETA_PROF_TIER_HOST;
+    return 1;
+}
+static int32_t caj_gpu_rocm_end(CajetaGpuEvent* ev) {
+    ev->dev_end_ns = __cajeta_currentTimeNanos();
+    return 1;
+}
+static int32_t caj_gpu_rocm_collect(void)   { return 0; }
+static int32_t caj_gpu_rocm_calibrate(void) { return 1; }
+
+static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
+    "rocm", caj_gpu_rocm_init, caj_gpu_rocm_begin, caj_gpu_rocm_end,
+    caj_gpu_rocm_collect, caj_gpu_rocm_calibrate
+};
+
+// Backends that have not landed yet (NVIDIA is Unit 12, Vulkan Unit 13)
+// degrade to host submit-to-complete rather than to nothing (§5.1.4). The tier
+// says so, so a consumer can weight it (§5.6.6).
 static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
-    (void) backend;
+    if (backend == CAJ_GPU_BACKEND_HIP
+            && __cajeta_prof_rocm_state() == CAJETA_ROCM_READY)
+        return &caj_gpu_rocm_vtbl;
     return &caj_gpu_cpu_vtbl;
+}
+
+// What a given backend id actually resolved to, and at which tier. Both read
+// the SAME selector the launch path uses, rather than re-deriving it — a test
+// that asked a second implementation of the rule would pass while the launch
+// path did something else.
+const char* __cajeta_prof_gpu_backend_name(int32_t backend) {
+    const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
+    return v && v->name ? v->name : "";
+}
+
+int32_t __cajeta_prof_gpu_backend_tier(int32_t backend) {
+    CajetaGpuEvent probe;
+    const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
+    memset(&probe, 0, sizeof(probe));
+    probe.tier = CAJETA_PROF_TIER_HOST;
+    if (v && v->begin_launch) v->begin_launch(&probe);
+    return probe.tier;
 }
 
 // ── the seam ──────────────────────────────────────────────────────────────

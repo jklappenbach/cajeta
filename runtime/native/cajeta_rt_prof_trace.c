@@ -726,10 +726,10 @@ static uint64_t caj_gpu_uuid(uint64_t base, int32_t backend, int32_t device,
 // a wrong name here mislabels a track and breaks nothing else.
 static const char* caj_gpu_backend_name(int32_t backend) {
     switch (backend) {
-        case 0:  return "cuda";
-        case 1:  return "hip";
-        case 2:  return "vulkan";
-        case 3:  return "cpu";
+        case CAJ_GPU_BACKEND_CUDA:   return "cuda";
+        case CAJ_GPU_BACKEND_HIP:    return "hip";
+        case CAJ_GPU_BACKEND_VULKAN: return "vulkan";
+        case CAJ_GPU_BACKEND_CPU:    return "cpu";
         default: return "xpu";
     }
 }

@@ -118,6 +118,37 @@ typedef struct {
     int32_t (*calibrate)(void);
 } CajetaGpuBackendVtbl;
 
+// Backend ids carried in CajetaGpuEvent.backend. Named here rather than left
+// as the bare integers they were, because Unit 8 gives them a second reader:
+// until now only caj_gpu_backend_name()'s switch cared, and a selector that
+// disagreed with that switch by one would silently bind the wrong lane.
+#define CAJ_GPU_BACKEND_CUDA    0
+#define CAJ_GPU_BACKEND_HIP     1
+#define CAJ_GPU_BACKEND_VULKAN  2
+#define CAJ_GPU_BACKEND_CPU     3
+
+// ── Unit 8: ROCm backend binding state (spec §5.2) ────────────────────────
+//
+// Why a STATE and not a bool: §5.2.2 requires that a degraded run say so, and
+// the four ways this backend can fail to deliver device timing call for
+// different responses. "The SDK is not installed" is a deployment fact;
+// "configured too late" is a bug in our own init order (§5.2.3); "bound but
+// delivered nothing" is a driver or permission problem (§5.2.5). Collapsing
+// them into one flag would leave a consumer unable to tell which.
+#define CAJETA_ROCM_UNATTEMPTED 0   // init() has not run
+#define CAJETA_ROCM_ABSENT      1   // no librocprofiler-sdk to bind (§5.2.2)
+#define CAJETA_ROCM_READY       2   // bound and tracing
+#define CAJETA_ROCM_LATE        3   // configure attempted after HIP init (§5.2.3)
+#define CAJETA_ROCM_NO_RECORDS  4   // zero records past the threshold (§5.2.5)
+
+// Attempt to bind rocprofiler-sdk. Returns 1 when READY, 0 otherwise; the
+// state and the human-readable reason are readable afterwards either way.
+int32_t     __cajeta_prof_rocm_init(void);
+void        __cajeta_prof_rocm_reset(void);
+int32_t     __cajeta_prof_rocm_state(void);
+const char* __cajeta_prof_rocm_reason(void);
+const char* __cajeta_prof_rocm_lib_path(void);
+
 // ── Unit 9: clock correlation and integrity (spec §6, §11) ────────────────
 //
 // A correlation DOMAIN is one device clock that has to be mapped onto the host

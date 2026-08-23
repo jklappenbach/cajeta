@@ -117,6 +117,7 @@ typedef void (*cajeta_ctor_fn)(void* self);
 #include "cajeta_rt_prof_trace.c"
 #include "cajeta_rt_prof_clock.c"
 #include "cajeta_rt_prof_integrity.c"
+#include "cajeta_rt_prof_rocm.c"   // U8: before prof_gpu, which selects it
 #include "cajeta_rt_prof_gpu.c"
 #include "cajeta_rt_shared.c"
 #include "cajeta_rt_utf8.c"
