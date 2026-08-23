@@ -260,9 +260,15 @@ Read from the compiler's own tests, not assumed.
 - **7.1** The Q4_K mat-vec at 4096x4096 scales with worker count, reported
   as a table across 1/2/4/8/16/nproc rather than a single number, so the
   curve and its knee are visible.
-- **7.2** End-to-end decode improves against a serial baseline re-measured
-  in the same session — the 7.83 s/token figure predates today's kernel
-  work and must not be carried over.
+- **7.2** End-to-end decode improves against the SERIAL BASELINE
+  re-measured 2026-08-23: **6.72 s/token** (median 6722.92 ms/token). The
+  previously-quoted 7.83 predated `headK4` and must not be used — carrying
+  it forward would credit threading with a gain `headK4` already delivered.
+- **7.2.1** Recorded alongside: `prefill(8)` costs **~47.4 s**, i.e. ~5.9
+  s/token, because `matvecInto` is a mat-VEC called once per token inside
+  `while (r < rows)` — every weight matrix is re-read 8 times for an
+  8-token prompt. That is §8.2's batching item, and it is larger than this
+  spec assumed.
 - **7.3** Bit-identical output per §6, gated by test.
 - **7.4** §5's cost is measured and reported as its own number. A net win
   that hides a large regression inside a larger gain is not acceptable.
@@ -276,7 +282,42 @@ Read from the compiler's own tests, not assumed.
 
 ## 8. Open questions
 
-- **8.1** DECIDED 2026-08-22 — spike §5 FIRST, before any routing is built.
+- **8.1** CLOSED 2026-08-23 — **GATE PASSES**, the flip costs nothing
+  measurable. Same binary, same input, one flag apart
+  (`CAJETA_LIVE_SET_MT` forces the locked path on WITHOUT starting a
+  thread), on a gated-idle box with the arm order ALTERNATED per round:
+
+  | arm | median ms/token | spread |
+  |---|---|---|
+  | OFF (single-threaded live-set) | 6722.92 | 2.5% |
+  | ON (locked path forced) | 6720.54 | 8.5% |
+
+  Arm effect **-0.04%**, far under the noise floor. All six runs emitted
+  the same token (`next: 15`), so this measured cost and not a behaviour
+  change.
+
+  SCOPE LIMIT, stated rather than implied: this decode is dominated by the
+  mat-vec kernels, which allocate nothing in their inner loops (§5.2). The
+  tokenizer and sampler do allocate, but they are a rounding error inside a
+  6.7 s/token decode. The finding is "costs nothing FOR THIS WORKLOAD", not
+  "the global allocation mutex is free".
+
+  METHOD NOTE — take 1 was INVALID and is worth recording. With the arm
+  order FIXED (OFF always first) on a loaded box, forcing a mutex ON
+  measured FASTER than leaving it off: OFF fell 7714 -> 7196 -> 6706 while
+  ON sat flat, because a decaying load lands entirely on whichever arm runs
+  first. The valid run shows a **+3.7% position effect** — first-run-of-
+  round is slower regardless of arm — which is exactly that artefact, now
+  cancelled by alternating. A directionally impossible result (a pure cost
+  measuring as a speedup) is a contamination signal, not a finding.
+
+  Take 2 then ABORTED after 20 minutes at load1=0.39 because the idle gate
+  also required zero `cajeta` processes — three were long-lived IDLE
+  servers (two `compiler-mcp`, one IDE `--lint-server`) and one belonged to
+  the measuring session itself. Gate on CPU consumption, never on process
+  existence.
+- **8.1.1** SUPERSEDED — original: DECIDED 2026-08-22 — spike §5 FIRST,
+  before any routing is built.
   Force the multithreaded flag on in an otherwise-serial engine run and
   measure end-to-end decode against the unflipped baseline. If the global
   allocation mutex costs more than parallelism can win, this plan pivots to
