@@ -340,6 +340,14 @@ static int cajeta_xpu_active_backend(void) {
     return r;
 }
 
+// cajeta.xpu.Device.activeBackend() — which backend the runtime selected.
+// Returns the CAJ_XPU_* id, or -1 when none is available. NOTE this SELECTS
+// the backend if the selection has not happened yet (it is a device touch),
+// which is the same contract Device.supports() already has.
+int32_t __cajeta_xpu_active_backend_id(void) {
+    return (int32_t) cajeta_xpu_active_backend();
+}
+
 // Forward decl (the OptiX glue's full extern block is below, near the launch path).
 extern int cajeta_xpu_optix_available(void);
 

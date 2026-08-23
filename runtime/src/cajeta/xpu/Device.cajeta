@@ -1,5 +1,6 @@
 package cajeta.xpu;
 
+import cajeta.lang.String;
 import cajeta.error.RecoverableException;
 import cajeta.xpu.Capability;
 
@@ -58,6 +59,39 @@ public final class Device {
     }
 
     /**
+     * The backend the runtime selected: `"cuda"`, `"hip"`, `"vulkan"`,
+     * `"cpu"`, or `"none"` when nothing bundled was available. The vocabulary
+     * is exactly {@link #force}'s, so a value read here can be handed back
+     * there.
+     *
+     * This is a DEVICE TOUCH: asking selects the backend if the selection has
+     * not happened yet, and a later {@link #force} will then throw. Ask after
+     * you have forced, not before.
+     *
+     * `"none"` is the answer for a program that declares NO `@Kernel`, even
+     * one built with `--xpu-backend=cpu`: a backend's registration ctor is
+     * emitted alongside the kernels the compiler found, so a program with no
+     * kernels bundles nothing to select.
+     *
+     * It exists because launch geometry is a device property. A packed
+     * mat-vec on this part peaks at 80 workgroups per dispatch — one wave per
+     * SIMD — and splitting a large weight into that many rows is worth 1.7x
+     * on the GPU and MINUS 6% on the CPU backend, whose persistent worker
+     * pool pays per dispatch and has no occupancy cliff to avoid. A caller
+     * that cannot ask which backend it got has to choose one of those.
+     *
+     * @EntryPoint
+     */
+    public static String activeBackend() {
+        int32 id = Device.nativeActiveBackend();
+        if (id == 0) { return "cuda"; }
+        if (id == 1) { return "hip"; }
+        if (id == 2) { return "vulkan"; }
+        if (id == 3) { return "cpu"; }
+        return "none";
+    }
+
+    /**
      * Bound how many worker threads a CPU-backend kernel launch may use.
      * 0 (the default) means unlimited — `min(gridBlocks, cores)`.
      *
@@ -113,4 +147,7 @@ public final class Device {
     // Sets the forced backend id; returns 0 when selection already ran.
     @Native("__cajeta_xpu_force_backend")
     private static int32 nativeForce(int32 id);
+
+    @Native("__cajeta_xpu_active_backend_id")
+    private static int32 nativeActiveBackend();
 }
