@@ -593,7 +593,7 @@ namespace xpu {
         // signed vs unsigned.
         virtual llvm::Value* integerDot4x8(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
-            llvm::Value* c, llvm::Value* acc, bool isSigned);
+            llvm::Value* c, llvm::Value* acc, bool aSigned, bool cSigned);
 
         // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) ------
         // `Buffer<float32>.atomic{Add,Min,Max}(i, v)`: an atomic read-modify-

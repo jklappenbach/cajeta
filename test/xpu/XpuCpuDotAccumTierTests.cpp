@@ -1,66 +1,246 @@
-// threaded-forward-path plan Unit 2 — DEFECT REPRO, disabled.
+// Device-side correctness for `dotAccum` — the test whose absence let a
+// silent wrong answer ship on every device backend.
 //
-// `dotAccum` produces a WRONG ANSWER inside a kernel body. Measured
-// 2026-08-22 with an AOT probe (`--emit=exe --xpu-backend=cpu`), 8 groups of
-// 64 uint8 weights against int8 activations, accumulator seeded from an
-// int32 array:
+// `dotAccum` means unsigned weights x SIGNED activations. That asymmetry is
+// the reason the instruction family exists (vpdpbusd, usdot, vqdotsu), and
+// llama.cpp reaches the same shape from the other direction: it normalizes
+// signed x signed INTO unsigned x signed with a sign-transfer
+// (`_mm256_sign_epi8(x,x)` / `_mm256_sign_epi8(y,x)`) because u x s is the
+// only form the hardware offers.
 //
-//     host path    vpdpbusd            lane0 = -1240   (correct)
-//     kernel body  vpmaddwd + vpaddd   lane0 =  6440   (wrong)
+// The device lowering seam used to carry ONE signedness flag for both
+// operands, so with an unsigned receiver it zero-extended the activations
+// too: measured 6440 against the host's -1240, on the CPU backend AND on a
+// real gfx1151. The seam now takes two flags; AMDGPU reaches
+// `amdgcn.sudot4` (per-operand sign bits) for the mixed case and Vulkan
+// falls back to the portable widen, since stock LLVM exposes no mixed
+// SPIR-V dot intrinsic.
 //
-// 6440 is exactly the sum with the ACTIVATIONS treated as unsigned:
-//     5*166 + 10*203 + 15*240 - 20 = 6440     (a[i] read as u8)
-//     5*-90 + 10*-53 + 15*-16 - 20 = -1240    (a[i] read as i8, correct)
-//
-// ROOT CAUSE — the device lowering seam models signedness SYMMETRICALLY and
-// cannot express what dotAccum means. KernelLowering.cpp routes dotAccum
-// through `LoweringTarget::integerDot4x8(b, m, a, c, acc, bool isSigned)`,
-// whose base implementation is `vecops::idotWiden`, and that widens BOTH
-// operands with the same flag:
-//
-//     ai = CreateIntCast(lane(a, i), i32, isSigned)
-//     ci = CreateIntCast(lane(c, i), i32, isSigned)
-//
-// But dotAccum's contract is ASYMMETRIC — unsigned weights x SIGNED
-// activations. That asymmetry is the whole point of the instruction family
-// it exists to reach (vpdpbusd, usdot, vqdotsu); the spec calls out that two
-// ISAs chose it independently because it is the shape quantized inference
-// needs. With an unsigned receiver the seam passes isSigned=false and
-// zero-extends the activations too.
-//
-// The host path is correct because it does NOT go through this seam:
-// MethodCallExpression passes `wUnsigned` to `vecops::dotAccum`, which
-// zext/sext's the weights per that flag and ALWAYS sext's the activations.
-//
-// BLAST RADIUS — every device backend, not just the CPU one. The Vulkan
-// override picks OpSDot/OpUDot and the AMDGPU override picks
-// amdgcn_sdot4/udot4 off the same single `isSigned`; both instruction pairs
-// are symmetric, so neither can express unsigned x signed either. This was
-// found on the CPU backend only because that is the one being routed first.
-//
-// FIX SHAPE — integerDot4x8 needs two signedness flags (or an explicit
-// "mixed" mode), and each backend override needs a mixed-signedness path:
-// on AMDGPU that means not sdot4/udot4 but a widen-and-multiply, on Vulkan
-// OpSUDot where available. Until then dotAccum must not be used in a kernel.
-//
-// IMPACT ON THE PLAN — contained. Of cajeta-llama's packed mat-vecs only
-// `q4kMatVecIntoQ8` uses dotAccum; the four f32 kernels that `matvecInto`
-// actually routes today do not, so Unit 3 proceeds on those (plan 2.3.2) and
-// the q8_K routing waits on this fix.
-//
-// Disabled rather than deleted: it documents a live defect and should be
-// enabled by whoever fixes the seam. It cannot be written against the JIT
-// harness — CajetaJit does not wire an XPU backend manifest, so a launch
-// there silently no-ops ("cajeta.xpu: no available backend among {}") and the
-// buffers read back as zero. The repro is an AOT build; see the spec.
+// These are AOT tests on purpose. They cannot be written against CajetaJit:
+// it wires no XPU backend manifest, so a kernel launch there silently
+// no-ops ("cajeta.xpu: no available backend among {}") and every buffer
+// reads back zero — a test written that way passes while verifying nothing.
+// That is not hypothetical: XpuScheduleTests.scheduleControlsRunNoOpOnCpu
+// compares two all-zero outputs and would pass with no kernel running at
+// all.
 
 #include "gtest/gtest.h"
 
-// Enable when LoweringTarget::integerDot4x8 can express unsigned x signed.
-// Needs an AOT harness (see the note above), not CajetaJit.
-TEST(XpuCpuDotAccumTierTests,
-     DISABLED_kernelBodyDotAccumMustMatchUnsignedTimesSigned) {
-    GTEST_SKIP() << "known defect: the device dot seam is symmetric-signedness "
-                    "only; dotAccum in a kernel body zero-extends its signed "
-                    "operand (measured 6440, want -1240)";
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+std::string compilerPath() {
+    std::string r;
+    const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
+    if (envRoot && *envRoot) r = envRoot;
+    else {
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        r = CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        r = ".";
+#endif
+    }
+#ifdef _WIN32
+    if (r.size() >= 3 && r[0] == '/' && std::isalpha((unsigned char) r[1])
+            && r[2] == '/')
+        r = std::string(1, r[1]) + ":" + r.substr(2);
+    std::string p = r + "/build/src/cajeta.exe";
+    std::replace(p.begin(), p.end(), '/', '\\');
+    return p;
+#else
+    return r + "/build/src/cajeta";
+#endif
+}
+
+std::string capture(const std::string& cmd) {
+    std::string out;
+#ifdef _WIN32
+    FILE* p = _popen((cmd + " 2>NUL").c_str(), "r");
+#else
+    FILE* p = popen((cmd + " 2>/dev/null").c_str(), "r");
+#endif
+    if (!p) return out;
+    std::array<char, 512> buf;
+    while (fgets(buf.data(), (int) buf.size(), p)) out += buf.data();
+#ifdef _WIN32
+    _pclose(p);
+    out.erase(std::remove(out.begin(), out.end(), '\r'), out.end());
+#else
+    pclose(p);
+#endif
+    return out;
+}
+
+// Build `source` as an exe for `backend` and run it, returning its stdout.
+// Empty means the build failed — asserted by the callers, since a silent
+// empty result is exactly the failure mode this file exists to prevent.
+std::string buildAndRun(const std::string& source, const char* backend,
+                        const char* entry) {
+    static std::mt19937_64 rng(std::random_device{}());
+    auto base = fs::temp_directory_path()
+              / ("cajeta_dotacc_" + std::to_string(rng()));
+    fs::create_directories(base / "probe");
+    fs::create_directories(base / "arch");
+    std::ofstream(base / "probe" / "K.cajeta") << source;
+    const std::string exe = (base / "out").string();
+    const std::string cmd = "\"" + compilerPath() + "\""
+        + " --release --emit=exe --xpu-backend=" + backend
+        + " -o \"" + exe + "\" " + entry
+        + " \"" + base.string() + "\" \"" + (base / "arch").string() + "\"";
+    capture(cmd);
+    if (!fs::exists(exe)) return {};
+    std::string out = capture("\"" + exe + "\"");
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    return out;
+}
+
+// Weights are unsigned nibbles in the Q4_K range; activations span the
+// signed int8 range and are genuinely negative, which is the whole point —
+// with the operands treated symmetrically the answer changes sign.
+const char* DOTACC_KERNEL = R"CJ(
+package probe;
+import cajeta.lang.System;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.KernelStream;
+public class K {
+    @Kernel
+    public static void accK(KernelBuffer<int32> out, KernelBuffer<uint8> w,
+                            KernelBuffer<int8> a, KernelBuffer<int32> seed,
+                            uint32 groups) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < groups) {
+            int64 wo = (int64) g * 64L;
+            int64 so = (int64) g * 16L;
+            Vector<uint8,64> wv = w.vload<64>(wo);
+            Vector<int8,64> av = a.vload<64>(wo);
+            Vector<int32,16> acc = seed.vload<16>(so);
+            out.vstore(so, wv.dotAccum(av, acc));
+        }
+    }
+    public static void run() {
+        uint32 groups = 8;
+        uint32 n = groups * 64;
+        uint32 accN = groups * 16;
+        uint8[] hw #= heap uint8[n];
+        int8[] ha #= heap int8[n];
+        int32[] hs #= heap int32[accN];
+        int32[] ho #= heap int32[accN];
+        uint32 i = 0;
+        while (i < n) {
+            hw[i] = (uint8) ((i * 5) % 16);
+            ha[i] = (int8) (((i * 37) % 255) - 127);
+            i = i + 1;
+        }
+        i = 0;
+        while (i < accN) { hs[i] = (int32) i * 3 - 20; i = i + 1; }
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(accN);
+        KernelBuffer<uint8> w = heap KernelBuffer<uint8>(n);
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(n);
+        KernelBuffer<int32> seed = heap KernelBuffer<int32>(accN);
+        w.upload(hw); a.upload(ha); seed.upload(hs);
+        KernelStream s #= KernelStream.current();
+        accK.launch(s, grid: [groups], block: [1])(out, w, a, seed, groups);
+        s.sync();
+        out.download(ho);
+        int32 bad = -1;
+        uint32 lane = 0;
+        while (lane < accN) {
+            int32 want = hs[lane];
+            uint32 k = 0;
+            while (k < 4) {
+                want = want + (int32) hw[lane * 4 + k] * (int32) ha[lane * 4 + k];
+                k = k + 1;
+            }
+            if (ho[lane] != want && bad < 0) { bad = (int32) lane; }
+            lane = lane + 1;
+        }
+        if (bad < 0) { System.stdout.println("RESULT ok"); }
+        else { System.stdout.println("RESULT bad lane " + bad
+            + " got " + ho[bad]); }
+        return;
+    }
+}
+)CJ";
+
+// `dot` is SYMMETRIC and must stay so. This is the "does not fire" half:
+// a fix that leaked into `dot` would turn 6460 into -1220 and erase the
+// difference the two spellings exist to express.
+const char* DOT_KERNEL = R"CJ(
+package probe;
+import cajeta.lang.System;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.KernelStream;
+public class K {
+    @Kernel
+    public static void symK(KernelBuffer<int32> out, KernelBuffer<uint8> w,
+                            KernelBuffer<int8> a) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < 1) {
+            out[0] = w.vload<4>(0L).dot(a.vload<4>(0L));
+        }
+    }
+    public static void run() {
+        uint8[] hw #= heap uint8[4];
+        int8[] ha #= heap int8[4];
+        uint32 i = 0;
+        while (i < 4) {
+            hw[i] = (uint8) ((i * 5) % 16);
+            ha[i] = (int8) (((i * 37) % 255) - 127);
+            i = i + 1;
+        }
+        int32[] ho #= heap int32[1];
+        KernelBuffer<int32> out = heap KernelBuffer<int32>(1);
+        KernelBuffer<uint8> w = heap KernelBuffer<uint8>(4);
+        KernelBuffer<int8> a = heap KernelBuffer<int8>(4);
+        w.upload(hw); a.upload(ha);
+        KernelStream s #= KernelStream.current();
+        symK.launch(s, grid: [1], block: [1])(out, w, a);
+        s.sync();
+        out.download(ho);
+        int32 sym = 0;
+        i = 0;
+        while (i < 4) {
+            sym = sym + (int32) hw[i] * ((int32) ha[i] & 255);
+            i = i + 1;
+        }
+        if (ho[0] == sym) { System.stdout.println("RESULT ok"); }
+        else { System.stdout.println("RESULT bad got " + ho[0]
+            + " want " + sym); }
+        return;
+    }
+}
+)CJ";
+
+}  // namespace
+
+TEST(XpuCpuDotAccumTests, dotAccumInKernelIsUnsignedTimesSigned) {
+    const std::string out = buildAndRun(DOTACC_KERNEL, "cpu", "probe.K.run");
+    ASSERT_FALSE(out.empty()) << "probe failed to build or produced no output";
+    EXPECT_NE(out.find("RESULT ok"), std::string::npos)
+        << "dotAccum in a CPU-backend kernel body disagrees with the scalar "
+           "reference; a symmetric signedness flag reads the signed "
+           "activations as unsigned. Got: " << out;
+}
+
+// The control. Same seam, same backend, the spelling that MUST be symmetric.
+TEST(XpuCpuDotAccumTests, dotInKernelStaysSymmetric) {
+    const std::string out = buildAndRun(DOT_KERNEL, "cpu", "probe.K.run");
+    ASSERT_FALSE(out.empty()) << "probe failed to build or produced no output";
+    EXPECT_NE(out.find("RESULT ok"), std::string::npos)
+        << "`dot` must stay symmetric on an unsigned receiver — only "
+           "dotAccum is unsigned x signed. Got: " << out;
 }

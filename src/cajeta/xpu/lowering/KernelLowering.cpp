@@ -1982,8 +1982,12 @@ private:
             llvm::Value* acc = args.size() == 2
                 ? coerceTo(lowerExpr(args[1].expression), i32)
                 : llvm::ConstantInt::get(i32, 0);
+            // `dot` is SYMMETRIC: both operands take the receiver's
+            // signedness. This is what makes it differ from dotAccum on an
+            // unsigned receiver, and that difference is deliberate and tested.
             bool sgn = signedness.count(recv) ? signedness[recv] : true;
-            return target.integerDot4x8(builder, mod, self, other, acc, sgn);
+            return target.integerDot4x8(builder, mod, self, other, acc, sgn,
+                                        sgn);
         }
         // simd-fused-integer-madd 2.2.x — dotAccum on DEVICE routes through the
         // SAME seam as DP4a `dot`, so one spelling serves host and device. On
@@ -2051,8 +2055,14 @@ private:
                                                               "dotacc.a4");
                 llvm::Value* a0 = builder.CreateExtractElement(out, lane,
                                                                "dotacc.acc");
+                // dotAccum is ASYMMETRIC. The host contract (see
+                // MethodCallExpression's dotAccum branch) reads only the
+                // RECEIVER's signedness and ALWAYS sign-extends the
+                // activations; passing `sgn` for both is the defect this
+                // fixes.
                 llvm::Value* r = target.integerDot4x8(builder, mod, ws, as,
-                    builder.CreateIntCast(a0, i32d, true), sgn);
+                    builder.CreateIntCast(a0, i32d, true), sgn,
+                    /*cSigned=*/true);
                 out = builder.CreateInsertElement(out, r, lane, "dotacc.ins");
             }
             return out;
@@ -5179,8 +5189,8 @@ llvm::Value* LoweringTarget::transcendental(
 // Vulkan overrides this to emit the DP4a op (llvm.spv.dot4add.*).
 llvm::Value* LoweringTarget::integerDot4x8(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* a, llvm::Value* c,
-    llvm::Value* acc, bool isSigned) {
-    return vecops::idotWiden(b, a, c, acc, isSigned);
+    llvm::Value* acc, bool aSigned, bool cSigned) {
+    return vecops::idotWiden(b, a, c, acc, aSigned, cSigned);
 }
 
 // Map a user MemoryOrder to an LLVM AtomicOrdering; Default falls back to the

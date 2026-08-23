@@ -198,24 +198,32 @@ namespace vecops {
         return acc;
     }
 
-    // idotWiden(a, b, acc, isSigned) -> i32. Integer dot product with int32
-    // accumulation: each lane is widened to i32 (sext if signed, zext if
+    // idotWiden(a, c, acc, aSigned, cSigned) -> i32. Integer dot product with
+    // int32 accumulation: each lane is widened to i32 (sext if signed, zext if
     // unsigned), multiplied, and summed into `acc`. The portable form of DP4a,
-    // correct on every backend; the Vulkan backend overrides the lowering seam
-    // (LoweringTarget::integerDot4x8) to emit llvm.spv.dot4add.* instead. `a`/`c`
+    // correct on every backend; device backends override the lowering seam
+    // (LoweringTarget::integerDot4x8) to emit a hardware DP4a instead. `a`/`c`
     // are <N x iK> vectors; `acc` is i32 (pass i32 0 for a plain dot).
+    //
+    // The two flags are INDEPENDENT and that is the whole point. `dot` is
+    // symmetric and passes the same flag twice; `dotAccum` is unsigned
+    // weights x SIGNED activations, the asymmetry the instruction family
+    // exists for (vpdpbusd, usdot, vqdotsu). A single shared flag cannot
+    // express it: with an unsigned receiver it zero-extended the activations
+    // too, silently, on every device backend (measured on gfx1151 -- 6440
+    // where the host returns -1240; threaded-forward-path spec 3.5.4-3.5.6).
     inline llvm::Value* idotWiden(llvm::IRBuilderBase& b, llvm::Value* a,
                                   llvm::Value* c, llvm::Value* acc,
-                                  bool isSigned) {
+                                  bool aSigned, bool cSigned) {
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(a->getType());
         unsigned n = vecTy->getNumElements();
         llvm::Type* i32 = llvm::Type::getInt32Ty(b.getContext());
         llvm::Value* sum = acc;
         for (unsigned i = 0; i < n; ++i) {
             llvm::Value* ai = b.CreateIntCast(extractLane(b, a, i), i32,
-                                              isSigned, "idot.a");
+                                              aSigned, "idot.a");
             llvm::Value* ci = b.CreateIntCast(extractLane(b, c, i), i32,
-                                              isSigned, "idot.b");
+                                              cSigned, "idot.b");
             sum = b.CreateAdd(sum, b.CreateMul(ai, ci, "idot.mul"), "idot.acc");
         }
         return sum;

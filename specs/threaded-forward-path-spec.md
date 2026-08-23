@@ -154,12 +154,40 @@ Read from the compiler's own tests, not assumed.
   it — and it shipped with no device-side correctness test, only the host
   ones, which is why it read as done.
 
-  FIX SHAPE: two signedness flags at the seam, plus a mixed path per
-  backend. Vulkan can use `OpSUDot` (`SPV_KHR_integer_dot_product` has the
-  mixed form; the override simply does not reach for it). AMDGPU has no
-  mixed dot4 at all, so it needs the widen-and-multiply fallback there —
-  which means the GPU tier for quantized inference is slower than assumed,
-  and that belongs in the q8_K routing decision.
+- **3.5.6.1** FIXED 2026-08-22, and the fix shape is the REVERSE of what
+  this spec first guessed. Reading the intrinsic tables rather than assuming:
+
+  - **AMDGPU has a native mixed dot4** — `llvm.amdgcn.sudot4(i1 a_sign,
+    v4i8 a, i1 b_sign, v4i8 b, i32 c, i1 clamp)` carries a sign bit PER
+    OPERAND. So unsigned x signed is ONE instruction on AMD, not the
+    widen-and-multiply this spec predicted, and the GPU tier for quantized
+    inference is NOT slower than assumed. `archHasDot4` admits gfx1151, so
+    the dev GPU takes it.
+  - **Vulkan is the one without a mixed form** — stock LLVM's
+    `IntrinsicsSPIRV.td` defines only `dot4add_i8packed` and
+    `dot4add_u8packed`, both symmetric. SPIR-V ITSELF has `OpSUDot` via
+    `SPV_KHR_integer_dot_product`, so this is an LLVM coverage gap, not a
+    hardware one; the override falls back to the portable widen until an
+    intrinsic exists.
+
+  `integerDot4x8` now takes two independent flags. `dot` passes the same
+  one twice (it is symmetric, and that is what makes it differ from
+  `dotAccum` on an unsigned receiver); `dotAccum` passes
+  `(receiver, /*cSigned=*/true)`, matching the host contract, which reads
+  only the receiver's signedness and always sign-extends the activations.
+
+  VERIFIED: **-1240** on the CPU backend and on real gfx1151, against 6440
+  before. Control, same builds: `dot` on an unsigned receiver still returns
+  **6460**, so the fix did not leak into the symmetric spelling.
+- **3.5.6.2** How llama.cpp avoids this entirely, which is the design
+  lesson: it never models signedness as a symmetric flag. `u x s` is its
+  canonical form, because that is the only form the hardware offers, and
+  symmetric cases are CONVERTED into it by sign transfer —
+  `ax = _mm256_sign_epi8(x, x)` (magnitude) and
+  `sy = _mm256_sign_epi8(y, x)` (sign moved onto y), so
+  `|x| * (y*sign(x)) = x*y` exactly. Both its AVX2 (`maddubs`) and VNNI
+  (`dpbusd`) paths do this. A seam whose canonical form is the asymmetric
+  one cannot express the bug we shipped.
 - **3.5.7** SECOND, INDEPENDENT DEFECT found by the same probe: the
   **portable tier is wrong under AOT** while correct under JIT. Same source
   at `--cpu=x86-64`:

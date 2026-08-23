@@ -655,11 +655,21 @@ public:
     // stock-LLVM intrinsic (the HLSL path), so no fork guard is needed.
     llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* a, llvm::Value* c, llvm::Value* acc,
-                               bool isSigned) override {
+                               bool aSigned, bool cSigned) override {
+        // MIXED signedness — what dotAccum means — has no stock LLVM SPIR-V
+        // intrinsic: IntrinsicsSPIRV.td defines only dot4add_i8packed and
+        // dot4add_u8packed, both symmetric. SPIR-V ITSELF has OpSUDot
+        // (SPV_KHR_integer_dot_product), so this is an LLVM coverage gap
+        // rather than a hardware one; until an intrinsic exists, fall back to
+        // the portable widen, which is correct on every target. Picking a
+        // symmetric intrinsic here instead was the defect.
+        if (aSigned != cSigned)
+            return LoweringTarget::integerDot4x8(b, m, a, c, acc, aSigned,
+                                                 cSigned);
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
         llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
-        llvm::Intrinsic::ID id = isSigned
+        llvm::Intrinsic::ID id = aSigned
             ? llvm::Intrinsic::spv_dot4add_i8packed
             : llvm::Intrinsic::spv_dot4add_u8packed;
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);

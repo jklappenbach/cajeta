@@ -213,17 +213,33 @@ public:
 
     llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* a, llvm::Value* c, llvm::Value* acc,
-                               bool isSigned) override {
+                               bool aSigned, bool cSigned) override {
         if (!bundleHasDot4(m))
-            return LoweringTarget::integerDot4x8(b, m, a, c, acc, isSigned);
+            return LoweringTarget::integerDot4x8(b, m, a, c, acc, aSigned,
+                                                 cSigned);
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
         llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
-        llvm::Intrinsic::ID id = isSigned ? llvm::Intrinsic::amdgcn_sdot4
-                                          : llvm::Intrinsic::amdgcn_udot4;
+        // clamp=false throughout: the non-saturating encoding, so this tier
+        // stays bit-identical with the portable widen it replaces
+        // (simd-fused-integer-madd §4.8/§4.9).
+        if (aSigned != cSigned) {
+            // MIXED — what dotAccum actually means, and what sdot4/udot4
+            // cannot express. amdgcn.sudot4 carries a sign bit PER OPERAND:
+            //   a[i] = (a_sign ? a.i8[i] : promoteToSigned(a.u8[i]))
+            // so unsigned weights x signed activations is one instruction
+            // here, not a widen-and-multiply fallback. Emitting sdot4/udot4
+            // off a single shared flag was the defect (measured on gfx1151:
+            // 6440 against the host's -1240).
+            llvm::Function* su = llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::amdgcn_sudot4);
+            return b.CreateCall(su, {b.getInt1(aSigned), x,
+                                     b.getInt1(cSigned), y, acc, b.getFalse()},
+                                "dp4a.su");
+        }
+        llvm::Intrinsic::ID id = aSigned ? llvm::Intrinsic::amdgcn_sdot4
+                                         : llvm::Intrinsic::amdgcn_udot4;
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id);
-        // clamp=false: the non-saturating encoding, so this tier stays
-        // bit-identical with the portable widen it replaces (spec §4.8/§4.9).
         return b.CreateCall(f, {x, y, acc, b.getFalse()}, "dp4a");
     }
 

@@ -5890,7 +5890,11 @@ namespace cajeta {
                     bool sgn = (vecT->getElementType()->getTypeFlags()
                                 & SIGNED_FLAG) != 0;
                     resolvedType = CajetaType::of("int32");
-                    return vecops::idotWiden(*builder, self, other, acc, sgn);
+                    // Host integer `dot` is SYMMETRIC — same flag both
+                    // sides. dotAccum's asymmetry is handled in its own
+                    // branch above, via vecops::dotAccum.
+                    return vecops::idotWiden(*builder, self, other, acc, sgn,
+                                             sgn);
                 }
                 // SIMD: eqMask(needle) -> int32. Per-lane equality packed into a
                 // bitmask (bit i set iff lane i == needle) — the JSON-scanner
