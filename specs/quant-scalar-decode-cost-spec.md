@@ -51,7 +51,16 @@ optimizes against it.
 - **2.3** Both are called twice or once per 256-element block, 65,536 blocks
   per projection. Neither touches the SIMD path.
 
-## 3. `f16At` — 38%, and it is a compiler defect, not a kernel defect
+## 3. `f16At` — 38%, and it was TWO defects, one compiler and one kernel
+
+**CLOSED 2026-08-22.** The filing blamed the arithmetic decode behind
+`f16At` and was half right. Fixing the AOT bitcast (§3.3.1) let
+`halfBitsToF32` drop `pow2`, which took the kernel from 22.90 to ~14 ms.
+The REMAINDER was not in `halfBitsToF32` at all — it was the four
+bounds-checked byte reads `f16At` makes per block, removed by folding the
+f16 pair into `headK4`'s single header load (§5.1.1). Two distinct causes
+behind one ablation row: the arithmetic AND the access. Neither would have
+been found by reasoning about the other.
 
 - **3.1** `f16At` reads two bytes and calls `GgufFile.halfBitsToF32`, which is
   an ARITHMETIC IEEE decode: it calls `pow2(exp - 15)`, and `pow2` is a
@@ -92,7 +101,7 @@ optimizes against it.
   fallback still removes `pow2`: the exponent rebase is a shift and an add, and
   only the subnormal and infinity cases need branches.
 
-## 4. `scaleMinK4` — 40%
+## 4. `scaleMinK4` — 40% (CLOSED — now `headK4`)
 
 - **4.1** It decodes 12 packed 6-bit fields into two `int32[8]` heap arrays,
   per block, via 12 `Quant.u8` calls and bit twiddling — then the kernel reads
@@ -118,7 +127,63 @@ optimizes against it.
 - **5.1** PROGRESS 2026-08-22: Q4_K f32 **14.23 ms** and q8_K **11.19 ms**,
   from 22.90 / 20.98 at the start of the day. End to end, decode is
   **7.83 s/token** from 10.91, i.e. 61.6x -> 44.2x against `llama.cpp -t 1`.
-  The 10 ms bar is not met yet; `f16At`'s residual ~4 ms is the next item.
+- **5.1.1** `f16At`'s residual is CLOSED, and §5.1.0's bar is met for the
+  q8_K kernel. The Q4_K header — `{ f16 d; f16 dmin; u8 scales[12] }` — is
+  exactly 16 bytes, so `scaleMinK4` was replaced by `headK4`, which takes
+  ONE `vload<16>` at the block base and decodes d, dmin and all 12 packed
+  fields from it. Previously the 12 scale bytes came from a vector load at
+  `ro+4` while d and dmin came from four separately bounds-checked byte
+  reads — the residual was the two `f16At` calls, not `halfBitsToF32`,
+  which was already loop-free.
+
+  Interleaved A/B, medians of 3, same binary pair, verified idle
+  (loadavg 0.90, only a browser resident):
+
+  | kernel | before | after | delta |
+  |---|---|---|---|
+  | Q4_K f32 | 13.64 ms | **11.28 ms** | -17.3% |
+  | Q4_K q8_K | 11.20 ms | **8.77 ms** | -21.7% |
+  | Q5_K | 28.51 ms | **26.62 ms** | -6.6% |
+  | Q6_K (untouched) | 25.57 ms | 25.50 ms | -0.2% |
+
+  Q6_K is a NEGATIVE CONTROL that was not planned as one: it shares
+  `f16At` but not the 16-byte header, and it moved 0.2% while the kernels
+  the change reaches moved 7-22%. That is what separates this result from
+  measurement drift, and it is the check §2's hygiene note asks for.
+- **5.1.3** REFUTED — the per-byte pattern does NOT generalize to Q6_K.
+  Q6_K reads `packed[ro + 192 + sb]` inside its sub-block loop: 16
+  separately bounds-checked byte reads per block, four times as many as
+  the four `headK4` removed, so it looked like the same defect and was
+  next on the priority list. A `headK6` doing one `vload<32>` over the
+  block trailer (`int8 scales[16]` + `f16 d`, the last 18 bytes of 210)
+  was built and gated — all fixtures green, including
+  `q6kSimdMatVecAgreesWithScalarFloor`, whose scalar floor still reads
+  those bytes the old way.
+
+  | kernel | headK4 | + headK6 | delta |
+  |---|---|---|---|
+  | Q6_K | 25.54 ms | 26.13 ms | +2.3% |
+  | Q5_K (untouched) | 26.17 ms | 26.71 ms | +2.1% |
+
+  The untouched kernel moved as far as the changed one, so +2.3% IS the
+  noise floor and the true effect is zero. Reverted rather than kept:
+  a helper that costs a decode plus a 16-element array round-trip and buys
+  nothing is worse than the byte reads it replaced.
+- **5.1.4** Why it worked for Q4_K and not Q6_K — and the count of byte
+  reads is NOT the discriminator, since Q6_K had four times as many.
+  `headK4` also removed a whole second vector load (the old `scaleMinK4`
+  loaded at `ro+4` while `f16At` read `ro` and `ro+2` separately), and
+  those reads sat on the block's critical path BEFORE any vector work
+  began. Q6_K's byte read sits inside a loop already carrying two 16-byte
+  loads, eight f32 vector loads and eight FMAs per 16 elements, so it
+  amortizes into work that was already there. The lesson for the rest of
+  this spec: per-byte access is a candidate, not a diagnosis — what made
+  Q4_K's expensive was its position, and the only way to tell is to
+  measure with an untouched kernel in the same run.
+- **5.1.2** Q5_K gains less than Q4_K because it was already carrying the
+  same header through `headK4`; its remaining cost is not per-byte access —
+  its inner loop is entirely `vload`s and its scale reads come from the
+  hoisted arrays.
 - **5.1.0** The Q4_K mat-vec at 4096x4096 beats **10 ms**, against 21.30 when
   filed —
   removing `f16At` and `scaleMinK4` alone accounts for 16.5 ms of it, so this
