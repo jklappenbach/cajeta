@@ -12,6 +12,7 @@ import com.intellij.execution.configurations.coverage.CoverageEnabledConfigurati
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
+import java.io.File
 import dev.cajeta.idea.CajetaFileType
 import dev.cajeta.idea.buildtool.CajetaTaskRunConfiguration
 import dev.cajeta.idea.debugger.CajetaRunConfiguration
@@ -76,10 +77,49 @@ class CajetaCoverageEngine : CoverageEngine() {
      * FILE, so editing one file leaves its neighbours' markings intact (5.1.c).
      */
     override fun coverageEditorHighlightingApplicableTo(psiFile: PsiFile): Boolean {
-        if (!isCajetaFile(psiFile)) return false
-        val path = psiFile.virtualFile?.path ?: return true
-        return !CocoFreshness.getInstance(psiFile.project).isStale(path)
+        val decision = decide(psiFile)
+        // Logged, not silent. `CoverageDataAnnotationsManager` consults exactly
+        // three engine gates before it will annotate an editor — this one,
+        // `acceptedByFilters` and `isInLibraryClasses` — and a `false` from any
+        // of them produces a blank gutter with no explanation anywhere. Whichever
+        // one refuses, the reason is now in the log under a greppable name.
+        if (!decision.applicable) {
+            LOG.info("coco/gutter: NOT annotating ${decision.path} — ${decision.why}")
+        } else {
+            LOG.debug("coco/gutter: annotating ${decision.path}")
+        }
+        return decision.applicable
     }
+
+    private data class GutterDecision(
+        val applicable: Boolean,
+        val path: String,
+        val why: String,
+    )
+
+    private fun decide(psiFile: PsiFile): GutterDecision {
+        val path = psiFile.virtualFile?.path ?: "<no virtual file>"
+        if (!isCajetaFile(psiFile)) {
+            return GutterDecision(
+                false, path,
+                "not a Cajeta file (fileType=${psiFile.fileType.name}, " +
+                    "ext=${psiFile.virtualFile?.extension})",
+            )
+        }
+        if (psiFile.virtualFile == null) {
+            return GutterDecision(true, path, "no virtual file; allowed")
+        }
+        val freshness = CocoFreshness.getInstance(psiFile.project)
+        if (freshness.isStale(path)) {
+            return GutterDecision(
+                false, path,
+                "stale: ${freshness.reasonFor(path) ?: "content differs from the run"}",
+            )
+        }
+        return GutterDecision(true, path, "fresh")
+    }
+
+    private val LOG = com.intellij.openapi.diagnostic.logger<CajetaCoverageEngine>()
 
     private fun isCajetaFile(psiFile: PsiFile): Boolean =
         psiFile.fileType == CajetaFileType ||
@@ -87,6 +127,56 @@ class CajetaCoverageEngine : CoverageEngine() {
 
     override fun acceptedByFilters(psiFile: PsiFile, suite: CoverageSuitesBundle): Boolean =
         coverageEditorHighlightingApplicableTo(psiFile)
+
+    /**
+     * The keys under which this file's data sits in `ProjectData` — the step
+     * that turns a loaded suite into MARKS IN THE EDITOR.
+     *
+     * `SrcFileAnnotator` asks the engine for a file's keys and looks each one up
+     * with `ProjectData.getClassData`. The base implementation returns an EMPTY
+     * SET, so an engine that does not override this loads its data, reports its
+     * percentages, fills the Coverage tool window from the annotator's own
+     * rollups — and paints nothing, anywhere, with no error at any layer. The
+     * gutters and the tool window reach the data by different routes, and only
+     * one of them was wired.
+     *
+     * `CocoProjectData` keys by ABSOLUTE FILE PATH (the name reads like a class
+     * name for Java's sake), normalized with '/' separators, so that is what
+     * this returns — and the two must be normalized identically or the lookup
+     * misses on Windows while passing everywhere else.
+     */
+    override fun getQualifiedNames(psiFile: PsiFile): Set<String> =
+        keyFor(psiFile)?.let { setOf(it) } ?: emptySet()
+
+    /**
+     * The SINGULAR form — and the one the editor actually reaches.
+     *
+     * `CoverageEditorAnnotatorImpl` asks for a file's output paths first; the
+     * base `getCorrespondingOutputPaths` answers with the source file's own nio
+     * path, so that set is never empty, so the annotator always takes the
+     * output-path branch and calls THIS. The plural [getQualifiedNames] is the
+     * else-branch for engines with no output paths, and is never reached here.
+     *
+     * The base implementation is `return null`, and a null key yields no
+     * highlighters — no error, no log line. That is why coverage could load,
+     * fill the tool window with correct per-file percentages (those come from
+     * the annotator's own filesystem walk, not from `ProjectData` keys) and
+     * still leave every gutter blank. Overriding only the plural form fixes
+     * nothing, because nothing calls it.
+     */
+    // Widened to public deliberately: the handshake between this key and
+    // `CocoProjectData`'s is the thing that was broken, and a test cannot assert
+    // it through a protected member.
+    public override fun getQualifiedName(outputFile: File, sourceFile: PsiFile): String? =
+        keyFor(sourceFile)
+
+    /**
+     * The key `CocoProjectData` stores this file's `ClassData` under: its
+     * absolute path with '/' separators. Both sides derive it here so they
+     * cannot drift.
+     */
+    private fun keyFor(psiFile: PsiFile): String? =
+        psiFile.virtualFile?.path?.replace('\\', '/')
 
     override fun coverageProjectViewStatisticsApplicableTo(
         fileOrDir: com.intellij.openapi.vfs.VirtualFile,

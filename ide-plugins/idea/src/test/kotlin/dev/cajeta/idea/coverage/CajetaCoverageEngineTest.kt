@@ -207,4 +207,71 @@ class CajetaCoverageEngineTest : BasePlatformTestCase() {
         val s = suite("orphan", profile)
         assertNull(s.getCoverageData(CoverageDataManager.getInstance(project)))
     }
+
+    // ── the handshake between the engine and ProjectData ───────────────────
+    //
+    // Added 2026-08-22, from a live failure. Everything above tests that the
+    // platform ACCEPTS the suite, and it did: the run loaded, the percentages
+    // were right, the tool window had data — and no gutter appeared in any file.
+    //
+    // `SrcFileAnnotator` reaches a file's data by asking the engine for that
+    // file's keys and looking each up in `ProjectData`. The base
+    // `getQualifiedNames` returns an EMPTY SET, so an engine that forgets to
+    // override it paints nothing, everywhere, with no error at any layer. The
+    // tool window is fed by a different route (the annotator's own rollups),
+    // which is exactly why the failure looked like a rendering problem rather
+    // than a wiring one.
+    //
+    // This class's own header said testing that IntelliJ paints would be
+    // testing IntelliJ. True, and it is not what this is: the HANDSHAKE —
+    // "the engine names the keys the data is stored under" — is ours, it is
+    // pure, and it is the part that was broken.
+
+    fun `test the engine names the keys ProjectData is actually keyed by`() {
+        val psi = myFixture.configureByText("Taxes.cajeta", "public class Taxes {\n}\n")
+        val path = psi.virtualFile.path
+
+        val sites = listOf(site(id = 0, line = 2, file = "tour/Taxes.cajeta"))
+        val coverage = CocoCoverage(sites, CocoProfile(1, null, mapOf(0L to 1L)))
+        // The resolver's job in production; here it is the identity that maps
+        // coco's relative path onto the file the fixture actually created.
+        val data = CocoProjectData.toProjectData(coverage) { path }
+
+        val engine = CoverageEngine.EP_NAME.findExtensionOrFail(CajetaCoverageEngine::class.java)
+        val names = engine.getQualifiedNames(psi)
+
+        assertFalse("the engine named no keys, so nothing can ever be painted",
+                    names.isEmpty())
+        assertTrue(
+            "no key the engine names exists in ProjectData: engine said $names, " +
+                "data holds ${data.classes.keys}",
+            names.any { data.getClassData(it) != null },
+        )
+
+        // The SINGULAR form, which is the one the editor annotator actually
+        // calls: output paths are never empty (the base implementation answers
+        // with the source file's own path), so the plural form is the branch
+        // that never runs. Overriding only the plural one left every gutter
+        // blank while the tool window stayed correct, because the two reach
+        // the data by different routes.
+        val single = engine.getQualifiedName(java.io.File(path), psi)
+        assertNotNull("the editor's own lookup returned no key", single)
+        assertNotNull(
+            "the editor's key is not in ProjectData: got $single, " +
+                "data holds ${data.classes.keys}",
+            data.getClassData(single),
+        )
+    }
+
+    private fun site(id: Long, line: Int, file: String) = CocoSite(
+        id = id,
+        kind = CocoSiteKind.LINE,
+        line = line,
+        decision = -1,
+        file = file,
+        owner = "tour.Taxes",
+        method = "rate()",
+        block = "",
+        target = "",
+    )
 }
