@@ -104,9 +104,27 @@ class CocoDeadCodePanel(private val project: Project) : JPanel(BorderLayout()) {
     }
 
     companion object {
+        /**
+         * The measured CONDITION, not an instruction.
+         *
+         * These read `DELETE?` and `TEST` — imperatives, one of them hedged
+         * with a question mark. Neither is how analysis tooling labels a
+         * finding, and coco's own Mutants tab already does it the conventional
+         * way (`KILLED`/`SURVIVED`, after PIT). Rust says "never used", Go says
+         * "is unused", IntelliJ says "is never used" and offers Safe Delete as
+         * the ACTION — the tool reports what it found and the developer decides
+         * what to do about it.
+         *
+         * `DELETE?` also carried its uncertainty in punctuation, which reads as
+         * a glitch rather than as a hedge. Naming the measurement removes the
+         * need: "unreachable" is what coco computed (not reachable from the
+         * entry, nor from anything the run demonstrably executed), and it makes
+         * no claim about what should happen next. Safe Delete stays on the
+         * context menu, which is where a recommendation belongs.
+         */
         fun labelOf(v: Verdict): String = when (v) {
-            Verdict.DELETION_CANDIDATE -> "DELETE?"
-            Verdict.NEEDS_A_TEST -> "TEST"
+            Verdict.DELETION_CANDIDATE -> "UNREACHABLE"
+            Verdict.NEEDS_A_TEST -> "UNTESTED"
             Verdict.UNDETERMINED -> "UNKNOWN"
         }
 
