@@ -16,6 +16,12 @@
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
 #include "llvm/Support/ModRef.h"
+#include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/Target/TargetMachine.h"
+#include "CpuBackend.h"
+#include "../../type/VectorOps.h"
+#include <cstdlib>
+#include <memory>
 
 namespace cajeta {
 namespace xpu {
@@ -29,6 +35,56 @@ namespace {
 class CpuTarget : public LoweringTarget {
 public:
     const char* name() const override { return "cpu"; }
+
+    // Wide `dotAccum` — the CPU backend's ISA IS the host's, so a @Kernel
+    // must reach the same tier an ordinary method does. It did not: the
+    // per-lane `integerDot4x8` seam handed x86 four int8 lanes at a time,
+    // and `vpdpbusd` needs sixteen, so every kernel dotAccum fell to the
+    // portable widening reduce. Measured, in one binary: the host form of a
+    // Q4_K/q8_K mat-vec got 8 `vpdpbusd` and the identical @Kernel got 8
+    // `vpmaddwd`.
+    //
+    // The subtarget is asked the same way `createCpuTargetMachine` builds
+    // it — host CPU plus its native features — because that is precisely
+    // what the CPU backend compiles kernels for. Asking anything else would
+    // let this disagree with the machine the object actually targets.
+    llvm::Value* integerDotWide(llvm::IRBuilderBase& b, llvm::Module& m,
+                                llvm::Value* w, llvm::Value* a,
+                                llvm::Value* acc, bool wUnsigned) override {
+        const char* fsd = std::getenv("CAJETA_SIMD_SCALAR_FALLBACK");
+        if (fsd && fsd[0] && fsd[0] != '0') return nullptr;   // stays a control
+        static const std::unique_ptr<llvm::TargetMachine> tm =
+            createCpuTargetMachine();
+        if (!tm || !tm->getTargetTriple().isX86()) return nullptr;
+        const llvm::MCSubtargetInfo& sti = tm->getMCSubtargetInfo();
+        if (!sti.checkFeatures("+avx512vnni") && !sti.checkFeatures("+avxvnni"))
+            return nullptr;
+
+        // VNNI ONLY, and the shape checked here rather than left to
+        // vecops::dotAccum's tier order.
+        //
+        // The reason is a correctness one, not caution. `vecops::dotAccum`
+        // prefers a three-instruction AVX2 tier over its exact one when VNNI
+        // is absent, and that tier SATURATES — authorized on the host, where
+        // every caller is a K-quant with headroom to spare. The CPU backend
+        // is not just another caller: it is the bit-exact oracle the GPU
+        // backends are checked against, so it must not silently acquire a
+        // saturating lowering on an AVX2-only machine. `vpdpbusd` does not
+        // saturate, so taking that tier and only that tier changes speed and
+        // never results.
+        auto* wt = llvm::dyn_cast<llvm::FixedVectorType>(w->getType());
+        auto* at = llvm::dyn_cast<llvm::FixedVectorType>(acc->getType());
+        if (!wUnsigned || wt == nullptr || at == nullptr) return nullptr;
+        unsigned n = at->getNumElements();
+        if (wt->getNumElements() != n * 4) return nullptr;
+        if (n != 4 && n != 8 && n != 16) return nullptr;
+
+        vecops::DotAccumTargets t;
+        t.vnni = true;
+        t.avx2 = false;             // never reachable given the gate above
+        t.forceScalar = false;
+        return vecops::dotAccum(b, &m, w, a, acc, wUnsigned, t);
+    }
 
     // No native inline ray query: the AccelerationStructure noun is built as the
     // portable software BVH, so the RayQuery verb follows to the SoftwareRayQuery

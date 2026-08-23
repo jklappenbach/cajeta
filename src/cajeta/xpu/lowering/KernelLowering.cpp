@@ -2056,6 +2056,13 @@ private:
                 unsupported("Vector.dotAccum's accumulator must be "
                             "Vector<int32,N> for 4N lanes of int8");
             bool sgn = signedness.count(recv) ? signedness[recv] : true;
+            // A target with a WIDE fused int8 dot takes the whole vector; the
+            // per-lane slicing below would hand x86's vpdpbusd four lanes at
+            // a time and it needs sixteen. Null means no wide form, and the
+            // per-lane seam is then exactly what it always was.
+            if (llvm::Value* wide = target.integerDotWide(
+                    builder, mod, self, other, accv, /*wUnsigned=*/!sgn))
+                return wide;
             llvm::Type* i32d = llvm::Type::getInt32Ty(builder.getContext());
             unsigned n = avt->getNumElements();
             llvm::Value* out = accv;

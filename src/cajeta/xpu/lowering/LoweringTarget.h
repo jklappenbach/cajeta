@@ -595,6 +595,26 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
             llvm::Value* c, llvm::Value* acc, bool aSigned, bool cSigned);
 
+        // WIDE `dotAccum` for targets whose ISA has a wide fused int8 dot.
+        //
+        // `integerDot4x8` above is the per-lane seam, and slicing a 32-lane
+        // dotAccum into eight 4-lane dots is the right shape on a GPU, where
+        // each thread does scalar work. It is the WRONG shape on the CPU
+        // backend, whose ISA is the host's: x86's `vpdpbusd` consumes 16 or
+        // 64 int8 lanes at once, so the per-lane slicing destroys the very
+        // shape the instruction needs. Measured — a @Kernel doing the exact
+        // dotAccum an ordinary method does got `vpmaddwd` while the method
+        // got `vpdpbusd`, and the CPU arm of a decode ran 1.19x instead of
+        // what VNNI is worth.
+        //
+        // Returns nullptr when the target has no wide form, and the caller
+        // then falls back to the per-lane loop — so GPU backends inherit
+        // exactly the behaviour they had.
+        virtual llvm::Value* integerDotWide(
+            llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/,
+            llvm::Value* /*w*/, llvm::Value* /*a*/, llvm::Value* /*acc*/,
+            bool /*wUnsigned*/) { return nullptr; }
+
         // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) ------
         // `Buffer<float32>.atomic{Add,Min,Max}(i, v)`: an atomic read-modify-
         // write on the element pointer, returning the OLD value. DEFAULT: a
