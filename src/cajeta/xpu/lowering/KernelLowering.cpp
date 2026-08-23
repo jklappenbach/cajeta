@@ -1851,6 +1851,14 @@ private:
 
     // The `<N x T>` slot type of a vector local named `nm`, or nullptr if `nm`
     // isn't a bound local of vector type.
+    // Method names that lowerVectorMethod handles. Used to decide whether a
+    // nameless (chained) receiver is worth materializing into a slot.
+    static bool isVectorMethodName(const std::string& n) {
+        return n == "dot" || n == "dotAccum" || n == "length"
+            || n == "normalize";
+    }
+    unsigned syntheticRecvSeq = 0;
+
     llvm::FixedVectorType* vectorSlotType(const std::string& nm) {
         auto it = slotTypes.find(nm);
         if (it == slotTypes.end() || !it->second->isVectorTy()) return nullptr;
@@ -2889,6 +2897,30 @@ private:
         // `recv` names a vector local.
         if (!recv.empty() && vectorSlotType(recv)) {
             return lowerVectorMethod(recv, name, mc);
+        }
+        // ...and the same methods on a CHAINED receiver, which has no name.
+        // `recv` is only set when child[0] is an IdentifierExpression, so
+        // `w.vload<4>(0).dot(a)` skipped every branch above and fell through
+        // to a silent zero — a wrong answer with no diagnostic. Materialize
+        // the receiver into a real slot under a synthetic name and reuse the
+        // named path verbatim, so the two spellings cannot diverge.
+        if (recv.empty() && isVectorMethodName(name)
+                && !mc->getChildren().empty()) {
+            ExpressionPtr recvExpr = std::dynamic_pointer_cast<Expression>(
+                mc->getChildren()[0]);
+            if (!recvExpr) return nullptr;
+            llvm::Value* rv = lowerExpr(recvExpr);
+            if (rv && rv->getType()->isVectorTy()) {
+                auto* rvt = llvm::cast<llvm::FixedVectorType>(rv->getType());
+                const std::string tmp =
+                    ".vrecv." + std::to_string(syntheticRecvSeq++);
+                llvm::Value* slot = builder.CreateAlloca(rvt, nullptr, tmp);
+                builder.CreateStore(rv, slot);
+                values[tmp]      = slot;
+                slotTypes[tmp]   = rvt;
+                signedness[tmp]  = exprSigned(recvExpr);
+                return lowerVectorMethod(tmp, name, mc);
+            }
         }
         // RayQuery ops (Part C). `recv` names a RayQuery body local; the op
         // lowers to a backend ray-query intrinsic (Vulkan llvm.spv.ray.query.*).
@@ -4871,6 +4903,20 @@ private:
             return true;
         }
         if (std::dynamic_pointer_cast<IntegerLiteralExpression>(e)) return true;
+        // `buf.vload<N>(i)` carries the BUFFER's element signedness. Without
+        // this a chained `w.vload<4>(0).dot(...)` on a KernelBuffer<uint8>
+        // reads back as signed, because a call is an "unknown leaf" below and
+        // unknown defaults to signed.
+        if (auto mc = std::dynamic_pointer_cast<MethodCallExpression>(e)) {
+            if (mc->getMethodCallName() == "vload"
+                    && !mc->getChildren().empty()) {
+                if (auto b = std::dynamic_pointer_cast<IdentifierExpression>(
+                        mc->getChildren()[0])) {
+                    auto it = bufferElemSigned.find(b->getTextValue());
+                    if (it != bufferElemSigned.end()) return it->second;
+                }
+            }
+        }
         // Composite forms: kernel bodies aren't host-type-resolved, so a nested
         // expression has no signedness map key. Recurse — a computed value is
         // signed if either operand is (else `(a-b) < 0` lowers to ICmpULT, an

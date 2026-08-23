@@ -12,6 +12,8 @@
 // DebugController so an armed safepoint parks until the caller resumes.
 //
 #include "cajeta/jit/CajetaJitHost.h"
+#include "cajeta/xpu/core/XpuAttributes.h"
+#include "cajeta/xpu/XpuTarget.h"
 
 #include "cajeta/error/Diagnostics.h"
 
@@ -1420,6 +1422,34 @@ BuiltJit buildJitImpl(const JitRunOptions& opts) {
                                                   jitModules.end());
         if (residentStdlib) mods.push_back(residentStdlib);  // delivery too
         moduleBCs.reserve(mods.size());
+        // XPU kernel registration. Without this a JIT'd `kernel.launch(...)`
+        // finds no backend in the manifest, silently no-ops, and leaves every
+        // output buffer zero — a wrong answer with only a warning
+        // (threaded-forward-path 8.8). Gated on --xpu-backend, so a host-only
+        // jit-run is unchanged.
+        if (!opts.xpuBackends.empty() && primary) {
+            std::vector<cajeta::MethodPtr> kernels;
+            for (auto& m : mods) {
+                if (!m) continue;
+                for (auto& method : m->getAllMethods())
+                    if (method && cajeta::xpu::isKernel(*method))
+                        kernels.push_back(method);
+            }
+            if (!kernels.empty()) {
+                llvm::Module* pm = primary->getLlvmModule();
+                cajeta::xpu::emitBackendManifest(opts.xpuBackends, *pm);
+                for (cajeta::xpu::Backend be : opts.xpuBackends) {
+                    std::string arch =
+                        !opts.xpuArch.empty()              ? opts.xpuArch
+                      : be == cajeta::xpu::Backend::Nvptx  ? "sm_89"
+                      : be == cajeta::xpu::Backend::Amdgpu ? "gfx1151"
+                      : be == cajeta::xpu::Backend::Spirv  ? "vulkan1.3"
+                      :                                      "";
+                    cajeta::xpu::emitKernelRegistration(be, kernels, *pm, arch);
+                }
+            }
+        }
+
         // Legalize EVERY module before verifying ANY: a use from module B
         // into module A trips A's verifier even though the fix lives in B.
         for (auto& m : mods) {
@@ -2057,6 +2087,40 @@ int dispatchJitRun(int argc, const char* argv[]) {
             setEnvVar("CAJETA_DIAG_FORMAT", "json");
         } else if (a == "--diag-format=text") {
             setEnvVar("CAJETA_DIAG_FORMAT", "text");
+        } else if (a.rfind("--xpu-backend=", 0) == 0) {
+            // Comma-separated, same spelling as the compile driver. An
+            // unknown name is a hard error: silently bundling nothing is
+            // exactly what made a kernel launch a no-op here before.
+            std::string list = a.substr(std::string("--xpu-backend=").size());
+            size_t pos = 0;
+            bool bad = false;
+            while (pos <= list.size() && !bad) {
+                size_t comma = list.find(',', pos);
+                std::string one = list.substr(
+                    pos, comma == std::string::npos ? std::string::npos
+                                                    : comma - pos);
+                if (!one.empty() && one != "none") {
+                    if (one == "cpu")
+                        opts.xpuBackends.push_back(cajeta::xpu::Backend::Cpu);
+                    else if (one == "nvptx")
+                        opts.xpuBackends.push_back(cajeta::xpu::Backend::Nvptx);
+                    else if (one == "amdgpu")
+                        opts.xpuBackends.push_back(cajeta::xpu::Backend::Amdgpu);
+                    else if (one == "vulkan" || one == "spirv")
+                        opts.xpuBackends.push_back(cajeta::xpu::Backend::Spirv);
+                    else bad = true;
+                }
+                if (comma == std::string::npos) break;
+                pos = comma + 1;
+            }
+            if (bad) {
+                std::cerr << "cajeta jit-run: unknown --xpu-backend in '"
+                          << a << "' (none|nvptx|amdgpu|vulkan|cpu)\n";
+                cajeta::emitJsonResult("error", "usage");
+                return 2;
+            }
+        } else if (a.rfind("--xpu-arch=", 0) == 0) {
+            opts.xpuArch = a.substr(std::string("--xpu-arch=").size());
         } else {
             positional.push_back(a);
         }

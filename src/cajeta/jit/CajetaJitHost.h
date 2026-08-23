@@ -11,6 +11,7 @@
 //
 #pragma once
 
+#include "cajeta/xpu/XpuTarget.h"
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -38,6 +39,14 @@ namespace cajeta::jit {
         std::vector<std::string> programArgs;
         // Reserved for CP2+: emit __cajeta_dbg_safepoint polls + debug frames.
         bool debugInfo = false;
+        // XPU backends to bundle, from `--xpu-backend=<list>`. Empty means
+        // host-only: @Kernel launches then have NO backend to dispatch to.
+        // Before this existed jit-run ignored the flag entirely and a launch
+        // silently no-op'd, leaving every output buffer zero with only a
+        // warning on stderr (threaded-forward-path 8.8).
+        std::vector<cajeta::xpu::Backend> xpuBackends;
+        // Device arch override for the bundled backend(s).
+        std::string xpuArch;
         // Resident-world mode (resident-debug-server 4.2.1): reuse the
         // primed stdlib front-end (StdlibReuseCore) across builds in this
         // process. Set by the DAP server when the launch request asks;

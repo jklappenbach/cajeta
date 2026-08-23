@@ -18,8 +18,11 @@
 #include "cajeta/compile/Optimizer.h"
 
 #include "cajeta/method/Method.h"
+#include "cajeta/type/CajetaClass.h"
 #include "cajeta/xpu/core/XpuAttributes.h"
 #include "cajeta/error/Exception.h"
+#include <cctype>
+#include <map>
 
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/Attributes.h"
@@ -711,11 +714,49 @@ void foldWaveVariants(llvm::Function& f) {
         // kernel's gridSize(dim) = nctaid·ntid (grid-stride for-each, Item 6 St.2).
         const unsigned kNumBlockCoordParams = 9;
 
+        // A kernel's LLVM symbols must be unique per PROGRAM, but the runtime
+        // registry is keyed by the SIMPLE name (every backend resolves a
+        // launch that way). Two classes each declaring `@Kernel dotK` used to
+        // emit `__cajeta_xpu_cpu.dotK` twice and fail at link with a
+        // duplicate symbol. Qualify the symbols with the declaring class, and
+        // diagnose the registry collision the symbols were masking — two
+        // kernels registering under one name would otherwise silently
+        // dispatch whichever ctor ran last.
+        auto symSuffix = [](const cajeta::MethodPtr& m) {
+            std::string q = m->getParent() ? m->getParent()->toCanonical()
+                                           : std::string();
+            std::string full = q.empty() ? m->getName() : q + "." + m->getName();
+            for (char& c : full)
+                if (!std::isalnum((unsigned char) c) && c != '.' && c != '_')
+                    c = '_';
+            return full;
+        };
+        // NOTE: this catches a collision only WITHIN one compilation unit;
+        // kernels are emitted per-module, so two files each declaring the
+        // same simple name are not visible to each other here. The symbol
+        // qualification above is what keeps those from colliding at link;
+        // the registry-level shadowing across files remains open.
+        std::map<std::string, std::string> simpleNameOwner;
+        for (auto& method : kernels) {
+            if (!method || !isKernel(*method)) continue;
+            std::string owner = method->getParent()
+                ? method->getParent()->toCanonical() : std::string("<none>");
+            auto ins = simpleNameOwner.emplace(method->getName(), owner);
+            if (!ins.second && ins.first->second != owner) {
+                throw cajeta::Exception(
+                    "two @Kernel methods share the simple name '"
+                    + method->getName() + "' (" + ins.first->second + " and "
+                    + owner + "). Kernel launches resolve by simple name, so "
+                    "one would silently shadow the other; rename one.",
+                    "CAJETA_ERROR_XPU_KERNEL_NAME_COLLISION");
+            }
+        }
+
         int emitted = 0;
         for (auto& method : kernels) {
             if (!method || !isKernel(*method)) continue;
             const std::string entryName = method->getName();
-            const std::string sym = "__cajeta_xpu_cpu." + entryName;
+            const std::string sym = "__cajeta_xpu_cpu." + symSuffix(method);
 
             // Lower into a fresh module sharing the host context (so it can be
             // linked). A throw here destroys `mod` with the host untouched.
@@ -765,7 +806,7 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::Function* wrapper = llvm::Function::Create(
                 llvm::FunctionType::get(voidTy, wtys, false),
                 llvm::GlobalValue::ExternalLinkage,
-                "__cajeta_xpu_cpu_block." + entryName, hostModule);
+                "__cajeta_xpu_cpu_block." + symSuffix(method), hostModule);
             // The trailing wrapper param is the dynamic shared byte count; a
             // `shared T[runtimeN]` array allocas it per block (else unused → DCE).
             llvm::Value* dynSharedBytes = wrapper->getArg(nReal + kNumBlockCoordParams);
@@ -959,7 +1000,7 @@ void foldWaveVariants(llvm::Function& f) {
                 llvm::FunctionType::get(voidTy, {ptrTy, ptrTy}, false);
             llvm::Function* thunk = llvm::Function::Create(
                 thunkTy, llvm::GlobalValue::ExternalLinkage,
-                "__cajeta_xpu_cpu_launch." + entryName, hostModule);
+                "__cajeta_xpu_cpu_launch." + symSuffix(method), hostModule);
             thunk->getArg(0)->setName("argv");
             thunk->getArg(1)->setName("coord");
             llvm::Value* argvArg = thunk->getArg(0);
@@ -1007,7 +1048,7 @@ void foldWaveVariants(llvm::Function& f) {
             llvm::FunctionType* ctorTy = llvm::FunctionType::get(voidTy, false);
             llvm::Function* ctor = llvm::Function::Create(
                 ctorTy, llvm::GlobalValue::InternalLinkage,
-                "__cajeta_xpu_cpu_reg_ctor." + entryName, hostModule);
+                "__cajeta_xpu_cpu_reg_ctor." + symSuffix(method), hostModule);
             llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", ctor);
             b.SetInsertPoint(bb);
             llvm::Value* nameStr =
