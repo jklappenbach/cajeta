@@ -730,6 +730,16 @@ int32_t __cajeta_prof_arm(void) {
                                                     sizeof(CajetaProfSample));
     if (!__cajeta_prof_ring) { __cajeta_prof_ring_cap = 0; return -3; }
     __cajeta_prof_out = getenv("CAJETA_PROFILER_OUT");
+    // §9.1 says "the run is profiled", not "the CPU is". GPU capture arms from
+    // the same variable and HERE — before any backend initializes — because
+    // §9.6 requires arming early enough for every backend's ordering rule, and
+    // Unit 8's rocprofiler configure hook gates on __cajeta_prof_gpu_is_armed().
+    // Armed later, that hook would miss the one window HIP allows it.
+    {
+        const char* gring_s = getenv("CAJETA_PROFILER_GPU_RING");
+        int gcap = gring_s ? atoi(gring_s) : 0;   // 0 = the capture default
+        __cajeta_prof_gpu_capture_arm(gcap);
+    }
     __cajeta_prof_head = __cajeta_prof_tail = 0;
     __cajeta_prof_stop = 0;
     // The arming thread is the program thread; register it here so §2.1's

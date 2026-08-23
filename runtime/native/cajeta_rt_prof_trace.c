@@ -606,12 +606,20 @@ typedef struct {
     int64_t     frames;
 } CajProfMeta;
 
+// Defined in cajeta_rt_prof_gpu.c, later in this TU (6.6).
+int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts);
+void    __cajeta_prof_gpu_capture_settle(void);
+
 int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
                                             int64_t n, const char* path,
                                             const CajProfMeta* meta) {
     if (!samples || n <= 0) return 0;
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    // Settle the GPU side FIRST: the metadata packet below carries the ROCm
+    // backend's account of itself (§5.2.2), and asking before the last records
+    // are claimed reports rocm_records=0 next to a file full of device spans.
+    __cajeta_prof_gpu_capture_settle();
     // First packet, so it survives a trace truncated moments later.
     if (meta)
         __cajeta_prof_trace_metadata(&w, (uint64_t) samples[0].host_ns,
@@ -673,6 +681,12 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
     // "which tier produced this number" a question about provenance the reader
     // has to keep track of by hand.
     __cajeta_prof_instr_to_trace(&w, (uint64_t) last_ts);
+
+    // 6.6 — and the GPU work this run captured, on its own device/context/queue
+    // tracks, in the SAME file for the same reason (§8.3's one time axis).
+    // Before this, an env-armed run of a GPU program wrote a trace with no
+    // device track at all.
+    __cajeta_prof_gpu_captured_to_trace(&w, (uint64_t) last_ts);
 
     int64_t packets = __cajeta_prof_trace_packets(&w);
     __cajeta_prof_trace_close(&w);
@@ -1229,6 +1243,7 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
 // System.exit, and from tests, and two of those can happen in one run. A second
 // call must not truncate the file the first one wrote.
 int32_t __cajeta_prof_gpu_trace_detach(void);   // cajeta_rt_prof_gpu.c, later in this TU
+int64_t __cajeta_prof_gpu_only_to_trace(const char* path);   // ditto
 
 static volatile int __cajeta_prof_shutdown_done = 0;
 
@@ -1246,6 +1261,11 @@ int64_t __cajeta_prof_shutdown(void) {
     // §3.1 promises them whether or not anyone armed the sampler.
     if (packets == 0)
         packets = __cajeta_prof_instr_only_to_trace(__cajeta_prof_out_path());
+    // 6.6 — and a run that dispatched to the GPU but collected no samples still
+    // measured something. The drain returns early on an empty ring, so without
+    // this a short GPU program would profile to nothing.
+    if (packets == 0)
+        packets = __cajeta_prof_gpu_only_to_trace(__cajeta_prof_out_path());
     return packets;
 }
 

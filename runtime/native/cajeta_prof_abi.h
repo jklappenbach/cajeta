@@ -198,6 +198,15 @@ int32_t     __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
 // parked launch can end up published at host tier instead: the table was full
 // when it launched (overflow), or its record never came back (unclaimed).
 int32_t     __cajeta_prof_gpu_collect(int32_t backend);
+// ── Unit 6.6: GPU capture, armed by the same environment as the sampler ────
+//
+// A profiled run records GPU work into the SAME trace as its samples (§8.3's
+// one time axis, §8.8's one file). Bounded: the ring drops the oldest and
+// counts it, the same bargain the sampler's ring makes.
+int32_t     __cajeta_prof_gpu_capture_arm(int32_t cap);
+void        __cajeta_prof_gpu_capture_disarm(void);
+int64_t     __cajeta_prof_gpu_captured(void);
+int64_t     __cajeta_prof_gpu_capture_dropped(void);
 int32_t     __cajeta_prof_gpu_pending_count(void);
 void        __cajeta_prof_gpu_pending_reset(void);
 int64_t     __cajeta_prof_gpu_pending_overflow(void);

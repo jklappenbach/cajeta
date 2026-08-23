@@ -600,6 +600,152 @@ static int32_t caj_gpu_writer_sink(const CajetaGpuEvent* recs, int32_t n, void* 
     return 0;
 }
 
+// ── 6.6 — capture, so a profiled run actually records GPU work ───────────
+//
+// Until this existed, CAJETA_PROFILER=1 armed the SAMPLER only. Nothing
+// registered a GPU sink, so a profiled run of a GPU program produced a
+// CPU-sampled trace with no device track, and Units 7 and 8 were reachable only
+// from tests that attached a writer by hand. `__cajeta_prof_shutdown` already
+// detached an attached GPU trace, which is how thoroughly the plumbing assumed
+// something on the other end.
+//
+// The events go into the SAME file as the samples, not a second one. §8.3 wants
+// host, fiber and device on one time axis and §8.8 wants that to be one file in
+// Perfetto with no export step — and §3.4 already settled the identical
+// question for instrumentation: "two files would make 'which tier produced this
+// number' a question about provenance the reader has to keep track of by hand."
+//
+// Which means buffering until drain. The ring is bounded and drops the OLDEST
+// on overflow, counting what it dropped — the same bargain the sampler's ring
+// makes, for the same reason: a profiler that grows without limit changes the
+// program it is measuring, and one that blocks changes it more.
+#define CAJ_GPU_CAPTURE_DEFAULT 8192
+
+static CajetaGpuEvent*  g_gpu_cap_ring = NULL;
+static int32_t          g_gpu_cap_size = 0;
+static int64_t          g_gpu_cap_head = 0;   // total ever written
+static int64_t          g_gpu_cap_dropped = 0;
+static int32_t          g_gpu_cap_sink = -1;
+static pthread_mutex_t  g_gpu_cap_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int32_t caj_gpu_capture_sink(const CajetaGpuEvent* recs, int32_t n, void* user) {
+    (void) user;
+    pthread_mutex_lock(&g_gpu_cap_lock);
+    if (g_gpu_cap_ring && g_gpu_cap_size > 0) {
+        for (int32_t i = 0; i < n; i++) {
+            if (g_gpu_cap_head >= g_gpu_cap_size) g_gpu_cap_dropped++;
+            g_gpu_cap_ring[g_gpu_cap_head % g_gpu_cap_size] = recs[i];
+            g_gpu_cap_head++;
+        }
+    }
+    pthread_mutex_unlock(&g_gpu_cap_lock);
+    return 0;
+}
+
+// Armed from the same environment that arms the sampler, and early — §9.6 wants
+// arming before any backend initializes, which is what lets Unit 8's
+// rocprofiler configure hook find its window (it gates on
+// __cajeta_prof_gpu_is_armed(), so before this the hook never fired outside
+// tests).
+int32_t __cajeta_prof_gpu_capture_arm(int32_t cap) {
+    if (g_gpu_cap_sink >= 0) return -1;
+    if (cap <= 0) cap = CAJ_GPU_CAPTURE_DEFAULT;
+    pthread_mutex_lock(&g_gpu_cap_lock);
+    g_gpu_cap_ring = (CajetaGpuEvent*) calloc((size_t) cap, sizeof(CajetaGpuEvent));
+    g_gpu_cap_size = g_gpu_cap_ring ? cap : 0;
+    g_gpu_cap_head = 0;
+    g_gpu_cap_dropped = 0;
+    pthread_mutex_unlock(&g_gpu_cap_lock);
+    if (!g_gpu_cap_ring) return -3;
+    // BATCHED: nothing is waiting on promptness, and per-record delivery would
+    // wake the delivery thread for every launch.
+    g_gpu_cap_sink = __cajeta_prof_gpu_sink_register(caj_gpu_capture_sink, NULL,
+                                                     CAJETA_GPU_SINK_BATCHED);
+    if (g_gpu_cap_sink < 0) { free(g_gpu_cap_ring); g_gpu_cap_ring = NULL; g_gpu_cap_size = 0; return -4; }
+    return 0;
+}
+
+void __cajeta_prof_gpu_capture_disarm(void) {
+    if (g_gpu_cap_sink >= 0) {
+        __cajeta_prof_gpu_sink_unregister(g_gpu_cap_sink);
+        g_gpu_cap_sink = -1;
+    }
+    pthread_mutex_lock(&g_gpu_cap_lock);
+    free(g_gpu_cap_ring);
+    g_gpu_cap_ring = NULL;
+    g_gpu_cap_size = 0;
+    g_gpu_cap_head = 0;
+    g_gpu_cap_dropped = 0;
+    pthread_mutex_unlock(&g_gpu_cap_lock);
+}
+
+int64_t __cajeta_prof_gpu_captured(void) {
+    const int64_t head = __atomic_load_n(&g_gpu_cap_head, __ATOMIC_ACQUIRE);
+    return head < (int64_t) g_gpu_cap_size ? head : (int64_t) g_gpu_cap_size;
+}
+
+int64_t __cajeta_prof_gpu_capture_dropped(void) {
+    return __atomic_load_n(&g_gpu_cap_dropped, __ATOMIC_ACQUIRE);
+}
+
+/**
+ * Emit what was captured into an already-open writer, in launch order.
+ *
+ * Called from the sampler's drain so both halves land in one file. Collects the
+ * device's outstanding records first: a launch parked waiting for its dispatch
+ * record is still parked at exit, and without this its device span would be
+ * dropped in favour of the host window it already had.
+ */
+void __cajeta_prof_gpu_capture_settle(void) {
+    // Claim the device's outstanding records and deliver everything queued.
+    // Separate from the emit, and called BEFORE the trace's metadata packet is
+    // written, because that packet carries the backend's account of itself
+    // (§5.2.2) — settling afterwards produced traces annotated rocm_records=0
+    // while 144 device spans sat in the same file.
+    __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
+    __cajeta_prof_gpu_flush();
+}
+
+int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts) {
+    (void) ts;
+    __cajeta_prof_gpu_capture_settle();
+
+    pthread_mutex_lock(&g_gpu_cap_lock);
+    const int64_t head = g_gpu_cap_head;
+    const int32_t size = g_gpu_cap_size;
+    if (!g_gpu_cap_ring || size <= 0 || head <= 0) {
+        pthread_mutex_unlock(&g_gpu_cap_lock);
+        return 0;
+    }
+    int64_t n = head < (int64_t) size ? head : (int64_t) size;
+    CajetaGpuEvent* ordered = (CajetaGpuEvent*) malloc((size_t) n * sizeof(CajetaGpuEvent));
+    if (!ordered) { pthread_mutex_unlock(&g_gpu_cap_lock); return 0; }
+    const int64_t tail = head - n;
+    for (int64_t i = 0; i < n; i++) ordered[i] = g_gpu_cap_ring[(tail + i) % size];
+    pthread_mutex_unlock(&g_gpu_cap_lock);
+
+    CajGpuTracks seen;
+    seen.n = 0;
+    int64_t packets = __cajeta_prof_gpu_emit(w, &seen, ordered, (int32_t) n);
+    free(ordered);
+    return packets;
+}
+
+// A run that dispatched to the GPU but collected no samples still measured
+// something. Mirrors __cajeta_prof_instr_only_to_trace, and exists for the same
+// reason: the sampler's drain returns early on an empty ring, so without this a
+// short GPU program profiles to an empty file.
+int64_t __cajeta_prof_gpu_only_to_trace(const char* path) {
+    if (__cajeta_prof_gpu_captured() <= 0 && __cajeta_prof_gpu_pending_count() <= 0) return 0;
+    static CajProfWriter w;
+    if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    __cajeta_prof_trace_metadata(&w, 0, "gpu", 0, 0, 0, 0, 0);
+    __cajeta_prof_gpu_captured_to_trace(&w, 0);
+    int64_t packets = __cajeta_prof_trace_packets(&w);
+    __cajeta_prof_trace_close(&w);
+    return packets;
+}
+
 int32_t __cajeta_prof_gpu_trace_attach(const char* path) {
     if (g_gpu_writer_open) return -1;
     if (!__cajeta_prof_trace_open(&g_gpu_writer, path)) return -2;
