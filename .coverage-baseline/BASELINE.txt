@@ -1,0 +1,13 @@
+>> Discovering tests...
+>> Running 66 tests across 6 shards (BATCH: 5 suites -> 6 chunks of <=16, one process each + per-test crash fallback)...
+
+=== Test summary ===
+Discovered: 66   Workers: 6   Elapsed: 2056s
+Passed: 64   Failed: 0   Timed out: 0   Crashed: 2   Skipped/disabled: 0
+
+Crashed:
+  ContainerSweepTests.heapLendStoresABorrow (exit 1)
+  OwnershipLeakProbe.stringElementTransferSpellings (exit 139)
+
+Re-run a crashing test in isolation with:
+  PARALLEL=0 ./cajeta_tests.sh <SuiteName.testName>

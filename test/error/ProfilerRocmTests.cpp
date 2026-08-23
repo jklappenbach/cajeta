@@ -37,6 +37,8 @@ struct Rocm {
     const char* (*libPath)(void)     = nullptr;
     int32_t     (*tierFor)(int32_t)  = nullptr;
     const char* (*vtblName)(int32_t) = nullptr;
+    int32_t     (*entryCount)(void)  = nullptr;
+    int32_t     (*entriesBound)(void) = nullptr;
 };
 
 Rocm& roc() {
@@ -55,6 +57,8 @@ Rocm& roc() {
         x.libPath  = reinterpret_cast<const char* (*)(void)>(sym("__cajeta_prof_rocm_lib_path"));
         x.tierFor  = reinterpret_cast<int32_t (*)(int32_t)>(sym("__cajeta_prof_gpu_backend_tier"));
         x.vtblName = reinterpret_cast<const char* (*)(int32_t)>(sym("__cajeta_prof_gpu_backend_name"));
+        x.entryCount   = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_entry_count"));
+        x.entriesBound = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_entries_bound"));
         return x;
     }();
     return r;
@@ -164,4 +168,71 @@ TEST(ProfilerRocm, resetReturnsToTheUnattemptedState) {
     r.reset();
     EXPECT_EQ(r.state(), CAJETA_ROCM_UNATTEMPTED)
         << "reset left the previous attempt's verdict in place";
+}
+
+// ── 8.2.a — entry-point binding ──────────────────────────────────────────
+//
+// dlopen succeeding is not the same as the SDK being usable. A library can load
+// and still not export what buffered dispatch tracing needs — a partial ROCm
+// install, a version older than the buffer-tracing API, or (as here) an
+// unrelated library on the override path. If binding stopped at dlopen, that
+// case would come out READY and every later call would go through a null
+// pointer, which is a crash in the profiler rather than a degraded measurement.
+//
+// libm is the stand-in: it is present wherever glibc is, it loads, and it
+// exports none of what is wanted. Building a fixture .so would test the same
+// thing at more cost.
+
+namespace {
+const char* kLoadsButIsNotTheSdk = "libm.so.6";
+}
+
+TEST(ProfilerRocm, aLibraryThatLoadsWithoutTheEntryPointsIsAbsentNotReady) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.state && r.entryCount && r.entriesBound);
+    ASSERT_GT(r.entryCount(), 0) << "no entry points declared; the check is vacuous";
+
+    ForcedLib forced(kLoadsButIsNotTheSdk);
+    r.reset();
+    const int32_t rc = r.init();
+
+    EXPECT_EQ(rc, 0) << "a library with none of the entry points reported success";
+    EXPECT_EQ(r.state(), CAJETA_ROCM_ABSENT)
+        << "dlopen succeeded so binding declared victory; the entry points are "
+           "what the backend actually calls";
+    EXPECT_LT(r.entriesBound(), r.entryCount());
+}
+
+TEST(ProfilerRocm, aMissingEntryPointIsNamedInTheReason) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.reason);
+
+    ForcedLib forced(kLoadsButIsNotTheSdk);
+    r.reset();
+    r.init();
+
+    const std::string why = r.reason() ? r.reason() : "";
+    // "wrong version of the SDK" is only actionable if the report says which
+    // symbol went missing — that names the version boundary that was crossed.
+    EXPECT_NE(why.find("rocprofiler_"), std::string::npos)
+        << "the reason does not name the entry point that failed to resolve; "
+           "got [" << why << "]";
+}
+
+TEST(ProfilerRocm, everyEntryPointResolvesWhenTheRealSdkBinds) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.init && r.reset && r.state && r.entryCount && r.entriesBound);
+
+    ForcedLib forced(nullptr);   // real search path
+    r.reset();
+    r.init();
+
+    if (r.state() != CAJETA_ROCM_READY) {
+        GTEST_SKIP() << "rocprofiler-sdk not loadable here (" << r.reason()
+                     << ") — this half needs the SDK and says so rather than "
+                        "passing quietly";
+    }
+    EXPECT_EQ(r.entriesBound(), r.entryCount())
+        << "READY with " << r.entriesBound() << " of " << r.entryCount()
+        << " entry points bound";
 }

@@ -148,6 +148,11 @@ void        __cajeta_prof_rocm_reset(void);
 int32_t     __cajeta_prof_rocm_state(void);
 const char* __cajeta_prof_rocm_reason(void);
 const char* __cajeta_prof_rocm_lib_path(void);
+// How many entry points the backend needs, and how many the last attempt
+// resolved. Kept separate so "bound nothing" (wrong library) and "bound most"
+// (wrong SDK version) are distinguishable without parsing the reason string.
+int32_t     __cajeta_prof_rocm_entry_count(void);
+int32_t     __cajeta_prof_rocm_entries_bound(void);
 
 // ── Unit 9: clock correlation and integrity (spec §6, §11) ────────────────
 //
