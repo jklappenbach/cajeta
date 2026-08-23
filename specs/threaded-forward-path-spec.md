@@ -121,14 +121,45 @@ Read from the compiler's own tests, not assumed.
   records two ISAs choosing independently. With an unsigned receiver the
   seam passes `isSigned=false` and zero-extends the activations too. The
   host path is correct only because it bypasses this seam entirely.
-- **3.5.6** BLAST RADIUS — every device backend, not just the CPU one. The
-  Vulkan override selects `OpSDot`/`OpUDot` and the AMDGPU override selects
-  `amdgcn_sdot4`/`udot4` from the same single flag; both pairs are
-  symmetric, so neither can express unsigned x signed. `dotAccum` is
-  therefore wrong on GPU too — found on the CPU backend only because that is
-  the backend being routed first. The fix needs two signedness flags at the
-  seam plus a mixed path per backend (`OpSUDot` on Vulkan where available; a
-  widen-and-multiply on AMDGPU, since sdot4/udot4 cannot do it).
+- **3.5.6** BLAST RADIUS — every device backend. First asserted from
+  reading the overrides, then MEASURED ON SILICON, because this project does
+  not accept the former: built with `--xpu-backend=amdgpu` and run on a real
+  **gfx1151**, the same probe returns **6440** — bit-for-bit the CPU-backend
+  answer, and the same unsigned-activation arithmetic.
+
+  Control, on the same GPU in the same build: `tagK` (scalar stores) returns
+  `7 8 9 10` and `copyK` (`vload`/`vstore` of int32) returns
+  `-20 -17 -14 -11`, both correct, and a `amdgcn-amd-amdhsa--gfx1151` code
+  object is present in the binary. The GPU path is live and healthy;
+  `dotAccum` specifically is wrong on it.
+
+  WHY, precisely: hardware DP4a comes in exactly two flavours — signed x
+  signed and unsigned x unsigned — and the compiler picks between them with
+  ONE bit taken from the receiver's type. Q4_K weights are unsigned nibbles,
+  so the receiver is `uint8`, the bit says "unsigned", and AMD's
+  `v_dot4_u32_u8` reads the genuinely-negative `int8` activations as
+  unsigned bytes: -127 becomes 129, -90 becomes 166. Not a rounding
+  difference — a different computation.
+
+  The irony is structural. `dotAccum` exists BECAUSE of the asymmetric
+  unsigned x signed shape — it is why x86 has `vpdpbusd`, ARM `usdot`,
+  RISC-V `vqdotsu`, and `simd-fused-integer-madd` opens by noting two ISAs
+  chose that asymmetry independently. The device seam models signedness as
+  one symmetric bit, so the single shape the operation was built to express
+  is the one shape it cannot represent.
+
+  ACCOUNTABILITY: the AMDGPU override was added earlier in this same arc
+  (`simd-fused-integer-madd` 1.6). It emitted `sdot4`/`udot4` off the
+  seam's existing single flag and inherited the defect rather than noticing
+  it — and it shipped with no device-side correctness test, only the host
+  ones, which is why it read as done.
+
+  FIX SHAPE: two signedness flags at the seam, plus a mixed path per
+  backend. Vulkan can use `OpSUDot` (`SPV_KHR_integer_dot_product` has the
+  mixed form; the override simply does not reach for it). AMDGPU has no
+  mixed dot4 at all, so it needs the widen-and-multiply fallback there —
+  which means the GPU tier for quantized inference is slower than assumed,
+  and that belongs in the q8_K routing decision.
 - **3.5.7** SECOND, INDEPENDENT DEFECT found by the same probe: the
   **portable tier is wrong under AOT** while correct under JIT. Same source
   at `--cpu=x86-64`:
