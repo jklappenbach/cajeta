@@ -14,8 +14,7 @@
 // ============================================================================
 
 #define CAJETA_SHARED_BIT ((int64_t) 1 << 63)
-#define CAJETA_SHARED_CAPACITY (1 << 14)
-#define CAJETA_SHARED_LOAD_CAP ((CAJETA_SHARED_CAPACITY * 3) / 4)
+#define CAJETA_SHARED_INITIAL_CAPACITY (1 << 14)
 #define CAJETA_SHARED_TOMBSTONE ((void*) 1)
 
 typedef struct {
@@ -23,12 +22,97 @@ typedef struct {
     int64_t rc;
 } caj_shared_entry;
 
-static caj_shared_entry __cajeta_shared_table[CAJETA_SHARED_CAPACITY];
+// The table GROWS. It used to be a fixed 1<<14 array whose insert silently
+// returned once three quarters full, after warning once — and a promotion that
+// fails to insert has already set the buffer's shared bit, so its release finds
+// no entry and the buffer can never be freed. A sizing limit became unbounded
+// memory loss, in exactly the programs big enough to reach it.
+//
+// The limit was not theoretical. `cajeta-coco` parsing a 2.7 MB cross-reference
+// index retains ~12,000 live strings and saturated the table during PARSING,
+// before doing any work: measured 333 promotions for 104 site rows and 11,954+
+// for 13,684 xref records — both linear in retained data. Nothing was leaking;
+// the table was simply too small for a program that holds an index in memory.
+//
+// Growth is amortized doubling with a rehash. The rehash also drops
+// tombstones, which the fixed table accumulated forever — they cost probe
+// length on every lookup and were never reclaimed.
+static caj_shared_entry* __cajeta_shared_table = NULL;
+static int __cajeta_shared_capacity = 0;
 static int __cajeta_shared_entries = 0;
+static int __cajeta_shared_tombstones = 0;
 static pthread_mutex_t __cajeta_shared_mu = PTHREAD_MUTEX_INITIALIZER;
 
+static inline uint64_t caj_shared_hash_cap(const void* p, int cap) {
+    return (((uintptr_t) p) >> 4) & (uint64_t) (cap - 1);
+}
+
 static inline uint64_t caj_shared_hash(const void* p) {
-    return (((uintptr_t) p) >> 4) & (CAJETA_SHARED_CAPACITY - 1);
+    return caj_shared_hash_cap(p, __cajeta_shared_capacity);
+}
+
+// Live entries + tombstones, against which the 3/4 load factor is measured.
+// Tombstones MUST count: they occupy slots and lengthen probe sequences, and a
+// table full of them with few live entries would otherwise never be rehashed.
+static inline int caj_shared_occupancy(void) {
+    return __cajeta_shared_entries + __cajeta_shared_tombstones;
+}
+
+// Place into a table known to have room. No growth check, no counter updates —
+// used by the rehash, which owns the bookkeeping itself.
+static void caj_shared_place(caj_shared_entry* table, int cap, void* base, int64_t rc) {
+    uint64_t idx = caj_shared_hash_cap(base, cap);
+    for (;;) {
+        caj_shared_entry* e = &table[idx];
+        if (e->base == NULL) {
+            e->base = base;
+            e->rc = rc;
+            return;
+        }
+        idx = (idx + 1) & (uint64_t) (cap - 1);
+    }
+}
+
+// Grow to `cap` (or rehash in place at the same size when tombstones are what
+// filled the table). Returns 0 and leaves the table untouched if allocation
+// fails — the caller then falls back to the old refuse-and-leak behaviour,
+// which is the only remaining path that can leak and now requires a genuine
+// out-of-memory condition rather than merely a big program.
+static int caj_shared_rehash_locked(int cap) {
+    caj_shared_entry* fresh = (caj_shared_entry*) calloc((size_t) cap, sizeof(caj_shared_entry));
+    if (!fresh) return 0;
+    if (__cajeta_shared_table) {
+        for (int i = 0; i < __cajeta_shared_capacity; i++) {
+            caj_shared_entry* e = &__cajeta_shared_table[i];
+            if (e->base != NULL && e->base != CAJETA_SHARED_TOMBSTONE) {
+                caj_shared_place(fresh, cap, e->base, e->rc);
+            }
+        }
+        free(__cajeta_shared_table);
+    }
+    __cajeta_shared_table = fresh;
+    __cajeta_shared_capacity = cap;
+    __cajeta_shared_tombstones = 0;   // dropped by the rehash
+    return 1;
+}
+
+// Ensure there is room for one more insert. Doubles when live entries alone
+// are past the load factor; rehashes at the SAME size when tombstones are the
+// reason, so a long-running program that promotes and releases repeatedly
+// reclaims slots instead of growing without bound.
+static int caj_shared_reserve_locked(void) {
+    if (__cajeta_shared_capacity == 0) {
+        return caj_shared_rehash_locked(CAJETA_SHARED_INITIAL_CAPACITY);
+    }
+    if (caj_shared_occupancy() + 1 <= (__cajeta_shared_capacity * 3) / 4) {
+        return 1;
+    }
+    int target = __cajeta_shared_capacity;
+    if (__cajeta_shared_entries + 1 > (__cajeta_shared_capacity * 3) / 8) {
+        target = __cajeta_shared_capacity * 2;
+        if (target <= 0) return 0;   // capacity overflow; refuse rather than wrap
+    }
+    return caj_shared_rehash_locked(target);
 }
 
 int64_t __cajeta_shared_population(void) {
@@ -48,24 +132,29 @@ int64_t __cajeta_shared_masked_count(const void* base) {
 }
 
 static caj_shared_entry* caj_shared_find_locked(void* base) {
+    if (!__cajeta_shared_table) return NULL;
     uint64_t idx = caj_shared_hash(base);
-    for (int i = 0; i < CAJETA_SHARED_CAPACITY; i++) {
+    for (int i = 0; i < __cajeta_shared_capacity; i++) {
         caj_shared_entry* e = &__cajeta_shared_table[idx];
         if (e->base == base) return e;
         if (e->base == NULL) return NULL;
-        idx = (idx + 1) & (CAJETA_SHARED_CAPACITY - 1);
+        idx = (idx + 1) & (uint64_t) (__cajeta_shared_capacity - 1);
     }
     return NULL;
 }
 
 static void caj_shared_insert_locked(void* base, int64_t rc) {
-    if (__cajeta_shared_entries >= CAJETA_SHARED_LOAD_CAP) {
+    if (!caj_shared_reserve_locked()) {
+        // Out of memory, not out of table. The buffer keeps its shared bit and
+        // will not be freed — the same leak as before, now reachable only when
+        // the allocator itself has failed.
         static int warned = 0;
         if (!warned) {
             fprintf(stderr,
-                "cajeta: shared-buffer table reached load cap (%d). Further "
-                "promotions leak their buffers (correctness-preserving).\n",
-                CAJETA_SHARED_LOAD_CAP);
+                "cajeta: cannot grow the shared-buffer table (out of memory at "
+                "%d entries). Further promotions leak their buffers "
+                "(correctness-preserving).\n",
+                __cajeta_shared_capacity);
             warned = 1;
         }
         return;
@@ -74,12 +163,13 @@ static void caj_shared_insert_locked(void* base, int64_t rc) {
     for (;;) {
         caj_shared_entry* e = &__cajeta_shared_table[idx];
         if (e->base == NULL || e->base == CAJETA_SHARED_TOMBSTONE) {
+            if (e->base == CAJETA_SHARED_TOMBSTONE) __cajeta_shared_tombstones--;
             e->base = base;
             e->rc = rc;
             __cajeta_shared_entries++;
             return;
         }
-        idx = (idx + 1) & (CAJETA_SHARED_CAPACITY - 1);
+        idx = (idx + 1) & (uint64_t) (__cajeta_shared_capacity - 1);
     }
 }
 
@@ -143,6 +233,7 @@ static int caj_shared_release_locked(void* base) {
     if (e->rc > 0) return 0;
     e->base = CAJETA_SHARED_TOMBSTONE;
     __cajeta_shared_entries--;
+    __cajeta_shared_tombstones++;
     return 1;
 }
 
