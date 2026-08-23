@@ -601,3 +601,60 @@ TEST(ProfilerRocm, theDeviceClockIsMappedOntoTheHostClock) {
         << "device clock maps to " << d << " but the host clock says " << h
         << " (" << (d - h) << " ns apart) — the domains are not being mapped";
 }
+
+// ── 8.1.f — concurrency survives the measurement (§5.1.3) ────────────────
+//
+// A profiler that serializes what it measures is reporting a program that did
+// not run. There are two ways to get that wrong and they need separate checks:
+// imposing serialization on the PROGRAM (waiting for the device inside the
+// launch path) and flattening it in the RECORD (clamping or reordering spans so
+// concurrent work reads as sequential). This is the second; the first needs a
+// GPU and lives in ProfilerRocmDispatchDeviceTests.
+
+TEST(ProfilerRocm, twoLaunchesInFlightKeepTheirOverlap) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.launch && r.sinkRegister && r.resolve && r.pendingReset);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    Caught caught;
+    r.pendingReset();
+    const int32_t sink = r.sinkRegister(catchSink, &caught, CAJETA_GPU_SINK_PER_RECORD);
+    ASSERT_GE(sink, 0);
+
+    hipLaunch(r);
+    const int64_t first = r.lastLaunchId();
+    hipLaunch(r);
+    const int64_t second = r.lastLaunchId();
+    ASSERT_NE(first, second);
+    // Both in flight at once. A launch path that waited for the device would
+    // never have two parked, because the first would have completed before the
+    // second was issued.
+    EXPECT_EQ(r.pendingCount(), 2);
+
+    // Resolved SECOND-FIRST on purpose: records come back in completion order,
+    // which is not launch order, and a table that assumed otherwise would
+    // mis-attribute every span on a machine where the shorter kernel was issued
+    // second.
+    ASSERT_EQ(r.resolve(second, 3000, 7000), 1);
+    ASSERT_EQ(r.resolve(first,  1000, 5000), 1);
+    r.gpuFlush();
+    r.sinkUnregister(sink);
+
+    ASSERT_EQ(caught.events.size(), 2u);
+    const CajetaGpuEvent* a = nullptr;
+    const CajetaGpuEvent* b = nullptr;
+    for (const auto& e : caught.events) {
+        if (e.launch_id == first)  a = &e;
+        if (e.launch_id == second) b = &e;
+    }
+    ASSERT_TRUE(a && b) << "a launch id was lost or swapped in the pending table";
+    EXPECT_EQ(a->dev_start_ns, 1000);
+    EXPECT_EQ(a->dev_end_ns,   5000);
+    EXPECT_EQ(b->dev_start_ns, 3000);
+    EXPECT_EQ(b->dev_end_ns,   7000);
+    // The overlap the spans describe is still there. Nothing clamped b to start
+    // where a ended, which is what a table keyed on "the launch currently
+    // running" would have produced.
+    EXPECT_LT(b->dev_start_ns, a->dev_end_ns)
+        << "two overlapping device spans came back serialized";
+}

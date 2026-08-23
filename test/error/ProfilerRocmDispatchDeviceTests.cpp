@@ -70,6 +70,52 @@ const char* kSaxpySource =
     "    }\n"
     "}\n";
 
+// Two streams, two launches, no sync between them. The kernel spins long
+// enough that a host which waited for stream 1 could not possibly have issued
+// stream 2's launch before stream 1's kernel finished — which is what makes the
+// serialization question answerable from the timestamps.
+const char* kTwoStreamSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelStream;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class Spin {\n"
+    "    @Kernel\n"
+    "    public static void spin(KernelBuffer<float32> y, uint32 n, uint32 iters) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            float32 v = y[i];\n"
+    "            for (uint32 k = 0; k < iters; k = k + 1) { v = v * 1.0000001f + 1.0f; }\n"
+    "            y[i] = v;\n"
+    "        }\n"
+    "    }\n"
+    "    public static float32 run() {\n"
+    "        uint32 n = 4096;\n"
+    "        uint32 iters = 2000000;\n"
+    "        float32[] h = heap float32[n];\n"
+    "        for (uint32 i = 0; i < n; i = i + 1) { h[i] = 0.0f; }\n"
+    "        KernelBuffer<float32> a = heap KernelBuffer<float32>(0, n);\n"
+    "        KernelBuffer<float32> b = heap KernelBuffer<float32>(0, n);\n"
+    "        a.allocate();\n"
+    "        b.allocate();\n"
+    "        a.upload(h);\n"
+    "        b.upload(h);\n"
+    "        KernelStream s1 #= KernelStream.create();\n"
+    "        KernelStream s2 #= KernelStream.create();\n"
+    "        spin.launch(s1, grid: [16], block: [256])(a, n, iters);\n"
+    "        spin.launch(s2, grid: [16], block: [256])(b, n, iters);\n"
+    "        s1.sync();\n"
+    "        s2.sync();\n"
+    "        a.download(h);\n"
+    "        float32 first = h[0];\n"
+    "        a.free();\n"
+    "        b.free();\n"
+    "        s1.destroy();\n"
+    "        s2.destroy();\n"
+    "        return first;\n"
+    "    }\n"
+    "}\n";
+
 std::vector<CajetaGpuEvent> g_caught;
 
 int32_t catchSink(const CajetaGpuEvent* recs, int32_t n, void*) {
@@ -191,4 +237,85 @@ TEST(ProfilerRocmDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
     // cannot match rather than guessing.
     EXPECT_GT(device->launch_id, 0);
     EXPECT_STRNE(device->kernel_name ? device->kernel_name : "", "");
+}
+
+
+// ── 8.1.f — the profiler does not serialize the program (§5.1.3) ─────────
+//
+// The other half of 8.1.f. ProfilerRocmTests checks that overlapping spans
+// survive the pending table; this checks that the launch path never waited for
+// the device in the first place. Both matter and they fail differently: a
+// profiler that flushes inside end_launch produces perfectly ordered,
+// non-overlapping records of a program that in fact ran concurrently, and
+// nothing in the trace says so.
+//
+// Fresh process, for the same reason as the test above: the configuration
+// window closes at the first HIP call.
+TEST(ProfilerRocmDispatchDevice, twoStreamsAreNotSerializedByBeingMeasured) {
+    if (::getenv(kChildMarker) == nullptr) {
+        std::string out;
+        const int rc = runInFreshProcess(
+            "ProfilerRocmDispatchDevice.twoStreamsAreNotSerializedByBeingMeasured", out);
+        if (rc != 0) FAIL() << "the two-stream child failed (exit " << rc << "):\n" << out;
+        if (out.find("[  SKIPPED ]") != std::string::npos) GTEST_SKIP() << "child skipped:\n" << out;
+        SUCCEED() << out;
+        return;
+    }
+
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Amdgpu};
+    o.xpuArch = "gfx1100,gfx1151";
+    auto jit = CajetaJit::compile(kTwoStreamSource, "test.Spin", o);
+    ASSERT_NE(jit, nullptr);
+
+    auto sym = [&](const char* n) { return jit->lookupRawSymbol(n); };
+    auto rocmInit    = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_init"));
+    auto rocmConfig  = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_configure"));
+    auto rocmTracing = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_tracing"));
+    auto rocmReason  = reinterpret_cast<const char* (*)(void)>(sym("__cajeta_prof_rocm_reason"));
+    auto sinkReg     = reinterpret_cast<int32_t (*)(CajetaGpuSinkFn, void*, int32_t)>(
+                           sym("__cajeta_prof_gpu_sink_register"));
+    auto sinkUnreg   = reinterpret_cast<int32_t (*)(int32_t)>(sym("__cajeta_prof_gpu_sink_unregister"));
+    auto gpuCollect  = reinterpret_cast<int32_t (*)(int32_t)>(sym("__cajeta_prof_gpu_collect"));
+    auto gpuFlush    = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_gpu_flush"));
+    ASSERT_TRUE(rocmInit && rocmConfig && rocmTracing && sinkReg && gpuCollect && gpuFlush);
+
+    rocmInit();
+    rocmConfig();
+    if (!rocmTracing()) {
+        GTEST_SKIP() << "rocprofiler-sdk dispatch tracing not available here ("
+                     << (rocmReason ? rocmReason() : "no reason") << ")";
+    }
+    if (!HipDriver::available()) GTEST_SKIP() << "no ROCm/HIP device available";
+
+    g_caught.clear();
+    const int32_t sink = sinkReg(catchSink, nullptr, CAJETA_GPU_SINK_PER_RECORD);
+    ASSERT_GE(sink, 0);
+
+    auto run = jit->lookup<float (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    EXPECT_GT(run(), 0.0f) << "the spin kernel did not run";
+
+    gpuCollect(CAJ_GPU_BACKEND_HIP);
+    gpuFlush();
+    sinkUnreg(sink);
+
+    ASSERT_GE(g_caught.size(), 2u) << "two launches produced fewer than two records";
+    const CajetaGpuEvent* a = &g_caught[0];
+    const CajetaGpuEvent* b = &g_caught[1];
+    if (b->host_launch_ns < a->host_launch_ns) { const CajetaGpuEvent* t = a; a = b; b = t; }
+
+    const long long gap  = (long long) (b->host_launch_ns - a->host_launch_ns);
+    const long long span = (long long) (a->dev_end_ns - a->dev_start_ns);
+    std::printf(" RESULT u8_two_stream_launch_gap_ns=%lld\n", gap);
+    std::printf(" RESULT u8_two_stream_first_span_ns=%lld\n", span);
+
+    ASSERT_GT(span, 0) << "the first kernel has no device span to compare against";
+    // The host issued the second launch while the first kernel was still
+    // running. A profiler that flushed or synchronized inside end_launch would
+    // have made this gap at least as large as the kernel it waited for.
+    EXPECT_LT(gap, span)
+        << "the second launch was issued " << gap << " ns after the first, and the "
+           "first kernel only ran for " << span << " ns — the measurement "
+           "serialized the program (§5.1.3)";
 }
