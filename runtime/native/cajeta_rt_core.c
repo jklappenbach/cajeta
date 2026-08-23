@@ -1108,6 +1108,25 @@ void __cajeta_live_set_go_multithreaded(void) {
     __atomic_store_n(&__cajeta_live_set_mt, 1, __ATOMIC_RELEASE);
 }
 
+// SPIKE INSTRUMENT (threaded-forward-path plan 1.2.1). Forces the locked
+// live-set path on WITHOUT starting a second thread, so the cost of the flip
+// can be measured apart from the parallelism that normally justifies it. The
+// flip is otherwise one-way and only ever reached by starting a carrier /
+// timer / reactor / kernel-pool thread, which makes the two costs impossible
+// to separate in a normal run.
+//
+// Absent $CAJETA_LIVE_SET_MT this is a no-op and the unflipped path is
+// byte-identical to before, which is the property 1.2.1 requires. Ordering
+// against other constructors does not matter: it only sets a flag that every
+// reader loads atomically.
+__attribute__((constructor))
+static void __cajeta_live_set_mt_from_env(void) {
+    const char* e = getenv("CAJETA_LIVE_SET_MT");
+    if (e != NULL && *e != '\0' && *e != '0') {
+        __atomic_store_n(&__cajeta_live_set_mt, 1, __ATOMIC_RELEASE);
+    }
+}
+
 void __cajeta_live_set_add(void* p) {
     if (__atomic_load_n(&__cajeta_live_set_mt, __ATOMIC_ACQUIRE) == 0) {
         __cajeta_live_set_add_locked(p);

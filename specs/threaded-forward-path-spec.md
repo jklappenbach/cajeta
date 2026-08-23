@@ -91,11 +91,67 @@ Read from the compiler's own tests, not assumed.
 - **3.5.3** `dotAccum` was built with a device lowering
   (`AmdgpuKernelLowering.cpp`, `amdgcn_sdot4`/`udot4`), so it was designed
   for this path rather than retrofitted to it.
-- **3.5.4** NOT yet verified, and the first thing to settle: that
-  `dotAccum` reaches its **x86 VNNI tiers when compiled as a CPU-backend
-  kernel body**. Everything above says the shape is legal; none of it says
-  the fast lowering survives the kernel path. If it drops to the portable
-  or scalar tier, the q8_K kernel loses more than parallelism wins.
+- **3.5.4** MEASURED 2026-08-22 — the gate FAILS, and worse than the
+  question anticipated. It asked whether `dotAccum` keeps its VNNI tier in a
+  kernel body, expecting a performance answer. In a kernel body `dotAccum`
+  returns a **WRONG ANSWER**, silently.
+
+  Identical expression, identical inputs, identical reference; only the
+  mechanism differs (the control this project's method requires):
+
+  | path | instructions | lane 0 | correct |
+  |---|---|---|---|
+  | host | `vpdpbusd` | **-1240** | yes |
+  | CPU-backend kernel body | `vpmaddwd` + `vpaddd` | **6440** | no |
+
+  6440 is exactly the sum with the ACTIVATIONS read as unsigned
+  (`5*166 + 10*203 + 15*240 - 20`), against `-1240` read as signed. It is
+  neither a tier drop nor a reduction-order difference — the strided
+  interpretation gives -20, also not 6440. Probes rule out the buffers: a
+  `uint8` vload in a kernel reads back `0 5 10 15` and an `int8` vload reads
+  back `-127 -90 -53 -16`, both correct.
+- **3.5.5** ROOT CAUSE — the device lowering seam is
+  **symmetric-signedness** and cannot express what `dotAccum` means.
+  `KernelLowering.cpp` routes it through
+  `LoweringTarget::integerDot4x8(..., bool isSigned)` whose base is
+  `vecops::idotWiden`, which widens BOTH operands with the same flag. But
+  `dotAccum`'s contract is unsigned weights x SIGNED activations — the
+  asymmetry that is the entire reason the instruction family exists
+  (`vpdpbusd`, `usdot`, `vqdotsu`), and which `simd-fused-integer-madd`
+  records two ISAs choosing independently. With an unsigned receiver the
+  seam passes `isSigned=false` and zero-extends the activations too. The
+  host path is correct only because it bypasses this seam entirely.
+- **3.5.6** BLAST RADIUS — every device backend, not just the CPU one. The
+  Vulkan override selects `OpSDot`/`OpUDot` and the AMDGPU override selects
+  `amdgcn_sdot4`/`udot4` from the same single flag; both pairs are
+  symmetric, so neither can express unsigned x signed. `dotAccum` is
+  therefore wrong on GPU too — found on the CPU backend only because that is
+  the backend being routed first. The fix needs two signedness flags at the
+  seam plus a mixed path per backend (`OpSUDot` on Vulkan where available; a
+  widen-and-multiply on AMDGPU, since sdot4/udot4 cannot do it).
+- **3.5.7** SECOND, INDEPENDENT DEFECT found by the same probe: the
+  **portable tier is wrong under AOT** while correct under JIT. Same source
+  at `--cpu=x86-64`:
+
+  | build | lane 0 | correct |
+  |---|---|---|
+  | JIT (`VectorDotAccumTests`, 12/12 green) | -1240 | yes |
+  | AOT `--emit=exe` | **-20** | no |
+  | AOT, `CAJETA_SIMD_SCALAR_FALLBACK=1` | -1240 | yes |
+
+  -20 is the STRIDED reduction — `llvm.vector.partial.reduce.add`'s native
+  lane mapping with the deinterleave shuffle absent. The shuffle IS in the
+  emitted code path (`VectorOps.h` tier 2, and its mask is correct), and the
+  scalar floor under the same AOT build is right, which isolates the loss to
+  tier 2 under AOT. This echoes the `aot-bitcast-f32-isel-abort` finding that
+  the JIT runs the LLVM verifier and AOT does not, and it means the whole
+  host test suite for this tier has been passing on a pipeline that is not
+  the one that ships.
+- **3.5.8** IMPACT — contained, and Unit 3 proceeds. Of cajeta-llama's
+  packed mat-vecs only `q4kMatVecIntoQ8` uses `dotAccum`; the four f32
+  kernels that `matvecInto` actually routes today use `widenLo`/`widenHi`/
+  `toF32` and touch neither defect. So the routing re-scopes to the f32
+  kernels (plan 2.3.2) and the q8_K path waits on the seam fix.
 
 ## 4. Routing the mat-vec
 
@@ -151,8 +207,9 @@ Read from the compiler's own tests, not assumed.
 - **7.3** Bit-identical output per §6, gated by test.
 - **7.4** §5's cost is measured and reported as its own number. A net win
   that hides a large regression inside a larger gain is not acceptable.
-- **7.5** `dotAccum`'s lowering tier through the CPU kernel path is
-  reported explicitly (§3.5.4), not inferred from the end-to-end timing.
+- **7.5** DISCHARGED 2026-08-22 by §3.5.4-§3.5.7, with a stronger answer
+  than asked for: not a tier report but two correctness defects. Re-opens
+  when the seam is fixed and the q8_K path is routed.
 - **7.6** Every timing is taken on a verified-idle machine per
   `quant-scalar-decode-cost` §2, with an untouched control in the same
   interleaved run. Today's Q6_K result — where the changed kernel and the
