@@ -53,37 +53,51 @@ int __cajeta_get_stack_trace_capture(void) {
 static void __cajeta_trace_record(void* throwable) {
     if (!throwable) return;
     if (!__cajeta_stack_trace_capture_enabled) return;
-    // Skip trace capture inside a fiber. backtrace(3) walks the stack via
-    // frame pointers / DWARF; on a makecontext-allocated fiber stack the
-    // unwinder reaches the makecontext boundary and SIGSEGVs trying to walk
-    // past it. Re-enable when fiber-aware unwinding lands.
-    if (__cajeta_current_fiber) return;
+    // Only the NATIVE backtrace is fiber-hostile: backtrace(3) walks the stack
+    // via frame pointers / DWARF, and on a makecontext-allocated fiber stack the
+    // unwinder reaches the makecontext boundary and SIGSEGVs trying to walk past
+    // it. So it is skipped on a fiber, and a fiber's entry carries no raw
+    // addresses until fiber-aware unwinding lands.
+    //
+    // cajeta-profiler Unit 2: the SHADOW stack is not subject to that at all —
+    // it is a fixed array written by line_enter/mark/leave, read with no
+    // unwinder — and it is what getStackTrace() actually resolves. Skipping the
+    // whole function on a fiber therefore threw away the frames that DO work,
+    // which is why an in-fiber throw reported an empty trace. Capture the shadow
+    // frames on every context; skip only the backtrace(3) call.
     void* buf[CAJETA_TRACE_MAX_FRAMES];
-    int n = backtrace(buf, CAJETA_TRACE_MAX_FRAMES);
-    if (n <= 0) return;
-    void** frames = (void**) malloc((size_t) n * sizeof(void*));
-    if (!frames) return;
-    memcpy(frames, buf, (size_t) n * sizeof(void*));
+    int n = 0;
+    if (!__cajeta_current_fiber) {
+        n = backtrace(buf, CAJETA_TRACE_MAX_FRAMES);
+        if (n < 0) n = 0;
+    }
+    int32_t sc = __cajeta_shadow_get_top();
+    if (sc > CAJETA_SHADOW_MAX) sc = CAJETA_SHADOW_MAX;
+    if (sc < 0) sc = 0;
+    // Nothing to record either way — line-info off AND no native frames.
+    if (n <= 0 && sc <= 0) return;
+    void** frames = NULL;
+    if (n > 0) {
+        frames = (void**) malloc((size_t) n * sizeof(void*));
+        if (!frames) return;
+        memcpy(frames, buf, (size_t) n * sizeof(void*));
+    }
     struct cajeta_trace_entry* e =
         (struct cajeta_trace_entry*) malloc(sizeof(*e));
     if (!e) { free(frames); return; }
     e->throwable = throwable;
-    e->frames = frames;
+    e->frames = frames;      // NULL on a fiber; frame_count is 0 to match
     e->frame_count = n;
     // U3: snapshot the shadow line-stack (semantic frames) alongside the raw
     // addresses. Present only when codegen emitted line-info (enter/mark/leave).
     e->shadow = NULL;
     e->shadow_count = 0;
-    {
-        int32_t sc = __cajeta_shadow_get_top();
-        if (sc > CAJETA_SHADOW_MAX) sc = CAJETA_SHADOW_MAX;
-        if (sc > 0) {
-            CajetaShadowFrame* snap =
-                (CajetaShadowFrame*) malloc((size_t) sc * sizeof(CajetaShadowFrame));
-            if (snap) {
-                e->shadow_count = __cajeta_shadow_snapshot(snap, sc);
-                e->shadow = snap;
-            }
+    if (sc > 0) {
+        CajetaShadowFrame* snap =
+            (CajetaShadowFrame*) malloc((size_t) sc * sizeof(CajetaShadowFrame));
+        if (snap) {
+            e->shadow_count = __cajeta_shadow_snapshot(snap, sc);
+            e->shadow = snap;
         }
     }
     pthread_mutex_lock(&__cajeta_trace_mutex);
@@ -145,7 +159,10 @@ static void cajeta_print_frames_locked(struct cajeta_trace_entry* e, FILE* out) 
         }
         return;
     }
-    // Fallback: raw addresses symbolized by the C library.
+    // Fallback: raw addresses symbolized by the C library. A fiber's entry has
+    // none (backtrace(3) is skipped there), so guard rather than hand
+    // backtrace_symbols a NULL.
+    if (!e->frames || e->frame_count <= 0) return;
     char** syms = backtrace_symbols(e->frames, e->frame_count);
     if (syms) {
         for (int i = 0; i < e->frame_count; i++) fprintf(out, "  %s\n", syms[i]);
@@ -353,6 +370,11 @@ void __cajeta_throw(void* value) {
     // shadow line-stack depth to the catching try-frame's watermark before we
     // resume in its catch block. Snapshot already taken in __cajeta_trace_record.
     __cajeta_shadow_set_top((*excTop)->shadow_watermark);
+    // U10 (§3.11): and the instrumentation depth, for the same reason — the
+    // unwound frames never ran __cajeta_prof_instr_exit either. Leaving it
+    // high makes every later root call look as though it had a probed
+    // ancestor, which is exactly the fabricated call edge §3.11 forbids.
+    __cajeta_prof_instr_set_depth((*excTop)->instr_watermark);
     // 9.1: same for the DEBUG frame chain — the unwound frames never ran
     // __cajeta_dbg_frame_leave, so free every node between the current head
     // and the catching try-frame's watermark. Only nodes owned by THIS chain

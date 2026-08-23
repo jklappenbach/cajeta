@@ -1,10 +1,12 @@
 package dev.cajeta.idea.coverage
 
+import com.intellij.coverage.CoverageDataAnnotationsManager
 import com.intellij.coverage.CoverageDataManager
 import com.intellij.coverage.CoverageRunner
 import com.intellij.coverage.CoverageSuitesBundle
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
@@ -61,12 +63,37 @@ object CocoRunLoader {
         // this at load rather than lazily is what makes "changed after the run"
         // detectable at all (spec §5).
         val resolver = CocoPathResolver.forProfile(profile, sourceRootsOf(project))
+        val resolved = coverage.files.map(resolver::resolve)
+        // An unresolved path is not an error anywhere downstream — it just
+        // annotates no file. That silence is exactly how a loaded run came to
+        // paint nothing, so say it once, with a name to grep for.
+        val unresolved = coverage.files.filterIndexed { i, _ -> !File(resolved[i]).isAbsolute }
+        if (unresolved.isNotEmpty()) {
+            LOG.warn(
+                "coco: ${unresolved.size} of ${coverage.files.size} measured files did not resolve " +
+                    "to a path on disk (first: ${unresolved.first()}); those files will show no " +
+                    "coverage. Check the source root in cajeta.json."
+            )
+        }
         CocoFreshness.getInstance(project)
-            .observeRun(profile, coverage.files.map(resolver::resolve))
+            .observeRun(profile, resolved)
 
         // Classify while still off the EDT — this queries the xref index.
-        CocoAnalysis.getInstance(project).update(coverage)
-        CocoAnalysis.getInstance(project).updateSidecars(profile)
+        //
+        // Isolated from the load. Classification is the SECONDARY product: the
+        // gutters come from the profile alone, while dead-vs-untested needs the
+        // xref index and everything that can go wrong with it. A threading
+        // violation in here used to take the entire load down and leave the
+        // coverage window empty, which reads as "coverage is broken" rather than
+        // "one tab has no data".
+        try {
+            CocoAnalysis.getInstance(project).update(coverage)
+            CocoAnalysis.getInstance(project).updateSidecars(profile)
+        } catch (e: ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
+            LOG.warn("coco: classification failed; loading coverage without it", e)
+        }
 
         val manager = CoverageDataManager.getInstance(project)
         val runner = CoverageRunner.getInstance(CajetaCoverageRunner::class.java)
@@ -74,6 +101,23 @@ object CocoRunLoader {
         ApplicationManager.getApplication().invokeLater {
             if (!project.isDisposed) {
                 manager.chooseSuitesBundle(CoverageSuitesBundle(suite))
+
+                // Re-annotate the editors that are ALREADY OPEN.
+                //
+                // `CoverageDataAnnotationsManager` annotates on two triggers:
+                // an editor opening, and its own `update()`. Choosing a bundle
+                // is not one of them. So loading a run left every open editor
+                // exactly as it was — and since loading coverage is something
+                // you do WITH your files open, that is every editor you were
+                // looking at. The tool window filled in, the percentages were
+                // right, and the gutters stayed blank until the file was closed
+                // and reopened.
+                //
+                // Diagnosed by closing and reopening one file: the gutters
+                // appeared, which proved the data, the ProjectData keys and
+                // every engine gate were already correct, and that the only
+                // thing missing was this call.
+                CoverageDataAnnotationsManager.getInstance(project).update()
             }
         }
         LOG.info("coco: loaded coverage from ${profile.path}")
@@ -117,9 +161,7 @@ object CocoRunLoader {
             "Coverage at ${outcome.profile.path} could not be read: ${outcome.reason}"
     }
 
-    private fun sourceRootsOf(project: Project): List<File> =
-        com.intellij.openapi.roots.ProjectRootManager.getInstance(project)
-            .contentSourceRoots.mapNotNull { it.canonicalPath }.map(::File)
+    private fun sourceRootsOf(project: Project): List<File> = CocoSourceRoots.of(project)
 
     private val LOG = logger<CocoRunLoader>()
 }

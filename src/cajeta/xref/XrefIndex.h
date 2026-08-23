@@ -50,6 +50,13 @@ namespace cajeta::xref {
         // renaming one overload rewrites the other's call sites.
         std::string overloadKey;
         std::vector<std::string> modifiers;
+        // Applied annotations, as CANONICAL FQNs where the annotation type
+        // resolves (`dev.cajeta.unit.Test`), and as written otherwise.
+        //
+        // Names only, deliberately: the consumers this exists for ask "is this
+        // method a test", "is it disabled" — presence questions. Argument values
+        // are a separate feature with separate consumers and are not recorded.
+        std::vector<std::string> annotations;
         SourceRef at;
     };
 

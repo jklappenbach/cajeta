@@ -670,7 +670,26 @@ static uint64_t caj_kpool_wait_gen(uint64_t seen) {
     return __atomic_load_n(&g_caj_kpool.shutdown, __ATOMIC_ACQUIRE) ? 0 : g;
 }
 
+// cajeta-profiler 3.2.d — a pool worker is a host thread running program work
+// (the kernel body), so §2.1 requires the sampler to see it. Registered around
+// the loop rather than inside it, matching the carrier/timer/reactor wrappers:
+// every return path unregisters, including the shutdown break below, so a
+// module teardown cannot leave a dead handle in the registry for the sampler to
+// dereference.
+//
+// This file is textually part of the runtime TU (cajeta_xpu.c is #included
+// after cajeta_rt_core.c), so the registry is a direct call — the plan's note
+// about needing an extern declaration was wrong.
+static void* caj_kpool_worker_body(void* arg);
+
 static void* caj_kpool_worker_main(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = caj_kpool_worker_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+
+static void* caj_kpool_worker_body(void* arg) {
     long myid = (long) (intptr_t) arg;
     // Baseline below the first dispatchable generation (see caj_kpool_dispatch):
     // generation starts at 0, first dispatch bumps it to 1. Starting at 0 makes a
@@ -694,6 +713,13 @@ static void* caj_kpool_worker_main(void* arg) {
         }
     }
     return NULL;
+}
+
+// How many pool workers exist right now. A diagnostic, and the only way a test
+// can tell "the registry did not grow" from "the launch never forked anything"
+// — the second reads as a pass on every assertion that matters.
+int32_t __cajeta_xpu_cpu_pool_threads(void) {
+    return (int32_t) g_caj_kpool.nthreads;
 }
 
 // Lazily create `cap-1` persistent workers (cap = chosen worker count). Grows

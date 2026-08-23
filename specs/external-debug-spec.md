@@ -96,7 +96,12 @@ The single switch controlling what a build carries.
       release output (i.e. `line`, per 2.1.3).
 2.2.3 As a developer wanting cheap semantic traces without debugger overhead,
       when I build `--debug-info=line`, then exception traces still resolve to
-      `Type.method(File.cajeta:NN)` and no safepoints are emitted.
+      `Type.method(File.cajeta)` and no safepoints are emitted. The exact
+      `:NN` moved to `full` on 2026-08-22: the per-statement probe carrying it
+      measured 3.5-9.4x at -O3 where the per-call probe naming the frame
+      measured at parity, so `line` no longer promises a line number.
+      `StackFrame.line` is 0 there, which is what it already documented as
+      "line-info unavailable".
 2.2.4 As a build-cache user, when I flip `--debug-info`, then the cache treats it
       as a different build and recompiles rather than re-publishing.
 

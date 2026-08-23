@@ -403,51 +403,366 @@ void __cajeta_dbg_frame_leave(void* node) {
 // in an AOT exe. `leave` fires only on normal returns; an exception unwind is
 // handled by restoring `__cajeta_shadow_top` to the catching try-frame's
 // watermark in `__cajeta_throw` (see cajeta_rt_io.c) — so a throw-across-frames
-// leaves no stale entries. Fiber line-info is deferred (spec §1.5): a fiber's
-// enter/mark/leave run on the carrier thread's TLS stack, which can leave stale
-// entries across a yield — bounded + memory-safe (fixed array), never resolved
-// for in-fiber throws (trace capture already skips fibers).
-typedef struct {
-    const char* typeName;    // "test.App"
-    const char* methodName;  // "run"
-    const char* fileName;    // "App.cajeta"
-} CajetaFrameDesc;
+// leaves no stale entries.
+//
+// cajeta-profiler Unit 2: the stack is PER FIBER, not per carrier thread. A
+// carrier hosts many fibers on one OS thread, so a single `__thread` stack
+// aliased across every fiber it ran — frames from different fibers interleaved
+// into one stack and a yield left stale entries behind. The selector
+// __cajeta_shadow_ptr picks the running fiber's slot or the program thread's
+// TLS, exactly as __cajeta_dbg_top_ptr does for the debug frame chain.
+//
+// The slot is an inline fixed array rather than a lazily-allocated pointer, so
+// this keeps its never-mallocs property on the enter/mark/leave hot path. It
+// costs CAJETA_SHADOW_MAX * sizeof(CajetaShadowFrame) = 8 KB per fiber against
+// a CAJETA_FIBER_STACK_SIZE of 1 MB — 0.8% of what a fiber already reserves.
+// CajetaFrameDesc / CajetaShadowFrame / CajetaProfSample and their bounds live
+// in the profiler ABI header, so the trace writer's transform can be driven by a
+// synthetic sample array in CI without dragging in the whole runtime.
+#include "cajeta_prof_abi.h"
 
-typedef struct {
-    const CajetaFrameDesc* desc;
-    int32_t line;
-} CajetaShadowFrame;
 
-#define CAJETA_SHADOW_MAX 512
-static __thread CajetaShadowFrame __cajeta_shadow[CAJETA_SHADOW_MAX];
-static __thread int32_t __cajeta_shadow_top = 0;
+// One shadow stack. The program thread owns the __thread instance below; each
+// fiber owns one inline in `struct cajeta_fiber`.
+typedef struct {
+    CajetaShadowFrame frames[CAJETA_SHADOW_MAX];
+    int32_t top;
+    // cajeta-profiler Unit 10 (spec §3.11): how many INSTRUMENTATION probes are
+    // live on this fiber's stack. Lives here, and not in a __thread of its own,
+    // for the same reason the frames do — a carrier hosts many fibers, so a
+    // per-thread depth would be shared by every fiber that ever ran on it and
+    // a yield would leave the next one believing it had a probed ancestor.
+    // Zero at entry means the caller was outside the selection.
+    int32_t instr_depth;
+} CajetaShadowStack;
+
+// Program/main-thread slot — used by any thread that is not running a fiber
+// (the JIT entry runs on a plain bg thread, not a carrier fiber).
+static __thread CajetaShadowStack __cajeta_main_shadow;
+
+// Selector for the live shadow stack, mirroring __cajeta_scope_top_ptr /
+// __cajeta_dbg_top_ptr. Defined in cajeta_rt_concurrent_exec.c, where
+// __cajeta_current_fiber and struct cajeta_fiber are in scope.
+CajetaShadowStack* __cajeta_shadow_ptr(void);
 
 void __cajeta_line_enter(const void* desc) {
-    int32_t t = __cajeta_shadow_top;
+    CajetaShadowStack* s = __cajeta_shadow_ptr();
+    int32_t t = s->top;
     if (t >= 0 && t < CAJETA_SHADOW_MAX) {
-        __cajeta_shadow[t].desc = (const CajetaFrameDesc*) desc;
-        __cajeta_shadow[t].line = 0;
+        s->frames[t].desc = (const CajetaFrameDesc*) desc;
+        s->frames[t].line = 0;
     }
-    __cajeta_shadow_top = t + 1;   // count past the cap so leave stays balanced
+    s->top = t + 1;   // count past the cap so leave stays balanced
 }
 void __cajeta_line_mark(int32_t line) {
-    int32_t t = __cajeta_shadow_top;
-    if (t > 0 && t <= CAJETA_SHADOW_MAX) __cajeta_shadow[t - 1].line = line;
+    CajetaShadowStack* s = __cajeta_shadow_ptr();
+    int32_t t = s->top;
+    if (t > 0 && t <= CAJETA_SHADOW_MAX) s->frames[t - 1].line = line;
 }
 void __cajeta_line_leave(void) {
-    if (__cajeta_shadow_top > 0) __cajeta_shadow_top--;
+    CajetaShadowStack* s = __cajeta_shadow_ptr();
+    if (s->top > 0) s->top--;
 }
-int32_t __cajeta_shadow_get_top(void) { return __cajeta_shadow_top; }
+int32_t __cajeta_shadow_get_top(void) { return __cajeta_shadow_ptr()->top; }
 void __cajeta_shadow_set_top(int32_t watermark) {
-    if (watermark >= 0) __cajeta_shadow_top = watermark;
+    if (watermark >= 0) __cajeta_shadow_ptr()->top = watermark;
 }
+// ── cajeta-profiler Unit 3: live-thread registry ──────────────────────────
+// Publishes each live PROGRAM THREAD's shadow stack so a sampler thread can
+// read a stack it does not own. A thread registers at its entry (§2.7 wants it
+// sampled from creation, so this is not lazy — a lazy check would also put a
+// branch on the enter/mark/leave hot path) and unregisters before it exits.
+//
+// FIBERS ARE DELIBERATELY ABSENT. The debugger's live-fiber registry above
+// already enumerates them under a single-lock snapshot, and since Unit 2 every
+// fiber carries its shadow stack inline, so a fiber handle is all a sampler
+// needs. A second registry over the same fibers would drift from that one.
+//
+// The mutex is taken on register/unregister/snapshot — never on the sampled
+// thread's enter/mark/leave path, which touches no shared state at all (3.3.a).
+static pthread_mutex_t __cajeta_prof_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
+static CajetaShadowStack** __cajeta_prof_threads = NULL;
+static int __cajeta_prof_thread_n = 0;
+static int __cajeta_prof_thread_cap = 0;
+
+// This thread's own shadow-stack handle — always the PROGRAM-thread slot, never
+// a fiber's: fibers are enumerated through the fiber registry, and a carrier
+// asked for "its" stack means the carrier's, not whichever fiber it is hosting.
+void* __cajeta_prof_thread_self(void) {
+    return (void*) &__cajeta_main_shadow;
+}
+
+void __cajeta_prof_thread_register(void) {
+    CajetaShadowStack* self = &__cajeta_main_shadow;
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    for (int i = 0; i < __cajeta_prof_thread_n; i++) {
+        if (__cajeta_prof_threads[i] == self) {   // idempotent
+            pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+            return;
+        }
+    }
+    if (__cajeta_prof_thread_n == __cajeta_prof_thread_cap) {
+        int cap = __cajeta_prof_thread_cap ? __cajeta_prof_thread_cap * 2 : 16;
+        CajetaShadowStack** grown = (CajetaShadowStack**) realloc(
+            __cajeta_prof_threads, (size_t) cap * sizeof(CajetaShadowStack*));
+        if (!grown) { pthread_mutex_unlock(&__cajeta_prof_thread_mutex); return; }
+        __cajeta_prof_threads = grown;
+        __cajeta_prof_thread_cap = cap;
+    }
+    __cajeta_prof_threads[__cajeta_prof_thread_n++] = self;
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+}
+
+void __cajeta_prof_thread_unregister(void) {
+    CajetaShadowStack* self = &__cajeta_main_shadow;
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    for (int i = 0; i < __cajeta_prof_thread_n; i++) {
+        if (__cajeta_prof_threads[i] != self) continue;
+        // Order-preserving removal, matching the fiber registry: a sampler's
+        // view stays in registration order rather than shuffling on every exit.
+        for (int j = i + 1; j < __cajeta_prof_thread_n; j++)
+            __cajeta_prof_threads[j - 1] = __cajeta_prof_threads[j];
+        __cajeta_prof_thread_n--;
+        break;
+    }
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+}
+
+int __cajeta_prof_thread_count(void) {
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    int n = __cajeta_prof_thread_n;
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+    return n;
+}
+
+// Copy up to `max` live handles under a SINGLE lock hold and return the live
+// count at that instant. Same rationale as __cajeta_dbg_fiber_snapshot:
+// count() followed by a loop of at(i) is a TOCTOU against threads registering
+// and exiting concurrently. Returning the full count (which may exceed `max`)
+// lets a caller grow its buffer and re-snapshot.
+int __cajeta_prof_thread_snapshot(void** out, int max) {
+    pthread_mutex_lock(&__cajeta_prof_thread_mutex);
+    int n = __cajeta_prof_thread_n;
+    if (out && max > 0) {
+        int copy = n < max ? n : max;
+        for (int i = 0; i < copy; i++) out[i] = (void*) __cajeta_prof_threads[i];
+    }
+    pthread_mutex_unlock(&__cajeta_prof_thread_mutex);
+    return n;
+}
+
+// Snapshot the frames behind a shadow stack from ANOTHER thread — the sampler's
+// entry point. `handle` is a CajetaShadowStack*, full stop: a thread handle from
+// __cajeta_prof_thread_snapshot already is one, and a FIBER handle must be put
+// through __cajeta_dbg_fiber_shadow_of first.
+//
+// This comment used to claim a fiber's shadow stack was the first member of
+// struct cajeta_fiber, so both handles resolved to the same shape. That was
+// false — `shadow` sits behind a ucontext_t and a dozen pointers — and it was
+// load-bearing, because it was the justification for casting a fiber handle
+// straight across. Every fiber then sampled as empty. Nothing failed; the fiber
+// lane was just never in any trace.
+//
+// `truncated` (spec §2.8) reports that the source stack was DEEPER than
+// capacity, so a caller never reads a capped stack as a complete one. The signal
+// costs nothing: __cajeta_line_enter deliberately counts `top` past the cap to
+// keep `leave` balanced, so an over-cap depth is already recorded.
+//
+// Lock-free by construction: it reads a live stack that its owner is still
+// mutating. A sample can therefore tear — a frame written while it is copied —
+// which is inherent to sampling a running thread and is why §11 verifies sample
+// plausibility rather than trusting it. Never blocks the sampled thread.
+int32_t __cajeta_prof_stack_snapshot(void* handle, CajetaShadowFrame* out,
+                                     int32_t max, int32_t* truncated) {
+    CajetaShadowStack* s = (CajetaShadowStack*) handle;
+    if (!s) { if (truncated) *truncated = 0; return 0; }
+    int32_t n = s->top;
+    int32_t trunc = 0;
+    if (n > CAJETA_SHADOW_MAX) { n = CAJETA_SHADOW_MAX; trunc = 1; }
+    if (n < 0) n = 0;
+    if (truncated) *truncated = trunc;
+    if (!out || max <= 0) return n;   // count-only query
+    int32_t w = 0;
+    for (int32_t i = n - 1; i >= 0 && w < max; i--) out[w++] = s->frames[i];
+    return w;
+}
+
+// ── cajeta-profiler Unit 4: the sampler ───────────────────────────────────
+// A dedicated thread walks the Unit 3 thread registry and the debugger's
+// live-fiber registry on an interval, copying each live shadow stack into a
+// ring. Nothing is added to the sampled program's path: arming starts a thread,
+// it does not emit a probe. That is what makes §2.2 true — a binary built with
+// default flags is profilable with no rebuild, because the frames the sampler
+// reads are the line-info probes every build already carries. Unarmed cost is
+// therefore exactly zero (§2.9, §13.4): no thread, no allocation, no branch.
+//
+// The ring is fixed-capacity and the producer is the sampler thread alone, so
+// there is no allocation on the sampling path. On overflow it DROPS and counts
+// the drop rather than blocking or growing: the alternative is a sampler that
+// perturbs the program it measures, and a silent drop is indistinguishable from
+// a correct run from outside — hence the counter, which the trace reports.
+// Defined in cajeta_rt_concurrent_exec.c, later in this TU — same forward-
+// declaration pattern as __cajeta_dbg_top_ptr / __cajeta_shadow_ptr above.
+int64_t __cajeta_currentTimeNanos(void);
+long __cajeta_dbg_fiber_id_of(void* fiber);   // cajeta_rt_concurrent_exec.c
+void* __cajeta_dbg_fiber_shadow_of(void* fiber);   // ditto
+
+#define CAJETA_PROF_DEFAULT_HZ 1000
+#define CAJETA_PROF_DEFAULT_RING 4096
+
+
+static pthread_t        __cajeta_prof_thread;
+static volatile int     __cajeta_prof_armed = 0;
+static volatile int     __cajeta_prof_stop  = 0;
+static int32_t          __cajeta_prof_interval = 0;
+static CajetaProfSample* __cajeta_prof_ring = NULL;
+static int32_t          __cajeta_prof_ring_cap = 0;
+static volatile int64_t __cajeta_prof_head = 0;   // producer index, monotonic
+static volatile int64_t __cajeta_prof_tail = 0;   // consumer index (Unit 5)
+static volatile int64_t __cajeta_prof_samples = 0;
+static volatile int64_t __cajeta_prof_drops = 0;
+static volatile int64_t __cajeta_prof_frames = 0;
+static const char*      __cajeta_prof_out = NULL;
+
+// 4.2.e: codegen registers that line-info probes were emitted, via a global
+// ctor — NOT a weak extern. See cajeta_rt_core.c's loc-table note above: the
+// runtime bitcode is linked into each module long before codegen emits its
+// definition, so a weak default here and a strong one there collide in one
+// module and LLVM silently renames the second.
+static volatile int __cajeta_line_info_present_flag = 0;
+void __cajeta_line_info_register(void) { __cajeta_line_info_present_flag = 1; }
+int32_t __cajeta_line_info_is_present(void) { return __cajeta_line_info_present_flag; }
+
+int32_t __cajeta_prof_interval_us(void)  { return __cajeta_prof_interval; }
+int32_t __cajeta_prof_ring_capacity(void){ return __cajeta_prof_ring_cap; }
+int32_t __cajeta_prof_is_armed(void)     { return __cajeta_prof_armed; }
+int64_t __cajeta_prof_sample_count(void) { return __cajeta_prof_samples; }
+int64_t __cajeta_prof_drop_count(void)   { return __cajeta_prof_drops; }
+int64_t __cajeta_prof_frame_count(void)  { return __cajeta_prof_frames; }
+const char* __cajeta_prof_out_path(void) {
+    return __cajeta_prof_out ? __cajeta_prof_out : "cajeta.pftrace";
+}
+
+// Copy one stack into the ring. Producer-only; the sampler thread is the sole
+// writer, so head moves without a CAS.
+static void __cajeta_prof_push(void* owner, int32_t owner_kind) {
+    int32_t trunc = 0;
+    CajetaShadowFrame tmp[CAJETA_PROF_MAX_FRAMES];
+    // A THREAD handle IS its shadow stack (the registry stores
+    // &__cajeta_main_shadow). A FIBER handle is a struct cajeta_fiber*, whose
+    // shadow stack is a member well inside it — resolve it rather than casting
+    // across. Getting this wrong is silent: the bogus depth reads non-positive,
+    // the sample is dropped as "idle", and the fiber lane is simply absent from
+    // every trace with nothing anywhere reporting a problem.
+    void* stack = (owner_kind == CAJETA_PROF_OWNER_FIBER)
+                      ? __cajeta_dbg_fiber_shadow_of(owner)
+                      : owner;
+    int32_t n = __cajeta_prof_stack_snapshot(stack, tmp,
+                                             CAJETA_PROF_MAX_FRAMES, &trunc);
+    __cajeta_prof_samples++;
+    if (n <= 0) return;               // idle context: a tick, but no frames
+    int64_t head = __cajeta_prof_head;
+    if (head - __cajeta_prof_tail >= __cajeta_prof_ring_cap) {
+        __cajeta_prof_drops++;        // full: drop, never block the sampler
+        return;
+    }
+    CajetaProfSample* slot = &__cajeta_prof_ring[head % __cajeta_prof_ring_cap];
+    slot->host_ns = __cajeta_currentTimeNanos();
+    slot->owner = owner;
+    slot->owner_kind = owner_kind;
+    slot->owner_id = (owner_kind == CAJETA_PROF_OWNER_FIBER)
+                         ? (int64_t) __cajeta_dbg_fiber_id_of(owner)
+                         : 0;
+    slot->n_frames = n;
+    slot->truncated = trunc;
+    for (int32_t i = 0; i < n; i++) slot->frames[i] = tmp[i];
+    __cajeta_prof_frames += n;
+    __atomic_store_n(&__cajeta_prof_head, head + 1, __ATOMIC_RELEASE);
+}
+
+static void* __cajeta_prof_loop(void* arg) {
+    (void) arg;
+    // The sampler does NOT register itself in the thread registry: it would
+    // sample its own stack, which is not the program's work.
+    while (!__cajeta_prof_stop) {
+        void* handles[256];
+        int n = __cajeta_prof_thread_snapshot(handles, 256);
+        if (n > 256) n = 256;
+        for (int i = 0; i < n; i++)
+            __cajeta_prof_push(handles[i], CAJETA_PROF_OWNER_THREAD);
+        int fn = __cajeta_dbg_fiber_snapshot(handles, 256);
+        if (fn > 256) fn = 256;
+        for (int i = 0; i < fn; i++)
+            __cajeta_prof_push(handles[i], CAJETA_PROF_OWNER_FIBER);
+        struct timespec ts;
+        ts.tv_sec  = __cajeta_prof_interval / 1000000;
+        ts.tv_nsec = (long) (__cajeta_prof_interval % 1000000) * 1000L;
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+// Returns 0 on success; negative on refusal. -1 already armed, -2 line-info is
+// off (§2.5 — fail loudly rather than produce an empty trace), -3 out of
+// memory, -4 the sampler thread could not start.
+int32_t __cajeta_prof_arm(void) {
+    if (__cajeta_prof_armed) return -1;
+    if (!getenv("CAJETA_PROFILER")) return 0;   // unset: arm nothing (§9.1)
+    if (!__cajeta_line_info_is_present()) {
+        fprintf(stderr,
+                "cajeta.profiler: refusing to arm — this binary was built "
+                "with --debug-info=off, so there are no frames to sample. "
+                "Rebuild with --debug-info=line (the default) to profile, or "
+                "--debug-info=full to also get exact line numbers.\n");
+        return -2;
+    }
+    const char* hz_s = getenv("CAJETA_PROFILER_HZ");
+    int hz = hz_s ? atoi(hz_s) : CAJETA_PROF_DEFAULT_HZ;
+    if (hz <= 0) hz = CAJETA_PROF_DEFAULT_HZ;
+    __cajeta_prof_interval = 1000000 / hz;
+    if (__cajeta_prof_interval <= 0) __cajeta_prof_interval = 1;
+
+    const char* ring_s = getenv("CAJETA_PROFILER_RING");
+    int cap = ring_s ? atoi(ring_s) : CAJETA_PROF_DEFAULT_RING;
+    if (cap <= 0) cap = CAJETA_PROF_DEFAULT_RING;
+    __cajeta_prof_ring_cap = cap;
+    __cajeta_prof_ring = (CajetaProfSample*) calloc((size_t) cap,
+                                                    sizeof(CajetaProfSample));
+    if (!__cajeta_prof_ring) { __cajeta_prof_ring_cap = 0; return -3; }
+    __cajeta_prof_out = getenv("CAJETA_PROFILER_OUT");
+    __cajeta_prof_head = __cajeta_prof_tail = 0;
+    __cajeta_prof_stop = 0;
+    // The arming thread is the program thread; register it here so §2.1's
+    // "every host thread" holds without a lazy check on the enter/mark/leave
+    // hot path (plan 3.2.d).
+    __cajeta_prof_thread_register();
+    if (pthread_create(&__cajeta_prof_thread, NULL, __cajeta_prof_loop, NULL) != 0) {
+        free(__cajeta_prof_ring);
+        __cajeta_prof_ring = NULL;
+        __cajeta_prof_ring_cap = 0;
+        return -4;
+    }
+    __cajeta_prof_armed = 1;
+    return 0;
+}
+
+void __cajeta_prof_disarm(void) {
+    if (!__cajeta_prof_armed) return;
+    __cajeta_prof_stop = 1;
+    pthread_join(__cajeta_prof_thread, NULL);
+    __cajeta_prof_armed = 0;
+    // The ring is NOT freed here: Unit 5's writer drains it on the way out, and
+    // freeing under it would lose the tail of every run that ends normally.
+}
+
 // Snapshot the live shadow frames innermost-first into `out` (caller-sized to
 // `max`), returning the number copied. `out[0]` is the throw-site frame.
 int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
-    int32_t n = __cajeta_shadow_top;
+    CajetaShadowStack* s = __cajeta_shadow_ptr();
+    int32_t n = s->top;
     if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;  // deepest-past-cap unstored
     int32_t w = 0;
-    for (int32_t i = n - 1; i >= 0 && w < max; i--) out[w++] = __cajeta_shadow[i];
+    for (int32_t i = n - 1; i >= 0 && w < max; i--) out[w++] = s->frames[i];
     return w;
 }
 
@@ -479,7 +794,8 @@ int32_t __cajeta_shadow_snapshot(CajetaShadowFrame* out, int32_t max) {
 __attribute__((used, retain))
 void __cajeta_print_stack(int32_t fd) {
     FILE* out = (fd == 1) ? stdout : stderr;
-    int32_t n = __cajeta_shadow_top;
+    CajetaShadowStack* s = __cajeta_shadow_ptr();
+    int32_t n = s->top;
     if (n > CAJETA_SHADOW_MAX) n = CAJETA_SHADOW_MAX;
     if (n <= 0) {
         fprintf(out, "  <no cajeta frames: line-info off, or not in cajeta code>\n");
@@ -487,14 +803,14 @@ void __cajeta_print_stack(int32_t fd) {
         return;
     }
     for (int32_t i = n - 1; i >= 0; i--) {
-        const CajetaFrameDesc* d = __cajeta_shadow[i].desc;
+        const CajetaFrameDesc* d = s->frames[i].desc;
         const char* t = (d && d->typeName)   ? d->typeName   : "?";
         const char* m = (d && d->methodName) ? d->methodName : "?";
         const char* f = (d && d->fileName)   ? d->fileName   : "?";
         // Basename only, matching the captured-trace format.
         const char* base = f;
         for (const char* q = f; *q; q++) if (*q == '/' || *q == '\\') base = q + 1;
-        fprintf(out, "  at %s.%s(%s:%d)\n", t, m, base, __cajeta_shadow[i].line);
+        fprintf(out, "  at %s.%s(%s:%d)\n", t, m, base, s->frames[i].line);
     }
     fflush(out);
 }
@@ -505,35 +821,35 @@ void __cajeta_print_stack(int32_t fd) {
 // through plain calls.
 __attribute__((used, retain))
 int32_t __cajeta_stack_depth(void) {
-    int32_t n = __cajeta_shadow_top;
+    int32_t n = __cajeta_shadow_ptr()->top;
     return n > CAJETA_SHADOW_MAX ? CAJETA_SHADOW_MAX : (n < 0 ? 0 : n);
 }
 __attribute__((used, retain))
 const char* __cajeta_stack_type(int32_t i) {
     int32_t n = __cajeta_stack_depth();
     if (i < 0 || i >= n) return "";
-    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    const CajetaFrameDesc* d = __cajeta_shadow_ptr()->frames[n - 1 - i].desc;
     return (d && d->typeName) ? d->typeName : "?";
 }
 __attribute__((used, retain))
 const char* __cajeta_stack_method(int32_t i) {
     int32_t n = __cajeta_stack_depth();
     if (i < 0 || i >= n) return "";
-    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    const CajetaFrameDesc* d = __cajeta_shadow_ptr()->frames[n - 1 - i].desc;
     return (d && d->methodName) ? d->methodName : "?";
 }
 __attribute__((used, retain))
 const char* __cajeta_stack_file(int32_t i) {
     int32_t n = __cajeta_stack_depth();
     if (i < 0 || i >= n) return "";
-    const CajetaFrameDesc* d = __cajeta_shadow[n - 1 - i].desc;
+    const CajetaFrameDesc* d = __cajeta_shadow_ptr()->frames[n - 1 - i].desc;
     return (d && d->fileName) ? d->fileName : "?";
 }
 __attribute__((used, retain))
 int32_t __cajeta_stack_line(int32_t i) {
     int32_t n = __cajeta_stack_depth();
     if (i < 0 || i >= n) return 0;
-    return __cajeta_shadow[n - 1 - i].line;
+    return __cajeta_shadow_ptr()->frames[n - 1 - i].line;
 }
 
 // ============================================================================

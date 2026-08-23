@@ -230,7 +230,28 @@ bool stdlibReusable(const CajetaJit::Options& o) {
         // A CPU/feature override changes stdlib codegen too, so the baseline
         // primed at the default target is not valid for it.
         && o.cpu.empty()
-        && o.features.empty();
+        && o.features.empty()
+        // cajeta-profiler U10: an instrumented compile adds a #ProfMethod
+        // global and a registration ctor to whatever module the builder is
+        // in — including the SHARED stdlib module. That is exactly the
+        // baseline mutation verifyPristine exists to catch, and it would
+        // land on the next test rather than this one. Instrumented compiles
+        // take the fresh path.
+        && o.profiler == cajeta::Profiler::Off
+        // ...and so must a --line-info=off compile, for the same reason with
+        // the sign flipped. Reuse shares ONE runtime copy, and line-info
+        // presence is published into it by a global ctor
+        // (__cajeta.lineinfo.register). A reusing lineInfo=off test therefore
+        // borrows a runtime where an EARLIER lineInfo=on test already set the
+        // flag, and __cajeta_line_info_is_present answers 1 for a build that
+        // emitted no probes at all.
+        //
+        // That is not cosmetic: it is the exact state §2.5's refusal exists to
+        // detect, so the test that pins the refusal was the one it broke —
+        // and only under the sweep, which exports CAJETA_STDLIB_REUSE=1 while
+        // a bare run does not. Found by the full suite; a targeted run and
+        // even 24-way contention both pass.
+        && o.lineInfoEnabled;
 }
 
 // Process-global cache: the stdlib parsed + codegen'd ONCE into a shared
@@ -534,6 +555,55 @@ struct StdlibReuseCache {
 
 CajetaJit::CajetaJit() = default;
 
+// A process-wide net under the per-JIT temp-root cleanup. Most tests hold their
+// CajetaJit in a local and ~CajetaJit reclaims the tree; a few hold one in a
+// function-local static for the compile cost, and MEASURED 2026-08-22 those
+// destructors do not run before the process ends — a clean ProfilerClock +
+// ProfilerIntegrity run left one pair each behind. Bounded (one per singleton,
+// not one per test) but not zero, and "not zero" is what accumulates across
+// runs. Anything still registered at exit is removed here.
+//
+// A killed process still leaks, and nothing destructor-based can change that.
+// The claim this makes good on is narrower and worth stating exactly: a NORMAL
+// exit leaves nothing behind.
+namespace {
+class TempRootRegistry {
+public:
+    static TempRootRegistry& instance() {
+        static TempRootRegistry r;
+        return r;
+    }
+    void add(const std::string& root) {
+        std::lock_guard<std::mutex> lk(mu_);
+        roots_.push_back(root);
+    }
+    void drop(const std::string& root) {
+        std::lock_guard<std::mutex> lk(mu_);
+        roots_.erase(std::remove(roots_.begin(), roots_.end(), root), roots_.end());
+    }
+    void sweep() {
+        std::lock_guard<std::mutex> lk(mu_);
+        if (!std::getenv("CAJETA_KEEP_TEMP")) {
+            for (const auto& r : roots_) {
+                std::error_code ec;
+                std::filesystem::remove_all(r, ec);
+            }
+        }
+        roots_.clear();
+    }
+
+private:
+    // No atexit registration: test/main.cpp terminates with _Exit to dodge a
+    // two-LLVM ManagedStatic teardown crash, so the atexit chain never runs.
+    // sweepTempRoots() is called from each exit point instead.
+    TempRootRegistry() = default;
+    std::mutex mu_;
+    std::vector<std::string> roots_;
+};
+} // namespace
+
+void sweepTempRoots() { TempRootRegistry::instance().sweep(); }
+
 CajetaJit::~CajetaJit() {
     // Each JIT module's runtime statics include the carrier-thread flag and
     // pthread handle. A fresh module starts a fresh carrier on its FIRST
@@ -559,6 +629,17 @@ CajetaJit::~CajetaJit() {
     if (sharedJit && userDylib) {
         if (auto err = sharedJit->getExecutionSession().removeJITDylib(*userDylib))
             cajeta::jittest::consumeError(std::move(err));
+    }
+    // The multi-source path's temp source/archive roots. Removed LAST, after
+    // the module is done with them. Nothing removed these before: a full suite
+    // run left ~7,800 dirs behind and they accumulated across runs until the
+    // per-user tmpfs quota broke unrelated builds. See JitTempDirCleanupTests.
+    for (const auto& root : tempRoots) {
+        if (!std::getenv("CAJETA_KEEP_TEMP")) {
+            std::error_code ec;
+            std::filesystem::remove_all(root, ec);
+        }
+        TempRootRegistry::instance().drop(root);
     }
 }
 
@@ -716,6 +797,28 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
                     / ("cajeta_multi_" + std::to_string(rng()));
     std::filesystem::create_directories(sourceRoot);
 
+    // Own the temp roots from the moment they exist, so a throw anywhere below
+    // (a CajetaException surfaced out of compile(), a failed JIT) still takes
+    // them with it. On the success path ownership TRANSFERS to the returned
+    // CajetaJit (see the release just before `return jitState`), whose
+    // destructor removes them once the module is done.
+    struct TempRootGuard {
+        std::vector<std::filesystem::path> roots;
+        bool armed = true;
+        ~TempRootGuard() {
+            if (!armed) return;
+            for (const auto& r : roots) {
+                if (!std::getenv("CAJETA_KEEP_TEMP")) {
+                    std::error_code ec;
+                    std::filesystem::remove_all(r, ec);
+                }
+                TempRootRegistry::instance().drop(r.string());
+            }
+        }
+    } tempRootGuard;
+    tempRootGuard.roots.push_back(sourceRoot);
+    TempRootRegistry::instance().add(sourceRoot.string());
+
     std::vector<std::filesystem::path> sourcePaths;
     sourcePaths.reserve(sources.size());
     for (auto& [fqClass, source] : sources) {
@@ -750,6 +853,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     auto archiveRoot = std::filesystem::temp_directory_path()
                      / ("cajeta_archive_" + sourceRoot.filename().string());
     std::filesystem::create_directories(archiveRoot);
+    tempRootGuard.roots.push_back(archiveRoot);
+    TempRootRegistry::instance().add(archiveRoot.string());
 
     // (The just-written sources are pre-scanned into the archive INSIDE the
     // retry loop below — after the Compiler ctor's resetGlobals() / the reuse
@@ -807,6 +912,8 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
         }
         compiler->getMutableFlags().lineInfo = opts.lineInfoEnabled;
         compiler->getMutableFlags().stackTraceCapture = opts.stackTraceCaptureEnabled;
+        compiler->getMutableFlags().profiler = opts.profiler;
+        compiler->getMutableFlags().profilerSelect = opts.profilerSelect;
         if (opts.session || !opts.sessionHostName.empty()) {
             compiler->setSessionState(opts.session, opts.sessionHostName);
         }
@@ -1330,6 +1437,11 @@ std::unique_ptr<CajetaJit> CajetaJit::compile(
     if (reuseStdlib) {
         stdlibCache.clearTransientStructNames(llvmModule);
     }
+
+    // Hand the temp roots to the JIT: they outlive this call, but not the
+    // module that was built from them.
+    for (const auto& r : tempRootGuard.roots) jitState->tempRoots.push_back(r.string());
+    tempRootGuard.armed = false;
 
     return jitState;
 }

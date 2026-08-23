@@ -1,0 +1,31 @@
+// cajeta-profiler 6.1.e — the fixture for attribution-check.sh.
+//
+// `outer` exists only to be inlined. It is a one-line forwarder, so any
+// optimizer worth the flag folds it into `main` at -O3; if the profile still
+// shows main -> outer -> inner after that, attribution is following the
+// program's SOURCE structure rather than its machine frames.
+//
+// `inner` spins long enough to be sampled at any reasonable rate. Nothing
+// here allocates: a heap path would pull stdlib frames into the stack and
+// make the expected shape depend on library internals.
+package nest;
+
+public final class Nest {
+    public static int32 inner(int32 n) {
+        int32 acc = 0;
+        int32 i = 0;
+        while (i < n) { acc = acc + (i % 7); i = i + 1; }
+        return acc;
+    }
+
+    public static int32 outer(int32 n) {
+        return Nest.inner(n) + 1;
+    }
+
+    public static void main() {
+        int32 total = 0;
+        int32 r = 0;
+        while (r < 40) { total = total + Nest.outer(400000); r = r + 1; }
+        System.stdout.println("total=" + total);
+    }
+}

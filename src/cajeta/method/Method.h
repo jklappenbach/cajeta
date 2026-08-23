@@ -15,6 +15,7 @@
 #include "../type/CajetaType.h"
 #include "../field/Field.h"
 #include "../type/Templates.h"
+#include "../prof/ProfileFrame.h"
 #include "queue"
 #include "map"
 #include "unordered_map"
@@ -200,8 +201,29 @@ namespace cajeta {
         // every frame_leave (returns + fall-through) loads it so leave
         // unlinks exactly this invocation's frame. Reset per generateCode.
         llvm::Value* dbgFrameSlot = nullptr;
+
+        // cajeta-profiler 6.4.B: did this method's PROLOGUE emit
+        // __cajeta_line_enter? Only Method::generateCode does, and a lambda
+        // body is codegen'd inline by LambdaExpression::generateCode, which
+        // never runs that prologue — so a lambda has no frame to pop. The
+        // shadow leave takes no argument (unlike the node-paired dbg leave
+        // above), so an unpaired one pops the ENCLOSING method's frame and
+        // erodes the stack a frame per call. Every leave site consults this.
+        // Reset per generateCode.
+        bool lineFrameEmitted = false;
+
+        // cajeta-profiler 10.2.a: this method's exact-instrumentation probe
+        // pair (spec §3.1) — the #ProfMethod descriptor the enter registered
+        // and the entry-block slot holding the enter's timestamp. Empty when
+        // the profiler is off or this class is outside the selection (§3.8),
+        // so every exit site skips on the frame alone and never re-decides
+        // membership. Reset per generateCode, exactly as dbgFrameSlot is.
+        prof::ProfileFrame profFrame;
     public:
         llvm::Value* getDbgFrameSlot() const { return dbgFrameSlot; }
+        bool hasLineFrame() const { return lineFrameEmitted; }
+        void setHasLineFrame(bool v) { lineFrameEmitted = v; }
+        const prof::ProfileFrame& getProfileFrame() const { return profFrame; }
     protected:
 
         // Stack of drop frames. Each Block::generateCode pushes a frame

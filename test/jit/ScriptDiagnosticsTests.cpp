@@ -28,12 +28,20 @@ struct CompileError {
     int line = -1;
 };
 
+// `withLines` asks for --debug-info=full. Per-statement line marks became a
+// full-debug-info feature when they were measured at 3.5-9.4x (see
+// LineInfoCodegen::emitLineMark), so a DEFAULT build renders a script frame as
+// `<script>` with the host FILE and no line. The host-line half of spec 6.2 is
+// still exactly as it was, on request — the tests below assert both, so
+// neither losing the line-map nor turning marks back on everywhere can pass.
 std::unique_ptr<CajetaJit> compileScript(const std::string& source,
                                          const std::string& fqClass,
                                          const std::string& hostName,
-                                         CompileError* err = nullptr) {
+                                         CompileError* err = nullptr,
+                                         bool withLines = false) {
     CajetaJit::Options opts;
     opts.sessionHostName = hostName;
+    opts.debugInfoEnabled = withLines;
     try {
         return CajetaJit::compile(source, fqClass, opts);
     } catch (cajeta::Exception& e) {
@@ -99,14 +107,44 @@ TEST(ScriptDiagnosticsTests, traceHidesSyntheticNames) {
         "    StackFrame top = fs[0];\n"
         "    if (!top.method.contains(\"boom\")) { return 5; }\n"
         "    if (!top.file.contains(\"trace-cell\")) { return 6; }\n"
-        "    if (top.line != 12) { return 7; }\n"
+        "    if (top.line != $LINE) { return 7; }\n"
         "    return 1;\n"
         "}\n";
-    auto jit = compileScript(src, "cajeta.script.diagtrace", "trace-cell");
-    ASSERT_NE(nullptr, jit.get());
-    auto entry = jit->lookup<int32_t (*)()>("__cajeta_script_entry");
-    ASSERT_NE(nullptr, entry);
-    EXPECT_EQ(1, entry());
+    // Substituted rather than prepended: the expected line is 12 because of
+    // where the throw SITS, so anything that shifts the host layout by a line
+    // invalidates the very thing being asserted.
+    auto withExpected = [&src](const char* line) {
+        std::string out = src;
+        const std::string tok = "$LINE";
+        auto at = out.find(tok);
+        out.replace(at, tok.size(), line);
+        return out;
+    };
+
+    // Default build: every synthetic-name and host-FILE assertion holds, and
+    // the frame carries no line (0, which StackFrame documents as
+    // "line-info unavailable").
+    {
+        auto jit = compileScript(withExpected("0"),
+                                 "cajeta.script.diagtrace", "trace-cell");
+        ASSERT_NE(nullptr, jit.get());
+        auto entry = jit->lookup<int32_t (*)()>("__cajeta_script_entry");
+        ASSERT_NE(nullptr, entry);
+        EXPECT_EQ(1, entry());
+    }
+    // --debug-info=full: the same frame, now carrying the HOST line. That is
+    // the half spec 6.2 is actually about — a line pointing INTO the
+    // synthesized wrapper would be worse than none, because it reads like a
+    // real one.
+    {
+        auto jit = compileScript(withExpected("12"),
+                                 "cajeta.script.diagtraceg", "trace-cell",
+                                 nullptr, /*withLines=*/true);
+        ASSERT_NE(nullptr, jit.get());
+        auto entry = jit->lookup<int32_t (*)()>("__cajeta_script_entry");
+        ASSERT_NE(nullptr, entry);
+        EXPECT_EQ(1, entry());
+    }
 }
 
 // 5.1.3 / spec 6 lints — a binding written and never read fires NO

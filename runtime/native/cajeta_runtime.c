@@ -113,6 +113,11 @@ typedef void (*cajeta_ctor_fn)(void* self);
 // grouped behind the cajeta_xpu.c module aggregator.
 // ===========================================================================
 #include "cajeta_rt_core.c"
+#include "cajeta_rt_prof_instr.c"   // Unit 10: needs core.c's shadow stack
+#include "cajeta_rt_prof_trace.c"
+#include "cajeta_rt_prof_clock.c"
+#include "cajeta_rt_prof_integrity.c"
+#include "cajeta_rt_prof_gpu.c"
 #include "cajeta_rt_shared.c"
 #include "cajeta_rt_utf8.c"
 #include "cajeta_rt_string.c"

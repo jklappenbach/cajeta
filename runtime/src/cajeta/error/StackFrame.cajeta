@@ -4,8 +4,9 @@ package cajeta.error;
  * One frame of a captured stack trace, as returned by
  * `Throwable.getStackTrace()` (diagnostic-exceptions §5.1.1).
  *
- * When `--line-info` was on at compile time (the default), a frame carries a
- * resolved semantic location — `declaringType`, `method`, `file`, `line`, and a
+ * When `--debug-info` was `line` or `full` at compile time (the default is
+ * `line`), a frame carries a resolved semantic location — `declaringType`,
+ * `method`, `file`, and a
  * [`FrameRole`](FrameRole.cajeta) — recovered from the runtime shadow line-stack
  * with no debug info. When `--line-info` was off (or the throw was inside a
  * fiber), only `nativeAddress` is populated: `declaringType`/`method`/`file` are
@@ -21,7 +22,15 @@ public final class StackFrame {
     public String method;
     /** Source file, e.g. `App.cajeta`; empty when unresolved. */
     public String file;
-    /** 1-based source line; `0` when line-info was unavailable. */
+    /**
+     * 1-based source line; `0` unless the build was `--debug-info=full`.
+     *
+     * The exact line comes from a per-STATEMENT probe, and that probe is the
+     * entire runtime cost of the shadow stack — measured 3.5-9.4x at -O3,
+     * against parity for the per-call frame identity beside it. So `line` is a
+     * `full` build's answer; `line` builds (the default, and the release
+     * flavor) resolve the frame to `Type.method(File.cajeta)` and leave this 0.
+     */
     public int32 line;
     /** Which layer this frame belongs to (User / Stdlib / Runtime). */
     public FrameRole role;

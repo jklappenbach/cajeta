@@ -356,6 +356,14 @@ struct cajeta_fiber {
     // Same aliasing rationale as scope_top/drop_top; selected by
     // __cajeta_dbg_top_ptr based on fiber-vs-main context.
     struct cajeta_dbg_frame* dbg_top;
+    // cajeta-profiler Unit 2: per-fiber line-info shadow stack. Same aliasing
+    // rationale as scope_top/drop_top/dbg_top — a carrier hosts many fibers on
+    // one OS thread, so the old single __thread stack interleaved their frames
+    // and left stale entries across a yield. Inline (not a pointer) to preserve
+    // the shadow stack's never-mallocs property on the enter/mark/leave hot
+    // path; 8 KB against this fiber's 1 MB stack. Selected by
+    // __cajeta_shadow_ptr.
+    CajetaShadowStack shadow;
     // Per-fiber frame arena (cajeta_rt_core.c). Same aliasing rationale as
     // scope_top/drop_top/exc_top: the arena's LIFO mark/reset discipline holds
     // per logical stack, and a carrier interleaves many fiber stacks — a
@@ -633,6 +641,15 @@ struct cajeta_dbg_frame** __cajeta_dbg_top_ptr(void) {
     return &__cajeta_main_dbg_top;
 }
 
+// cajeta-profiler Unit 2: selector for the live line-info shadow stack,
+// mirroring __cajeta_dbg_top_ptr. Forward-declared in cajeta_rt_core.c.
+CajetaShadowStack* __cajeta_shadow_ptr(void) {
+    if (__cajeta_current_fiber) {
+        return &__cajeta_current_fiber->shadow;
+    }
+    return &__cajeta_main_shadow;
+}
+
 // Debugger CP3: id of the fiber running on this carrier thread, or 0 when not
 // in a fiber (the main thread / program entry). Forward-declared up in the
 // debug-safepoint section; defined here where __cajeta_current_fiber is in
@@ -657,6 +674,19 @@ int __cajeta_dbg_current_fiber_id(void) {
 // cajeta_fiber_state enum value.
 long __cajeta_dbg_fiber_id_of(void* fiber) {
     return fiber ? (long) ((struct cajeta_fiber*) fiber)->dbg_id : 0;
+}
+
+// The fiber's shadow stack, for the sampler (cajeta-profiler 6.4).
+//
+// This accessor exists because a fiber handle is NOT a CajetaShadowStack*.
+// `shadow` sits well inside struct cajeta_fiber, behind a ucontext_t; the
+// sampler used to cast the handle straight across on the strength of a comment
+// claiming the stack was the first member. It is not, and the cast read
+// whatever lay 8 KB into the struct — which came back as a non-positive depth,
+// so every fiber sampled as "idle, no frames" and the fiber lane was silently
+// empty in every profile.
+void* __cajeta_dbg_fiber_shadow_of(void* fiber) {
+    return fiber ? (void*) &((struct cajeta_fiber*) fiber)->shadow : NULL;
 }
 
 void* __cajeta_dbg_fiber_frame_top(void* fiber) {
@@ -822,7 +852,18 @@ static void __cajeta_fiber_park_locked(void) {
 // condvar until a pusher signals. R8.3 — the carrier struct comes in via
 // the pthread_create arg so each carrier knows its own deque, mutex, and
 // id without TLS-init plumbing.
+// cajeta-profiler Unit 3: this thread publishes its shadow stack for the
+// duration of its life. A wrapper rather than a register/unregister pair
+// inside the loop body, so every return path unregisters — the carrier loop
+// returns from more than one place.
+static void* __cajeta_carrier_loop_body(void* arg);
 static void* __cajeta_carrier_loop(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = __cajeta_carrier_loop_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+static void* __cajeta_carrier_loop_body(void* arg) {
     struct cajeta_carrier* self = (struct cajeta_carrier*) arg;
     __cajeta_my_carrier = self;
     for (;;) {
@@ -1101,6 +1142,12 @@ void __cajeta_task_run(void* arg, cajeta_task_trampoline_fn trampoline,
     f->cancel_with = NULL;
     f->slot_ptr = fiber_slot;   // C2: so the carrier can null it before free
     f->dbg_top = NULL;
+    // Unit 2: a fresh fiber starts at depth 0. It does NOT inherit the
+    // spawner's frames — the shadow stack answers "where is THIS fiber
+    // executing", and a spawner's live frames are not the child's callers.
+    // Only `top` needs clearing; entries below it are written by line_enter
+    // before they are ever read.
+    f->shadow.top = 0;
     // Inherit-on-spawn (FiberLocal Layer 2): a deep-copied snapshot of the
     // SPAWNER's binding chain. __cajeta_task_run runs on the spawner's context,
     // so __cajeta_current_fiber (read inside snapshot_current) is the spawner
@@ -1346,7 +1393,18 @@ static int __cajeta_parked_remove_locked(struct cajeta_fiber* f) {
 
 // Timer thread. Sleeps on __cajeta_timer_cond until the next deadline (or
 // a register/cancel/shutdown signal), wakes expired fibers, sleeps again.
+// cajeta-profiler Unit 3: this thread publishes its shadow stack for the
+// duration of its life. A wrapper rather than a register/unregister pair
+// inside the loop body, so every return path unregisters — the timer loop
+// returns from more than one place.
+static void* __cajeta_timer_loop_body(void* arg);
 static void* __cajeta_timer_loop(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = __cajeta_timer_loop_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+static void* __cajeta_timer_loop_body(void* arg) {
     (void) arg;
     pthread_mutex_lock(&__cajeta_task_mutex);
     for (;;) {
@@ -1595,7 +1653,18 @@ static int __cajeta_io_events_to_epoll(int events) {
 // the shutdown flag is observed even when no I/O is in flight. On each
 // ready event, walks the waiter list under task_mutex, detaches matched
 // fibers from __cajeta_parked_head, and publishes them.
+// cajeta-profiler Unit 3: this thread publishes its shadow stack for the
+// duration of its life. A wrapper rather than a register/unregister pair
+// inside the loop body, so every return path unregisters — the reactor loop
+// returns from more than one place.
+static void* __cajeta_reactor_loop_body(void* arg);
 static void* __cajeta_reactor_loop(void* arg) {
+    __cajeta_prof_thread_register();
+    void* r = __cajeta_reactor_loop_body(arg);
+    __cajeta_prof_thread_unregister();
+    return r;
+}
+static void* __cajeta_reactor_loop_body(void* arg) {
     (void) arg;
     for (;;) {
         if (__cajeta_reactor_shutdown_requested) return NULL;

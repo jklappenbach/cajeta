@@ -11,6 +11,7 @@
 #include "../type/CajetaArray.h"
 #include "../type/CajetaFunctionType.h"
 #include "../compile/CajetaModule.h"
+#include "../prof/ProfileCodegen.h"
 #include "../compile/Compiler.h"
 #include "../compile/ExcFrameSetjmp.h"
 #include "../compile/ScriptUnitSynthesis.h"
@@ -2783,6 +2784,8 @@ namespace cajeta {
         // 9.1: node-paired — the enter's node lands in an entry slot and
         // every leave unlinks exactly it, immune to fiber-context changes.
         dbgFrameSlot = nullptr;
+        lineFrameEmitted = false;   // 6.4.B: re-decided by the prologue below
+        profFrame = prof::ProfileFrame{};   // 10.2.a: likewise
         if (llvm::Value* dbgNode =
                 dbg::emitDbgFrameEnter(module, getLlvmSymbolName())) {
             llvm::IRBuilder<>* b = module->getBuilder();
@@ -2821,6 +2824,17 @@ namespace cajeta {
                 }
             }
             dbg::emitLineEnter(module, typeName, frameMethod, fileName);
+            // 6.4.B: record that this method HAS a shadow frame, so the leave
+            // sites can tell a real method apart from an inline-codegen'd
+            // lambda body that never pushed one.
+            lineFrameEmitted = true;
+
+            // cajeta-profiler U10 (spec §3.1): the exact-count/exact-time probe
+            // pair. Same names the shadow frame carries, so an instrumented
+            // method is identified in the trace exactly as a sampled one is.
+            // No-op unless --profiler=instrument selects this class.
+            profFrame = prof::emitProfileEnter(module, typeName, frameMethod,
+                                               fileName);
         }
 
         // Register the parameters as locals in the debug frame. Materializing
@@ -3343,7 +3357,9 @@ namespace cajeta {
             // U3: pop the line-info shadow frame on this fall-through return too
             // (else a fall-through method — e.g. a constructor — leaks its frame
             // and pollutes the next throw's trace). No-op unless --line-info.
-            dbg::emitLineLeave(module);
+            // 6.4.B: only if the prologue actually pushed one.
+            if (lineFrameEmitted) dbg::emitLineLeave(module);
+            prof::emitProfileExit(module, profFrame);
             // Fire scope-end drops before the synthetic return so the chain is
             // unwound the same way an explicit `return` would do it.
             emitOwnerDrops(module);

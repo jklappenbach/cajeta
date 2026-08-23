@@ -1,5 +1,10 @@
 # Spec: XPU live kernel scheduling & occupancy-maximizing deployment (`xpu-kernel-scheduling`)
 
+> Status: **approved 2026-08-20**. The actionable *how* lives in
+> [`agents/xpu-kernel-scheduling-plan.md`](../agents/xpu-kernel-scheduling-plan.md).
+> §8's online feedback half is gated on [`cajeta-profiler`](cajeta-profiler-spec.md)
+> Unit 7 (§12.6); §3's offline classification is not gated on anything unbuilt.
+
 ## 1. Definition
 
 ### 1.1 Purpose
@@ -280,10 +285,20 @@ interference model.
 
 ### 8.2 Mechanism
 
-- **Signals**: per-kernel achieved vs predicted latency; device counters where
-  available (SM/CU active %, mem-BW %, matrix-core busy — via the existing
-  rocprof/CUPTI hooks used by `xpu-device-profile`); SLO attainment; deadline
-  misses.
+- **Signals**: per-kernel achieved vs predicted latency, taken from
+  [`cajeta-profiler`](cajeta-profiler-spec.md)'s dispatch-record seam (§5.6) — the
+  scheduler registers a **live record sink** and receives device start/end per
+  launch, in-process, already in the host clock domain and marked with the tier
+  that produced it. An earlier draft of this section sourced these from "the
+  existing rocprof/CUPTI hooks used by `xpu-device-profile`"; that tier is opt-in,
+  in-memory and built to calibrate a launch-config picker, and it emits no
+  per-launch stream. The profiler seam does, and was made dual-consumer for this
+  (that spec's §14.9). Secondary: device counters where available (SM/CU active %,
+  mem-BW %, matrix-core busy); SLO attainment; deadline misses.
+- **Sink discipline**: the seam drops rather than blocks (`cajeta-profiler` §5.6.4),
+  so the feedback loop must treat its record stream as **lossy by design** — a
+  sampled correction, never a ledger. A policy that requires having seen every
+  launch is a policy this loop cannot support.
 - **Adaptation**: online correction of the roofline class and interference
   weights (Clockwork/iGniter online profiling); demote a co-schedule that
   under-delivers; promote pairs that measured well; feed the device model.
@@ -357,7 +372,12 @@ continuous batching) — they are the highest-leverage first additions.
 - Lives in `cajeta.xpu.sched`, driven by the existing `@Kernel` launch path and
   `LoweringTarget` per-backend seam.
 - Consumes `DeviceProfile` (roofline, machine model) and per-kernel occupancy
-  budgets already produced by the shipped XPU work.
+  budgets already produced by the shipped XPU work — those are the *offline*
+  classification inputs (§3.2).
+- Consumes `cajeta-profiler`'s dispatch records through a registered live sink for
+  the *online* correction (§8.2). This is the one input that is not yet built: it
+  arrives with that spec's Unit 7, which ships the seam and the trace-writer sink;
+  the scheduler's own sink ships here.
 - Surface: a portable `@Kernel` launch site gains optional QoS/priority/deadline
   metadata (defaulting to `SCIENTIFIC`/throughput), and a session-level
   `Scheduler` handle for policy selection. Exact annotation names settle in the
@@ -376,9 +396,51 @@ continuous batching) — they are the highest-leverage first additions.
 3. **Interference-model error** — mispredictions violate SLOs; the online
    feedback loop (§8) and admission conservatism bound the damage.
 4. **Profiling-counter availability** — SM/BW counters differ across
-   backends/drivers; the loop must degrade to latency-only signals.
+   backends/drivers; the loop must degrade to latency-only signals. Those remain
+   available, because per-launch latency comes from the profiler seam rather than
+   from counters — and `cajeta-profiler` §1.4.1 excludes hardware counters
+   outright, so the counter tier is this spec's own problem to source, not
+   something that seam will ever supply.
 5. **Scheduling overhead** — the scheduler itself must stay off the critical
    path (10s of µs budget); use CUDA Graphs / batched submission.
+6. **Dependency on an unapproved spec** — the online half of §8 cannot be built
+   until `cajeta-profiler` Unit 7 exists. The offline half (§3.2 classification
+   from `DeviceProfile` + occupancy budgets) has no such dependency and can land
+   first; sequence the plan so the scheduler is useful before the feedback loop
+   closes, rather than blocked behind it.
+
+## 14. Resolved decisions
+
+Closed with the developer 2026-08-21.
+
+- **14.1 v1 ships all five QoS classes, with two of them unverified on available
+  hardware.** `SCIENTIFIC`, `ML_TRAIN`, `ML_INFER`, `GFX` and `CONTROL` all ship,
+  so §7.2's policy table lands whole and mixed-session composition is exercised
+  across the full range. **`GFX` and `CONTROL` are the deadline classes and their
+  guarantees cannot be verified here.** Unit 7.3.a requires a deadline-class
+  request to meet its deadline with best-effort work running concurrently, and
+  §12.2 warns that commodity GPUs preempt coarsely enough to need REEF-style
+  reset and cooperative yield-points for µs deadlines. gfx1151 is an APU with
+  limited preemption granularity and the RTX 4090 sits behind CI. Those two
+  classes therefore ship implemented and **explicitly marked unverified**, on the
+  same terms as §14.2 — never as a silent gap. A deadline guarantee that has
+  never been measured must not read like one that has.
+- **14.2 The MIG path is built and marked untested.** Neither reference device
+  exposes MIG, so tier 2's top rung ships without ever having run against real
+  hardware. It sits behind the same degradation ladder as everything else
+  (§6.2), so consumer GPUs take MPS or streams regardless and cannot silently
+  select it. The plan and the trace both record that it is unverified. Rejected:
+  deferring MIG entirely, which would leave §4.2.2's partitioning story
+  incomplete on paper; and gating it behind a flag, which adds a switch whose
+  only purpose is to quarantine untested code.
+- **14.3 Implementation starts after `cajeta-profiler` Unit 7.** §3's offline
+  classification is unblocked today — it reuses the shipped `DeviceProfile`
+  roofline and occupancy budgets — but starting now would put two half-finished
+  plans in one working copy and a context switch in every session. §8's online
+  half needs the dual-consumer record seam regardless (§12.6). Rejected: running
+  the offline half in parallel, and running it in a sibling clone, which the
+  per-clone focus state would have supported but which still splits attention
+  across two plans.
 
 ## 13. References
 
@@ -389,4 +451,5 @@ Volkov (occupancy), Williams (roofline), and the real-time accelerator
 scheduling survey. Vendor references: CUDA MPS & MIG user guides, CUDA
 streams/priorities & CUDA Graphs, HIP stream API + CU masking, Vulkan
 async-compute queues. Sibling specs: `xpu-device-profile`,
-`kernel-occupancy-autotune`, `xpu-kernel-scheduling-hints`.
+`kernel-occupancy-autotune`, `xpu-kernel-scheduling-hints`,
+[`cajeta-profiler`](cajeta-profiler-spec.md) (§5.6 record seam, §8 feedback source).

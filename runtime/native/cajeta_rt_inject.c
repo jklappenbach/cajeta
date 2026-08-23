@@ -677,8 +677,12 @@ struct cajeta_exception_frame {
     struct cajeta_drop_entry* drop_watermark;
     // Line-info shadow-stack depth at try-entry (diagnostic-exceptions U3). A
     // throw doesn't run __cajeta_line_leave for the frames it unwinds, so on
-    // catch __cajeta_throw restores __cajeta_shadow_top to this value.
+    // catch __cajeta_throw restores the live shadow top to this value.
     int32_t shadow_watermark;
+    // cajeta-profiler U10 (§3.11): the instrumentation probe depth, restored
+    // on catch for the same reason as the shadow watermark above — an unwound
+    // frame never runs its exit probe.
+    int32_t instr_watermark;
     // Debug frame-chain head at try-entry (resident-debug-server 9.1). Same
     // problem, same cure: a throw runs no __cajeta_dbg_frame_leave for the
     // frames it unwinds, so their nodes LEAKED onto the chain — every later
@@ -720,7 +724,9 @@ void __cajeta_exc_push(struct cajeta_exception_frame* f) {
     // Snapshot the current drop-chain top so a throw can unwind back to here.
     f->drop_watermark = *dropTop;
     // Snapshot the shadow line-stack depth so a caught throw restores it (U3).
-    f->shadow_watermark = __cajeta_shadow_top;
+    f->shadow_watermark = __cajeta_shadow_get_top();
+    // U10: same snapshot for the instrumentation depth.
+    f->instr_watermark = __cajeta_prof_instr_depth();
     // Snapshot the debug frame-chain head (9.1) — see the field's comment.
     f->dbg_watermark = *__cajeta_dbg_top_ptr();
     *top = f;

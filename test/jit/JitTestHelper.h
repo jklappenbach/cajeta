@@ -84,6 +84,15 @@ public:
         // embedded location table (external-debug §2/§3). Off by default — it
         // changes codegen and only matters under a debugger.
         bool debugInfoEnabled = false;
+        // --profiler=instrument (cajeta-profiler §3). Off by default, which
+        // is what makes 10.1.b assertable: the whole existing suite runs with
+        // the flag absent, so any IR change it caused would surface as a
+        // failure somewhere else first.
+        cajeta::Profiler profiler = cajeta::Profiler::Off;
+        // --profiler-select CONTENTS (§3.8-§3.10). The test supplies the text
+        // directly rather than a file, exactly as the flags carry it — the
+        // path is never part of what the compiler decides on.
+        std::string profilerSelect;
         // XPU device backend(s) to register @Kernels for and bundle in the
         // runtime manifest. Empty defaults to {Nvptx} (the legacy NVIDIA
         // host-launch path). The CPU dispatcher tests set {Cpu} to exercise
@@ -181,6 +190,19 @@ private:
     // Mapping short method name -> full mangled name in the JIT'd module. Built
     // once at compile time so per-test lookups don't have to rescan.
     std::map<std::string, std::string> nameMap;
+    // Temp source/archive roots the multi-source compile path created for this
+    // test, removed on destruction. The lifetime is the JIT's rather than the
+    // compile call's so nothing that reads back through a recorded path (debug
+    // info, the archive root) can find the tree gone while the module is live.
+    // Set CAJETA_KEEP_TEMP to leave them for inspection.
+    std::vector<std::string> tempRoots;
 };
+
+// Remove any temp source/archive roots still outstanding. The test binary
+// terminates with _Exit to dodge a two-LLVM teardown crash (see test/main.cpp),
+// which skips atexit and every static destructor — so a CajetaJit held in a
+// function-local static never runs its own cleanup, and this has to be called
+// explicitly at each exit point, exactly as the gcov dump already is.
+void sweepTempRoots();
 
 } // namespace cajeta_test

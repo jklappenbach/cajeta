@@ -44,6 +44,11 @@ static void (*mainGcovDumpFn())(void) {
 int cajetaForkPerTestMain();
 #endif
 
+#include "jit/JitTestHelper.h"
+
+#if !defined(_WIN32)
+#endif
+
 int main(int argc, char **argv) {
 #if defined(_WIN32)
     appendMsysCoreutilsToPath();
@@ -53,6 +58,7 @@ int main(int argc, char **argv) {
     if (std::getenv("CAJETA_FORK_PER_TEST")) {
         const int frc = cajetaForkPerTestMain();
         std::fflush(nullptr);
+        cajeta_test::sweepTempRoots();
         std::_Exit(frc);
     }
 #endif
@@ -69,6 +75,12 @@ int main(int argc, char **argv) {
     // safe and lets ctest see the real pass/fail exit code. CPU-only runs (no 2nd
     // LLVM) were unaffected either way.
     std::fflush(nullptr);
+    // Same reason as the gcov dump below: _Exit skips every static destructor,
+    // so a CajetaJit held in a function-local static (several profiler suites
+    // do, for the compile cost) never reclaims its temp source/archive tree.
+    // Measured 2026-08-22: without this a clean ProfilerClock + ProfilerIntegrity
+    // run left one pair each behind.
+    cajeta_test::sweepTempRoots();
 #if defined(__GNUC__) && !defined(_WIN32)
     // _Exit below skips the atexit chain (see above) — which also skips the
     // gcov counter dump in CAJETA_COVERAGE builds, silently producing zero

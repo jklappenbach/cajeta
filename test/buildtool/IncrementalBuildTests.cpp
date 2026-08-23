@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <random>
 #include <sstream>
 #include <string>
@@ -59,6 +60,21 @@ fs::path freshTempDir(const std::string& tag) {
     return base;
 }
 
+// Nothing removed these, and each holds a full build tree — a suite run left
+// ~1.6 GB behind, which accumulated across runs until the per-user tmpfs quota
+// broke unrelated builds (profiler plan 6.5). Tie the dir's lifetime to a
+// shared_ptr rather than a destructor so `Project` stays copyable and movable:
+// `Project::create` returns by value, and a destructor on Project would delete
+// the tree when the returned temporary died. The tree goes when its last
+// holder does. Set CAJETA_KEEP_TEMP to leave it for inspection.
+std::shared_ptr<void> tempDirCleanup(const fs::path& dir) {
+    if (std::getenv("CAJETA_KEEP_TEMP")) return {};
+    return std::shared_ptr<void>(nullptr, [dir](void*) {
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+    });
+}
+
 std::string readAll(const fs::path& path) {
     std::ifstream in(path);
     std::stringstream ss; ss << in.rdbuf();
@@ -79,6 +95,9 @@ int exitCodeOf(int systemStatus) {
 // into settings.build when non-empty.
 struct Project {
     fs::path root;
+    // Removes `root` when the last copy of this Project goes away. Declared
+    // second so aggregate init reads `Project{dir, tempDirCleanup(dir)}`.
+    std::shared_ptr<void> cleanup;
 
     fs::path srcDir() const {
         return root / "src" / "main" / "cajeta" / "t";
@@ -135,7 +154,8 @@ struct Project {
     static Project create(const std::string& tag,
                           const std::string& cacheSettings = "",
                           const std::string& incrementalParam = "true") {
-        Project p{freshTempDir(tag)};
+        auto dir = freshTempDir(tag);
+        Project p{dir, tempDirCleanup(dir)};
         p.writeManifest(cacheSettings, incrementalParam);
         p.writeSources(/*mainBias=*/4);   // streamed 3 + 4 = 7
         return p;
@@ -422,6 +442,7 @@ TEST(IncrementalBuild, TourSmokeBuildsIncrementally) {
         GTEST_SKIP() << "samples/tour unavailable";
 
     auto root = freshTempDir("tour");
+    auto rootCleanup = tempDirCleanup(root);
     std::error_code ec;
     fs::copy(tour / "cajeta.json", root / "cajeta.json", ec);
     fs::copy(tour / "src", root / "src", fs::copy_options::recursive, ec);
@@ -572,7 +593,8 @@ TEST(IncrementalBuild, AddedSkillFileMissesTheWholeArtifactCache) {
 TEST(IncrementalBuild, NoCacheParamBypassesBothLayers) {
     if (!fs::exists(compilerBinary()))
         GTEST_SKIP() << "compiler binary unavailable";
-    Project p{freshTempDir("nocache")};
+    auto nocacheDir = freshTempDir("nocache");
+    Project p{nocacheDir, tempDirCleanup(nocacheDir)};
     {
         std::ofstream m(p.root / "cajeta.json");
         m << "{\n"

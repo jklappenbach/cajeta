@@ -17,6 +17,7 @@
 #include "../compile/ScriptUnitSynthesis.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "cajeta/dbg/LineInfoCodegen.h"
+#include "cajeta/prof/ProfileCodegen.h"
 #include "../field/HeapField.h"
 #include "../field/StackField.h"
 #include "../field/ParameterField.h"
@@ -1580,8 +1581,26 @@ namespace cajeta {
         }
         // diagnostic-exceptions U3: pop the line-info shadow frame on this return
         // path (no-op unless --line-info). Same every-return coverage as above.
-        dbg::emitLineLeave(module);
+        //
+        // cajeta-profiler 6.4.B — ONLY when the prologue pushed one. A lambda
+        // body is codegen'd inline by LambdaExpression::generateCode, which
+        // never runs Method::generateCode's prologue, so it has no shadow
+        // frame; its `return`s still funnel through here, and this leave takes
+        // no argument, so an unpaired one pops the ENCLOSING method's frame.
+        // Repeated lambda calls then erode the stack a frame at a time — in
+        // samples/tour that ate Stream.forEach and then tour.Tour.main, after
+        // which every demo profiled at depth 0. The dbg leave immediately
+        // above is immune because it is node-paired (a lambda passes a null
+        // slot); the shadow stack, an index into an array, has no equivalent,
+        // so the pairing has to be decided here.
         auto m = module->getCurrentMethod();
+        if (m && m->hasLineFrame()) dbg::emitLineLeave(module);
+        // cajeta-profiler U10: close the instrumentation span on this return
+        // path. Gated on the FRAME, not on the flag, for the 6.4.B reason
+        // above — a lambda body running under the enclosing method's
+        // getCurrentMethod() must not close the enclosing method's span. The
+        // frame is empty for anything the prologue did not probe.
+        if (m) prof::emitProfileExit(module, m->getProfileFrame());
         if (!m) return;
         llvm::AllocaInst* mark = m->getScopeWatermark();
         if (!mark) return;

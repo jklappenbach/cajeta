@@ -47,4 +47,8 @@ One chapter per package area, mirroring the tour. *(Planned.)*
 
 ## Part IV — Specialized
 
-GPU kernels, graphics, embedded targets, toolchain deep-dives. *(Planned.)*
+| Chapter | |
+|---|---|
+| [23 Profiling](23-profiling.md) | The sampling profiler, `.pftrace` output, reading a trace |
+
+GPU kernels, graphics, embedded targets, further toolchain deep-dives. *(Planned.)*

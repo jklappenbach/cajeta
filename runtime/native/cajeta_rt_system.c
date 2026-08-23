@@ -7,6 +7,11 @@
 // System.exit(code). Terminates the process — caller must not rely on return.
 __attribute__((noreturn))
 void __cajeta_exit(int32_t code) {
+    // A profiled run that ends in System.exit must still produce its trace
+    // (4.2.d). This is the ONLY hook that fires here: _Exit deliberately runs no
+    // atexit handlers, so without this call the profile of every program that
+    // exits explicitly would be silently empty.
+    __cajeta_prof_shutdown();
     // Use _Exit so atexit handlers (incl. stdio buffer flush) don't run; matches
     // Java's exit semantics where the JVM is torn down without C-style cleanup.
     _Exit(code);

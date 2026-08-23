@@ -904,10 +904,16 @@ These are always on at `-O1` and above; disable individually via
 - `--unroll=on|off` — loop unrolling.
 - `--debug-info=full|line|off` — debug records, in Cajeta's own
   encoding (never DWARF). `line` (the default) keeps the shadow
-  stack, so a trace resolves to `Type.method(File.cajeta:NN)`;
-  `full` adds statement safepoints, local records, and the embedded
-  location table an external debugger reads; `off` emits neither,
-  for the smallest binaries.
+  stack, so a trace resolves to `Type.method(File.cajeta)` — the
+  frame's identity, at parity with an uninstrumented build. `full`
+  adds the exact `:NN`, statement safepoints, local records, and the
+  embedded location table an external debugger reads; `off` emits
+  none of it, for the smallest binaries.
+
+  The line number sits under `full` and not under `line` because it
+  is the expensive half: the per-statement probe that carries it
+  measured 3.5-9.4x at -O3, while the per-call probe that names the
+  frame measured at parity. See `LineInfoCodegen::emitLineMark`.
 
 ### Tradeoffs to know
 

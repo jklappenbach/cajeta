@@ -1,0 +1,358 @@
+# cajeta-profiler 5.1.f — a real Perfetto reader judges our trace.
+#
+# WHY THIS EXISTS
+# The profiler emits Perfetto protobuf by hand: no SDK, no generated code, no
+# build dependency (spec §7.7, plan 5.3.b). That leaves one failure mode nothing
+# local can catch. Round-trip tests verify the wire layer against itself, and
+# third_party/perfetto/perfetto_trace.proto verifies the field NUMBERS — but a
+# structurally wrong trace is valid protobuf carrying correct field numbers, so
+# every local check passes and the file still does not load. Only a reader can
+# say otherwise.
+#
+# Deliberately cheap: a plain `cc` over one standalone generator that textually
+# includes the real emitter. No LLVM, no toolchain build, no GPU, no self-hosted
+# runner. A check that took an hour would not run on every change to the writer,
+# and this one has to.
+name: trace-validate
+
+on:
+  push:
+    paths:
+      - 'runtime/native/cajeta_rt_prof_trace.c'
+      - 'tools/tracegen/**'
+      - 'third_party/perfetto/**'
+      - '.github/workflows/trace-validate.yml'
+  pull_request:
+    paths:
+      - 'runtime/native/cajeta_rt_prof_trace.c'
+      - 'tools/tracegen/**'
+      - '.github/workflows/trace-validate.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the generator
+        run: |
+          # -lm: Unit 9's correlation uses llround for the tick->ns mapping.
+          cc -O1 -Wall -Wextra -o tracegen tools/tracegen/tracegen.c -lm
+          ./tracegen min.pftrace
+          ./tracegen --profile prof.pftrace
+          ./tracegen --gpu gpu.pftrace
+          ./tracegen --instr instr.pftrace
+          ./tracegen --both both.pftrace
+          ls -l min.pftrace prof.pftrace gpu.pftrace instr.pftrace both.pftrace
+          test -s min.pftrace
+          test -s prof.pftrace
+          test -s gpu.pftrace
+          test -s instr.pftrace
+          test -s both.pftrace
+
+      - name: Fetch trace_processor
+        run: |
+          curl -sSL -o trace_processor https://get.perfetto.dev/trace_processor
+          chmod +x trace_processor
+          ./trace_processor --version || true
+
+      # Each query asserts something the generator deliberately put in. A trace
+      # that merely PARSES is not the bar — an empty trace parses.
+      - name: Trace loads and carries what was written
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin min.pftrace; }
+
+          echo "== slices =="
+          echo "select count(*) as slice_count from slice;" | q | tee slices.txt
+          grep -qE '(^|[^0-9])3([^0-9]|$)' slices.txt \
+            || { echo "FAIL: expected 3 slices (2 nested on one track, 1 overlapping on a child)"; exit 1; }
+
+          echo "== interned name resolved =="
+          echo "select distinct name from slice;" | q | tee names.txt
+          grep -q 'test.App.run' names.txt \
+            || { echo "FAIL: interned event name did not resolve (spec 7.4)"; exit 1; }
+
+          echo "== track hierarchy =="
+          echo "select count(*) as parented from track where parent_id is not null;" | q | tee tracks.txt
+          grep -qE '(^|[^0-9])1([^0-9]|$)' tracks.txt \
+            || { echo "FAIL: parent/child track hierarchy did not survive (spec 7.2)"; exit 1; }
+
+      # Unit 9 (spec §7.8, §10.6). The `debug.` prefix on these keys was
+      # MEASURED against trace_processor v57, not assumed.
+      - name: Spans carry their tier, and the run carries its calibration
+        run: |
+          set -euo pipefail
+          g() { ./trace_processor -q /dev/stdin gpu.pftrace; }
+
+          echo "== per-measurement tier and confidence (spec 10.6) =="
+          echo "select distinct key from args where key like 'debug.%';" | g | tee keys.txt
+          for k in debug.tier debug.clock_confidence; do
+            grep -q "$k" keys.txt || { echo "FAIL: $k missing (spec 10.6)"; exit 1; }
+          done
+
+          echo "== run-level calibration record (spec 7.8) =="
+          for k in debug.clock_domains_calibrated debug.clock3_confidence \
+                   debug.clock3_drift_ppm_milli debug.clock3_samples \
+                   debug.clock3_driver debug.clock3_layers; do
+            grep -q "$k" keys.txt || { echo "FAIL: $k missing (spec 7.8)"; exit 1; }
+          done
+
+          echo "== the numbers, not just the keys =="
+          echo "select int_value from args where key='debug.clock3_samples';" | g | tee s.txt
+          grep -qE '(^|[^0-9])8([^0-9]|$)' s.txt \
+            || { echo "FAIL: calibration sample count did not survive"; exit 1; }
+
+          # NOT asserted, deliberately: `select count(*) from clock_snapshot`.
+          # Measured 2026-08-21 — trace_processor materializes that table only
+          # when some packet REFERENCES the sequence-scoped clock via
+          # timestamp_clock_id. Device timestamps here are already in the host
+          # domain (spec 5.1.7), so nothing references clock 64+domain and the
+          # table stays empty even though the snapshot is present and correct.
+          # Asserting 0 would pin an accident; asserting >0 would fail forever.
+          # The snapshot's bytes are covered by ProfilerClockTests, and its
+          # ingestibility was verified with a probe trace that does reference
+          # the clock (2 rows). See third_party/perfetto/PROVENANCE.md.
+
+      # Unit 10 — exact instrumentation (spec 3.4, 3.5, 3.11, 3.12, 3.13).
+      #
+      # Every assertion here is about a number a reader would otherwise have to
+      # infer. A trace that reports counts without saying what was EXCLUDED
+      # reads as though the excluded code were free; one that reports timings
+      # without saying what the probes cost, or what optimization level the
+      # build used, hands over figures whose meaning is a guess.
+      - name: Instrumentation records its counts, its cost and its selection
+        run: |
+          set -euo pipefail
+          i() { ./trace_processor -q /dev/stdin instr.pftrace; }
+
+          echo "== run record: cost (3.5), selection (3.12), opt level (3.13) =="
+          echo "select distinct key from args where key like 'debug.%';" | i | tee ikeys.txt
+          for k in debug.instr_tier debug.instr_methods debug.instr_calls \
+                   debug.instr_probe_pairs debug.instr_probe_ns \
+                   debug.instr_overhead_ns debug.instr_opt_level \
+                   debug.instr_selection; do
+            grep -q "$k" ikeys.txt || { echo "FAIL: $k missing"; exit 1; }
+          done
+
+          echo "== the selection travels VERBATIM, not as a boolean =="
+          echo "select string_value from args where key='debug.instr_selection';" \
+            | i | tee sel.txt
+          grep -q 'exclude test.Noisy' sel.txt \
+            || { echo "FAIL: the selection in force did not reach the trace (3.12)"; exit 1; }
+
+          echo "== overhead is pairs x measured cost, not a guess =="
+          echo "select int_value from args where key='debug.instr_overhead_ns';" \
+            | i | tee oh.txt
+          # Anchored, not a substring search: 7938 is 441 x 18 exactly, and a
+          # loose match would also accept 79380 or 17938.
+          grep -qE '^"?7938"?$' oh.txt \
+            || { echo "FAIL: 441 pairs x 18 ns did not survive (3.5)"; exit 1; }
+
+          echo "== per-method counts and inclusive time (10.2.f) =="
+          echo "select s.name, a.key, a.int_value from slice s
+                join args a on s.arg_set_id = a.arg_set_id
+                where a.key in ('debug.calls','debug.inclusive_ns',
+                                'debug.outside_selection_calls')
+                order by s.name, a.key;" | i | tee per.txt
+          grep -q 'test.App.leaf(App.cajeta)","debug.calls",400' per.txt \
+            || { echo "FAIL: exact call counts did not reach the trace"; exit 1; }
+          grep -q 'test.App.run(App.cajeta)","debug.outside_selection_calls",1' per.txt \
+            || { echo "FAIL: a call from outside the selection was not recorded (3.11)"; exit 1; }
+
+      # 3.4 — both tiers in ONE trace, still distinguishable. The failure this
+      # catches is a merge that makes provenance a guess: an instrumented count
+      # rendered as though it were a sampled slice is not a better profile, it
+      # is a profile nobody can check.
+      - name: Sampling and instrumentation coexist and stay distinguishable
+        run: |
+          set -euo pipefail
+          b() { ./trace_processor -q /dev/stdin both.pftrace; }
+
+          echo "select t.name, count(*) from slice s
+                join track t on s.track_id = t.id group by t.name;" | b | tee tracks.txt
+          grep -q 'cajeta.instrumentation' tracks.txt \
+            || { echo "FAIL: no instrumentation track in the merged trace"; exit 1; }
+          grep -q 'cajeta.thread' tracks.txt \
+            || { echo "FAIL: no sampled thread track in the merged trace"; exit 1; }
+
+          echo "== and each instrumented record names its source outright =="
+          echo "select distinct string_value from args where key='debug.source';" \
+            | b | tee src.txt
+          grep -q 'instrumentation' src.txt \
+            || { echo "FAIL: an instrumented record does not say what produced it"; exit 1; }
+
+      # "without warnings" is the actual requirement, not "without crashing".
+      # trace_processor records its own complaints in the stats table; an
+      # unparseable packet or a dropped field shows up there rather than as a
+      # non-zero exit.
+      - name: No error-severity stats
+        run: |
+          set -euo pipefail
+          for t in min.pftrace prof.pftrace gpu.pftrace instr.pftrace both.pftrace; do
+            echo "== $t =="
+            echo "select name, value from stats where severity = 'error' and value > 0;" \
+              | ./trace_processor -q /dev/stdin "$t" | tee stats.txt
+            if grep -qE '^[a-z_]+ +[1-9]' stats.txt; then
+              echo "FAIL: trace_processor reported error-severity stats for $t"
+              exit 1
+            fi
+          done
+
+      # Unit 6: the sample->slice transform, run on synthetic samples through the
+      # runtime's OWN code (tracegen compiles it verbatim, minus the ring drain).
+      # The stack goes run->middle->inner, then loses inner, then loses middle.
+      # A transform that closed every slice each tick would still produce a
+      # loadable trace — just a wrong one — so these assert the SHAPE.
+      - name: Sampled profile converts to correct slices
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin prof.pftrace; }
+
+          echo "== distinct frames =="
+          echo "select distinct name from slice order by name;" | q | tee pnames.txt
+          for f in test.App.run test.App.middle test.App.inner; do
+            grep -q "$f" pnames.txt || { echo "FAIL: $f missing from the profile"; exit 1; }
+          done
+
+          echo "== run outlives its callees =="
+          # `run` is on the stack for every sample; `inner` leaves after the
+          # third. So run's slice MUST be strictly longer. If the diff closed and
+          # reopened every frame each tick, all three would come out equal and
+          # tick-sized — a trace that still loads and is still wrong.
+          #
+          # Asserted as a strict comparison, not as "run appears in the table":
+          # presence is satisfied by exactly the broken transform this is meant
+          # to catch.
+          echo "select name, max(dur) as d from slice group by name order by d desc;" | q | tee pdur.txt
+          cat pdur.txt
+          run_d=$(echo "select max(dur) as d from slice where name = 'test.App.run';"                   | q | grep -oE '^[0-9]+$' | head -1)
+          inner_d=$(echo "select max(dur) as d from slice where name = 'test.App.inner';"                     | q | grep -oE '^[0-9]+$' | head -1)
+          echo "run=$run_d inner=$inner_d"
+          test -n "$run_d" -a -n "$inner_d"             || { echo "FAIL: could not read slice durations"; exit 1; }
+          test "$run_d" -gt "$inner_d"             || { echo "FAIL: run ($run_d) did not outlive inner ($inner_d) — the diff is closing frames it should have left open"; exit 1; }
+
+          echo "== thread and fiber are distinct tracks (spec 4.3) =="
+          # Counted over PROGRAM frames only. Counting every track made this
+          # assertion depend on how many bookkeeping tracks the writer emits — it
+          # broke the moment 6.2.c added a cajeta.profiler metadata track, which is
+          # a thing we want, not a regression.
+          echo "select count(distinct track_id) as tracks from slice where name like 'test.App.%';" | q | tee ptracks.txt
+          grep -qE '(^|[^0-9])2([^0-9]|$)' ptracks.txt || { echo "FAIL: program frames did not land on exactly 2 tracks (thread + fiber)"; exit 1; }
+
+          echo "== no unterminated slices =="
+          echo "select count(*) as unfinished from slice where dur < 0;" | q | tee punf.txt
+          grep -qE '(^|[^0-9])0([^0-9]|$)' punf.txt             || { echo "FAIL: trace ended with slices left open"; exit 1; }
+
+      # 6.1.d: slices carry file:line, interned separately from names so a
+      # method sampled at many lines stays one EventName. The arg keys are
+      # dumped before the assertion so a mapping change reports what it became
+      # rather than just failing.
+      - name: Slices carry source locations
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin prof.pftrace; }
+          echo "== arg keys present =="
+          echo "select distinct key from args order by key;" | q | tee argkeys.txt
+          echo "== source file reaches the reader =="
+          echo "select count(*) as n from args where string_value like '%App.cajeta%';"             | q | tee srcargs.txt
+          n=$(grep -oE '^[0-9]+$' srcargs.txt | head -1)
+          test -n "$n" -a "$n" != "0"             || { echo "FAIL: no slice carried a source file; see arg keys above"; exit 1; }
+          echo "source locations present in $n arg(s)"
+
+      # 6.2.c / 7.8: the trace states what produced it and what it LOST. The
+      # sampler drops on ring overflow rather than blocking — correct, since
+      # blocking perturbs the program — but a trace that lost a third of its
+      # samples must not be byte-identical to a complete one.
+      - name: Trace records its own configuration and losses
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin prof.pftrace; }
+          echo "select key, coalesce(string_value, cast(int_value as text)) as v
+                from args where key like '%tier%' or key like '%rate_hz%'
+                   or key like '%dropped%' or key like '%samples%';" | q | tee meta.txt
+          grep -q 'sampling' meta.txt             || { echo "FAIL: trace does not say which tier produced it"; exit 1; }
+          # The drop count specifically: it is the number that decides whether a
+          # flame graph can be trusted, and it lived only in memory until now.
+          grep -qE '(^|[^0-9])8([^0-9]|$)' meta.txt             || { echo "FAIL: samples_dropped=8 did not reach the trace"; exit 1; }
+          echo "configuration and drop count present"
+
+      # Unit 7: the GPU dispatch record seam's trace half. Every claim below is
+      # one only a real reader can settle — each has a failure mode that leaves
+      # a file which is valid protobuf, loads without complaint, and is wrong.
+      - name: GPU records render as a device hierarchy with launch flows
+        run: |
+          set -euo pipefail
+          q() { ./trace_processor -q /dev/stdin gpu.pftrace; }
+
+          echo "== track hierarchy (spec 7.2) =="
+          echo "select t.id, t.name, t.parent_id from track t order by t.id;" | q | tee gtracks.txt
+          grep -q 'cajeta.xpu.cpu device 0' gtracks.txt \
+            || { echo "FAIL: no device track — the device lane is a synthetic thread"; exit 1; }
+          # A queue parented to nothing renders identically to a parented one in
+          # a single-device trace, and wrongly the moment there are two. So the
+          # PARENT is what gets asserted, not the presence of the name.
+          echo "select count(*) as parented from track q
+                join track c on q.parent_id = c.id
+                join track d on c.parent_id = d.id
+                where q.name like 'queue%' and c.name like 'context%'
+                  and d.name like 'cajeta.xpu%';" | q | tee gparent.txt
+          grep -qE '(^|[^0-9])2([^0-9]|$)' gparent.txt \
+            || { echo "FAIL: the two queue tracks are not parented device -> context -> queue"; exit 1; }
+
+          echo "== launch -> execution flows (spec 7.3) =="
+          # A flow needs BOTH ends to carry the id. Listing it on only one draws
+          # no arrow, and nothing else about the trace changes.
+          echo "select count(*) as flows from flow;" | q | tee gflow.txt
+          grep -qE '(^|[^0-9])4([^0-9]|$)' gflow.txt \
+            || { echo "FAIL: expected 4 launch->execution flows"; exit 1; }
+          # ...and each arrow must run from a HOST instant to a DEVICE slice.
+          # Four flows pointing device-to-device would pass a bare count.
+          echo "select count(*) as correct from flow f
+                join slice so on f.slice_out = so.id
+                join slice si on f.slice_in  = si.id
+                join track ot on so.track_id = ot.id
+                join track it on si.track_id = it.id
+                where ot.name like 'cajeta.thread.%' and it.name like 'queue%';" | q | tee gdir.txt
+          grep -qE '(^|[^0-9])4([^0-9]|$)' gdir.txt \
+            || { echo "FAIL: flows do not run from the host launch site to the device slice"; exit 1; }
+
+          echo "== kernels are timed on the device lane =="
+          echo "select count(*) as timed from slice s join track t on s.track_id = t.id
+                where t.name like 'queue%' and s.dur > 0;" | q | tee gdur.txt
+          grep -qE '(^|[^0-9])4([^0-9]|$)' gdur.txt \
+            || { echo "FAIL: device slices have no duration"; exit 1; }
+
+          echo "== the launch site reaches the reader (spec 5.1.2) =="
+          echo "select count(*) as n from args where string_value like '%App.cajeta%';" | q | tee gsrc.txt
+          n=$(grep -oE '^[0-9]+$' gsrc.txt | head -1)
+          test -n "$n" -a "$n" != "0" \
+            || { echo "FAIL: no dispatch carried its host call site"; exit 1; }
+
+          echo "== no reader complaints =="
+          echo "select name, value from stats where severity = 'error' and value > 0;" \
+            | q | tee gstats.txt
+          test "$(grep -cE '^"[a-z_]+",[0-9]+$' gstats.txt || true)" = "0" \
+            || { echo "FAIL: trace_processor reported error-severity stats"; exit 1; }
+
+      # 7.6: a trace cut mid-write must still read up to the cut. Truncation is
+      # the normal end of a profiled run that was killed, so this is the common
+      # case, not the edge case.
+      - name: Truncated trace still loads
+        run: |
+          set -euo pipefail
+          full=$(stat -c%s min.pftrace)
+          head -c $((full * 2 / 3)) min.pftrace > cut.pftrace
+          echo "select count(*) as n from slice;" | ./trace_processor -q /dev/stdin cut.pftrace
+          echo "truncated trace loaded ($((full * 2 / 3)) of $full bytes)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pftrace
+          path: |
+            min.pftrace
+            prof.pftrace
+            cut.pftrace

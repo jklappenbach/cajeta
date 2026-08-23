@@ -4,6 +4,8 @@
 
 #include "Expression.h"
 #include "cajeta/compile/CajetaModule.h"
+#include "cajeta/dbg/LineInfoCodegen.h"
+#include "cajeta/prof/ProfileCodegen.h"
 #include "cajeta/compile/ExcFrameSetjmp.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
 #include "cajeta/type/CajetaClass.h"
@@ -4513,6 +4515,40 @@ bool cajetaRhsCarriesRedundantSharp(
         llvm::IRBuilder<>* lambdaBuilder = new llvm::IRBuilder<>(entryBB);
         module->setBuilder(lambdaBuilder);
 
+        // U10: the lambda's instrumentation probe pair, closed alongside the
+        // shadow frame in the `ret` walk below.
+        prof::ProfileFrame lambdaProfFrame;
+        // cajeta-profiler 6.4.C: push a line-info shadow frame for the lambda,
+        // exactly as Method::generateCode's prologue does for an ordinary
+        // method (no-op unless --line-info). This body is codegen'd inline
+        // here rather than through that prologue, so without this a lambda is
+        // absent from every profile and stack trace: a stream pipeline showed
+        // the terminal and the element work with nothing between them naming
+        // the user's own callback.
+        //
+        // The frame is named for the DECLARING class with method `<lambda>`;
+        // the statement marks the body emits keep the line current, so a frame
+        // renders as `pkg.Type.<lambda>(File.cajeta:NN)` and two lambdas in one
+        // method stay distinguishable by line. Paired below — see the walk over
+        // this function's `ret`s before the builder is restored.
+        {
+            CajetaClassPtr lambdaOwner = outerMethod ? outerMethod->getParent()
+                                                     : nullptr;
+            std::string typeName = (lambdaOwner && lambdaOwner->getQName())
+                ? lambdaOwner->getQName()->toCanonical() : std::string();
+            std::string fileName = lambdaOwner ? lambdaOwner->getDeclaringFile()
+                                               : std::string();
+            if (fileName.empty()) fileName = module->remappedSourcePath();
+            dbg::emitLineEnter(module, typeName, "<lambda>", fileName);
+            // U10 (spec §3.1): the lambda gets its own instrumentation probe
+            // for the same reason it gets its own shadow frame — a callback is
+            // the user's code, and a profile that folds it into the terminal
+            // operation reports the wrong method. Selection is by the
+            // DECLARING class, so a lambda is in or out with its owner.
+            lambdaProfFrame = prof::emitProfileEnter(module, typeName,
+                                                     "<lambda>", fileName);
+        }
+
         // Open a fresh scope for the lambda's parameters + captures. After
         // adding to the stack, sever the parent link so identifier lookups
         // inside the body never walk up into the outer method's scope —
@@ -4748,6 +4784,40 @@ bool cajetaRhsCarriesRedundantSharp(
         module->restoreTryFinally(std::move(savedTryFrames));
         module->getScopeStack().pop();
         delete lambdaBuilder;
+        // 6.4.C: pop the lambda's shadow frame on EVERY exit. A lambda has
+        // many terminating paths — each `return` in a block body, the block's
+        // fall-through, and four separate expression-body epilogues (sret,
+        // void, value, and the null-bodyVal fallback) — and
+        // emitScopeExitToWatermark cannot serve them: it bails on a null
+        // current method, and a lambda body deliberately runs with none
+        // (setCurrentMethod(nullptr) above). Rather than place a leave at each
+        // site and rely on the next one being remembered, walk the finished
+        // function and put it before every `ret`. Paths that leave by throwing
+        // end in `unreachable`, not `ret`, and are handled the same way an
+        // ordinary method's are: __cajeta_throw restores the catching frame's
+        // watermark.
+        //
+        // This runs AFTER the epilogue's __cajeta_return_flag_set (the leave
+        // touches only the shadow stack, never the flag), and after any drops
+        // the body fires — so a drop_fn invoked on the way out is attributed
+        // inside the lambda rather than to its caller.
+        if (module->getFlags().lineInfo) {
+            if (llvm::Function* leaveFn =
+                    module->getRuntimeFunction("__cajeta_line_leave")) {
+                for (llvm::BasicBlock& bb : *fn) {
+                    if (auto* ri = llvm::dyn_cast_or_null<llvm::ReturnInst>(
+                            bb.getTerminator())) {
+                        llvm::IRBuilder<> leaveBuilder(ri);
+                        leaveBuilder.CreateCall(leaveFn, {});
+                    }
+                }
+            }
+        }
+        // U10: and close the instrumentation span at the same `ret`s, for the
+        // same reason — a lambda's exits are not reachable from
+        // emitScopeExitToWatermark.
+        prof::emitProfileExitAtReturns(module, fn, lambdaProfFrame);
+
         module->setBuilder(outerBuilder);
         module->setCurrentMethod(outerMethod);
         outerBuilder->SetInsertPoint(outerInsertBlock);

@@ -893,7 +893,7 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
 // Dispatch a launch to whatever backend is active, on its current device.
 // `specCount`/`specValues` are host overrides for the kernel's user spec
 // constants (NULL/0 = none); see __cajeta_xpu_launch_v3.
-static void caj_xpu_dispatch(const char* kernelName,
+static void caj_xpu_dispatch_raw(const char* kernelName,
                              int32_t gridX, int32_t gridY, int32_t gridZ,
                              int32_t blockX, int32_t blockY, int32_t blockZ,
                              uint32_t sharedBytes, void* argv,
@@ -934,6 +934,53 @@ static void caj_xpu_dispatch(const char* kernelName,
             return;
         default: return;   // none: diagnostic emitted
     }
+}
+
+// The profiler's dispatch-record seam (cajeta-profiler Unit 7, spec §5.1).
+//
+// Wrapped HERE rather than in __cajeta_xpu_launch_v3's body because this is the
+// single point every launch passes through: v3 dispatches from two places (the
+// HIP per-device branch and the fallthrough) and v2/v1 forward to v3, so a hook
+// written one level up would be two call sites, i.e. two chances to miss one.
+typedef struct {
+    const char* kernelName;
+    int32_t gridX, gridY, gridZ, blockX, blockY, blockZ;
+    uint32_t sharedBytes;
+    void* argv;
+    int64_t streamHandle;
+    int32_t specCount;
+    const int32_t* specValues;
+} CajXpuDispatchArgs;
+
+static void caj_xpu_dispatch_thunk(void* p) {
+    CajXpuDispatchArgs* a = (CajXpuDispatchArgs*) p;
+    caj_xpu_dispatch_raw(a->kernelName, a->gridX, a->gridY, a->gridZ,
+                         a->blockX, a->blockY, a->blockZ, a->sharedBytes,
+                         a->argv, a->streamHandle, a->specCount, a->specValues);
+}
+
+static void caj_xpu_dispatch(const char* kernelName,
+                             int32_t gridX, int32_t gridY, int32_t gridZ,
+                             int32_t blockX, int32_t blockY, int32_t blockZ,
+                             uint32_t sharedBytes, void* argv,
+                             int64_t streamHandle,
+                             int32_t specCount, const int32_t* specValues,
+                             int32_t deviceId) {
+    // Unarmed: one acquire load inside the seam, then the same call the
+    // unprofiled build makes. No record, no id, no stack read (plan 7.1.e).
+    if (__cajeta_prof_gpu_sink_count() == 0) {
+        caj_xpu_dispatch_raw(kernelName, gridX, gridY, gridZ, blockX, blockY,
+                             blockZ, sharedBytes, argv, streamHandle,
+                             specCount, specValues);
+        return;
+    }
+    CajXpuDispatchArgs a = { kernelName, gridX, gridY, gridZ, blockX, blockY,
+                             blockZ, sharedBytes, argv, streamHandle,
+                             specCount, specValues };
+    __cajeta_prof_gpu_launch(kernelName, gridX, gridY, gridZ,
+                             blockX, blockY, blockZ, sharedBytes, streamHandle,
+                             deviceId, cajeta_xpu_active_backend(),
+                             caj_xpu_dispatch_thunk, &a);
 }
 
 // How many devices the given backend exposes (>= 1). Best-effort; falls back to
@@ -1011,7 +1058,7 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
                 g_xpu_hip.hipSetDevice(deviceId);
                 caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
                                  blockX, blockY, blockZ, sharedBytes, argv,
-                                 streamHandle, specCount, specValues);
+                                 streamHandle, specCount, specValues, deviceId);
                 g_xpu_hip.hipSetDevice(prev);
                 return;
             }
@@ -1027,7 +1074,7 @@ void __cajeta_xpu_launch_v3(const char* kernelName,
 
     caj_xpu_dispatch(kernelName, gridX, gridY, gridZ,
                      blockX, blockY, blockZ, sharedBytes, argv, streamHandle,
-                     specCount, specValues);
+                     specCount, specValues, deviceId);
 }
 
 // Compat shim (ABI v2): no spec override. Frozen signature.

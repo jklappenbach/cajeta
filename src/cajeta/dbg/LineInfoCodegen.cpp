@@ -1,6 +1,7 @@
 #include "cajeta/dbg/LineInfoCodegen.h"
 
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 namespace cajeta::dbg {
 
@@ -13,6 +14,39 @@ namespace cajeta::dbg {
             llvm::BasicBlock* bb = builder->GetInsertBlock();
             if (!bb || bb->hasTerminator()) return nullptr;
             return builder;
+        }
+
+        // cajeta-profiler 4.2.e (spec §2.5). The profiler must refuse to arm on
+        // a --line-info=off binary rather than produce an empty trace, and the
+        // runtime cannot infer the flag: an empty shadow stack is what an idle
+        // program looks like too, and counting probe calls would put a cost on
+        // the hot path §2.9 forbids. So codegen says so, once per module.
+        //
+        // A ctor, NOT a weak extern. cajeta_rt_core.c's loc-table note has the
+        // reason: the runtime bitcode is linked into each module long before
+        // codegen emits its definition, so a weak default there and a strong one
+        // here collide in one module and LLVM silently renames the second. A
+        // ctor behaves identically under LLJIT and a native link — the shape the
+        // loc table and the XPU kernel registry both already use.
+        //
+        // Idempotent by construction: emitLineEnter runs per method, and the
+        // presence of the ctor function is the "already done" flag.
+        void ensureLineInfoRegistered(llvm::Module* mod,
+                                      const cajeta::CajetaModulePtr& module) {
+            static const char* kCtorName = "__cajeta.lineinfo.register";
+            if (!mod || mod->getFunction(kCtorName)) return;
+            llvm::Function* regFn =
+                module->getRuntimeFunction("__cajeta_line_info_register");
+            if (!regFn) return;
+            auto& ctx = mod->getContext();
+            llvm::FunctionType* ctorTy =
+                llvm::FunctionType::get(llvm::Type::getVoidTy(ctx), false);
+            llvm::Function* ctor = llvm::Function::Create(
+                ctorTy, llvm::GlobalValue::InternalLinkage, kCtorName, mod);
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", ctor));
+            b.CreateCall(regFn, {});
+            b.CreateRetVoid();
+            llvm::appendToGlobalCtors(*mod, ctor, /*priority=*/65535);
         }
     }
 
@@ -32,6 +66,8 @@ namespace cajeta::dbg {
         llvm::Constant* fC = builder->CreateGlobalString(fileName);
         llvm::StructType* descTy = llvm::StructType::get(ctx, {ptrTy, ptrTy, ptrTy});
         llvm::Module* mod = builder->GetInsertBlock()->getModule();
+        // First probe in this module also records that probes exist at all.
+        ensureLineInfoRegistered(mod, module);
         auto* desc = new llvm::GlobalVariable(
             *mod, descTy, /*isConstant=*/true, llvm::GlobalValue::PrivateLinkage,
             llvm::ConstantStruct::get(descTy, {tC, mC, fC}), ".cajeta.framedesc");
@@ -47,6 +83,39 @@ namespace cajeta::dbg {
     }
 
     void emitLineMark(cajeta::CajetaModulePtr module, int line) {
+        // The per-STATEMENT mark is the entire runtime cost of the shadow
+        // stack, and it is not close. Measured 2026-08-22 at -O3:
+        //
+        //                       off     enter/leave    + marks
+        //   realistic body     0.11 s      0.11 s       0.39 s   (3.5x)
+        //   tiny callee        0.05 s      0.15 s       0.47 s   (9.4x)
+        //
+        // Per-CALL enter/leave is at parity with an uninstrumented build on
+        // ordinary code; per-statement marks cost 3.5-9.4x. And the cost is
+        // NOT the probe's work — with the bodies emptied the figure is
+        // unchanged, because an opaque call at every statement boundary
+        // forbids inlining and folding. There is no cheap version to engineer
+        // toward, only a decision about when to emit them at all.
+        //
+        // So they are now a --debug-info=full feature. `line` (the default,
+        // and what the release flavor selects) keeps the frame identity that
+        // makes a trace name Type.method(File.cajeta) and that the profiler
+        // samples; `full` adds the exact line. This is what the flag's own
+        // note in CompilerMode.h asked for: "measure before relying on
+        // default-on in release."
+        //
+        // EITHER flag, derived at the USE site — the same rule Block.cpp
+        // applies to `__cajeta_dbg_safepoint`, and for the same reason. A mark
+        // and a safepoint are both per-statement, so a consumer that has
+        // already accepted the per-statement cost should not then have to
+        // discover that its line numbers went missing. Gating on `debugInfo`
+        // alone did exactly that to the Jupyter kernel, which asks for
+        // `safepoints` (and deliberately NOT `debugInfo`, whose keep-all class
+        // retention broke the first cell — see KernelSession): every notebook
+        // traceback silently lost its line and reported `cell:0`, which is the
+        // one thing `everyDiagnosticNamesTheCellAndLine` exists to prevent.
+        const auto& f = module->getFlags();
+        if (!f.debugInfo && !f.safepoints) return;
         llvm::IRBuilder<>* builder = lineGuard(module);
         if (!builder || line <= 0) return;
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_line_mark");
