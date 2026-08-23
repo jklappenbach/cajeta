@@ -336,19 +336,150 @@ static const CajetaGpuBackendVtbl caj_gpu_cpu_vtbl = {
 // with zeros would be worse than the host window, because a zero device span
 // is indistinguishable downstream from a measured one.
 static int32_t caj_gpu_rocm_init(void) { return __cajeta_prof_rocm_init(); }
+
+// ── the pending table (8.2.c) ─────────────────────────────────────────────
+//
+// A dispatch record arrives after the launch that caused it has already
+// returned — often several launches later, in a batch. So a launch that is
+// waiting for its device span is PARKED here instead of being published at the
+// seam, and the record claims it by launch id when it turns up.
+//
+// The alternative — flushing and waiting inside end_launch — would make every
+// launch synchronous with its own completion. Two streams that genuinely
+// overlapped would be recorded back to back, and §5.1.3 asks for exactly the
+// opposite. Waiting is the one thing a profiler of concurrency must not do.
+//
+// Bounded, and full is not fatal: an unparkable launch publishes immediately at
+// host tier, which is a true measurement of a narrower thing. Nothing is
+// dropped for want of a slot.
+#define CAJ_GPU_PENDING_MAX 256
+
+typedef struct {
+    int32_t        in_use;
+    int64_t        launch_id;
+    CajetaGpuEvent ev;
+} CajGpuPending;
+
+static CajGpuPending   g_gpu_pending[CAJ_GPU_PENDING_MAX];
+static pthread_mutex_t g_gpu_pending_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t         g_gpu_pending_overflow = 0;   // published at host tier instead
+static int64_t         g_gpu_pending_unclaimed = 0;  // parked, never matched, flushed out
+
+// Park a launch awaiting its device record. Returns 1 when parked (the caller
+// must NOT publish), 0 when the table is full (the caller publishes as-is).
+static int32_t caj_gpu_park(const CajetaGpuEvent* ev) {
+    int i;
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
+        if (g_gpu_pending[i].in_use) continue;
+        g_gpu_pending[i].in_use    = 1;
+        g_gpu_pending[i].launch_id = ev->launch_id;
+        g_gpu_pending[i].ev        = *ev;
+        pthread_mutex_unlock(&g_gpu_pending_lock);
+        return 1;
+    }
+    g_gpu_pending_overflow++;
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+    return 0;
+}
+
+int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
+                                           int64_t devStartNs, int64_t devEndNs) {
+    CajetaGpuEvent ev;
+    int i;
+    int found = 0;
+
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
+        if (!g_gpu_pending[i].in_use || g_gpu_pending[i].launch_id != launchId) continue;
+        ev = g_gpu_pending[i].ev;
+        g_gpu_pending[i].in_use = 0;
+        found = 1;
+        break;
+    }
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+    if (!found) return 0;   // not ours, or already resolved — never invent one
+
+    ev.dev_start_ns = devStartNs;
+    ev.dev_end_ns   = devEndNs;
+    // TIER_DEVICE is claimed here and nowhere else in this backend. It means a
+    // vendor dispatch record supplied the span; every other path through the
+    // ROCm backend reports HOST, because that is what those numbers are.
+    ev.tier = CAJETA_PROF_TIER_DEVICE;
+    __cajeta_prof_gpu_publish(&ev);   // published OUTSIDE the lock: a sink runs
+                                      // user code, and holding a lock across it
+                                      // would let a slow sink stall every launch
+    return 1;
+}
+
+// Publish everything still parked, at host tier. Called when the trace ends and
+// after a flush that did not claim everything: a launch whose record never came
+// back still has an honest host submit-to-complete window, and losing it
+// entirely would be worse than reporting it for what it is.
+static int32_t caj_gpu_drain_pending(void) {
+    CajetaGpuEvent batch[CAJ_GPU_PENDING_MAX];
+    int32_t n = 0;
+    int i;
+
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
+        if (!g_gpu_pending[i].in_use) continue;
+        batch[n++] = g_gpu_pending[i].ev;
+        g_gpu_pending[i].in_use = 0;
+    }
+    g_gpu_pending_unclaimed += n;
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+
+    for (i = 0; i < n; ++i) __cajeta_prof_gpu_publish(&batch[i]);
+    return n;
+}
+
+int64_t __cajeta_prof_gpu_pending_overflow(void)  { return g_gpu_pending_overflow; }
+int64_t __cajeta_prof_gpu_pending_unclaimed(void) { return g_gpu_pending_unclaimed; }
+
+int32_t __cajeta_prof_gpu_pending_count(void) {
+    int i, n = 0;
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) if (g_gpu_pending[i].in_use) n++;
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+    return n;
+}
+
+void __cajeta_prof_gpu_pending_reset(void) {
+    int i;
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) g_gpu_pending[i].in_use = 0;
+    g_gpu_pending_overflow  = 0;
+    g_gpu_pending_unclaimed = 0;
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+}
+
 static int32_t caj_gpu_rocm_begin(CajetaGpuEvent* ev) {
-    // Placeholder timing until 8.2.c lands the buffered dispatch tracing: the
-    // tier stays HOST because that is what these numbers ARE. It is upgraded
-    // to TIER_DEVICE only when a vendor dispatch record supplies the span.
+    // The host window is filled in either way: it is what gets reported if the
+    // device record never comes back, and §10.4 says a degraded measurement
+    // beats none. TIER_DEVICE is claimed only in resolve_dispatch.
     ev->dev_start_ns = __cajeta_currentTimeNanos();
     ev->tier = CAJETA_PROF_TIER_HOST;
+    __cajeta_prof_rocm_push(ev->launch_id);
     return 1;
 }
+
+// Returns 0 to tell the seam "I have taken this one" — see the publish contract
+// on __cajeta_prof_gpu_launch.
 static int32_t caj_gpu_rocm_end(CajetaGpuEvent* ev) {
     ev->dev_end_ns = __cajeta_currentTimeNanos();
-    return 1;
+    __cajeta_prof_rocm_pop();
+    if (!__cajeta_prof_rocm_tracing()) return 1;   // no records will come; publish now
+    return caj_gpu_park(ev) ? 0 : 1;
 }
-static int32_t caj_gpu_rocm_collect(void)   { return 0; }
+
+static int32_t caj_gpu_rocm_collect(void) {
+    __cajeta_prof_rocm_flush();
+    // Whatever the flush did not claim has waited long enough. Its host window
+    // is still true, so it goes out at host tier rather than being held for a
+    // record that may never arrive.
+    return caj_gpu_drain_pending();
+}
 static int32_t caj_gpu_rocm_calibrate(void) { return 1; }
 
 static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
@@ -373,6 +504,14 @@ static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
 const char* __cajeta_prof_gpu_backend_name(int32_t backend) {
     const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
     return v && v->name ? v->name : "";
+}
+
+// Drain a backend's buffered device records and publish what they claim. The
+// trace-end path calls it; so does anything that wants the device's answer
+// before the run is over. Backends with nothing buffered answer 0.
+int32_t __cajeta_prof_gpu_collect(int32_t backend) {
+    const CajetaGpuBackendVtbl* v = caj_gpu_vtbl_for(backend);
+    return (v && v->collect) ? v->collect() : 0;
 }
 
 int32_t __cajeta_prof_gpu_backend_tier(int32_t backend) {
@@ -431,8 +570,15 @@ void __cajeta_prof_gpu_launch(const char* kernelName,
     ev.host_launch_ns = __cajeta_currentTimeNanos();
     if (vt->begin_launch) vt->begin_launch(&ev);
     if (run) run(runArg);
-    if (vt->end_launch) vt->end_launch(&ev);
+    // Stamped BEFORE end_launch so a backend that parks the event parks a
+    // complete one. It also keeps end_launch's own cost out of the window,
+    // which is the profiler's time and not the program's.
     ev.host_return_ns = __cajeta_currentTimeNanos();
+    // end_launch returns 0 to say "I have taken this record and will publish it
+    // myself, later" — the ROCm backend does that while it waits for the device
+    // dispatch record that turns a host window into a device span. Any other
+    // answer, including no end_launch at all, publishes here.
+    if (vt->end_launch && vt->end_launch(&ev) == 0) return;
     __cajeta_prof_gpu_publish(&ev);
 }
 
@@ -471,6 +617,11 @@ int32_t __cajeta_prof_gpu_trace_attach(const char* path) {
 
 int32_t __cajeta_prof_gpu_trace_detach(void) {
     if (!g_gpu_writer_open) return 0;
+    // Claim what the device has finished, THEN publish whatever is still
+    // parked at host tier, THEN deliver. A launch waiting on a record that
+    // never came back is still a measurement, and dropping it at trace end
+    // would leave a hole where a kernel plainly ran.
+    __cajeta_prof_gpu_collect(CAJ_GPU_BACKEND_HIP);
     __cajeta_prof_gpu_flush();     // whatever is queued belongs in the file
     if (g_gpu_writer_sink >= 0) __cajeta_prof_gpu_sink_unregister(g_gpu_writer_sink);
     g_gpu_writer_sink = -1;

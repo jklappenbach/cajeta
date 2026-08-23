@@ -17,7 +17,9 @@
 
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <string>
+#include <vector>
 #if !defined(_WIN32)
 #  include <dlfcn.h>
 #  include <sys/wait.h>
@@ -49,6 +51,21 @@ struct Rocm {
     int32_t     (*configure)(void)   = nullptr;
     int32_t     (*configured)(void)  = nullptr;
     int32_t     (*toolInitRan)(void) = nullptr;
+    int32_t     (*tracing)(void)     = nullptr;
+    int32_t     (*dispatchKind)(void) = nullptr;
+    int64_t     (*rocRecords)(void)  = nullptr;
+    // seam side
+    void    (*launch)(const char*, int32_t, int32_t, int32_t, int32_t, int32_t,
+                      int32_t, uint32_t, int64_t, int32_t, int32_t,
+                      void (*)(void*), void*) = nullptr;
+    int32_t (*sinkRegister)(CajetaGpuSinkFn, void*, int32_t) = nullptr;
+    int32_t (*sinkUnregister)(int32_t) = nullptr;
+    int32_t (*gpuFlush)(void)          = nullptr;
+    int32_t (*gpuCollect)(int32_t)     = nullptr;
+    int32_t (*resolve)(int64_t, int64_t, int64_t) = nullptr;
+    int32_t (*pendingCount)(void)      = nullptr;
+    void    (*pendingReset)(void)      = nullptr;
+    int64_t (*lastLaunchId)(void)      = nullptr;
 };
 
 Rocm& roc() {
@@ -72,6 +89,18 @@ Rocm& roc() {
         x.configure    = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_configure"));
         x.configured   = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_configured"));
         x.toolInitRan  = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_tool_init_ran"));
+        x.tracing      = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_tracing"));
+        x.dispatchKind = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_dispatch_kind"));
+        x.rocRecords   = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_rocm_records"));
+        x.launch         = reinterpret_cast<decltype(x.launch)>(sym("__cajeta_prof_gpu_launch"));
+        x.sinkRegister   = reinterpret_cast<decltype(x.sinkRegister)>(sym("__cajeta_prof_gpu_sink_register"));
+        x.sinkUnregister = reinterpret_cast<decltype(x.sinkUnregister)>(sym("__cajeta_prof_gpu_sink_unregister"));
+        x.gpuFlush       = reinterpret_cast<decltype(x.gpuFlush)>(sym("__cajeta_prof_gpu_flush"));
+        x.gpuCollect     = reinterpret_cast<decltype(x.gpuCollect)>(sym("__cajeta_prof_gpu_collect"));
+        x.resolve        = reinterpret_cast<decltype(x.resolve)>(sym("__cajeta_prof_gpu_resolve_dispatch"));
+        x.pendingCount   = reinterpret_cast<decltype(x.pendingCount)>(sym("__cajeta_prof_gpu_pending_count"));
+        x.pendingReset   = reinterpret_cast<decltype(x.pendingReset)>(sym("__cajeta_prof_gpu_pending_reset"));
+        x.lastLaunchId   = reinterpret_cast<decltype(x.lastLaunchId)>(sym("__cajeta_prof_gpu_last_launch_id"));
         return x;
     }();
     return r;
@@ -413,4 +442,162 @@ TEST(ProfilerRocm, configuringAgainIsSuccessNotLateness) {
     // working device backend on the second trace of a run.
     EXPECT_EQ(r.configure(), 1) << "reported failure the second time: " << r.reason();
     EXPECT_EQ(r.state(), CAJETA_ROCM_READY);
+}
+
+// ── 8.2.c — buffered dispatch tracing, and the parking it requires ───────
+//
+// A dispatch record arrives after the launch that caused it has returned, in a
+// batch, out of order. So a launch waiting for its device span is parked rather
+// than published at the seam, and the record claims it later by launch id. The
+// alternative — flushing and waiting inside end_launch — would make every
+// launch synchronous with its own completion and record two overlapping streams
+// back to back, which is the opposite of what §5.1.3 asks for.
+//
+// These exercise the parking, the claim, and the fallbacks WITHOUT a kernel:
+// the seam takes the dispatch as a thunk, so a no-op thunk drives the same code
+// a real launch does. The device end of it is
+// ProfilerRocmDispatchDeviceTests, which needs a GPU.
+
+namespace {
+
+// Collects what the seam publishes.
+struct Caught {
+    std::vector<CajetaGpuEvent> events;
+};
+
+int32_t catchSink(const CajetaGpuEvent* recs, int32_t n, void* user) {
+    auto* c = static_cast<Caught*>(user);
+    for (int32_t i = 0; i < n; ++i) c->events.push_back(recs[i]);
+    return 0;
+}
+
+void noKernel(void*) {}
+
+// A launch through the real seam on the HIP backend.
+void hipLaunch(Rocm& r) {
+    r.launch("k", 1, 1, 1, 64, 1, 1, 0, 0, 0, kBackendHip, noKernel, nullptr);
+}
+
+// Bring the backend up for real; skip if this machine cannot.
+bool armTracing(Rocm& r) {
+    ForcedLib forced(nullptr);
+    r.reset();
+    r.init();
+    if (r.state() != CAJETA_ROCM_READY) return false;
+    r.configure();
+    return r.state() == CAJETA_ROCM_READY && r.tracing() != 0;
+}
+
+} // namespace
+
+TEST(ProfilerRocm, theDispatchKindIsFoundByNameNotByItsEnumValue) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.tracing && r.dispatchKind);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    // The value is 11 in this SDK. What matters is that it was LOOKED UP: a
+    // hardcoded 11 keeps working until the SDK inserts a kind above it, at
+    // which point the profiler subscribes to memory copies and reports them as
+    // kernels.
+    EXPECT_GE(r.dispatchKind(), 0)
+        << "KERNEL_DISPATCH was never resolved, so no dispatch service is subscribed";
+}
+
+TEST(ProfilerRocm, resolvingADispatchNobodyIsWaitingForInventsNothing) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.resolve && r.pendingReset);
+    r.pendingReset();
+
+    // A record for a launch this profiler never made — a hipMemset fill kernel
+    // is a real example, and this SDK does report them. Attributing it to some
+    // launch would be a measurement of nothing.
+    EXPECT_EQ(r.resolve(987654321, 1000, 2000), 0);
+}
+
+TEST(ProfilerRocm, aParkedLaunchIsClaimedByItsRecordAndBecomesDeviceTier) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.launch && r.sinkRegister && r.resolve && r.pendingReset && r.gpuFlush);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    Caught caught;
+    r.pendingReset();
+    const int32_t sink = r.sinkRegister(catchSink, &caught, CAJETA_GPU_SINK_PER_RECORD);
+    ASSERT_GE(sink, 0);
+
+    hipLaunch(r);
+    const int64_t id = r.lastLaunchId();
+    // Parked, not published: the device has not answered yet, and publishing a
+    // host window now would mean publishing the same launch twice.
+    EXPECT_EQ(r.pendingCount(), 1);
+    r.gpuFlush();
+    EXPECT_TRUE(caught.events.empty()) << "the launch was published before its record arrived";
+
+    ASSERT_EQ(r.resolve(id, 5000, 9000), 1);
+    r.gpuFlush();
+    r.sinkUnregister(sink);
+
+    ASSERT_EQ(caught.events.size(), 1u);
+    const CajetaGpuEvent& ev = caught.events[0];
+    EXPECT_EQ(ev.launch_id, id);
+    EXPECT_EQ(ev.dev_start_ns, 5000);
+    EXPECT_EQ(ev.dev_end_ns, 9000);
+    // TIER_DEVICE is claimed here and nowhere else in this backend: it means a
+    // vendor record supplied the span, not that a GPU was involved.
+    EXPECT_EQ(ev.tier, CAJETA_PROF_TIER_DEVICE);
+    EXPECT_EQ(r.pendingCount(), 0);
+}
+
+TEST(ProfilerRocm, aLaunchWhoseRecordNeverArrivesIsStillPublishedAtHostTier) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.launch && r.sinkRegister && r.gpuCollect && r.pendingReset);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    Caught caught;
+    r.pendingReset();
+    const int32_t sink = r.sinkRegister(catchSink, &caught, CAJETA_GPU_SINK_PER_RECORD);
+    ASSERT_GE(sink, 0);
+
+    hipLaunch(r);
+    ASSERT_EQ(r.pendingCount(), 1);
+
+    // Nothing ever claims it — no kernel actually ran. Holding it forever, or
+    // dropping it, would leave a hole in the trace where a launch plainly
+    // happened. Its host submit-to-complete window is still true (§10.4).
+    r.gpuCollect(kBackendHip);
+    r.gpuFlush();
+    r.sinkUnregister(sink);
+
+    ASSERT_EQ(caught.events.size(), 1u);
+    EXPECT_EQ(caught.events[0].tier, CAJETA_PROF_TIER_HOST)
+        << "an unclaimed launch was published as a DEVICE measurement";
+    EXPECT_GT(caught.events[0].host_return_ns, 0);
+    EXPECT_EQ(r.pendingCount(), 0);
+}
+
+TEST(ProfilerRocm, theDeviceClockIsMappedOntoTheHostClock) {
+    Rocm& r = roc();
+    ASSERT_TRUE(r.tracing);
+    if (!armTracing(r)) GTEST_SKIP() << "rocprofiler-sdk not usable here (" << r.reason() << ")";
+
+    auto deviceNow = reinterpret_cast<int64_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_prof_rocm_device_now_ns"));
+    auto hostNow = reinterpret_cast<int64_t (*)(void)>(
+        r.jit->lookupRawSymbol("__cajeta_currentTimeNanos"));
+    ASSERT_NE(deviceNow, nullptr);
+    ASSERT_NE(hostNow, nullptr);
+
+    // rocprofiler stamps records in CLOCK_BOOTTIME; CajetaGpuEvent.dev_*_ns is
+    // documented as already host-domain (§5.1.7) and the host clock is
+    // CLOCK_MONOTONIC. The two differ by however long the machine has been
+    // suspended — zero on a freshly booted server, minutes on a laptop that
+    // slept. Asking the SDK for "now" and putting it through the SAME
+    // conversion every record goes through checks the mapping directly. Without
+    // it the two clocks agree on a machine that has never suspended and diverge
+    // silently on one that has, so a sign check would prove nothing here.
+    const int64_t d = deviceNow();
+    const int64_t h = hostNow();
+    ASSERT_NE(d, 0) << "the SDK clock is not readable";
+    EXPECT_LT(std::llabs(d - h), 1000000LL)
+        << "device clock maps to " << d << " but the host clock says " << h
+        << " (" << (d - h) << " ns apart) — the domains are not being mapped";
 }

@@ -44,6 +44,7 @@ typedef struct { uint64_t handle; } caj_rocp_callback_thread_t;
 typedef union  { uint64_t value; void* ptr; } caj_rocp_user_data_t;
 
 #define CAJ_ROCP_STATUS_SUCCESS 0
+#define CAJ_ROCP_BUFFER_POLICY_LOSSLESS 2   // block rather than drop
 
 typedef caj_rocp_status_t (*caj_rocp_force_configure_fn)(void*);
 typedef caj_rocp_status_t (*caj_rocp_is_initialized_fn)(int*);
@@ -68,6 +69,33 @@ typedef caj_rocp_status_t (*caj_rocp_create_callback_thread_fn)(caj_rocp_callbac
 typedef caj_rocp_status_t (*caj_rocp_assign_callback_thread_fn)(caj_rocp_buffer_id_t,
                                                                caj_rocp_callback_thread_t);
 typedef const char* (*caj_rocp_status_string_fn)(caj_rocp_status_t);
+typedef int (*caj_rocp_kind_cb_fn)(int32_t kind, void* data);
+typedef caj_rocp_status_t (*caj_rocp_iterate_kinds_fn)(caj_rocp_kind_cb_fn, void*);
+typedef caj_rocp_status_t (*caj_rocp_kind_name_fn)(int32_t, const char**, uint64_t*);
+
+// The two record shapes the buffer callback reads. Only the leading fields are
+// declared: the SDK appends to these structs, and `size` on every record says
+// how much of it this build is entitled to read. Reading past what `size`
+// promises is how a profiler starts reporting a future SDK's padding as
+// timestamps, so the callback checks it.
+typedef struct {
+    uint32_t category;
+    uint32_t kind;
+    void*    payload;
+} caj_rocp_record_header_t;
+
+typedef struct {
+    uint64_t size;
+    int32_t  kind;
+    int32_t  operation;
+    struct { uint64_t internal; caj_rocp_user_data_t external; } correlation_id;
+    uint64_t thread_id;
+    uint64_t start_timestamp;   // device clock, CLOCK_BOOTTIME domain
+    uint64_t end_timestamp;
+    // dispatch_info follows; not read here.
+} caj_rocp_kernel_dispatch_record_t;
+
+#define CAJ_ROCM_KD_RECORD_MIN_SIZE ((uint64_t) sizeof(caj_rocp_kernel_dispatch_record_t))
 
 // The tool-registration shapes. `size` is the SDK's own ABI guard: it is set to
 // sizeof(the struct as this code understands it), so an SDK with a longer
@@ -98,6 +126,8 @@ typedef struct {
     caj_rocp_create_callback_thread_fn   create_callback_thread;
     caj_rocp_assign_callback_thread_fn   assign_callback_thread;
     caj_rocp_status_string_fn            status_string;
+    caj_rocp_iterate_kinds_fn            iterate_kinds;
+    caj_rocp_kind_name_fn                kind_name;
 } CajRocmApi;
 
 // One row per entry point: the exported name and where its address goes. Kept
@@ -128,6 +158,8 @@ static const CajRocmEntry caj_rocm_entries[] = {
     CAJ_ROCM_ENTRY(create_callback_thread,   "rocprofiler_create_callback_thread"),
     CAJ_ROCM_ENTRY(assign_callback_thread,   "rocprofiler_assign_callback_thread"),
     CAJ_ROCM_ENTRY(status_string,            "rocprofiler_get_status_string"),
+    CAJ_ROCM_ENTRY(iterate_kinds,            "rocprofiler_iterate_buffer_tracing_kinds"),
+    CAJ_ROCM_ENTRY(kind_name,                "rocprofiler_query_buffer_tracing_kind_name"),
 };
 
 #define CAJ_ROCM_ENTRY_COUNT ((int32_t)(sizeof(caj_rocm_entries) / sizeof(caj_rocm_entries[0])))
@@ -139,6 +171,16 @@ typedef struct {
     int32_t    configured;               // force_configure succeeded IN THIS PROCESS
     int32_t    tool_init_ran;            // the SDK called back into us
     uint32_t   sdk_version;              // (10000*major)+(100*minor)+patch, from the callback
+    // Buffered kernel-dispatch tracing (8.2.c). Written once inside
+    // tool_initialize, before any record can flow, and read from the buffer
+    // callback WITHOUT the mutex — see the deadlock note on caj_rocm_buffer_cb.
+    caj_rocp_context_id_t ctx;
+    caj_rocp_buffer_id_t  buf;
+    int32_t    kd_kind;                  // discovered by name, never hardcoded
+    int32_t    tracing;                  // the dispatch service is up
+    int64_t    boot_minus_mono_ns;       // §5.1.7 device->host clock mapping
+    int64_t    records;                  // dispatch records seen (feeds §5.2.5)
+    int64_t    unmatched;                // records whose launch we never parked
     CajRocmApi api;
     char       path[CAJ_ROCM_PATH_MAX];     // what was tried, or what bound
     char       reason[CAJ_ROCM_REASON_MAX]; // why the state is what it is
@@ -313,12 +355,183 @@ static caj_rocp_tool_result_t caj_rocm_tool_result;
 // the context and the dispatch buffer here; for now it records that the SDK
 // called back, which is the difference between "force_configure returned
 // success" and "the SDK actually adopted us".
+// ── 8.2.c — buffered kernel-dispatch tracing ─────────────────────────────
+
+// CLOCK_BOOTTIME minus CLOCK_MONOTONIC, right now. rocprofiler stamps dispatch
+// records in the BOOTTIME domain; CajetaGpuEvent.dev_*_ns is documented as
+// already host-domain (§5.1.7), and the host clock here is MONOTONIC. The two
+// differ by however long the machine has been suspended, which is zero on a
+// server and minutes on a laptop that slept mid-trace — so this is sampled
+// rather than assumed to be zero. §6.4's suspend detection (8.3.c) is the same
+// quantity watched for a jump.
+#if defined(CLOCK_BOOTTIME)
+#  define CAJ_CLOCK_BOOT CLOCK_BOOTTIME
+#else
+// No BOOTTIME to compare against: the offset comes out zero, which is the truth
+// right up until the machine suspends. Degrading to "no suspend correction" is
+// better than refusing to map the clocks at all.
+#  define CAJ_CLOCK_BOOT CLOCK_MONOTONIC
+#endif
+static int64_t caj_rocm_ns(clockid_t c) {
+    struct timespec t;
+    if (clock_gettime(c, &t) != 0) return 0;
+    return (int64_t) t.tv_sec * 1000000000LL + (int64_t) t.tv_nsec;
+}
+
+static int64_t caj_rocm_boot_minus_mono(void) {
+    // Monotonic is read either side of boottime and the midpoint taken. Two
+    // sequential clock reads are ~100 ns apart, and reading them in a fixed
+    // order puts that whole gap into the offset with a consistent sign — which
+    // showed up immediately as a negative offset for a quantity that cannot be
+    // negative. Bracketing cancels the bias instead of tolerating it.
+    const int64_t m0 = caj_rocm_ns(CLOCK_MONOTONIC);
+    const int64_t b  = caj_rocm_ns(CAJ_CLOCK_BOOT);
+    const int64_t m1 = caj_rocm_ns(CLOCK_MONOTONIC);
+    if (!m0 || !b || !m1) return 0;
+    return b - (m0 + (m1 - m0) / 2);
+}
+
+// Find KERNEL_DISPATCH by NAME. Its enum value is 11 in this SDK, and writing
+// 11 here would work until the SDK inserts a kind above it — at which point
+// the profiler would quietly subscribe to memory copies and report them as
+// kernels. The name is the stable identifier; the number is an implementation
+// detail of the header this was not compiled against.
+static int caj_rocm_find_kind_cb(int32_t kind, void* data) {
+    const char* name = NULL;
+    uint64_t    len  = 0;
+    (void) data;
+    if (caj_rocm.api.kind_name(kind, &name, &len) == CAJ_ROCP_STATUS_SUCCESS
+            && name && strcmp(name, "KERNEL_DISPATCH") == 0)
+        caj_rocm.kd_kind = kind;
+    return 0;
+}
+
+// Called by the SDK on its own thread when the buffer reaches its watermark or
+// is flushed.
+//
+// It takes NO lock. __cajeta_prof_rocm_flush() calls flush_buffer, and the SDK
+// may run this synchronously on the calling thread; taking caj_rocm_mutex here
+// would deadlock against a flush that already holds it. Everything read below
+// is written once inside tool_initialize, before rocprofiler starts a context
+// and therefore before any record can exist, so there is nothing to race with.
+static void caj_rocm_buffer_cb(caj_rocp_context_id_t ctx, caj_rocp_buffer_id_t buf,
+                               caj_rocp_record_header_t** headers, size_t count,
+                               void* data, uint64_t drop_count) {
+    size_t i;
+    (void) ctx; (void) buf; (void) data; (void) drop_count;
+    for (i = 0; i < count; ++i) {
+        caj_rocp_record_header_t* h = headers ? headers[i] : NULL;
+        caj_rocp_kernel_dispatch_record_t* r;
+        if (!h || (int32_t) h->kind != caj_rocm.kd_kind || !h->payload) continue;
+        r = (caj_rocp_kernel_dispatch_record_t*) h->payload;
+        if (r->size < CAJ_ROCM_KD_RECORD_MIN_SIZE) continue;
+        __atomic_add_fetch(&caj_rocm.records, 1, __ATOMIC_RELAXED);
+        // external is the launch id this profiler pushed. Zero means the
+        // dispatch was not one of ours — a hipMemset fill kernel, say, which
+        // this SDK does report. Attributing it to some launch would invent a
+        // measurement, so it is counted and dropped.
+        if (r->correlation_id.external.value == 0) {
+            __atomic_add_fetch(&caj_rocm.unmatched, 1, __ATOMIC_RELAXED);
+            continue;
+        }
+        if (!__cajeta_prof_gpu_resolve_dispatch(
+                (int64_t) r->correlation_id.external.value,
+                (int64_t) r->start_timestamp - caj_rocm.boot_minus_mono_ns,
+                (int64_t) r->end_timestamp   - caj_rocm.boot_minus_mono_ns))
+            __atomic_add_fetch(&caj_rocm.unmatched, 1, __ATOMIC_RELAXED);
+    }
+}
+
+// Runs INSIDE force_configure, on the calling thread, with caj_rocm_mutex
+// already held by __cajeta_prof_rocm_configure. It must not lock.
 static int caj_rocm_tool_initialize(void* fini_func, void* tool_data) {
+    caj_rocp_status_t st;
+    // 64 KiB holds ~350 dispatch records at this SDK's 184 bytes each, and the
+    // watermark is half of it. The watermark must NOT be zero: measured against
+    // librocprofiler-sdk 1.1.0, a zero watermark delivers the first record and
+    // then reports the buffer as size 0, dropping everything after it.
+    const size_t kBufBytes  = 64u * 1024u;
+    const size_t kWatermark = kBufBytes / 2u;
+
     (void) fini_func;
     (void) tool_data;
     caj_rocm.tool_init_ran = 1;
+    caj_rocm.kd_kind = -1;
+
+    st = caj_rocm.api.create_context(&caj_rocm.ctx);
+    if (st != CAJ_ROCP_STATUS_SUCCESS) return 0;
+
+    caj_rocm.api.iterate_kinds(caj_rocm_find_kind_cb, NULL);
+    if (caj_rocm.kd_kind < 0) return 0;
+
+    st = caj_rocm.api.create_buffer(caj_rocm.ctx, kBufBytes, kWatermark,
+                                    CAJ_ROCP_BUFFER_POLICY_LOSSLESS,
+                                    (void*) caj_rocm_buffer_cb, NULL, &caj_rocm.buf);
+    if (st != CAJ_ROCP_STATUS_SUCCESS) return 0;
+
+    // NULL operations + count 0 means every operation of the kind.
+    st = caj_rocm.api.configure_buffer_tracing(caj_rocm.ctx, caj_rocm.kd_kind,
+                                               NULL, 0, caj_rocm.buf);
+    if (st != CAJ_ROCP_STATUS_SUCCESS) return 0;
+
+    st = caj_rocm.api.start_context(caj_rocm.ctx);
+    if (st != CAJ_ROCP_STATUS_SUCCESS) return 0;
+
+    caj_rocm.boot_minus_mono_ns = caj_rocm_boot_minus_mono();
+    caj_rocm.tracing = 1;
+    // Returning non-zero here aborts the SDK's registration. Setup failures
+    // above return 0 too: the tool stays registered but `tracing` stays 0, and
+    // the caller reads that as "no device records", which is the truth and is
+    // already a state this backend knows how to degrade from.
     return 0;
 }
+
+// Push/pop the launch id as the SDK's external correlation id, around the
+// dispatch. This is what ties a device record back to the launch that made it
+// (§5.1.6) without a timestamp heuristic. Per-thread inside the SDK, so
+// concurrent streams on different threads do not collide.
+int32_t __cajeta_prof_rocm_push(int64_t launchId) {
+    caj_rocp_user_data_t u;
+    uint64_t tid = 0;
+    if (!caj_rocm.tracing || launchId <= 0) return 0;
+    if (caj_rocm.api.get_thread_id(&tid) != CAJ_ROCP_STATUS_SUCCESS) return 0;
+    u.value = (uint64_t) launchId;
+    return caj_rocm.api.push_external(caj_rocm.ctx, tid, u) == CAJ_ROCP_STATUS_SUCCESS;
+}
+
+int32_t __cajeta_prof_rocm_pop(void) {
+    caj_rocp_user_data_t back;
+    uint64_t tid = 0;
+    if (!caj_rocm.tracing) return 0;
+    if (caj_rocm.api.get_thread_id(&tid) != CAJ_ROCP_STATUS_SUCCESS) return 0;
+    back.value = 0;
+    return caj_rocm.api.pop_external(caj_rocm.ctx, tid, &back) == CAJ_ROCP_STATUS_SUCCESS;
+}
+
+// Drain whatever the SDK has buffered. Re-samples the clock mapping first:
+// records completed since the last drain, and a suspend inside that window
+// would otherwise be applied to none of them.
+int32_t __cajeta_prof_rocm_flush(void) {
+    if (!caj_rocm.tracing) return 0;
+    caj_rocm.boot_minus_mono_ns = caj_rocm_boot_minus_mono();
+    return caj_rocm.api.flush_buffer(caj_rocm.buf) == CAJ_ROCP_STATUS_SUCCESS;
+}
+
+// The SDK's own clock, mapped into the host domain — the same conversion every
+// dispatch record goes through, exposed so the mapping can be checked directly
+// rather than inferred from a record's plausibility.
+int64_t __cajeta_prof_rocm_device_now_ns(void) {
+    uint64_t t = 0;
+    if (!caj_rocm.api.get_timestamp) return 0;
+    if (caj_rocm.api.get_timestamp(&t) != CAJ_ROCP_STATUS_SUCCESS) return 0;
+    return (int64_t) t - caj_rocm.boot_minus_mono_ns;
+}
+
+int32_t __cajeta_prof_rocm_tracing(void)       { return caj_rocm.tracing; }
+int32_t __cajeta_prof_rocm_dispatch_kind(void) { return caj_rocm.kd_kind; }
+int64_t __cajeta_prof_rocm_records(void)   { return __atomic_load_n(&caj_rocm.records, __ATOMIC_ACQUIRE); }
+int64_t __cajeta_prof_rocm_unmatched(void) { return __atomic_load_n(&caj_rocm.unmatched, __ATOMIC_ACQUIRE); }
+int64_t __cajeta_prof_rocm_clock_offset_ns(void) { return caj_rocm.boot_minus_mono_ns; }
 
 static caj_rocp_tool_result_t* caj_rocm_tool_configure(uint32_t version,
                                                       const char* runtime_version,
@@ -439,6 +652,15 @@ int32_t     __cajeta_prof_rocm_entries_bound(void) { return 0; }
 int32_t     __cajeta_prof_rocm_configure(void)     { return 0; }
 int32_t     __cajeta_prof_rocm_configured(void)    { return 0; }
 int32_t     __cajeta_prof_rocm_tool_init_ran(void) { return 0; }
+int32_t     __cajeta_prof_rocm_push(int64_t l)     { (void) l; return 0; }
+int32_t     __cajeta_prof_rocm_pop(void)           { return 0; }
+int32_t     __cajeta_prof_rocm_flush(void)         { return 0; }
+int32_t     __cajeta_prof_rocm_tracing(void)       { return 0; }
+int32_t     __cajeta_prof_rocm_dispatch_kind(void) { return -1; }
+int64_t     __cajeta_prof_rocm_records(void)       { return 0; }
+int64_t     __cajeta_prof_rocm_unmatched(void)     { return 0; }
+int64_t     __cajeta_prof_rocm_clock_offset_ns(void) { return 0; }
+int64_t     __cajeta_prof_rocm_device_now_ns(void)   { return 0; }
 
 #endif  /* !_WIN32 */
 

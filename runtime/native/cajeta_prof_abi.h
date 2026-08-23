@@ -159,6 +159,40 @@ int32_t     __cajeta_prof_rocm_configure(void);
 int32_t     __cajeta_prof_rocm_configured(void);
 int32_t     __cajeta_prof_rocm_tool_init_ran(void);
 
+// ── Unit 8.2.c: buffered kernel-dispatch tracing ──────────────────────────
+//
+// The device's answer arrives LATER than the launch that caused it — the SDK
+// buffers dispatch records and hands them over in batches. So the launch id
+// rides along as the SDK's external correlation id, and a record coming back
+// is matched to the launch that is waiting for it. The alternative, flushing
+// and waiting at each launch, would serialize concurrent streams and destroy
+// the overlap the trace exists to show (§5.1.3).
+int32_t     __cajeta_prof_rocm_push(int64_t launchId);
+int32_t     __cajeta_prof_rocm_pop(void);
+int32_t     __cajeta_prof_rocm_flush(void);
+int32_t     __cajeta_prof_rocm_tracing(void);
+int32_t     __cajeta_prof_rocm_dispatch_kind(void);
+int64_t     __cajeta_prof_rocm_records(void);
+int64_t     __cajeta_prof_rocm_unmatched(void);
+int64_t     __cajeta_prof_rocm_clock_offset_ns(void);
+int64_t     __cajeta_prof_rocm_device_now_ns(void);
+
+// Hand a device record back to the launch that is waiting for it. Declared
+// here because the ROCm backend is compiled BEFORE the GPU seam in the single
+// runtime TU and its buffer callback has to reach forward. Timestamps arrive
+// already mapped into the host clock domain (§5.1.7). Returns 1 if a waiting
+// launch claimed it, 0 if none did.
+int32_t     __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
+                                               int64_t devStartNs, int64_t devEndNs);
+// How many launches are parked waiting for a device record, and the two ways a
+// parked launch can end up published at host tier instead: the table was full
+// when it launched (overflow), or its record never came back (unclaimed).
+int32_t     __cajeta_prof_gpu_collect(int32_t backend);
+int32_t     __cajeta_prof_gpu_pending_count(void);
+void        __cajeta_prof_gpu_pending_reset(void);
+int64_t     __cajeta_prof_gpu_pending_overflow(void);
+int64_t     __cajeta_prof_gpu_pending_unclaimed(void);
+
 // ── Unit 9: clock correlation and integrity (spec §6, §11) ────────────────
 //
 // A correlation DOMAIN is one device clock that has to be mapped onto the host
