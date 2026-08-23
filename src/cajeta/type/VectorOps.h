@@ -749,6 +749,22 @@ namespace vecops {
                         : b.CreateUIToFP(v, fv, "conv.uitofp");
     }
 
+    // Lane-wise FLOAT width conversion: binary16 <-> binary32. `fpext` is
+    // exact in one direction (every half is a float) and `fptrunc` rounds
+    // to nearest-even in the other, overflowing to infinity past 65504 —
+    // a narrowing, not a reinterpretation. `bitcastLanes` is the
+    // reinterpreting twin and is a different method for that reason.
+    inline llvm::Value* convertFpLanes(llvm::IRBuilderBase& b, llvm::Value* v,
+                                       llvm::Type* toElem) {
+        auto* vt = llvm::cast<llvm::FixedVectorType>(v->getType());
+        auto* to = llvm::FixedVectorType::get(toElem, vt->getNumElements());
+        unsigned from = vt->getElementType()->getPrimitiveSizeInBits();
+        unsigned dest = toElem->getPrimitiveSizeInBits();
+        if (from == dest) return v;
+        return dest > from ? b.CreateFPExt(v, to, "conv.fpext")
+                           : b.CreateFPTrunc(v, to, "conv.fptrunc");
+    }
+
     inline llvm::Value* convertToI32(llvm::IRBuilderBase& b, llvm::Value* v) {
         auto* vt = llvm::cast<llvm::FixedVectorType>(v->getType());
         auto* iv = llvm::FixedVectorType::get(

@@ -303,6 +303,54 @@ public class L {
 }
 )CJ";
 
+// f16 <-> f32 lane conversion INSIDE a kernel. This is the rung that was
+// missing when an f16 mat-vec probe failed to lower (plan 8.14): the
+// ladder had an integer `toF32` and no float one.
+const char* HALF_KERNEL = R"CJ(
+package probe;
+import cajeta.lang.System;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelThread;
+import cajeta.xpu.KernelStream;
+public class L {
+    @Kernel
+    public static void halfK(KernelBuffer<float32> out,
+                             KernelBuffer<float16> h) {
+        uint32 g = KernelThread.globalIdX();
+        if (g < 1) {
+            Vector<float16,4> hv = h.vload<4>(0L);
+            Vector<float32,4> f = hv.toF32() * 2.0f;
+            out.vstore(0L, f);
+            // ...and back down, so the rung is exercised both ways.
+            Vector<float16,4> back = f.toF16();
+            out.vstore(4L, back.toF32());
+        }
+    }
+    public static void run() {
+        float16[] hh #= heap float16[4];
+        hh[0] = (float16) 1.5f;
+        hh[1] = (float16) -2.25f;
+        hh[2] = (float16) 0.5f;
+        hh[3] = (float16) 10.0f;
+        float32[] ho #= heap float32[8];
+        KernelBuffer<float32> out = heap KernelBuffer<float32>(8);
+        KernelBuffer<float16> h = heap KernelBuffer<float16>(4);
+        h.upload(hh);
+        KernelStream s #= KernelStream.current();
+        halfK.launch(s, grid: [1], block: [1])(out, h);
+        s.sync();
+        out.download(ho);
+        // 2*(1.5 - 2.25 + 0.5 + 10.0) = 19.5, twice (the round trip is
+        // exact for these values).
+        float32 a = ho[0] + ho[1] + ho[2] + ho[3];
+        float32 b = ho[4] + ho[5] + ho[6] + ho[7];
+        if (a == 19.5f && b == 19.5f) { System.stdout.println("RESULT ok"); }
+        else { System.stdout.println("RESULT bad a=" + a + " b=" + b); }
+        return;
+    }
+}
+)CJ";
+
 // A construct that cannot lower to a device: a heap allocation in a kernel
 // body. The point is not that it is rejected — it is that the BUILD SAYS SO.
 const char* UNLOWERABLE_KERNEL = R"CJ(
@@ -363,6 +411,15 @@ TEST(XpuCpuVectorLadderTests, signedWidenSignExtendsInAKernel) {
     EXPECT_NE(b.runOut.find("RESULT -16"), std::string::npos)
         << "widenLo on a signed receiver must SIGN-extend: (int8) 0xF0 is "
            "-16, and 240 means the unsigned rule leaked across. Got: "
+        << b.runOut;
+}
+
+TEST(XpuCpuVectorLadderTests, halfToF32AndBackLowerInAKernel) {
+    const Built b = buildAndRun(HALF_KERNEL, "cpu", "probe.L.run");
+    ASSERT_FALSE(b.runOut.empty())
+        << "probe failed to build. Build said:\n" << b.buildLog;
+    EXPECT_NE(b.runOut.find("RESULT ok"), std::string::npos)
+        << "f16 <-> f32 lane conversion is wrong inside a kernel. Got: "
         << b.runOut;
 }
 

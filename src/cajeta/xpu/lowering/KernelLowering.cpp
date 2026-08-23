@@ -1862,7 +1862,7 @@ private:
             // added, or a chained rung silently returns zero the way a
             // chained `dot` did.
             || n == "widenLo" || n == "widenHi" || n == "narrow"
-            || n == "toF32" || n == "toI32"
+            || n == "toF32" || n == "toI32" || n == "toF16"
             || n == "asUnsigned" || n == "asSigned";
     }
     unsigned syntheticRecvSeq = 0;
@@ -2180,11 +2180,28 @@ private:
             return vecops::narrowPair(builder, self, other);
         }
         if (name == "toF32") {
-            if (isFloat || !args.empty())
-                unsupported("Vector.toF32 takes no arguments and an "
-                            "integer-element receiver");
+            if (!args.empty())
+                unsupported("Vector.toF32 takes no arguments");
+            // A narrower FLOAT receiver (float16 / bfloat16) widens by
+            // fpext; an integer one converts by value. float32 is rejected
+            // — nothing to widen to.
+            if (isFloat) {
+                if (elemTy->getPrimitiveSizeInBits() >= 32)
+                    unsupported("Vector.toF32 needs an integer or "
+                                "narrower-float element type "
+                                "(float16 / bfloat16)");
+                return vecops::convertFpLanes(builder, self,
+                    llvm::Type::getFloatTy(builder.getContext()));
+            }
             bool sgn = signedness.count(recv) ? signedness[recv] : true;
             return vecops::convertToF32(builder, self, sgn);
+        }
+        if (name == "toF16") {
+            if (!isFloat || !args.empty())
+                unsupported("Vector.toF16 takes no arguments and a "
+                            "float-element receiver");
+            return vecops::convertFpLanes(builder, self,
+                llvm::Type::getHalfTy(builder.getContext()));
         }
         if (name == "toI32") {
             if (!isFloat || !args.empty())

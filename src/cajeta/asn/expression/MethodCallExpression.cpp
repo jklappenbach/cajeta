@@ -6052,16 +6052,50 @@ namespace cajeta {
                 }
                 // toF32() / toI32() — lane-wise VALUE conversion (17.1.4).
                 if (methodCallName == "toF32") {
-                    if (!parameters.empty() || isFloat) {
-                        throw Exception("Vector.toF32 takes no arguments and "
-                                        "an integer-element receiver",
+                    if (!parameters.empty()) {
+                        throw Exception("Vector.toF32 takes no arguments",
                                         "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    // A NARROWER float receiver (float16 / bfloat16) widens
+                    // by fpext; an integer one converts by value. float32
+                    // stays rejected — there is nothing to widen to, and
+                    // allowing it would make `toF32` a silent no-op on the
+                    // wrong type.
+                    auto* svt =
+                        llvm::cast<llvm::FixedVectorType>(self->getType());
+                    if (isFloat) {
+                        unsigned w = svt->getElementType()
+                            ->getPrimitiveSizeInBits();
+                        if (w >= 32) {
+                            throw Exception("Vector.toF32 needs an integer or "
+                                            "narrower-float element type "
+                                            "(float16 / bfloat16)",
+                                            "CAJETA_ERROR_VECTOR_METHOD");
+                        }
+                        resolvedType = CajetaVector::getOrCreate(module,
+                            CajetaType::of("float32"), vecT->getLanes());
+                        return vecops::convertFpLanes(*builder, self,
+                            llvm::Type::getFloatTy(builder->getContext()));
                     }
                     bool sgn = (vecT->getElementType()->getTypeFlags()
                                 & SIGNED_FLAG) != 0;
                     resolvedType = CajetaVector::getOrCreate(module,
                         CajetaType::of("float32"), vecT->getLanes());
                     return vecops::convertToF32(*builder, self, sgn);
+                }
+                // toF16() — the narrowing twin. Present so the rung is not
+                // one-directional: half a ladder is what made `widenLo` /
+                // `toF32` unusable inside kernels (plan 8.10).
+                if (methodCallName == "toF16") {
+                    if (!parameters.empty() || !isFloat) {
+                        throw Exception("Vector.toF16 takes no arguments and "
+                                        "a float-element receiver",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("float16"), vecT->getLanes());
+                    return vecops::convertFpLanes(*builder, self,
+                        llvm::Type::getHalfTy(builder->getContext()));
                 }
                 if (methodCallName == "toI32") {
                     if (!parameters.empty() || !isFloat) {
