@@ -67,7 +67,7 @@ Neither answer depends on the plugin's cooperation.
 
 | In | Out |
 |---|---|
-| Shipped emitter in `cajeta.buildtool.plugin` | The plugin *invocation* protocol (stdin request shape) |
+| Shipped emitter in `cajeta.buildtool.plugin`, reached through an injected `ActionContext` (§1.4) | The plugin *invocation* protocol (stdin request shape) |
 | Non-forgeable record provenance (§1.2) | Signing or authenticating the plugin artifact itself |
 | Additive schema extension for `source` + `output`/`write` kinds (§5.1) | Restructuring the diagnostic schema or bumping its major |
 | Record validation + diagnostics for malformed input | New record kinds beyond those listed in §1 |
@@ -75,6 +75,51 @@ Neither answer depends on the plugin's cooperation.
 | Diagnostic-style rendering of findings in text mode | IDE-side presentation (consumes what this emits) |
 | Migrating `dev.cajeta.coverage` onto the API | Other published plugins (none hand-roll emission today) |
 | coco's `warn` coverage level (§7.1) | Other coco thresholds (`min-score`, mutation gates) |
+
+## 1.4 The channel is injected, not global *(amended 2026-08-23)*
+
+Discovered while starting §2: **the shipped plugin API is entirely unused.**
+There is no implementation of `ActionContext` anywhere, nothing on the C++ side
+references it, and `dev.cajeta.coverage` imports none of the four classes. They
+are four files referenced only by each other.
+
+So `ActionContext.write`'s own warning —
+
+> Never write directly to STDOUT_FILENO from plugin code — the runtime may be
+> capturing or redirecting output
+
+— is a documented promise with nothing behind it. A plugin author following the
+documentation would find no way to obtain an `ActionContext` at all. coco's
+hand-rolled emitter is not a shortcut past a working API; it is what you get
+when the API does not function.
+
+**The emitter is therefore reached through a context handed to the action, not
+through static calls on a global.**
+
+### 1.4.1 Why, and what it does not buy
+
+The decisive reason is **testability**, and this API's own history is the
+evidence. A static emitter writes to process-global stdout, so the only way to
+observe a plugin's output is to spawn a subprocess and capture bytes. That is
+why `ActionResult` and `Finding` have no tests at all, and why an interface
+with no implementation survived long enough for its documentation to become
+false. An injected channel lets a test construct a RECORDING context, run the
+action in-process, and assert on records directly — which is also what lets §0's
+conformance suite drive real actions rather than checking a stream.
+
+What it does NOT buy, stated plainly because the opposite is easy to assume:
+the plugin is a SUBPROCESS, so its context lives in its own process and cannot
+be the build tool's object. Provenance is still stamped at ingest (§1.2).
+The gain is smaller and real: records become self-attributing, so the runtime
+VERIFIES rather than invents, and a mismatch between claimed and actual identity
+becomes detectable instead of silently overwritten.
+
+### 1.4.2 Why now
+
+§7 migrates coco regardless. Changing the entry signature while exactly one
+plugin exists costs almost nothing; shipping a static API and adding a context
+later would break every plugin that adopted it in between — and this spec exists
+so that plugin authors are not the ones absorbing protocol churn.
 
 ## 2. The emitter ships with the API
 
@@ -88,6 +133,11 @@ serializes through one writer that escapes correctly.
 2. A plugin reports a finding by constructing a `Finding`, never a string.
 3. A plugin sets an output key whose value contains a newline.
 4. A plugin author writes no JSON at any point.
+4a. A test constructs a recording context, runs an action IN-PROCESS, and
+   asserts the records it emitted — no subprocess, no stdout capture. This is
+   the property whose absence let the shipped API rot.
+4b. A plugin that writes to stdout directly bypasses the channel; the runtime
+   still tolerates it as a log (§4), and it fails conformance (§0).
 5. A second plugin (not coco) adopts the API and inherits every guarantee
    without copying code.
 
@@ -95,8 +145,8 @@ serializes through one writer that escapes correctly.
 
 **Use cases**
 
-1. An action returns without calling `result`; the runtime emits one from the
-   returned `ActionResult`, and the task sees a well-formed completion.
+1. An action returns without calling `result`; **the context** emits one from
+   the returned `ActionResult`, and the task sees a well-formed completion.
 2. An action returns a failing `ActionResult`; the emitted result carries the
    error message.
 3. An action calls `result` explicitly; exactly one result is emitted, not two.
@@ -349,6 +399,8 @@ a surviving mutant is a warning, a coverage floor breach is an error.
 | # | Criterion |
 |---|---|
 | 8.1 | No plugin in tree spells a JSON record by hand. |
+| 8.1a | An action's records are assertable in-process, with no subprocess and no stdout capture. |
+| 8.1b | `ActionContext` has an implementation and a consumer — the documented channel exists. |
 | 8.2 | A message containing `"`, `\`, newline and a non-ASCII character round-trips intact. |
 | 8.3 | `--diag-format=json` yields findings as diagnostics from a plugin-driven task. |
 | 8.4 | A malformed record warns once and does not fail the build. |
@@ -390,3 +442,4 @@ than only here.
 | 9 | Does the malformed-record warning name the line? | Yes, escaped and truncated so it cannot damage the stream reporting it | §4, §4.1 |
 | 10 | What is the stamped identity? | The plugin's Olla library key | §1.2 |
 | 11 | Does coco's `min` gate migrate to a finding? | Yes, and gains a non-failing `warn` level | §7.1 |
+| 12 | Static emitter, or a channel handed to the action? | **Injected context.** The shipped API was found to be entirely unimplemented; a static global is untestable in-process, which is why it rotted unnoticed | §1.4 |
