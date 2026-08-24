@@ -904,7 +904,11 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
             int32_t a = caj_prof_anno_int(anno, "tier", e->tier);
             a += caj_prof_anno_int(anno + a, "clock_confidence",
                                    __cajeta_prof_clock_confidence(e->backend));
-            int32_t integrity = __cajeta_prof_check_dispatch(e);
+            // What the checker derives, OR'd with what only the producer could
+            // know (a Vulkan timestamp-register reset is visible solely in the
+            // backend's own span history — §5.5.7).
+            int32_t integrity = __cajeta_prof_check_dispatch(e)
+                              | e->integrity_flags;
             if (integrity != CAJETA_SPAN_OK) {
                 a += caj_prof_anno_int(anno + a, "integrity_flags", integrity);
             }

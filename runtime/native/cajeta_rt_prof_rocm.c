@@ -445,6 +445,22 @@ static int64_t caj_rocm_boot_minus_mono(void) {
     const int64_t b  = caj_rocm_ns(CAJ_CLOCK_BOOT);
     const int64_t m1 = caj_rocm_ns(CLOCK_MONOTONIC);
     if (!m0 || !b || !m1) return 0;
+    // The read IS a calibration sandwich, so feed it to the clock engine as
+    // one. This backend keeps its own direct conversion — the mapping is a
+    // constant offset in the same ns domain — but the engine is where §10.6's
+    // clock_confidence annotation comes from, and before this every
+    // device-tier span from a working ROCm run was annotated confidence 0,
+    // which the viewer honestly renders as "no trustworthy clock correlation"
+    // (§11.6). The mapping was measured to track under a microsecond; the
+    // report said it did not exist. Found 2026-08-24 while wiring the Vulkan
+    // backend to the same engine (plan 13.2.f).
+    {
+        static int32_t period_set = 0;
+        if (!period_set)
+            period_set = __cajeta_prof_clock_set_period(CAJ_GPU_BACKEND_HIP,
+                                                        1.0);
+        if (period_set) __cajeta_prof_clock_sample(CAJ_GPU_BACKEND_HIP, m0, b, m1);
+    }
     return b - (m0 + (m1 - m0) / 2);
 }
 

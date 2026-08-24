@@ -106,6 +106,14 @@ class RealAmdgpuTraceTest {
                 assertEquals(ProfileTier.DEVICE, quality!!.tier)
                 assertTrue("a genuine device span arrived flagged: ${quality.reasons}",
                     !quality.flagged)
+                // The whole chain, not just the tier: a real dispatch record
+                // with a converged clock correlation renders TRUSTED. Before
+                // plan 13.2.f the ROCm backend never fed the clock engine, so
+                // these exact spans carried clock_confidence=0 and rendered
+                // as §11.6's "no trustworthy clock correlation" — for a
+                // mapping measured to track under a microsecond.
+                assertEquals("a genuine device span did not render as trusted: " +
+                    quality.reasons, RenderClass.TRUSTED, quality.renderClass)
                 spans++
             }
         }

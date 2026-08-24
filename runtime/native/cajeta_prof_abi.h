@@ -113,6 +113,12 @@ typedef struct {
     // it is the proof behind a TIER_DEVICE claim, which without it is a
     // device span no record supplied.
     int64_t     resolved_ns;
+    // §11.3 flags only the PRODUCER can know, OR'd with what the checker
+    // derives at emit. The first user is §5.5.7: a Vulkan timestamp-register
+    // reset is visible only in the backend's own span history — the flagged
+    // span itself is internally flawless, and nothing downstream could
+    // rediscover the condition.
+    int32_t     integrity_flags;
 } CajetaGpuEvent;
 
 // A sink returns 0 for "handled" and non-zero for "I faulted". A crash inside a
@@ -210,6 +216,55 @@ int64_t     __cajeta_prof_rocm_suspend_ns(void);
 // launch claimed it, 0 if none did.
 int32_t     __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
                                                int64_t devStartNs, int64_t devEndNs);
+// The tier-explicit form: the caller names the MECHANISM that supplied the
+// span (§5.1.4) — the ROCm callback resolves vendor dispatch records at
+// TIER_DEVICE (the shim above), the Vulkan dispatcher resolves query-pool
+// brackets at TIER_EVENT.
+int32_t     __cajeta_prof_gpu_resolve_dispatch_tier(int64_t launchId,
+                                                    int64_t devStartNs,
+                                                    int64_t devEndNs,
+                                                    int32_t tier);
+// The full form: producer-known §11.3 flags ride the event and are OR'd with
+// the checker's own findings at emit.
+int32_t     __cajeta_prof_gpu_resolve_dispatch_flags(int64_t launchId,
+                                                     int64_t devStartNs,
+                                                     int64_t devEndNs,
+                                                     int32_t tier,
+                                                     int32_t integrityFlags);
+
+// ── Unit 13: the Vulkan backend (spec §5.5, §6.5, §6.6) ───────────────────
+//
+// Split like the ROCm backend, but along a different line: the PURE half
+// (cajeta_rt_prof_vulkan.c — family selection, wrap arithmetic, the low-power
+// timestamp-reset detector, period validation) compiles with no Vulkan SDK at
+// all, and the API half lives in cajeta_xpu_vulkan.c beside the dispatch path
+// that owns the command buffer the bracket is recorded into.
+int32_t  __cajeta_xpu_vk_pick_queue_family(const uint32_t* queueFlags,
+                                           const uint32_t* timestampValidBits,
+                                           int32_t n, int32_t* timingOk);
+uint64_t __cajeta_prof_vk_delta_ticks(uint64_t startTicks, uint64_t endTicks,
+                                      uint32_t validBits);
+int32_t  __cajeta_prof_vk_note_span_ticks(uint64_t startTicks,
+                                          uint64_t endTicks);
+void     __cajeta_prof_vk_span_tracking_reset(void);
+int32_t  __cajeta_prof_vk_configure(uint32_t validBits, double periodNs,
+                                    int32_t hasCalibration);
+int32_t  __cajeta_prof_vk_timing_ok(void);
+uint32_t __cajeta_prof_vk_valid_bits(void);
+double   __cajeta_prof_vk_period_ns(void);
+int64_t  __cajeta_prof_vk_resets(void);
+int64_t  __cajeta_prof_vk_spans(void);
+int64_t  __cajeta_prof_vk_unavailable(void);
+void     __cajeta_prof_vk_note_resolved(void);
+void     __cajeta_prof_vk_note_unavailable(void);
+void     __cajeta_prof_vk_reset(void);
+// The seam half (cajeta_rt_prof_gpu.c): the launch id the dispatcher brackets
+// under, the bracket hand-back, and §5.5.8's explicit host-blocked span.
+int64_t  __cajeta_prof_vk_current_launch(void);
+void     __cajeta_prof_vk_bracket_resolved(int64_t launchId, int64_t devStartNs,
+                                           int64_t devEndNs, int32_t flags);
+int32_t  __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
+                                    int64_t endNs);
 // How many launches are parked waiting for a device record, and the two ways a
 // parked launch can end up published at host tier instead: the table was full
 // when it launched (overflow), or its record never came back (unclaimed).

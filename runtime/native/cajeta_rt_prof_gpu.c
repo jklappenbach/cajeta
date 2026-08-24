@@ -383,8 +383,16 @@ static int32_t caj_gpu_park(const CajetaGpuEvent* ev) {
     return 0;
 }
 
-int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
-                                           int64_t devStartNs, int64_t devEndNs) {
+// Resolve a parked launch with the span its backend's mechanism supplied,
+// claiming `tier` for it. The tier is the CALLER's claim about the mechanism
+// (§5.1.4): the ROCm backend resolves vendor dispatch records at TIER_DEVICE;
+// the Vulkan backend resolves query-pool brackets at TIER_EVENT — device
+// event bracketing, which is what a timestamp pair around a dispatch is.
+int32_t __cajeta_prof_gpu_resolve_dispatch_flags(int64_t launchId,
+                                                 int64_t devStartNs,
+                                                 int64_t devEndNs,
+                                                 int32_t tier,
+                                                 int32_t integrityFlags) {
     CajetaGpuEvent ev;
     int i;
     int found = 0;
@@ -402,19 +410,36 @@ int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
 
     ev.dev_start_ns = devStartNs;
     ev.dev_end_ns   = devEndNs;
-    // TIER_DEVICE is claimed here and nowhere else in this backend. It means a
-    // vendor dispatch record supplied the span; every other path through the
-    // ROCm backend reports HOST, because that is what those numbers are.
-    ev.tier = CAJETA_PROF_TIER_DEVICE;
-    // The record's arrival closes the span's causal bracket: a real execution
-    // ended before the record describing it was read. The integrity check
-    // bounds dev_end by this rather than by host_return_ns, which an
-    // asynchronous dispatch overruns by construction (plan 6.7.2.c).
+    ev.tier = tier;
+    ev.integrity_flags |= integrityFlags;
+    // The mechanism's answer closes the span's causal bracket: a real
+    // execution ended before the record (or query result) describing it was
+    // read. The integrity check bounds dev_end by this rather than by
+    // host_return_ns, which an asynchronous dispatch overruns by construction
+    // (plan 6.7.2.c).
     ev.resolved_ns = __cajeta_currentTimeNanos();
     __cajeta_prof_gpu_publish(&ev);   // published OUTSIDE the lock: a sink runs
                                       // user code, and holding a lock across it
                                       // would let a slow sink stall every launch
     return 1;
+}
+
+int32_t __cajeta_prof_gpu_resolve_dispatch_tier(int64_t launchId,
+                                                int64_t devStartNs,
+                                                int64_t devEndNs,
+                                                int32_t tier) {
+    return __cajeta_prof_gpu_resolve_dispatch_flags(launchId, devStartNs,
+                                                    devEndNs, tier,
+                                                    CAJETA_SPAN_OK);
+}
+
+int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
+                                           int64_t devStartNs, int64_t devEndNs) {
+    // TIER_DEVICE: a vendor dispatch record supplied the span — the ROCm
+    // buffer callback is this entry point's only production caller.
+    return __cajeta_prof_gpu_resolve_dispatch_tier(launchId, devStartNs,
+                                                   devEndNs,
+                                                   CAJETA_PROF_TIER_DEVICE);
 }
 
 // Publish everything still parked, at host tier. Called when the trace ends and
@@ -492,13 +517,125 @@ static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
     caj_gpu_rocm_collect, caj_gpu_rocm_calibrate
 };
 
-// Backends that have not landed yet (NVIDIA is Unit 12, Vulkan Unit 13)
-// degrade to host submit-to-complete rather than to nothing (§5.1.4). The tier
-// says so, so a consumer can weight it (§5.6.6).
+// ── Vulkan (Unit 13, spec §5.5) ───────────────────────────────────────────
+//
+// The mechanics live in cajeta_xpu_vulkan.c — the query pool is device state
+// and the dispatch path already owns the command buffer the bracket has to be
+// recorded into. What lives HERE is the seam contract: the launch parks like
+// a ROCm launch, and the dispatcher — which runs INSIDE the launch, on the
+// same thread — reads the launch id from TLS, brackets the dispatch, and
+// resolves the parked event at EVENT tier once the query pair reads back
+// available. A pair that never becomes available leaves the parked event to
+// drain at host tier, which is the §10.4 degradation, not a loss.
+static __thread int64_t caj_gpu_vk_current_launch;
+
+int64_t __cajeta_prof_vk_current_launch(void) { return caj_gpu_vk_current_launch; }
+
+static int32_t caj_gpu_vk_init(void) { return __cajeta_prof_vk_timing_ok(); }
+
+static int32_t caj_gpu_vk_begin(CajetaGpuEvent* ev) {
+    // The host window is filled either way, exactly as the ROCm backend does:
+    // it is what gets reported if the bracket never resolves.
+    ev->dev_start_ns = __cajeta_currentTimeNanos();
+    ev->tier = CAJETA_PROF_TIER_HOST;
+    caj_gpu_vk_current_launch = ev->launch_id;
+    return 1;
+}
+
+// The dispatcher's bracket result arrives while the launch is still INSIDE
+// __cajeta_prof_gpu_launch — before end_launch has parked the event — so it
+// cannot resolve through the pending table directly. It is held here (one
+// slot: the dispatch path is serialized by the submit mutex, and TLS makes
+// the slot this thread's own) and applied by end_launch right after the park.
+static __thread struct {
+    int64_t launch_id;
+    int64_t start_ns;
+    int64_t end_ns;
+    int32_t flags;      // §5.5.7's producer-only integrity flags
+    int32_t valid;
+} caj_gpu_vk_bracket;
+
+void __cajeta_prof_vk_bracket_resolved(int64_t launchId, int64_t devStartNs,
+                                       int64_t devEndNs, int32_t flags) {
+    caj_gpu_vk_bracket.launch_id = launchId;
+    caj_gpu_vk_bracket.start_ns = devStartNs;
+    caj_gpu_vk_bracket.end_ns = devEndNs;
+    caj_gpu_vk_bracket.flags = flags;
+    caj_gpu_vk_bracket.valid = 1;
+}
+
+static int32_t caj_gpu_vk_end(CajetaGpuEvent* ev) {
+    ev->dev_end_ns = __cajeta_currentTimeNanos();
+    caj_gpu_vk_current_launch = 0;
+    if (!__cajeta_prof_vk_timing_ok()) {
+        caj_gpu_vk_bracket.valid = 0;   // nothing should have been left
+        return 1;                       // no bracket ran; publish now
+    }
+    if (!caj_gpu_park(ev)) {
+        caj_gpu_vk_bracket.valid = 0;   // table full: host window goes out as-is
+        return 1;
+    }
+    // Park FIRST, then apply the bracket the dispatcher left: resolution goes
+    // through the pending table, so the event must be in it. The dispatch is
+    // synchronous, so on the happy path the bracket is already waiting here
+    // and the span resolves at EVENT tier before this function returns.
+    if (caj_gpu_vk_bracket.valid) {
+        caj_gpu_vk_bracket.valid = 0;
+        if (__cajeta_prof_gpu_resolve_dispatch_flags(caj_gpu_vk_bracket.launch_id,
+                                                     caj_gpu_vk_bracket.start_ns,
+                                                     caj_gpu_vk_bracket.end_ns,
+                                                     CAJETA_PROF_TIER_EVENT,
+                                                     caj_gpu_vk_bracket.flags))
+            __cajeta_prof_vk_note_resolved();
+    }
+    return 0;
+}
+
+static int32_t caj_gpu_vk_collect(void) {
+    // Nothing buffers: the synchronous dispatch resolves in the launch
+    // epilogue. Anything still parked has no bracket coming.
+    return caj_gpu_drain_pending();
+}
+static int32_t caj_gpu_vk_calibrate(void) { return 1; }
+
+static const CajetaGpuBackendVtbl caj_gpu_vk_vtbl = {
+    "vulkan", caj_gpu_vk_init, caj_gpu_vk_begin, caj_gpu_vk_end,
+    caj_gpu_vk_collect, caj_gpu_vk_calibrate
+};
+
+// §5.5.8 / §14.13 — the host blocked on vkQueueWaitIdle. An explicit span,
+// not a gap: the dispatcher hands over the wall interval it spent blocked,
+// and it is published as its own host-tier record so the reader sees "host
+// blocked on GPU" instead of having to notice an absence and rule out its
+// other causes. Returns 1 when published, 0 when profiling is unarmed.
+int32_t __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
+                                   int64_t endNs) {
+    if (__atomic_load_n(&g_gpu_sinks_live, __ATOMIC_ACQUIRE) == 0) return 0;
+    CajetaGpuEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.launch_id = __atomic_add_fetch(&g_gpu_launch_id, 1, __ATOMIC_ACQ_REL);
+    ev.kernel_name = "host blocked on GPU";
+    ev.backend = CAJ_GPU_BACKEND_VULKAN;
+    ev.queue = queue;
+    ev.host_thread = (void*) (uintptr_t) pthread_self();
+    ev.host_launch_ns = startNs;
+    ev.host_return_ns = endNs;
+    ev.dev_start_ns = startNs;   // a host-measured wall interval: host tier,
+    ev.dev_end_ns = endNs;       // and the "device" span IS the host window
+    ev.tier = CAJETA_PROF_TIER_HOST;
+    __cajeta_prof_gpu_publish(&ev);
+    return 1;
+}
+
+// Backends that have not landed yet (NVIDIA is Unit 12) degrade to host
+// submit-to-complete rather than to nothing (§5.1.4). The tier says so, so a
+// consumer can weight it (§5.6.6).
 static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
     if (backend == CAJ_GPU_BACKEND_HIP
             && __cajeta_prof_rocm_state() == CAJETA_ROCM_READY)
         return &caj_gpu_rocm_vtbl;
+    if (backend == CAJ_GPU_BACKEND_VULKAN && __cajeta_prof_vk_timing_ok())
+        return &caj_gpu_vk_vtbl;
     return &caj_gpu_cpu_vtbl;
 }
 

@@ -833,14 +833,28 @@ TEST(ProfilerRocm, deviceTierIsClaimedInExactlyOnePlace) {
         (fs::path(root) / "runtime" / "native" / "cajeta_rt_prof_gpu.c").string());
     ASSERT_FALSE(body.empty());
 
+    // Since Unit 13, resolution takes the tier as a parameter (the Vulkan
+    // backend resolves brackets at EVENT tier through the same pending
+    // table), so the DEVICE claim is no longer an assignment — it is the
+    // argument the vendor-record shim passes. The invariant is unchanged:
+    // exactly ONE site in the seam is entitled to say "a vendor dispatch
+    // record supplied this span", and no direct assignment may reappear.
     int assignments = 0;
     for (size_t at = body.find("tier = CAJETA_PROF_TIER_DEVICE");
          at != std::string::npos;
          at = body.find("tier = CAJETA_PROF_TIER_DEVICE", at + 1))
         ++assignments;
+    EXPECT_EQ(assignments, 0)
+        << "a direct DEVICE-tier assignment reappeared in the seam; the claim "
+           "belongs to the vendor-record resolve shim alone";
 
-    EXPECT_EQ(assignments, 1)
-        << "device tier is claimed in " << assignments << " places; it means "
+    int claims = 0;
+    for (size_t at = body.find("CAJETA_PROF_TIER_DEVICE);");
+         at != std::string::npos;
+         at = body.find("CAJETA_PROF_TIER_DEVICE);", at + 1))
+        ++claims;
+    EXPECT_EQ(claims, 1)
+        << "device tier is claimed in " << claims << " places; it means "
            "\"a vendor dispatch record supplied this span\" and nothing else "
            "is entitled to say it";
 }
