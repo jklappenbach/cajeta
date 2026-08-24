@@ -182,6 +182,46 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * Device-only intrinsic — the fused GEMM-epilogue verb
+     * (xpu-coopmatrix-epilogue, Option B): for every element of this
+     * ACCUMULATOR tile (`Use = 2`, int32 or float32),
+     *
+     *     facc[r][c] += (rowF[r] * colF[c]) * this[r][c]
+     *
+     * `facc` is a same-shape `CooperativeMatrix<float32, Rows, Cols, 2>`;
+     * `rowF`/`colF` are `Shared<float32>` vectors of `Rows`/`Cols`
+     * elements. One fma chain per element with exactly that grouping on
+     * EVERY tier — the consumers' acceptance is bit-exact agreement, so
+     * the association is part of the contract, not an implementation
+     * detail. On amdgpu-native this runs in the accumulator fragment's
+     * registers (no LDS round trip, no barrier); the software tile runs
+     * the elementwise loop; a native tier without epilogue support
+     * demotes the kernel's tiles to the portable tile, loudly.
+     *
+     * This is the k-quant dequant seam: fold `d * sc` into `rowF` per
+     * K-slice, the activation scale into `colF`, and the int32 mma
+     * accumulator flows into a register-resident float accumulator
+     * without ever being spilled.
+     */
+    public void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                Shared<float32> rowF, Shared<float32> colF) {
+    }
+
+    /**
+     * Device-only intrinsic — the rank-1 epilogue accumulate
+     * (xpu-coopmatrix-epilogue, Option B): on a `float32` accumulator
+     * tile (`Use = 2`),
+     *
+     *     this[r][c] += rowF[r] * colF[c]
+     *
+     * The separable correction term of min-based quant formats (Q4_K's
+     * `-dmin·m` sub-block term, folded per K-slice the way llama.cpp
+     * folds it). Same tier and grouping rules as {@link #scaledAccumInto}.
+     */
+    public void rank1Accum(Shared<float32> rowF, Shared<float32> colF) {
+    }
+
+    /**
      * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.

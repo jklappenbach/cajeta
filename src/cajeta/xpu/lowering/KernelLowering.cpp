@@ -4249,6 +4249,73 @@ private:
             });
             return llvm::ConstantInt::get(i32, 0);
         }
+
+        // The fused epilogue verbs (xpu-coopmatrix-epilogue, Option B).
+        // Element order and association are the CONTRACT every tier
+        // shares: one fma chain per element, `(rowF[r] * colF[c]) *
+        // this[r][c]` then add — the native lowerings must emit the same
+        // grouping, since the consumer's acceptance is EXACT equality.
+        if (name == "scaledAccumInto" || name == "rank1Accum") {
+            const bool scaled = (name == "scaledAccumInto");
+            const size_t want = scaled ? 3 : 2;
+            if (args.size() != want)
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            (scaled ? " expects (facc, rowF, colF)"
+                                    : " expects (rowF, colF)"));
+            CoopMatrixSlot facc = slot;
+            if (scaled) {
+                facc = resolveCoopMatrixArg(args[0].expression);
+                if (!facc.software)
+                    unsupported("CooperativeMatrix.scaledAccumInto: the "
+                                "float accumulator must share the "
+                                "receiver's tier");
+                if (facc.rows != R || facc.cols != C)
+                    unsupported("CooperativeMatrix.scaledAccumInto: "
+                                "receiver and facc must share Rows/Cols");
+            }
+            if (slot.use != 2 || facc.use != 2)
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": accumulator tiles (Use=2) only");
+            if (!facc.elemType->isFloatTy())
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": the target accumulator must be float32");
+            llvm::Value* rB = nullptr; llvm::Type* rE = nullptr;
+            llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
+            const size_t ri = scaled ? 1 : 0;
+            if (!resolveBufferBase(args[ri].expression, rB, rE) ||
+                !resolveBufferBase(args[ri + 1].expression, cB, cE))
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": rowF/colF must be Shared<float32> vectors");
+            emitCountedLoop(R, [&](llvm::Value* r) {
+                llvm::Value* rv = builder.CreateLoad(
+                    rE, target.bufferElementPtr(
+                            builder, mod, rB, rE,
+                            builder.CreateZExt(r, i64)), "epi.rf");
+                emitCountedLoop(C, [&](llvm::Value* c) {
+                    llvm::Value* cv = builder.CreateLoad(
+                        cE, target.bufferElementPtr(
+                                builder, mod, cB, cE,
+                                builder.CreateZExt(c, i64)), "epi.cf");
+                    llvm::Value* lin = builder.CreateAdd(
+                        builder.CreateMul(r, llvm::ConstantInt::get(i32, C)),
+                        c);
+                    llvm::Value* term = builder.CreateFMul(rv, cv);
+                    if (scaled) {
+                        // toFloat, not coerceTo: the receiver is the
+                        // int32 accumulator and the conversion must be
+                        // a VALUE conversion (sitofp), never a bitcast.
+                        llvm::Value* mcv = toFloat(builder.CreateLoad(
+                            elem, coopElemPtr(slot, lin)));
+                        term = builder.CreateFMul(term, mcv);
+                    }
+                    llvm::Value* fptr = coopElemPtr(facc, lin);
+                    llvm::Value* cur =
+                        builder.CreateLoad(facc.elemType, fptr, "epi.cur");
+                    builder.CreateStore(builder.CreateFAdd(cur, term), fptr);
+                });
+            });
+            return llvm::ConstantInt::get(i32, 0);
+        }
         unsupported("CooperativeMatrix." + name + "() [software]");
     }
 
