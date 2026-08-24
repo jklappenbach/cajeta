@@ -239,6 +239,35 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * Device-only intrinsic — {@link #scaledAccumInto} with a SCALAR
+     * column factor (threaded-forward-path 10.12.31): on the native
+     * WMMA mapping the column of every element a lane holds is
+     * `lane & 15`, so `colF[c]` is a per-lane constant — this variant
+     * passes it as a plain register value instead of a Shared vector,
+     * deleting the LDS staging and its wave-uniform branch at the call
+     * site. CONTRACT: `colF` must be the factor for THIS LANE's column
+     * (both lanes holding column `c` pass the same value); `rowF`
+     * stays a Shared vector because rows are genuinely cross-lane.
+     * NATIVE-ONLY: the software tile has no lane-column mapping, so a
+     * tier that cannot lower this natively REJECTS the kernel with a
+     * named diagnostic — never a silent demote.
+     */
+    public void scaledAccumIntoS(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                 Shared<float32> rowF, float32 colF) {
+    }
+
+    /**
+     * Device-only intrinsic — {@link #scaledAccumInto2} with SCALAR
+     * column factors (10.12.31): `colF`/`colG` are per-lane register
+     * values under the same lane-local contract as
+     * {@link #scaledAccumIntoS}. NATIVE-ONLY, same rejection rule.
+     */
+    public void scaledAccumInto2S(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                  Shared<float32> rowF, float32 colF,
+                                  Shared<float32> rowG, float32 colG) {
+    }
+
+    /**
      * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.

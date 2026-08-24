@@ -3568,7 +3568,9 @@ private:
                         std::dynamic_pointer_cast<MethodCallExpression>(node)) {
                     const std::string& mn = vmc->getMethodCallName();
                     if (mn == "scaledAccumInto" || mn == "rank1Accum" ||
-                        mn == "scaledAccumInto2")
+                        mn == "scaledAccumInto2" ||
+                        mn == "scaledAccumIntoS" ||
+                        mn == "scaledAccumInto2S")
                         anyEpilogueVerb = true;
                 }
                 if (auto lvd =
@@ -4151,9 +4153,16 @@ private:
         // is a compiler bug — the tier scan demotes those kernels — so
         // the guard is belt-and-braces, not a code path.
         if (name == "scaledAccumInto" || name == "rank1Accum" ||
-            name == "scaledAccumInto2") {
+            name == "scaledAccumInto2" || name == "scaledAccumIntoS" ||
+            name == "scaledAccumInto2S") {
             const bool scaled = (name != "rank1Accum");
-            const bool dual = (name == "scaledAccumInto2");
+            const bool dual = (name == "scaledAccumInto2" ||
+                               name == "scaledAccumInto2S");
+            // The S variants (10.12.31): colF/colG are per-lane SCALAR
+            // register values, not Shared vectors — the caller passes
+            // this lane's own column factor.
+            const bool scalarCol = (name == "scaledAccumIntoS" ||
+                                    name == "scaledAccumInto2S");
             const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
@@ -4184,16 +4193,29 @@ private:
             llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
             llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
             llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
+            llvm::Value* cS = nullptr; llvm::Value* gS = nullptr;
             const size_t ri = scaled ? 1 : 0;
-            if (!resolveBufferBase(args[ri].expression, rB, rE) ||
-                !resolveBufferBase(args[ri + 1].expression, cB, cE))
+            if (!resolveBufferBase(args[ri].expression, rB, rE))
                 unsupported(std::string("CooperativeMatrix.") + name +
-                            ": rowF/colF must be Shared<float32> vectors");
-            if (dual &&
-                (!resolveBufferBase(args[ri + 2].expression, gB, gE) ||
-                 !resolveBufferBase(args[ri + 3].expression, hB, hE)))
-                unsupported("CooperativeMatrix.scaledAccumInto2: "
-                            "rowG/colG must be Shared<float32> vectors");
+                            ": rowF must be a Shared<float32> vector");
+            if (scalarCol) {
+                cS = toFloat(lowerExpr(args[ri + 1].expression));
+                if (dual) {
+                    if (!resolveBufferBase(args[ri + 2].expression, gB, gE))
+                        unsupported("CooperativeMatrix.scaledAccumInto2S: "
+                                    "rowG must be a Shared<float32> vector");
+                    gS = toFloat(lowerExpr(args[ri + 3].expression));
+                }
+            } else {
+                if (!resolveBufferBase(args[ri + 1].expression, cB, cE))
+                    unsupported(std::string("CooperativeMatrix.") + name +
+                                ": colF must be a Shared<float32> vector");
+                if (dual &&
+                    (!resolveBufferBase(args[ri + 2].expression, gB, gE) ||
+                     !resolveBufferBase(args[ri + 3].expression, hB, hE)))
+                    unsupported("CooperativeMatrix.scaledAccumInto2: "
+                                "rowG/colG must be Shared<float32> vectors");
+            }
             llvm::Value* accVal = nullptr;
             if (scaled)
                 accVal = builder.CreateLoad(slot.matrixType, slot.alloca,
@@ -4201,7 +4223,8 @@ private:
             llvm::Value* faccVal =
                 builder.CreateLoad(facc.matrixType, facc.alloca, "epi.facc");
             llvm::Value* v = target.coopMatrixEpilogueAccum(
-                builder, mod, accVal, faccVal, rB, rE, cB, cE, gB, hB);
+                builder, mod, accVal, faccVal, rB, rE, cB,
+                cE ? cE : rE, gB, hB, cS, gS);
             builder.CreateStore(v, facc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -4337,6 +4360,22 @@ private:
             return llvm::ConstantInt::get(i32, 0);
         }
 
+        // The SCALAR-column variants are NATIVE-ONLY (10.12.31): their
+        // colF/colG is "this lane's column factor", and the software
+        // tile has no lane-column mapping — every workitem owns the
+        // full R x C tile — so there is no honest lowering. Reject
+        // with the named diagnostic; a silent demote would compute
+        // one column's factor across all sixteen.
+        if (name == "scaledAccumIntoS" || name == "scaledAccumInto2S") {
+            unsupported(std::string("CooperativeMatrix.") + name +
+                        ": NATIVE-ONLY (the scalar colF/colG is this "
+                        "lane's column factor; the software tile has no "
+                        "lane-column mapping). Use the Shared-vector "
+                        "form " +
+                        (name == "scaledAccumIntoS" ? "scaledAccumInto"
+                                                    : "scaledAccumInto2") +
+                        " on this tier");
+        }
         // The fused epilogue verbs (xpu-coopmatrix-epilogue, Option B).
         // Element order and association are the CONTRACT every tier
         // shares: one fma chain per element, `(rowF[r] * colF[c]) *
@@ -5927,7 +5966,8 @@ llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*accVal*/,
     llvm::Value* /*faccVal*/, llvm::Value* /*rowFPtr*/, llvm::Type* /*rowETy*/,
     llvm::Value* /*colFPtr*/, llvm::Type* /*colETy*/,
-    llvm::Value* /*rowGPtr*/, llvm::Value* /*colGPtr*/) {
+    llvm::Value* /*rowGPtr*/, llvm::Value* /*colGPtr*/,
+    llvm::Value* /*colFScalar*/, llvm::Value* /*colGScalar*/) {
     // Unreachable by construction: the tier scan demotes verb-using kernels
     // on any backend where coopMatrixEpilogueSupported() is false, and the
     // demoted (software) path never dispatches here.

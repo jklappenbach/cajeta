@@ -169,6 +169,28 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnCpu) {
         << err;
 }
 
+// 10.12.31 — the scalar-column variants on the CPU tier: NATIVE-ONLY,
+// so the software tile must reject the kernel with the named
+// diagnostic — a silent demote would apply one lane's column factor
+// to all sixteen columns and produce a plausible wrong answer.
+TEST(XpuCoopEpilogueTests, scalarColumnVerbsAreNamedNativeOnlyOnCpu) {
+    std::string bad = std::string(KERNEL);
+    std::string from = "mc.scaledAccumInto2(facc, rowF, colF, rowG, colG);";
+    std::string to = "float32 cfs = 1.0f;\n"
+                     "        mc.scaledAccumInto2S(facc, rowF, cfs, rowG, cfs);";
+    bad.replace(bad.find(from), from.size(), to);
+    std::string src = std::string(PRE) +
+        "public final class D {\n" + bad +
+        "    public static int32 run() { return 1; }\n}\n";
+    std::string err;
+    EXPECT_EQ(runI32Cpu(src, &err), 1);
+    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
+        << "the rejection must say WHY the software tile cannot lower "
+           "the scalar variant:\n" << err;
+    EXPECT_NE(err.find("scaledAccumInto2S"), std::string::npos)
+        << "the diagnostic must NAME the verb:\n" << err;
+}
+
 // 1.1.2 — a malformed call names its defect instead of skipping
 // silently: wrong arity on scaledAccumInto.
 TEST(XpuCoopEpilogueTests, wrongArityIsANamedDiagnostic) {

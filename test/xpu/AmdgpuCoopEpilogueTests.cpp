@@ -75,6 +75,40 @@ std::string epiKernel(bool withVerbs) {
     return std::string(PRE) + body;
 }
 
+// The SCALAR-column variant (10.12.31): colF/colG arrive as per-lane
+// register values — each lane passes its own column's factor — so the
+// LDS staging and its wave-uniform branch disappear at the call site.
+std::string scalarEpiKernel() {
+    return std::string(PRE) +
+        "public final class D {\n"
+        "    @Kernel\n"
+        "    public static void epi(KernelBuffer<float32> y,\n"
+        "            KernelBuffer<int8> a, KernelBuffer<int8> b,\n"
+        "            KernelBuffer<float32> rf, KernelBuffer<float32> cf) {\n"
+        "        Shared<float32> rowF = shared float32[16];\n"
+        "        Shared<float32> rowG = shared float32[16];\n"
+        "        uint32 lane = KernelThread.x();\n"
+        "        if (lane < 16) { rowF[lane] = rf[lane]; rowG[lane] = rf[lane]; }\n"
+        "        Barrier.workgroup();\n"
+        "        float32 cfs = cf[lane % 16];\n"
+        "        float32 cgs = 0.0f - cfs;\n"
+        "        CooperativeMatrix<int8,16,16,0> ma;\n"
+        "        CooperativeMatrix<int8,16,16,1> mb;\n"
+        "        CooperativeMatrix<int32,16,16,2> mc;\n"
+        "        CooperativeMatrix<float32,16,16,2> facc;\n"
+        "        facc.splat(0.0f);\n"
+        "        mc.splat(0);\n"
+        "        ma.load(a, 0, 0, 16);\n"
+        "        mb.load(b, 0, 0, 16);\n"
+        "        mc.mma(ma, mb);\n"
+        "        mc.scaledAccumIntoS(facc, rowF, cfs);\n"
+        "        mc.scaledAccumInto2S(facc, rowF, cfs, rowG, cgs);\n"
+        "        facc.store(y, 0, 0, 16);\n"
+        "    }\n"
+        "    public static int32 run() { return 1; }\n"
+        "}\n";
+}
+
 } // namespace
 
 // 2.1.1 — on amdgpu the verb kernel LOWERS NATIVELY: no skip note and
@@ -102,6 +136,35 @@ TEST(AmdgpuCoopEpilogueTests, spirvDemotesLoudlyWithTheVerbs) {
         << "the demote must be announced by the epilogue note:\n" << err;
     EXPECT_NE(err.find("scaledAccumInto"), std::string::npos)
         << "the note must NAME the op that forced the demotion:\n" << err;
+}
+
+// 10.12.31 — the scalar-column variants lower natively on amdgpu: no
+// skip, no tier note. Same native path as the vector verbs minus the
+// colF/colG LDS loads.
+TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsLowerNativelyOnAmdgpu) {
+    std::string err;
+    EXPECT_EQ(runI32On(cajeta::xpu::Backend::Amdgpu, scalarEpiKernel(),
+                       &err), 1);
+    EXPECT_EQ(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "the scalar epilogue kernel must lower, not skip:\n" << err;
+    EXPECT_EQ(err.find("[mma-tiering]"), std::string::npos)
+        << "int8+scalar epilogue is native on amdgpu:\n" << err;
+}
+
+// 10.12.31 — the scalar variants are NATIVE-ONLY: a backend without
+// native epilogue support (SPIR-V) demotes the tiles, and the software
+// tile then REJECTS the kernel with the named NATIVE-ONLY diagnostic —
+// never a silent wrong-answer demote (the scalar is one lane's column
+// factor; the software tile owns all sixteen columns).
+TEST(AmdgpuCoopEpilogueTests, scalarColumnVerbsRejectLoudlyOffNative) {
+    std::string err;
+    EXPECT_EQ(runI32On(cajeta::xpu::Backend::Spirv, scalarEpiKernel(),
+                       &err), 1);
+    EXPECT_NE(err.find("[xpu-kernel-skipped]"), std::string::npos)
+        << "off-native the scalar verbs must SKIP the kernel loudly:\n"
+        << err;
+    EXPECT_NE(err.find("NATIVE-ONLY"), std::string::npos)
+        << "the skip must carry the NATIVE-ONLY explanation:\n" << err;
 }
 
 // 2.1.2 (does not fire) — the same kernel minus the verbs stays on the

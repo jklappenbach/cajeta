@@ -1098,7 +1098,9 @@ public:
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
             llvm::Value* colFPtr, llvm::Type* colETy,
             llvm::Value* rowGPtr = nullptr,
-            llvm::Value* colGPtr = nullptr) override {
+            llvm::Value* colGPtr = nullptr,
+            llvm::Value* colFScalar = nullptr,
+            llvm::Value* colGScalar = nullptr) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
@@ -1107,12 +1109,19 @@ public:
             b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
         llvm::Value* half =
             b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
-        llvm::Value* cv = b.CreateLoad(
-            colETy, b.CreateGEP(colETy, colFPtr, lane16, "epi.cf.ptr"),
-            "epi.cf");
-        // Dual form: the second column vector is also per-lane constant.
-        llvm::Value* cgv = nullptr;
-        if (colGPtr)
+        // colF[c] is a per-lane constant either way: the S variants
+        // (10.12.31) hand it over as a register value and skip the LDS
+        // load entirely — this was already ONE load per lane, hoisted,
+        // so the scalar form is the same math minus the LDS round trip.
+        llvm::Value* cv = colFScalar
+            ? colFScalar
+            : b.CreateLoad(
+                  colETy, b.CreateGEP(colETy, colFPtr, lane16,
+                                      "epi.cf.ptr"),
+                  "epi.cf");
+        // Dual form: the second column factor is also per-lane constant.
+        llvm::Value* cgv = colGScalar;
+        if (!cgv && colGPtr)
             cgv = b.CreateLoad(
                 colETy, b.CreateGEP(colETy, colGPtr, lane16, "epi.cg.ptr"),
                 "epi.cg");

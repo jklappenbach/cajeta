@@ -865,11 +865,20 @@ namespace xpu {
         // rowGPtr/colGPtr non-null = the DUAL form (scaledAccumInto2):
         // facc[r][c] += rowF[r]*colF[c]*acc[r][c] + rowG[r]*colG[c] —
         // the k-quant dmin term folded into the same per-element pass.
+        // colFScalar/colGScalar non-null = the SCALAR-column variants
+        // (scaledAccumIntoS / scaledAccumInto2S, 10.12.31): the column
+        // factor is a per-lane register value (the caller's contract:
+        // it is the factor for this lane's column) and the matching
+        // colFPtr/colGPtr is null. NATIVE-ONLY — the software tile has
+        // no lane-column mapping, so its lowering rejects these with a
+        // named diagnostic rather than lowering them wrong.
         virtual llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
             llvm::Value* colFPtr, llvm::Type* colETy,
-            llvm::Value* rowGPtr = nullptr, llvm::Value* colGPtr = nullptr);
+            llvm::Value* rowGPtr = nullptr, llvm::Value* colGPtr = nullptr,
+            llvm::Value* colFScalar = nullptr,
+            llvm::Value* colGScalar = nullptr);
 
         // Called once on the enclosing kernel function the first time a NATIVE
         // cooperative-matrix tile is allocated in its body. A backend whose
