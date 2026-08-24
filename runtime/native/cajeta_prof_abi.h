@@ -265,6 +265,36 @@ void     __cajeta_prof_vk_bracket_resolved(int64_t launchId, int64_t devStartNs,
                                            int64_t devEndNs, int32_t flags);
 int32_t  __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
                                     int64_t endNs);
+
+// ── Unit 12: CUPTI binding state (spec §5.4) ──────────────────────────────
+//
+// The same shape as the ROCm backend's, for the same §5.2.2-class reason: a
+// run whose CUPTI is missing must still succeed, degraded and reported, and a
+// cupti table that binds nothing yet answers calls would read downstream
+// exactly like a working device backend. Unit 1's §5.4.4 verdict (what an
+// UNPRIVILEGED user may be promised) gates the capability-ladder claims, not
+// this loader — which is why the loader lands first.
+#define CAJETA_CUPTI_UNATTEMPTED 0   // init() has not run
+#define CAJETA_CUPTI_ABSENT      1   // no libcupti to bind (§5.4.2)
+#define CAJETA_CUPTI_READY       2   // core entry points bound
+
+int32_t     __cajeta_prof_cupti_init(void);
+void        __cajeta_prof_cupti_reset(void);
+int32_t     __cajeta_prof_cupti_state(void);
+const char* __cajeta_prof_cupti_reason(void);
+const char* __cajeta_prof_cupti_lib_path(void);
+int32_t     __cajeta_prof_cupti_entry_count(void);
+int32_t     __cajeta_prof_cupti_entries_bound(void);
+// §6.2/§6.9 — the timestamp callback is newer than the core Activity API
+// (CUDA 11.6). Bound separately and reported rather than folded into the
+// all-or-nothing core set: its ABSENCE selects the conversion path, it does
+// not make the backend absent.
+int32_t     __cajeta_prof_cupti_has_timestamp_callback(void);
+// §10.5/§12.5 — WSL is where the timestamp callback was measured accepted-
+// then-ignored, so the platform has to be identifiable. The parse is split
+// from the probe so it is testable on machines that are not WSL.
+int32_t     __cajeta_prof_cupti_version_is_wsl(const char* procVersion);
+int32_t     __cajeta_prof_cupti_on_wsl(void);
 // How many launches are parked waiting for a device record, and the two ways a
 // parked launch can end up published at host tier instead: the table was full
 // when it launched (overflow), or its record never came back (unclaimed).

@@ -119,6 +119,7 @@ typedef void (*cajeta_ctor_fn)(void* self);
 #include "cajeta_rt_prof_integrity.c"
 #include "cajeta_rt_prof_rocm.c"   // U8: before prof_gpu, which selects it
 #include "cajeta_rt_prof_vulkan.c" // U13: same — prof_gpu's selector reads it
+#include "cajeta_rt_prof_cupti.c"  // U12: loader/binding state (same pattern)
 #include "cajeta_rt_prof_gpu.c"
 #include "cajeta_rt_shared.c"
 #include "cajeta_rt_utf8.c"

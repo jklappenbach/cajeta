@@ -133,6 +133,8 @@ struct cajeta_vk {
     VkQueryPool profPool;        // 2 queries; the dispatch path is serialized
     int      profPoolReady;      // 0 not yet, 1 ready, -1 refused
     int64_t  lastCalibrateNs;    // §6.6 refresh bookkeeping
+    int      calPaired;          // 1 = DEVICE+CLOCK_MONOTONIC in one driver
+                                 // read; 0 = DEVICE only, our own bracket
 };
 static struct cajeta_vk g_xpu_vk;
 
@@ -695,16 +697,21 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         if (!g_xpu_vk.vkGetCalibratedTimestamps) g_xpu_vk.hasCalibratedTs = 0;
     }
     if (g_xpu_vk.hasCalibratedTs) {
-        // §6.5 — verify the DOMAINS, not just the extension. The calibration
-        // read pairs DEVICE with CLOCK_MONOTONIC, and passing a domain the
-        // driver never offered is invalid usage that can return VK_SUCCESS
-        // carrying junk. Measured on the first PHOENIX shakedown (run
-        // 32755371649): Windows/NVIDIA offers QPC, not CLOCK_MONOTONIC — the
-        // unchecked read "succeeded", the engine fit a host value of garbage,
-        // and every device span converted to 0..0. Until Unit 12's §6.8 adds
-        // the QPC host domain, a device that does not offer CLOCK_MONOTONIC
-        // gets NO calibration — and the bracket's duration-plus-anchor
-        // fallback stays honest instead of precise.
+        // §6.5 — verify the DOMAINS, not just the extension. Passing a domain
+        // the driver never offered is invalid usage that can return
+        // VK_SUCCESS carrying junk. Measured on the first PHOENIX shakedown
+        // (run 32755371649): Windows/NVIDIA offers QPC, not CLOCK_MONOTONIC —
+        // the unchecked (DEVICE, CLOCK_MONOTONIC) read "succeeded", the
+        // engine fit a host value of garbage, and every device span
+        // converted to 0..0.
+        //
+        // Where CLOCK_MONOTONIC IS offered, the driver's paired read is the
+        // tight sandwich (both clocks read close together, maxDeviation
+        // stated). Where it is not (§6.8: Windows offers QPC), the DEVICE
+        // domain alone is still calibrateable: the read is bracketed by our
+        // own host-clock reads instead — a wider sandwich the clock engine's
+        // dispersion cap still accepts, and one that never depends on any
+        // assumed equivalence between QPC's epoch and the host clock's.
         PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT getDomains =
             (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)
                 g_xpu_vk.getInstanceProcAddr(
@@ -729,7 +736,8 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                 }
             }
         }
-        if (!haveDevice || !haveMonotonic) g_xpu_vk.hasCalibratedTs = 0;
+        if (!haveDevice) g_xpu_vk.hasCalibratedTs = 0;
+        g_xpu_vk.calPaired = haveMonotonic;
     }
 #endif
     // RT path: resolve the AS/device-address entry points only when the device
@@ -808,20 +816,44 @@ static int32_t caj_vk_calibration_read(int64_t* hostBeforeNs, int64_t* devTicks,
                                        int64_t* hostAfterNs, void* user) {
     (void) user;
     if (!g_xpu_vk.vkGetCalibratedTimestamps) return 0;
-    VkCalibratedTimestampInfoEXT infos[2];
-    memset(infos, 0, sizeof(infos));
-    infos[0].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
-    infos[0].timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
-    infos[1].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
-    infos[1].timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT;
-    uint64_t ts[2] = {0, 0};
+    if (g_xpu_vk.calPaired) {
+        // The driver reads both clocks close together and states how far
+        // apart the reads could have been — maxDeviation IS the sandwich.
+        VkCalibratedTimestampInfoEXT infos[2];
+        memset(infos, 0, sizeof(infos));
+        infos[0].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+        infos[0].timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+        infos[1].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+        infos[1].timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT;
+        uint64_t ts[2] = {0, 0};
+        uint64_t maxDev = 0;
+        if (g_xpu_vk.vkGetCalibratedTimestamps(g_xpu_vk.device, 2, infos, ts,
+                                               &maxDev) != VK_SUCCESS)
+            return 0;
+        *devTicks = (int64_t) ts[0];
+        *hostBeforeNs = (int64_t) ts[1] - (int64_t) maxDev;
+        *hostAfterNs = (int64_t) ts[1] + (int64_t) maxDev;
+        return 1;
+    }
+    // No CLOCK_MONOTONIC domain (§6.8: Windows offers QPC): read the DEVICE
+    // domain alone and let OUR host clock bracket the call. Wider than the
+    // driver's pairing, but in the right domain by construction — the quality
+    // gate (§6.7) rejects any read the scheduler stretched too far.
+    VkCalibratedTimestampInfoEXT info;
+    memset(&info, 0, sizeof(info));
+    info.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+    info.timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+    uint64_t ts = 0;
     uint64_t maxDev = 0;
-    if (g_xpu_vk.vkGetCalibratedTimestamps(g_xpu_vk.device, 2, infos, ts,
+    const int64_t before = __cajeta_currentTimeNanos();
+    if (g_xpu_vk.vkGetCalibratedTimestamps(g_xpu_vk.device, 1, &info, &ts,
                                            &maxDev) != VK_SUCCESS)
         return 0;
-    *devTicks = (int64_t) ts[0];
-    *hostBeforeNs = (int64_t) ts[1] - (int64_t) maxDev;
-    *hostAfterNs = (int64_t) ts[1] + (int64_t) maxDev;
+    const int64_t after = __cajeta_currentTimeNanos();
+    if (!before || !after) return 0;
+    *devTicks = (int64_t) ts;
+    *hostBeforeNs = before;
+    *hostAfterNs = after;
     return 1;
 }
 #endif
