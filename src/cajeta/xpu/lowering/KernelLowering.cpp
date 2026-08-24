@@ -3567,7 +3567,8 @@ private:
                 if (auto vmc =
                         std::dynamic_pointer_cast<MethodCallExpression>(node)) {
                     const std::string& mn = vmc->getMethodCallName();
-                    if (mn == "scaledAccumInto" || mn == "rank1Accum")
+                    if (mn == "scaledAccumInto" || mn == "rank1Accum" ||
+                        mn == "scaledAccumInto2")
                         anyEpilogueVerb = true;
                 }
                 if (auto lvd =
@@ -4149,13 +4150,16 @@ private:
         // epilogue Option B). Reaching here on a backend without support
         // is a compiler bug — the tier scan demotes those kernels — so
         // the guard is belt-and-braces, not a code path.
-        if (name == "scaledAccumInto" || name == "rank1Accum") {
-            const bool scaled = (name == "scaledAccumInto");
-            const size_t want = scaled ? 3 : 2;
+        if (name == "scaledAccumInto" || name == "rank1Accum" ||
+            name == "scaledAccumInto2") {
+            const bool scaled = (name != "rank1Accum");
+            const bool dual = (name == "scaledAccumInto2");
+            const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
-                            (scaled ? " expects (facc, rowF, colF)"
-                                    : " expects (rowF, colF)"));
+                            (dual ? " expects (facc, rowF, colF, rowG, colG)"
+                                  : (scaled ? " expects (facc, rowF, colF)"
+                                            : " expects (rowF, colF)")));
             if (!target.coopMatrixEpilogueSupported())
                 unsupported(std::string("CooperativeMatrix.") + name +
                             ": no native epilogue lowering on this backend "
@@ -4178,11 +4182,18 @@ private:
                             ": the target accumulator must be float32");
             llvm::Value* rB = nullptr; llvm::Type* rE = nullptr;
             llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
+            llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
+            llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
             const size_t ri = scaled ? 1 : 0;
             if (!resolveBufferBase(args[ri].expression, rB, rE) ||
                 !resolveBufferBase(args[ri + 1].expression, cB, cE))
                 unsupported(std::string("CooperativeMatrix.") + name +
                             ": rowF/colF must be Shared<float32> vectors");
+            if (dual &&
+                (!resolveBufferBase(args[ri + 2].expression, gB, gE) ||
+                 !resolveBufferBase(args[ri + 3].expression, hB, hE)))
+                unsupported("CooperativeMatrix.scaledAccumInto2: "
+                            "rowG/colG must be Shared<float32> vectors");
             llvm::Value* accVal = nullptr;
             if (scaled)
                 accVal = builder.CreateLoad(slot.matrixType, slot.alloca,
@@ -4190,7 +4201,7 @@ private:
             llvm::Value* faccVal =
                 builder.CreateLoad(facc.matrixType, facc.alloca, "epi.facc");
             llvm::Value* v = target.coopMatrixEpilogueAccum(
-                builder, mod, accVal, faccVal, rB, rE, cB, cE);
+                builder, mod, accVal, faccVal, rB, rE, cB, cE, gB, hB);
             builder.CreateStore(v, facc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -4331,13 +4342,16 @@ private:
         // shares: one fma chain per element, `(rowF[r] * colF[c]) *
         // this[r][c]` then add — the native lowerings must emit the same
         // grouping, since the consumer's acceptance is EXACT equality.
-        if (name == "scaledAccumInto" || name == "rank1Accum") {
-            const bool scaled = (name == "scaledAccumInto");
-            const size_t want = scaled ? 3 : 2;
+        if (name == "scaledAccumInto" || name == "rank1Accum" ||
+            name == "scaledAccumInto2") {
+            const bool scaled = (name != "rank1Accum");
+            const bool dual = (name == "scaledAccumInto2");
+            const size_t want = dual ? 5 : (scaled ? 3 : 2);
             if (args.size() != want)
                 unsupported(std::string("CooperativeMatrix.") + name +
-                            (scaled ? " expects (facc, rowF, colF)"
-                                    : " expects (rowF, colF)"));
+                            (dual ? " expects (facc, rowF, colF, rowG, colG)"
+                                  : (scaled ? " expects (facc, rowF, colF)"
+                                            : " expects (rowF, colF)")));
             CoopMatrixSlot facc = slot;
             if (scaled) {
                 facc = resolveCoopMatrixArg(args[0].expression);
@@ -4357,11 +4371,18 @@ private:
                             ": the target accumulator must be float32");
             llvm::Value* rB = nullptr; llvm::Type* rE = nullptr;
             llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
+            llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
+            llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
             const size_t ri = scaled ? 1 : 0;
             if (!resolveBufferBase(args[ri].expression, rB, rE) ||
                 !resolveBufferBase(args[ri + 1].expression, cB, cE))
                 unsupported(std::string("CooperativeMatrix.") + name +
                             ": rowF/colF must be Shared<float32> vectors");
+            if (dual &&
+                (!resolveBufferBase(args[ri + 2].expression, gB, gE) ||
+                 !resolveBufferBase(args[ri + 3].expression, hB, hE)))
+                unsupported("CooperativeMatrix.scaledAccumInto2: "
+                            "rowG/colG must be Shared<float32> vectors");
             emitCountedLoop(R, [&](llvm::Value* r) {
                 llvm::Value* rv = builder.CreateLoad(
                     rE, target.bufferElementPtr(
@@ -4383,6 +4404,20 @@ private:
                         llvm::Value* mcv = toFloat(builder.CreateLoad(
                             elem, coopElemPtr(slot, lin)));
                         term = builder.CreateFMul(term, mcv);
+                    }
+                    if (dual) {
+                        llvm::Value* rg = builder.CreateLoad(
+                            gE, target.bufferElementPtr(
+                                    builder, mod, gB, gE,
+                                    builder.CreateZExt(r, i64)),
+                            "epi.rg");
+                        llvm::Value* cg = builder.CreateLoad(
+                            hE, target.bufferElementPtr(
+                                    builder, mod, hB, hE,
+                                    builder.CreateZExt(c, i64)),
+                            "epi.cg");
+                        term = builder.CreateFAdd(
+                            term, builder.CreateFMul(rg, cg));
                     }
                     llvm::Value* fptr = coopElemPtr(facc, lin);
                     llvm::Value* cur =
@@ -5891,7 +5926,8 @@ llvm::Value* LoweringTarget::coopMatrixSplat(
 llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*accVal*/,
     llvm::Value* /*faccVal*/, llvm::Value* /*rowFPtr*/, llvm::Type* /*rowETy*/,
-    llvm::Value* /*colFPtr*/, llvm::Type* /*colETy*/) {
+    llvm::Value* /*colFPtr*/, llvm::Type* /*colETy*/,
+    llvm::Value* /*rowGPtr*/, llvm::Value* /*colGPtr*/) {
     // Unreachable by construction: the tier scan demotes verb-using kernels
     // on any backend where coopMatrixEpilogueSupported() is false, and the
     // demoted (software) path never dispatches here.

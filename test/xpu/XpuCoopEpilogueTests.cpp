@@ -79,6 +79,7 @@ const char* KERNEL =
     "        mc.mma(ma, mb);\n"
     "        mc.scaledAccumInto(facc, rowF, colF);\n"
     "        facc.rank1Accum(rowG, colG);\n"
+    "        mc.scaledAccumInto2(facc, rowF, colF, rowG, colG);\n"
     "        facc.store(y, 0, 0, 16);\n"
     "    }\n";
 
@@ -135,8 +136,11 @@ const char* RUN =
     "                              * (int32) hb[k * 16 + c];\n"
     "                    k = k + 1;\n"
     "                }\n"
-    "                float32 want = hrf[r] * hcf[c] * (float32) acc\n"
-    "                             + hrg[r] * hcg[c];\n"
+    "                float32 t1 = hrf[r] * hcf[c] * (float32) acc\n"
+    "                            + hrg[r] * hcg[c];\n"
+    "                float32 t2 = hrf[r] * hcf[c] * (float32) acc\n"
+    "                            + hrg[r] * hcg[c];\n"
+    "                float32 want = t1 + t2;\n"
     "                float32 got = hy[r * 16 + c];\n"
     "                if (got != want) { return -(r * 16 + c + 1); }\n"
     "                if (got != 0.0f) { live = true; }\n"

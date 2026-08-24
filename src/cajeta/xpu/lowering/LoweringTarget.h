@@ -862,10 +862,14 @@ namespace xpu {
         // scale vectors. The multiply association `(rowF*colF)*C` is the
         // cross-tier CONTRACT (consumers assert bit-exactness against
         // the software tile). Returns the updated facc fragment.
+        // rowGPtr/colGPtr non-null = the DUAL form (scaledAccumInto2):
+        // facc[r][c] += rowF[r]*colF[c]*acc[r][c] + rowG[r]*colG[c] —
+        // the k-quant dmin term folded into the same per-element pass.
         virtual llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
-            llvm::Value* colFPtr, llvm::Type* colETy);
+            llvm::Value* colFPtr, llvm::Type* colETy,
+            llvm::Value* rowGPtr = nullptr, llvm::Value* colGPtr = nullptr);
 
         // Called once on the enclosing kernel function the first time a NATIVE
         // cooperative-matrix tile is allocated in its body. A backend whose

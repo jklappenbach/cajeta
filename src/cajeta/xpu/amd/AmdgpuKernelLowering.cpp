@@ -1096,7 +1096,9 @@ public:
     llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
             llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
-            llvm::Value* colFPtr, llvm::Type* colETy) override {
+            llvm::Value* colFPtr, llvm::Type* colETy,
+            llvm::Value* rowGPtr = nullptr,
+            llvm::Value* colGPtr = nullptr) override {
         llvm::LLVMContext& ctx = m.getContext();
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
@@ -1108,6 +1110,12 @@ public:
         llvm::Value* cv = b.CreateLoad(
             colETy, b.CreateGEP(colETy, colFPtr, lane16, "epi.cf.ptr"),
             "epi.cf");
+        // Dual form: the second column vector is also per-lane constant.
+        llvm::Value* cgv = nullptr;
+        if (colGPtr)
+            cgv = b.CreateLoad(
+                colETy, b.CreateGEP(colETy, colGPtr, lane16, "epi.cg.ptr"),
+                "epi.cg");
         auto* vecTy = llvm::cast<llvm::FixedVectorType>(faccVal->getType());
         unsigned n = vecTy->getNumElements();
         llvm::Value* out = faccVal;
@@ -1123,6 +1131,13 @@ public:
                 if (av->getType()->isIntegerTy())
                     av = b.CreateSIToFP(av, f32);
                 term = b.CreateFMul(term, av);
+            }
+            if (rowGPtr) {
+                llvm::Value* rg = b.CreateLoad(
+                    rowETy,
+                    b.CreateGEP(rowETy, rowGPtr, row, "epi.rg.ptr"),
+                    "epi.rg");
+                term = b.CreateFAdd(term, b.CreateFMul(rg, cgv));
             }
             llvm::Value* cur = b.CreateExtractElement(out, e);
             out = b.CreateInsertElement(out, b.CreateFAdd(cur, term), e,

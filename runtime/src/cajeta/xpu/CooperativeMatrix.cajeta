@@ -222,6 +222,23 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * Device-only intrinsic — the DUAL fused epilogue
+     * (xpu-coopmatrix-epilogue follow-on, threaded-forward-path
+     * 10.12.21): one per-element pass computing
+     *
+     *     facc[r][c] += (rowF[r] * colF[c]) * this[r][c]
+     *                 +  rowG[r] * colG[c]
+     *
+     * — the k-quant scale seam AND its separable min correction in a
+     * single accumulator visit. Same tier, shape and grouping rules as
+     * {@link #scaledAccumInto}.
+     */
+    public void scaledAccumInto2(CooperativeMatrix<float32, Rows, Cols, 2> facc,
+                                 Shared<float32> rowF, Shared<float32> colF,
+                                 Shared<float32> rowG, Shared<float32> colG) {
+    }
+
+    /**
      * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.
