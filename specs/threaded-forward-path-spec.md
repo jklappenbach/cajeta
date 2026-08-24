@@ -620,6 +620,18 @@ attention tail degrades 25 -> 27.5 going 0 -> 512 deep; ours degrades
 26 -> 34.5. Decode-at-depth is attention-tail bound, which feeds the
 decode-attribution explore, not the GEMM work.
 
+**Re-measured 2026-08-24 evening, post-epilogue (xpu-coopmatrix-
+epilogue closed):** mixed Q4_K_M prefill **2791 ms** (Q4_K spill 1570 +
+Q6_K register-epilogue 341; 6.4x vs llama.cpp's 439). Pure Q6_K
+head-to-head (fresh requant of the local Q8_0): llama.cpp **580 ms**
+(882.16 ± 37.62 t/s — their MMQ DECLINES Q6_K at ne11=512 on RDNA3.5
+and runs dequant+rocBLAS, 32% slower than their own Q4_K_M) vs ours
+**3206 ms**, all 224 calls on `wmma6-epi` — **5.5x, the closest gap on
+record**. The register-epilogue verdict was split by measurement: Q6_K
+-35% (shipped as default); Q4_K epi SLOWER than its spill (the dmin
+term does not factor into the verb shape cheaply) — parked behind the
+`q4epi` arm for the 10.12.21 re-tiling.
+
 ## 9.2 The three ceilings, each validated
 
 A ceiling probe is only worth its number if the loop was not hoisted, so
