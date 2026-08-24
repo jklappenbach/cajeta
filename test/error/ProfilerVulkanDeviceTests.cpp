@@ -261,3 +261,82 @@ TEST(ProfilerVulkanDevice, theSamePlumbingRunsOnLavapipe) {
     }
     runBracketBody();
 }
+
+// 13.3.c — the whole path, exactly as a user runs it: env-armed, one trace at
+// shutdown, the Vulkan lane inside it. The queue track, the event brackets
+// and the "host blocked on GPU" spans all reach the FILE, not just a sink —
+// and the wait spans are what turn the backend's per-dispatch serialization
+// from a suspicion into something a reader sees labelled (§5.5.8, §14.13;
+// filed as specs/INDEX.md `vulkan-dispatch-serialization`).
+TEST(ProfilerVulkanDevice, anEnvArmedRunWritesTheVulkanLaneIntoOneTrace) {
+    if (::getenv(kChildMarker) == nullptr) {
+        std::string out;
+        const int rc = runInFreshProcess(
+            "ProfilerVulkanDevice.anEnvArmedRunWritesTheVulkanLaneIntoOneTrace",
+            nullptr, out);
+        if (rc != 0) FAIL() << "the env-armed child failed (exit " << rc << "):\n" << out;
+        if (out.find("[  SKIPPED ]") != std::string::npos)
+            GTEST_SKIP() << "child skipped:\n" << out;
+        SUCCEED() << out;
+        return;
+    }
+
+    CajetaJit::Options o;
+    o.xpuBackends = {cajeta::xpu::Backend::Spirv};
+    static std::unique_ptr<CajetaJit> jit =
+        CajetaJit::compile(kSaxpySource, "test.VkSaxpy", o);
+    ASSERT_NE(jit, nullptr);
+
+    auto sym = [&](const char* n) { return jit->lookupRawSymbol(n); };
+    auto arm = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_arm"));
+    auto disarm = reinterpret_cast<void (*)(void)>(sym("__cajeta_prof_disarm"));
+    auto shutdown = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_shutdown"));
+    auto shutdownReset = reinterpret_cast<void (*)(void)>(sym("__cajeta_prof_shutdown_reset"));
+    auto timingOk = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_vk_timing_ok"));
+    ASSERT_TRUE(arm && shutdown && timingOk);
+
+    const char* tmp = std::getenv("TMPDIR");
+    std::string path = std::string(tmp ? tmp : "/tmp") + "/cajeta-vk-e2e.pftrace";
+    std::remove(path.c_str());
+    ::setenv("CAJETA_PROFILER", "1", 1);
+    ::setenv("CAJETA_PROFILER_HZ", "4000", 1);
+    ::setenv("CAJETA_PROFILER_OUT", path.c_str(), 1);
+    shutdownReset();
+    ASSERT_EQ(arm(), 0) << "profiler did not arm";
+
+    auto run = jit->lookup<float (*)()>("run");
+    ASSERT_NE(run, nullptr);
+    const float sum = run();
+
+    const int64_t packets = shutdown();
+    disarm();
+    shutdownReset();
+    ::unsetenv("CAJETA_PROFILER");
+    ::unsetenv("CAJETA_PROFILER_HZ");
+    ::unsetenv("CAJETA_PROFILER_OUT");
+
+    if (sum == 0.0f || !timingOk()) {
+        std::remove(path.c_str());
+        GTEST_SKIP() << "no Vulkan device / timing here";
+    }
+    ASSERT_FLOAT_EQ(sum, 40960.0f);
+    ASSERT_GT(packets, 0) << "shutdown wrote no packets";
+
+    std::string body;
+    {
+        FILE* f = ::fopen(path.c_str(), "rb");
+        ASSERT_NE(f, nullptr) << "no trace at " << path;
+        char buf[4096];
+        size_t got;
+        while ((got = ::fread(buf, 1, sizeof(buf), f)) > 0) body.append(buf, got);
+        ::fclose(f);
+    }
+    std::remove(path.c_str());
+    EXPECT_NE(body.find("cajeta.xpu.vulkan device"), std::string::npos)
+        << "no Vulkan device track in the trace";
+    EXPECT_NE(body.find("queue "), std::string::npos) << "no queue track";
+    EXPECT_NE(body.find("cajeta.thread."), std::string::npos)
+        << "the Vulkan lane displaced the host half instead of joining it";
+    EXPECT_NE(body.find("host blocked on GPU"), std::string::npos)
+        << "the per-dispatch stalls left no labelled span (§5.5.8)";
+}
