@@ -4,6 +4,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import dev.cajeta.idea.lint.XrefStream
 import dev.cajeta.idea.lint.XrefStreamParser
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -23,27 +24,48 @@ class CajetaXrefFreshness {
 
     private val snap = AtomicReference(Snapshot(State.STALE, "no export ingested yet"))
 
+    /**
+     * Notified when the snapshot actually CHANGES. The status widget is the
+     * consumer: a StatusBarWidget renders only when the platform repaints it,
+     * so a state machine that flips silently leaves the bar reading whatever it
+     * last drew — reported live 2026-08-24 as "still reads stale after an index
+     * update", against an index that had rebuilt fine.
+     *
+     * Only real changes fire. `updateFromLint` runs on every edit's lint
+     * result, and repainting the status bar per keystroke to redraw the same
+     * four characters is waste.
+     */
+    private val listeners = CopyOnWriteArrayList<() -> Unit>()
+
+    fun addChangeListener(l: () -> Unit) { listeners += l }
+    fun removeChangeListener(l: () -> Unit) { listeners.remove(l) }
+
+    private fun publish(next: Snapshot) {
+        if (snap.getAndSet(next) == next) return
+        for (l in listeners) l()
+    }
+
     val state: State get() = snap.get().state
     val reason: String? get() = snap.get().reason
 
     /** ide-features Unit 5's gate (9.1.6). */
     fun safeForRefactoring(): Boolean = state == State.FRESH
 
-    fun refreshStarted() { snap.set(Snapshot(State.REFRESHING, null)) }
-    fun refreshSucceeded() { snap.set(Snapshot(State.FRESH, null)) }
-    fun refreshFailed(reason: String) { snap.set(Snapshot(State.STALE, reason)) }
+    fun refreshStarted() { publish(Snapshot(State.REFRESHING, null)) }
+    fun refreshSucceeded() { publish(Snapshot(State.FRESH, null)) }
+    fun refreshFailed(reason: String) { publish(Snapshot(State.STALE, reason)) }
 
     /** Per-edit lint outcome → state. Called by the annotator's apply(). */
     fun updateFromLint(compilerConfigured: Boolean, stream: XrefStream) {
         when {
-            !compilerConfigured -> snap.set(Snapshot(State.UNAVAILABLE,
+            !compilerConfigured -> publish(Snapshot(State.UNAVAILABLE,
                 "Cajeta compiler not configured — xref navigation is off; " +
                 "locals, highlighting, folding and structure still work"))
-            !stream.supported -> snap.set(Snapshot(State.UNAVAILABLE,
+            !stream.supported -> publish(Snapshot(State.UNAVAILABLE,
                 "compiler emits xref schema major ${stream.versionMajor}; " +
                 "this plugin speaks ${XrefStreamParser.SUPPORTED_MAJOR} — " +
                 "records refused rather than misread"))
-            else -> snap.set(Snapshot(State.FRESH, null))
+            else -> publish(Snapshot(State.FRESH, null))
         }
     }
 
