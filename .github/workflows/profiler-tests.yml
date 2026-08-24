@@ -1,0 +1,218 @@
+# cajeta-profiler's runner lanes on the NVIDIA box (plan Unit 12, spec §5.4,
+# §6.2, §6.8, §12.3, §12.5).
+#
+# Unit 12 targets PHOENIX (Windows/RTX 4090) and phoenix-wsl — there is no
+# NVIDIA hardware on the development machine, so these lanes ARE where the
+# CUPTI backend gets built and where 12.3.a's "green on PHOENIX and
+# phoenix-wsl" is answered. They exist before the ProfilerCupti* suites do,
+# deliberately: the Profiler* corpus (sampler, seam, capture, clock,
+# integrity, trace wire — 160+ tests) has NEVER run on Windows or against the
+# NVIDIA stack, and §6.8's Windows host-clock path plus §12.5's WSL
+# timestamp-callback hazard both need a measured baseline before Unit 12
+# asserts anything against them. New ProfilerCupti*/ProfilerNvidia* suites
+# match the default filter as they land — no workflow change needed.
+#
+# dispatch-only, no cron: Unit 12 is in flight, and a nightly that is red
+# because the unit is unfinished is a nightly people learn to ignore. Add the
+# schedule when 12.3.a closes.
+#
+# Build recipe is device-tests.yml's, which is release.yml's — including the
+# self-hosted quirks those files already paid for (MSYS2's read-only $HOME on
+# PHOENIX, the fork's stale LLVMConfig tools dir, the NOTFOUND-caching
+# workspace reuse). Keep the three in sync when the recipe changes.
+name: profiler-tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      legs:
+        description: 'Which runners to use'
+        required: true
+        type: choice
+        options: [both, wsl, windows]
+        default: both
+      filter:
+        description: 'gtest filter'
+        required: false
+        default: 'Profiler*'
+
+concurrency:
+  # The runners are single-box; newest wins.
+  group: profiler-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+    steps:
+      - id: pick
+        run: |
+          set -euo pipefail
+          WSL='{"name":"wsl-nvidia","key":"wsl","os":["self-hosted","wsl"],"asset_os":"linux-x64","shell":"bash"}'
+          WIN='{"name":"windows-nvidia","key":"windows","os":["self-hosted","Windows","X64","gpu"],"asset_os":"windows-x64","shell":"msys2 {0}"}'
+          LEGS='${{ inputs.legs }}'
+          [ -z "$LEGS" ] && LEGS=both
+          case "$LEGS" in
+            wsl)     INC="[$WSL]" ;;
+            windows) INC="[$WIN]" ;;
+            both)    INC="[$WSL,$WIN]" ;;
+            *) echo "::error::unknown legs value '$LEGS'"; exit 1 ;;
+          esac
+          echo "matrix={\"include\":$INC}" >> "$GITHUB_OUTPUT"
+
+  profiler:
+    needs: setup
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # The Profiler* corpus took ~10 min on proton AFTER a warm build; the
+    # from-source build dominates. Same ceiling as device-tests.
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Setup Java (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-antlr4-runtime-cpp
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-xxhash
+            mingw-w64-x86_64-glog
+            mingw-w64-x86_64-gtest
+            mingw-w64-x86_64-vulkan-headers
+            tar
+            vim
+
+      # Which stacks this box actually offers the profiler: CUPTI is what
+      # Unit 12 binds, and the 4090's Vulkan driver is a third data point for
+      # Unit 13's backend (proton covered RADV and lavapipe). Non-fatal — the
+      # tests degrade per §10.4 and the summary shows what really ran.
+      - name: GPU inventory
+        continue-on-error: true
+        run: |
+          echo "== nvidia =="; nvidia-smi -L || echo "(no nvidia-smi)"
+          echo "== cupti ==";  find /usr/local/cuda*/extras/CUPTI/lib64 /c/Program\ Files/NVIDIA\ GPU\ Computing\ Toolkit -name 'libcupti*' -o -name 'cupti*.dll' 2>/dev/null | head -3 || true
+          echo "== vulkan ==";  vulkaninfo --summary 2>/dev/null | grep -i deviceName || echo "(no vulkaninfo)"
+
+      - name: Fetch prebuilt LLVM toolchain (cajeta-spirv fork)
+        env:
+          # Keep in lockstep with release.yml's LLVM_RELEASE_TAG.
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r9
+        run: |
+          set -euo pipefail
+          ASSET="${LLVM_RELEASE_TAG}-${{ matrix.asset_os }}.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            DEST="$PWD/cajeta-llvm"
+          else
+            DEST="$HOME/cajeta-llvm"
+          fi
+          mkdir -p "$DEST"
+          curl -fsSL "$URL" -o llvm.tar.zst
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            zstd -dc llvm.tar.zst | tar -x -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$(cygpath -m "$DEST")/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$(cygpath -w "$DEST")\\bin" >> "$GITHUB_PATH"
+          else
+            tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+            echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "$DEST/bin" >> "$GITHUB_PATH"
+          fi
+          rm -f llvm.tar.zst
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          export CAJETA_SKIP_DEPS=1
+          if [ -f build/CMakeCache.txt ] && grep -q 'NOTFOUND' build/CMakeCache.txt; then
+            echo "stale CMakeCache holds NOTFOUND entries — removing it to force a clean configure:"
+            grep 'NOTFOUND' build/CMakeCache.txt | head -10
+            rm -f build/CMakeCache.txt
+            rm -rf build/CMakeFiles/CMakeError.log
+          fi
+          CMAKE_EXTRA=()
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            export CC=gcc CXX=g++
+            FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
+            CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang.exe")
+            CMAKE_EXTRA+=("-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link.exe")
+          fi
+          ./setup.sh "${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}"
+
+      - name: Build
+        run: cmake --build build --config Release -- -j 4
+
+      - name: Smoke test
+        run: ./build/src/cajeta --version
+
+      # CAJETA_SOURCE_ROOT: ProfilerRocm's one-place-tier pin slurps runtime
+      # source from the tree, and a checkout on a runner is not at the default
+      # root.
+      - name: Run profiler tests
+        env:
+          CAJETA_SOURCE_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          FILTER='${{ inputs.filter }}'
+          [ -z "$FILTER" ] && FILTER='Profiler*'
+          echo "filter: $FILTER"
+          ./build/test/cajeta_test --gtest_filter="$FILTER" 2>&1 | tee profiler-tests.log
+
+      # Unlike the device workflow, most Profiler* tests are not hardware-
+      # gated — a run where NOTHING passed means the suite is broken on this
+      # platform, not that a GPU was absent. Skips still matter (they are the
+      # vendor-gated lanes) so they are counted and shown.
+      - name: Summarize
+        if: always()
+        run: |
+          set -euo pipefail
+          [ -f profiler-tests.log ] || { echo "::error::no test log produced"; exit 1; }
+          RAN=$(grep -c '^\[       OK \]' profiler-tests.log || true)
+          FAILED=$(grep -c '^\[  FAILED  \]' profiler-tests.log || true)
+          SKIPPED=$(grep -c 'SKIPPED' profiler-tests.log || true)
+          echo "passed: $RAN    failed-lines: $FAILED    skipped: $SKIPPED"
+          {
+            echo "### ${{ matrix.name }}"
+            echo ""
+            echo "| outcome | count |"
+            echo "|---|---|"
+            echo "| passed | $RAN |"
+            echo "| skipped (vendor-gated) | $SKIPPED |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$RAN" -eq 0 ]; then
+            echo "::error::no profiler test passed on this leg"
+            exit 1
+          fi
+
+      - name: Upload test log
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: profiler-tests-${{ matrix.name }}
+          path: profiler-tests.log
+          if-no-files-found: warn
