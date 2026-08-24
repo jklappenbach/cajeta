@@ -1,0 +1,164 @@
+package cajeta.buildtool.plugin;
+
+import cajeta.codec.json.JsonWriter;
+import cajeta.lang.String;
+
+/**
+ * Serializes plugin protocol records. A plugin never calls this directly and
+ * never spells a record itself — it emits through its [ActionContext], which
+ * uses this.
+ *
+ * ## Why this exists
+ *
+ * Every plugin used to write the wire format by hand. `dev.cajeta.coverage`
+ * built its records by concatenation:
+ *
+ * ```cajeta
+ * System.stdout.println("{\"kind\":\"log\",\"level\":\"info\",\"message\":\""
+ *     + message + "\"}");
+ * ```
+ *
+ * with no escaping, so a message containing a quote, a backslash or a newline
+ * emitted malformed JSON — a Windows path or a quoted compiler diagnostic was
+ * enough. The build tool then failed the parse or silently mis-read the record,
+ * and the plugin looked broken for a reason nothing reported.
+ *
+ * Escaping goes through `JsonWriter`, which the stdlib already had. Writing a
+ * second escaper here would recreate the defect one layer down.
+ *
+ * ## Building is separate from emitting
+ *
+ * Each `*Record` method RETURNS the line rather than writing it. That is what
+ * makes the protocol assertable: a test compares strings, with no subprocess
+ * and no stdout capture. The shipped plugin API had no tests at all, and being
+ * observable only through a subprocess is why.
+ */
+public final class PluginHost {
+
+    /** `{"kind":"log","level":<level>,"message":<message>}` */
+    public static #String logRecord(String message, String level) {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("log");
+        w.key("level");
+        w.writeString(level);
+        w.key("message");
+        w.writeString(message);
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /** `{"kind":"warn","message":<message>}` */
+    public static #String warnRecord(String message) {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("warn");
+        w.key("message");
+        w.writeString(message);
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /** `{"kind":"write","text":<text>}` */
+    public static #String writeRecord(String text) {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("write");
+        w.key("text");
+        w.writeString(text);
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /** `{"kind":"output","key":<key>,"value":<value>}` */
+    public static #String outputRecord(String key, String value) {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("output");
+        w.key("key");
+        w.writeString(key);
+        w.key("value");
+        w.writeString(value);
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /**
+     * `{"kind":"finding",...}`
+     *
+     * Location keys are emitted only when the finding HAS a location. An
+     * unlocated finding must produce a diagnostic with no position rather than
+     * a fabricated one at 0:0 — a wrong position navigates somewhere, which is
+     * worse than navigating nowhere.
+     */
+    public static #String findingRecord(Finding f) {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("finding");
+        String severity #= f.severity().toName();
+        w.key("severity");
+        w.writeString(severity);
+        w.key("message");
+        w.writeString(f.message());
+        String rule = f.rule();
+        if (rule.byteLength() > 0) {
+            w.key("rule");
+            w.writeString(rule);
+        }
+        String file = f.file();
+        if (file.byteLength() > 0) {
+            w.key("file");
+            w.writeString(file);
+            w.key("line");
+            w.writeNumber((int64) f.line());
+            w.key("column");
+            w.writeNumber((int64) f.column());
+        }
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /** `{"kind":"result","status":"ok"}` */
+    public static #String okResultRecord() {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("result");
+        w.key("status");
+        w.writeString("ok");
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /** `{"kind":"result","status":"error","message":<message>}` */
+    public static #String errorResultRecord(String message) {
+        JsonWriter w #= heap JsonWriter();
+        w.beginObject();
+        w.key("kind");
+        w.writeString("result");
+        w.key("status");
+        w.writeString("error");
+        w.key("message");
+        w.writeString(message);
+        w.endObject();
+        return PluginHost.finish(w);
+    }
+
+    /**
+     * Take the writer's bytes as a String.
+     *
+     * `size()` is read BEFORE `toBytes()`, which resets it — reading after
+     * would yield a zero-length string and an empty record, which the build
+     * tool would report as a missing field rather than as an empty write.
+     */
+    static #String finish(JsonWriter w) {
+        int32 n = w.size();
+        int8[] bytes #= w.toBytes();
+        return heap String(#bytes, n);
+    }
+}

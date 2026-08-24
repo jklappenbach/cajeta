@@ -1,0 +1,71 @@
+package cajeta.buildtool.plugin;
+
+import cajeta.lang.String;
+import cajeta.lang.System;
+
+/**
+ * The [ActionContext] a plugin subprocess is given: every call becomes one
+ * protocol record on stdout.
+ *
+ * ## The first implementation there has been
+ *
+ * `ActionContext` shipped as an interface with **no implementation**, and its
+ * own documentation told plugin authors to
+ *
+ * > Never write directly to STDOUT_FILENO from plugin code
+ *
+ * while providing no channel to write through instead. An author following the
+ * documentation could not obtain a context at all, which is why
+ * `dev.cajeta.coverage` hand-rolled its own emitter and why that emitter's
+ * escaping bug went unnoticed. This class makes that warning true.
+ *
+ * ## This is the one place stdout is legitimate
+ *
+ * Everything else in a plugin goes through the context. Here, writing to stdout
+ * IS the transport — the runtime reads these lines. A plugin that bypasses the
+ * context still works (the runtime wraps stray text as a log so `printf`
+ * debugging survives) but fails conformance, which is the asymmetry that lets
+ * the protocol tighten without breaking anyone mid-build.
+ */
+public class StdoutActionContext implements ActionContext {
+
+    String root;
+    String name;
+    String version;
+
+    public StdoutActionContext(#String workdir, #String projectName,
+                               #String projectVersion) {
+        this.root    #= workdir;
+        this.name    #= projectName;
+        this.version #= projectVersion;
+    }
+
+    public String workdir()       { return this.root;    }
+    public String projectName()   { return this.name;    }
+    public String projectVersion(){ return this.version; }
+
+    public void write(String text) {
+        String line #= PluginHost.writeRecord(text);
+        System.stdout.println(line);
+    }
+
+    public void warn(String message) {
+        String line #= PluginHost.warnRecord(message);
+        System.stdout.println(line);
+    }
+
+    public void log(String message) {
+        String line #= PluginHost.logRecord(message, "info");
+        System.stdout.println(line);
+    }
+
+    public void finding(Finding f) {
+        String line #= PluginHost.findingRecord(f);
+        System.stdout.println(line);
+    }
+
+    public void output(String key, String value) {
+        String line #= PluginHost.outputRecord(key, value);
+        System.stdout.println(line);
+    }
+}
