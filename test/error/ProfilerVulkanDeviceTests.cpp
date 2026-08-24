@@ -19,6 +19,7 @@
 #include "../PortableEnv.h"
 #include "../../runtime/native/cajeta_prof_abi.h"
 #include "cajeta/xpu/XpuTarget.h"
+#include "../xpu/XpuDeviceTestUtil.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -105,6 +106,13 @@ int runInFreshProcess(const std::string& filter, const char* icd,
 // The body both lanes run. Everything is driven through ONE jit instance —
 // the runtime statics (Vulkan instance, profiler state) are per-instance.
 void runBracketBody() {
+    // The standard gate every Vulkan device suite uses (XpuDeviceTestUtil.h).
+    // First shakedown on phoenix-wsl proved why it cannot be improvised: that
+    // box has NO Vulkan ICD, the dispatcher printed "no available backend
+    // among {vulkan}" and dropped every launch, and a sum==0 guard never
+    // fires when the kernel silently no-ops over initialized data. In the
+    // child this evaluates under the lane's own VK_ICD_FILENAMES.
+    CAJETA_SKIP_IF_NO_VULKAN();
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
     // Static for the same reason the amdgpu fixture generator is: process-
@@ -227,6 +235,7 @@ void runBracketBody() {
 // 13.3.a — the reference device (RADV on gfx1151), via the default ICD.
 TEST(ProfilerVulkanDevice, bracketsResolveAtEventTierOnTheDefaultDevice) {
     if (::getenv(kChildMarker) == nullptr) {
+        CAJETA_SKIP_IF_NO_VULKAN();   // do not spin a child on a box with no ICD
         std::string out;
         const int rc = runInFreshProcess(
             "ProfilerVulkanDevice.bracketsResolveAtEventTierOnTheDefaultDevice",
@@ -270,6 +279,7 @@ TEST(ProfilerVulkanDevice, theSamePlumbingRunsOnLavapipe) {
 // filed as specs/INDEX.md `vulkan-dispatch-serialization`).
 TEST(ProfilerVulkanDevice, anEnvArmedRunWritesTheVulkanLaneIntoOneTrace) {
     if (::getenv(kChildMarker) == nullptr) {
+        CAJETA_SKIP_IF_NO_VULKAN();
         std::string out;
         const int rc = runInFreshProcess(
             "ProfilerVulkanDevice.anEnvArmedRunWritesTheVulkanLaneIntoOneTrace",
@@ -281,6 +291,7 @@ TEST(ProfilerVulkanDevice, anEnvArmedRunWritesTheVulkanLaneIntoOneTrace) {
         return;
     }
 
+    CAJETA_SKIP_IF_NO_VULKAN();
     CajetaJit::Options o;
     o.xpuBackends = {cajeta::xpu::Backend::Spirv};
     static std::unique_ptr<CajetaJit> jit =
