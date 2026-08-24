@@ -255,6 +255,75 @@ void attachWaveVariants(llvm::Module& m, llvm::StringRef scalarName,
                                               masked->getArg(0), idv);
             b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
         }
+    } else if (scalarName == "__cajeta_xpu_wave_reduce_sum_f32" ||
+               scalarName == "__cajeta_xpu_wave_reduce_max_f32") {
+        // Float wave reduce (10.12.38): broadcast(freduce(x)). The masked form
+        // folds inactive lanes to the identity (0.0f for sum, -FLT_MAX for
+        // max) so they don't perturb the reduction.
+        tokens = "v";
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        auto* vTy = llvm::FixedVectorType::get(f32, W);
+        const bool isSum = scalarName == "__cajeta_xpu_wave_reduce_sum_f32";
+        auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
+            if (isSum)
+                return b.CreateFAddReduce(
+                    llvm::ConstantFP::get(f32, 0.0), x);
+            return b.CreateFPMaxReduce(x);
+        };
+        llvm::Constant* ident = isSum
+            ? llvm::ConstantFP::get(f32, 0.0)
+            : llvm::ConstantFP::get(f32, -3.402823466e38);
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, unmasked->getArg(0))));
+        }
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* idv = b.CreateVectorSplat(W, ident);
+            llvm::Value* sel = b.CreateSelect(masked->getArg(1),
+                                              masked->getArg(0), idv);
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
+        }
+    } else if (scalarName.ends_with("_f32_m") &&
+               scalarName.starts_with("__cajeta_xpu_wave_reduce_")) {
+        // Mask-as-data float reduce spellings (value, active) — the f32 twin
+        // of the _u32_m family below; see that branch for the shape.
+        llvm::StringRef base = scalarName.drop_back(2);   // strip "_m"
+        tokens = "vv";
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        auto* vTy = llvm::FixedVectorType::get(f32, W);
+        const bool isSum = base == "__cajeta_xpu_wave_reduce_sum_f32";
+        auto reduceOf = [&](llvm::IRBuilder<>& b, llvm::Value* x) -> llvm::Value* {
+            if (isSum)
+                return b.CreateFAddReduce(llvm::ConstantFP::get(f32, 0.0), x);
+            return b.CreateFPMaxReduce(x);
+        };
+        llvm::Constant* ident = isSum
+            ? llvm::ConstantFP::get(f32, 0.0)
+            : llvm::ConstantFP::get(f32, -3.402823466e38);
+        unmasked = makeVariantShell(m, scalarName.str() + "_v" + sw,
+                                    llvm::FunctionType::get(vTy, {vTy, maskTy}, false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", unmasked));
+            llvm::Value* idv = b.CreateVectorSplat(W, ident);
+            llvm::Value* sel = b.CreateSelect(unmasked->getArg(1),
+                                              unmasked->getArg(0), idv);
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
+        }
+        masked = makeVariantShell(m, scalarName.str() + "_Mv" + sw,
+                                  llvm::FunctionType::get(vTy, {vTy, maskTy, maskTy},
+                                                          false));
+        {
+            llvm::IRBuilder<> b(llvm::BasicBlock::Create(ctx, "entry", masked));
+            llvm::Value* act = b.CreateAnd(masked->getArg(1), masked->getArg(2));
+            llvm::Value* idv = b.CreateVectorSplat(W, ident);
+            llvm::Value* sel = b.CreateSelect(act, masked->getArg(0), idv);
+            b.CreateRet(b.CreateVectorSplat(W, reduceOf(b, sel)));
+        }
     } else if (scalarName.ends_with("_u32_m") &&
                scalarName.starts_with("__cajeta_xpu_wave_reduce_")) {
         // Mask-as-data reduce spellings (value, active). Produced by the
@@ -401,6 +470,8 @@ void forceLoopVectorWidth(llvm::UncondBrInst* latch, unsigned W) {
 static const char* const kWaveOps[] = {
     "__cajeta_xpu_wave_reduce_sum_u32",
     "__cajeta_xpu_wave_reduce_max_u32",
+    "__cajeta_xpu_wave_reduce_sum_f32",
+    "__cajeta_xpu_wave_reduce_max_f32",
     "__cajeta_xpu_wave_reduce_min_u32",
     "__cajeta_xpu_wave_reduce_and_u32",
     "__cajeta_xpu_wave_reduce_or_u32",
@@ -470,11 +541,12 @@ struct WaveRemarkHandler final : public llvm::DiagnosticHandler {
 } // namespace
 
 static bool isMaskAsDataReduce(llvm::StringRef name, bool* isMasked) {
-    if (name.starts_with("__cajeta_xpu_wave_reduce_") && name.ends_with("_u32")) {
+    if (!name.starts_with("__cajeta_xpu_wave_reduce_")) return false;
+    if (name.ends_with("_u32") || name.ends_with("_f32")) {
         *isMasked = false;
         return true;
     }
-    if (name.starts_with("__cajeta_xpu_wave_reduce_") && name.ends_with("_u32_m")) {
+    if (name.ends_with("_u32_m") || name.ends_with("_f32_m")) {
         *isMasked = true;
         return true;
     }
@@ -527,7 +599,10 @@ static bool rewriteOneGuardedWaveCall(llvm::Function& f, llvm::Module& m,
         const std::string mName = wasMasked
             ? calleeF->getName().str()
             : calleeF->getName().str() + "_m";
-        auto* mTy = llvm::FunctionType::get(i32, {i32, i1}, false);
+        // The scalar carrier type follows the reduce family: i32 for the
+        // integer spellings, float for the f32 twins (10.12.38).
+        llvm::Type* sTy = call->getType();
+        auto* mTy = llvm::FunctionType::get(sTy, {sTy, i1}, false);
         llvm::Function* mf = m.getFunction(mName);
         if (mf && mf->getFunctionType() != mTy) {
             if (getenv("CAJETA_XPU_DEBUG_WAVE"))

@@ -2749,6 +2749,15 @@ private:
                                              lowerExpr(args[0].expression));
                 }
             }
+            if (name == "reduceSumF32" || name == "reduceMaxF32") {
+                if (args.size() != 1) unsupported("Wave.reduceF32 arity");
+                usedSubgroupOp_ = true;
+                auto fop = name == "reduceSumF32"
+                    ? LoweringTarget::WaveReduceFOp::Sum
+                    : LoweringTarget::WaveReduceFOp::Max;
+                return target.waveReduceF32(builder, mod, fop,
+                                            lowerExpr(args[0].expression));
+            }
             if (name == "prefixSum" || name == "prefixProduct") {
                 if (args.size() != 1) unsupported("Wave.prefix arity");
                 usedSubgroupOp_ = true;
@@ -6280,6 +6289,48 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
         isFirst, lane, b.CreateSub(lane, llvm::ConstantInt::get(i32, 1)));
     llvm::Value* prev = waveShuffleDivergent(b, m, inc, prevLane);
     return b.CreateSelect(isFirst, identity, prev);
+}
+
+// Float wave reduce default (10.12.38): a width-agnostic XOR butterfly on the
+// divergent shuffle. Every lane combines with its partner at distance d for
+// d = 1, 2, 4, … < width; after log2(width) rounds every lane holds the full
+// reduction. The shuffle moves the f32 through i32 bit punning (the divergent
+// shuffle's carrier type). NVPTX takes this path (no float redux.sync before
+// sm_100); AMDGPU/Vulkan/CPU override to native forms.
+llvm::Value* LoweringTarget::waveReduceF32(llvm::IRBuilderBase& b,
+                                           llvm::Module& m, WaveReduceFOp op,
+                                           llvm::Value* value) {
+    llvm::LLVMContext& ctx = m.getContext();
+    llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+    llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+    llvm::Value* lane = waveLaneId(b, m);
+    llvm::Value* width = waveWidth(b, m);
+    llvm::Function* fn = b.GetInsertBlock()->getParent();
+    llvm::BasicBlock* preheader = b.GetInsertBlock();
+    llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "fred.loop", fn);
+    llvm::BasicBlock* done = llvm::BasicBlock::Create(ctx, "fred.done", fn);
+    b.CreateBr(loop);
+    b.SetInsertPoint(loop);
+    llvm::PHINode* accPhi = b.CreatePHI(f32, 2, "fred.acc");
+    llvm::PHINode* dPhi = b.CreatePHI(i32, 2, "fred.d");
+    accPhi->addIncoming(value, preheader);
+    dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
+    llvm::Value* src = b.CreateXor(lane, dPhi, "fred.src");
+    llvm::Value* otherBits = waveShuffleDivergent(
+        b, m, b.CreateBitCast(accPhi, i32), src);
+    llvm::Value* other = b.CreateBitCast(otherBits, f32);
+    llvm::Value* acc = op == WaveReduceFOp::Sum
+        ? b.CreateFAdd(accPhi, other, "fred.sum")
+        : b.CreateBinaryIntrinsic(llvm::Intrinsic::maxnum, accPhi, other,
+                                  llvm::FMFSource(), "fred.max");
+    llvm::Value* dNext = b.CreateShl(dPhi, 1);
+    accPhi->addIncoming(acc, loop);
+    dPhi->addIncoming(dNext, loop);
+    b.CreateCondBr(b.CreateICmpULT(dNext, width), loop, done);
+    b.SetInsertPoint(done);
+    llvm::PHINode* res = b.CreatePHI(f32, 1, "fred.result");
+    res->addIncoming(acc, loop);
+    return res;
 }
 
 // Quad (2x2) op defaults — width-agnostic forms built on the wave seams (see

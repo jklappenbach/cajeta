@@ -84,6 +84,26 @@ public final class Wave {
     @Native("__cajeta_xpu_wave_reduce_max_u32")
     public static uint32 reduceMax(uint32 value);
 
+    /**
+     * Wave-wide float SUM of `value` across the active lanes; every lane
+     * receives the same total. The reduction tree's association is the
+     * hardware's — callers must tolerate reassociation-level rounding.
+     *   AMDGPU: llvm.amdgcn.wave.reduce.fadd
+     *   SPIR-V: OpGroupNonUniformFAdd (Reduce)
+     *   NVPTX:  shuffle butterfly (no float redux.sync before sm_100)
+     *   CPU:    VFABI f32 reduce variant
+     */
+    @Native("__cajeta_xpu_wave_reduce_sum_f32")
+    public static float32 reduceSumF32(float32 value);
+
+    /**
+     * Wave-wide float MAXIMUM across the active lanes (maxnum semantics);
+     * every lane receives the same result. See {@link #reduceSumF32} for the
+     * per-backend lowering shape.
+     */
+    @Native("__cajeta_xpu_wave_reduce_max_f32")
+    public static float32 reduceMaxF32(float32 value);
+
     /** Wave-wide minimum (UNSIGNED). See {@link #reduceMax}. */
     @Native("__cajeta_xpu_wave_reduce_min_u32")
     public static uint32 reduceMin(uint32 value);

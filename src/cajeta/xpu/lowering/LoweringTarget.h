@@ -964,6 +964,20 @@ namespace xpu {
         virtual llvm::Value* waveReduce(llvm::IRBuilderBase& b, llvm::Module& m,
                                         WaveReduceOp op, llvm::Value* value) = 0;
 
+        // FLOAT wave reduction (10.12.38): sum (fadd) and max (maxnum) of an
+        // f32 across the active lanes; every lane receives the same result.
+        // NOT pure-virtual: the default (out-of-line in KernelLowering.cpp) is
+        // a width-agnostic XOR butterfly on waveShuffleDivergent with f32↔i32
+        // bit punning — correct on any backend with a divergent shuffle (NVPTX
+        // takes it: no float redux.sync before sm_100). AMDGPU overrides to
+        // wave.reduce.{fadd,fmax}; Vulkan to the any-ty spv wave-reduce
+        // intrinsics (→ OpGroupNonUniformF{Add,Max} Reduce); CPU to f32 VFABI
+        // reduce variants.
+        enum class WaveReduceFOp { Sum, Max };
+        virtual llvm::Value* waveReduceF32(llvm::IRBuilderBase& b,
+                                           llvm::Module& m, WaveReduceFOp op,
+                                           llvm::Value* value);
+
         // EXCLUSIVE prefix scan across the lanes: lane i receives the sum (or
         // product) of lanes 0..i-1; lane 0 gets the identity (0 / 1). uint32.
         // NOT pure-virtual: the default (out-of-line in KernelLowering.cpp) is a

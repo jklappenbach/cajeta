@@ -843,6 +843,21 @@ public:
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id, {i32});
         return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)}, "wavered");
     }
+    llvm::Value* waveReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
+                               WaveReduceFOp op, llvm::Value* value) override {
+        // amdgcn.wave.reduce.{fadd,fmax} over f32 — the native float wave
+        // reduce (10.12.38); strategy operand 0 = default lowering, same
+        // contract as the integer family above.
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Intrinsic::ID id = op == WaveReduceFOp::Sum
+            ? llvm::Intrinsic::amdgcn_wave_reduce_fadd
+            : llvm::Intrinsic::amdgcn_wave_reduce_fmax;
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(&m, id, {f32});
+        return b.CreateCall(f, {value, llvm::ConstantInt::get(i32, 0)},
+                            "wavered.f");
+    }
     llvm::Value* waveLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
         // The canonical AMDGPU lane-id idiom: mbcnt counts set bits of the
         // exec-relative mask below this lane. hi(~0, lo(~0, 0)) = this lane's

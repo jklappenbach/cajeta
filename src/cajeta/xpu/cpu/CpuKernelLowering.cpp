@@ -552,6 +552,17 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         return pureCall(b, m, sym, i32, {value}, "wave.reduce");
     }
+    llvm::Value* waveReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
+                               WaveReduceFOp op, llvm::Value* value) override {
+        // Mirror the integer family: a pure f32 runtime stub whose VFABI
+        // vector variant (CpuRegistration) does the cross-lane float reduce
+        // when the kernel widens (10.12.38).
+        const char* sym = op == WaveReduceFOp::Sum
+            ? "__cajeta_xpu_wave_reduce_sum_f32"
+            : "__cajeta_xpu_wave_reduce_max_f32";
+        llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
+        return pureCall(b, m, sym, f32, {value}, "wave.reducef");
+    }
     llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
                           WaveScanOp op, llvm::Value* value) override {
         // A pure runtime stub whose VFABI vector variant does the in-lane

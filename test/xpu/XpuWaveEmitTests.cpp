@@ -143,6 +143,27 @@ cajeta::MethodPtr compileLaneKernel(Compiler& compiler) {
     return findMethod(module->getStructures()["test.M"], "wavelane");
 }
 
+// Float wave reduce (10.12.38): reduceSumF32 / reduceMaxF32. Divergent operand
+// (a buffer read) for the same constant-folding reason as the uint reduce.
+const char* kReduceF32Source =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavereducef(KernelBuffer<float32> in,\n"
+    "            KernelBuffer<float32> out) {\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        out[t] = Wave.reduceSumF32(in[t]) + Wave.reduceMaxF32(in[t]);\n"
+    "    }\n"
+    "}\n";
+
+cajeta::MethodPtr compileReduceF32Kernel(Compiler& compiler) {
+    auto module = compileForInspection(compiler, kReduceF32Source);
+    return findMethod(module->getStructures()["test.M"], "wavereducef");
+}
+
 } // namespace
 
 // NVPTX: wave ops lower to the warp-shuffle + vote-ballot intrinsics.
@@ -272,6 +293,79 @@ TEST(XpuWaveEmitTests, spirvLowersReduceFamilyAndValidates) {
     int rc = llvm::sys::ExecuteAndWait(*tool, args);
     std::filesystem::remove(path);
     EXPECT_EQ(rc, 0) << "spirv-val rejected the reduce-family module";
+}
+
+
+// --- Float wave reduce (10.12.38) -------------------------------------------
+// AMDGPU has native f32 wave reduce (wave.reduce.fadd/fmax); SPIR-V's any-ty
+// wave-reduce intrinsics select the OpGroupNonUniformF* forms; NVPTX has no
+// float redux.sync pre-sm100 and takes the default shuffle butterfly.
+
+TEST(XpuWaveEmitTests, amdgpuLowersReduceF32ToWaveReduceFaddFmax) {
+    Compiler compiler;
+    auto k = compileReduceF32Kernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_reducef_amd", ctx);
+    cajeta::xpu::amd::configureDeviceModule(m, *tm);
+    ASSERT_NE(cajeta::xpu::amd::lowerKernel(k, m), nullptr);
+    std::string ir = printModule(m);
+    EXPECT_NE(ir.find("llvm.amdgcn.wave.reduce.fadd"), std::string::npos) << ir;
+    EXPECT_NE(ir.find("llvm.amdgcn.wave.reduce.fmax"), std::string::npos) << ir;
+}
+
+TEST(XpuWaveEmitTests, nvptxLowersReduceF32ToShuffleButterfly) {
+    Compiler compiler;
+    auto k = compileReduceF32Kernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::nvidia::createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module m("xpu_reducef_nvptx", ctx);
+    cajeta::xpu::nvidia::configureDeviceModule(m, *tm);
+    ASSERT_NE(cajeta::xpu::nvidia::lowerKernel(k, m), nullptr);
+    std::string ir = printModule(m);
+    EXPECT_NE(ir.find("llvm.nvvm.shfl"), std::string::npos) << ir;
+}
+
+TEST(XpuWaveEmitTests, spirvLowersReduceF32AndValidates) {
+    Compiler compiler;
+    auto k = compileReduceF32Kernel(compiler);
+    ASSERT_NE(k, nullptr);
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+
+    llvm::LLVMContext txtCtx;
+    llvm::Module txtMod("xpu_reducef_txt", txtCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(txtMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, txtMod);
+    std::string text = cajeta::xpu::vulkan::emitSpirvText(txtMod, *tm);
+    ASSERT_FALSE(text.empty());
+    EXPECT_NE(text.find("OpGroupNonUniformFAdd"), std::string::npos) << text;
+    EXPECT_NE(text.find("OpGroupNonUniformFMax"), std::string::npos) << text;
+
+    llvm::LLVMContext binCtx;
+    llvm::Module binMod("xpu_reducef_bin", binCtx);
+    cajeta::xpu::vulkan::configureDeviceModule(binMod, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, binMod);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(binMod, *tm);
+    ASSERT_FALSE(spirv.empty());
+    auto tool = llvm::sys::findProgramByName("spirv-val");
+    if (!tool) { GTEST_SUCCEED() << "spirv-val absent; skipped validation"; return; }
+    static std::mt19937_64 rng(std::random_device{}());
+    auto path = std::filesystem::temp_directory_path()
+              / ("cajeta_reducef_" + std::to_string(rng()) + ".spv");
+    { std::ofstream o(path, std::ios::binary);
+      o.write(reinterpret_cast<const char*>(spirv.data()),
+              (std::streamsize) spirv.size()); }
+    std::string fileStr = path.string();
+    llvm::StringRef env = "--target-env", ver = "vulkan1.3", file = fileStr;
+    llvm::SmallVector<llvm::StringRef, 4> args = {*tool, env, ver, file};
+    int rc = llvm::sys::ExecuteAndWait(*tool, args);
+    std::filesystem::remove(path);
+    EXPECT_EQ(rc, 0) << "spirv-val rejected the float-reduce module";
 }
 
 

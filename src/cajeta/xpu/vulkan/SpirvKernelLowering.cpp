@@ -1194,6 +1194,18 @@ public:
             &m, id, {llvm::Type::getInt32Ty(m.getContext())});
         return b.CreateCall(f, {value}, "wavered");
     }
+    llvm::Value* waveReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
+                               WaveReduceFOp op, llvm::Value* value) override {
+        // The any-ty spv wave-reduce intrinsics specialize on the operand
+        // type: a float operand selects OpGroupNonUniformF{Add,Max} with the
+        // Reduce group operation (10.12.38).
+        llvm::Intrinsic::ID id = op == WaveReduceFOp::Sum
+            ? llvm::Intrinsic::spv_wave_reduce_sum
+            : llvm::Intrinsic::spv_wave_reduce_max;
+        llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, id, {llvm::Type::getFloatTy(m.getContext())});
+        return b.CreateCall(f, {value}, "wavered.f");
+    }
     llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
                           WaveScanOp op, llvm::Value* value) override {
         // The native single-op exclusive scan: spv.wave.prefix.{sum,product} →

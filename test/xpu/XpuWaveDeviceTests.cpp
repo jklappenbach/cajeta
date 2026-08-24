@@ -110,6 +110,25 @@ const char* kReduceSource =
 
 constexpr unsigned kReduceBlock = 64;  // multiple of 32 and 64 ⇒ full occupancy
 
+// Float wave reduce (10.12.38): reduceSumF32 over all-1.0f == the wave width;
+// reduceMaxF32 over (laneId+1) == the wave width too — both width-agnostic at
+// either real width, and both need a divergent operand for the same
+// constant-folding reason as the uint reduce above.
+const char* kReduceF32Source =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "import cajeta.xpu.Wave;\n"
+    "public class M {\n"
+    "    @Kernel\n"
+    "    public static void wavereducef(KernelBuffer<float32> in,\n"
+    "            KernelBuffer<float32> outSum, KernelBuffer<float32> outMax) {\n"
+    "        uint32 t = KernelThread.x();\n"
+    "        outSum[t] = Wave.reduceSumF32(in[t]);\n"
+    "        outMax[t] = Wave.reduceMaxF32((float32) Wave.laneId() + 1.0f);\n"
+    "    }\n"
+    "}\n";
+
 // out[t] = Wave.laneId() (Inc 5C). Within the first wave (lanes 0..31, present
 // at any wave width 32 or 64) lane t simply has index t, so out[t] == t — a
 // wave-size-agnostic check.
@@ -249,6 +268,20 @@ void expectUniformWaveWidth(const std::vector<uint32_t>& out) {
         EXPECT_EQ(out[i], w) << "lane " << i << " disagrees on the wave sum";
 }
 
+// Float twin: reduceSumF32(1.0f) == width and reduceMaxF32(laneId+1) == width,
+// exactly, at either real wave size.
+void expectUniformWaveWidthF(const std::vector<float>& sum,
+                             const std::vector<float>& mx) {
+    ASSERT_FALSE(sum.empty());
+    float w = sum[0];
+    EXPECT_TRUE(w == 32.0f || w == 64.0f) << "reduceSumF32(1) = " << w
+        << " is not a valid wave width (expected a genuine cross-lane fadd)";
+    for (size_t i = 0; i < sum.size(); ++i) {
+        EXPECT_EQ(sum[i], w) << "lane " << i << " disagrees on the wave fsum";
+        EXPECT_EQ(mx[i], w) << "lane " << i << " disagrees on the wave fmax";
+    }
+}
+
 } // namespace
 
 TEST(XpuWaveDeviceTests, amdgpuShuffleBallotRunsOnDevice) {
@@ -368,6 +401,101 @@ TEST(XpuWaveDeviceTests, amdgpuReduceSumRunsOnDevice) {
     hip.free(dIn);
     hip.free(dOut);
     expectUniformWaveWidth(out);
+}
+
+// Float wave reduce on the AMD device (10.12.38): fadd/fmax hardware reduce.
+TEST(XpuWaveDeviceTests, amdgpuReduceF32RunsOnDevice) {
+    if (!cajeta::xpu::amd::HipDriver::available()) {
+        GTEST_SKIP() << "no ROCm/HIP device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceF32Source);
+    auto k = findMethod(module->getStructures()["test.M"], "wavereducef");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::amd::createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_reducef_amddevice", ctx);
+    cajeta::xpu::amd::configureDeviceModule(dev, *tm);
+    cajeta::xpu::amd::lowerKernel(k, dev);
+    std::vector<uint8_t> hsaco = cajeta::xpu::amd::assembleHsaco(dev, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    cajeta::xpu::amd::HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    auto mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    auto fn = hip.getFunction(mod, "wavereducef");
+    ASSERT_NE(fn, nullptr);
+
+    const unsigned block = kReduceBlock;
+    const std::size_t bytes = block * sizeof(float);
+    auto dIn = hip.alloc(bytes);
+    auto dSum = hip.alloc(bytes);
+    auto dMax = hip.alloc(bytes);
+    ASSERT_NE(dIn, nullptr);
+    ASSERT_NE(dSum, nullptr);
+    ASSERT_NE(dMax, nullptr);
+    std::vector<float> ones(block, 1.0f);
+    ASSERT_TRUE(hip.memcpyHtoD(dIn, ones.data(), bytes));
+    void* params[] = { &dIn, &dSum, &dMax };
+    ASSERT_TRUE(hip.launch(fn, /*grid=*/1, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<float> sum(block, 0.0f), mx(block, 0.0f);
+    ASSERT_TRUE(hip.memcpyDtoH(sum.data(), dSum, bytes));
+    ASSERT_TRUE(hip.memcpyDtoH(mx.data(), dMax, bytes));
+    hip.free(dIn);
+    hip.free(dSum);
+    hip.free(dMax);
+    expectUniformWaveWidthF(sum, mx);
+}
+
+// Float wave reduce through SPIR-V (10.12.38): the any-ty spv wave-reduce
+// intrinsics select OpGroupNonUniformFAdd/FMax for a float operand.
+TEST(XpuWaveDeviceTests, vulkanReduceF32RunsOnDevice) {
+    if (!cajeta::xpu::vulkan::VulkanDriver::available()) {
+        GTEST_SKIP() << "no Vulkan compute device available";
+    }
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kReduceF32Source);
+    auto k = findMethod(module->getStructures()["test.M"], "wavereducef");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::vulkan::createSpirvTargetMachine("vulkan1.3");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext ctx;
+    llvm::Module dev("xpu_reducef_vkdevice", ctx);
+    cajeta::xpu::vulkan::configureDeviceModule(dev, *tm);
+    cajeta::xpu::vulkan::lowerKernel(k, dev);
+    std::vector<uint8_t> spirv = cajeta::xpu::vulkan::emitSpirv(dev, *tm);
+    ASSERT_FALSE(spirv.empty());
+
+    const unsigned threads = cajeta::xpu::vulkan::kVulkanLocalSizeX;
+    const std::size_t bytes = threads * sizeof(float);
+    cajeta::xpu::vulkan::VulkanDriver vk;
+    ASSERT_TRUE(vk.init());
+    auto dIn = vk.alloc(bytes);
+    auto dSum = vk.alloc(bytes);
+    auto dMax = vk.alloc(bytes);
+    ASSERT_NE(dIn, 0u);
+    ASSERT_NE(dSum, 0u);
+    ASSERT_NE(dMax, 0u);
+    std::vector<float> ones(threads, 1.0f), zero(threads, 0.0f);
+    ASSERT_TRUE(vk.upload(dIn, ones.data(), bytes));
+    ASSERT_TRUE(vk.upload(dSum, zero.data(), bytes));
+    ASSERT_TRUE(vk.upload(dMax, zero.data(), bytes));
+    ASSERT_TRUE(vk.launch(spirv.data(), spirv.size(), "wavereducef",
+                          {dIn, dSum, dMax}, /*groupCountX=*/1));
+
+    std::vector<float> sum(threads, 0.0f), mx(threads, 0.0f);
+    ASSERT_TRUE(vk.download(sum.data(), dSum, bytes));
+    ASSERT_TRUE(vk.download(mx.data(), dMax, bytes));
+    vk.free(dIn);
+    vk.free(dSum);
+    vk.free(dMax);
+    expectUniformWaveWidthF(sum, mx);
 }
 
 TEST(XpuWaveDeviceTests, vulkanReduceSumRunsOnDevice) {

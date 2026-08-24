@@ -70,6 +70,16 @@ public class M {
         if (t < active) { out[t] = Wave.reduceSum(in[t]); }
     }
     @Kernel
+    public static void sumfk(KernelBuffer<float32> out, KernelBuffer<float32> in) {
+        uint32 t = KernelThread.globalIdX();
+        out[t] = Wave.reduceSumF32(in[t]);
+    }
+    @Kernel
+    public static void maxfk(KernelBuffer<float32> out) {
+        uint32 t = KernelThread.globalIdX();
+        out[t] = Wave.reduceMaxF32((float32) Wave.laneId() + 1.0f);
+    }
+    @Kernel
     public static void ballotk(KernelBuffer<uint32> out) {
         uint32 t = KernelThread.globalIdX();
         out[t] = (uint32) Wave.ballotSync(t < 4);
@@ -136,6 +146,37 @@ public class M {
         // Every lane gets its wave's sum of ones = W.
         for (uint32 i = 0; i < n; i = i + 1) {
             if (hout[i] != w) { return 100 + i; }
+        }
+        return w;
+    }
+
+    // Float wave reduce (10.12.38): reduceSumF32 over all-ones == W exactly
+    // (integer-valued float adds are exact), and reduceMaxF32 over
+    // (laneId + 1) == W exactly — both at the real host width.
+    public static uint32 runReduceF32() {
+        uint32 w = probeWidth();
+        if (w < 2) { return 0; }
+        uint32 n = 256;
+        float32[] hin = heap float32[n];
+        float32[] hsum = heap float32[n];
+        float32[] hmax = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            hin[i] = 1.0f; hsum[i] = 0.0f; hmax[i] = 0.0f;
+        }
+        KernelBuffer<float32> bin = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> bsum = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> bmax = heap KernelBuffer<float32>(n);
+        bin.upload(hin);
+        KernelStream s #= KernelStream.current();
+        sumfk.launch(s, grid: [1], block: [256])(bsum, bin);
+        maxfk.launch(s, grid: [1], block: [256])(bmax);
+        s.sync();
+        bsum.download(hsum);
+        bmax.download(hmax);
+        float32 fw = (float32) w;
+        for (uint32 i = 0; i < n; i = i + 1) {
+            if (hsum[i] != fw) { return 100 + i; }
+            if (hmax[i] != fw) { return 100 + i; }
         }
         return w;
     }
@@ -348,6 +389,12 @@ std::string compileToIr(const char* source, const std::string& entry) {
 // ACTIVE lanes only via the masked VFABI variant — GPU active-mask semantics.
 TEST(XpuCpuWaveSimdTests, divergentReduceSumIsActiveLaneMasked) {
     runWaveDriver("runDivergentReduceSum");
+}
+
+// Float wave reduce (10.12.38): reduceSumF32 / reduceMaxF32 via the f32 VFABI
+// reduce variants — sum of ones == W and max of (laneId+1) == W, exactly.
+TEST(XpuCpuWaveSimdTests, reduceF32SumAndMaxAtHostWidth) {
+    runWaveDriver("runReduceF32");
 }
 
 // ballotSync: the per-lane predicate packs into a wave-uniform bitmask.

@@ -115,12 +115,16 @@ uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
 // of silent wrong sums). Width-1 fallback: an active lane reduces to its own
 // value, an inactive lane contributes the op's identity (result unused —
 // every consumer of the result is still under the original guard).
+float __cajeta_xpu_wave_reduce_sum_f32(float value) { return value; }
+float __cajeta_xpu_wave_reduce_max_f32(float value) { return value; }
 uint32_t __cajeta_xpu_wave_reduce_sum_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_max_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_min_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
 uint32_t __cajeta_xpu_wave_reduce_and_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
 uint32_t __cajeta_xpu_wave_reduce_or_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_xor_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
+float __cajeta_xpu_wave_reduce_sum_f32_m(float value, _Bool active) { return active ? value : 0.0f; }
+float __cajeta_xpu_wave_reduce_max_f32_m(float value, _Bool active) { return active ? value : -3.402823466e38f; }
 // Exclusive prefix scan: width-1 fallback — lane 0's exclusive prefix is the
 // identity (0 for sum, 1 for product). The real scan runs in the VFABI variant.
 uint32_t __cajeta_xpu_wave_prefix_sum_u32(uint32_t value) { (void)value; return 0; }
