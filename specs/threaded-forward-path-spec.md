@@ -577,3 +577,213 @@ Read from the compiler's own tests, not assumed.
   stacks as "~64 KB initial"; they have been **1 MB**
   (`CAJETA_FIBER_STACK_SIZE`) since the native-call-depth fix. Found
   alongside; also belongs to the runtime, not here.
+
+---
+
+# 9. GPU forward path — measured state, 2026-08-23
+
+Everything in this section was MEASURED on the development box (AMD Ryzen
+AI MAX+ 395 "Strix Halo", gfx1151, RDNA3.5, 40 CU, wave32, 32 MB MALL,
+96 GB unified LPDDR5X) against
+`Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf`. Where a number was inferred and
+later measured, BOTH are recorded — the corrections are the most useful
+part of this section.
+
+## 9.1 Where we stand against llama.cpp
+
+Baselines from `llama-bench` on the same box and model, `-r 6` (the
+first `-r 2` run reported `pp512 548 +/- 220 t/s` and was NOISE; it was
+contaminated by sharing an invocation with `tg128`):
+
+| | llama.cpp | us | |
+|---|---|---|---|
+| decode, comparable amortization | 25.15 ms/tok (39.76 t/s) | **26.0 ms/tok** | **1.03x — PARITY** |
+| decode @ 512 ctx | — | 32.6 ms/tok | — |
+| prefill 512 tokens | **0.44 s** (1157.67 +/- 7.34 t/s) | **6.77 s** | ~15x |
+
+Decode reached parity and has not moved since; every subsequent unit was
+prefill.
+
+## 9.2 The three ceilings, each validated
+
+A ceiling probe is only worth its number if the loop was not hoisted, so
+each doubles its iteration count and checks that the TIME doubles.
+
+| path | TMAC/s |
+|---|---|
+| our prefill GEMM today | 1.08 |
+| llama.cpp prefill achieves | 9.3 |
+| `dotAccum` ceiling | **9.9** |
+| WMMA float16 | 26.8 |
+| WMMA int8 | **27.0** |
+
+Two consequences that set strategy:
+
+- **`dotAccum` cannot beat llama.cpp.** Its ceiling is 9.9 and they
+  already achieve 9.3. Instruction-efficiency work on that kernel is a
+  parity play.
+- **The matrix cores can.** `int8` and `float16` are NATIVE on amdgpu —
+  the `[mma-tiering]` notes name only bfloat16, float32 and float64 as
+  software-tier. This is answered at COMPILE time and costs nothing to
+  ask; ask it before writing a kernel, not after.
+
+An independent implementation (llama.cpp) landing at 9.3 against our
+probe's 9.9 is mutual confirmation that ~10 TMAC/s is this chip's real
+dp4a rate. An earlier "2-4% of peak" claim extrapolated from a vendor
+spec sheet and was wrong by 3x.
+
+## 9.3 What is on the device
+
+- **Decode**: the whole layer. RMSNorm, both residual adds, SwiGLU, all
+  seven projections, RoPE, the KV append and the attend. Nothing in a
+  decode layer crosses the bus.
+- **Prefill**: the projections (batched, WMMA for Q4_K) and the attend.
+  RoPE and the paged-cache append stay on the host.
+- **`Prim.attendF32` is NOT routed and must not be.** It gives one work
+  item per OUTPUT ELEMENT, so every `headDim` lane of a head recomputes
+  the same `count x headDim` score dot and each K read is a broadcast of
+  one float — 11.0's one-row-per-work-item shape in its worst form.
+
+## 9.4 Hypotheses that were REFUTED by measurement
+
+Recorded because each is plausible enough to be tried again.
+
+- **Attention is a rounding error.** It measured 3 ms of a 32 ms token
+  and was ranked minor. That was an artifact of an 8-token bench prompt:
+  at 128 positions it is 20 ms, at 512 it is **97 ms of a 125 ms token —
+  77%**. The projections are FLAT at ~29 ms throughout, as they must be.
+  Attention is the only part of a decode token that grows.
+- **The prefill GEMM is bandwidth-bound.** Four tokens per lane cuts
+  passes over the weights from 16 to 4 — a 4x traffic cut — and measured
+  13% SLOWER. It is issue- and occupancy-bound.
+- **Redundant decode is the GEMM's cost.** Every lane unpacks the same
+  16-byte header identically. Removing the scale unpack entirely: ~1%.
+  Removing the nibble split: 4%. Total decode ~5%.
+- **The combine pass dominates the attend.** It runs one workgroup per
+  head, 32 on a part with 160 SIMDs, so occupancy said it would. It is
+  the CHEAPER half by 2.5x: combine 1.53 ms, score 3.90 ms.
+- **Widening amortization pays.** The WMMA B tile depends on
+  `(output rows, block)` and never on tokens, so at 512 tokens 32
+  workgroups widen byte-identical tiles. Sweeping several token tiles per
+  workgroup is monotonically WORSE — 3021 / 3191 / 3644 ms at 1 / 2 / 8
+  tiles — because LDS goes 7.6 -> 19 KB and the grid shrinks 8192 -> 1024.
+  **The redundant widening is cheaper than the occupancy it costs to
+  avoid.**
+- **OS page cache or L2/L3 explains llama.cpp's prefill.** It cannot: a
+  batched 512-token prefill reads the weights ONCE, 23 ms at ~200 GB/s,
+  about 5% of their 440 ms. Both timings exclude model load. 4.58 GB
+  caches for nobody against a 32 MB MALL. Both are compute-bound.
+
+## 9.5 The prefill GEMM, attributed
+
+prefill(512) = 7.89 s at the time of attribution:
+
+| phase | ms | share |
+|---|---|---|
+| GEMM launch | 3514 | 45% |
+| pack (host q8_K) | 859 | 11% |
+| download | 520 | 7% |
+| copyOut (host copy) | 327 | 4% |
+| upload | 104 | 1% |
+| unaccounted (norms, glu, rope, attend, adds) | 2566 | 33% |
+
+Within the GEMM: bandwidth 0% (negative), decode ~5%, activation loads
+~15%, **~70% loop control, addressing, issue and latency**.
+
+A supporting datum: making ONE 8-iteration loop's trip count
+runtime-dependent cost **55%** of the kernel (3588 -> 5583 ms) by
+defeating its unroll. That is the strongest evidence for issue-bound.
+
+## 9.6 LONG CONTEXT — the blockers, computed
+
+Two independent axes. Weight reads depend on the MODEL only (4.6 / 18.7 /
+40.3 GB for 8B / 30B / 70B at Q4_K). Arithmetic depends on the PRODUCT,
+params x tokens. Memory depends on the PROMPT, and that is where it
+fails.
+
+| model | ctx | MACs | WMMA floor | KV f16 | arena | score matrix |
+|---|---|---|---|---|---|---|
+| 8B | 8k | 66 T | 2.4 s | 1.0 GB | 1.7 GB | **8 GB** |
+| 8B | 250k | 2,007 T | 74 s | 30.5 GB | 51.5 GB | **7,451 GB** |
+| 70B | 250k | 17,650 T | 654 s | 76.3 GB | 101 GB | **14,901 GB** |
+
+**9.6.1 The prefill attend is O(n^2) in MEMORY.** It materializes
+`rows x heads x ctx` scores. 33 MB at 512 tokens, 8 GB at 8k, 7.4 TB at
+250k. The current implementation caps out around **4-8k tokens**.
+Chunking does not rescue it: at chunk 512 / ctx 250k / 64 heads it is
+still 33 GB. **Flash attention — online softmax that never materializes
+scores — is REQUIRED, not an optimization.**
+
+**9.6.2 The arena is O(n).** 51.5 GB at 250k for 8B, 101 GB for 70B,
+past the 96 GB GTT. Prefill must be chunked. `stepSeq` already takes a
+chunk and the prefill attend already honours a nonzero `startPos`
+(`thePrefillAttendReadsHistoryBeforeItsChunk`).
+
+**9.6.3 KV must become f16 then quantized.** `DeviceKv` allocates FLAT
+f32 planes sized to `maxSeq` — 2x the f16 figures. At 70B/250k even f16
+KV (76 GB) plus weights (40 GB) exceeds the box.
+
+**9.6.4 At 1M tokens attention DWARFS the weights by 9-16x**, and no
+kernel work changes it:
+
+| model | weight MACs | attention MACs | ratio | attention at the 27 TMAC/s ceiling |
+|---|---|---|---|---|
+| 8B | 8,030 T | 131,072 T | 16x | **1.3 h** |
+| 70B | 70,600 T | 655,360 T | 9x | **6.7 h** |
+
+Memory at 1M with GQA already assumed: 8B needs 122 GB f16 / 31 GB q4
+KV (fits with weights at 35 GB); 70B needs 305 GB f16 / 76 GB q4 (117 GB
+with weights — **does not fit**).
+
+**Dense causal attention does not reach 1M.** Models that advertise it
+change the mechanism: MLA (DeepSeek, ~90% KV reduction), interleaved
+local/global (Llama 4 iRoPE, Gemma 5:1, Mistral SWA), attention sinks
+(StreamingLLM), sparse patterns. Realistic ceiling for the dense
+Llama-class models we support on this box is **128k for 8B**.
+
+**9.6.5 We refuse the mechanism that would help.** `PagedKvCache`
+already has sliding-window support — `layerWindow`, `ringK`/`ringV`, the
+`from` clamp — for Gemma and Mistral. `DeviceKv.supports()` explicitly
+REFUSES windowed layers, because flat planes have no ring indexing. So
+the device attention path rejects exactly the mechanism long-context
+models rely on.
+
+## 9.7 MoE — scoped, not built
+
+We have **zero** MoE support: no `expert` config key, nothing in the
+model code. llama.cpp has 14 MoE architectures (Mixtral, Qwen2/3/3.5,
+DeepSeek/V2, Llama4, OLMoE, PhiMoE, GraniteMoE, HunyuanMoE, OpenAI-MoE,
+BailingMoE, SmolLM3), the `GGML_OP_MUL_MAT_ID` indexed-matmul primitive,
+and `build_moe_ffn`.
+
+Their `mmq.cu` carries `ids_dst`/`ids_src`/`n_expert`, so **MoE prefill
+runs on the matrix cores with the expert indices threaded into the tile
+ADDRESSING** rather than physically permuting activations — and
+`ggml-cuda.cu` fuses `ffn_up`/`ffn_gate`/GLU when all are `MUL_MAT_ID`.
+That is a generation ahead of the gather-then-GEMM shape we would reach
+for first.
+
+For us the constraint is concrete: `ma.load(buf, offset, layout, stride)`
+needs a CONSTANT row stride, and MoE rows are scattered. Either we
+gather each expert's tokens into a contiguous staging buffer, or
+`CooperativeMatrix` gains an indexed load — a compiler-side question to
+settle before writing the kernel.
+
+Note also that the pre-dequantize plan (9.8) is a DENSE optimization and
+fights MoE directly: most experts are cold most of the time, so it would
+need to be lazy and hotness-driven, which couples it to an expert cache.
+
+## 9.8 Next, in order
+
+1. **Pre-dequantize weights to int8 once** (dense). The LDS amortization
+   failed on occupancy; a global int8 copy is not blocked that way —
+   `mb.load` takes `layout = 1` (column-major), so a `[outDim x cols]`
+   int8 buffer feeds fragments straight from global with NO staging and
+   NO barriers. Feed cost goes to zero rather than being divided. Price:
+   4.58 -> 8.03 GB, and the packed copy must STAY because decode is
+   bandwidth-bound and would get ~1.75x slower on int8. 12.6 GB resident.
+2. **Flash-attention prefill** — removes the O(n^2) score buffer (9.6.1).
+3. **Chunked prefill** — the arena (9.6.2).
+4. **f16 / quantized KV** — (9.6.3).
+5. **Windowed layers on the device path** — (9.6.5).
+6. **MoE** as its own spec (9.7).
