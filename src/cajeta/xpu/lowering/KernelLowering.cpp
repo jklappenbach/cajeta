@@ -3776,6 +3776,29 @@ private:
         return false;
     }
 
+    // Epilogue-verb Shared args may be SLICES (10.12.33): `arr[expr]`
+    // resolves to the address of element `expr`, so per-wave/per-tile
+    // scale vectors can live in ONE Shared array and the call site
+    // selects its 16-vector by offset — no wave-uniform branch per
+    // base. A bare identifier still resolves to the array base; the
+    // index expression is evaluated once, at the call.
+    bool resolveBufferBaseOrSlice(const ExpressionPtr& e,
+                                  llvm::Value*& base, llvm::Type*& elemTy) {
+        if (resolveBufferBase(e, base, elemTy)) return true;
+        if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(e)) {
+            llvm::Value* b = nullptr; llvm::Type* et = nullptr;
+            if (resolveBufferBase(exprChild(ai, 0), b, et) && et) {
+                llvm::Value* idx = coerceTo(
+                    lowerExpr(exprChild(ai, 1)),
+                    llvm::Type::getInt64Ty(ctx));
+                base = target.bufferElementPtr(builder, mod, b, et, idx);
+                elemTy = et;
+                return true;
+            }
+        }
+        return false;
+    }
+
     // CoopStage.panel(dst, src, rowBase, colBase, rows, cols, ld) — the
     // workgroup-cooperative global→LDS staging copy (Option B). Every thread of
     // the workgroup strides over the rows*cols panel and copies it from a
@@ -4195,24 +4218,30 @@ private:
             llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
             llvm::Value* cS = nullptr; llvm::Value* gS = nullptr;
             const size_t ri = scaled ? 1 : 0;
-            if (!resolveBufferBase(args[ri].expression, rB, rE))
+            if (!resolveBufferBaseOrSlice(args[ri].expression, rB, rE))
                 unsupported(std::string("CooperativeMatrix.") + name +
-                            ": rowF must be a Shared<float32> vector");
+                            ": rowF must be a Shared<float32> vector "
+                            "(or a slice of one)");
             if (scalarCol) {
                 cS = toFloat(lowerExpr(args[ri + 1].expression));
                 if (dual) {
-                    if (!resolveBufferBase(args[ri + 2].expression, gB, gE))
+                    if (!resolveBufferBaseOrSlice(args[ri + 2].expression,
+                                                  gB, gE))
                         unsupported("CooperativeMatrix.scaledAccumInto2S: "
-                                    "rowG must be a Shared<float32> vector");
+                                    "rowG must be a Shared<float32> vector "
+                                    "(or a slice of one)");
                     gS = toFloat(lowerExpr(args[ri + 3].expression));
                 }
             } else {
-                if (!resolveBufferBase(args[ri + 1].expression, cB, cE))
+                if (!resolveBufferBaseOrSlice(args[ri + 1].expression,
+                                              cB, cE))
                     unsupported(std::string("CooperativeMatrix.") + name +
                                 ": colF must be a Shared<float32> vector");
                 if (dual &&
-                    (!resolveBufferBase(args[ri + 2].expression, gB, gE) ||
-                     !resolveBufferBase(args[ri + 3].expression, hB, hE)))
+                    (!resolveBufferBaseOrSlice(args[ri + 2].expression,
+                                               gB, gE) ||
+                     !resolveBufferBaseOrSlice(args[ri + 3].expression,
+                                               hB, hE)))
                     unsupported("CooperativeMatrix.scaledAccumInto2: "
                                 "rowG/colG must be Shared<float32> vectors");
             }
@@ -4413,13 +4442,13 @@ private:
             llvm::Value* gB = nullptr; llvm::Type* gE = nullptr;
             llvm::Value* hB = nullptr; llvm::Type* hE = nullptr;
             const size_t ri = scaled ? 1 : 0;
-            if (!resolveBufferBase(args[ri].expression, rB, rE) ||
-                !resolveBufferBase(args[ri + 1].expression, cB, cE))
+            if (!resolveBufferBaseOrSlice(args[ri].expression, rB, rE) ||
+                !resolveBufferBaseOrSlice(args[ri + 1].expression, cB, cE))
                 unsupported(std::string("CooperativeMatrix.") + name +
                             ": rowF/colF must be Shared<float32> vectors");
             if (dual &&
-                (!resolveBufferBase(args[ri + 2].expression, gB, gE) ||
-                 !resolveBufferBase(args[ri + 3].expression, hB, hE)))
+                (!resolveBufferBaseOrSlice(args[ri + 2].expression, gB, gE) ||
+                 !resolveBufferBaseOrSlice(args[ri + 3].expression, hB, hE)))
                 unsupported("CooperativeMatrix.scaledAccumInto2: "
                             "rowG/colG must be Shared<float32> vectors");
             emitCountedLoop(R, [&](llvm::Value* r) {

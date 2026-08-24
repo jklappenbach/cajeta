@@ -202,6 +202,12 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
      * K-slice, the activation scale into `colF`, and the int32 mma
      * accumulator flows into a register-resident float accumulator
      * without ever being spilled.
+     *
+     * Every Shared-vector argument of the epilogue verbs also accepts
+     * a SLICE, spelled `arr[offset]` (10.12.33): the vector is read
+     * starting at that element, so per-wave or per-tile vectors can
+     * live in one Shared array selected by offset instead of one
+     * array per wave behind a wave-uniform branch.
      */
     public void scaledAccumInto(CooperativeMatrix<float32, Rows, Cols, 2> facc,
                                 Shared<float32> rowF, Shared<float32> colF) {

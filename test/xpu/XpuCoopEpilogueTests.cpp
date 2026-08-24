@@ -58,13 +58,13 @@ const char* KERNEL =
     "            KernelBuffer<float32> rg, KernelBuffer<float32> cg) {\n"
     "        Shared<float32> rowF = shared float32[16];\n"
     "        Shared<float32> colF = shared float32[16];\n"
-    "        Shared<float32> rowG = shared float32[16];\n"
+    "        Shared<float32> rowG = shared float32[48];\n"
     "        Shared<float32> colG = shared float32[16];\n"
     "        uint32 lane = KernelThread.x();\n"
     "        uint32 i = lane;\n"
     "        while (i < 16) {\n"
     "            rowF[i] = rf[i]; colF[i] = cf[i];\n"
-    "            rowG[i] = rg[i]; colG[i] = cg[i];\n"
+    "            rowG[16 + i] = rg[i]; colG[i] = cg[i];\n"
     "            i = i + 32;\n"
     "        }\n"
     "        Barrier.workgroup();\n"
@@ -78,8 +78,8 @@ const char* KERNEL =
     "        mb.load(b, 0, 0, 16);\n"
     "        mc.mma(ma, mb);\n"
     "        mc.scaledAccumInto(facc, rowF, colF);\n"
-    "        facc.rank1Accum(rowG, colG);\n"
-    "        mc.scaledAccumInto2(facc, rowF, colF, rowG, colG);\n"
+    "        facc.rank1Accum(rowG[16], colG);\n"
+    "        mc.scaledAccumInto2(facc, rowF, colF, rowG[16], colG);\n"
     "        facc.store(y, 0, 0, 16);\n"
     "    }\n";
 
@@ -175,9 +175,11 @@ TEST(XpuCoopEpilogueTests, verbsMatchScalarReferenceExactlyOnCpu) {
 // to all sixteen columns and produce a plausible wrong answer.
 TEST(XpuCoopEpilogueTests, scalarColumnVerbsAreNamedNativeOnlyOnCpu) {
     std::string bad = std::string(KERNEL);
-    std::string from = "mc.scaledAccumInto2(facc, rowF, colF, rowG, colG);";
+    std::string from =
+        "mc.scaledAccumInto2(facc, rowF, colF, rowG[16], colG);";
     std::string to = "float32 cfs = 1.0f;\n"
-                     "        mc.scaledAccumInto2S(facc, rowF, cfs, rowG, cfs);";
+                     "        mc.scaledAccumInto2S(facc, rowF, cfs, "
+                     "rowG[16], cfs);";
     bad.replace(bad.find(from), from.size(), to);
     std::string src = std::string(PRE) +
         "public final class D {\n" + bad +
