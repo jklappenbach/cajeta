@@ -604,6 +604,22 @@ contaminated by sharing an invocation with `tg128`):
 Decode reached parity and has not moved since; every subsequent unit was
 prefill.
 
+**Re-measured 2026-08-24, post-10.12.16** (same box/model/method; ours
+at ctx512 with dec64 steady state, 2 rounds alternated, idle-gated;
+llama-bench one test per invocation, `-r 6`):
+
+| | llama.cpp | us | |
+|---|---|---|---|
+| prefill 512 | **439 ms** (1166.30 ± 8.31 t/s) | packed **6407 ms** / int8 **6263 ms** | 14.6x / 14.3x |
+| decode @ 512 depth | **27.5 ms/tok** (tg64@d512: 36.42 ± 0.17 t/s) | **34.5 ms/tok** both modes | **1.26x** |
+| decode, shallow | 24.94 ms/tok (tg128: 40.09 ± 0.12 t/s) | 26.0 (prior record) | 1.04x |
+
+The shallow-context parity row STILL holds, but `llama-bench -d` (depth)
+shows the honest 512-depth decode gap: 27.5 vs 34.5 ms/tok — their
+attention tail degrades 25 -> 27.5 going 0 -> 512 deep; ours degrades
+26 -> 34.5. Decode-at-depth is attention-tail bound, which feeds the
+decode-attribution explore, not the GEMM work.
+
 ## 9.2 The three ceilings, each validated
 
 A ceiling probe is only worth its number if the loop was not hoisted, so
