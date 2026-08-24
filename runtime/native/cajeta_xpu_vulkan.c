@@ -694,6 +694,43 @@ static int cajeta_xpu_vulkan_init_locked(void) {
                                            "vkGetCalibratedTimestampsEXT");
         if (!g_xpu_vk.vkGetCalibratedTimestamps) g_xpu_vk.hasCalibratedTs = 0;
     }
+    if (g_xpu_vk.hasCalibratedTs) {
+        // §6.5 — verify the DOMAINS, not just the extension. The calibration
+        // read pairs DEVICE with CLOCK_MONOTONIC, and passing a domain the
+        // driver never offered is invalid usage that can return VK_SUCCESS
+        // carrying junk. Measured on the first PHOENIX shakedown (run
+        // 32755371649): Windows/NVIDIA offers QPC, not CLOCK_MONOTONIC — the
+        // unchecked read "succeeded", the engine fit a host value of garbage,
+        // and every device span converted to 0..0. Until Unit 12's §6.8 adds
+        // the QPC host domain, a device that does not offer CLOCK_MONOTONIC
+        // gets NO calibration — and the bracket's duration-plus-anchor
+        // fallback stays honest instead of precise.
+        PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT getDomains =
+            (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)
+                g_xpu_vk.getInstanceProcAddr(
+                    g_xpu_vk.instance,
+                    "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR");
+        if (!getDomains)
+            getDomains = (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)
+                g_xpu_vk.getInstanceProcAddr(
+                    g_xpu_vk.instance,
+                    "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT");
+        int haveDevice = 0, haveMonotonic = 0;
+        if (getDomains) {
+            uint32_t nd = 0;
+            getDomains(g_xpu_vk.phys, &nd, NULL);
+            if (nd > 0 && nd <= 16) {
+                VkTimeDomainEXT doms[16];
+                getDomains(g_xpu_vk.phys, &nd, doms);
+                for (uint32_t d = 0; d < nd; ++d) {
+                    if (doms[d] == VK_TIME_DOMAIN_DEVICE_EXT) haveDevice = 1;
+                    if (doms[d] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT)
+                        haveMonotonic = 1;
+                }
+            }
+        }
+        if (!haveDevice || !haveMonotonic) g_xpu_vk.hasCalibratedTs = 0;
+    }
 #endif
     // RT path: resolve the AS/device-address entry points only when the device
     // was created with the ray-query extensions. vkGetBufferDeviceAddress is

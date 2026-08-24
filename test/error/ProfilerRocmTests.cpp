@@ -156,6 +156,12 @@ TEST(ProfilerRocm, absentSdkLeavesTheRunWorkingAtHostTier) {
 }
 
 TEST(ProfilerRocm, absenceIsReportedWithTheReasonAndThePathTried) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the Windows runtime ships a deliberate ROCm stub (no "
+                    "dlfcn, fixed absence report) — the path under test is "
+                    "the POSIX loader's; measured on profiler-tests run "
+                    "32755371649";
+#endif
     Rocm& r = roc();
     ASSERT_TRUE(r.init && r.reset && r.reason && r.libPath);
 
@@ -239,6 +245,12 @@ const char* kLoadsButIsNotTheSdk = "libm.so.6";
 }
 
 TEST(ProfilerRocm, aLibraryThatLoadsWithoutTheEntryPointsIsAbsentNotReady) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the Windows runtime ships a deliberate ROCm stub (no "
+                    "dlfcn, fixed absence report) — the path under test is "
+                    "the POSIX loader's; measured on profiler-tests run "
+                    "32755371649";
+#endif
     Rocm& r = roc();
     ASSERT_TRUE(r.init && r.reset && r.state && r.entryCount && r.entriesBound);
     ASSERT_GT(r.entryCount(), 0) << "no entry points declared; the check is vacuous";
@@ -255,6 +267,12 @@ TEST(ProfilerRocm, aLibraryThatLoadsWithoutTheEntryPointsIsAbsentNotReady) {
 }
 
 TEST(ProfilerRocm, aMissingEntryPointIsNamedInTheReason) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the Windows runtime ships a deliberate ROCm stub (no "
+                    "dlfcn, fixed absence report) — the path under test is "
+                    "the POSIX loader's; measured on profiler-tests run "
+                    "32755371649";
+#endif
     Rocm& r = roc();
     ASSERT_TRUE(r.init && r.reset && r.reason);
 
@@ -960,6 +978,12 @@ TEST(ProfilerRocm, aSteadyClockGapIsNotMistakenForASuspend) {
 }
 
 TEST(ProfilerRocm, aJumpInTheClockGapIsRecordedAsASuspend) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the Windows runtime ships a deliberate ROCm stub (no "
+                    "dlfcn, fixed absence report) — the path under test is "
+                    "the POSIX loader's; measured on profiler-tests run "
+                    "32755371649";
+#endif
     Rocm& r = roc();
     auto note = reinterpret_cast<int32_t (*)(int64_t)>(
         r.jit->lookupRawSymbol("__cajeta_prof_rocm_note_clock_offset"));
@@ -986,6 +1010,12 @@ TEST(ProfilerRocm, aJumpInTheClockGapIsRecordedAsASuspend) {
 }
 
 TEST(ProfilerRocm, resetClearsTheSuspendRecordWithTheRestOfTheAssessment) {
+#if defined(_WIN32)
+    GTEST_SKIP() << "the Windows runtime ships a deliberate ROCm stub (no "
+                    "dlfcn, fixed absence report) — the path under test is "
+                    "the POSIX loader's; measured on profiler-tests run "
+                    "32755371649";
+#endif
     Rocm& r = roc();
     auto note = reinterpret_cast<int32_t (*)(int64_t)>(
         r.jit->lookupRawSymbol("__cajeta_prof_rocm_note_clock_offset"));
