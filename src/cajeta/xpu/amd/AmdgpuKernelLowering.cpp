@@ -975,6 +975,48 @@ public:
         if (use != 2 && fe->isIntegerTy(32)) {
             llvm::LLVMContext& ctx = m.getContext();
             llvm::Type* i8 = llvm::Type::getInt8Ty(ctx);
+            // FAST PATH (threaded-forward-path 10.12.26): when this
+            // lane's 16 fragment bytes are provably CONSECUTIVE — A
+            // (use 0) row-major or B (use 1) column-major, constant
+            // stride divisible by 4, no swizzle, no block pad — load
+            // them as ONE <4 x i32> instead of assembling four words
+            // from sixteen one-byte loads. The byte path measured the
+            // consumer GEMM's memory unit at 97.3% busy on REQUEST
+            // COUNT (512 byte-granularity ops per lane per block), with
+            // waves waiting 32:1 — the per-byte-access lesson at
+            // fragment scale. A little-endian wide load produces
+            // exactly the bytes-shifted-into-words packing below.
+            {
+                auto* cl = llvm::dyn_cast<llvm::ConstantInt>(layout);
+                auto* cs = llvm::dyn_cast<llvm::ConstantInt>(stride);
+                // Contiguity needs only the LAYOUT to be constant —
+                // the stride merely positions each lane's base (the
+                // first build required a constant stride and silently
+                // left every A operand, whose stride is a runtime
+                // kernel parameter, on the sixteen-byte path). A
+                // provably 4-aligned stride upgrades the alignment
+                // hint; otherwise align 1, which gfx11 global loads
+                // handle wide anyway.
+                bool laneRun = cl && n == 4 && swz == 0 &&
+                    !blk.period &&
+                    ((use == 0 && cl->getZExtValue() == 0) ||
+                     (use == 1 && cl->getZExtValue() == 1));
+                if (laneRun) {
+                    llvm::Type* i32t = llvm::Type::getInt32Ty(ctx);
+                    llvm::Value* lane16 = b.CreateAnd(
+                        waveLaneId(b, m),
+                        llvm::ConstantInt::get(i32t, 15));
+                    llvm::Value* off =
+                        b.CreateMul(lane16, stride, "cm.ld16.off");
+                    llvm::Value* p =
+                        b.CreateGEP(i8, ptr, off, "cm.ld16.ptr");
+                    llvm::LoadInst* wide =
+                        b.CreateLoad(vecTy, p, "cm.ld16");
+                    wide->setAlignment(llvm::Align(
+                        cs && (cs->getZExtValue() % 4) == 0 ? 4 : 1));
+                    return wide;
+                }
+            }
             for (unsigned w = 0; w < n; ++w) {
                 llvm::Value* word = llvm::ConstantInt::get(fe, 0);
                 for (unsigned s = 0; s < 4; ++s) {
