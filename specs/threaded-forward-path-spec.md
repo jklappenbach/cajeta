@@ -860,6 +860,28 @@ need to be lazy and hotness-driven, which couples it to an expert cache.
      `CAJETA_XPU_BACKEND`) — 3 device tests had latent shape bugs that
      fired the first time they truly ran. Fixed; 194/0/1 on a real
      amdgpu compile now.
+   **OUTCOME 2 (2026-08-24 evening, plan 10.12.21):** the fragment
+   epilogue landed as `scaledAccumInto`/`rank1Accum`/`scaledAccumInto2`
+   (compiler 8f43a68a) and the full llama.cpp shape was rebuilt in two
+   measured stages — with the DIAGNOSIS INVERTED by the second one:
+
+   - `q4kWmmaDeqMwKernel` (8 waves/WG + register epilogue + barrier-free
+     K-loop) cut issues/mma-pair ~150 -> ~55 and bought only 5% (kernel
+     1153 -> 1097 ms): the kernel was at the MEMORY WALL (~155 GB/s),
+     because each 16-token tile re-reads the whole weight matrix — 32x
+     per 512-token prefill, ~163 GB. Issue economy was never the
+     constraint; ARITHMETIC INTENSITY was. This closes the "2.65 vs 27
+     TMAC/s" question: the ceiling was compute-validated, but the
+     single-token-tile shape never had the intensity to reach it.
+   - `q4kWmmaDeqMw4Kernel` (TOKEN BLOCKING, llama.cpp's `mmq_x`): four
+     token-tiles per WG share every weight fragment — weight traffic /4.
+     Kernel 1097 -> 784 ms, prefill 1857 -> 1550 ms (-16.5%), and the
+     kernel now runs UNDER the wall (~84 GB/s implied): the constraint
+     moved back to latency/occupancy. Remaining kernel order: Q6_K twin
+     of the same transform (323 ms at 152 GB/s today), then T=8.
+   - Prefill(512) 2026-08-24 arc: 6770 -> 1550 ms (4.4x). llama.cpp:
+     439 ms — gap 3.5x, attend (208 ms) and widen (110 ms) now rank
+     beside the GEMM (784 ms) and Q6 (323 ms).
 2. **Flash-attention prefill** — removes the O(n^2) score buffer (9.6.1).
 3. **Chunked prefill** — the arena (9.6.2).
 4. **f16 / quantized KV** — (9.6.3).
