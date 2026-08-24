@@ -1043,6 +1043,52 @@ public:
         return b.CreateCall(f, {a, bMat, c}, "wmma");
     }
 
+    // The fused epilogue verbs run in the accumulator fragment's registers
+    // (xpu-coopmatrix-epilogue Option B): per lane, element e sits at row
+    // `2e + (lane>>4)`, column `lane & 15` — the C/D mapping documented
+    // above — so `rowF[row]` is one LDS load per element and `colF[col]`
+    // ONE per lane, hoisted. Association `(rowF*colF)*C` is the
+    // cross-tier contract (bit-exact against the software tile).
+    bool coopMatrixEpilogueSupported() const override { return true; }
+
+    llvm::Value* coopMatrixEpilogueAccum(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
+            llvm::Value* colFPtr, llvm::Type* colETy) override {
+        llvm::LLVMContext& ctx = m.getContext();
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
+        llvm::Value* lane = waveLaneId(b, m);
+        llvm::Value* lane16 =
+            b.CreateAnd(lane, llvm::ConstantInt::get(i32, 15));
+        llvm::Value* half =
+            b.CreateLShr(lane, llvm::ConstantInt::get(i32, 4));
+        llvm::Value* cv = b.CreateLoad(
+            colETy, b.CreateGEP(colETy, colFPtr, lane16, "epi.cf.ptr"),
+            "epi.cf");
+        auto* vecTy = llvm::cast<llvm::FixedVectorType>(faccVal->getType());
+        unsigned n = vecTy->getNumElements();
+        llvm::Value* out = faccVal;
+        for (unsigned e = 0; e < n; ++e) {
+            llvm::Value* row = b.CreateAdd(
+                llvm::ConstantInt::get(i32, 2 * e), half, "epi.row");
+            llvm::Value* rv = b.CreateLoad(
+                rowETy, b.CreateGEP(rowETy, rowFPtr, row, "epi.rf.ptr"),
+                "epi.rf");
+            llvm::Value* term = b.CreateFMul(rv, cv);
+            if (accVal) {
+                llvm::Value* av = b.CreateExtractElement(accVal, e);
+                if (av->getType()->isIntegerTy())
+                    av = b.CreateSIToFP(av, f32);
+                term = b.CreateFMul(term, av);
+            }
+            llvm::Value* cur = b.CreateExtractElement(out, e);
+            out = b.CreateInsertElement(out, b.CreateFAdd(cur, term), e,
+                                        "epi.facc");
+        }
+        return out;
+    }
+
     llvm::Value* coopMatrixSplat(llvm::IRBuilderBase& b, llvm::Module& m,
                                  llvm::Value* value,
                                  llvm::Type* matrixType) override {

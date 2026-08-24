@@ -3560,9 +3560,16 @@ private:
     void scanCoopMatrixTiers(const AbstractSyntaxNodePtr& root) {
         bool anyNative = false;
         bool anyPortable = false;
+        bool anyEpilogueVerb = false;
         std::function<void(const AbstractSyntaxNodePtr&)> walk =
             [&](const AbstractSyntaxNodePtr& node) {
                 if (!node) return;
+                if (auto vmc =
+                        std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+                    const std::string& mn = vmc->getMethodCallName();
+                    if (mn == "scaledAccumInto" || mn == "rank1Accum")
+                        anyEpilogueVerb = true;
+                }
                 if (auto lvd =
                         std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
                     CajetaTypePtr dt = lvd->getType();
@@ -3592,6 +3599,26 @@ private:
             };
         walk(root);
         coopStraddleDemote = anyNative && anyPortable;
+        // The epilogue-verb gate (xpu-coopmatrix-epilogue): a kernel using
+        // scaledAccumInto/rank1Accum on a backend whose native tier cannot
+        // lower them demotes ALL its tiles to the portable tile — loudly,
+        // once, naming the op — instead of skipping or (worse) reaching
+        // the base seam's throw at lowering time.
+        if (anyEpilogueVerb && anyNative &&
+            !target.coopMatrixEpilogueSupported()) {
+            coopStraddleDemote = true;
+            std::string key = std::string("epilogue@") + target.name();
+            if (notedCoopTiers.insert(key).second) {
+                std::cerr << "note: [mma-epilogue] scaledAccumInto/"
+                             "rank1Accum have no native lowering on the "
+                          << target.name() << " backend - the kernel's "
+                             "cooperative-matrix tiles take the portable "
+                             "software tile (the result is identical; the "
+                             "epilogue runs in the accumulator's registers "
+                             "on backends that support it, e.g. AMD WMMA)."
+                          << std::endl;
+            }
+        }
     }
 
     CoopMatrixSlot buildCoopMatrixSlot(const CajetaTypePtr& declType,
@@ -4116,6 +4143,55 @@ private:
             llvm::Value* v = target.coopMatrixMulAdd(builder, mod, aVal, bVal,
                                                      cVal, slot.matrixType);
             builder.CreateStore(v, slot.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
+        // The fused epilogue verbs on the NATIVE tier (xpu-coopmatrix-
+        // epilogue Option B). Reaching here on a backend without support
+        // is a compiler bug — the tier scan demotes those kernels — so
+        // the guard is belt-and-braces, not a code path.
+        if (name == "scaledAccumInto" || name == "rank1Accum") {
+            const bool scaled = (name == "scaledAccumInto");
+            const size_t want = scaled ? 3 : 2;
+            if (args.size() != want)
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            (scaled ? " expects (facc, rowF, colF)"
+                                    : " expects (rowF, colF)"));
+            if (!target.coopMatrixEpilogueSupported())
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": no native epilogue lowering on this backend "
+                            "(tier scan should have demoted)");
+            CoopMatrixSlot facc = slot;
+            if (scaled) {
+                facc = resolveCoopMatrixArg(args[0].expression);
+                if (facc.software)
+                    unsupported("CooperativeMatrix.scaledAccumInto: facc "
+                                "must share the receiver's (native) tier");
+                if (facc.rows != slot.rows || facc.cols != slot.cols)
+                    unsupported("CooperativeMatrix.scaledAccumInto: "
+                                "receiver and facc must share Rows/Cols");
+            }
+            if (slot.use != 2 || facc.use != 2)
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": accumulator tiles (Use=2) only");
+            if (!facc.elemType->isFloatTy())
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": the target accumulator must be float32");
+            llvm::Value* rB = nullptr; llvm::Type* rE = nullptr;
+            llvm::Value* cB = nullptr; llvm::Type* cE = nullptr;
+            const size_t ri = scaled ? 1 : 0;
+            if (!resolveBufferBase(args[ri].expression, rB, rE) ||
+                !resolveBufferBase(args[ri + 1].expression, cB, cE))
+                unsupported(std::string("CooperativeMatrix.") + name +
+                            ": rowF/colF must be Shared<float32> vectors");
+            llvm::Value* accVal = nullptr;
+            if (scaled)
+                accVal = builder.CreateLoad(slot.matrixType, slot.alloca,
+                                            recv + ".val");
+            llvm::Value* faccVal =
+                builder.CreateLoad(facc.matrixType, facc.alloca, "epi.facc");
+            llvm::Value* v = target.coopMatrixEpilogueAccum(
+                builder, mod, accVal, faccVal, rB, rE, cB, cE);
+            builder.CreateStore(v, facc.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
         unsupported("CooperativeMatrix." + name + "()");
@@ -5809,6 +5885,16 @@ llvm::Value* LoweringTarget::coopMatrixMulAdd(
 llvm::Value* LoweringTarget::coopMatrixSplat(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*value*/,
     llvm::Type* /*matrixType*/) {
+    throw coopMatrixUnsupported(name());
+}
+
+llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
+    llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*accVal*/,
+    llvm::Value* /*faccVal*/, llvm::Value* /*rowFPtr*/, llvm::Type* /*rowETy*/,
+    llvm::Value* /*colFPtr*/, llvm::Type* /*colETy*/) {
+    // Unreachable by construction: the tier scan demotes verb-using kernels
+    // on any backend where coopMatrixEpilogueSupported() is false, and the
+    // demoted (software) path never dispatches here.
     throw coopMatrixUnsupported(name());
 }
 

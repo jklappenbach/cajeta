@@ -846,6 +846,27 @@ namespace xpu {
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* value,
             llvm::Type* matrixType);
 
+        // Fused GEMM-epilogue verbs (xpu-coopmatrix-epilogue, Option B):
+        // whether this backend can lower `scaledAccumInto`/`rank1Accum` on
+        // its NATIVE tier. When false, the tier scan demotes any kernel
+        // using the verbs to the portable tile (loudly, via the
+        // [mma-epilogue] note) — so coopMatrixEpilogueAccum is only ever
+        // called on a backend that returned true here.
+        virtual bool coopMatrixEpilogueSupported() const { return false; }
+
+        // facc[r][c] += (rowF[r] * colF[c]) * acc[r][c], per fragment
+        // element of the CURRENT lane — the k-quant dequant seam, run in
+        // the accumulator's registers. `accVal` is the int32/f32
+        // accumulator fragment, or null for the rank-1 form (no C term).
+        // `rowFPtr`/`colFPtr` are element-0 pointers of the Shared
+        // scale vectors. The multiply association `(rowF*colF)*C` is the
+        // cross-tier CONTRACT (consumers assert bit-exactness against
+        // the software tile). Returns the updated facc fragment.
+        virtual llvm::Value* coopMatrixEpilogueAccum(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,
+            llvm::Value* faccVal, llvm::Value* rowFPtr, llvm::Type* rowETy,
+            llvm::Value* colFPtr, llvm::Type* colETy);
+
         // Called once on the enclosing kernel function the first time a NATIVE
         // cooperative-matrix tile is allocated in its body. A backend whose
         // matrix-core path has ABI requirements on the kernel (AMD RDNA3 WMMA is
