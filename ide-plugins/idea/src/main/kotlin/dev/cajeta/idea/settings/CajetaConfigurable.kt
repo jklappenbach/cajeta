@@ -26,6 +26,8 @@ class CajetaConfigurable : Configurable {
     private var facetsVariablesCheck: JBCheckBox? = null
     private var facetsGutterCheck: JBCheckBox? = null
     private var facetsInlineCheck: JBCheckBox? = null
+    // variable-inspection §3.1.4: rows per page when expanding an aggregate.
+    private var debugPageSizeField: JBTextField? = null
     // Build-tool tool window settings (spec §14).
     private var buildToolPathField: JBTextField? = null
     private var buildToolPathProblem: JBLabel? = null
@@ -66,6 +68,8 @@ class CajetaConfigurable : Configurable {
             "Show inline memory-facet hints on the current line while debugging",
             settings.showFacetsInline,
         ).also { facetsInlineCheck = it }
+        val pageSizeField = JBTextField(settings.debugPageSize.toString(), 6)
+            .also { debugPageSizeField = it }
         val legend = JBTextArea(MemoryFacetLegend.text()).apply {
             isEditable = false
             isOpaque = false
@@ -125,6 +129,10 @@ class CajetaConfigurable : Configurable {
             .addComponent(varsCheck, 1)
             .addComponent(gutterCheck, 1)
             .addComponent(inlineCheck, 1)
+            .addLabeledComponent(
+                JBLabel("Variables expansion page size (rows per page):"),
+                pageSizeField, 1, false,
+            )
             .addComponent(JBLabel("Legend:"), 1)
             .addComponent(legend, 1)
             .addSeparator()
@@ -164,7 +172,8 @@ class CajetaConfigurable : Configurable {
             (jsonlStructuredCheck?.isSelected ?: true) != s.jsonlDefaultStructured ||
             (jsonlLevelField?.text ?: "") != s.jsonlDefaultLevel ||
             (buildInBuildWindowCheck?.isSelected ?: true) != s.buildTasksInBuildWindow ||
-            (lintServerCheck?.isSelected ?: true) != s.useLintServer
+            (lintServerCheck?.isSelected ?: true) != s.useLintServer ||
+            (debugPageSizeField?.text?.toIntOrNull() ?: s.debugPageSize) != s.debugPageSize
     }
 
     override fun apply() {
@@ -187,6 +196,15 @@ class CajetaConfigurable : Configurable {
         s.jsonlDefaultLevel = jsonlLevelField?.text?.trim().orEmpty()
         s.buildTasksInBuildWindow = buildInBuildWindowCheck?.isSelected ?: true
         s.useLintServer = lintServerCheck?.isSelected ?: true
+        // An unparseable or out-of-range entry keeps the stored value rather
+        // than writing a page size the server would reject — the same shape as
+        // the typing-delay field above.
+        debugPageSizeField?.text?.toIntOrNull()?.let {
+            s.debugPageSize = it.coerceIn(
+                CajetaSettings.MIN_DEBUG_PAGE_SIZE,
+                CajetaSettings.MAX_DEBUG_PAGE_SIZE,
+            )
+        }
     }
 
     override fun reset() {
@@ -207,6 +225,7 @@ class CajetaConfigurable : Configurable {
         jsonlLevelField?.text = s.jsonlDefaultLevel
         buildInBuildWindowCheck?.isSelected = s.buildTasksInBuildWindow
         lintServerCheck?.isSelected = s.useLintServer
+        debugPageSizeField?.text = s.debugPageSize.toString()
     }
 
     override fun disposeUIResources() {
@@ -227,6 +246,7 @@ class CajetaConfigurable : Configurable {
         jsonlLevelField = null
         buildInBuildWindowCheck = null
         lintServerCheck = null
+        debugPageSizeField = null
         panel = null
     }
 }

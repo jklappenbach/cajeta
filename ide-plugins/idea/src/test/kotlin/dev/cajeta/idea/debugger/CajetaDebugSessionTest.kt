@@ -252,6 +252,50 @@ class CajetaDebugSessionTest {
         )
     }
 
+    /**
+     * variable-inspection §3.1.4 — the settings page size rides the launch
+     * request, so expansion pages at the size the developer chose.
+     */
+    @Test
+    fun launchCarriesPageSize() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(
+            CajetaDebugSession.LaunchParams(
+                "demo.Calc.main", "/tmp/root",
+                pageSize = 25,
+            ),
+        ).get(5, TimeUnit.SECONDS)
+
+        assertEquals(
+            25,
+            lastRequestByCommand["launch"]!!.at("arguments")
+                .at("pageSize").asInt(),
+        )
+    }
+
+    /**
+     * An unset page size stays OFF the wire, exactly like env and cacheDir:
+     * the server reads a missing value as "use my hard fallback" (§3.1.4), and
+     * a `pageSize: 0` on the wire would be a nonsensical value it has to defend
+     * against instead. `launchWithNoEnvironmentIsUnchanged` pins the same rule
+     * from the other side.
+     */
+    @Test
+    fun launchOmitsAnUnsetPageSize() {
+        connect()
+        runServer()
+        session.start()
+
+        session.launch(CajetaDebugSession.LaunchParams("demo.Calc.main", "/tmp/root"))
+            .get(5, TimeUnit.SECONDS)
+
+        val args = lastRequestByCommand["launch"]!!.at("arguments") as Json.Obj
+        assertTrue("pageSize" !in args.entries.keys)
+    }
+
     @Test
     fun routesStoppedThenExitedThenTerminated() {
         connect()

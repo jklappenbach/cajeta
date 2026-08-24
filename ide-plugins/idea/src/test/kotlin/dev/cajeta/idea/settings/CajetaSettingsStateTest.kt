@@ -1,5 +1,6 @@
 package dev.cajeta.idea.settings
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -22,5 +23,29 @@ class CajetaSettingsStateTest {
         assertTrue(onlyGutterOff.showFacetsInVariables)
         assertTrue(!onlyGutterOff.showFacetsInGutter)
         assertTrue(onlyGutterOff.showFacetsInline)
+    }
+
+    /**
+     * variable-inspection §3.1.4: the expansion page size is a persisted
+     * setting defaulting to 50 rows. 50 is the spec's number and is NOT the
+     * server's hard fallback (100) — the two are deliberately independent, so
+     * an unset plugin still gets a working page and a configured plugin always
+     * wins. A test that read the default off the server would pass while the
+     * setting did nothing.
+     */
+    @Test
+    fun debugPageSizeDefaultsToFifty() {
+        assertEquals(50, CajetaSettings.State().debugPageSize)
+        assertEquals(50, CajetaSettings.DEFAULT_DEBUG_PAGE_SIZE)
+    }
+
+    @Test
+    fun debugPageSizeIsIndependentOfTheOtherFields() {
+        val s = CajetaSettings.State()
+        val paged = s.copy(debugPageSize = 200)
+        assertEquals(200, paged.debugPageSize)
+        assertEquals(s.compilerPath, paged.compilerPath)
+        assertTrue(paged.useLintServer)
+        assertTrue(paged.showFacetsInVariables)
     }
 }
