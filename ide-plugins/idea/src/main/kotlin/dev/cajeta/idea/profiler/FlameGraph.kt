@@ -89,11 +89,13 @@ object FlameGraph {
     /**
      * Build one forest per track.
      *
-     * Events are consumed in FILE order, never sorted by timestamp. Nesting is
-     * carried by emission order: `main`, `forEach` and the lambda beneath them
-     * all begin at the same nanosecond in the tour fixture, and sorting by
-     * timestamp would flatten three real levels into an arbitrary order while
-     * still producing a tree that looked entirely reasonable.
+     * Events are consumed in timestamp order under a STABLE sort, so equal
+     * timestamps keep their emission order. Both halves matter: `main`,
+     * `forEach` and the lambda beneath them all begin at the same nanosecond in
+     * the tour fixture, and only emission order carries that nesting — while
+     * the GPU writer emits each device slice's BEGIN and END as an adjacent
+     * pair, so on a queue only timestamps carry the nesting and file order
+     * would flatten every slice to a root.
      */
     fun build(trace: ProfileTrace): List<FlameTrack> {
         if (trace.events.isEmpty()) return emptyList()
@@ -127,6 +129,7 @@ object FlameGraph {
     }
 
     private fun buildTrack(uuid: Long, events: List<ProfileEvent>): List<FlameNode> {
+        val ordered = events.sortedBy { it.timestampNs }
         val stack = ArrayDeque<Open>()
         val roots = ArrayList<FlameNode>()
         var lastTs = 0L
@@ -152,7 +155,7 @@ object FlameGraph {
             if (stack.isEmpty()) roots.add(node) else stack.last().children.add(node)
         }
 
-        for (e in events) {
+        for (e in ordered) {
             if (e.timestampNs > 0) lastTs = e.timestampNs
             when {
                 e.isBegin -> stack.addLast(

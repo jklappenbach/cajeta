@@ -148,19 +148,32 @@ class ProfileViewModel(
 
         fun of(trace: ProfileTrace): ProfileViewModel {
             val flame = FlameGraph.build(trace)
-            val views = flame.map { t ->
-                val kind = TrackKind.of(t.track.name)
+            val flameByUuid = flame.associateBy { it.track.uuid }
+
+            fun view(track: ProfileTrack): ProfileTrackView {
                 val stamps = trace.events
-                    .filter { it.trackUuid == t.track.uuid && it.timestampNs > 0 }
+                    .filter { it.trackUuid == track.uuid && it.timestampNs > 0 }
                     .map { it.timestampNs }
-                ProfileTrackView(
-                    track = t.track,
-                    kind = kind,
-                    roots = t.roots,
+                return ProfileTrackView(
+                    track = track,
+                    kind = TrackKind.of(track.name),
+                    roots = flameByUuid[track.uuid]?.roots ?: emptyList(),
                     startNs = stamps.minOrNull() ?: 0,
                     endNs = stamps.maxOrNull() ?: 0,
                 )
             }
+
+            // Every DECLARED track gets a view, slices or not — a device or
+            // context descriptor carries the hierarchy its queues indent under,
+            // and building views from the flame forest alone dropped exactly
+            // those rows. Tracks that carry events without a descriptor (a
+            // truncated trace) follow, under their synthesized names.
+            val declared = trace.tracks.map { view(it) }
+            val declaredUuids = trace.tracks.map { it.uuid }.toSet()
+            val undeclared = flame
+                .filter { it.track.uuid !in declaredUuids }
+                .map { view(it.track) }
+            val views = declared + undeclared
 
             // The axis spans tracks that carry work. Structure and metadata
             // tracks are excluded deliberately: the profiler's own run record

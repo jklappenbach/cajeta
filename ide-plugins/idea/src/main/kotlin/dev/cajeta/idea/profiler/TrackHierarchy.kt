@@ -39,12 +39,34 @@ object TrackHierarchy {
         val childrenOf = HashMap<Long, MutableList<ProfileTrackView>>()
         val roots = ArrayList<ProfileTrackView>()
 
-        for (t in tracks) {
-            val parent = t.track.parentUuid
-            if (parent != 0L && parent != t.track.uuid && byUuid.containsKey(parent)) {
-                childrenOf.getOrPut(parent) { ArrayList() }.add(t)
-            } else {
-                roots.add(t)
+        // Placement, not a single pass: a track becomes a child only once its
+        // parent is itself placed. A pure cycle leaves every member unplaceable
+        // — a single-pass build files each member under the other and returns
+        // an empty forest — so when a round places nothing, the first
+        // unplaced track is promoted to a root and placement resumes; the rest
+        // of its cycle then hangs beneath it.
+        val placed = HashSet<Long>()
+        val pending = tracks.toMutableList()
+        while (pending.isNotEmpty()) {
+            var progressed = false
+            val it = pending.iterator()
+            while (it.hasNext()) {
+                val t = it.next()
+                val parent = t.track.parentUuid
+                val isRoot = parent == 0L || parent == t.track.uuid ||
+                    !byUuid.containsKey(parent)
+                if (isRoot || parent in placed) {
+                    if (isRoot) roots.add(t)
+                    else childrenOf.getOrPut(parent) { ArrayList() }.add(t)
+                    placed.add(t.track.uuid)
+                    it.remove()
+                    progressed = true
+                }
+            }
+            if (!progressed) {
+                val promoted = pending.removeAt(0)
+                roots.add(promoted)
+                placed.add(promoted.track.uuid)
             }
         }
 
