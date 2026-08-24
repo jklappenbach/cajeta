@@ -782,6 +782,56 @@ need to be lazy and hotness-driven, which couples it to an expert cache.
    NO barriers. Feed cost goes to zero rather than being divided. Price:
    4.58 -> 8.03 GB, and the packed copy must STAY because decode is
    bandwidth-bound and would get ~1.75x slower on int8. 12.6 GB resident.
+
+   **Amended 2026-08-24: prefill weight residency is a USER POLICY with
+   two modes, not an unconditional upgrade.** The int8 copy trades ~2x
+   weight memory for GEMM speed, and not every machine has this box's
+   96 GB GTT. Requirements:
+
+   - `packed` (DEFAULT) — the shipped 10.12.14 kernel: per-block widen
+     into 4 KB of LDS, zero extra bytes. This is exactly llama.cpp's
+     shape — their `mmq.cuh` `load_tiles_q4_K` stages still-quantized
+     blocks into SRAM per tile and never materializes a dequantized
+     weight copy (verified in source, 5306f4b). Default because no user
+     should get a surprise 2x weight footprint.
+   - `int8` — the resident widened copy, chosen explicitly by the user
+     (`EngineOptions.prefillWeights`). Decode reads the packed copy in
+     BOTH modes; the policy touches only the batched prefill route, and
+     the route diagnostic must say which kernel ran.
+   - Auto-selection by VRAM size is BLOCKED on the device-profile work
+     (`Device` cannot report memory geometry today) — explicit option
+     first, auto later.
+   - llama.cpp's third trick — transient per-op weight copies from a
+     reuse pool (`ggml_backend_cuda_device_offload_op`, batch >= 32) —
+     is a known middle mode, NOT built: our 32-row tiling touches each
+     tensor ~16x per 512-token prefill, so it needs a once-per-pass
+     scheduling seam nobody currently needs.
+   - MoE (9.7) fights the resident copy (cold experts); the policy
+     surface must not preclude going per-tensor/hotness-driven later.
+
+   **OUTCOME (2026-08-24, plan 10.12.16/.19/.20):** shipped as the
+   policy above, with the design's own feed hypothesis part-refuted:
+
+   - The flat `[outDim x cols]` + `layout=1` form was 52% SLOWER
+     (strided global fragment gathers); the shipped copy is TILE-MAJOR
+     (each 16x16 fragment one contiguous 256-byte run).
+   - `int8` measures launch 3015 -> 2855 ms (-5.3%), prefill 6385 ->
+     6233 ms (-2.4%); decode 35.9 ms/tok in both modes. Killing the
+     whole B feed bought only 160 ms — **the LDS staging was never the
+     bottleneck**, so the remaining gap to llama.cpp lives in the scale
+     SEAM (8 accumulator spills + 16 barriers per block) and the
+     single-wave tiling.
+   - CORRECTION to 9.2's framing: llama.cpp's 9.3 TMAC/s prefill on
+     this box is **WMMA MMQ, not dp4a** — `amd_wmma_available` covers
+     RDNA3/3.5 in the vintage benchmarked, and their kernel applies
+     Q4_K scales per accumulator fragment element in REGISTERS. Ours
+     cannot: `CooperativeMatrix`'s accumulator is opaque. That compiler
+     feature (fragment element access) is the gating next lever.
+   - The amdgpu test suite had NEVER compiled device code before this
+     work (`run-tests.sh` reads `XPU_BACKEND`; sweeps set
+     `CAJETA_XPU_BACKEND`) — 3 device tests had latent shape bugs that
+     fired the first time they truly ran. Fixed; 194/0/1 on a real
+     amdgpu compile now.
 2. **Flash-attention prefill** — removes the O(n^2) score buffer (9.6.1).
 3. **Chunked prefill** — the arena (9.6.2).
 4. **f16 / quantized KV** — (9.6.3).
