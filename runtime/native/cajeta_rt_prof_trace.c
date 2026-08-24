@@ -872,9 +872,16 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
         if (host) {
             const CajetaFrameDesc* d = e->call_site;
             uint64_t iid = __cajeta_prof_intern(w, kn);
+            // "Type.method", via the SAME helper the sampler uses. Interning
+            // the bare method name here would give one call site two different
+            // names depending on which half of the profiler saw it — `sum` in
+            // the launch flow and `gpu.Reduce.sum` in the sampled stack — and a
+            // reader correlating the two would find no match and have no way to
+            // tell that from the launch genuinely not being sampled.
+            char qual[192];
+            if (d) caj_prof_frame_name(qual, (int32_t) sizeof(qual), d);
             uint64_t src = (d && d->fileName)
-                ? __cajeta_prof_intern_source(w, d->fileName,
-                                              d->methodName ? d->methodName : kn,
+                ? __cajeta_prof_intern_source(w, d->fileName, qual,
                                               e->call_site_line)
                 : 0;
             CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };

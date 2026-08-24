@@ -39,6 +39,13 @@ data class ProfileEvent(
      */
     val nameIid: Long = 0,
     val sourceLocationIid: Long = 0,
+    /**
+     * Flows this event STARTS — a host launch site listing the kernel it is
+     * about to dispatch (spec §8.4).
+     */
+    val flowIds: List<Long> = emptyList(),
+    /** Flows this event ENDS — a device slice naming the launch that caused it. */
+    val terminatingFlowIds: List<Long> = emptyList(),
 ) {
     val isBegin: Boolean get() = type == PerfettoTraceReader.TYPE_SLICE_BEGIN
     val isEnd: Boolean get() = type == PerfettoTraceReader.TYPE_SLICE_END
@@ -94,6 +101,11 @@ object PerfettoTraceReader {
     private const val TE_TRACK_UUID = 11
     private const val TE_NAME = 23
     private const val TE_SOURCE_LOCATION_IID = 34
+    // fixed64, both of them. TrackEvent.flow_ids (36) is a DEPRECATED varint
+    // twin of 47 and still in the schema; reading 47 as a varint parses cleanly
+    // and finds no flows at all, which is why ProtoWireTest pins fixed64.
+    private const val TE_FLOW_IDS = 47
+    private const val TE_TERMINATING_FLOW_IDS = 48
 
     // InternedData
     private const val ID_EVENT_NAMES = 2
@@ -248,6 +260,8 @@ object PerfettoTraceReader {
         var name: String? = null
         var locIid = 0L
         val annotations = LinkedHashMap<String, String>()
+        val flowIds = ArrayList<Long>()
+        val termFlowIds = ArrayList<Long>()
         while (te.hasMore()) {
             val tag = te.readTag()
             when (ProtoWire.fieldOf(tag)) {
@@ -257,6 +271,12 @@ object PerfettoTraceReader {
                 TE_NAME -> name = te.readString()
                 TE_SOURCE_LOCATION_IID -> locIid = te.readVarint()
                 TE_DEBUG_ANNOTATIONS -> readAnnotation(te.readSub(), annotations)
+                // `repeated fixed64` may arrive one per tag or packed into a
+                // single length-delimited run. The writer emits them singly;
+                // both are read, because the format permits either and a trace
+                // that packed them is not a broken trace.
+                TE_FLOW_IDS -> readFixed64s(te, ProtoWire.wireOf(tag), flowIds)
+                TE_TERMINATING_FLOW_IDS -> readFixed64s(te, ProtoWire.wireOf(tag), termFlowIds)
                 else -> te.skip(ProtoWire.wireOf(tag))
             }
         }
@@ -269,7 +289,20 @@ object PerfettoTraceReader {
             annotations = annotations,
             nameIid = nameIid,
             sourceLocationIid = locIid,
+            flowIds = flowIds,
+            terminatingFlowIds = termFlowIds,
         )
+    }
+
+    private fun readFixed64s(r: ProtoWire, wireType: Int, into: MutableList<Long>) {
+        if (wireType == ProtoWire.LEN) {
+            val packed = r.readSub()
+            while (packed.hasMore()) into.add(packed.readFixed64())
+        } else if (wireType == ProtoWire.FIXED64) {
+            into.add(r.readFixed64())
+        } else {
+            r.skip(wireType)
+        }
     }
 
     private fun readAnnotation(da: ProtoWire, into: MutableMap<String, String>) {
