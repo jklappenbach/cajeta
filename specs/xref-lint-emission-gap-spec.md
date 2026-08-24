@@ -55,11 +55,40 @@ funnel every callee resolution passes through, `drainCalls` merges duplicates,
 and `pruneDanglingEdges` would keep the edges (it indexes both `fqn` and
 `overloadKey`, and the callee keys match declared overload keys).
 
-### 1.4 Cause — field references (not yet established)
+### 1.4 Cause — field references (established 2026-08-24; SAME cause)
 `DotExpression::recordFieldXref` is called from `DotExpression::resolveTypes`,
-which `--lint` **does** run — so 1.3's explanation does not cover it, and the
-two must not be assumed to share a fix. What is measured is only that the
-records do not appear. See 6.1.
+which looked like a path lint runs. It is not: **body `resolveTypes` is invoked
+only from `Method::generateCode`.** Signature-position type resolution happens
+under lint; nothing inside a method body is resolved at all.
+
+So both relations have one cause — **resolution of method bodies is entangled
+with codegen, and lint stops before codegen.** This is one fix, not two.
+
+### 1.4.1 It is documented, and the documentation contradicts itself
+`Compiler::lint` (`Compiler.cpp:1991`):
+
+> What lint-mode capture yields, honestly: declarations, inheritance, enums,
+> template members, and parse-time type references. NOT calls or field
+> accesses — body resolveTypes runs only inside `Method::generateCode`, the
+> codegen phase lint deliberately stops before. Per-edit, the buffer's own
+> declarations are what must stay fresh; **edges refresh on build or whole-root
+> export.**
+
+`Compiler::lintRoot` (`Compiler.cpp:2238`) — the whole-root export:
+
+> this parses everything and stops where lint stops ... **Call and field-access
+> edges need body resolution (codegen) and come from a real build's
+> `--emit-xref` instead.**
+
+The first promises the whole-root export refreshes edges. The second, which IS
+the whole-root export, says it does not and points at a real build. Measured,
+the second is correct.
+
+The IDE runs only these two paths. So the promise the per-edit path makes is
+kept by nothing the product ever executes. `xref::captureStaticReceivers` — a
+separate AST walk added to both paths to recover static-receiver TYPE
+references — is the existing evidence that this gap was understood and patched
+narrowly rather than closed.
 
 ### 1.5 Why this survived as accepted
 `ide-symbol-index` plan item 2.3.4 records measured counts — 2087 call edges,
@@ -159,26 +188,39 @@ work — they have nothing to resolve.
 
 ## 6 Open questions
 
-- **6.1** **What suppresses field references under lint?** `recordFieldXref`
-  sits on a path lint runs, so the calls explanation does not apply. Candidates:
-  the receiver's type is unresolved during lint so `findProp` is never reached;
-  `idLine`/`getSourceFile()` are unset on the node; or the records are produced
-  and dropped later. **This must be measured before the plan is written** — it
-  determines whether this is one fix or two.
-- **6.2** **Where should the call site come from?** Two shapes:
-  (a) open the `CallSiteScope` in a pass lint runs (e.g. `MethodCallExpression`'s
-  resolve phase) as well as in codegen, de-duplicating in `drainCalls` as it
-  already does for the resolve/codegen double-resolution; or
-  (b) drop the ambient-scope mechanism and pass the position explicitly from the
-  AST node into `resolveMethod`.
-  (a) is smaller and reuses a merge path that already exists and is tested;
-  (b) removes a thread-local ambient dependency that is the reason this class of
-  bug is possible at all. **Recommendation: (a) for the fix, and record (b) as a
-  follow-up**, so the defect is closed without a refactor of every resolution
-  site in the same change.
-- **6.3** **Is a full-build export still wanted?** If lint and build must agree
-  (2.1.1), the cheapest guarantee is one recording path used by both. Confirm no
-  consumer needs build-only records.
-- **6.4** **Does this affect published `.cja` archives?** Archives carry
+- **6.1** ~~What suppresses field references under lint?~~ **RESOLVED
+  2026-08-24 — same cause as calls** (§1.4): body `resolveTypes` runs only
+  inside `Method::generateCode`. One fix, not two.
+- **6.2** **How does body resolution become available to lint?** This is the
+  load-bearing decision and the spec does not settle it. Three shapes:
+  - **(a) Decouple body `resolveTypes` from `Method::generateCode`** and run it
+    as a lint pass. Both relations then fall out of the existing recording code
+    with no change to `CallSiteScope`, `noteResolvedCall`, or `recordFieldXref`.
+    Truest to the design — resolution is a semantic pass and belongs before
+    codegen — and the largest change. The risk is cost per keystroke and any
+    behaviour that silently depends on resolution happening under an active
+    module.
+  - **(b) A dedicated AST walk over parsed bodies**, in the shape of the
+    existing `xref::captureStaticReceivers`, recording calls and field accesses
+    without full body resolution. Smallest and precedented, but it must resolve
+    overloads to name a callee's overload key, which is most of what body
+    resolution does — so it risks reimplementing resolution badly, and a WRONG
+    edge is explicitly worse than a missing one (ide-symbol-index §1.3).
+  - **(c) Feed the IDE a build export** for the whole-root index and keep lint
+    for per-edit declaration freshness. No compiler change, but it makes the
+    index require a successful build, and per-edit shards would then carry
+    strictly less than the shards they overwrite.
+  **Recommendation: (a)**, measured for cost against the lint-server budget
+  before committing. (b) is the fallback if (a) proves too expensive per edit;
+  (c) is a last resort because a partial per-edit shard clobbering a complete
+  whole-root shard is the failure mode the ingest code already warns about.
+- **6.3** **What is the per-edit cost budget?** `lint-server` recorded warm lint
+  at ~3.5 s median (Debug, 2026-08-18). Body resolution's added cost must be
+  measured against that number before (a) is chosen, and the answer decides
+  whether per-edit shards carry edges or only the whole-root export does.
+- **6.4** **Do the two comments' promises get reconciled?** Whichever shape
+  wins, both docstrings in `Compiler.cpp` state the contract and currently
+  contradict each other (§1.4.1). They are part of the deliverable.
+- **6.5** **Does this affect published `.cja` archives?** Archives carry
   `meta/reflection-keep.v1` and class sources; whether any carries xref records
   produced by a build path is unverified.
