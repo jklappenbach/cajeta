@@ -1,8 +1,17 @@
 # CooperativeMatrix epilogues: the accumulator must be touchable
 
-**Status: DRAFT 2026-08-24 — two API options laid out for a decision;
-neither is implemented.** Filed from cajeta-llama's threaded-forward-path
-10.12.20, where this is the measured remaining lever on the prefill GEMM.
+**Status: ACTIVE — Option B DECIDED (Julian, 2026-08-24).** The two
+fused verbs (§4) are the feature; Option A (§3) stays recorded as the
+eventual general successor and is NOT being built now. Plan:
+`agents/xpu-coopmatrix-epilogue-plan.md`. Filed from cajeta-llama's
+threaded-forward-path 10.12.20, where this is the measured remaining
+lever on the prefill GEMM.
+
+**v1 backend decision** (narrowing §4.2): on the Vulkan native tier the
+verbs do not get the scratch-spill fallback yet — the tier scan DEMOTES
+the kernel's tiles to the portable tile (the straddle machinery, with
+its note), which is correct and loud. The in-tier SPIR-V fallback is
+future work if a Vulkan consumer appears.
 
 ## 1. Definition — the problem
 
