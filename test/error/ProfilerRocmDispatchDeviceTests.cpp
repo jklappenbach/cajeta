@@ -248,6 +248,35 @@ TEST(ProfilerRocmDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
     // cannot match rather than guessing.
     EXPECT_GT(device->launch_id, 0);
     EXPECT_STRNE(device->kernel_name ? device->kernel_name : "", "");
+
+    // 6.7.1.a — a TIER_DEVICE span exists only because a dispatch record
+    // supplied it, and the trace's own account must agree: every device-tier
+    // record carries its resolution stamp, no more device-tier records exist
+    // than records the SDK delivered, and the backend that produced them
+    // reports a non-zero record count. The 6.6.3 trace violated the last of
+    // these (144 device spans beside rocm_records=0, from the pre-6.6.2.d
+    // settle ordering) and nothing pinned it.
+    int32_t deviceTierCount = 0;
+    for (const auto& e : g_caught) {
+        if (e.tier != CAJETA_PROF_TIER_DEVICE) continue;
+        deviceTierCount++;
+        EXPECT_GT(e.resolved_ns, 0)
+            << "a device-tier record with no resolution stamp — a device claim "
+               "no dispatch record stands behind";
+    }
+    EXPECT_LE((int64_t) deviceTierCount, rocmRecords())
+        << "more device-tier spans than dispatch records exist to supply them";
+
+    // 6.7.1.c on real hardware — a healthy asynchronous dispatch must come
+    // through the integrity checker CLEAN. Before the causal bracket, every
+    // span of a healthy gfx1151 run wore OUTSIDE_HOST, which taught readers to
+    // ignore the one flag that exists to catch a sheared clock domain.
+    auto checkDispatch = reinterpret_cast<int32_t (*)(const CajetaGpuEvent*)>(
+        sym("__cajeta_prof_check_dispatch"));
+    ASSERT_NE(checkDispatch, nullptr);
+    EXPECT_EQ(checkDispatch(device), CAJETA_SPAN_OK)
+        << "a real device span from a healthy run was flagged (flags="
+        << checkDispatch(device) << ")";
 }
 
 

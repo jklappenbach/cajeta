@@ -61,9 +61,18 @@ typedef struct {
 // span), yet it is still reported as host-side, because a consumer cannot tell
 // "exact because there is no device" from "degraded because the device would
 // not say" unless the mechanism is what gets reported.
-#define CAJETA_PROF_TIER_DEVICE 0   // vendor profiler dispatch records
-#define CAJETA_PROF_TIER_EVENT  1   // device event bracketing
-#define CAJETA_PROF_TIER_HOST   2   // host submit-to-complete
+//
+// ZERO IS UNKNOWN, on purpose (plan 6.7.2.a). Every CajetaGpuEvent is minted by
+// memset, so whatever value 0 names is the claim an event makes when nothing
+// assigned its tier — and DEVICE held that slot until 2026-08-24, which made
+// the unassigned default the strongest claim a span can make. The §10.4
+// demotion ladder walks DEVICE -> EVENT -> HOST by increment and floors at
+// HOST; UNKNOWN sits below DEVICE and is never a rung, only the unassigned
+// state.
+#define CAJETA_PROF_TIER_UNKNOWN 0  // never assigned by any backend
+#define CAJETA_PROF_TIER_DEVICE  1  // vendor profiler dispatch records
+#define CAJETA_PROF_TIER_EVENT   2  // device event bracketing
+#define CAJETA_PROF_TIER_HOST    3  // host submit-to-complete
 
 // Delivery granularity a sink asks for at registration (spec §5.6.8, §14.12).
 // Per-sink, never global: a global per-record rule taxes the writer, which is
@@ -97,6 +106,13 @@ typedef struct {
     int32_t     grid_x, grid_y, grid_z;
     int32_t     block_x, block_y, block_z;
     uint32_t    shared_bytes;
+    // Host clock at the moment a vendor record claimed this launch; 0 = no
+    // record ever did. Two duties (plan 6.7.2.c): it closes the causal bracket
+    // the integrity check bounds a device span by — a real span lies between
+    // its submit and its resolution, however asynchronous the dispatch — and
+    // it is the proof behind a TIER_DEVICE claim, which without it is a
+    // device span no record supplied.
+    int64_t     resolved_ns;
 } CajetaGpuEvent;
 
 // A sink returns 0 for "handled" and non-zero for "I faulted". A crash inside a

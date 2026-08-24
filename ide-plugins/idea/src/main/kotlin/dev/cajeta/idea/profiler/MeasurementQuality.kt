@@ -13,21 +13,29 @@ package dev.cajeta.idea.profiler
  * without a screenshot.
  */
 
-/** How a span's timing was obtained. Lower is better. */
+/**
+ * How a span's timing was obtained. Lower id is better among the real tiers —
+ * and id 0 is deliberately NOT one of them: the runtime mints every event by
+ * memset, so 0 is the value an event carries when nothing assigned its tier,
+ * and it maps to [UNKNOWN] (the runtime renumbered it so on 2026-08-24, plan
+ * 6.7.2.a — before that, 0 was DEVICE and the unassigned default read as the
+ * strongest claim a span can make).
+ */
 enum class ProfileTier(val id: Int, val label: String) {
     /** A vendor profiler dispatch record: the device said so itself. */
-    DEVICE(0, "device"),
+    DEVICE(1, "device"),
 
     /** Device event bracketing — real device time, coarser. */
-    EVENT(1, "event"),
+    EVENT(2, "event"),
 
     /** Host submit-to-complete. True, and about a wider thing than the kernel. */
-    HOST(2, "host"),
+    HOST(3, "host"),
 
     /**
-     * A tier id this build does not recognise. Ranked LAST, never first: an
-     * unrecognised claim is one that cannot be verified, and a newer runtime
-     * adding a tier must not have it silently rendered as the best available.
+     * A tier id this build does not recognise — including 0, the unassigned
+     * default. Ranked LAST, never first: an unrecognised claim is one that
+     * cannot be verified, and a newer runtime adding a tier must not have it
+     * silently rendered as the best available.
      */
     UNKNOWN(-1, "unknown");
 
@@ -57,7 +65,7 @@ object SpanIntegrity {
         NEGATIVE to "ends before it starts",
         IMPLAUSIBLE to "duration outside any sane bound",
         UNCORRELATED to "no trustworthy clock mapping",
-        OUTSIDE_HOST to "device span escapes its own launch window",
+        OUTSIDE_HOST to "device span outside its launch-to-resolution bracket",
     )
 
     /** One human-readable reason per raised bit. */
@@ -139,14 +147,14 @@ data class MeasurementQuality(
          * The quality of a span, or **null** when the event is not a measured
          * device span at all.
          *
-         * Null rather than a default is the whole of this function's care.
-         * `CAJETA_PROF_TIER_DEVICE` is 0, so the absent annotation and the
-         * strongest possible claim are the same bytes. A sampled CPU frame
-         * carries no `tier` at all, and defaulting it would report every host
-         * frame in a trace as measured on the device — which is not
-         * hypothetical: a real amdgpu run on this machine produced 144 spans
-         * claiming device tier from a backend that reported zero dispatch
-         * records (plan 6.7).
+         * Null rather than a default is the whole of this function's care. A
+         * sampled CPU frame carries no `tier` annotation at all — it is not a
+         * device measurement, degraded or otherwise — and defaulting the
+         * absent annotation to any tier would put every host frame in the
+         * quality legend. (The runtime-side twin of this hazard — memsetting
+         * an event whose 0-valued tier then read as DEVICE, the strongest
+         * claim — was closed by plan 6.7.2.a's renumber: 0 is now UNKNOWN on
+         * both sides.)
          */
         fun of(event: ProfileEvent): MeasurementQuality? = of(event.annotations)
 

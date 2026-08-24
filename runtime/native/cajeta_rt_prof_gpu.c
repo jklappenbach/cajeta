@@ -406,6 +406,11 @@ int32_t __cajeta_prof_gpu_resolve_dispatch(int64_t launchId,
     // vendor dispatch record supplied the span; every other path through the
     // ROCm backend reports HOST, because that is what those numbers are.
     ev.tier = CAJETA_PROF_TIER_DEVICE;
+    // The record's arrival closes the span's causal bracket: a real execution
+    // ended before the record describing it was read. The integrity check
+    // bounds dev_end by this rather than by host_return_ns, which an
+    // asynchronous dispatch overruns by construction (plan 6.7.2.c).
+    ev.resolved_ns = __cajeta_currentTimeNanos();
     __cajeta_prof_gpu_publish(&ev);   // published OUTSIDE the lock: a sink runs
                                       // user code, and holding a lock across it
                                       // would let a slow sink stall every launch

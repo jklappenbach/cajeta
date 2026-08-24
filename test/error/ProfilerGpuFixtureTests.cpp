@@ -170,8 +170,9 @@ TEST(ProfilerGpuFixture, writeGpuTrace) {
     for (const CajetaGpuEvent& e : src) f.publish(&e);
 
     // Device tier: the span a vendor dispatch record would have supplied. Held
-    // strictly inside the host window, which is what an honest device span
-    // looks like and what Unit 9's integrity check expects.
+    // strictly inside the host window, resolution stamped after the span ends
+    // — the causal bracket an honest device span sits in, and what Unit 9's
+    // integrity check expects (plan 6.7.2.c).
     for (size_t i = 0; i < src.size(); ++i) {
         CajetaGpuEvent d = src[i];
         d.launch_id += 1000;
@@ -179,6 +180,7 @@ TEST(ProfilerGpuFixture, writeGpuTrace) {
         const int64_t window = d.host_return_ns - d.host_launch_ns;
         d.dev_start_ns = d.host_launch_ns + window / 8;
         d.dev_end_ns   = d.host_return_ns - window / 8;
+        d.resolved_ns  = d.host_return_ns + window;
         f.publish(&d);
     }
 
@@ -201,11 +203,15 @@ TEST(ProfilerGpuFixture, writeGpuTrace) {
     // fixture has to contain one for the viewer to have anything to render
     // differently.
     //
-    // OUTSIDE_HOST rather than a negative span, for two reasons. It is what the
-    // real amdgpu run produced, so the fixture carries a failure that actually
-    // happens. And a negative span emits its END before its BEGIN, which leaves
-    // a NEIGHBOURING slice unclosed on the same track — the fixture would then
-    // be testing the viewer against damage the flag is not about.
+    // OUTSIDE_HOST via a SHEARED CLOCK DOMAIN — §6.5's real failure, the one
+    // the causal bracket exists to catch: the span ends after the moment its
+    // own record was read, which no real execution can. (Before 6.7 this
+    // exemplar was "span after host_return", but that is what every healthy
+    // asynchronous dispatch looks like and is no longer a fault.) Not a
+    // negative span, because a negative span emits its END before its BEGIN,
+    // which leaves a NEIGHBOURING slice unclosed on the same track — the
+    // fixture would then be testing the viewer against damage the flag is not
+    // about.
     {
         CajetaGpuEvent bad = src[1];
         bad.launch_id += 3000;
@@ -215,6 +221,7 @@ TEST(ProfilerGpuFixture, writeGpuTrace) {
         const int64_t window = bad.host_return_ns - bad.host_launch_ns;
         bad.dev_start_ns = bad.host_return_ns + window;
         bad.dev_end_ns   = bad.dev_start_ns + window / 2;
+        bad.resolved_ns  = bad.host_return_ns + window / 4;  // before dev_end
         f.publish(&bad);
     }
 

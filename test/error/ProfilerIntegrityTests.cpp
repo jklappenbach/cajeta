@@ -262,56 +262,124 @@ TEST(ProfilerIntegrity, nodeAdviceNamesTheFixAndDiffersByCause) {
     EXPECT_EQ(std::string(itg().node_advice(CAJETA_NODE_OK, "/dev/kfd")), "");
 }
 
-// --- 9.1.a: the device span belongs to its own launch ----------------------
+// --- 9.1.a / 6.7: the device span belongs to its own launch ----------------
+//
+// The bracket a real span must lie in is [submit, resolution] — by CAUSALITY:
+// a kernel cannot start before it was submitted, and a dispatch record cannot
+// describe an execution that has not finished when the record is read. The
+// bracket is NOT [submit, launch-return]: an asynchronous HIP kernel executes
+// after the launch call returns by construction (6.7's reproduction measured
+// dev_start landing 8.5–491 µs after the launch instant, on 144 of 144
+// dispatches), and the earlier launch-return bound flagged every one of them.
 
 namespace {
 CajetaGpuEvent dispatch(int64_t hostLaunch, int64_t hostReturn,
                         int64_t devStart, int64_t devEnd,
-                        int32_t tier = CAJETA_PROF_TIER_DEVICE) {
+                        int32_t tier = CAJETA_PROF_TIER_DEVICE,
+                        int64_t resolved = 0) {
     CajetaGpuEvent ev{};
     ev.host_launch_ns = hostLaunch;
     ev.host_return_ns = hostReturn;
     ev.dev_start_ns = devStart;
     ev.dev_end_ns = devEnd;
     ev.tier = tier;
+    ev.resolved_ns = resolved;
     return ev;
 }
 } // namespace
 
-TEST(ProfilerIntegrity, deviceSpanInsideTheHostWindowIsConsistent) {
+TEST(ProfilerIntegrity, deviceSpanInsideItsCausalBracketIsConsistent) {
     auto check = reinterpret_cast<int32_t (*)(const CajetaGpuEvent*)>(
         itg().jit->lookupRawSymbol("__cajeta_prof_check_dispatch"));
     ASSERT_NE(check, nullptr) << "__cajeta_prof_check_dispatch not linked";
 
-    auto ok = dispatch(1000, 9000, 2000, 8000);
+    auto ok = dispatch(1000, 9000, 2000, 8000, CAJETA_PROF_TIER_DEVICE, 9500);
     EXPECT_EQ(check(&ok), CAJETA_SPAN_OK);
 
     // Touching either edge is legal — a dispatch that begins the instant it is
-    // submitted is fast, not broken.
-    auto flush = dispatch(1000, 9000, 1000, 9000);
+    // submitted is fast, not broken, and one resolved the instant it ended is
+    // a synchronous collect, not a fault.
+    auto flush = dispatch(1000, 9000, 1000, 9000, CAJETA_PROF_TIER_DEVICE, 9000);
     EXPECT_EQ(check(&flush), CAJETA_SPAN_OK);
 }
 
-// The failure this exists for: a lane converted with the WRONG clock domain.
-// §6.5 measured two backends' domains 5.68 s apart, and the resulting span is
-// an ordinary 6 ms of work — it is only wrong relative to the launch it came
-// from.
-TEST(ProfilerIntegrity, aDeviceSpanOutsideItsHostWindowIsFlagged) {
+// 6.7.1.c — the shape EVERY real async dispatch has: the kernel starts after
+// the launch call already returned and completes long after it, and the
+// record arrives later still. Flagging this is flagging the truth; before the
+// fix this exact shape carried OUTSIDE_HOST on 144 of 144 spans of a healthy
+// gfx1151 run.
+TEST(ProfilerIntegrity, anAsyncSpanCompletingAfterLaunchReturnIsNotFlagged) {
+    auto check = reinterpret_cast<int32_t (*)(const CajetaGpuEvent*)>(
+        itg().jit->lookupRawSymbol("__cajeta_prof_check_dispatch"));
+    ASSERT_NE(check, nullptr);
+
+    const int64_t launch = 1000000000LL, ret = launch + 8000LL;  // enqueue cost
+    const int64_t start = ret + 8700LL, end = start + 98000LL;   // measured shape
+    auto async = dispatch(launch, ret, start, end,
+                          CAJETA_PROF_TIER_DEVICE, end + 500000LL);
+    EXPECT_EQ(check(&async), CAJETA_SPAN_OK)
+        << "a legitimate asynchronous device span was flagged";
+}
+
+// The failure the bracket exists for: a lane converted with the WRONG clock
+// domain. §6.5 measured two backends' domains 5.68 s apart, and the resulting
+// span is an ordinary 6 ms of work — it is only wrong relative to the launch
+// and the resolution it came from: a +5.68 s shear puts dev_end after the
+// moment the record was read, and a −5.68 s shear puts dev_start before the
+// submit. Both sides of the bracket are load-bearing.
+TEST(ProfilerIntegrity, aDeviceSpanOutsideItsCausalBracketIsFlagged) {
     auto check = reinterpret_cast<int32_t (*)(const CajetaGpuEvent*)>(
         itg().jit->lookupRawSymbol("__cajeta_prof_check_dispatch"));
     ASSERT_NE(check, nullptr);
 
     const int64_t launch = 1000000000LL, ret = launch + 8000000LL;
+    const int64_t resolved = ret + 2000000LL;
     const int64_t shear = 5680000000LL;                 // §6.5's measured gap
-    auto sheared = dispatch(launch, ret, launch + shear, launch + shear + 6000000LL);
+    auto sheared = dispatch(launch, ret, launch + shear,
+                            launch + shear + 6000000LL,
+                            CAJETA_PROF_TIER_DEVICE, resolved);
     EXPECT_TRUE(check(&sheared) & CAJETA_SPAN_OUTSIDE_HOST);
     // ... and note the span itself looks entirely reasonable.
     EXPECT_EQ(sheared.dev_end_ns - sheared.dev_start_ns, 6000000LL);
 
-    auto early = dispatch(launch, ret, launch - 1, ret);
+    auto early = dispatch(launch, ret, launch - 1, ret,
+                          CAJETA_PROF_TIER_DEVICE, resolved);
     EXPECT_TRUE(check(&early) & CAJETA_SPAN_OUTSIDE_HOST);
-    auto late = dispatch(launch, ret, launch, ret + 1);
+    auto late = dispatch(launch, ret, launch, resolved + 1,
+                         CAJETA_PROF_TIER_DEVICE, resolved);
     EXPECT_TRUE(check(&late) & CAJETA_SPAN_OUTSIDE_HOST);
+}
+
+// 6.7.1.c — TIER_DEVICE means "a vendor dispatch record supplied this span".
+// An event claiming it with resolved_ns == 0 is a device claim NO record
+// stands behind — 6.6.3's original reading of the amdgpu trace — and its
+// timestamps have no trustworthy provenance, which is what UNCORRELATED says.
+TEST(ProfilerIntegrity, aDeviceClaimWithNoRecordBehindItIsUncorrelated) {
+    auto check = reinterpret_cast<int32_t (*)(const CajetaGpuEvent*)>(
+        itg().jit->lookupRawSymbol("__cajeta_prof_check_dispatch"));
+    ASSERT_NE(check, nullptr);
+
+    auto orphan = dispatch(1000, 9000, 2000, 8000, CAJETA_PROF_TIER_DEVICE, 0);
+    EXPECT_TRUE(check(&orphan) & CAJETA_SPAN_UNCORRELATED)
+        << "a device-tier span with no resolution behind it passed as clean";
+
+    // An unresolved non-DEVICE tier makes no record claim; the launch-return
+    // fallback bracket still applies to it, nothing more.
+    auto ev = dispatch(1000, 9000, 2000, 8000, CAJETA_PROF_TIER_EVENT, 0);
+    EXPECT_EQ(check(&ev), CAJETA_SPAN_OK);
+}
+
+// 6.7.1.b — the memset default must be the WEAKEST claim, not the strongest.
+// Every CajetaGpuEvent is minted by memset; with DEVICE = 0, an event that
+// never reached a backend's begin_launch silently asserted a vendor-record
+// measurement, and the viewer had to defend against it (11.1.f refuses the
+// absent annotation for exactly this reason).
+TEST(ProfilerIntegrity, theMemsetDefaultTierIsNotTheStrongestClaim) {
+    EXPECT_NE(CAJETA_PROF_TIER_DEVICE, 0)
+        << "tier 0 is the memset default and must not read as DEVICE";
+    CajetaGpuEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    EXPECT_EQ(ev.tier, CAJETA_PROF_TIER_UNKNOWN);
 }
 
 // A HOST-tier record's device span IS the host window, so containment is a
