@@ -949,6 +949,19 @@ void foldWaveVariants(llvm::Function& f) {
                             forceLoopVectorWidth(latch, waveW);
                     }
                 }
+                // CAJETA_XPU_CPU_DUMP_PREOPT=<dir>: write the whole host
+                // module as textual IR right before the vectorize pipeline, so
+                // a pass crash (the XpuCoopEpilogue InstCombine SIGSEGV) can be
+                // reproduced in standalone `opt` and reduced with llvm-reduce.
+                if (const char* dumpDir =
+                        std::getenv("CAJETA_XPU_CPU_DUMP_PREOPT")) {
+                    std::error_code ec;
+                    llvm::raw_fd_ostream os(
+                        std::string(dumpDir) + "/" +
+                            wrapper->getName().str() + ".preopt.ll",
+                        ec);
+                    if (!ec) hostModule.print(os, nullptr);
+                }
                 if (!cpuVectorizeDisabled())
                     vectorizeFunction(*wrapper, hostTm.get());
                 if (waveKernel) {

@@ -15,6 +15,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ReplaceConstant.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 
@@ -229,12 +230,27 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
     // instance, which would race across the blocks/threads that each call this
     // wrapper. Replace it with a wrapper-local buffer (fresh per block call);
     // the addrspacecast 0→3 is a no-op the CPU backend folds.
+    // Discovery must see THROUGH ConstantExprs: a slice base (`arr[k]` with a
+    // constant k, epilogue-verb SLICE args) folds to a ConstantExpr GEP over
+    // the global, so the instruction operand is the CE, not the global — a
+    // shared array referenced only that way would silently keep ONE module
+    // global across all blocks (a cross-block race).
     llvm::SmallPtrSet<llvm::GlobalVariable*, 4> sharedGlobals;
+    llvm::SmallVector<llvm::Value*, 16> work;
+    llvm::SmallPtrSet<llvm::Value*, 16> seen;
     for (auto& bb : *wrapper)
         for (auto& in : bb)
             for (llvm::Value* op : in.operands())
-                if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(op))
-                    if (gv->getAddressSpace() == 3) sharedGlobals.insert(gv);
+                if (seen.insert(op).second) work.push_back(op);
+    while (!work.empty()) {
+        llvm::Value* v = work.pop_back_val();
+        if (auto* gv = llvm::dyn_cast<llvm::GlobalVariable>(v)) {
+            if (gv->getAddressSpace() == 3) sharedGlobals.insert(gv);
+        } else if (auto* ce = llvm::dyn_cast<llvm::ConstantExpr>(v)) {
+            for (llvm::Value* op : ce->operands())
+                if (seen.insert(op).second) work.push_back(op);
+        }
+    }
     for (llvm::GlobalVariable* gv : sharedGlobals) {
         llvm::AllocaInst* buf;
         if (gv->hasInitializer()) {
@@ -254,6 +270,15 @@ void fissionBarrierKernel(llvm::Function* linked, llvm::Function* wrapper,
                                   gv->getName() + ".dyn");
         }
         buf->setAlignment(llvm::Align(16));
+        // The replacement is an INSTRUCTION, and gv may be used inside
+        // ConstantExprs (the folded slice GEP above). RAUW through a constant
+        // user re-uniques the constant with `cast<Constant>(New)` — in a
+        // release build that blindly installs the Instruction pointer INSIDE
+        // the "constant", i.e. malformed IR that InstCombine later walks into
+        // a nondeterministic SIGSEGV (the XpuCoopEpilogue parallel-suite
+        // crash). Expand every constant user to instructions first; then all
+        // uses are instruction operands and the RAUW is well-defined.
+        llvm::convertUsersOfConstantsToInstructions({gv});
         gv->replaceAllUsesWith(
             eb.CreateAddrSpaceCast(buf, llvm::PointerType::get(ctx, 3)));
         if (gv->use_empty()) gv->eraseFromParent();
