@@ -97,6 +97,12 @@ struct cajeta_vk {
     PFN_vkCmdDispatch vkCmdDispatch;
     PFN_vkQueueSubmit vkQueueSubmit;
     PFN_vkQueueWaitIdle vkQueueWaitIdle;
+    // Deferred batch submission (v2 launch path).
+    PFN_vkCreateFence vkCreateFence;
+    PFN_vkWaitForFences vkWaitForFences;
+    PFN_vkResetFences vkResetFences;
+    PFN_vkResetDescriptorPool vkResetDescriptorPool;
+    PFN_vkResetCommandBuffer vkResetCommandBuffer;
     // Ray-query / acceleration-structure path (cajeta-gpu Part C inc 3b).
     // Resolved + the device extensions/features enabled only when the physical
     // device supports VK_KHR_acceleration_structure + VK_KHR_ray_query +
@@ -711,6 +717,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkCmdDispatch);
     CAJ_VKD(vkQueueSubmit);
     CAJ_VKD(vkQueueWaitIdle);
+    CAJ_VKD(vkCreateFence);
+    CAJ_VKD(vkWaitForFences);
+    CAJ_VKD(vkResetFences);
+    CAJ_VKD(vkResetDescriptorPool);
+    CAJ_VKD(vkResetCommandBuffer);
     // cajeta-profiler Unit 13 — timestamp-query timing entry points.
     CAJ_VKD(vkCreateQueryPool);
     CAJ_VKD(vkDestroyQueryPool);
@@ -1061,7 +1072,104 @@ static void* cajeta_xpu_vk_mapped(int64_t handle) {
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return m;
 }
+// ---- Deferred batch submission state (HIP-stream parity) -------------------
+// v1 recorded one command buffer per launch, submitted it and vkQueueWaitIdle'd
+// under the mutex — the host blocked for the full kernel duration on every
+// dispatch (~230/token on the 8B decode), which the profiler files as
+// vulkan-dispatch-serialization and the bench measured as most of ~200 ms/tok.
+// v2 records NoSync dispatches into ONE command buffer (compute->compute
+// barrier between them) and submits once with a fence at the points that need
+// results: KernelStream.sync, any host read of a buffer the batch touched, or
+// a host WRITE into one (the upload-into-staging hazard HIP orders implicitly
+// via stream semantics and Vulkan does not). Transient buffers/samplers freed
+// while a batch is open are deferred to the flush — their descriptors are
+// baked into recorded dispatches. Profiled launches (the timestamp bracket
+// needs per-dispatch completion) and CAJETA_XPU_VK_SUBMIT=eager keep the v1
+// per-launch path.
+struct caj_vk_dpool { VkDescriptorPool pool; };
+#define CAJ_VK_BATCH_POOLS 64
+#define CAJ_VK_BOUND_SLOTS 8192
+#define CAJ_VK_PENDING_FREES 16384
+#define CAJ_VK_PENDING_SAMPLERS 256
+static struct {
+    int open;                      // recording?
+    int inited;                    // cmd/fence created?
+    unsigned dispatches;           // recorded in the open batch
+    VkCommandBuffer cmd;
+    VkFence fence;
+    struct caj_vk_dpool pools[CAJ_VK_BATCH_POOLS];
+    int npools;                    // pools created (kept across batches)
+    int poolCursor;                // pool currently allocating from
+    // Open-addressing set of VkBuffer handles the open batch references.
+    // Overflow degrades to "assume referenced" (flush on any host access).
+    void* bound[CAJ_VK_BOUND_SLOTS];
+    unsigned nbound;
+    int boundOverflow;
+    int64_t pendingFree[CAJ_VK_PENDING_FREES];
+    int npendingFree;
+    int64_t pendingSampler[CAJ_VK_PENDING_SAMPLERS];
+    int npendingSampler;
+} g_vk_batch;
+
+static void cajeta_xpu_vk_flush(void);          // defined with the launch path
+static void cajeta_xpu_vk_free_now(int64_t handle);
+
+static void caj_vk_bound_note(void* buf) {
+    if (!buf || g_vk_batch.boundOverflow) return;
+    if (g_vk_batch.nbound > (CAJ_VK_BOUND_SLOTS * 3u) / 4u) {
+        g_vk_batch.boundOverflow = 1;
+        return;
+    }
+    size_t h = ((size_t) buf >> 4) % CAJ_VK_BOUND_SLOTS;
+    while (g_vk_batch.bound[h]) {
+        if (g_vk_batch.bound[h] == buf) return;
+        h = (h + 1) % CAJ_VK_BOUND_SLOTS;
+    }
+    g_vk_batch.bound[h] = buf;
+    g_vk_batch.nbound++;
+}
+static int caj_vk_bound_has(void* buf) {
+    if (!buf) return 0;
+    if (g_vk_batch.boundOverflow) return 1;
+    size_t h = ((size_t) buf >> 4) % CAJ_VK_BOUND_SLOTS;
+    while (g_vk_batch.bound[h]) {
+        if (g_vk_batch.bound[h] == buf) return 1;
+        h = (h + 1) % CAJ_VK_BOUND_SLOTS;
+    }
+    return 0;
+}
+
+// Host is about to READ or WRITE the mapped storage of `handle`. If the open
+// batch references that VkBuffer (through any view of it — the set stores the
+// VkBuffer, which a view shares with its parent), the batch must execute
+// first: a read needs its results, a write would clobber a recorded-but-
+// unexecuted dispatch's input. Not referenced -> no ordering owed, no flush.
+static void cajeta_xpu_vk_note_host_access(int64_t handle) {
+    if (!g_vk_batch.open) return;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
+    if (r && g_vk_batch.open && caj_vk_bound_has((void*) r->buffer))
+        cajeta_xpu_vk_flush();
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+
 static void cajeta_xpu_vk_free(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    // A recorded-but-unexecuted dispatch may hold this buffer in a baked
+    // descriptor set; destroying it now would fault the flush. Park the
+    // handle (slot stays live, so no reuse aliasing) until the batch lands.
+    if (g_vk_batch.open) {
+        if (g_vk_batch.npendingFree < CAJ_VK_PENDING_FREES) {
+            g_vk_batch.pendingFree[g_vk_batch.npendingFree++] = handle;
+            pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+            return;
+        }
+        cajeta_xpu_vk_flush();   // backstop: land the batch, then free now
+    }
+    cajeta_xpu_vk_free_now(handle);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+static void cajeta_xpu_vk_free_now(int64_t handle) {
     pthread_mutex_lock(&g_xpu_vk_submit_mu);
     struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
     if (r) {
@@ -1520,8 +1628,17 @@ static int64_t cajeta_xpu_vk_make_sampler(int32_t filterMode,
 
 static void cajeta_xpu_vk_destroy_sampler(int64_t handle) {
     if (!handle) return;
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    // Same deferral as vk_free: a recorded dispatch may reference it.
+    if (g_vk_batch.open
+            && g_vk_batch.npendingSampler < CAJ_VK_PENDING_SAMPLERS) {
+        g_vk_batch.pendingSampler[g_vk_batch.npendingSampler++] = handle;
+        pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+        return;
+    }
     g_xpu_vk.vkDestroySampler(g_xpu_vk.device,
                               (VkSampler) (uintptr_t) handle, NULL);
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
 // --- Vulkan acceleration-structure (BVH) table (Part C inc 3b) ---------------
@@ -2255,242 +2372,535 @@ static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
     return VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 }
 
-static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
-                                const char* entry, const int64_t* bindings,
-                                const uint8_t* kinds, int n,
-                                unsigned gx, unsigned gy, unsigned gz,
-                                unsigned bx, unsigned by, unsigned bz,
-                                unsigned sharedBytes,
-                                int userSpecCount,
-                                const int32_t* userSpecValues) {
-    if (!spirv || len < 4 || n <= 0) return 0;
-    // Serialize the dispatch: VkQueue + VkCommandPool require external host
-    // synchronization, and an AS binding reads the g_vk_accels table — all shared
-    // with the build/free paths, which may run on a different OS thread.
-    pthread_mutex_lock(&g_xpu_vk_submit_mu);
-    VkShaderModule module = VK_NULL_HANDLE;
-    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-    VkPipelineLayout pipeLayout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkDescriptorPool descPool = VK_NULL_HANDLE;
-    VkCommandBuffer cmd = VK_NULL_HANDLE;
-    int ok = 0;
+// ---- Pipeline cache --------------------------------------------------------
+// v1 created shader module + layouts + pipeline on EVERY launch and destroyed
+// them after — RADV recompiled every kernel every dispatch, most of the
+// ~200 ms/token the 8B decode measured. Pipelines are keyed on the kernel blob
+// plus everything baked at creation (block dims, dynamic-shared size, user
+// spec values, binding kinds); the grid is a vkCmdDispatch argument and is NOT
+// part of the key. Entries live for the process — the engine's kernel set is
+// small (~100) and models churn buffers, not pipelines.
+struct caj_vk_pipe {
+    int live;
+    const void* spirv;
+    uint64_t len;
+    unsigned bx, by, bz, sharedBytes;
+    int nspec;
+    int32_t spec[60];
+    int n;
+    uint8_t kinds[64];
+    VkShaderModule module;
+    VkDescriptorSetLayout setLayout;
+    VkPipelineLayout pipeLayout;
+    VkPipeline pipeline;
+};
+#define CAJ_VK_PIPES 1024
+static struct caj_vk_pipe g_vk_pipes[CAJ_VK_PIPES];
+static int g_vk_pipe_count;
+
+static struct caj_vk_pipe* caj_vk_pipe_get(
+        const void* spirv, uint64_t len, const char* entry,
+        const uint8_t* kinds, int n,
+        unsigned bx, unsigned by, unsigned bz, unsigned sharedBytes,
+        int userSpecCount, const int32_t* userSpecValues) {
+    int nUser = userSpecCount;
+    if (nUser < 0) nUser = 0;
+    if (nUser > 60) nUser = 60;
+    for (int i = 0; i < g_vk_pipe_count; ++i) {
+        struct caj_vk_pipe* P = &g_vk_pipes[i];
+        if (!P->live || P->spirv != spirv || P->len != len) continue;
+        if (P->bx != bx || P->by != by || P->bz != bz
+                || P->sharedBytes != sharedBytes || P->n != n
+                || P->nspec != nUser)
+            continue;
+        if (nUser && memcmp(P->spec, userSpecValues,
+                            (size_t) nUser * sizeof(int32_t)) != 0)
+            continue;
+        if (memcmp(P->kinds, kinds, (size_t) n) != 0) continue;
+        return P;
+    }
+    if (g_vk_pipe_count >= CAJ_VK_PIPES) {
+        fprintf(stderr, "cajeta.xpu.vulkan: pipeline cache FULL (%d) for "
+                "kernel '%s'\n", CAJ_VK_PIPES, entry ? entry : "?");
+        return NULL;
+    }
+    struct caj_vk_pipe* P = &g_vk_pipes[g_vk_pipe_count];
+    memset(P, 0, sizeof(*P));
+    P->spirv = spirv; P->len = len;
+    P->bx = bx; P->by = by; P->bz = bz; P->sharedBytes = sharedBytes;
+    P->nspec = nUser;
+    if (nUser) memcpy(P->spec, userSpecValues,
+                      (size_t) nUser * sizeof(int32_t));
+    P->n = n;
+    memcpy(P->kinds, kinds, (size_t) n);
 
     VkShaderModuleCreateInfo smci;
     memset(&smci, 0, sizeof(smci));
     smci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     smci.codeSize = (size_t) len;
     smci.pCode = (const uint32_t*) spirv;
-    if (g_xpu_vk.vkCreateShaderModule(g_xpu_vk.device, &smci, NULL, &module)
-            != VK_SUCCESS) goto done;
+    if (g_xpu_vk.vkCreateShaderModule(g_xpu_vk.device, &smci, NULL,
+                                      &P->module) != VK_SUCCESS)
+        goto fail;
 
-    VkDescriptorSetLayoutBinding binds[64];
-    if (n > 64) goto done;
-    memset(binds, 0, sizeof(binds[0]) * n);
-    for (int i = 0; i < n; ++i) {
-        binds[i].binding = (uint32_t) i;
-        binds[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
-        binds[i].descriptorCount =
-            (kinds[i] == CAJ_VKB_BUFFER_ARRAY) ? CAJ_VK_BINDLESS_MAX : 1;
-        binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    {
+        VkDescriptorSetLayoutBinding binds[64];
+        memset(binds, 0, sizeof(binds[0]) * n);
+        for (int i = 0; i < n; ++i) {
+            binds[i].binding = (uint32_t) i;
+            binds[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
+            binds[i].descriptorCount =
+                (kinds[i] == CAJ_VKB_BUFFER_ARRAY) ? CAJ_VK_BINDLESS_MAX : 1;
+            binds[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo slci;
+        memset(&slci, 0, sizeof(slci));
+        slci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        slci.bindingCount = (uint32_t) n;
+        slci.pBindings = binds;
+        if (g_xpu_vk.vkCreateDescriptorSetLayout(g_xpu_vk.device, &slci, NULL,
+                                                 &P->setLayout) != VK_SUCCESS)
+            goto fail;
     }
-    VkDescriptorSetLayoutCreateInfo slci;
-    memset(&slci, 0, sizeof(slci));
-    slci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    slci.bindingCount = (uint32_t) n;
-    slci.pBindings = binds;
-    if (g_xpu_vk.vkCreateDescriptorSetLayout(g_xpu_vk.device, &slci, NULL,
-                                             &setLayout) != VK_SUCCESS) goto done;
-
-    VkPipelineLayoutCreateInfo plci;
-    memset(&plci, 0, sizeof(plci));
-    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    plci.setLayoutCount = 1;
-    plci.pSetLayouts = &setLayout;
-    if (g_xpu_vk.vkCreatePipelineLayout(g_xpu_vk.device, &plci, NULL,
-                                        &pipeLayout) != VK_SUCCESS) goto done;
-
-    // Spec constants: SpecId 0/1/2 = block.x/y/z (workgroup size, see
-    // injectWorkgroupSizeSpecConstant), SpecId 3 = the dynamic shared array's
-    // length in elements (= sharedBytes / 4; the dynamic-shared element is 4 bytes
-    // — int32/float32 — for now). SpecId kFirstUserSpecId(4)+i = the user's
-    // Spec.geti/getf slot `i`, supplied as a host override (raw 4-byte word; i32
-    // today, f32 reinterpreted later). All set at pipeline creation.
-    enum { CAJ_VK_FIRST_USER_SPEC_ID = 4 };   // mirrors LoweringTarget::kFirstUserSpecId
-    int nUser = userSpecCount;
-    if (nUser < 0) nUser = 0;
-    if (nUser > 60) nUser = 60;               // cap: 4 reserved + 60 user <= 64
-    uint32_t specData[64];
-    VkSpecializationMapEntry specEntries[64];
-    specData[0] = bx; specData[1] = by; specData[2] = bz;
-    specData[3] = sharedBytes / 4u;
-    specEntries[0] = (VkSpecializationMapEntry){ 0, 0,                    sizeof(uint32_t) };
-    specEntries[1] = (VkSpecializationMapEntry){ 1, sizeof(uint32_t),     sizeof(uint32_t) };
-    specEntries[2] = (VkSpecializationMapEntry){ 2, 2 * sizeof(uint32_t), sizeof(uint32_t) };
-    specEntries[3] = (VkSpecializationMapEntry){ 3, 3 * sizeof(uint32_t), sizeof(uint32_t) };
-    for (int i = 0; i < nUser; ++i) {
-        specData[4 + i] = (uint32_t) userSpecValues[i];   // raw word (bit-exact)
-        specEntries[4 + i] = (VkSpecializationMapEntry){
-            (uint32_t) (CAJ_VK_FIRST_USER_SPEC_ID + i),
-            (uint32_t) ((4 + i) * sizeof(uint32_t)), sizeof(uint32_t) };
+    {
+        VkPipelineLayoutCreateInfo plci;
+        memset(&plci, 0, sizeof(plci));
+        plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        plci.setLayoutCount = 1;
+        plci.pSetLayouts = &P->setLayout;
+        if (g_xpu_vk.vkCreatePipelineLayout(g_xpu_vk.device, &plci, NULL,
+                                            &P->pipeLayout) != VK_SUCCESS)
+            goto fail;
     }
-    VkSpecializationInfo specInfo;
-    specInfo.mapEntryCount = (uint32_t) (4 + nUser);
-    specInfo.pMapEntries = specEntries;
-    specInfo.dataSize = (size_t) (4 + nUser) * sizeof(uint32_t);
-    specInfo.pData = specData;
+    {
+        // Spec constants: SpecId 0/1/2 = block dims, SpecId 3 = the dynamic
+        // shared array's length in 4-byte elements, SpecId 4+i = the user's
+        // Spec.geti/getf slot i (raw 4-byte word). All baked at pipeline
+        // creation — which is exactly why they are part of the cache key.
+        enum { CAJ_VK_FIRST_USER_SPEC_ID = 4 };
+        uint32_t specData[64];
+        VkSpecializationMapEntry specEntries[64];
+        specData[0] = bx; specData[1] = by; specData[2] = bz;
+        specData[3] = sharedBytes / 4u;
+        for (int i = 0; i < 4; ++i)
+            specEntries[i] = (VkSpecializationMapEntry){
+                (uint32_t) i, (uint32_t) (i * sizeof(uint32_t)),
+                sizeof(uint32_t) };
+        for (int i = 0; i < nUser; ++i) {
+            specData[4 + i] = (uint32_t) userSpecValues[i];
+            specEntries[4 + i] = (VkSpecializationMapEntry){
+                (uint32_t) (CAJ_VK_FIRST_USER_SPEC_ID + i),
+                (uint32_t) ((4 + i) * sizeof(uint32_t)), sizeof(uint32_t) };
+        }
+        VkSpecializationInfo specInfo;
+        specInfo.mapEntryCount = (uint32_t) (4 + nUser);
+        specInfo.pMapEntries = specEntries;
+        specInfo.dataSize = (size_t) (4 + nUser) * sizeof(uint32_t);
+        specInfo.pData = specData;
 
-    VkComputePipelineCreateInfo cpci;
-    memset(&cpci, 0, sizeof(cpci));
-    cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    cpci.stage.module = module;
-    cpci.stage.pName = entry;
-    cpci.stage.pSpecializationInfo = &specInfo;
-    cpci.layout = pipeLayout;
-    if (g_xpu_vk.vkCreateComputePipelines(g_xpu_vk.device, VK_NULL_HANDLE, 1,
-                                          &cpci, NULL, &pipeline) != VK_SUCCESS)
-        goto done;
-
-    // Pool sized by the distinct descriptor types actually used (storage
-    // buffer / sampled image / sampler), one entry per non-empty class.
-    uint32_t nBuf = 0, nImg = 0, nStor = 0, nSamp = 0, nAccel = 0;
-    for (int i = 0; i < n; ++i) {
-        if (kinds[i] == CAJ_VKB_TEXTURE) ++nImg;
-        else if (kinds[i] == CAJ_VKB_STORAGE_IMAGE) ++nStor;
-        else if (kinds[i] == CAJ_VKB_SAMPLER) ++nSamp;
-        else if (kinds[i] == CAJ_VKB_ACCEL) ++nAccel;
-        else if (kinds[i] == CAJ_VKB_BUFFER_ARRAY) nBuf += CAJ_VK_BINDLESS_MAX;
-        else ++nBuf;
+        VkComputePipelineCreateInfo cpci;
+        memset(&cpci, 0, sizeof(cpci));
+        cpci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        cpci.stage.module = P->module;
+        cpci.stage.pName = entry;
+        cpci.stage.pSpecializationInfo = &specInfo;
+        cpci.layout = P->pipeLayout;
+        if (g_xpu_vk.vkCreateComputePipelines(g_xpu_vk.device, VK_NULL_HANDLE,
+                                              1, &cpci, NULL, &P->pipeline)
+                != VK_SUCCESS)
+            goto fail;
     }
-    VkDescriptorPoolSize poolSizes[5];
-    uint32_t nPool = 0;
-    if (nBuf) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                poolSizes[nPool++].descriptorCount = nBuf; }
-    if (nImg) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-                poolSizes[nPool++].descriptorCount = nImg; }
-    if (nStor){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-                poolSizes[nPool++].descriptorCount = nStor; }
-    if (nSamp){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-                poolSizes[nPool++].descriptorCount = nSamp; }
-    if (nAccel){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-                 poolSizes[nPool++].descriptorCount = nAccel; }
-    VkDescriptorPoolCreateInfo dpci;
-    memset(&dpci, 0, sizeof(dpci));
-    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpci.maxSets = 1;
-    dpci.poolSizeCount = nPool;
-    dpci.pPoolSizes = poolSizes;
-    if (g_xpu_vk.vkCreateDescriptorPool(g_xpu_vk.device, &dpci, NULL, &descPool)
-            != VK_SUCCESS) goto done;
+    P->live = 1;
+    g_vk_pipe_count++;
+    return P;
+fail:
+    fprintf(stderr, "cajeta.xpu.vulkan: pipeline build FAILED for kernel "
+            "'%s'\n", entry ? entry : "?");
+    if (P->pipeline) g_xpu_vk.vkDestroyPipeline(g_xpu_vk.device, P->pipeline, NULL);
+    if (P->pipeLayout) g_xpu_vk.vkDestroyPipelineLayout(g_xpu_vk.device, P->pipeLayout, NULL);
+    if (P->setLayout) g_xpu_vk.vkDestroyDescriptorSetLayout(g_xpu_vk.device, P->setLayout, NULL);
+    if (P->module) g_xpu_vk.vkDestroyShaderModule(g_xpu_vk.device, P->module, NULL);
+    memset(P, 0, sizeof(*P));
+    return NULL;
+}
 
-    VkDescriptorSetAllocateInfo dsai;
-    memset(&dsai, 0, sizeof(dsai));
-    dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    dsai.descriptorPool = descPool;
-    dsai.descriptorSetCount = 1;
-    dsai.pSetLayouts = &setLayout;
-    VkDescriptorSet descSet = VK_NULL_HANDLE;
-    if (g_xpu_vk.vkAllocateDescriptorSets(g_xpu_vk.device, &dsai, &descSet)
-            != VK_SUCCESS) goto done;
-
+// ---- Descriptor marshalling (shared by the eager and batched paths) --------
+// Fills and applies the descriptor writes for one dispatch. Static scratch —
+// callers hold g_xpu_vk_submit_mu. When `noteBound` is set, every referenced
+// VkBuffer lands in the open batch's bound-set (the host-access hazard test).
+static struct {
     VkDescriptorBufferInfo bufInfos[64];
-    // Per-array-binding descriptor infos (CAJ_VK_BINDLESS_MAX each). One row per
-    // binding index; only buffer-array bindings use their row.
     VkDescriptorBufferInfo arrInfos[64 * CAJ_VK_BINDLESS_MAX];
     VkDescriptorImageInfo imgInfos[64];
     VkWriteDescriptorSet writes[64];
-    // Acceleration-structure writes chain their AS handle in via pNext; both the
-    // pNext struct and the handle it points at must outlive vkUpdateDescriptorSets.
     VkWriteDescriptorSetAccelerationStructureKHR accelInfos[64];
     VkAccelerationStructureKHR accelHandles[64];
-    memset(writes, 0, sizeof(writes[0]) * n);
-    memset(imgInfos, 0, sizeof(imgInfos[0]) * n);
-    memset(accelInfos, 0, sizeof(accelInfos[0]) * n);
+} g_vk_ws;
+
+static int caj_vk_marshal_writes(VkDescriptorSet descSet,
+                                 const int64_t* bindings,
+                                 const uint8_t* kinds, int n, int noteBound) {
+    memset(g_vk_ws.writes, 0, sizeof(g_vk_ws.writes[0]) * n);
+    memset(g_vk_ws.imgInfos, 0, sizeof(g_vk_ws.imgInfos[0]) * n);
+    memset(g_vk_ws.accelInfos, 0, sizeof(g_vk_ws.accelInfos[0]) * n);
     for (int i = 0; i < n; ++i) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = descSet;
-        writes[i].dstBinding = (uint32_t) i;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = cajeta_vkb_desc_type(kinds[i]);
+        VkWriteDescriptorSet* w = &g_vk_ws.writes[i];
+        w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w->dstSet = descSet;
+        w->dstBinding = (uint32_t) i;
+        w->descriptorCount = 1;
+        w->descriptorType = cajeta_vkb_desc_type(kinds[i]);
         if (kinds[i] == CAJ_VKB_ACCEL) {
             struct cajeta_vk_accel* a = cajeta_xpu_vk_accel_rec(bindings[i]);
-            if (!a) goto done;
-            accelHandles[i] = a->accel;
-            accelInfos[i].sType =
+            if (!a) return 0;
+            g_vk_ws.accelHandles[i] = a->accel;
+            g_vk_ws.accelInfos[i].sType =
                 VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-            accelInfos[i].accelerationStructureCount = 1;
-            accelInfos[i].pAccelerationStructures = &accelHandles[i];
-            writes[i].pNext = &accelInfos[i];
+            g_vk_ws.accelInfos[i].accelerationStructureCount = 1;
+            g_vk_ws.accelInfos[i].pAccelerationStructures =
+                &g_vk_ws.accelHandles[i];
+            w->pNext = &g_vk_ws.accelInfos[i];
         } else if (kinds[i] == CAJ_VKB_TEXTURE) {
             struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
-            if (!t) goto done;
-            imgInfos[i].imageView = t->view;
-            imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            writes[i].pImageInfo = &imgInfos[i];
+            if (!t) return 0;
+            g_vk_ws.imgInfos[i].imageView = t->view;
+            g_vk_ws.imgInfos[i].imageLayout =
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            w->pImageInfo = &g_vk_ws.imgInfos[i];
         } else if (kinds[i] == CAJ_VKB_STORAGE_IMAGE) {
-            // Writable storage image (Image2D): bound in GENERAL layout, the only
-            // layout valid for an OpImageWrite descriptor. The pre-dispatch
-            // barrier below transitions the image into GENERAL.
+            // Bound in GENERAL — the only layout valid for OpImageWrite; the
+            // recorded pre-dispatch barrier transitions it.
             struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
-            if (!t) goto done;
-            imgInfos[i].imageView = t->view;
-            imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-            writes[i].pImageInfo = &imgInfos[i];
+            if (!t) return 0;
+            g_vk_ws.imgInfos[i].imageView = t->view;
+            g_vk_ws.imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+            w->pImageInfo = &g_vk_ws.imgInfos[i];
         } else if (kinds[i] == CAJ_VKB_SAMPLER) {
-            imgInfos[i].sampler = (VkSampler) (uintptr_t) bindings[i];
-            if (imgInfos[i].sampler == VK_NULL_HANDLE) goto done;
-            writes[i].pImageInfo = &imgInfos[i];
+            g_vk_ws.imgInfos[i].sampler = (VkSampler) (uintptr_t) bindings[i];
+            if (g_vk_ws.imgInfos[i].sampler == VK_NULL_HANDLE) return 0;
+            w->pImageInfo = &g_vk_ws.imgInfos[i];
         } else if (kinds[i] == CAJ_VKB_BUFFER_ARRAY) {
-            // bindings[i] points at the launch-marshalled [int64 count, int64
-            // h0 … h(count-1)]. Bind CAJ_VK_BINDLESS_MAX descriptors: the first
-            // `count` real, the rest padded with handle[0] (a valid buffer) so
-            // every descriptor in the array is bound (avoids PARTIALLY_BOUND).
-            // The kernel only reads bufs[0..count).
+            // bindings[i] -> launch-marshalled [count, h0 .. h(count-1)]; bind
+            // CAJ_VK_BINDLESS_MAX descriptors, padding with element 0 so every
+            // slot is bound (no PARTIALLY_BOUND requirement).
             const int64_t* arr = (const int64_t*) (intptr_t) bindings[i];
             int64_t cnt = arr ? arr[0] : 0;
-            if (cnt < 1 || cnt > CAJ_VK_BINDLESS_MAX) goto done;
-            VkDescriptorBufferInfo* row = &arrInfos[i * CAJ_VK_BINDLESS_MAX];
+            if (cnt < 1 || cnt > CAJ_VK_BINDLESS_MAX) return 0;
+            VkDescriptorBufferInfo* row =
+                &g_vk_ws.arrInfos[i * CAJ_VK_BINDLESS_MAX];
             for (int e = 0; e < CAJ_VK_BINDLESS_MAX; ++e) {
-                int64_t h = arr[1 + (e < (int) cnt ? e : 0)];   // pad with elem 0
+                int64_t h = arr[1 + (e < (int) cnt ? e : 0)];
                 struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(h);
-                if (!r) goto done;
+                if (!r) return 0;
                 row[e].buffer = r->buffer;
                 row[e].offset = r->view_offset;
                 row[e].range = VK_WHOLE_SIZE;
+                if (noteBound) caj_vk_bound_note((void*) r->buffer);
             }
-            writes[i].descriptorCount = CAJ_VK_BINDLESS_MAX;
-            writes[i].pBufferInfo = row;
+            w->descriptorCount = CAJ_VK_BINDLESS_MAX;
+            w->pBufferInfo = row;
         } else {
             struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(bindings[i]);
-            if (!r) goto done;
-            bufInfos[i].buffer = r->buffer;
-            bufInfos[i].offset = r->view_offset;   // 0 for an owner; slice byte offset for a view
-            bufInfos[i].range = VK_WHOLE_SIZE;
-            writes[i].pBufferInfo = &bufInfos[i];
+            if (!r) return 0;
+            g_vk_ws.bufInfos[i].buffer = r->buffer;
+            g_vk_ws.bufInfos[i].offset = r->view_offset;
+            g_vk_ws.bufInfos[i].range = VK_WHOLE_SIZE;
+            w->pBufferInfo = &g_vk_ws.bufInfos[i];
+            if (noteBound) caj_vk_bound_note((void*) r->buffer);
         }
     }
-    g_xpu_vk.vkUpdateDescriptorSets(g_xpu_vk.device, (uint32_t) n, writes, 0,
-                                    NULL);
+    g_xpu_vk.vkUpdateDescriptorSets(g_xpu_vk.device, (uint32_t) n,
+                                    g_vk_ws.writes, 0, NULL);
+    return 1;
+}
 
-    VkCommandBufferAllocateInfo cbai;
-    memset(&cbai, 0, sizeof(cbai));
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.commandPool = g_xpu_vk.cmdPool;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandBufferCount = 1;
-    if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
-            != VK_SUCCESS) goto done;
+// Storage images must be in GENERAL before dispatch; when already GENERAL the
+// barrier is a write->read/write dependency instead of a transition, so a
+// kernel reading a previous dispatch's img.store sees the new texels.
+static void caj_vk_record_image_transitions(VkCommandBuffer cmd,
+                                            const int64_t* bindings,
+                                            const uint8_t* kinds, int n) {
+    for (int i = 0; i < n; ++i) {
+        if (kinds[i] != CAJ_VKB_STORAGE_IMAGE) continue;
+        struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
+        if (!t) continue;
+        int wasGeneral = (t->layout == VK_IMAGE_LAYOUT_GENERAL);
+        VkImageMemoryBarrier toGen;
+        memset(&toGen, 0, sizeof(toGen));
+        toGen.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        toGen.oldLayout = t->layout;
+        toGen.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        toGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toGen.image = t->image;
+        toGen.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        toGen.subresourceRange.levelCount = 1;
+        toGen.subresourceRange.layerCount = 1;
+        toGen.srcAccessMask = wasGeneral ? VK_ACCESS_SHADER_WRITE_BIT : 0;
+        toGen.dstAccessMask =
+            VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            cmd,
+            wasGeneral ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                       : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+            0, NULL, 0, NULL, 1, &toGen);
+        t->layout = VK_IMAGE_LAYOUT_GENERAL;
+    }
+}
 
-    // cajeta-profiler 13.2.c (spec §5.5.3-§5.5.5) — bracket this dispatch with
-    // timestamp queries when it was launched under the profiler seam. Zero
-    // queries, zero cost otherwise. The pool is two slots reused per dispatch,
-    // which the submit mutex serializes; §5.5.5 requires the reset BEFORE
-    // reuse — an unreset slot reports available carrying the previous use's
-    // value — done from the host when the feature exists, in-command
-    // otherwise.
-    const int64_t profLaunch = __cajeta_prof_vk_current_launch();
+// ---- Batch machinery -------------------------------------------------------
+static VkDescriptorPool caj_vk_batch_make_pool(void) {
+    VkDescriptorPoolSize sizes[5];
+    sizes[0] = (VkDescriptorPoolSize){ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4096 };
+    sizes[1] = (VkDescriptorPoolSize){ VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 128 };
+    sizes[2] = (VkDescriptorPoolSize){ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 128 };
+    sizes[3] = (VkDescriptorPoolSize){ VK_DESCRIPTOR_TYPE_SAMPLER, 64 };
+    sizes[4] = (VkDescriptorPoolSize){
+        VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 32 };
+    VkDescriptorPoolCreateInfo dpci;
+    memset(&dpci, 0, sizeof(dpci));
+    dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpci.maxSets = 256;
+    dpci.poolSizeCount = g_xpu_vk.rayQuery ? 5 : 4;
+    dpci.pPoolSizes = sizes;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (g_xpu_vk.vkCreateDescriptorPool(g_xpu_vk.device, &dpci, NULL, &pool)
+            != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    return pool;
+}
+
+// Allocate one set from the batch's pool chain, growing it on exhaustion.
+static int caj_vk_batch_alloc_set(VkDescriptorSetLayout layout,
+                                  VkDescriptorSet* out) {
+    for (;;) {
+        if (g_vk_batch.poolCursor >= g_vk_batch.npools) {
+            if (g_vk_batch.npools >= CAJ_VK_BATCH_POOLS) return 0;
+            VkDescriptorPool pool = caj_vk_batch_make_pool();
+            if (!pool) return 0;
+            g_vk_batch.pools[g_vk_batch.npools++].pool = pool;
+        }
+        VkDescriptorSetAllocateInfo dsai;
+        memset(&dsai, 0, sizeof(dsai));
+        dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool = g_vk_batch.pools[g_vk_batch.poolCursor].pool;
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &layout;
+        VkResult r = g_xpu_vk.vkAllocateDescriptorSets(g_xpu_vk.device, &dsai,
+                                                       out);
+        if (r == VK_SUCCESS) return 1;
+        g_vk_batch.poolCursor++;   // pool exhausted (or fragmented): next
+    }
+}
+
+static int caj_vk_batch_begin(void) {
+    if (g_vk_batch.open) return 1;
+    if (!g_vk_batch.inited) {
+        VkCommandBufferAllocateInfo cbai;
+        memset(&cbai, 0, sizeof(cbai));
+        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = g_xpu_vk.cmdPool;
+        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai,
+                                              &g_vk_batch.cmd) != VK_SUCCESS)
+            return 0;
+        VkFenceCreateInfo fci;
+        memset(&fci, 0, sizeof(fci));
+        fci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        if (g_xpu_vk.vkCreateFence(g_xpu_vk.device, &fci, NULL,
+                                   &g_vk_batch.fence) != VK_SUCCESS)
+            return 0;
+        g_vk_batch.inited = 1;
+    }
+    VkCommandBufferBeginInfo cbbi;
+    memset(&cbbi, 0, sizeof(cbbi));
+    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (g_xpu_vk.vkBeginCommandBuffer(g_vk_batch.cmd, &cbbi) != VK_SUCCESS)
+        return 0;
+    g_vk_batch.open = 1;
+    g_vk_batch.dispatches = 0;
+    g_vk_batch.poolCursor = 0;
+    memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
+    g_vk_batch.nbound = 0;
+    g_vk_batch.boundOverflow = 0;
+    return 1;
+}
+
+// Land the open batch: final compute->host barrier, one submit, fence wait,
+// then reclaim (descriptor pools reset for reuse, deferred frees executed).
+static void cajeta_xpu_vk_flush(void) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    if (!g_vk_batch.open) {
+        pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+        return;
+    }
+    g_vk_batch.open = 0;   // no re-entry through the frees below
+    if (g_vk_batch.dispatches > 0) {
+        VkMemoryBarrier mb;
+        memset(&mb, 0, sizeof(mb));
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            g_vk_batch.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    }
+    g_xpu_vk.vkEndCommandBuffer(g_vk_batch.cmd);
+    if (g_vk_batch.dispatches > 0) {
+        VkSubmitInfo si;
+        memset(&si, 0, sizeof(si));
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &g_vk_batch.cmd;
+        if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, g_vk_batch.fence)
+                == VK_SUCCESS) {
+            VkResult wr = g_xpu_vk.vkWaitForFences(
+                g_xpu_vk.device, 1, &g_vk_batch.fence, VK_TRUE, ~0ull);
+            if (wr != VK_SUCCESS)
+                fprintf(stderr, "cajeta.xpu.vulkan: batch fence wait FAILED "
+                        "(%d) after %u dispatches\n", (int) wr,
+                        g_vk_batch.dispatches);
+            g_xpu_vk.vkResetFences(g_xpu_vk.device, 1, &g_vk_batch.fence);
+        } else {
+            fprintf(stderr, "cajeta.xpu.vulkan: batch submit FAILED "
+                    "(%u dispatches dropped)\n", g_vk_batch.dispatches);
+        }
+    }
+    for (int i = 0; i < g_vk_batch.npools; ++i)
+        g_xpu_vk.vkResetDescriptorPool(g_xpu_vk.device,
+                                       g_vk_batch.pools[i].pool, 0);
+    g_vk_batch.poolCursor = 0;
+    for (int i = 0; i < g_vk_batch.npendingFree; ++i)
+        cajeta_xpu_vk_free_now(g_vk_batch.pendingFree[i]);
+    g_vk_batch.npendingFree = 0;
+    for (int i = 0; i < g_vk_batch.npendingSampler; ++i)
+        g_xpu_vk.vkDestroySampler(
+            g_xpu_vk.device,
+            (VkSampler) (uintptr_t) g_vk_batch.pendingSampler[i], NULL);
+    g_vk_batch.npendingSampler = 0;
+    g_vk_batch.dispatches = 0;
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+
+// ---- Batched record path ---------------------------------------------------
+static int caj_vk_launch_batched(struct caj_vk_pipe* P,
+                                 const int64_t* bindings,
+                                 const uint8_t* kinds, int n,
+                                 unsigned gx, unsigned gy, unsigned gz) {
+    if (!caj_vk_batch_begin()) return 0;
+    VkDescriptorSet ds = VK_NULL_HANDLE;
+    if (!caj_vk_batch_alloc_set(P->setLayout, &ds)) {
+        // Pool chain exhausted mid-batch: land what is recorded, start fresh.
+        cajeta_xpu_vk_flush();
+        if (!caj_vk_batch_begin()) return 0;
+        if (!caj_vk_batch_alloc_set(P->setLayout, &ds)) return 0;
+    }
+    if (!caj_vk_marshal_writes(ds, bindings, kinds, n, /*noteBound=*/1))
+        return 0;
+    if (g_vk_batch.dispatches > 0) {
+        // Later dispatches read what earlier ones wrote (the layer chain);
+        // one full compute->compute dependency between neighbours.
+        VkMemoryBarrier mb;
+        memset(&mb, 0, sizeof(mb));
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask =
+            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        g_xpu_vk.vkCmdPipelineBarrier(
+            g_vk_batch.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    }
+    caj_vk_record_image_transitions(g_vk_batch.cmd, bindings, kinds, n);
+    g_xpu_vk.vkCmdBindPipeline(g_vk_batch.cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                               P->pipeline);
+    g_xpu_vk.vkCmdBindDescriptorSets(g_vk_batch.cmd,
+                                     VK_PIPELINE_BIND_POINT_COMPUTE,
+                                     P->pipeLayout, 0, 1, &ds, 0, NULL);
+    g_xpu_vk.vkCmdDispatch(g_vk_batch.cmd, gx, gy, gz);
+    g_vk_batch.dispatches++;
+    return 1;
+}
+
+// ---- Eager path (v1 semantics; the profiler's per-dispatch bracket needs
+// per-launch completion, so a profiled launch always lands here) -------------
+static int caj_vk_launch_eager(struct caj_vk_pipe* P,
+                               const int64_t* bindings,
+                               const uint8_t* kinds, int n,
+                               unsigned gx, unsigned gy, unsigned gz,
+                               int64_t profLaunch) {
+    VkDescriptorPool descPool = VK_NULL_HANDLE;
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    int ok = 0;
+
+    // Pool sized by the distinct descriptor types actually used.
+    {
+        uint32_t nBuf = 0, nImg = 0, nStor = 0, nSamp = 0, nAccel = 0;
+        for (int i = 0; i < n; ++i) {
+            if (kinds[i] == CAJ_VKB_TEXTURE) ++nImg;
+            else if (kinds[i] == CAJ_VKB_STORAGE_IMAGE) ++nStor;
+            else if (kinds[i] == CAJ_VKB_SAMPLER) ++nSamp;
+            else if (kinds[i] == CAJ_VKB_ACCEL) ++nAccel;
+            else if (kinds[i] == CAJ_VKB_BUFFER_ARRAY)
+                nBuf += CAJ_VK_BINDLESS_MAX;
+            else ++nBuf;
+        }
+        VkDescriptorPoolSize poolSizes[5];
+        uint32_t nPool = 0;
+        if (nBuf) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    poolSizes[nPool++].descriptorCount = nBuf; }
+        if (nImg) { poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                    poolSizes[nPool++].descriptorCount = nImg; }
+        if (nStor){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                    poolSizes[nPool++].descriptorCount = nStor; }
+        if (nSamp){ poolSizes[nPool].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                    poolSizes[nPool++].descriptorCount = nSamp; }
+        if (nAccel){ poolSizes[nPool].type =
+                         VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+                     poolSizes[nPool++].descriptorCount = nAccel; }
+        VkDescriptorPoolCreateInfo dpci;
+        memset(&dpci, 0, sizeof(dpci));
+        dpci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        dpci.maxSets = 1;
+        dpci.poolSizeCount = nPool;
+        dpci.pPoolSizes = poolSizes;
+        if (g_xpu_vk.vkCreateDescriptorPool(g_xpu_vk.device, &dpci, NULL,
+                                            &descPool) != VK_SUCCESS)
+            goto done;
+    }
+    VkDescriptorSet descSet = VK_NULL_HANDLE;
+    {
+        VkDescriptorSetAllocateInfo dsai;
+        memset(&dsai, 0, sizeof(dsai));
+        dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dsai.descriptorPool = descPool;
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &P->setLayout;
+        if (g_xpu_vk.vkAllocateDescriptorSets(g_xpu_vk.device, &dsai, &descSet)
+                != VK_SUCCESS) goto done;
+    }
+    if (!caj_vk_marshal_writes(descSet, bindings, kinds, n, /*noteBound=*/0))
+        goto done;
+
+    {
+        VkCommandBufferAllocateInfo cbai;
+        memset(&cbai, 0, sizeof(cbai));
+        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.commandPool = g_xpu_vk.cmdPool;
+        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandBufferCount = 1;
+        if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
+                != VK_SUCCESS) goto done;
+    }
+
+    // cajeta-profiler 13.2.c (spec 5.5.3-5.5.5) — bracket this dispatch with
+    // timestamp queries when launched under the profiler seam. The two-slot
+    // pool is reused per dispatch, which per-launch completion serializes;
+    // 5.5.5 requires the reset BEFORE reuse.
     int profTiming = 0;
     if (profLaunch != 0 && __cajeta_prof_vk_timing_ok()
             && g_xpu_vk.vkCreateQueryPool && g_xpu_vk.vkCmdWriteTimestamp
@@ -2512,68 +2922,34 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     if (profTiming && g_xpu_vk.hasHostQueryReset)
         g_xpu_vk.vkResetQueryPool(g_xpu_vk.device, g_xpu_vk.profPool, 0, 2);
 #endif
-    // §6.6 — refresh the calibration when it has gone stale; the reference
-    // device drifts −15 ppm, so a single startup calibration is not enough.
+    // 6.6 — refresh the calibration when it has gone stale.
     if (profTiming) {
         const int64_t now = __cajeta_currentTimeNanos();
         if (now - g_xpu_vk.lastCalibrateNs > CAJ_VK_RECAL_INTERVAL_NS)
             caj_vk_calibrate_now(now);
     }
 
-    VkCommandBufferBeginInfo cbbi;
-    memset(&cbbi, 0, sizeof(cbbi));
-    cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    {
+        VkCommandBufferBeginInfo cbbi;
+        memset(&cbbi, 0, sizeof(cbbi));
+        cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    }
     if (profTiming && !g_xpu_vk.hasHostQueryReset)
         g_xpu_vk.vkCmdResetQueryPool(cmd, g_xpu_vk.profPool, 0, 2);
-    // Storage images (Image2D) must be in GENERAL layout for OpImageWrite /
-    // OpImageRead. Barrier each before binding the pipeline. The barrier is
-    // emitted even when the image is ALREADY GENERAL (a prior dispatch): then it
-    // is not a layout transition but a read/write-after-write memory dependency,
-    // so a kernel that loads what an earlier dispatch stored sees the new texels
-    // (img.load reading a previous dispatch's img.store).
-    for (int i = 0; i < n; ++i) {
-        if (kinds[i] != CAJ_VKB_STORAGE_IMAGE) continue;
-        struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
-        if (!t) continue;
-        int wasGeneral = (t->layout == VK_IMAGE_LAYOUT_GENERAL);
-        VkImageMemoryBarrier toGen;
-        memset(&toGen, 0, sizeof(toGen));
-        toGen.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-        toGen.oldLayout = t->layout;
-        toGen.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-        toGen.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toGen.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        toGen.image = t->image;
-        toGen.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        toGen.subresourceRange.levelCount = 1;
-        toGen.subresourceRange.layerCount = 1;
-        // From GENERAL: a prior dispatch's shader writes must be made available
-        // before this dispatch's shader read/write. From UNDEFINED/other: a plain
-        // transition with no prior shader access to wait on.
-        toGen.srcAccessMask = wasGeneral ? VK_ACCESS_SHADER_WRITE_BIT : 0;
-        toGen.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-        g_xpu_vk.vkCmdPipelineBarrier(
-            cmd,
-            wasGeneral ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-                       : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-            0, NULL, 0, NULL, 1, &toGen);
-        t->layout = VK_IMAGE_LAYOUT_GENERAL;
-    }
-    g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    caj_vk_record_image_transitions(cmd, bindings, kinds, n);
+    g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                               P->pipeline);
     g_xpu_vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                     pipeLayout, 0, 1, &descSet, 0, NULL);
+                                     P->pipeLayout, 0, 1, &descSet, 0, NULL);
     if (profTiming)
         g_xpu_vk.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                                      g_xpu_vk.profPool, 0);
-    g_xpu_vk.vkCmdDispatch(cmd, gx, gy, gz);   // 3-D grid (block dim is baked)
+    g_xpu_vk.vkCmdDispatch(cmd, gx, gy, gz);
     if (profTiming) {
-        // §5.5.3 — the EXPLICIT barrier before the closing timestamp. Without
-        // it some drivers latch the timestamp before the kernel completes,
-        // yielding durations wrong by four to five orders of magnitude, and
-        // ALL_COMMANDS does not prevent it.
+        // 5.5.3 — the EXPLICIT barrier before the closing timestamp: without
+        // it some drivers latch the timestamp before the kernel completes.
         VkMemoryBarrier mb;
         memset(&mb, 0, sizeof(mb));
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -2587,14 +2963,16 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     }
     g_xpu_vk.vkEndCommandBuffer(cmd);
 
-    VkSubmitInfo si;
-    memset(&si, 0, sizeof(si));
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
-            != VK_SUCCESS) goto done;
-    // §5.5.8 / §14.13 — the host is about to block on the GPU; the interval is
+    {
+        VkSubmitInfo si;
+        memset(&si, 0, sizeof(si));
+        si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
+                != VK_SUCCESS) goto done;
+    }
+    // 5.5.8 / 14.13 — the host is about to block on the GPU; the interval is
     // an explicit span, not a gap the reader must diagnose.
     {
         const int64_t waitStart = __cajeta_currentTimeNanos();
@@ -2606,10 +2984,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     }
 
     // 13.2.c — read the bracket by AVAILABILITY, never by value and never
-    // with WAIT (§5.5.4): an unavailable result leaves the destination buffer
-    // untouched, and a wait here would stall the launch path on a query the
-    // idle queue has already retired anyway. Layout with WITH_AVAILABILITY:
-    // each query's value is followed by its availability word.
+    // with WAIT (5.5.4).
     if (profTiming) {
         uint64_t rr[4] = {0, 0, 0, 0};
         const VkResult qr = g_xpu_vk.vkGetQueryPoolResults(
@@ -2618,9 +2993,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
         if (qr == VK_SUCCESS && rr[1] != 0 && rr[3] != 0) {
             const uint64_t startTicks = rr[0], endTicks = rr[2];
-            // §5.5.7 — only history reveals a timestamp-register reset; the
-            // flag rides the event because nothing downstream can rediscover
-            // the condition.
+            // 5.5.7 — only history reveals a timestamp-register reset.
             const int32_t flags =
                 __cajeta_prof_vk_note_span_ticks(startTicks, endTicks);
             const uint32_t bits = __cajeta_prof_vk_valid_bits();
@@ -2628,18 +3001,13 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
                 __cajeta_prof_vk_delta_ticks(startTicks, endTicks, bits);
             int64_t startNs, endNs;
             if (bits >= 64 && __cajeta_prof_clock_valid(CAJ_GPU_BACKEND_VULKAN)) {
-                // Full-width ticks convert absolutely through the fitted
-                // mapping (§6.6): offset + drift, not the advertised period.
                 startNs = __cajeta_prof_clock_to_host(CAJ_GPU_BACKEND_VULKAN,
                                                       (int64_t) startTicks);
                 endNs = __cajeta_prof_clock_to_host(CAJ_GPU_BACKEND_VULKAN,
                                                     (int64_t) endTicks);
             } else {
-                // Sub-64-bit ticks wrap inside a fit window, so the absolute
-                // mapping cannot be trusted across a wrap. The DURATION is
-                // still device truth (wrap-corrected above); anchor it at the
-                // host's completion sighting. The duration uses the fitted
-                // rate when one exists, the advertised period otherwise.
+                // Sub-64-bit ticks wrap inside a fit window; the DURATION is
+                // still device truth, anchored at the host completion sighting.
                 const double perTick =
                     __cajeta_prof_clock_valid(CAJ_GPU_BACKEND_VULKAN)
                         ? (__cajeta_prof_clock_period(CAJ_GPU_BACKEND_VULKAN)
@@ -2659,19 +3027,53 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     ok = 1;
 
 done:
+    if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool,
+                                           1, &cmd);
+    if (descPool) g_xpu_vk.vkDestroyDescriptorPool(g_xpu_vk.device, descPool,
+                                                   NULL);
+    return ok;
+}
+
+static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
+                                const char* entry, const int64_t* bindings,
+                                const uint8_t* kinds, int n,
+                                unsigned gx, unsigned gy, unsigned gz,
+                                unsigned bx, unsigned by, unsigned bz,
+                                unsigned sharedBytes,
+                                int userSpecCount,
+                                const int32_t* userSpecValues) {
+    if (!spirv || len < 4 || n <= 0 || n > 64) return 0;
+    // CAJETA_XPU_VK_SUBMIT=eager restores the v1 submit-and-wait per launch
+    // (the A/B control for the batched path; pipelines stay cached either way).
+    static int eagerMode = -1;
+    if (eagerMode < 0) {
+        const char* m = getenv("CAJETA_XPU_VK_SUBMIT");
+        eagerMode = (m && strcmp(m, "eager") == 0) ? 1 : 0;
+    }
+    // Serialize: VkQueue + VkCommandPool + the tables + the batch state all
+    // require external host synchronization (the engine drives launches from
+    // both the main and carrier-fiber threads).
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct caj_vk_pipe* P = caj_vk_pipe_get(spirv, len, entry, kinds, n,
+                                            bx > 0 ? bx : 1, by > 0 ? by : 1,
+                                            bz > 0 ? bz : 1,
+                                            sharedBytes > 0 ? sharedBytes : 0,
+                                            userSpecCount, userSpecValues);
+    int ok = 0;
+    if (P) {
+        const int64_t profLaunch = __cajeta_prof_vk_current_launch();
+        if (eagerMode || profLaunch != 0) {
+            // Ordering: anything already recorded must land first.
+            cajeta_xpu_vk_flush();
+            ok = caj_vk_launch_eager(P, bindings, kinds, n, gx, gy, gz,
+                                     profLaunch);
+        } else {
+            ok = caj_vk_launch_batched(P, bindings, kinds, n, gx, gy, gz);
+        }
+    }
     if (!ok)
         fprintf(stderr, "cajeta.xpu.vulkan: launch FAILED for kernel '%s' "
                 "(n=%d grid=%u,%u,%u)\n", entry ? entry : "?", n, gx, gy, gz);
-    if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1,
-                                           &cmd);
-    if (descPool) g_xpu_vk.vkDestroyDescriptorPool(g_xpu_vk.device, descPool,
-                                                   NULL);
-    if (pipeline) g_xpu_vk.vkDestroyPipeline(g_xpu_vk.device, pipeline, NULL);
-    if (pipeLayout) g_xpu_vk.vkDestroyPipelineLayout(g_xpu_vk.device, pipeLayout,
-                                                     NULL);
-    if (setLayout) g_xpu_vk.vkDestroyDescriptorSetLayout(g_xpu_vk.device,
-                                                         setLayout, NULL);
-    if (module) g_xpu_vk.vkDestroyShaderModule(g_xpu_vk.device, module, NULL);
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return ok;
 }
@@ -2684,6 +3086,8 @@ int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }
 static void cajeta_xpu_vk_view_release(int64_t h) { (void) h; }
+static void cajeta_xpu_vk_flush(void) {}
+static void cajeta_xpu_vk_note_host_access(int64_t h) { (void) h; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,
