@@ -581,9 +581,37 @@ static int32_t caj_gpu_vk_end(CajetaGpuEvent* ev) {
     // and the span resolves at EVENT tier before this function returns.
     if (caj_gpu_vk_bracket.valid) {
         caj_gpu_vk_bracket.valid = 0;
+        int64_t s = caj_gpu_vk_bracket.start_ns;
+        int64_t e = caj_gpu_vk_bracket.end_ns;
+        // Placement through the fitted clock mapping carries the fit's
+        // uncertainty. On a paired-calibration lane that is nanoseconds and
+        // this block never moves anything; on the bracket-calibrated lane
+        // (§6.8: no CLOCK_MONOTONIC domain) it is microseconds — wide enough
+        // to push a converted span a hair outside its causal bracket, which
+        // the first Windows run showed as OUTSIDE_HOST on every span. The
+        // dispatch is SYNCHRONOUS: the true execution provably lies inside
+        // [submit, now]. So the span is translated — duration untouched —
+        // just far enough to fit, bounded by the same dispersion cap the
+        // calibration samples were accepted under. An excursion the cap
+        // cannot explain is a real shear and stays where it was, to be
+        // flagged (§11.3).
+        {
+            const int64_t lo = ev->host_launch_ns;
+            const int64_t hi = __cajeta_currentTimeNanos();
+            const int64_t slack = __cajeta_prof_clock_dispersion_cap();
+            if (e - s <= hi - lo) {
+                int64_t shift = 0;
+                if (s < lo)      shift = lo - s;
+                else if (e > hi) shift = hi - e;
+                if (shift != 0 && shift <= slack && shift >= -slack
+                        && s + shift >= lo && e + shift <= hi) {
+                    s += shift;
+                    e += shift;
+                }
+            }
+        }
         if (__cajeta_prof_gpu_resolve_dispatch_flags(caj_gpu_vk_bracket.launch_id,
-                                                     caj_gpu_vk_bracket.start_ns,
-                                                     caj_gpu_vk_bracket.end_ns,
+                                                     s, e,
                                                      CAJETA_PROF_TIER_EVENT,
                                                      caj_gpu_vk_bracket.flags))
             __cajeta_prof_vk_note_resolved();
