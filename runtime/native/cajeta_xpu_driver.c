@@ -858,7 +858,11 @@ struct cajeta_kparams {
     const uint8_t* kind;
     const uint32_t* byteSize;
 };
-#define CAJETA_XPU_MAX_KPARAMS 128
+// 1024, up from 128 (2026-08-25) — same silent-overflow bug as the module
+// registry: cajeta-llama's suite crossed 128 kernels and dropped entries
+// surfaced only as downstream misbehaviour. Kept equal to
+// CAJETA_XPU_MAX_MODULES by convention.
+#define CAJETA_XPU_MAX_KPARAMS 1024
 static struct cajeta_kparams g_xpu_kparams[CAJETA_XPU_MAX_KPARAMS];
 static int g_xpu_kparam_count;
 
@@ -878,6 +882,10 @@ void __cajeta_xpu_register_kernel_params(const char* name, int32_t count,
     int isNew = 0;
     if (idx < 0) {
         if (g_xpu_kparam_count >= CAJETA_XPU_MAX_KPARAMS) {
+            fprintf(stderr,
+                    "cajeta.xpu: kparams registry FULL (%d) — dropping "
+                    "'%s'; raise CAJETA_XPU_MAX_KPARAMS\n",
+                    CAJETA_XPU_MAX_KPARAMS, name);
             pthread_mutex_unlock(&g_xpu_cuda_lock);
             return;
         }

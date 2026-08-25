@@ -1136,6 +1136,15 @@ static void cajeta_xpu_register_module_impl(const char* kernelName,
         e->name[sizeof(e->name) - 1] = '\0';
         e->backend = backend;
     }
+    if (!e) {
+        // A dropped registration MUST be loud: the failure otherwise
+        // surfaces only at launch time as "no registered kernel", in a
+        // different program run, with no pointer back to this cap.
+        fprintf(stderr,
+                "cajeta.xpu: kernel registry FULL (%d) — dropping '%s'; "
+                "raise CAJETA_XPU_MAX_MODULES\n",
+                CAJETA_XPU_MAX_MODULES, kernelName);
+    }
     if (e) {
         e->image = image;
         e->len = len;

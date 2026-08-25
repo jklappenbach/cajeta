@@ -17,7 +17,13 @@ struct cajeta_xpu_module {
     void* module;     // CUmodule/hipModule, lazily loaded
     void* function;   // CUfunction/hipFunction, lazily resolved
 };
-#define CAJETA_XPU_MAX_MODULES 128
+// 1024, up from 128 (2026-08-25): cajeta-llama's engine + test suite crossed
+// 128 registered kernels and the overflow was SILENT — registration returned
+// without storing, and the dropped kernel surfaced only at launch as "no
+// registered kernel", two programs and one linker away from the cause. The
+// register path now also says so at the moment of the drop (see
+// cajeta_xpu_register_module_impl); this headroom is cheap (~300 KB static).
+#define CAJETA_XPU_MAX_MODULES 1024
 static struct cajeta_xpu_module g_xpu_modules[CAJETA_XPU_MAX_MODULES];
 static int g_xpu_module_count;
 
