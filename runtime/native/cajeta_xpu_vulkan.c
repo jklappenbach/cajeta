@@ -389,11 +389,26 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // still succeeds on devices lacking it.
     // shaderInt64 (core feature) is the same story for kernels that touch 64-bit
     // ints (e.g. device handles); read it from the same features2 query.
-    int wantInt8 = 0, wantInt64 = 0;
+    int wantInt8 = 0, wantInt64 = 0, wantInt16 = 0;
+    // 8/16-bit storage-buffer access: kernels whose SPIR-V loads/stores bytes or
+    // halves straight from a StorageBuffer (KernelBuffer<int8> element reads —
+    // the per-row quant mat-vecs) declare StorageBuffer8BitAccess, which
+    // VUID-RuntimeSpirv-storageBuffer8BitAccess-06328 requires these features to
+    // back. RADV does not reject the module when they are missing — it crashes
+    // compiling it (fault addr 0x40 in vkCreateComputePipelines). Probe each bit
+    // and enable exactly what the device reports. Core in Vk 1.2+.
+    VkPhysicalDevice8BitStorageFeatures qs8;
+    VkPhysicalDevice16BitStorageFeatures qs16;
+    memset(&qs8, 0, sizeof(qs8));
+    memset(&qs16, 0, sizeof(qs16));
     if (getFeatures2) {
         VkPhysicalDeviceShaderFloat16Int8Features qi8;
         memset(&qi8, 0, sizeof(qi8));
         qi8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES;
+        qs8.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES;
+        qs16.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES;
+        qi8.pNext = &qs8;
+        qs8.pNext = &qs16;
         VkPhysicalDeviceFeatures2 qf2;
         memset(&qf2, 0, sizeof(qf2));
         qf2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -401,6 +416,9 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         getFeatures2(g_xpu_vk.phys, &qf2);
         wantInt8 = qi8.shaderInt8 ? 1 : 0;
         wantInt64 = qf2.features.shaderInt64 ? 1 : 0;
+        wantInt16 = qf2.features.shaderInt16 ? 1 : 0;
+        qs8.pNext = NULL;    // re-used below as the enable structs
+        qs16.pNext = NULL;
     }
 
     float prio = 1.0f;
@@ -492,12 +510,32 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         enInt8.pNext = (void*) dci.pNext;
         dci.pNext = &enInt8;
     }
+    // 8/16-bit storage: the probed structs above already hold exactly the bits
+    // the device supports, so chain them as-is (a struct whose bits are all
+    // VK_FALSE is legal but pointless — skip it). See the probe comment for why
+    // missing these is a driver CRASH, not a clean failure.
+    if (qs8.storageBuffer8BitAccess || qs8.uniformAndStorageBuffer8BitAccess
+            || qs8.storagePushConstant8) {
+        qs8.pNext = (void*) dci.pNext;
+        dci.pNext = &qs8;
+    }
+    if (qs16.storageBuffer16BitAccess || qs16.uniformAndStorageBuffer16BitAccess
+            || qs16.storagePushConstant16 || qs16.storageInputOutput16) {
+        qs16.pNext = (void*) dci.pNext;
+        dci.pNext = &qs16;
+    }
     // shaderInt64 is a CORE feature -> pEnabledFeatures (legal alongside the pNext
     // extension-feature chain, which carries no VkPhysicalDeviceFeatures2).
     VkPhysicalDeviceFeatures coreFeats;
     memset(&coreFeats, 0, sizeof(coreFeats));
     if (wantInt64) {
         coreFeats.shaderInt64 = VK_TRUE;
+        dci.pEnabledFeatures = &coreFeats;
+    }
+    // shaderInt16 likewise (16-bit arithmetic — the Int16 capability kernels
+    // declare for short-typed intermediates).
+    if (wantInt16) {
+        coreFeats.shaderInt16 = VK_TRUE;
         dci.pEnabledFeatures = &coreFeats;
     }
 

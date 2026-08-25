@@ -615,6 +615,20 @@ std::vector<uint8_t> emitSpirv(llvm::Module& deviceModule,
     // Turn each Spec.geti witness global into a real OpSpecConstant (SpecId 4+,
     // default the witness seed). No-op for kernels without Spec.geti.
     injectUserSpecConstants(spirv);
+    // CAJETA_XPU_DUMP_SPV=<dir>: write the FINAL binary (post codegen + all
+    // word-stream fixups) — exactly what vkCreateShaderModule receives, so
+    // spirv-val/spirv-dis triage sees the driver's input, not an approximation.
+    if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_SPV")) {
+        std::string name = "module";
+        for (auto& f : deviceModule) {
+            if (!f.isDeclaration()) { name = f.getName().str(); break; }
+        }
+        std::error_code ec;
+        llvm::raw_fd_ostream spvOut(
+            std::string(dumpDir) + "/" + name + ".spv", ec);
+        if (!ec) spvOut.write(reinterpret_cast<const char*>(spirv.data()),
+                              spirv.size());
+    }
     return spirv;
 }
 
