@@ -791,6 +791,22 @@ static void cajeta_xpu_vk_free(int64_t handle) {
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
 }
 
+// Release a slice VIEW's table slot. Views are the one table entry nothing
+// owned: Buffer.slice allocates a slot, the view's KernelBuffer is non-owning, and
+// no path ever cleared it — so every slice LEAKED a slot and the per-row 8B
+// prefill (~115k slices at ctx512) overflowed any static cap. Guarded on
+// is_view so a real (owning or borrowed) handle can never lose its resources
+// through this path; freeing a non-view here is a caller bug and is refused.
+static void cajeta_xpu_vk_view_release(int64_t handle) {
+    pthread_mutex_lock(&g_xpu_vk_submit_mu);
+    struct cajeta_vk_buf* r = cajeta_xpu_vk_rec(handle);
+    if (r && r->is_view) {
+        r->live = 0; r->mapped = NULL; r->buffer = VK_NULL_HANDLE;
+        r->memory = VK_NULL_HANDLE; r->is_view = 0; r->view_offset = 0;
+    }
+    pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+}
+
 // --- Vulkan sampled-image (Texture2D) table (Item 8 Stage B) ----------------
 // A Texture2D's device handle on Vulkan is a 1-based index into this table. The
 // image is R32_SFLOAT (single-channel float, matching the scalar texel), OPTIMAL
@@ -2255,6 +2271,7 @@ done:
 static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }
+static void cajeta_xpu_vk_view_release(int64_t h) { (void) h; }
 static void* cajeta_xpu_vk_mapped(int64_t h) { (void) h; return NULL; }
 static void cajeta_xpu_vk_free(int64_t h) { (void) h; }
 static int64_t cajeta_xpu_vk_tex_alloc(uint32_t w, uint32_t h, int storage,

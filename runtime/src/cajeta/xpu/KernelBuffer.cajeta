@@ -90,6 +90,14 @@ public final class KernelBuffer<T> {
         if (this.owned && this.deviceHandle != 0) {
             this.deviceFree(this.deviceHandle, this.kind);
             this.deviceHandle = 0;
+        } else if (!this.owned && this.deviceHandle != 0) {
+            // A slice view: the storage belongs to the parent, but the
+            // BACKEND RECORD of the view (Vulkan's buffer-table slot) is
+            // this handle's to return. Pointer backends make this a no-op;
+            // without it every slice() leaked a Vulkan table slot and an 8B
+            // per-row prefill exhausted the table (all-zero logits).
+            this.sliceRelease(this.deviceHandle);
+            this.deviceHandle = 0;
         }
     }
 
@@ -290,6 +298,11 @@ public final class KernelBuffer<T> {
         if (this.owned && this.deviceHandle != 0) {
             this.deviceFree(this.deviceHandle, this.kind);
             this.deviceHandle = 0;
+        } else if (!this.owned && this.deviceHandle != 0) {
+            // Explicit free() of a view: release the backend view record
+            // now (see ~KernelBuffer); the parent's storage is untouched.
+            this.sliceRelease(this.deviceHandle);
+            this.deviceHandle = 0;
         }
     }
 
@@ -361,4 +374,9 @@ public final class KernelBuffer<T> {
     // is `offset * elementBytes()`, computed caller-side.
     @Native("__cajeta_xpu_buffer_slice")
     private int64 deviceSlice(int64 handle, uint64 byteOffset);
+
+    // Release a slice view's backend record (Vulkan buffer-table slot);
+    // a no-op on pointer backends, and never frees the parent's storage.
+    @Native("__cajeta_xpu_buffer_slice_release")
+    private void sliceRelease(int64 handle);
 }

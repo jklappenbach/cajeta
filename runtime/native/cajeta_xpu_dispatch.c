@@ -1405,4 +1405,15 @@ int64_t __cajeta_xpu_buffer_slice(void* self, int64_t handle, uint64_t byteOffse
     }
 }
 
+// Buffer.slice release: drop a view's backend record. Pointer backends fold
+// the offset into the handle (nothing was allocated — no-op); Vulkan allocated
+// a borrowing view slot in its buffer table, which is cleared here. Called by
+// the view KernelBuffer's drop/free, never for owning handles.
+void __cajeta_xpu_buffer_slice_release(void* self, int64_t handle) {
+    (void) self;
+    if (!handle) return;
+    if (cajeta_xpu_active_backend() == CAJ_XPU_VULKAN)
+        cajeta_xpu_vk_view_release(handle);
+}
+
 // --- HIP texture helpers (Item 8 Stage C) -----------------------------------
