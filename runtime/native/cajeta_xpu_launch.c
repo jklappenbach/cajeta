@@ -1167,3 +1167,45 @@ void __cajeta_xpu_register_module(const char* kernelName, const void* image,
     cajeta_xpu_register_module_impl(kernelName, image, len, -1);
 }
 
+// Is `kernelName` actually LAUNCHABLE on the active backend — device code
+// registered, and (Vulkan) parameter metadata present? Type-level routing
+// (hasBatchKernel) cannot know a backend SKIPPED a kernel at build (the
+// NATIVE-only verb kernels on the shader tier); launching one is a loud
+// no-op the caller reads as success with garbage output (the vkwmma
+// measurement: 1,344 dropped launches, wrong logits at an impossibly fast
+// 130 ms prefill). This query lets a route degrade to kernels that exist.
+// `nameArr` is a cajeta int8[] (payload at +8), NOT NUL-terminated.
+// STATIC native: no leading `this` (the instance-native forwarder passes one,
+// static natives do not — the first cut declared `(void* self, ...)` and read
+// the ARRAY as self and the LENGTH as the array, returning all-false on every
+// backend; the Vulkan all-false was plausible enough to survive one gate).
+int32_t __cajeta_xpu_kernel_available(void* nameArr, int64_t len) {
+    if (!nameArr || len <= 0 || len > 255) return 0;
+    char name[256];
+    memcpy(name, (const char*) nameArr + 8, (size_t) len);
+    name[len] = 0;
+    int backend = cajeta_xpu_active_backend();
+    // Per-backend registry SEMANTICS differ (measured, not assumed — the
+    // first cut used Vulkan's per-kernel-module lookup for every backend and
+    // read ALL-FALSE on HIP, demoting amdgpu off its Mw8 GEMMs, 594 -> 1538
+    // ms prefill):
+    //  - Vulkan registers one SPIR-V module PER KERNEL plus kparams; both
+    //    must exist or the launch is a loud no-op.
+    //  - HIP/CUDA register fatbin modules per unit and resolve kernels via
+    //    hipModuleGetFunction at launch; per-kernel find_module misses by
+    //    design. Their toolchains also compile EVERY kernel today (the
+    //    build-time skip mechanism is shader-tier-only), so availability is
+    //    unconditionally true. When a native backend gains skips, wire its
+    //    real resolution here.
+    //  - CPU registers thunks; everything lowerable is present.
+    if (backend != CAJ_XPU_VULKAN) return 1;
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    struct cajeta_xpu_module* e = cajeta_xpu_find_module(name, backend);
+    int ok = (e && e->image && e->len >= 4) ? 1 : 0;
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (ok) {
+        struct cajeta_kparams* kp = cajeta_xpu_find_kparams(name);
+        if (!kp || kp->count <= 0 || kp->count > 64) ok = 0;
+    }
+    return ok;
+}

@@ -150,4 +150,21 @@ public final class Device {
 
     @Native("__cajeta_xpu_active_backend_id")
     private static int32 nativeActiveBackend();
+
+    /**
+     * Is `name`'s device code actually REGISTERED for the active backend?
+     *
+     * A backend may skip a kernel at build (a NATIVE-only construct on the
+     * shader tier is the standing example); launching a skipped kernel is a
+     * loud no-op the caller cannot distinguish from success. A routing layer
+     * choosing between kernel variants asks this and degrades to one that
+     * exists, rather than assuming the build shipped everything.
+     */
+    public static boolean kernelAvailable(String name) {
+        int8[] b #= name.toBytes();
+        return Device.nativeKernelAvailable(b, (int64) b.count()) != 0;
+    }
+
+    @Native("__cajeta_xpu_kernel_available")
+    private static int32 nativeKernelAvailable(int8[] name, int64 len);
 }

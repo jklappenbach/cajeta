@@ -97,6 +97,14 @@ struct cajeta_vk {
     PFN_vkCmdDispatch vkCmdDispatch;
     PFN_vkQueueSubmit vkQueueSubmit;
     PFN_vkQueueWaitIdle vkQueueWaitIdle;
+    // Subgroup-size control (core 1.3): pin compute pipelines to wave32.
+    // Kernels are AUTHORED wave32 (barrier/LDS cooperation in the staged
+    // WMMA GEMMs); RADV defaults gfx11 compute to wave64, under which that
+    // cooperation is barrier divergence — measured as a GPU HANG and
+    // "context lost, guilty of a hard recovery" on the first Q6 batch GEMM.
+    int subgroupCtl;                 // feature enabled + 32 within [min,max]
+    uint32_t minSubgroupSize;
+    uint32_t maxSubgroupSize;
     // Deferred batch submission (v2 launch path).
     PFN_vkCreateFence vkCreateFence;
     PFN_vkWaitForFences vkWaitForFences;
@@ -465,6 +473,34 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         wantInt8 = qi8.shaderInt8 ? 1 : 0;
         wantInt64 = qf2.features.shaderInt64 ? 1 : 0;
         wantInt16 = qf2.features.shaderInt16 ? 1 : 0;
+#if defined(VK_VERSION_1_3)
+        {
+            VkPhysicalDeviceSubgroupSizeControlFeatures qssc;
+            memset(&qssc, 0, sizeof(qssc));
+            qssc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+            VkPhysicalDeviceSubgroupSizeControlProperties pssc;
+            memset(&pssc, 0, sizeof(pssc));
+            pssc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_PROPERTIES;
+            VkPhysicalDeviceFeatures2 qf2b;
+            memset(&qf2b, 0, sizeof(qf2b));
+            qf2b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+            qf2b.pNext = &qssc;
+            getFeatures2(g_xpu_vk.phys, &qf2b);
+            VkPhysicalDeviceProperties2 qp2;
+            memset(&qp2, 0, sizeof(qp2));
+            qp2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            qp2.pNext = &pssc;
+            PFN_vkGetPhysicalDeviceProperties2 gp2 =
+                (PFN_vkGetPhysicalDeviceProperties2) g_xpu_vk.getInstanceProcAddr(
+                    g_xpu_vk.instance, "vkGetPhysicalDeviceProperties2");
+            if (gp2) gp2(g_xpu_vk.phys, &qp2);
+            g_xpu_vk.minSubgroupSize = pssc.minSubgroupSize;
+            g_xpu_vk.maxSubgroupSize = pssc.maxSubgroupSize;
+            g_xpu_vk.subgroupCtl = (qssc.subgroupSizeControl
+                                    && pssc.minSubgroupSize <= 32u
+                                    && pssc.maxSubgroupSize >= 32u) ? 1 : 0;
+        }
+#endif
         qs8.pNext = NULL;    // re-used below as the enable structs
         qs16.pNext = NULL;
     }
@@ -621,6 +657,16 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         qs16.pNext = (void*) dci.pNext;
         dci.pNext = &qs16;
     }
+#if defined(VK_VERSION_1_3)
+    VkPhysicalDeviceSubgroupSizeControlFeatures enSsc;
+    if (g_xpu_vk.subgroupCtl) {
+        memset(&enSsc, 0, sizeof(enSsc));
+        enSsc.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES;
+        enSsc.subgroupSizeControl = VK_TRUE;
+        enSsc.pNext = (void*) dci.pNext;
+        dci.pNext = &enSsc;
+    }
+#endif
     // shaderInt64 is a CORE feature -> pEnabledFeatures (legal alongside the pNext
     // extension-feature chain, which carries no VkPhysicalDeviceFeatures2).
     VkPhysicalDeviceFeatures coreFeats;
@@ -2507,6 +2553,24 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
         cpci.stage.pName = entry;
         cpci.stage.pSpecializationInfo = &specInfo;
         cpci.layout = P->pipeLayout;
+#if defined(VK_VERSION_1_3)
+        // Pin wave32: the kernels' cooperation (barriers, LDS staging, the
+        // Wave.* ops) is authored for 32-lane subgroups; RADV's gfx11
+        // default of wave64 turns that into barrier divergence — a device
+        // HANG on the staged batch GEMMs, then context-lost for the rest
+        // of the process. REQUIRE_FULL_SUBGROUPS when the workgroup tiles
+        // by 32 keeps the mapping exact.
+        VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss;
+        if (g_xpu_vk.subgroupCtl) {
+            memset(&rss, 0, sizeof(rss));
+            rss.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
+            rss.requiredSubgroupSize = 32u;
+            cpci.stage.pNext = &rss;
+            if (((uint64_t) bx * by * bz) % 32u == 0u)
+                cpci.stage.flags |=
+                    VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
+        }
+#endif
         if (g_xpu_vk.vkCreateComputePipelines(g_xpu_vk.device, VK_NULL_HANDLE,
                                               1, &cpci, NULL, &P->pipeline)
                 != VK_SUCCESS)
