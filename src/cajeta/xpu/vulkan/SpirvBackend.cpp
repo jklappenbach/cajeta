@@ -5,6 +5,7 @@
 #include "SpirvBackend.h"
 
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/PassManager.h"
@@ -12,6 +13,7 @@
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/Transforms/Utils/UnifyFunctionExitNodes.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CodeGen.h"
@@ -95,9 +97,11 @@ void ensureTargetsInitialized() {
 
 // Run the SPIR-V codegen pipeline to a file type (Assembly = SPIR-V text,
 // Object = SPIR-V binary) into an in-memory buffer. Unlike the AMDGPU backend
-// there is no pre-emit mem2reg: the in-tree SPIR-V backend lowers Function-
-// storage allocas itself, and PromotePass is unnecessary for the descriptor-
-// set kernels we emit. Returns false (and logs) on failure.
+// mem2reg runs pre-emit (see the pipeline below): the in-tree SPIR-V
+// backend lowers Function-storage allocas itself, but a WIDE vector local
+// left in memory becomes spv_load/spv_store intrinsics that bypass the
+// legalizer's wide-vector splitting on shader targets. Returns false (and
+// logs) on failure.
 bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
                   llvm::CodeGenFileType type, llvm::SmallVectorImpl<char>& out) {
     // Inline every @Device helper (alwaysinline, internal) into its kernel
@@ -130,12 +134,37 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
     // already-structured kernels (the native ray-query path is unaffected).
     {
         llvm::FunctionPassManager fpm;
+        // Mem2reg BEFORE codegen (10.12.44): a Vector<int8,16> local that
+        // stays an alloca reaches SPIRVEmitIntrinsics as spv_load/spv_store
+        // of a WIDE vector, and the intrinsic forms bypass the G_LOAD/
+        // G_STORE wide-vector splitting entirely — on a shader target
+        // (MaxVectorSize 4) that is a hard legalizer failure. Promoted to
+        // SSA, the wide values flow through ops the legalizer CAN narrow
+        // (loop-carried ones become G_PHIs, which now split). The old
+        // comment above said PromotePass was unnecessary; on compute
+        // kernels full of vector locals it is load-bearing.
+        fpm.addPass(llvm::PromotePass());
         fpm.addPass(llvm::FixIrreduciblePass());
         fpm.addPass(llvm::UnifyFunctionExitNodesPass());
         fpm.addPass(llvm::StructurizeCFGPass());
         mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
     }
     mpm.run(m, mam);
+
+    // CAJETA_XPU_DUMP_BC=<dir>: write each kernel module's bitcode (post
+    // inline/structurize, pre codegen) so a legalizer failure can be
+    // reproduced and stepped in the standalone `llc -global-isel` instead
+    // of inside the in-process backend. The 10.12.44 debugging instrument.
+    if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_BC")) {
+        std::string name = "module";
+        for (auto& f : m) {
+            if (!f.isDeclaration()) { name = f.getName().str(); break; }
+        }
+        std::error_code ec;
+        llvm::raw_fd_ostream bcOut(
+            std::string(dumpDir) + "/" + name + ".vulkan.bc", ec);
+        if (!ec) llvm::WriteBitcodeToFile(m, bcOut);
+    }
 
     llvm::raw_svector_ostream os(out);
     llvm::legacy::PassManager pm;

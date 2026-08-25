@@ -3026,7 +3026,14 @@ private:
                 auto* rvt = llvm::cast<llvm::FixedVectorType>(rv->getType());
                 const std::string tmp =
                     ".vrecv." + std::to_string(syntheticRecvSeq++);
-                llvm::Value* slot = builder.CreateAlloca(rvt, nullptr, tmp);
+                // entryAlloca, not a point-of-use alloca: mid-function
+                // allocas are invisible to mem2reg (it only promotes the
+                // entry block), so a chained-receiver spill inside a loop
+                // stayed a real memory round-trip — which on the SPIR-V
+                // shader flavor becomes a WIDE spv_load/spv_store the
+                // legalizer cannot split (10.12.44), and on every backend
+                // re-allocas per iteration.
+                llvm::Value* slot = entryAlloca(rvt, tmp);
                 builder.CreateStore(rv, slot);
                 values[tmp]      = slot;
                 slotTypes[tmp]   = rvt;
