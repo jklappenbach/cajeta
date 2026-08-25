@@ -11,6 +11,8 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/Transforms/Scalar/EarlyCSE.h"
 #include "llvm/Transforms/Scalar/StructurizeCFG.h"
 #include "llvm/Transforms/Utils/FixIrreducible.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
@@ -144,12 +146,68 @@ bool emitToBuffer(llvm::Module& m, llvm::TargetMachine& tm,
         // comment above said PromotePass was unnecessary; on compute
         // kernels full of vector locals it is load-bearing.
         fpm.addPass(llvm::PromotePass());
+        // Clean up after promotion BEFORE codegen. Without these, the
+        // builder's literal instruction stream reaches the backend: a
+        // shuffle-of-bitcast byte slice feeding a packed dot legalizes to
+        // per-byte extract + repack (519 shifts against 128 dots in the
+        // tiled GEMM's ISA), and every LDS index add is a fresh i64 chain.
+        // EarlyCSE dedups the address math; InstCombine folds the
+        // bitcast/shuffle chains into the dword extracts the dot wants.
+        fpm.addPass(llvm::EarlyCSEPass());
+        // NOT InstCombine: its canonicalizations (FP narrowing to bfloat,
+        // load/GEP reshaping) crash the in-tree SPIRVLegalizePointerCast and
+        // trip the SPV_INTEL_bfloat16_arithmetic guard. EarlyCSE alone
+        // dedups the i64 LDS address chains, which is the win that matters.
         fpm.addPass(llvm::FixIrreduciblePass());
         fpm.addPass(llvm::UnifyFunctionExitNodesPass());
         fpm.addPass(llvm::StructurizeCFGPass());
         mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
     }
     mpm.run(m, mam);
+
+    // InstCombine's FP-narrowing canonicalizes fptrunc(op(fpext a, fpext b))
+    // into direct bfloat arithmetic, which the SPIR-V backend only accepts
+    // under SPV_INTEL_bfloat16_arithmetic (not a Vulkan extension). Re-expand:
+    // bf16 math runs as f32 with a trunc back, exactly the shape the source
+    // lowering emits. Semantics match — bf16 ops are DEFINED here as
+    // round-trips through f32.
+    {
+        llvm::SmallVector<llvm::Instruction*, 8> bf16Ops;
+        for (auto& f : m)
+            for (auto& bb : f)
+                for (auto& inst : bb) {
+                    if (!inst.getType()->isBFloatTy()
+                        && !(inst.getType()->isVectorTy()
+                             && inst.getType()->getScalarType()->isBFloatTy()))
+                        continue;
+                    if (inst.isBinaryOp() || inst.getOpcode() == llvm::Instruction::FNeg)
+                        bf16Ops.push_back(&inst);
+                }
+        for (llvm::Instruction* inst : bf16Ops) {
+            llvm::IRBuilder<> b(inst);
+            llvm::Type* fTy = inst->getType()->isVectorTy()
+                ? (llvm::Type*) llvm::FixedVectorType::get(
+                      b.getFloatTy(),
+                      llvm::cast<llvm::FixedVectorType>(inst->getType())
+                          ->getNumElements())
+                : (llvm::Type*) b.getFloatTy();
+            llvm::Value* wide;
+            if (inst->getOpcode() == llvm::Instruction::FNeg) {
+                wide = b.CreateFNeg(
+                    b.CreateFPExt(inst->getOperand(0), fTy, "bf16.x"));
+            } else {
+                wide = b.CreateBinOp(
+                    (llvm::Instruction::BinaryOps) inst->getOpcode(),
+                    b.CreateFPExt(inst->getOperand(0), fTy, "bf16.x"),
+                    b.CreateFPExt(inst->getOperand(1), fTy, "bf16.y"),
+                    "bf16.w");
+            }
+            llvm::Value* back = b.CreateFPTrunc(wide, inst->getType(),
+                                                "bf16.t");
+            inst->replaceAllUsesWith(back);
+            inst->eraseFromParent();
+        }
+    }
 
     // CAJETA_XPU_DUMP_BC=<dir>: write each kernel module's bitcode (post
     // inline/structurize, pre codegen) so a legalizer failure can be

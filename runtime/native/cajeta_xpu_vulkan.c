@@ -2709,6 +2709,16 @@ static uint64_t caj_vk_spv_written_mask(const uint32_t* w, size_t nwords) {
         case 228: // OpAtomicStore: pointer a[1]
             if (wc >= 5) CAJ_SPV_MARK(a[1]);
             break;
+        case 319: // OpAtomicFlagClear: pointer a[1]
+            if (wc >= 4) CAJ_SPV_MARK(a[1]);
+            break;
+        case 318: // OpAtomicFlagTestAndSet: pointer a[3]
+            if (wc >= 6) CAJ_SPV_MARK(a[3]);
+            break;
+        case 4458: // OpCooperativeMatrixStoreKHR: pointer a[1]
+        case 5360: // OpCooperativeMatrixStoreNV: pointer a[1]
+            if (wc >= 3) CAJ_SPV_MARK(a[1]);
+            break;
         case 229: case 230: case 231: case 232: case 233: case 234:
         case 235: case 236: case 237: case 238: case 239: case 240:
         case 241: case 242: // result-carrying atomics: pointer a[3]

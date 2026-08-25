@@ -6017,6 +6017,94 @@ namespace cajeta {
                         CajetaType::of(next), vecT->getLanes());
                     return self;   // same bits, same register
                 }
+                // dotSum(other, acc) — the byte vector dotted into one
+                // int32 scalar (receiver signedness for the receiver,
+                // activations sign-extended, plus acc). Host form: widen,
+                // multiply, reduce-add. The device form chains dp4a.
+                if (methodCallName == "dotSum") {
+                    if (parameters.size() != 2) {
+                        throw Exception("Vector.dotSum expects (other, acc)",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto elemT = vecT->getElementType();
+                    if (isFloat
+                        || elemT->getLlvmType()->getIntegerBitWidth() != 8
+                        || (vecT->getLanes() % 4) != 0) {
+                        throw Exception(
+                            "Vector.dotSum needs an 8-bit vector whose lane "
+                            "count is a multiple of 4",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* other = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    llvm::Value* acc = loadIfLValue(module,
+                        parameters[1].expression->generateCode(module),
+                        parameters[1].expression);
+                    bool sgn = (elemT->getTypeFlags() & SIGNED_FLAG) != 0;
+                    unsigned lanes = vecT->getLanes();
+                    auto* wideTy = llvm::FixedVectorType::get(
+                        llvm::Type::getInt32Ty(*module->getLlvmContext()),
+                        lanes);
+                    llvm::Value* ww = sgn
+                        ? builder->CreateSExt(self, wideTy, "dotsum.w")
+                        : builder->CreateZExt(self, wideTy, "dotsum.w");
+                    llvm::Value* aw = builder->CreateSExt(other, wideTy,
+                                                          "dotsum.a");
+                    llvm::Value* prod = builder->CreateMul(ww, aw,
+                                                           "dotsum.p");
+                    llvm::Value* sum = builder->CreateAddReduce(prod);
+                    resolvedType = CajetaType::of("int32");
+                    return builder->CreateAdd(sum, acc, "dotsum");
+                }
+                // asWords() / asBytes() — reinterpret <4N x i8> as
+                // <N x int32> and back, little-endian (byte k of word j is
+                // byte 4j+k). One bitcast, no lane traffic. Exists so LDS
+                // tiles can be DECLARED Shared<int32> (SPIR-V types a tile
+                // by element, and Mesa does not merge Workgroup byte
+                // accesses) while the dot verbs keep their byte-vector
+                // operand shape.
+                if (methodCallName == "asWords"
+                        || methodCallName == "asBytes") {
+                    if (!parameters.empty()) {
+                        throw Exception(
+                            "Vector.asWords/asBytes take no arguments",
+                            "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    if (isFloat) {
+                        throw Exception(
+                            "Vector.asWords/asBytes require an integer "
+                            "element type", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    unsigned w = vecT->getElementType()
+                        ->getLlvmType()->getIntegerBitWidth();
+                    unsigned n = vecT->getLanes();
+                    if (methodCallName == "asWords") {
+                        if (w != 8 || (n % 4) != 0) {
+                            throw Exception(
+                                "Vector.asWords needs an 8-bit vector whose "
+                                "lane count is a multiple of 4",
+                                "CAJETA_ERROR_VECTOR_METHOD");
+                        }
+                        resolvedType = CajetaVector::getOrCreate(module,
+                            CajetaType::of("int32"), n / 4);
+                        return builder->CreateBitCast(self,
+                            llvm::FixedVectorType::get(
+                                llvm::Type::getInt32Ty(
+                                    *module->getLlvmContext()), n / 4),
+                            "as.words");
+                    }
+                    if (w != 32) {
+                        throw Exception("Vector.asBytes needs a 32-bit "
+                                        "vector", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        CajetaType::of("int8"), n * 4);
+                    return builder->CreateBitCast(self,
+                        llvm::FixedVectorType::get(
+                            llvm::Type::getInt8Ty(*module->getLlvmContext()),
+                            n * 4), "as.bytes");
+                }
                 // narrow(other) — the ladder inverse: two Vector<i2W,N>
                 // truncate into one Vector<iW,2N>, receiver's lanes first.
                 if (methodCallName == "narrow") {

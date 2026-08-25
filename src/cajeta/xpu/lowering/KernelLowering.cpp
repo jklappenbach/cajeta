@@ -1866,7 +1866,8 @@ private:
             // chained `dot` did.
             || n == "widenLo" || n == "widenHi" || n == "narrow"
             || n == "toF32" || n == "toI32" || n == "toF16"
-            || n == "asUnsigned" || n == "asSigned";
+            || n == "asUnsigned" || n == "asSigned"
+            || n == "asWords" || n == "asBytes" || n == "dotSum";
     }
     unsigned syntheticRecvSeq = 0;
 
@@ -2032,6 +2033,130 @@ private:
                 unsupported("Vector.asUnsigned/asSigned take no arguments");
             return self;
         }
+        // asWords()/asBytes() — pure vector reinterpretation between
+        // <4N x i8> and <N x i32>, little-endian (byte k of word j is byte
+        // 4j+k). What it exists for: SPIR-V logical addressing types an LDS
+        // tile by its ELEMENT, and Mesa does not re-vectorize Workgroup
+        // byte accesses the way it merges global ones — a byte-tiled LDS
+        // GEMM measured 384 scalar ds_read_u8 per inner loop. Declaring the
+        // tile Shared<int32> and reinterpreting per 32-byte chunk keeps
+        // every LDS access dword-shaped. Result signedness follows the
+        // declared LHS, exactly as asUnsigned's contract.
+        if (name == "asWords" || name == "asBytes") {
+            if (isFloat)
+                unsupported("Vector.asWords/asBytes require an integer "
+                            "element type");
+            if (!args.empty())
+                unsupported("Vector.asWords/asBytes take no arguments");
+            unsigned lanes = vt->getNumElements();
+            unsigned width = vt->getElementType()->getIntegerBitWidth();
+            llvm::LLVMContext& c = builder.getContext();
+            if (name == "asWords") {
+                if (width != 8 || (lanes % 4) != 0)
+                    unsupported("Vector.asWords needs an 8-bit vector whose "
+                                "lane count is a multiple of 4");
+                return builder.CreateBitCast(self,
+                    llvm::FixedVectorType::get(llvm::Type::getInt32Ty(c),
+                                               lanes / 4), "as.words");
+            }
+            if (width != 32)
+                unsupported("Vector.asBytes needs a 32-bit vector");
+            return builder.CreateBitCast(self,
+                llvm::FixedVectorType::get(llvm::Type::getInt8Ty(c),
+                                           lanes * 4), "as.bytes");
+        }
+        // dotSum(other, acc) — the whole byte vector dotted into ONE scalar
+        // by CHAINING the 4x8 dot through its accumulator operand: 8 serial
+        // v_dot4 for a 32-lane receiver, no 8-wide accumulator register and
+        // no horizontal reduction. This is the register shape llama.cpp's
+        // mul_mmq accumulates in; dotAccum's <8 x i32> accumulator costs 8
+        // VGPRs per live (row, token) pair and capped the tiled GEMM at 256
+        // VGPRs = 1 wave/SIMD. Signedness contract matches dotAccum: the
+        // receiver's element signedness, activations always signed.
+        if (name == "dotSum") {
+            if (isFloat)
+                unsupported("Vector.dotSum is integer-only");
+            if (args.size() != 2)
+                unsupported("Vector.dotSum expects (other, acc)");
+            auto* wvt = llvm::dyn_cast<llvm::FixedVectorType>(self->getType());
+            if (wvt == nullptr
+                    || wvt->getElementType()->getIntegerBitWidth() != 8
+                    || (wvt->getNumElements() % 4) != 0)
+                unsupported("Vector.dotSum needs an 8-bit vector whose lane "
+                            "count is a multiple of 4");
+            llvm::Value* other = lowerExpr(args[0].expression);
+            llvm::Value* acc = lowerExpr(args[1].expression);
+            auto* ovt = llvm::dyn_cast<llvm::FixedVectorType>(
+                other->getType());
+            if (ovt == nullptr
+                    || ovt->getElementType()->getIntegerBitWidth() != 8
+                    || ovt->getNumElements() != wvt->getNumElements())
+                unsupported("Vector.dotSum's operands must have the same "
+                            "8-bit lane count");
+            if (!acc->getType()->isIntegerTy(32))
+                unsupported("Vector.dotSum's accumulator must be int32");
+            bool sgn = signedness.count(recv) ? signedness[recv] : true;
+            unsigned n = wvt->getNumElements() / 4;
+            llvm::Type* i32d = llvm::Type::getInt32Ty(builder.getContext());
+            auto* v4i8 = llvm::FixedVectorType::get(
+                llvm::Type::getInt8Ty(builder.getContext()), 4);
+            // Same packed-dword peek as dotAccum below: a receiver that is
+            // an asBytes() view of loaded dwords feeds the dot as those
+            // dwords, not as re-packed byte slices.
+            auto packedWordsN = [&](llvm::Value* v) -> llvm::Value* {
+                for (int hop = 0; hop < 6; ++hop) {
+                    auto* ld = llvm::dyn_cast<llvm::LoadInst>(v);
+                    if (!ld) break;
+                    auto* al = llvm::dyn_cast<llvm::AllocaInst>(
+                        ld->getPointerOperand());
+                    if (!al) break;
+                    llvm::StoreInst* only = nullptr;
+                    bool multi = false;
+                    for (llvm::User* u : al->users()) {
+                        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                            if (only) multi = true;
+                            only = st;
+                        }
+                    }
+                    if (!only || multi || only->getParent() != ld->getParent()
+                            || !only->comesBefore(ld))
+                        break;
+                    v = only->getValueOperand();
+                }
+                auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v);
+                if (!bc) return nullptr;
+                auto* svt = llvm::dyn_cast<llvm::FixedVectorType>(
+                    bc->getSrcTy());
+                if (svt && svt->getElementType()->isIntegerTy(32)
+                        && svt->getNumElements() == n)
+                    return bc->getOperand(0);
+                return nullptr;
+            };
+            llvm::Value* selfW = packedWordsN(self);
+            llvm::Value* otherW = packedWordsN(other);
+            llvm::Value* run = acc;
+            for (unsigned lane = 0; lane < n; ++lane) {
+                llvm::SmallVector<int, 4> m4 = {(int) (lane * 4),
+                    (int) (lane * 4 + 1), (int) (lane * 4 + 2),
+                    (int) (lane * 4 + 3)};
+                llvm::Value* ws = selfW
+                    ? builder.CreateBitCast(
+                          builder.CreateExtractElement(selfW, lane), v4i8,
+                          "dotsum.w4")
+                    : builder.CreateShuffleVector(self, self, m4,
+                                                  "dotsum.w4");
+                llvm::Value* as = otherW
+                    ? builder.CreateBitCast(
+                          builder.CreateExtractElement(otherW, lane), v4i8,
+                          "dotsum.a4")
+                    : builder.CreateShuffleVector(other, other, m4,
+                                                  "dotsum.a4");
+                run = target.integerDot4x8(builder, mod, ws, as, run, sgn,
+                                           /*cSigned=*/true);
+            }
+            (void) i32d;
+            return run;
+        }
         if (name == "dotAccum") {
             if (isFloat)
                 unsupported("Vector.dotAccum is integer-only");
@@ -2069,16 +2194,70 @@ private:
             llvm::Type* i32d = llvm::Type::getInt32Ty(builder.getContext());
             unsigned n = avt->getNumElements();
             llvm::Value* out = accv;
+            // A byte vector that is really an asBytes() view of packed
+            // dwords should feed the dot as those dwords: slicing it with a
+            // byte shuffle survives to the backend as per-byte extract +
+            // repack (519 shifts against 128 dots in the tiled GEMM's ISA).
+            // Peek through the bitcast and extract the dword directly; the
+            // seam's own bitcast-to-i32 then folds to nothing.
+            auto packedWords = [&](llvm::Value* v) -> llvm::Value* {
+                // A named receiver arrives as a load from its slot, and a
+                // CHAINED one threads several synthetic slots (vload -> slot,
+                // .asBytes() -> slot, ...), so strip load-of-single-store
+                // slots repeatedly. Each hop is safe only when the one store
+                // dominates the load within the same block.
+                for (int hop = 0; hop < 6; ++hop) {
+                    auto* ld = llvm::dyn_cast<llvm::LoadInst>(v);
+                    if (!ld) break;
+                    auto* al = llvm::dyn_cast<llvm::AllocaInst>(
+                        ld->getPointerOperand());
+                    if (!al) break;
+                    llvm::StoreInst* only = nullptr;
+                    bool multi = false;
+                    for (llvm::User* u : al->users()) {
+                        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                            if (only) multi = true;
+                            only = st;
+                        }
+                    }
+                    if (!only || multi || only->getParent() != ld->getParent()
+                            || !only->comesBefore(ld))
+                        break;
+                    v = only->getValueOperand();
+                }
+                auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v);
+                if (!bc) return nullptr;
+                auto* svt = llvm::dyn_cast<llvm::FixedVectorType>(
+                    bc->getSrcTy());
+                if (svt && svt->getElementType()->isIntegerTy(32)
+                        && svt->getNumElements() == n)
+                    return bc->getOperand(0);
+                return nullptr;
+            };
+            llvm::Value* selfW = packedWords(self);
+            llvm::Value* otherW = packedWords(other);
+            auto* v4i8 = llvm::FixedVectorType::get(
+                llvm::Type::getInt8Ty(builder.getContext()), 4);
             for (unsigned lane = 0; lane < n; ++lane) {
                 // Slice the 4 lanes feeding this accumulator lane and hand
                 // them to the seam, which is DP4a-shaped by construction.
                 llvm::SmallVector<int, 4> m4 = {(int) (lane * 4),
                     (int) (lane * 4 + 1), (int) (lane * 4 + 2),
                     (int) (lane * 4 + 3)};
-                llvm::Value* ws = builder.CreateShuffleVector(self, self, m4,
-                                                              "dotacc.w4");
-                llvm::Value* as = builder.CreateShuffleVector(other, other, m4,
-                                                              "dotacc.a4");
+                llvm::Value* ws = selfW
+                    ? builder.CreateBitCast(
+                          builder.CreateExtractElement(selfW, lane,
+                                                       "dotacc.w32"),
+                          v4i8, "dotacc.w4")
+                    : builder.CreateShuffleVector(self, self, m4,
+                                                  "dotacc.w4");
+                llvm::Value* as = otherW
+                    ? builder.CreateBitCast(
+                          builder.CreateExtractElement(otherW, lane,
+                                                       "dotacc.a32"),
+                          v4i8, "dotacc.a4")
+                    : builder.CreateShuffleVector(other, other, m4,
+                                                  "dotacc.a4");
                 llvm::Value* a0 = builder.CreateExtractElement(out, lane,
                                                                "dotacc.acc");
                 // dotAccum is ASYMMETRIC. The host contract (see

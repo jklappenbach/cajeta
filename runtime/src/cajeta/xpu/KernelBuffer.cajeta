@@ -368,6 +368,28 @@ public final class KernelBuffer<T> {
         return #sub;                 // move out; the source dtor no-ops
     }
 
+    /**
+     * Reinterpret this buffer's bytes as int32 words — a non-owning VIEW
+     * of the same storage, little-endian (byte k of word j is byte 4j+k).
+     * The byte length must be a multiple of 4; the view has byteLen/4
+     * elements. Same lifetime rules as {@link #slice}: the parent owns the
+     * storage and must outlive the view.
+     *
+     * What it exists for: SPIR-V logical addressing types a binding by its
+     * ELEMENT, so a byte-typed buffer can only be loaded per byte — and a
+     * packed-quant GEMM that reads its payload through byte vectors pays a
+     * shift-and-or repack per dword at the legalizer. A word view makes the
+     * same bytes loadable as dwords.
+     */
+    public #KernelBuffer<int32> wordView() {
+        int64 base = this.deviceSlice(this.deviceHandle, (uint64) 0);
+        KernelBuffer<int32> w = heap KernelBuffer<int32>(base,
+            this.length() * elementBytes() / (uint64) 4);
+        w.owned = false;
+        w.kind = this.kind;
+        return #w;
+    }
+
     // Backend-aware sub-range address resolution. Pointer backends fold the
     // byte offset into the device pointer; Vulkan (handle = buffer-table index)
     // resolves it into a view record carrying the descriptor offset. byteOffset

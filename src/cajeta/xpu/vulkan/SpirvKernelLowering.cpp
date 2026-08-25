@@ -656,19 +656,28 @@ public:
     llvm::Value* integerDot4x8(llvm::IRBuilderBase& b, llvm::Module& m,
                                llvm::Value* a, llvm::Value* c, llvm::Value* acc,
                                bool aSigned, bool cSigned) override {
-        // MIXED signedness — what dotAccum means — has no stock LLVM SPIR-V
-        // intrinsic: IntrinsicsSPIRV.td defines only dot4add_i8packed and
-        // dot4add_u8packed, both symmetric. SPIR-V ITSELF has OpSUDot
-        // (SPV_KHR_integer_dot_product), so this is an LLVM coverage gap
-        // rather than a hardware one; until an intrinsic exists, fall back to
-        // the portable widen, which is correct on every target. Picking a
-        // symmetric intrinsic here instead was the defect.
-        if (aSigned != cSigned)
-            return LoweringTarget::integerDot4x8(b, m, a, c, acc, aSigned,
-                                                 cSigned);
+        // MIXED signedness — what dotAccum means — maps to OpSUDot, whose
+        // FIRST operand packs the signed bytes and SECOND the unsigned
+        // (SPV_KHR_integer_dot_product). Stock LLVM has no intrinsic for it
+        // (only the symmetric dot4add_{i8,u8}packed pair), so the fork adds
+        // spv_dot4add_su8packed with the same (acc, x, y) shape; before it
+        // existed this case fell back to the portable widen, which is
+        // CORRECT but scalar — the whole Vulkan integer tier measured
+        // 1.16 TMAC/s against 9.9 native on the same silicon, and every
+        // quant kernel's dotAccum (unsigned weights x signed activations)
+        // was on that path.
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         llvm::Value* x = b.CreateBitCast(a, i32, "dp4a.x");
         llvm::Value* y = b.CreateBitCast(c, i32, "dp4a.y");
+        if (aSigned != cSigned) {
+            // OpSUDot wants (signed, unsigned) — swap when the receiver is
+            // the unsigned side. Integer dot is order-symmetric in value.
+            llvm::Value* xs = aSigned ? x : y;
+            llvm::Value* yu = aSigned ? y : x;
+            llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
+                &m, llvm::Intrinsic::spv_dot4add_su8packed);
+            return b.CreateCall(f, {acc, xs, yu}, "dp4a.su");
+        }
         llvm::Intrinsic::ID id = aSigned
             ? llvm::Intrinsic::spv_dot4add_i8packed
             : llvm::Intrinsic::spv_dot4add_u8packed;
@@ -1081,15 +1090,31 @@ public:
     // (OpCompositeConstruct via insertelement); the store extracts each lane and
     // writes it scalar. This is the granular form of the spec's §6.1.4
     // "split into <=4-component ops" — valid for any width SPIR-V admits.
+    // A Workgroup (shared / addrspace 3) tile is at most 64 KB, so its lane
+    // indices fit i32 — and 64-bit index chains are what stops Mesa folding
+    // the per-lane `+j` into the ds_load/ds_store immediate offset field: the
+    // tiled GEMM's steady state showed `v_add_co + v_lshl + ds_load` per
+    // DWORD (two VALU per LDS op). Truncate once, add in i32 with nuw/nsw.
+    static llvm::Value* laneIndexBase(llvm::IRBuilderBase& b,
+                                      llvm::Value* base, llvm::Value* index) {
+        bool isShared = base->getType()->isPointerTy()
+            && base->getType()->getPointerAddressSpace() == 3;
+        if (isShared && !index->getType()->isIntegerTy(32))
+            return b.CreateTrunc(index, b.getInt32Ty(), "idx32");
+        return index;
+    }
+
     llvm::Value* vectorLoad(llvm::IRBuilderBase& b, llvm::Module& m,
                             llvm::Value* base, llvm::Type* elemTy,
                             unsigned lanes, llvm::Value* index) override {
         auto* vecTy = llvm::FixedVectorType::get(elemTy, lanes);
         llvm::Value* vec = llvm::UndefValue::get(vecTy);
+        index = laneIndexBase(b, base, index);
         llvm::Type* idxTy = index->getType();
         for (unsigned j = 0; j < lanes; ++j) {
             llvm::Value* jIdx = b.CreateAdd(
-                index, llvm::ConstantInt::get(idxTy, j));
+                index, llvm::ConstantInt::get(idxTy, j), "", /*HasNUW=*/true,
+                /*HasNSW=*/true);
             llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, jIdx);
             llvm::Value* sc = b.CreateLoad(elemTy, ptr, "vl.lane");
             vec = b.CreateInsertElement(
@@ -1101,10 +1126,12 @@ public:
     void vectorStore(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* base,
                      llvm::Type* elemTy, unsigned lanes, llvm::Value* index,
                      llvm::Value* value) override {
+        index = laneIndexBase(b, base, index);
         llvm::Type* idxTy = index->getType();
         for (unsigned j = 0; j < lanes; ++j) {
             llvm::Value* jIdx = b.CreateAdd(
-                index, llvm::ConstantInt::get(idxTy, j));
+                index, llvm::ConstantInt::get(idxTy, j), "", /*HasNUW=*/true,
+                /*HasNSW=*/true);
             llvm::Value* ptr = bufferElementPtr(b, m, base, elemTy, jIdx);
             llvm::Value* sc = b.CreateExtractElement(
                 value, llvm::ConstantInt::get(b.getInt32Ty(), j), "vs.lane");
