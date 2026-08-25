@@ -112,11 +112,24 @@ static void caj_cupti_say(int32_t state, const char* tried, const char* why) {
 // detection is armed where the hazard lives. The kernel says so itself:
 // /proc/version contains "microsoft" (WSL2 spells it lowercase inside
 // "microsoft-standard-WSL2", WSL1 capitalized it), and no non-WSL kernel does.
+// Hand-rolled rather than strncasecmp: the runtime is JIT-materialized, and
+// one POSIX symbol the Windows host cannot resolve fails materialization of
+// the WHOLE runtime — run 32776148357 took all 139 Windows tests down at
+// 65–90 s apiece over exactly this call.
+static int caj_cupti_imatch_microsoft(const char* p) {
+    static const char kWord[9] = {'m','i','c','r','o','s','o','f','t'};
+    for (int i = 0; i < 9; ++i) {
+        char c = p[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if (c != kWord[i]) return 0;
+    }
+    return 1;
+}
+
 int32_t __cajeta_prof_cupti_version_is_wsl(const char* procVersion) {
     if (!procVersion) return 0;
     for (const char* p = procVersion; *p; ++p) {
-        if ((p[0] == 'm' || p[0] == 'M') &&
-            strncasecmp(p, "microsoft", 9) == 0)
+        if ((p[0] == 'm' || p[0] == 'M') && caj_cupti_imatch_microsoft(p))
             return 1;
     }
     return 0;
