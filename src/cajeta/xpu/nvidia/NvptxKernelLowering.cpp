@@ -389,8 +389,10 @@ public:
 
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
-                                  llvm::Value* c, llvm::Type* /*matrixType*/)
-            override {
+                                  llvm::Value* c, llvm::Type* /*matrixType*/,
+                                  uint32_t /*signFlags*/) override {
+        // signFlags unused: the NVPTX tier is f16/bf16-only today (no integer
+        // mma fragments wired), and float matmuls carry no signedness.
         // Pick mma by the A fragment's SHAPE, not a scalar probe: f16 A/B
         // fragments are {<2 x half> x 8}, while bf16 fragments pack two values
         // per .b32 register and are {i32 x 4} (IntrinsicsNVVM.td

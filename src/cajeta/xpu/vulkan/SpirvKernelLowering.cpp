@@ -1007,14 +1007,21 @@ public:
             {ptr->getType(), matrixVal->getType()});
         b.CreateCall(f, {ptr, matrixVal, layout, stride});
     }
-    // result = OpCooperativeMatrixMulAddKHR A B C (overloaded on result, A, B, C).
+    // result = OpCooperativeMatrixMulAddKHR A B C [operands] (overloaded on
+    // result, A, B, C). `signFlags` is the KHR Cooperative Matrix Operands
+    // mask; WITHOUT it integer components multiply as UNSIGNED (signed int8
+    // read -1 as 255 — the shader-tier GEMM wrong-values defect, measured by
+    // VkTileProbe 2026-08-25). Float matmuls pass 0 and no literal is emitted.
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
-                                  llvm::Value* c, llvm::Type* matrixType) override {
+                                  llvm::Value* c, llvm::Type* matrixType,
+                                  uint32_t signFlags) override {
         llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
             &m, llvm::Intrinsic::spv_cooperative_matrix_muladd,
             {matrixType, a->getType(), bMat->getType(), c->getType()});
-        return b.CreateCall(f, {a, bMat, c}, "cm.mma");
+        llvm::Value* flags = llvm::ConstantInt::get(
+            llvm::Type::getInt32Ty(m.getContext()), signFlags);
+        return b.CreateCall(f, {a, bMat, c, flags}, "cm.mma");
     }
     // result = OpCompositeConstruct value (single-scalar splat; overloaded on
     // result matrix type then scalar value type).
@@ -1037,7 +1044,8 @@ public:
         coopMatrixNoForkToolchain();
     }
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,
-                                  llvm::Value*, llvm::Value*, llvm::Type*) override {
+                                  llvm::Value*, llvm::Value*, llvm::Type*,
+                                  uint32_t) override {
         coopMatrixNoForkToolchain();
     }
     llvm::Value* coopMatrixSplat(llvm::IRBuilderBase&, llvm::Module&, llvm::Value*,

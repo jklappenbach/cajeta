@@ -836,9 +836,15 @@ namespace xpu {
 
         // c.mma(a, b) → a*b+c (result type `matrixType`, the accumulator type)
         // (→ OpCooperativeMatrixMulAddKHR).
+        // `signFlags` is the SPV_KHR_cooperative_matrix operands mask
+        // (A signed 0x1, B 0x2, C 0x4, Result 0x8): int types are signless in
+        // both LLVM and SPIR-V, so the multiply's signedness must travel as
+        // DATA. Vulkan emits it as the MulAdd operands literal; AMD folds it
+        // into the signed/unsigned booleans its WMMA intrinsics take.
         virtual llvm::Value* coopMatrixMulAdd(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* a,
-            llvm::Value* bMat, llvm::Value* c, llvm::Type* matrixType);
+            llvm::Value* bMat, llvm::Value* c, llvm::Type* matrixType,
+            uint32_t signFlags);
 
         // m.splat(value) → a tile with every element = `value` (the zero/initial
         // accumulator), result type `matrixType` (→ OpCompositeConstruct).

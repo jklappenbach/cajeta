@@ -1073,8 +1073,8 @@ public:
 
     llvm::Value* coopMatrixMulAdd(llvm::IRBuilderBase& b, llvm::Module& m,
                                   llvm::Value* a, llvm::Value* bMat,
-                                  llvm::Value* c, llvm::Type* /*matrixType*/)
-            override {
+                                  llvm::Value* c, llvm::Type* /*matrixType*/,
+                                  uint32_t signFlags) override {
         // Pick the intrinsic by the A/B element type: <16 x half> -> f16 WMMA,
         // <16 x i16> -> bf16 WMMA, <4 x i32> (packed int8) -> iu8 WMMA.
         llvm::Type* ae =
@@ -1087,9 +1087,14 @@ public:
             llvm::Function* f = llvm::Intrinsic::getOrInsertDeclaration(
                 &m, llvm::Intrinsic::amdgcn_wmma_i32_16x16x16_iu8,
                 {c->getType(), a->getType()});
-            llvm::Value* tru = llvm::ConstantInt::getTrue(ctx);   // A/B signed
+            // The seam's signFlags (A=0x1, B=0x2) become the intrinsic's
+            // per-operand signed booleans — the same fact SPIR-V spells as
+            // the MulAdd operands literal. Was hardcoded signed; reading the
+            // mask keeps a future uint8 tile honest on both tiers.
+            llvm::Value* aSg = llvm::ConstantInt::getBool(ctx, (signFlags & 1u) != 0);
+            llvm::Value* bSg = llvm::ConstantInt::getBool(ctx, (signFlags & 2u) != 0);
             llvm::Value* fls = llvm::ConstantInt::getFalse(ctx);  // no clamp
-            return b.CreateCall(f, {tru, a, tru, bMat, c, fls}, "wmma.iu8");
+            return b.CreateCall(f, {aSg, a, bSg, bMat, c, fls}, "wmma.iu8");
         }
         llvm::Intrinsic::ID id = ae->isHalfTy()
             ? llvm::Intrinsic::amdgcn_wmma_f32_16x16x16_f16

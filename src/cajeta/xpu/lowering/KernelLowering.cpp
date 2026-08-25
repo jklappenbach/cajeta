@@ -498,6 +498,9 @@ private:
         llvm::Type* matrixType = nullptr;   // opaque tile (native) or [N x elem] (software)
         bool software = false;
         llvm::Type* elemType = nullptr;     // device scalar (storage) element type
+        bool elemSigned = true;             // cajeta T signedness (int8 vs uint8);
+                                            // LLVM/SPIR-V int types are signless,
+                                            // so this is the ONLY carrier of it
         uint32_t rows = 0, cols = 0, use = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
@@ -3656,6 +3659,7 @@ private:
             unsupported("CooperativeMatrix Rows/Cols/Use must be integer constants");
         CoopMatrixSlot s;
         s.elemType = elem;
+        s.elemSigned = typeIsSigned(targs[0]);
         s.rows = (uint32_t) rows->getValue();
         s.cols = (uint32_t) cols->getValue();
         s.use  = (uint32_t) use->getValue();
@@ -4182,8 +4186,19 @@ private:
             llvm::Value* bVal = builder.CreateLoad(b.matrixType, b.alloca, "cm.b");
             llvm::Value* cVal =
                 builder.CreateLoad(slot.matrixType, slot.alloca, "cm.c");
+            // SPV_KHR_cooperative_matrix signedness mask: A=0x1 B=0x2 C=0x4
+            // Result=0x8. SPIR-V integer types are SIGNLESS — omitting these
+            // executes signed int8 as UNSIGNED (-1 reads as 255; measured on
+            // RADV as VkTileProbe stage2 121/256 wrong, stage3 256/256). AMD's
+            // WMMA intrinsics encode the same fact in the intrinsic name, so
+            // its target reads the mask instead of hardcoding signed.
+            uint32_t signFlags = 0;
+            if (a.elemSigned) signFlags |= 0x1u;
+            if (b.elemSigned) signFlags |= 0x2u;
+            if (slot.elemSigned) signFlags |= 0x4u | 0x8u;
             llvm::Value* v = target.coopMatrixMulAdd(builder, mod, aVal, bVal,
-                                                     cVal, slot.matrixType);
+                                                     cVal, slot.matrixType,
+                                                     signFlags);
             builder.CreateStore(v, slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
@@ -5997,7 +6012,8 @@ void LoweringTarget::coopMatrixStore(
 
 llvm::Value* LoweringTarget::coopMatrixMulAdd(
     llvm::IRBuilderBase& /*b*/, llvm::Module& /*m*/, llvm::Value* /*a*/,
-    llvm::Value* /*bMat*/, llvm::Value* /*c*/, llvm::Type* /*matrixType*/) {
+    llvm::Value* /*bMat*/, llvm::Value* /*c*/, llvm::Type* /*matrixType*/,
+    uint32_t /*signFlags*/) {
     throw coopMatrixUnsupported(name());
 }
 
