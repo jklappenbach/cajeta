@@ -240,9 +240,27 @@ track, and an arrow runs from the host call site that launched a kernel to the
 kernel's execution on the device — click through to see which line started
 which piece of GPU work.
 
+Where the numbers come from depends on the backend. On AMD, kernel spans come
+from rocprofiler's own dispatch records — the device saying what it did. On
+Vulkan, they come from timestamp queries bracketing each dispatch — real
+device time, one step coarser. When neither mechanism is available the span
+is the host's submit-to-complete window, which is true and about a wider
+thing than the kernel. Every span is annotated with the **tier** that
+measured it, the **confidence** of the clock correlation behind it, and any
+**integrity flags** the runtime raised (a timestamp register that reset on a
+low-power transition, a span outside its own launch-to-resolution bracket) —
+so a degraded or untrustworthy measurement renders as one instead of
+blending in.
+
 Device timing degrades rather than disappearing when a vendor profiler is
-absent: the trace records which timing tier produced each measurement, so a
-host-side estimate is never presented as an exact device measurement.
+absent: a run whose rocprofiler is missing, whose Vulkan queue family cannot
+timestamp, or whose driver refuses calibration still profiles — the tier
+says what each number actually is.
+
+On the Vulkan backend, each dispatch also emits an explicit **"host blocked
+on GPU"** span for the time the host spent waiting on the queue. That wait is
+the backend's current per-dispatch cost, and the labelled span is there so it
+reads as what it is rather than as an unexplained gap.
 
 ## See also
 

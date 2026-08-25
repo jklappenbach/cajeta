@@ -1,0 +1,76 @@
+package cajeta.buildtool.plugin;
+
+import cajeta.collection.ArrayList;
+import cajeta.lang.String;
+
+/**
+ * An [ActionContext] that keeps its records instead of writing them.
+ *
+ * This is what makes the plugin protocol testable, and its absence is why the
+ * shipped API had no tests at all. With a static emitter the only way to see
+ * what an action emitted was to spawn a subprocess and capture bytes, so nobody
+ * did — and an interface with no implementation survived long enough for its
+ * own documentation to become false.
+ *
+ * With the channel injected, a test runs the action IN-PROCESS and asserts on
+ * `records()` directly. The same object also feeds the conformance suite, so
+ * "this plugin conforms" is answered by running it rather than by reading it.
+ *
+ * Not test-only by accident of packaging: it ships beside the interface so a
+ * PLUGIN AUTHOR can test their own action the same way, without depending on
+ * anything of ours that is not part of the contract.
+ */
+public class RecordingActionContext implements ActionContext {
+
+    ArrayList<String> lines;
+    String root;
+    String name;
+    String version;
+
+    public RecordingActionContext(#String workdir, #String projectName,
+                                  #String projectVersion) {
+        this.lines   #= heap ArrayList<String>();
+        this.root    #= workdir;
+        this.name    #= projectName;
+        this.version #= projectVersion;
+    }
+
+    /**
+     * The records emitted so far, in order.
+     *
+     * A VIEW — valid while this context lives. Order matters to a caller
+     * asserting that a result came last, so this is never sorted or deduped.
+     */
+    public ArrayList<String> records() { return this.lines; }
+
+    public int32 count() { return this.lines.count(); }
+
+    public String workdir()       { return this.root;    }
+    public String projectName()   { return this.name;    }
+    public String projectVersion(){ return this.version; }
+
+    public void write(String text) {
+        String line #= PluginHost.writeRecord(text);
+        this.lines.add(#line);
+    }
+
+    public void warn(String message) {
+        String line #= PluginHost.warnRecord(message);
+        this.lines.add(#line);
+    }
+
+    public void log(String message) {
+        String line #= PluginHost.logRecord(message, "info");
+        this.lines.add(#line);
+    }
+
+    public void finding(Finding f) {
+        String line #= PluginHost.findingRecord(f);
+        this.lines.add(#line);
+    }
+
+    public void output(String key, String value) {
+        String line #= PluginHost.outputRecord(key, value);
+        this.lines.add(#line);
+    }
+}

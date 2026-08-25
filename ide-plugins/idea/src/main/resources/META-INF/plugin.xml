@@ -119,6 +119,16 @@
             anchor="right"
             secondary="true"
             factoryClass="dev.cajeta.idea.buildtool.CajetaBuildToolWindowFactory"/>
+
+        <!-- cajeta-profiler 11.2.e (spec §8.1): ONE window, a tab per view,
+             following the coco window's precedent — the flame graph, the
+             timeline and the totals are one run looked at three ways, so they
+             share a place and an open/closed state. -->
+        <toolWindow
+            id="Cajeta Profiler"
+            anchor="bottom"
+            secondary="false"
+            factoryClass="dev.cajeta.idea.profiler.CajetaProfilerToolWindowFactory"/>
         <notificationGroup id="Cajeta Build Tool" displayType="BALLOON"/>
 
         <fileType
@@ -235,6 +245,14 @@
             implementation="dev.cajeta.idea.debugger.CajetaExceptionBreakpointType"/>
     </extensions>
 
+    <projectListeners>
+        <!-- cajeta-profiler 11.2.e (spec §9.5): a run this plugin armed opens
+             its own trace when it finishes. Only armed runs are picked up;
+             reacting to any .pftrace appearing would hijack unrelated runs. -->
+        <listener class="dev.cajeta.idea.profiler.ProfiledRunListener"
+                  topic="com.intellij.execution.ExecutionListener"/>
+    </projectListeners>
+
     <actions>
         <!-- ide-coverage 4.2.c: load a previous coco run without re-running it.
              The platform's Import Coverage exists but asks the user to find
@@ -259,6 +277,13 @@
         </reference>
         <group id="dev.cajeta.idea.toolsGroup" text="Cajeta" popup="true">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <!-- cajeta-profiler 11.2.e (spec §8.1, §9.4): the toolchain already
+                 knows where traces are written; the platform's generic Open
+                 would ask the developer to find one by hand. -->
+            <action id="Cajeta.OpenProfile"
+                    class="dev.cajeta.idea.profiler.OpenCajetaProfileAction"
+                    text="Open Cajeta Profile…"
+                    description="Open a .pftrace written by a profiled run"/>
             <action
                 id="dev.cajeta.idea.xref.RebuildIndex"
                 class="dev.cajeta.idea.xref.CajetaXrefRebuildAction"

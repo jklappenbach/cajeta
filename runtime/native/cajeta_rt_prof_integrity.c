@@ -253,13 +253,25 @@ const char* __cajeta_prof_node_advice(int32_t status, const char* path) {
     }
 }
 
-// 9.1.a — the device span must sit inside the host submit-to-complete window
-// that produced it. This is the one check that catches an entire clock domain
-// being wrong: §6.5 measured two backends' preferred domains 5.68 seconds
-// apart, and a lane converted with the wrong domain still renders as a
-// perfectly ordinary span of a perfectly ordinary duration. Nothing internal to
-// the span gives it away — only comparing it against the host window it came
-// from does.
+// 9.1.a / 6.7.2.c — the device span must sit inside its CAUSAL bracket:
+// [host submit, record resolution]. This is the one check that catches an
+// entire clock domain being wrong: §6.5 measured two backends' preferred
+// domains 5.68 seconds apart, and a lane converted with the wrong domain still
+// renders as a perfectly ordinary span of a perfectly ordinary duration.
+// Nothing internal to the span gives it away — only its position relative to
+// the two host-clock moments that bracket it does: a kernel cannot start
+// before it was submitted, and a record cannot describe an execution that had
+// not finished when the record was read. A shear in either direction pushes
+// one edge out of the bracket.
+//
+// The upper bound is the RESOLUTION time, not host_return_ns. host_return_ns
+// is stamped when the launch call returns, and an asynchronous dispatch
+// executes after that by construction — 6.7's reproduction measured dev_start
+// landing 8.5-491 us past the launch on 144 of 144 healthy dispatches, every
+// one of which the old launch-return bound flagged. A check that fires on
+// every correct span teaches readers to ignore the one flag that exists to
+// catch a sheared domain. When no resolution exists the bracket falls back to
+// host_return_ns — for a synchronous backend that is the truth.
 //
 // A HOST-tier record is exempt from the containment check by construction: its
 // device span IS the host window (see the tier note in this header), so
@@ -277,9 +289,18 @@ int32_t __cajeta_prof_check_dispatch(const CajetaGpuEvent* ev) {
     // the tier already says which it is.
     if (ev->tier != CAJETA_PROF_TIER_HOST
             && (ev->dev_start_ns != 0 || ev->dev_end_ns != 0)) {
+        const int64_t upper = ev->resolved_ns ? ev->resolved_ns
+                                              : ev->host_return_ns;
         if (ev->dev_start_ns < ev->host_launch_ns
-                || ev->dev_end_ns > ev->host_return_ns) {
+                || ev->dev_end_ns > upper) {
             flags |= CAJETA_SPAN_OUTSIDE_HOST;
+        }
+        // TIER_DEVICE means "a vendor dispatch record supplied this span";
+        // with no resolution behind it that claim has nothing standing behind
+        // it, and the timestamps have no provenance worth trusting (6.7.1.c —
+        // the 6.6.3 trace was first read as exactly this).
+        if (ev->tier == CAJETA_PROF_TIER_DEVICE && ev->resolved_ns == 0) {
+            flags |= CAJETA_SPAN_UNCORRELATED;
         }
     }
     return flags;

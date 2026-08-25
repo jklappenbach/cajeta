@@ -112,6 +112,29 @@ struct cajeta_vk {
     // minAccelerationStructureScratchOffsetAlignment — the BVH build scratch
     // device address must be rounded up to this (VUID-...-scratchData-03710).
     VkDeviceSize scratchAlign;
+    // ── cajeta-profiler Unit 13: timestamp-query timing (spec §5.5, §6.5) ──
+    uint32_t tsValidBits;        // the selected family's timestampValidBits
+    float    tsPeriod;           // limits.timestampPeriod, ns per tick
+    int      tsTimingOk;         // family can time (picker's verdict)
+    int      hasHostQueryReset;  // core-1.2 feature enabled on the device
+    int      hasSync2;           // core-1.3 feature enabled on the device
+    int      hasCalibratedTs;    // calibrated-timestamps ext enabled
+    PFN_vkCreateQueryPool vkCreateQueryPool;
+    PFN_vkDestroyQueryPool vkDestroyQueryPool;
+    PFN_vkCmdResetQueryPool vkCmdResetQueryPool;
+    PFN_vkCmdWriteTimestamp vkCmdWriteTimestamp;
+    PFN_vkGetQueryPoolResults vkGetQueryPoolResults;
+#if defined(VK_VERSION_1_2)
+    PFN_vkResetQueryPool vkResetQueryPool;   // host reset (core 1.2 / EXT alias)
+#endif
+#if defined(VK_EXT_calibrated_timestamps)
+    PFN_vkGetCalibratedTimestampsEXT vkGetCalibratedTimestamps;   // KHR is ABI-identical
+#endif
+    VkQueryPool profPool;        // 2 queries; the dispatch path is serialized
+    int      profPoolReady;      // 0 not yet, 1 ready, -1 refused
+    int64_t  lastCalibrateNs;    // §6.6 refresh bookkeeping
+    int      calPaired;          // 1 = DEVICE+CLOCK_MONOTONIC in one driver
+                                 // read; 0 = DEVICE only, our own bracket
 };
 static struct cajeta_vk g_xpu_vk;
 
@@ -260,13 +283,27 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         if (qn > 32) qn = 32;
         VkQueueFamilyProperties qp[32];
         g_xpu_vk.vkGetPhysicalDeviceQueueFamilyProperties(devs[di], &qn, qp);
+        // cajeta-profiler 13.2.b (spec §5.5.2): prefer a compute family whose
+        // timestamps MEAN something. Three of five families on the reference
+        // device report timestampValidBits == 0, where a timestamp write is
+        // legal, returns a value, and means nothing. A device whose compute
+        // families all report zero still dispatches — timing is refused, not
+        // the device (§10.4).
+        uint32_t qflags[32], qbits[32];
         for (uint32_t qi = 0; qi < qn; ++qi) {
-            if (qp[qi].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                g_xpu_vk.phys = devs[di];
-                g_xpu_vk.queueFamily = qi;
-                found = 1;
-                break;
-            }
+            qflags[qi] = (uint32_t) qp[qi].queueFlags;
+            qbits[qi] = qp[qi].timestampValidBits;
+        }
+        int32_t timingOk = 0;
+        int32_t pick = __cajeta_xpu_vk_pick_queue_family(qflags, qbits,
+                                                         (int32_t) qn,
+                                                         &timingOk);
+        if (pick >= 0) {
+            g_xpu_vk.phys = devs[di];
+            g_xpu_vk.queueFamily = (uint32_t) pick;
+            g_xpu_vk.tsValidBits = qbits[pick];
+            g_xpu_vk.tsTimingOk = timingOk;
+            found = 1;
         }
     }
     if (!found) return 0;
@@ -426,6 +463,55 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         qs16.pNext = NULL;
     }
 
+    // cajeta-profiler 13.2.a (spec §5.5): the three timing facilities, probed
+    // and enabled when available, unconditional and free when unused. Host
+    // query reset and synchronization2 are core features (1.2 / 1.3);
+    // calibrated timestamps is an extension with an ABI-identical KHR/EXT
+    // pair. None of them is load-bearing for dispatch — a device without any
+    // still runs kernels, and the profiler degrades per §10.4.
+    int wantHostQueryReset = 0, wantSync2 = 0, wantCalTs = 0;
+#if defined(VK_VERSION_1_2)
+    if (getFeatures2) {
+        VkPhysicalDeviceHostQueryResetFeatures qhr;
+        memset(&qhr, 0, sizeof(qhr));
+        qhr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
+        VkPhysicalDeviceFeatures2 qf2b;
+        memset(&qf2b, 0, sizeof(qf2b));
+        qf2b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        qf2b.pNext = &qhr;
+#if defined(VK_VERSION_1_3)
+        VkPhysicalDeviceSynchronization2Features qs2;
+        memset(&qs2, 0, sizeof(qs2));
+        qs2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+        qhr.pNext = &qs2;
+#endif
+        getFeatures2(g_xpu_vk.phys, &qf2b);
+        wantHostQueryReset = qhr.hostQueryReset ? 1 : 0;
+#if defined(VK_VERSION_1_3)
+        wantSync2 = qs2.synchronization2 ? 1 : 0;
+#endif
+    }
+#endif
+#if defined(VK_EXT_calibrated_timestamps)
+    if (enumDevExt) {
+        uint32_t extCount = 0;
+        enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
+        if (extCount > 0 && extCount <= 512) {
+            VkExtensionProperties* exts = (VkExtensionProperties*)
+                malloc(extCount * sizeof(VkExtensionProperties));
+            if (exts) {
+                enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
+                for (uint32_t e = 0; e < extCount; ++e) {
+                    if (strcmp(exts[e].extensionName,
+                               VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == 0)
+                        wantCalTs = 1;
+                }
+                free(exts);
+            }
+        }
+    }
+#endif
+
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci;
     memset(&qci, 0, sizeof(qci));
@@ -544,9 +630,41 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         dci.pEnabledFeatures = &coreFeats;
     }
 
+    // cajeta-profiler 13.2.a — the timing facilities, prepended to the chain.
+#if defined(VK_VERSION_1_2)
+    VkPhysicalDeviceHostQueryResetFeatures enHqr;
+    if (wantHostQueryReset) {
+        memset(&enHqr, 0, sizeof(enHqr));
+        enHqr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
+        enHqr.hostQueryReset = VK_TRUE;
+        enHqr.pNext = (void*) dci.pNext;
+        dci.pNext = &enHqr;
+    }
+#endif
+#if defined(VK_VERSION_1_3)
+    VkPhysicalDeviceSynchronization2Features enS2;
+    if (wantSync2) {
+        memset(&enS2, 0, sizeof(enS2));
+        enS2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
+        enS2.synchronization2 = VK_TRUE;
+        enS2.pNext = (void*) dci.pNext;
+        dci.pNext = &enS2;
+    }
+#endif
+#if defined(VK_EXT_calibrated_timestamps)
+    if (wantCalTs) {
+        devExts[nDevExts++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
+        dci.enabledExtensionCount = nDevExts;
+        dci.ppEnabledExtensionNames = devExts;
+    }
+#endif
+
     if (g_xpu_vk.vkCreateDevice(g_xpu_vk.phys, &dci, NULL, &g_xpu_vk.device)
             != VK_SUCCESS)
         return 0;
+    g_xpu_vk.hasHostQueryReset = wantHostQueryReset;
+    g_xpu_vk.hasSync2 = wantSync2;
+    g_xpu_vk.hasCalibratedTs = wantCalTs;
 
     #define CAJ_VKD(nm) g_xpu_vk.nm = (PFN_##nm)                               \
         g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device, #nm)
@@ -593,6 +711,78 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     CAJ_VKD(vkCmdDispatch);
     CAJ_VKD(vkQueueSubmit);
     CAJ_VKD(vkQueueWaitIdle);
+    // cajeta-profiler Unit 13 — timestamp-query timing entry points.
+    CAJ_VKD(vkCreateQueryPool);
+    CAJ_VKD(vkDestroyQueryPool);
+    CAJ_VKD(vkCmdResetQueryPool);
+    CAJ_VKD(vkCmdWriteTimestamp);
+    CAJ_VKD(vkGetQueryPoolResults);
+#if defined(VK_VERSION_1_2)
+    if (g_xpu_vk.hasHostQueryReset) {
+        CAJ_VKD(vkResetQueryPool);
+        if (!g_xpu_vk.vkResetQueryPool)   // 1.1 device exposing only the EXT
+            g_xpu_vk.vkResetQueryPool = (PFN_vkResetQueryPool)
+                g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device,
+                                           "vkResetQueryPoolEXT");
+        if (!g_xpu_vk.vkResetQueryPool) g_xpu_vk.hasHostQueryReset = 0;
+    }
+#endif
+#if defined(VK_EXT_calibrated_timestamps)
+    if (g_xpu_vk.hasCalibratedTs) {
+        // KHR first (ABI-identical), EXT as the long-standing fallback.
+        g_xpu_vk.vkGetCalibratedTimestamps = (PFN_vkGetCalibratedTimestampsEXT)
+            g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device,
+                                       "vkGetCalibratedTimestampsKHR");
+        if (!g_xpu_vk.vkGetCalibratedTimestamps)
+            g_xpu_vk.vkGetCalibratedTimestamps = (PFN_vkGetCalibratedTimestampsEXT)
+                g_xpu_vk.getDeviceProcAddr(g_xpu_vk.device,
+                                           "vkGetCalibratedTimestampsEXT");
+        if (!g_xpu_vk.vkGetCalibratedTimestamps) g_xpu_vk.hasCalibratedTs = 0;
+    }
+    if (g_xpu_vk.hasCalibratedTs) {
+        // §6.5 — verify the DOMAINS, not just the extension. Passing a domain
+        // the driver never offered is invalid usage that can return
+        // VK_SUCCESS carrying junk. Measured on the first PHOENIX shakedown
+        // (run 32755371649): Windows/NVIDIA offers QPC, not CLOCK_MONOTONIC —
+        // the unchecked (DEVICE, CLOCK_MONOTONIC) read "succeeded", the
+        // engine fit a host value of garbage, and every device span
+        // converted to 0..0.
+        //
+        // Where CLOCK_MONOTONIC IS offered, the driver's paired read is the
+        // tight sandwich (both clocks read close together, maxDeviation
+        // stated). Where it is not (§6.8: Windows offers QPC), the DEVICE
+        // domain alone is still calibrateable: the read is bracketed by our
+        // own host-clock reads instead — a wider sandwich the clock engine's
+        // dispersion cap still accepts, and one that never depends on any
+        // assumed equivalence between QPC's epoch and the host clock's.
+        PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT getDomains =
+            (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)
+                g_xpu_vk.getInstanceProcAddr(
+                    g_xpu_vk.instance,
+                    "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR");
+        if (!getDomains)
+            getDomains = (PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT)
+                g_xpu_vk.getInstanceProcAddr(
+                    g_xpu_vk.instance,
+                    "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT");
+        int haveDevice = 0, haveMonotonic = 0;
+        if (getDomains) {
+            uint32_t nd = 0;
+            getDomains(g_xpu_vk.phys, &nd, NULL);
+            if (nd > 0 && nd <= 16) {
+                VkTimeDomainEXT doms[16];
+                getDomains(g_xpu_vk.phys, &nd, doms);
+                for (uint32_t d = 0; d < nd; ++d) {
+                    if (doms[d] == VK_TIME_DOMAIN_DEVICE_EXT) haveDevice = 1;
+                    if (doms[d] == VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT)
+                        haveMonotonic = 1;
+                }
+            }
+        }
+        if (!haveDevice) g_xpu_vk.hasCalibratedTs = 0;
+        g_xpu_vk.calPaired = haveMonotonic;
+    }
+#endif
     // RT path: resolve the AS/device-address entry points only when the device
     // was created with the ray-query extensions. vkGetBufferDeviceAddress is
     // core 1.2; the AS builders are KHR. If any fails to resolve, drop back to
@@ -630,8 +820,108 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     if (g_xpu_vk.vkCreateCommandPool(g_xpu_vk.device, &cpci, NULL,
                                      &g_xpu_vk.cmdPool) != VK_SUCCESS)
         return 0;
+
+    // cajeta-profiler Unit 13 — hand the timing parameters to the profiler's
+    // pure half. timestampPeriod is the driver's ADVERTISED rate; §6.6's
+    // rolling fit refines it (the reference device drifts −15 ppm against its
+    // own advertisement), but conversions before the first calibration need a
+    // seed, and §11.4 validates it rather than trusting it.
+    {
+        float period = 0.0f;
+        if (getProps2) {
+            VkPhysicalDeviceProperties2 p2;
+            memset(&p2, 0, sizeof(p2));
+            p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            getProps2(g_xpu_vk.phys, &p2);
+            period = p2.properties.limits.timestampPeriod;
+        }
+        g_xpu_vk.tsPeriod = period;
+        __cajeta_prof_vk_configure(g_xpu_vk.tsTimingOk ? g_xpu_vk.tsValidBits
+                                                       : 0,
+                                   (double) period, g_xpu_vk.hasCalibratedTs);
+    }
     g_xpu_vk.loaded = 1;
     return 1;
+}
+
+// ── cajeta-profiler Unit 13: calibration + the dispatch bracket ──────────
+//
+// The clock engine (Unit 9) owns quality rejection, the bounded retry, drift
+// fitting and snapshots; this backend only supplies the sandwich (§6.7). The
+// sandwich comes from vkGetCalibratedTimestamps{KHR,EXT} with the DEVICE and
+// CLOCK_MONOTONIC domains requested EXPLICITLY — the driver's own preference
+// order puts CLOCK_MONOTONIC_RAW first, which §6.5 measured 5.68 s away from
+// the domain the ROCm lane uses, and accepting each backend's default would
+// put the two lanes seconds apart with nothing reporting an error. The
+// returned maxDeviation IS the sandwich width.
+#if defined(VK_EXT_calibrated_timestamps)
+static int32_t caj_vk_calibration_read(int64_t* hostBeforeNs, int64_t* devTicks,
+                                       int64_t* hostAfterNs, void* user) {
+    (void) user;
+    if (!g_xpu_vk.vkGetCalibratedTimestamps) return 0;
+    if (g_xpu_vk.calPaired) {
+        // The driver reads both clocks close together and states how far
+        // apart the reads could have been — maxDeviation IS the sandwich.
+        VkCalibratedTimestampInfoEXT infos[2];
+        memset(infos, 0, sizeof(infos));
+        infos[0].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+        infos[0].timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+        infos[1].sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+        infos[1].timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_EXT;
+        uint64_t ts[2] = {0, 0};
+        uint64_t maxDev = 0;
+        if (g_xpu_vk.vkGetCalibratedTimestamps(g_xpu_vk.device, 2, infos, ts,
+                                               &maxDev) != VK_SUCCESS)
+            return 0;
+        *devTicks = (int64_t) ts[0];
+        *hostBeforeNs = (int64_t) ts[1] - (int64_t) maxDev;
+        *hostAfterNs = (int64_t) ts[1] + (int64_t) maxDev;
+        return 1;
+    }
+    // No CLOCK_MONOTONIC domain (§6.8: Windows offers QPC): read the DEVICE
+    // domain alone and let OUR host clock bracket the call. Wider than the
+    // driver's pairing, but in the right domain by construction — the quality
+    // gate (§6.7) rejects any read the scheduler stretched too far.
+    VkCalibratedTimestampInfoEXT info;
+    memset(&info, 0, sizeof(info));
+    info.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_EXT;
+    info.timeDomain = VK_TIME_DOMAIN_DEVICE_EXT;
+    uint64_t ts = 0;
+    uint64_t maxDev = 0;
+    const int64_t before = __cajeta_currentTimeNanos();
+    if (g_xpu_vk.vkGetCalibratedTimestamps(g_xpu_vk.device, 1, &info, &ts,
+                                           &maxDev) != VK_SUCCESS)
+        return 0;
+    const int64_t after = __cajeta_currentTimeNanos();
+    if (!before || !after) return 0;
+    *devTicks = (int64_t) ts;
+    *hostBeforeNs = before;
+    *hostAfterNs = after;
+    return 1;
+}
+#endif
+
+// What device creation actually enabled (plan 13.1.a) — readable so a test
+// can assert the facilities were adopted where the device offers them,
+// instead of trusting that the probe ran.
+int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return g_xpu_vk.hasHostQueryReset; }
+int32_t __cajeta_xpu_vk_has_sync2(void)            { return g_xpu_vk.hasSync2; }
+int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return g_xpu_vk.hasCalibratedTs; }
+
+// (Re)calibrate the Vulkan clock domain. Cheap enough to refresh: §6.6
+// measured −15 ppm of drift (~54 ms/hour), so a single startup calibration is
+// stale within seconds at microsecond span lengths.
+#define CAJ_VK_RECAL_INTERVAL_NS (5LL * 1000000000LL)
+
+static void caj_vk_calibrate_now(int64_t hostNowNs) {
+#if defined(VK_EXT_calibrated_timestamps)
+    if (!g_xpu_vk.hasCalibratedTs || !__cajeta_prof_vk_timing_ok()) return;
+    __cajeta_prof_clock_calibrate(CAJ_GPU_BACKEND_VULKAN, caj_vk_calibration_read,
+                                  NULL, /*wantSamples=*/4, /*maxAttempts=*/16);
+    g_xpu_vk.lastCalibrateNs = hostNowNs;
+#else
+    (void) hostNowNs;
+#endif
 }
 
 // Allocate a host-visible/coherent storage buffer; return a 1-based table
@@ -2193,11 +2483,50 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     if (g_xpu_vk.vkAllocateCommandBuffers(g_xpu_vk.device, &cbai, &cmd)
             != VK_SUCCESS) goto done;
 
+    // cajeta-profiler 13.2.c (spec §5.5.3-§5.5.5) — bracket this dispatch with
+    // timestamp queries when it was launched under the profiler seam. Zero
+    // queries, zero cost otherwise. The pool is two slots reused per dispatch,
+    // which the submit mutex serializes; §5.5.5 requires the reset BEFORE
+    // reuse — an unreset slot reports available carrying the previous use's
+    // value — done from the host when the feature exists, in-command
+    // otherwise.
+    const int64_t profLaunch = __cajeta_prof_vk_current_launch();
+    int profTiming = 0;
+    if (profLaunch != 0 && __cajeta_prof_vk_timing_ok()
+            && g_xpu_vk.vkCreateQueryPool && g_xpu_vk.vkCmdWriteTimestamp
+            && g_xpu_vk.vkGetQueryPoolResults) {
+        if (g_xpu_vk.profPoolReady == 0) {
+            VkQueryPoolCreateInfo qpci;
+            memset(&qpci, 0, sizeof(qpci));
+            qpci.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+            qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            qpci.queryCount = 2;
+            g_xpu_vk.profPoolReady =
+                (g_xpu_vk.vkCreateQueryPool(g_xpu_vk.device, &qpci, NULL,
+                                            &g_xpu_vk.profPool) == VK_SUCCESS)
+                    ? 1 : -1;
+        }
+        profTiming = g_xpu_vk.profPoolReady > 0;
+    }
+#if defined(VK_VERSION_1_2)
+    if (profTiming && g_xpu_vk.hasHostQueryReset)
+        g_xpu_vk.vkResetQueryPool(g_xpu_vk.device, g_xpu_vk.profPool, 0, 2);
+#endif
+    // §6.6 — refresh the calibration when it has gone stale; the reference
+    // device drifts −15 ppm, so a single startup calibration is not enough.
+    if (profTiming) {
+        const int64_t now = __cajeta_currentTimeNanos();
+        if (now - g_xpu_vk.lastCalibrateNs > CAJ_VK_RECAL_INTERVAL_NS)
+            caj_vk_calibrate_now(now);
+    }
+
     VkCommandBufferBeginInfo cbbi;
     memset(&cbbi, 0, sizeof(cbbi));
     cbbi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     g_xpu_vk.vkBeginCommandBuffer(cmd, &cbbi);
+    if (profTiming && !g_xpu_vk.hasHostQueryReset)
+        g_xpu_vk.vkCmdResetQueryPool(cmd, g_xpu_vk.profPool, 0, 2);
     // Storage images (Image2D) must be in GENERAL layout for OpImageWrite /
     // OpImageRead. Barrier each before binding the pipeline. The barrier is
     // emitted even when the image is ALREADY GENERAL (a prior dispatch): then it
@@ -2236,7 +2565,26 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     g_xpu_vk.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     g_xpu_vk.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                      pipeLayout, 0, 1, &descSet, 0, NULL);
+    if (profTiming)
+        g_xpu_vk.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                     g_xpu_vk.profPool, 0);
     g_xpu_vk.vkCmdDispatch(cmd, gx, gy, gz);   // 3-D grid (block dim is baked)
+    if (profTiming) {
+        // §5.5.3 — the EXPLICIT barrier before the closing timestamp. Without
+        // it some drivers latch the timestamp before the kernel completes,
+        // yielding durations wrong by four to five orders of magnitude, and
+        // ALL_COMMANDS does not prevent it.
+        VkMemoryBarrier mb;
+        memset(&mb, 0, sizeof(mb));
+        mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+        mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        mb.dstAccessMask = 0;
+        g_xpu_vk.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0,
+                                      1, &mb, 0, NULL, 0, NULL);
+        g_xpu_vk.vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                     g_xpu_vk.profPool, 1);
+    }
     g_xpu_vk.vkEndCommandBuffer(cmd);
 
     VkSubmitInfo si;
@@ -2246,7 +2594,68 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     si.pCommandBuffers = &cmd;
     if (g_xpu_vk.vkQueueSubmit(g_xpu_vk.queue, 1, &si, VK_NULL_HANDLE)
             != VK_SUCCESS) goto done;
-    if (g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue) != VK_SUCCESS) goto done;
+    // §5.5.8 / §14.13 — the host is about to block on the GPU; the interval is
+    // an explicit span, not a gap the reader must diagnose.
+    {
+        const int64_t waitStart = __cajeta_currentTimeNanos();
+        const VkResult wr = g_xpu_vk.vkQueueWaitIdle(g_xpu_vk.queue);
+        const int64_t waitEnd = __cajeta_currentTimeNanos();
+        if (profLaunch != 0)
+            __cajeta_prof_vk_note_wait(0, waitStart, waitEnd);
+        if (wr != VK_SUCCESS) goto done;
+    }
+
+    // 13.2.c — read the bracket by AVAILABILITY, never by value and never
+    // with WAIT (§5.5.4): an unavailable result leaves the destination buffer
+    // untouched, and a wait here would stall the launch path on a query the
+    // idle queue has already retired anyway. Layout with WITH_AVAILABILITY:
+    // each query's value is followed by its availability word.
+    if (profTiming) {
+        uint64_t rr[4] = {0, 0, 0, 0};
+        const VkResult qr = g_xpu_vk.vkGetQueryPoolResults(
+            g_xpu_vk.device, g_xpu_vk.profPool, 0, 2, sizeof(rr), rr,
+            /*stride=*/2 * sizeof(uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        if (qr == VK_SUCCESS && rr[1] != 0 && rr[3] != 0) {
+            const uint64_t startTicks = rr[0], endTicks = rr[2];
+            // §5.5.7 — only history reveals a timestamp-register reset; the
+            // flag rides the event because nothing downstream can rediscover
+            // the condition.
+            const int32_t flags =
+                __cajeta_prof_vk_note_span_ticks(startTicks, endTicks);
+            const uint32_t bits = __cajeta_prof_vk_valid_bits();
+            const uint64_t durTicks =
+                __cajeta_prof_vk_delta_ticks(startTicks, endTicks, bits);
+            int64_t startNs, endNs;
+            if (bits >= 64 && __cajeta_prof_clock_valid(CAJ_GPU_BACKEND_VULKAN)) {
+                // Full-width ticks convert absolutely through the fitted
+                // mapping (§6.6): offset + drift, not the advertised period.
+                startNs = __cajeta_prof_clock_to_host(CAJ_GPU_BACKEND_VULKAN,
+                                                      (int64_t) startTicks);
+                endNs = __cajeta_prof_clock_to_host(CAJ_GPU_BACKEND_VULKAN,
+                                                    (int64_t) endTicks);
+            } else {
+                // Sub-64-bit ticks wrap inside a fit window, so the absolute
+                // mapping cannot be trusted across a wrap. The DURATION is
+                // still device truth (wrap-corrected above); anchor it at the
+                // host's completion sighting. The duration uses the fitted
+                // rate when one exists, the advertised period otherwise.
+                const double perTick =
+                    __cajeta_prof_clock_valid(CAJ_GPU_BACKEND_VULKAN)
+                        ? (__cajeta_prof_clock_period(CAJ_GPU_BACKEND_VULKAN)
+                           * (1.0 + __cajeta_prof_clock_drift_ppm(CAJ_GPU_BACKEND_VULKAN)
+                                    * 1e-6))
+                        : (double) g_xpu_vk.tsPeriod;
+                const int64_t durNs = (int64_t) ((double) durTicks * perTick);
+                endNs = __cajeta_currentTimeNanos();
+                startNs = endNs - durNs;
+            }
+            __cajeta_prof_vk_bracket_resolved(profLaunch, startNs, endNs,
+                                              flags);
+        } else {
+            __cajeta_prof_vk_note_unavailable();
+        }
+    }
     ok = 1;
 
 done:
@@ -2269,6 +2678,9 @@ done:
 
 #else  // no Vulkan SDK header at runtime-build time — Vulkan unavailable.
 static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
+int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return 0; }
+int32_t __cajeta_xpu_vk_has_sync2(void)            { return 0; }
+int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return 0; }
 static int64_t cajeta_xpu_vk_alloc(uint64_t b) { (void) b; return 0; }
 static int64_t cajeta_xpu_vk_slice(int64_t p, uint64_t o) { (void) p; (void) o; return 0; }
 static void cajeta_xpu_vk_view_release(int64_t h) { (void) h; }

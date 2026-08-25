@@ -668,6 +668,17 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipDeviceGetAttribute, "hipDeviceGetAttribute");
     CAJ_HBIND_OPT(hipMemcpyDtoD, "hipMemcpyDtoD");
     #undef CAJ_HBIND_OPT
+    // cajeta-profiler §5.2.3 — the one window rocprofiler can be configured in.
+    // It intercepts HIP by installing itself while HIP loads, so this must
+    // happen after libamdhip64's symbols are bound and BEFORE hipInit brings
+    // the runtime up; a line later and the SDK refuses, and no dispatch is ever
+    // traced. Gated on the profiler being armed, because configuring
+    // rocprofiler installs intercepts process-wide and an unprofiled run should
+    // not pay for them. Both calls report their own failures and degrade to the
+    // host window (§10.4), so neither can fail HIP initialization.
+    if (__cajeta_prof_gpu_is_armed()) {
+        if (__cajeta_prof_rocm_init()) __cajeta_prof_rocm_configure();
+    }
     if (g_xpu_hip.hipInit(0) != 0) return 0;
     int count = 0;
     if (g_xpu_hip.hipGetDeviceCount(&count) != 0 || count <= 0) return 0;

@@ -62,6 +62,34 @@ class CocoDeadCodeViewTest : BasePlatformTestCase() {
         assertTrue(CocoDeadCodePanel.labelOf(Verdict.UNDETERMINED).contains("UNKNOWN"))
     }
 
+    /**
+     * A label names the measured condition; it does not issue an instruction,
+     * and it does not carry its uncertainty in punctuation.
+     *
+     * These read `DELETE?` and `TEST`. Analysis tooling does not label findings
+     * that way — Rust "never used", Go "is unused", IntelliJ "is never used"
+     * with Safe Delete offered separately as the action — and coco's own
+     * Mutants tab already follows the convention (`KILLED`/`SURVIVED`). The
+     * recommendation belongs on the context menu, not in the row.
+     */
+    fun testLabelsNameTheConditionRatherThanCommandingAnAction() {
+        for (v in Verdict.entries) {
+            val label = CocoDeadCodePanel.labelOf(v)
+            assertFalse(
+                "a label hedged with punctuation reads as a glitch; say what " +
+                    "was measured instead: $label",
+                label.contains("?"),
+            )
+            assertFalse(
+                "'$label' is an instruction; the row reports, the context menu " +
+                    "recommends",
+                label == "DELETE" || label == "TEST" || label == "FIX",
+            )
+        }
+        assertEquals("UNREACHABLE", CocoDeadCodePanel.labelOf(Verdict.DELETION_CANDIDATE))
+        assertEquals("UNTESTED", CocoDeadCodePanel.labelOf(Verdict.NEEDS_A_TEST))
+    }
+
     // --- 6.1.d  navigation is one action, and resolves a real file -----------
 
     fun testNavigationResolvesACocoRelativePathAgainstTheProject() {

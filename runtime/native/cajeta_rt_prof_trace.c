@@ -606,12 +606,20 @@ typedef struct {
     int64_t     frames;
 } CajProfMeta;
 
+// Defined in cajeta_rt_prof_gpu.c, later in this TU (6.6).
+int64_t __cajeta_prof_gpu_captured_to_trace(CajProfWriter* w, uint64_t ts);
+void    __cajeta_prof_gpu_capture_settle(void);
+
 int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
                                             int64_t n, const char* path,
                                             const CajProfMeta* meta) {
     if (!samples || n <= 0) return 0;
     static CajProfWriter w;
     if (!__cajeta_prof_trace_open(&w, path)) return 0;
+    // Settle the GPU side FIRST: the metadata packet below carries the ROCm
+    // backend's account of itself (§5.2.2), and asking before the last records
+    // are claimed reports rocm_records=0 next to a file full of device spans.
+    __cajeta_prof_gpu_capture_settle();
     // First packet, so it survives a trace truncated moments later.
     if (meta)
         __cajeta_prof_trace_metadata(&w, (uint64_t) samples[0].host_ns,
@@ -674,6 +682,12 @@ int64_t __cajeta_prof_samples_to_trace_meta(const CajetaProfSample* samples,
     // has to keep track of by hand.
     __cajeta_prof_instr_to_trace(&w, (uint64_t) last_ts);
 
+    // 6.6 — and the GPU work this run captured, on its own device/context/queue
+    // tracks, in the SAME file for the same reason (§8.3's one time axis).
+    // Before this, an env-armed run of a GPU program wrote a trace with no
+    // device track at all.
+    __cajeta_prof_gpu_captured_to_trace(&w, (uint64_t) last_ts);
+
     int64_t packets = __cajeta_prof_trace_packets(&w);
     __cajeta_prof_trace_close(&w);
     return packets;
@@ -726,10 +740,10 @@ static uint64_t caj_gpu_uuid(uint64_t base, int32_t backend, int32_t device,
 // a wrong name here mislabels a track and breaks nothing else.
 static const char* caj_gpu_backend_name(int32_t backend) {
     switch (backend) {
-        case 0:  return "cuda";
-        case 1:  return "hip";
-        case 2:  return "vulkan";
-        case 3:  return "cpu";
+        case CAJ_GPU_BACKEND_CUDA:   return "cuda";
+        case CAJ_GPU_BACKEND_HIP:    return "hip";
+        case CAJ_GPU_BACKEND_VULKAN: return "vulkan";
+        case CAJ_GPU_BACKEND_CPU:    return "cpu";
         default: return "xpu";
     }
 }
@@ -858,9 +872,16 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
         if (host) {
             const CajetaFrameDesc* d = e->call_site;
             uint64_t iid = __cajeta_prof_intern(w, kn);
+            // "Type.method", via the SAME helper the sampler uses. Interning
+            // the bare method name here would give one call site two different
+            // names depending on which half of the profiler saw it — `sum` in
+            // the launch flow and `gpu.Reduce.sum` in the sampled stack — and a
+            // reader correlating the two would find no match and have no way to
+            // tell that from the launch genuinely not being sampled.
+            char qual[192];
+            if (d) caj_prof_frame_name(qual, (int32_t) sizeof(qual), d);
             uint64_t src = (d && d->fileName)
-                ? __cajeta_prof_intern_source(w, d->fileName,
-                                              d->methodName ? d->methodName : kn,
+                ? __cajeta_prof_intern_source(w, d->fileName, qual,
                                               e->call_site_line)
                 : 0;
             CajPbBuf b = { w->scratch, CAJ_PROF_SCRATCH, 0, 0 };
@@ -883,7 +904,11 @@ int64_t __cajeta_prof_gpu_emit(CajProfWriter* w, CajGpuTracks* seen,
             int32_t a = caj_prof_anno_int(anno, "tier", e->tier);
             a += caj_prof_anno_int(anno + a, "clock_confidence",
                                    __cajeta_prof_clock_confidence(e->backend));
-            int32_t integrity = __cajeta_prof_check_dispatch(e);
+            // What the checker derives, OR'd with what only the producer could
+            // know (a Vulkan timestamp-register reset is visible solely in the
+            // backend's own span history — §5.5.7).
+            int32_t integrity = __cajeta_prof_check_dispatch(e)
+                              | e->integrity_flags;
             if (integrity != CAJETA_SPAN_OK) {
                 a += caj_prof_anno_int(anno + a, "integrity_flags", integrity);
             }
@@ -1021,6 +1046,44 @@ static int32_t caj_prof_calibration_annos(uint8_t* out, int32_t cap) {
 // exists so the developer can judge how much the measurement distorted the
 // program, and a figure this file guessed at would read exactly like a measured
 // one.
+#ifndef CAJETA_PROF_TRACE_STANDALONE
+// ── Unit 8 — what the ROCm backend actually did (§5.2, §6.4) ─────────────
+//
+// Present on every trace from a run that attempted the ROCm backend, including
+// — especially — the runs where it did not work. A degraded trace that looks
+// identical to a device-timed one is the failure §5.2.2 is about, and the state
+// plus the reason are what let a reader tell them apart without being there.
+static int32_t caj_prof_rocm_annos(uint8_t* out, int32_t cap) {
+    int32_t n = 0;
+    const int32_t state = __cajeta_prof_rocm_state();
+    if (state == CAJETA_ROCM_UNATTEMPTED) return 0;   // no GPU run; say nothing
+    if (cap < 640) return 0;
+
+    n += caj_prof_anno_int(out + n, "rocm_state", state);
+    n += caj_prof_anno_int(out + n, "rocm_tracing", __cajeta_prof_rocm_tracing());
+    n += caj_prof_anno_int(out + n, "rocm_launches", __cajeta_prof_rocm_launches());
+    n += caj_prof_anno_int(out + n, "rocm_records", __cajeta_prof_rocm_records());
+    // Records that matched no launch of ours — HIP's own fill and copy kernels.
+    // Reported rather than hidden: a reader comparing launches to records would
+    // otherwise conclude the correlation was leaking.
+    n += caj_prof_anno_int(out + n, "rocm_unmatched_records",
+                           __cajeta_prof_rocm_unmatched());
+    n += caj_prof_anno_int(out + n, "rocm_clock_offset_ns",
+                           __cajeta_prof_rocm_clock_offset_ns());
+    // §6.4 — a trace that spans a suspend has everything after the sleep sitting
+    // minutes out of place while rendering perfectly, so the file has to say so.
+    n += caj_prof_anno_int(out + n, "rocm_suspended", __cajeta_prof_rocm_suspended());
+    if (__cajeta_prof_rocm_suspended())
+        n += caj_prof_anno_int(out + n, "rocm_suspend_ns",
+                               __cajeta_prof_rocm_suspend_ns());
+    if (state != CAJETA_ROCM_READY) {
+        const char* why = __cajeta_prof_rocm_reason();
+        if (why && *why) n += caj_prof_anno_str(out + n, "rocm_degraded_reason", why);
+    }
+    return n;
+}
+#endif
+
 static int32_t caj_prof_instr_annos(uint8_t* out, int32_t cap) {
     if (!__cajeta_prof_instr_is_present()) return 0;
     if (cap < 512) return 0;
@@ -1128,6 +1191,9 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);
     // §3.5/§3.12/§3.13 — present only on a build that actually carries probes.
     n += caj_prof_instr_annos(te + n, (int32_t) sizeof(te) - n);
+#ifndef CAJETA_PROF_TRACE_STANDALONE
+    n += caj_prof_rocm_annos(te + n, (int32_t) sizeof(te) - n);
+#endif
     uint8_t pkt[2048];
     int32_t p = __cajeta_pb_uint64(pkt, CAJ_PB_PKT_TIMESTAMP, ts);
     p += __cajeta_pb_uint64(pkt + p, CAJ_PB_PKT_SEQ_ID, w->seq_id);
@@ -1188,6 +1254,7 @@ int64_t __cajeta_prof_drain_to_trace(const char* path) {
 // System.exit, and from tests, and two of those can happen in one run. A second
 // call must not truncate the file the first one wrote.
 int32_t __cajeta_prof_gpu_trace_detach(void);   // cajeta_rt_prof_gpu.c, later in this TU
+int64_t __cajeta_prof_gpu_only_to_trace(const char* path);   // ditto
 
 static volatile int __cajeta_prof_shutdown_done = 0;
 
@@ -1205,6 +1272,11 @@ int64_t __cajeta_prof_shutdown(void) {
     // §3.1 promises them whether or not anyone armed the sampler.
     if (packets == 0)
         packets = __cajeta_prof_instr_only_to_trace(__cajeta_prof_out_path());
+    // 6.6 — and a run that dispatched to the GPU but collected no samples still
+    // measured something. The drain returns early on an empty ring, so without
+    // this a short GPU program would profile to nothing.
+    if (packets == 0)
+        packets = __cajeta_prof_gpu_only_to_trace(__cajeta_prof_out_path());
     return packets;
 }
 

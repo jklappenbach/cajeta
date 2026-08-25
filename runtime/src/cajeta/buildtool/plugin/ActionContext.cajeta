@@ -69,4 +69,26 @@ public interface ActionContext {
 
     /** Verbose-mode informational log. Suppressed by default. */
     void log(String message);
+
+    /**
+     * Report a finding.
+     *
+     * The finding travels structurally, so the build tool can render it as a
+     * diagnostic — clickable in an IDE, and machine-readable under
+     * `--diag-format=json`. A plugin that formatted a finding into a log line
+     * would have thrown that away before the runtime ever saw it.
+     *
+     * A finding at `error` severity FAILS the task that produced it, so
+     * severity is load-bearing rather than decorative.
+     */
+    void finding(Finding f);
+
+    /**
+     * Set a named output, readable by the task that invoked the action
+     * (`${id.key}` in the manifest).
+     *
+     * Structural, never a message: an output is data the build consumes, and
+     * flattening it into text would leave the consumer parsing prose.
+     */
+    void output(String key, String value);
 }
