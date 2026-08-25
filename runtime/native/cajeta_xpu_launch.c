@@ -812,10 +812,11 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
     }
     int64_t bindings[64];
     uint8_t bkinds[64];                     // per-binding resource kind
-    int64_t transient[64];                  // transient scalar SSBOs to free
+    int64_t transient[64];                  // transient scalar view slots to free
     int64_t samplers[64];                   // transient VkSamplers (as int64)
     int ntrans = 0, nsamp = 0;
     int built = 1;
+    cajeta_xpu_vk_scalar_begin_launch();    // arena headroom for this launch
     for (int i = 0; i < n; ++i) {
         switch (kp->kind[i]) {
             case CAJETA_KP_BUFFER:
@@ -864,12 +865,10 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
                 samplers[nsamp++] = s;
                 break;
             }
-            default: {   // scalar by value -> transient single-element SSBO
+            default: {   // scalar by value -> a slot in the persistent arena
                 uint32_t sz = kp->byteSize[i] ? kp->byteSize[i] : 4u;
-                int64_t h = cajeta_xpu_vk_alloc(sz);
+                int64_t h = cajeta_xpu_vk_scalar_push(argv[i], sz);
                 if (!h) { built = 0; break; }
-                void* m = cajeta_xpu_vk_mapped(h);
-                if (m) memcpy(m, argv[i], sz);
                 bindings[i] = h;
                 bkinds[i] = CAJ_VKB_BUFFER;
                 transient[ntrans++] = h;
