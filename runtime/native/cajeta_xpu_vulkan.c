@@ -147,7 +147,12 @@ struct cajeta_vk_buf {
     int is_view;
     VkDeviceSize view_offset;
 };
-#define CAJETA_VK_MAX_BUFFERS 4096
+// 65536: an 8B model holds ~2k live buffers (weights, slices, per-Linear
+// outputs) and per-launch temporaries churn thousands more in flight; 4096
+// filled during the FIRST 8B prefill and every later alloc — the lm_head
+// output included — was dropped, reading as all-zero logits. The drop is
+// loud now; the cap is a leak backstop, not a budget.
+#define CAJETA_VK_MAX_BUFFERS 65536
 static struct cajeta_vk_buf g_vk_bufs[CAJETA_VK_MAX_BUFFERS];
 static int g_vk_buf_count;
 
@@ -642,15 +647,22 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkBuffer buf = VK_NULL_HANDLE;
-    if (g_xpu_vk.vkCreateBuffer(g_xpu_vk.device, &bci, NULL, &buf) != VK_SUCCESS)
+    if (g_xpu_vk.vkCreateBuffer(g_xpu_vk.device, &bci, NULL, &buf) != VK_SUCCESS) {
+        fprintf(stderr, "cajeta.xpu.vulkan: vkCreateBuffer FAILED (%llu bytes)\n",
+                (unsigned long long) bytes);
         return 0;
+    }
     VkMemoryRequirements req;
     memset(&req, 0, sizeof(req));
     g_xpu_vk.vkGetBufferMemoryRequirements(g_xpu_vk.device, buf, &req);
     int mt = cajeta_xpu_vk_find_memory_type(
         req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
                                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    if (mt < 0) { g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL); return 0; }
+    if (mt < 0) {
+        fprintf(stderr, "cajeta.xpu.vulkan: no host-visible memory type "
+                "(%llu bytes)\n", (unsigned long long) bytes);
+        g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL); return 0;
+    }
     VkMemoryAllocateInfo mai;
     memset(&mai, 0, sizeof(mai));
     mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -659,6 +671,8 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
     VkDeviceMemory mem = VK_NULL_HANDLE;
     if (g_xpu_vk.vkAllocateMemory(g_xpu_vk.device, &mai, NULL, &mem)
             != VK_SUCCESS) {
+        fprintf(stderr, "cajeta.xpu.vulkan: vkAllocateMemory FAILED "
+                "(%llu bytes)\n", (unsigned long long) req.size);
         g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
         return 0;
     }
@@ -681,6 +695,9 @@ static int64_t cajeta_xpu_vk_alloc(uint64_t bytes) {
     if (slot < 0) {
         if (g_vk_buf_count >= CAJETA_VK_MAX_BUFFERS) {
             pthread_mutex_unlock(&g_xpu_vk_submit_mu);
+            fprintf(stderr, "cajeta.xpu.vulkan: buffer table FULL "
+                    "(%d) — %llu-byte alloc dropped\n",
+                    CAJETA_VK_MAX_BUFFERS, (unsigned long long) bytes);
             g_xpu_vk.vkUnmapMemory(g_xpu_vk.device, mem);
             g_xpu_vk.vkFreeMemory(g_xpu_vk.device, mem, NULL);
             g_xpu_vk.vkDestroyBuffer(g_xpu_vk.device, buf, NULL);
@@ -2217,6 +2234,9 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     ok = 1;
 
 done:
+    if (!ok)
+        fprintf(stderr, "cajeta.xpu.vulkan: launch FAILED for kernel '%s' "
+                "(n=%d grid=%u,%u,%u)\n", entry ? entry : "?", n, gx, gy, gz);
     if (cmd) g_xpu_vk.vkFreeCommandBuffers(g_xpu_vk.device, g_xpu_vk.cmdPool, 1,
                                            &cmd);
     if (descPool) g_xpu_vk.vkDestroyDescriptorPool(g_xpu_vk.device, descPool,
