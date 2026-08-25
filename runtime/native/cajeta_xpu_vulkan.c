@@ -2426,6 +2426,106 @@ static VkDescriptorType cajeta_vkb_desc_type(uint8_t kind) {
 // spec values, binding kinds); the grid is a vkCmdDispatch argument and is NOT
 // part of the key. Entries live for the process — the engine's kernel set is
 // small (~100) and models churn buffers, not pipelines.
+// ---- SPIR-V writes-mask scan -----------------------------------------------
+// Which descriptor bindings can a kernel STORE through? Scanned once per
+// pipeline from the module's instruction stream: pointer chains are followed
+// from OpVariable roots through access chains/copies, and every store-shaped
+// opcode (OpStore, OpCopyMemory*, the writing OpAtomic*s) marks its root's
+// binding. Pointers escaping into OpFunctionCall/OpExtInst/OpPhi/OpSelect are
+// marked without being followed. A defeated scan returns all-ones — a wrong
+// mask can only over-synchronize, never under-synchronize. This feeds the
+// batched path's barrier elision (llama.cpp's ggml-vulkan does the same
+// dependency test from ggml tensor metadata; we recover it from the SPIR-V).
+static uint64_t caj_vk_spv_written_mask(const uint32_t* w, size_t nwords) {
+    if (nwords < 6 || w[0] != 0x07230203u) return ~0ull;
+    uint32_t bound = w[3];
+    if (bound == 0 || bound > (1u << 22)) return ~0ull;
+    uint32_t* root = (uint32_t*) calloc(bound, sizeof(uint32_t));
+    uint32_t* bind = (uint32_t*) calloc(bound, sizeof(uint32_t)); // binding+1
+    uint8_t* isBuf = (uint8_t*) calloc(bound, 1);
+    if (!root || !bind || !isBuf) {
+        free(root); free(bind); free(isBuf);
+        return ~0ull;
+    }
+    uint64_t mask = 0;
+    int bad = 0;
+#define CAJ_SPV_MARK(id)                                                       \
+    do {                                                                       \
+        uint32_t r_ = ((id) < bound) ? root[(id)] : 0;                         \
+        if (r_ && isBuf[r_] && bind[r_]) {                                     \
+            uint32_t b_ = bind[r_] - 1;                                        \
+            if (b_ < 64) mask |= 1ull << b_; else bad = 1;                     \
+        }                                                                      \
+    } while (0)
+    size_t i = 5;
+    while (i < nwords) {
+        uint32_t op = w[i] & 0xFFFFu;
+        uint32_t wc = w[i] >> 16;
+        if (wc == 0 || i + wc > nwords) { bad = 1; break; }
+        const uint32_t* a = &w[i];
+        switch (op) {
+        case 71: // OpDecorate
+            if (wc >= 4 && a[2] == 33 /*Binding*/ && a[1] < bound)
+                bind[a[1]] = a[3] + 1;
+            break;
+        case 59: // OpVariable: result a[2], storage class a[3]
+            if (wc >= 4 && a[2] < bound) {
+                root[a[2]] = a[2];
+                if (a[3] == 12 /*StorageBuffer*/ || a[3] == 2 /*Uniform*/)
+                    isBuf[a[2]] = 1;
+            }
+            break;
+        case 65: case 66: case 67: case 70: // access chains: base a[3]
+            if (wc >= 4 && a[2] < bound && a[3] < bound)
+                root[a[2]] = root[a[3]];
+            break;
+        case 83: case 124: // OpCopyObject / OpBitcast: operand a[3]
+            if (wc >= 4 && a[2] < bound && a[3] < bound)
+                root[a[2]] = root[a[3]];
+            break;
+        case 62: case 63: // OpStore / OpCopyMemory: target a[1]
+            if (wc >= 3) CAJ_SPV_MARK(a[1]);
+            break;
+        case 64: // OpCopyMemorySized: target a[1]
+            if (wc >= 4) CAJ_SPV_MARK(a[1]);
+            break;
+        case 228: // OpAtomicStore: pointer a[1]
+            if (wc >= 5) CAJ_SPV_MARK(a[1]);
+            break;
+        case 229: case 230: case 231: case 232: case 233: case 234:
+        case 235: case 236: case 237: case 238: case 239: case 240:
+        case 241: case 242: // result-carrying atomics: pointer a[3]
+        case 5614: case 5615: case 6035: // FMin/FMax/FAdd EXT
+            if (wc >= 4) CAJ_SPV_MARK(a[3]);
+            break;
+        case 57: // OpFunctionCall: a pointer arg escapes the scan — mark it
+            for (uint32_t k = 4; k < wc; ++k)
+                if (a[k] < bound && root[a[k]]) CAJ_SPV_MARK(a[k]);
+            break;
+        case 12: // OpExtInst (Modf/Frexp write through a pointer operand)
+            for (uint32_t k = 5; k < wc; ++k)
+                if (a[k] < bound && root[a[k]]) CAJ_SPV_MARK(a[k]);
+            break;
+        case 169: // OpSelect over pointers: conservative
+            if (wc >= 6) {
+                if (a[4] < bound && root[a[4]]) CAJ_SPV_MARK(a[4]);
+                if (a[5] < bound && root[a[5]]) CAJ_SPV_MARK(a[5]);
+            }
+            break;
+        case 245: // OpPhi over pointers: conservative
+            for (uint32_t k = 3; k < wc; k += 2)
+                if (a[k] < bound && root[a[k]]) CAJ_SPV_MARK(a[k]);
+            break;
+        default:
+            break;
+        }
+        i += wc;
+    }
+#undef CAJ_SPV_MARK
+    free(root); free(bind); free(isBuf);
+    return bad ? ~0ull : mask;
+}
+
 struct caj_vk_pipe {
     int live;
     const void* spirv;
@@ -2435,6 +2535,7 @@ struct caj_vk_pipe {
     int32_t spec[60];
     int n;
     uint8_t kinds[64];
+    uint64_t writesMask;   // bindings the kernel can store through (bit i)
     VkShaderModule module;
     VkDescriptorSetLayout setLayout;
     VkPipelineLayout pipeLayout;
@@ -2479,6 +2580,8 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
                       (size_t) nUser * sizeof(int32_t));
     P->n = n;
     memcpy(P->kinds, kinds, (size_t) n);
+    P->writesMask = caj_vk_spv_written_mask((const uint32_t*) spirv,
+                                            (size_t) (len / 4));
 
     VkShaderModuleCreateInfo smci;
     memset(&smci, 0, sizeof(smci));
@@ -2601,6 +2704,15 @@ static struct {
     VkWriteDescriptorSet writes[64];
     VkWriteDescriptorSetAccelerationStructureKHR accelInfos[64];
     VkAccelerationStructureKHR accelHandles[64];
+    // Per-binding byte ranges of THIS dispatch, harvested for barrier
+    // elision. A view binds [view_offset, parent end) (descriptors use
+    // VK_WHOLE_SIZE), so that open-ended span is the honest bound.
+    VkBuffer rngBuf[64];
+    VkDeviceSize rngOff[64];
+    VkDeviceSize rngEnd[64];
+    uint8_t rngIsBuf[64];
+    int sawImage;      // dispatch binds an image (sampled or storage)
+    int sawArray;      // dispatch binds a bindless buffer array
 } g_vk_ws;
 
 static int caj_vk_marshal_writes(VkDescriptorSet descSet,
@@ -2609,6 +2721,9 @@ static int caj_vk_marshal_writes(VkDescriptorSet descSet,
     memset(g_vk_ws.writes, 0, sizeof(g_vk_ws.writes[0]) * n);
     memset(g_vk_ws.imgInfos, 0, sizeof(g_vk_ws.imgInfos[0]) * n);
     memset(g_vk_ws.accelInfos, 0, sizeof(g_vk_ws.accelInfos[0]) * n);
+    memset(g_vk_ws.rngIsBuf, 0, sizeof(g_vk_ws.rngIsBuf[0]) * n);
+    g_vk_ws.sawImage = 0;
+    g_vk_ws.sawArray = 0;
     for (int i = 0; i < n; ++i) {
         VkWriteDescriptorSet* w = &g_vk_ws.writes[i];
         w->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -2629,6 +2744,7 @@ static int caj_vk_marshal_writes(VkDescriptorSet descSet,
         } else if (kinds[i] == CAJ_VKB_TEXTURE) {
             struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
             if (!t) return 0;
+            g_vk_ws.sawImage = 1;
             g_vk_ws.imgInfos[i].imageView = t->view;
             g_vk_ws.imgInfos[i].imageLayout =
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2638,6 +2754,7 @@ static int caj_vk_marshal_writes(VkDescriptorSet descSet,
             // recorded pre-dispatch barrier transitions it.
             struct cajeta_vk_tex* t = cajeta_xpu_vk_tex_rec(bindings[i]);
             if (!t) return 0;
+            g_vk_ws.sawImage = 1;
             g_vk_ws.imgInfos[i].imageView = t->view;
             g_vk_ws.imgInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
             w->pImageInfo = &g_vk_ws.imgInfos[i];
@@ -2652,6 +2769,7 @@ static int caj_vk_marshal_writes(VkDescriptorSet descSet,
             const int64_t* arr = (const int64_t*) (intptr_t) bindings[i];
             int64_t cnt = arr ? arr[0] : 0;
             if (cnt < 1 || cnt > CAJ_VK_BINDLESS_MAX) return 0;
+            g_vk_ws.sawArray = 1;
             VkDescriptorBufferInfo* row =
                 &g_vk_ws.arrInfos[i * CAJ_VK_BINDLESS_MAX];
             for (int e = 0; e < CAJ_VK_BINDLESS_MAX; ++e) {
@@ -2671,6 +2789,10 @@ static int caj_vk_marshal_writes(VkDescriptorSet descSet,
             g_vk_ws.bufInfos[i].buffer = r->buffer;
             g_vk_ws.bufInfos[i].offset = r->view_offset;
             g_vk_ws.bufInfos[i].range = VK_WHOLE_SIZE;
+            g_vk_ws.rngBuf[i] = r->buffer;
+            g_vk_ws.rngOff[i] = r->view_offset;
+            g_vk_ws.rngEnd[i] = r->view_offset + r->size;
+            g_vk_ws.rngIsBuf[i] = 1;
             w->pBufferInfo = &g_vk_ws.bufInfos[i];
             if (noteBound) caj_vk_bound_note((void*) r->buffer);
         }
@@ -2760,6 +2882,41 @@ static int caj_vk_batch_alloc_set(VkDescriptorSetLayout layout,
     }
 }
 
+// ---- Barrier elision -------------------------------------------------------
+// llama.cpp's scheme (ggml-vulkan.cpp ggml_vk_build_graph): keep the byte
+// ranges written and read since the last barrier; a new dispatch needs one
+// only when a binding overlaps an unsynced WRITE (RAW/WAW), or one of its own
+// writes overlaps an unsynced READ (WAR). Read-after-read never barriers, so
+// the q/k/v and gate/up projections overlap on the GPU. Which bindings a
+// kernel writes comes from the pipe's SPIR-V writes-mask scan. Anything the
+// tracker cannot see — images, bindless arrays, a defeated scan, list
+// overflow — falls back to a barrier. CAJETA_XPU_VK_NOELIDE=1 restores the
+// barrier-every-dispatch behaviour (the control arm); CAJETA_XPU_VK_SYNC_LOG=1
+// prints dispatch/barrier counts at each flush.
+struct caj_vk_range { VkBuffer buf; VkDeviceSize off, end; };
+#define CAJ_VK_UNSYNC_W 192
+#define CAJ_VK_UNSYNC_R 384
+static struct {
+    struct caj_vk_range w[CAJ_VK_UNSYNC_W]; int nw;
+    struct caj_vk_range r[CAJ_VK_UNSYNC_R]; int nr;
+} g_vk_unsync;
+static int g_vk_elide = -1;      // -1 unread, 0 off (control), 1 on
+static int g_vk_sync_log = 0;
+static unsigned g_vk_stat_disp, g_vk_stat_barrier;
+
+static void caj_vk_unsync_clear(void) {
+    g_vk_unsync.nw = 0;
+    g_vk_unsync.nr = 0;
+}
+static int caj_vk_range_hits(const struct caj_vk_range* list, int n,
+                             VkBuffer buf, VkDeviceSize off,
+                             VkDeviceSize end) {
+    for (int i = 0; i < n; ++i)
+        if (list[i].buf == buf && list[i].off < end && off < list[i].end)
+            return 1;
+    return 0;
+}
+
 static int caj_vk_batch_begin(void) {
     if (g_vk_batch.open) return 1;
     if (!g_vk_batch.inited) {
@@ -2792,6 +2949,7 @@ static int caj_vk_batch_begin(void) {
     memset(g_vk_batch.bound, 0, sizeof(g_vk_batch.bound));
     g_vk_batch.nbound = 0;
     g_vk_batch.boundOverflow = 0;
+    caj_vk_unsync_clear();   // flush waited on the fence: GPU is idle
     return 1;
 }
 
@@ -2835,6 +2993,14 @@ static void cajeta_xpu_vk_flush(void) {
                     "(%u dispatches dropped)\n", g_vk_batch.dispatches);
         }
     }
+    if (g_vk_sync_log && g_vk_stat_disp) {
+        fprintf(stderr, "cajeta.xpu.vulkan: sync-log %u dispatches, "
+                "%u barriers elided to %u\n", g_vk_stat_disp,
+                g_vk_stat_disp > 0 ? g_vk_stat_disp - 1 : 0,
+                g_vk_stat_barrier);
+        g_vk_stat_disp = 0;
+        g_vk_stat_barrier = 0;
+    }
     for (int i = 0; i < g_vk_batch.npools; ++i)
         g_xpu_vk.vkResetDescriptorPool(g_xpu_vk.device,
                                        g_vk_batch.pools[i].pool, 0);
@@ -2866,9 +3032,32 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
     }
     if (!caj_vk_marshal_writes(ds, bindings, kinds, n, /*noteBound=*/1))
         return 0;
-    if (g_vk_batch.dispatches > 0) {
-        // Later dispatches read what earlier ones wrote (the layer chain);
-        // one full compute->compute dependency between neighbours.
+    if (g_vk_elide < 0) {
+        g_vk_elide = getenv("CAJETA_XPU_VK_NOELIDE") ? 0 : 1;
+        g_vk_sync_log = getenv("CAJETA_XPU_VK_SYNC_LOG") ? 1 : 0;
+    }
+    int needSync;
+    if (!g_vk_elide || g_vk_ws.sawImage || g_vk_ws.sawArray) {
+        needSync = 1;   // opaque to the tracker: keep the old full barrier
+    } else {
+        needSync = 0;
+        for (int i = 0; i < n && !needSync; ++i) {
+            if (!g_vk_ws.rngIsBuf[i]) continue;
+            int isWrite = (int) ((P->writesMask >> i) & 1u);
+            // RAW / WAW: anything touching an unsynced write.
+            if (caj_vk_range_hits(g_vk_unsync.w, g_vk_unsync.nw,
+                                  g_vk_ws.rngBuf[i], g_vk_ws.rngOff[i],
+                                  g_vk_ws.rngEnd[i]))
+                needSync = 1;
+            // WAR: our write over an unsynced read.
+            else if (isWrite &&
+                     caj_vk_range_hits(g_vk_unsync.r, g_vk_unsync.nr,
+                                       g_vk_ws.rngBuf[i], g_vk_ws.rngOff[i],
+                                       g_vk_ws.rngEnd[i]))
+                needSync = 1;
+        }
+    }
+    if (needSync && g_vk_batch.dispatches > 0) {
         VkMemoryBarrier mb;
         memset(&mb, 0, sizeof(mb));
         mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -2878,7 +3067,49 @@ static int caj_vk_launch_batched(struct caj_vk_pipe* P,
         g_xpu_vk.vkCmdPipelineBarrier(
             g_vk_batch.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+        g_vk_stat_barrier++;
     }
+    if (needSync) caj_vk_unsync_clear();
+    // Record this dispatch's ranges for the next decision. If either list
+    // cannot hold them, emit one barrier here (it is recorded before this
+    // dispatch, so this dispatch's ranges alone seed the fresh lists).
+    {
+        int nw = 0, nr = 0;
+        for (int i = 0; i < n; ++i) {
+            if (!g_vk_ws.rngIsBuf[i]) continue;
+            if ((P->writesMask >> i) & 1u) nw++; else nr++;
+        }
+        if (g_vk_unsync.nw + nw > CAJ_VK_UNSYNC_W ||
+            g_vk_unsync.nr + nr > CAJ_VK_UNSYNC_R) {
+            if (g_vk_batch.dispatches > 0 && !needSync) {
+                VkMemoryBarrier mb;
+                memset(&mb, 0, sizeof(mb));
+                mb.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+                mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                mb.dstAccessMask =
+                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+                g_xpu_vk.vkCmdPipelineBarrier(
+                    g_vk_batch.cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                    VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb,
+                    0, NULL, 0, NULL);
+                g_vk_stat_barrier++;
+            }
+            caj_vk_unsync_clear();
+        }
+        for (int i = 0; i < n; ++i) {
+            if (!g_vk_ws.rngIsBuf[i]) continue;
+            struct caj_vk_range e = { g_vk_ws.rngBuf[i], g_vk_ws.rngOff[i],
+                                      g_vk_ws.rngEnd[i] };
+            if ((P->writesMask >> i) & 1u) {
+                if (g_vk_unsync.nw < CAJ_VK_UNSYNC_W)
+                    g_vk_unsync.w[g_vk_unsync.nw++] = e;
+            } else {
+                if (g_vk_unsync.nr < CAJ_VK_UNSYNC_R)
+                    g_vk_unsync.r[g_vk_unsync.nr++] = e;
+            }
+        }
+    }
+    g_vk_stat_disp++;
     caj_vk_record_image_transitions(g_vk_batch.cmd, bindings, kinds, n);
     g_xpu_vk.vkCmdBindPipeline(g_vk_batch.cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                P->pipeline);
