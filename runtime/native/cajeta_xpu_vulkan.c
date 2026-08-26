@@ -2892,11 +2892,22 @@ static struct caj_vk_pipe* caj_vk_pipe_get(
         // by 32 keeps the mapping exact.
         VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rss;
         if (g_xpu_vk.subgroupCtl) {
+            /* Wave-width contract: kernels are authored for 32-lane
+             * subgroups and pinned there — EXCEPT a kernel whose entry
+             * name contains "W64", which declares it is authored for
+             * 64-lane subgroups (llama.cpp's mul_mm runs wave64 on RADV;
+             * the coop GEMM's W64 twin adopts its 2-warp layout). The
+             * name is the contract: it travels inside the SPIR-V blob,
+             * so the pipeline cache and every backend see one truth. */
+            uint32_t want = 32u;
+            if (entry && strstr(entry, "W64")
+                    && g_xpu_vk.maxSubgroupSize >= 64u)
+                want = 64u;
             memset(&rss, 0, sizeof(rss));
             rss.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_REQUIRED_SUBGROUP_SIZE_CREATE_INFO;
-            rss.requiredSubgroupSize = 32u;
+            rss.requiredSubgroupSize = want;
             cpci.stage.pNext = &rss;
-            if (((uint64_t) bx * by * bz) % 32u == 0u)
+            if (((uint64_t) bx * by * bz) % want == 0u)
                 cpci.stage.flags |=
                     VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
         }
