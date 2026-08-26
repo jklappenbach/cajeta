@@ -245,6 +245,25 @@ Use cases:
 - **4.8** When a config declares `head_dim` explicitly, it is used rather than
   inferred as `hidden_size / n_heads`. Gemma 3 declares 256, which does not
   equal that quotient, and Llama 3.2 declares it too.
+- **4.11** When a checkpoint's architecture is a **Qwen2 family** decoder
+  (`qwen2`, `qwen2vl`), it loads and runs through the same decoder stack as
+  Llama: RMSNorm, GQA, SwiGLU MLP, rotary embeddings. The family differs in
+  three things and nothing else the text path touches — a per-architecture
+  GGUF key prefix (§9.6), biases on the q/k/v projections (4.12), and
+  multi-section rotary metadata that a text-only sequence collapses to
+  ordinary RoPE (4.13).
+- **4.12** When an attention projection carries a **bias** tensor
+  (`attn_q.bias`, `attn_k.bias`, `attn_v.bias`), it is added after the
+  projection, on both the host path and every device route. A model whose
+  biases are silently dropped still produces fluent text, so this is checked
+  against reference logits, never by reading output.
+- **4.13** When rotary metadata declares `rope.dimension_sections`
+  (Qwen2-VL's M-RoPE), a **text-only** sequence uses the ordinary rotary
+  path: the sections select which of the (t, h, w) position components feeds
+  each frequency band, and for text all three are the token position, so the
+  rotation is identical. Image and video positions are out of scope for the
+  text path and the loader says so rather than pretending.
+
 - **4.7** When a config declares `tie_word_embeddings`, the output projection
   reuses the input embedding matrix rather than expecting a separate tensor.
   Llama 3.2 1B/3B and several Qwen sizes tie, and the 1B is the natural parity
@@ -513,6 +532,10 @@ Use cases:
   populate the model config without a separate `config.json`.
 - **9.4** When a GGUF quantization type is not supported, the error names the
   type and the tensor.
+- **9.6** When GGUF metadata is read, hyperparameter keys are looked up under
+  the **file's own** `general.architecture` prefix (`llama.*`, `qwen2vl.*`),
+  not a hard-coded one. The prefix is data in the file; treating it as a
+  constant is what makes a second architecture look like a rewrite.
 
 ## 10. Quantized execution
 
@@ -536,6 +559,7 @@ fail to load a single real `Q4_K_M` file. Scope is the family:
 |---|---|---|---|
 | Q8_0 | 32 | 8 | f16 scale |
 | Q4_0 | 32 | 4 | f16 scale |
+| Q5_0 | 32 | 5 | f16 scale, 32 high bits in a u32 |
 | Q6_K | 256 super-block, 16 × 16 | 6 | 8-bit scales, f16 `d` |
 | Q5_K | 256 super-block, 8 × 32 | 5 | 6-bit scales + mins, f16 `d` and `dmin` |
 | Q4_K | 256 super-block, 8 × 32 | 4 | 6-bit scales + mins, f16 `d` and `dmin` |
@@ -567,6 +591,10 @@ Use cases:
   the type rather than failing obscurely.
 - **10.10** When weight bits do not divide a byte evenly (Q3_K at 3 bits,
   Q5_K at 5, Q6_K at 6), the extraction spans byte boundaries correctly.
+- **10.11** When a legacy (non-K) block format appears **inside** a k-quant
+  file, it decodes by its own type like any other (9.5). Real recipes mix
+  them: Qwen2.5-VL-72B-Instruct-Q4_K_L carries `ffn_down` as Q8_0 on half its
+  layers and Q5_0 on the other half, beside Q4_K, Q5_K and Q6_K elsewhere.
 
 ## 11. Surface
 
