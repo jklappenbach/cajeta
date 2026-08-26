@@ -596,6 +596,20 @@ Use cases:
   them: Qwen2.5-VL-72B-Instruct-Q4_K_L carries `ffn_down` as Q8_0 on half its
   layers and Q5_0 on the other half, beside Q4_K, Q5_K and Q6_K elsewhere.
 
+- **10.12** When a batched (prefill) GEMM runs on a matrix-core backend,
+  **every** supported quantization takes it — not a privileged subset. The
+  f16 cooperative-matrix kernel's compute half is format-blind, so a format
+  contributes only an unpack; a format whose ggml block stride is not a
+  multiple of four is repacked once, on device, into a dword-addressable
+  stride before its first GEMM.
+- **10.13** When a weight tile is staged for a cooperative-matrix GEMM, the
+  accumulator count per subgroup is chosen so the kernel does not spill.
+  A tile that spills moves accumulator state through memory on every
+  k-iteration and costs far more than the arithmetic intensity a larger
+  tile buys — measured 2026-08-26 at 55-70% of the kernel's throughput on
+  gfx1151, invisible to wall-clock A/B and named immediately by the
+  shader's register statistics.
+
 ## 11. Surface
 
 Use cases:
