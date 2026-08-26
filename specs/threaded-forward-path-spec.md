@@ -11,7 +11,7 @@ XPU path a non-goal on a reason that turned out to be no reason at all.
 
 ## 1. Definition
 
-`cajeta-llm`'s decode path is serial host code. `LlamaForCausalLM` calls
+`cajeta-llm`'s decode path is serial host code. `CausalLM` calls
 `rmsnormRowHost`, `attendRowHost` and `matvecInto` — never a kernel launch.
 The `@Kernel` bodies in `Prim.cajeta` exist and, as far as decode is
 concerned, are dead code.
