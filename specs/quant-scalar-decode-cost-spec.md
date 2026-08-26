@@ -9,7 +9,7 @@ what the measurement found instead.
 
 A Q4_K mat-vec spends 78% of its time decoding two block-header fields and 9%
 on the arithmetic those fields scale. This spec defines the work to remove that
-overhead. It is scoped to the packed K-quant mat-vecs in `cajeta-llama`
+overhead. It is scoped to the packed K-quant mat-vecs in `cajeta-llm`
 (`Quant.q4k/q5k/q6k/q8MatVecInto*`) and to the one compiler defect that forces
 the larger half.
 

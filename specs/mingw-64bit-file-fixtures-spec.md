@@ -13,7 +13,7 @@ ninja: build stopped: subcommand failed.
 
 **1.2 Found.** 2026-08-13, run 31682002702 (first scheduled `device-tests`
 nightly), job `windows-nvidia` on `PHOENIX`, building `596d72de`. The file was
-added the day before by cajeta-llama Units 3–4 and had only ever been compiled
+added the day before by cajeta-llm Units 3–4 and had only ever been compiled
 on Linux.
 
 **1.3 Root cause — three POSIX assumptions, only one of which the compiler

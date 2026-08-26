@@ -1,4 +1,4 @@
-# nvptx-coop-bf16-fragment-abort — defect (fix in PR #3; found during cajeta-llama Unit 2)
+# nvptx-coop-bf16-fragment-abort — defect (fix in PR #3; found during cajeta-llm Unit 2)
 
 *Filed 2026-08-10 as `spirv-coop-mixed-tier-abort`; renamed same day when the
 repro relocated the defect — see 1.4.*

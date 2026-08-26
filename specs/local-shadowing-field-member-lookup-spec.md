@@ -1,6 +1,6 @@
 # local-shadowing-field-member-lookup — defect
 
-Found 2026-08-14 implementing `cajeta-llama` Unit 13 (the chat-template
+Found 2026-08-14 implementing `cajeta-llm` Unit 13 (the chat-template
 interpreter, `TplEval.callMethod`).
 
 ## 1. Defect
@@ -12,7 +12,7 @@ program:
 
 ```
 TplEval.cajeta:1203:21: CAJETA_ERROR_MEMBER_NOT_FOUND:
-    no member 'add' on 'dev.cajeta.llama.chat.TplBuf'
+    no member 'add' on 'dev.cajeta.llm.chat.TplBuf'
 ```
 
 `TplBuf` is the type of the *field* `out`; the line in question operates

@@ -12,7 +12,7 @@
 # `matmulBf16Wide` and `matmulI8` keep the NATIVE path (all-Native, no
 # straddle). Retained below as the record of the defect.
 
-**Filed 2026-08-20** (found by cajeta-llama Unit 15's first attempt to run
+**Filed 2026-08-20** (found by cajeta-llm Unit 15's first attempt to run
 the engine on real silicon; affects any `--xpu-backend=amdgpu` build whose
 reachable code contains a `CooperativeMatrix` GEMM at f32 or narrow bf16 —
 `cajeta.math.Ewise.matmulF32` and `Ewise.matmulBf16` today).

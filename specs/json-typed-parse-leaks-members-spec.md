@@ -3,7 +3,7 @@
 *(Filed as "`Json.parse<T>` leaks every owned member it deserializes" — that
 is the symptom. The cause is general; see Root cause below.)*
 
-**Filed 2026-08-21** (found converting cajeta-llama's `ModelConfig` to
+**Filed 2026-08-21** (found converting cajeta-llm's `ModelConfig` to
 annotation-driven config binding, which is the idiomatic way to keep
 snake_case wire names out of camelCase source).
 
@@ -46,7 +46,7 @@ what the synthesized deserializer stored into its fields.
 The synthesized field stores do not register the deserialized members on
 the drop chain, so dropping the DTO reclaims the shell and abandons every
 `String`, array, and nested object inside it. The leak scales with the
-DTO: cajeta-llama's real `config.json` shape (a dozen strings/arrays plus
+DTO: cajeta-llm's real `config.json` shape (a dozen strings/arrays plus
 a nested `rope_scaling` object) leaked **8 per parse**, which turned three
 independent ownership probes red the moment `ModelConfig.parse` was moved
 onto `Json.parse<T>`:
@@ -209,5 +209,5 @@ what makes the members drop once their owner does.
 - A DTO with a nested object, a `String[]`, and a `String` returns 0.
 - An owned member that the document does NOT supply (field left at its
   default) is still safe to drop — no double-free on the absent case.
-- cajeta-llama's `ModelConfig` can bind through `Json.parse<T>` with
+- cajeta-llm's `ModelConfig` can bind through `Json.parse<T>` with
   `probeCfgParseCycleIsBalanced` staying at 0.

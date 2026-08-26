@@ -1,4 +1,4 @@
-# json-grow-element-uaf — defect (found during cajeta-llama Unit 5)
+# json-grow-element-uaf — defect (found during cajeta-llm Unit 5)
 
 ## 1. Definition
 
@@ -32,7 +32,7 @@ were never at risk.)
 **1.3 Why latent until now.** The defect needs an object past 8 entries AND
 allocator reuse of the freed blocks. Configs and manifests in the repo stay
 under 8 keys; the first workloads to stress large JSON objects are
-cajeta-llama's — a safetensors header (thousands of tensors) and the
+cajeta-llm's — a safetensors header (thousands of tensors) and the
 tokenizer vocab (~100k keys). The 5.2.4 hash-index tests hit it on their
 first run.
 

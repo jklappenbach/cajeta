@@ -1,8 +1,8 @@
-# runtime-path-nul-termination — defect investigation (found during cajeta-llama Unit 4)
+# runtime-path-nul-termination — defect investigation (found during cajeta-llm Unit 4)
 
 ## 1. Definition
 
-**1.1 Claim as filed.** cajeta-llama spec §3.8: "When a path is built at
+**1.1 Claim as filed.** cajeta-llm spec §3.8: "When a path is built at
 runtime by concatenation or substring, it is NUL-terminated before reaching
 the native layer." Filed 2026-08-08 as one of three stdlib defects split out
 of that spec (its decision 13.8), on the concern that a runtime-constructed
@@ -35,7 +35,7 @@ without passing through either `loadStringArg` or `__cajeta_string_cstr`.
 ## 2. Pin
 
 `test/expression/FileIo64Tests.cpp` (`runtimeConstructedPathOpens`,
-cajeta-llama 4.1.3) pins both construction forms — a `+`-concatenated path
+cajeta-llm 4.1.3) pins both construction forms — a `+`-concatenated path
 and a mode-2 windowed substring whose source deliberately carries trailing
 garbage (`"…###"`) that an un-terminated window would leak into the
 filename — and verifies the files land at the exact expected paths,

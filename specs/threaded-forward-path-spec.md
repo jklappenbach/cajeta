@@ -11,7 +11,7 @@ XPU path a non-goal on a reason that turned out to be no reason at all.
 
 ## 1. Definition
 
-`cajeta-llama`'s decode path is serial host code. `LlamaForCausalLM` calls
+`cajeta-llm`'s decode path is serial host code. `LlamaForCausalLM` calls
 `rmsnormRowHost`, `attendRowHost` and `matvecInto` — never a kernel launch.
 The `@Kernel` bodies in `Prim.cajeta` exist and, as far as decode is
 concerned, are dead code.
@@ -206,7 +206,7 @@ Read from the compiler's own tests, not assumed.
   the JIT runs the LLVM verifier and AOT does not, and it means the whole
   host test suite for this tier has been passing on a pipeline that is not
   the one that ships.
-- **3.5.8** IMPACT — contained, and Unit 3 proceeds. Of cajeta-llama's
+- **3.5.8** IMPACT — contained, and Unit 3 proceeds. Of cajeta-llm's
   packed mat-vecs only `q4kMatVecIntoQ8` uses `dotAccum`; the four f32
   kernels that `matvecInto` actually routes today use `widenLo`/`widenHi`/
   `toF32` and touch neither defect. So the routing re-scopes to the f32
@@ -403,9 +403,9 @@ Read from the compiler's own tests, not assumed.
 
   | engine | config | ms/token | t/s | samples |
   |---|---|---|---|---|
-  | cajeta-llama | serial host floor | 2781 | 0.36 | 1 |
-  | cajeta-llama | **routed, CPU 32 workers** | **111.6** | 8.96 | 4, spread 1.4% |
-  | cajeta-llama | **routed, GPU gfx1151** | **100.0** | 10.00 | 5, spread 1.2% |
+  | cajeta-llm | serial host floor | 2781 | 0.36 | 1 |
+  | cajeta-llm | **routed, CPU 32 workers** | **111.6** | 8.96 | 4, spread 1.4% |
+  | cajeta-llm | **routed, GPU gfx1151** | **100.0** | 10.00 | 5, spread 1.2% |
   | llama.cpp | CPU `-ngl 0 -t 1` | 177.6 | 5.63 ± 0.03 | 3 |
   | llama.cpp | CPU `-ngl 0 -t 32` | 71.4 | 14.01 ± 2.30 | 3 |
   | llama.cpp | GPU `-ngl 99` | 25.4 | 39.36 ± 0.57 | 3 |
@@ -437,9 +437,9 @@ Read from the compiler's own tests, not assumed.
 
   | engine | config | ms/token | t/s |
   |---|---|---|---|
-  | cajeta-llama | serial host | ~3155 | 0.32 |
-  | cajeta-llama | routed, CPU, 32 workers | **261.4** | 3.83 |
-  | cajeta-llama | routed, GPU (gfx1151) | ~271 | 3.69 |
+  | cajeta-llm | serial host | ~3155 | 0.32 |
+  | cajeta-llm | routed, CPU, 32 workers | **261.4** | 3.83 |
+  | cajeta-llm | routed, GPU (gfx1151) | ~271 | 3.69 |
   | llama.cpp | CPU `-t 1` | 163.7 | 6.11 |
   | llama.cpp | CPU `-t 32` | 92.8 | 10.77 |
   | llama.cpp | GPU `-ngl 99` | **25.2** | 39.70 |

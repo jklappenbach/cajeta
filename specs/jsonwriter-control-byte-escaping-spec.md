@@ -1,7 +1,7 @@
 # jsonwriter-control-byte-escaping — defect
 
-Found 2026-08-07 implementing `cajeta-llama` Unit 12 planning (filed per
-cajeta-llama spec 13.7/13.8; kept as plan item 12.1.2 until this spec was
+Found 2026-08-07 implementing `cajeta-llm` Unit 12 planning (filed per
+cajeta-llm spec 13.7/13.8; kept as plan item 12.1.2 until this spec was
 authored 2026-08-14).
 
 ## 1. Defect
@@ -29,7 +29,7 @@ Reads are unaffected: `JsonReader` correctly *accepts* `\n`, `\t`, `\uXXXX`
 et al. The defect is write-side only. It is distinct from the codec-wide
 verbatim-escape *read* design (`JsonValue.cajeta:125`,
 `JsonIndex.cajeta:28,152,355`), which is deliberate and not a defect
-(cajeta-llama spec 13.7).
+(cajeta-llm spec 13.7).
 
 ## 2. Requirements
 

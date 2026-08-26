@@ -187,7 +187,7 @@ The mapping is direct, and each requirement below names what implements it:
   self-distillation is NOT needed and must not be enabled, since a
   pseudo-label would be strictly worse than the ground truth already in
   hand.
-- **5.4.7** When cajeta-llama adopts this, it takes a `dev.cajeta.ml`
+- **5.4.7** When cajeta-llm adopts this, it takes a `dev.cajeta.ml`
   dependency it does not have today, and that dependency is runtime, not
   dev-only.
 

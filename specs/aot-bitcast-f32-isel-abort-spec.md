@@ -1,6 +1,6 @@
 # AOT emission cannot select `bitcast i32 -> f32` (Cajeta.bitsToF32)
 
-**Filed 2026-08-20** (found by cajeta-llama Unit 16's GGUF reader; blocks
+**Filed 2026-08-20** (found by cajeta-llm Unit 16's GGUF reader; blocks
 any `--emit=exe` build whose reachable code calls `Cajeta.bitsToF32` /
 `bitsToF64` on a computed operand).
 
@@ -100,7 +100,7 @@ pipelines is elsewhere.
 **Why this is worth scheduling.** Measured 2026-08-22 by ablation, the
 workaround this defect forces — `GgufFile.halfBitsToF32`, an arithmetic decode
 whose `pow2()` is a repeated-squaring loop in float64 — is **38% of
-cajeta-llama's Q4_K mat-vec** (7.99 ms of 21.30 at 4096x4096). Two f16 reads
+cajeta-llm's Q4_K mat-vec** (7.99 ms of 21.30 at 4096x4096). Two f16 reads
 per 256-element block means 131,072 loop-driven float64 conversions per
 projection, for what is a bit-shuffle and a bitcast. The same workaround
 appears in `ParityRun` and in `GgufFile.singleBits`. This is not a cosmetic
@@ -118,6 +118,6 @@ isel-pass configuration difference between the exe path and the JIT.
 
 ## Consumers worked around (revert when fixed)
 
-`dev.cajeta.llama.io.GgufFile` and `bench.ParityRun` decode IEEE bits
+`dev.cajeta.llm.io.GgufFile` and `bench.ParityRun` decode IEEE bits
 arithmetically (`Float.decode`-style sign/exponent/mantissa math) instead
 of bitcasting — correct but slower; both note this spec.

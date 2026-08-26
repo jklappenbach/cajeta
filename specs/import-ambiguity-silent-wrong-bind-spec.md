@@ -1,7 +1,7 @@
 # A short type name imported by two packages binds to the alphabetically
 # first one, silently, across the whole merged module
 
-**Filed 2026-08-20** (found by cajeta-llama Unit 15 when
+**Filed 2026-08-20** (found by cajeta-llm Unit 15 when
 `cajeta.xpu.Capability` became the stdlib's first real short-name
 collision, against `cajeta.nucleo.frame.Capability`).
 

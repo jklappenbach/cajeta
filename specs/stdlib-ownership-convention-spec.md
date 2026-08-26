@@ -1,6 +1,6 @@
 # stdlib-ownership-convention — spec
 
-Authored 2026-08-14, from evidence gathered implementing `cajeta-llama`
+Authored 2026-08-14, from evidence gathered implementing `cajeta-llm`
 Units 11–13. Four ownership bugs in one unit, one root cause, and only
 one of the four caught at compile time.
 
@@ -100,7 +100,7 @@ cost being paid.
 
 The §1.2 table is one unit's experience with one library, which is thin
 ground for a convention. `llama.cpp` — a mature, widely-deployed C/C++
-inference engine, and `cajeta-llama`'s reference implementation —
+inference engine, and `cajeta-llm`'s reference implementation —
 independently hit every category this spec names, and its workarounds
 are the strongest available evidence that these are real requirements
 rather than local taste.
@@ -290,7 +290,7 @@ lending a view, and each has one correct default.
 - **3.5** When a value is copied for safety in the common path, the cost
   is bounded and documented, and a zero-copy alternative exists where
   measurement justifies it — the tokenizer's `currentBytes()` zero-copy
-  key matching (`cajeta-llama` spec 13.7) is the model: deliberate,
+  key matching (`cajeta-llm` spec 13.7) is the model: deliberate,
   named, and opt-in.
 - **3.6** When a view's validity is bound to an **operation** rather
   than a scope — invalidated by the next mutating call, or living only
@@ -511,7 +511,7 @@ than as corruption.
   instance; the audit establishes whether it is the only one.
 - **5.3** An audit of borrow-returning accessors for §2.7 naming and
   one-line lifetime documentation.
-- **5.4** `cajeta-llama`'s `TplEval` drops its local workarounds once
+- **5.4** `cajeta-llm`'s `TplEval` drops its local workarounds once
   §5.1 lands.
 - **5.5** **An ownership check whose blast radius is unknown lands as a
   WARNING first, is migrated against in one pass, and is then flipped to
@@ -540,7 +540,7 @@ than as corruption.
 
 - **6.1** The two checks are implemented, with a test per rejection
   and per non-rejection (conforming code still compiles).
-- **6.2** The `cajeta-llama` Unit 13 bugs are reproduced as compiler
+- **6.2** The `cajeta-llm` Unit 13 bugs are reproduced as compiler
   tests, and each is recorded as caught, uncaught-with-reason, or
   not-reproducible.
 
@@ -582,7 +582,7 @@ than as corruption.
   currently has this shape, and inventing lifetime syntax against zero
   in-tree instances is how a language grows features nobody uses. Revisit
   when the first in-tree case appears — the KV-cache and mmap'd-weight
-  paths in `cajeta-llama` are the likeliest source, since they are where
+  paths in `cajeta-llm` are the likeliest source, since they are where
   `llama.cpp` hit it.
 
 - **7.3 CLOSED 2026-08-14 — no producer/consumer/sink annotation, in

@@ -1,4 +1,4 @@
-# cajeta-llama — decoder-only LLM inference engine
+# cajeta-llm — decoder-only LLM inference engine
 
 ## 1. Definition
 
@@ -572,7 +572,7 @@ Use cases:
 
 Use cases:
 
-- **11.1** When `cajeta-llama run --model <path> --prompt <text>` is invoked,
+- **11.1** When `cajeta-llm run --model <path> --prompt <text>` is invoked,
   it loads, generates, and streams to stdout.
 - **11.2** When `--device` names a backend, execution uses it; when it is
   absent, the runtime dispatcher's order applies (CUDA, HIP, Vulkan, CPU).
@@ -681,7 +681,7 @@ the recommendation they were filed with; both are marked.
   currently sit on a silent stale-host read that 2.3 converts to a fault.
   Residual cost: `FftGpu.cajeta:70,93` round-trips `cpu()`/`gpu()` and gains
   one host reallocation.
-- **13.3 New repo `cajeta-llama`, namespace `dev.cajeta.llama`.** Matches
+- **13.3 New repo `cajeta-llm`, namespace `dev.cajeta.llm`.** Matches
   `cajeta-ml`/`dev.cajeta.ml` and `cajeta-http`/`dev.cajeta.http`, and matches
   the namespace policy: `cajeta.*` is the embedded stdlib and is never
   published; `dev.cajeta.*` is every external published library. The stdlib

@@ -1,6 +1,6 @@
 # Fused integer multiply-add for quantized kernels
 
-**Filed 2026-08-22**, from cajeta-llama plan 15.1.18(b). The engine's Q4_K
+**Filed 2026-08-22**, from cajeta-llm plan 15.1.18(b). The engine's Q4_K
 mat-vec sits ~100x above its memory floor while `llama.cpp` sits at its floor,
 and the difference is three SIMD primitives cajeta does not expose.
 
@@ -59,7 +59,7 @@ One 4096x4096 projection, one token, `--release`, on a box with avx512f.
   The primitive earns its place regardless — it is correct, it is the right
   abstraction, every ISA provides it, and it is a real 5%. But §2.3 named the
   wrong cause, and a 5% answer to a 100x question has to say so plainly.
-- **2.5** Discovered while measuring the above: NOTHING in cajeta-llama builds
+- **2.5** Discovered while measuring the above: NOTHING in cajeta-llm builds
   with `--cpu=native`. The compiler's default is `generic` — SSE2 baseline — so
   every benchmark in this spec, and the 61x engine gap that motivated it, was
   measured against an ISA-handicapped build. For these kernels it turns out to

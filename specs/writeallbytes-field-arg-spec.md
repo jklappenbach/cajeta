@@ -1,4 +1,4 @@
-# writeallbytes-field-arg — defect (found during cajeta-llama Unit 4)
+# writeallbytes-field-arg — defect (found during cajeta-llm Unit 4)
 
 ## 1. Definition
 
@@ -9,10 +9,10 @@ same corruption applies to any array argument reaching the `File` intrinsic
 lowerings through an l-value shape that is not a plain local: a field
 (DotExpression GEP) or an array element (ArrayIndex GEP).
 
-**1.2 Found.** Identified statically 2026-08-08 while scoping cajeta-llama
+**1.2 Found.** Identified statically 2026-08-08 while scoping cajeta-llm
 (spec §3.7), during the survey of the file path's argument lowering; the
 failing shape is pinned by `test/expression/FileIo64Tests.cpp`
-(`writeAllBytesFromStructField`), written 2026-08-12 as cajeta-llama 4.1.2.
+(`writeAllBytesFromStructField`), written 2026-08-12 as cajeta-llm 4.1.2.
 
 **1.3 Root cause.** The File-receiver dispatch's array-argument helper
 unwrapped only `AllocaInst`:
@@ -56,6 +56,6 @@ file receives the array's bytes, verified outside the JIT.
 
 ## 3. Status
 
-Fixed on `cajeta-llama/unit-3-4-storage-io` together with cajeta-llama
+Fixed on `cajeta-llama/unit-3-4-storage-io` together with cajeta-llm
 Unit 4 (the 64-bit widening touches the same lowerings; splitting the
 commits would have meant editing the same lines twice).
