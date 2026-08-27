@@ -2088,6 +2088,48 @@ namespace cajeta {
         CajetaModule::resolveAdviceMatches();
         CajetaModule::resolveDependencyGraph();
 
+        // xref-lint-emission-gap Unit 3 — resolve the TARGET module's bodies,
+        // so a per-edit shard carries the same field references (and, with
+        // Unit 4, call edges) as the whole-root export it overwrites in the
+        // plugin's index (spec 2.1.4, plan 3.2.2). Siblings stay
+        // signature-only: they were parsed into externalModules for their
+        // signatures and resolving their bodies would be per-keystroke work
+        // for records this shard must not carry (lint-source-root-spec §3).
+        //
+        // Per method, best-effort: one unresolvable body must not cost the
+        // buffer its other records, and must not fail the lint — the plugin
+        // asks on every keystroke, including mid-edit ones (plan 3.1.3).
+        for (auto& [_, klass] : module->getStructures()) {
+            if (!klass) continue;
+            for (auto& [__, method] : klass->getMethods()) {
+                if (!method) continue;
+                try {
+                    // Same minimal context lintRoot establishes: `this` (and
+                    // the implicit-this shorthand) resolve against the class
+                    // on the structure stack, which codegen's prologue
+                    // normally pushes and lint never did.
+                    module->getStructureStack().push_back(klass);
+                    try {
+                        method->resolveBody(module);
+                    } catch (...) {
+                        module->getStructureStack().pop_back();
+                        throw;
+                    }
+                    module->getStructureStack().pop_back();
+                } catch (cajeta::Exception& e) {
+                    if (json)
+                        emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
+                    else
+                        std::cerr << "cajeta: body-resolve: " << e.getMessage() << "\n";
+                } catch (const std::exception& e) {
+                    if (json)
+                        emitJsonDiagnostic("error", "", e.what());
+                    else
+                        std::cerr << "cajeta: body-resolve: " << e.what() << "\n";
+                }
+            }
+        }
+
         // Static-receiver type references (see lintRoot) for the target's own
         // body — so per-edit navigation on `Gzip.decompress(...)` matches the
         // whole-root export.
@@ -2323,13 +2365,50 @@ namespace cajeta {
         guarded("advice", [] { CajetaModule::resolveAdviceMatches(); });
         guarded("dependencies", [] { CajetaModule::resolveDependencyGraph(); });
 
+        // xref-lint-emission-gap Unit 3 — resolve method BODIES.
+        //
+        // Field references (and, with Unit 4, call edges) are recorded during
+        // body resolution, which ran only inside Method::generateCode — the
+        // codegen phase lint deliberately stops before. So every export the
+        // IDE has ever consumed carried types and nothing else, and Ctrl-click
+        // on a field has never worked (spec §1.1, §1.4).
+        //
+        // After the four passes above, because a body needs prototypes and the
+        // dependency graph; before captureStaticReceivers and writeXrefIndex,
+        // which read what this records.
+        //
+        // Per METHOD best-effort, not per module: one body that cannot resolve
+        // must not cost the file its other records (plan 3.1.3). That is the
+        // same bargain lint already makes per file, one level finer.
+        auto stdlib = CajetaModule::getStdlibModule();
+        for (auto& m : modules) {
+            if (!m || m == stdlib) continue;
+            for (auto& [_, klass] : m->getStructures()) {
+                if (!klass) continue;
+                for (auto& [__, method] : klass->getMethods()) {
+                    if (!method) continue;
+                    if (getenv("CAJETA_DBG_BODYRESOLVE")) {
+                        std::cerr << "[bodyresolve] " << klass->getQName()->toCanonical()
+                                  << "::" << method->getName() << "\n";
+                    }
+                    guarded("body-resolve", [&] {
+                        m->getStructureStack().push_back(klass);
+                        try { method->resolveBody(m); } catch (...) {
+                            m->getStructureStack().pop_back();
+                            throw;
+                        }
+                        m->getStructureStack().pop_back();
+                    });
+                }
+            }
+        }
+
         // Static method-call / field-access receivers (`Gzip.decompress(...)`)
         // resolve in codegen, which the export stops before — walk the parsed
         // bodies here to record the receiver's TYPE reference (scope-aware, so
         // a local/field of the same name is never mistaken for a type). Skip
         // the stdlib module: the project's own files are what a developer
         // navigates.
-        auto stdlib = CajetaModule::getStdlibModule();
         for (auto& m : modules) {
             if (m && m != stdlib) guarded("static-receivers",
                 [&] { xref::captureStaticReceivers(m); });
