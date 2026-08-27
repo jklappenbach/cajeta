@@ -347,7 +347,37 @@ public final class JsonWriter {
                 this.append((int32) 92);
                 this.append((int32) 92);
             } else {
-                this.append((int32) c);
+                int32 u = (int32) c & 255;
+                if (u < 32) {
+                    // Control characters MUST be escaped (RFC 8259 §7):
+                    // a raw newline in a string is invalid JSON, and it
+                    // split a JSONL line in two before this landed. The
+                    // named short escapes for the common five, \u00XX
+                    // for the rest. UTF-8 continuation bytes are >= 128
+                    // and never enter this branch.
+                    this.append((int32) 92);
+                    if (u == 10) {
+                        this.append((int32) 110);          // \n
+                    } else if (u == 13) {
+                        this.append((int32) 114);          // \r
+                    } else if (u == 9) {
+                        this.append((int32) 116);          // \t
+                    } else if (u == 8) {
+                        this.append((int32) 98);           // \b
+                    } else if (u == 12) {
+                        this.append((int32) 102);          // \f
+                    } else {
+                        this.append((int32) 117);          // \u00XX
+                        this.append((int32) 48);
+                        this.append((int32) 48);
+                        int32 hi = u >> 4;
+                        int32 lo = u & 15;
+                        this.append(hi < 10 ? 48 + hi : 87 + hi);
+                        this.append(lo < 10 ? 48 + lo : 87 + lo);
+                    }
+                } else {
+                    this.append(u);
+                }
             }
             i = i + 1;
         }
