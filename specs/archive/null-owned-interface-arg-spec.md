@@ -108,3 +108,31 @@ for "the shapes that already work" was written; see [[controls-must-vary-the-mec
 
 **This spec is now closed for real**, and its INDEX row is dropped.
 
+## 6. The root cause, found after §5 was written (2026-08-27)
+
+§5 credited `2a689d4f` with closing the residue. It closed the SYMPTOMS. The
+cause was underneath, and is the more serious half: `getOrCreateStaticFieldGlobal`
+declared every non-primitive static as `ptr`. Right for a class, whose instances
+are referenced by pointer; wrong for an interface, whose value IS the 24-byte fat
+struct, stored and loaded BY VALUE. The global was under-allocated by 16 bytes.
+
+    @pkg.Main.direct = global ptr null
+    call void @llvm.memcpy(ptr @pkg.Main.direct, ptr %8, i64 24)
+    %12 = load %pkg.I, ptr @pkg.Main.direct
+
+Unoptimized builds tolerate the overrun and read back what was written — which is
+why every JIT test added alongside §5's compare fix passed. Under `--release`,
+LLVM knows the object is 8 bytes, folds the out-of-bounds reads, and **an
+ASSIGNED static interface field compares EQUAL TO NULL**. A silent miscompile, in
+the shipping configuration only.
+
+Fixed in `0d2a40c4`. Surfaced only because cajeta-llm's suite builds twice, the
+second pass under `--release --live-set=bounded`; only the second failed.
+
+**The lesson worth keeping**, in that commit's own words: had it shipped, §5's
+compare fix "would have turned a loud compiler crash into a quiet wrong answer,
+which is the worse trade." A fix that removes a crash without finding what the
+crash was reporting can make the defect harder to see, not gone. See
+[[controls-must-vary-the-mechanism]] — here the missing control was the
+configuration, not the code path: a debug-only test suite could not observe this.
+
