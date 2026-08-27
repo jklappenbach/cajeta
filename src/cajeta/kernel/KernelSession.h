@@ -258,6 +258,16 @@ namespace cajeta::kernel {
         bool installArchive(const std::string& cjaPath,
                             std::string* error = nullptr);
 
+        // notebook-olla-install U2 (spec 2.1, 2.4-2.6): the host end of
+        // `Packages.install`, called from JIT'd cell code through the
+        // runtime bridge. Writes the resolved version into `out` when it
+        // returns true, and the located failure message when it returns
+        // false. Resolution is stubbed for U2 — `request` is a local .cja
+        // path until Unit 3 wires in the resolver.
+        bool installFromHook(const std::string& request,
+                             const std::string& constraint,
+                             char* out, int32_t outCap);
+
         const SessionStats& stats() const;
 
     private:

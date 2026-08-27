@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -49,7 +50,57 @@
 
 namespace cajeta::kernel {
 
+// notebook-olla-install U2 (spec 2.1, 2.7) — the runtime's install bridge.
+// Declared here rather than in a header: the C side is the runtime's, and
+// the kernel is only one of its hosts.
+extern "C" void __cajeta_session_set_install_hook(
+    int32_t (*fn)(const char* name, int32_t nameLen,
+                  const char* constraint, int32_t constraintLen,
+                  int32_t save, char* out, int32_t outCap, void* ctx),
+    void* ctx);
+
+// The bridge's state lives HERE, in the host, and cajeta_rt_session.c only
+// declares it. The runtime is compiled twice — into this binary, and to the
+// bitcode embedded in every JIT session — so a definition on the runtime
+// side would give cell code a second copy of the hook and the registration
+// below would never be seen by the code that calls it. Retained and
+// default-visibility so the JIT's process generator can bind them.
+extern "C" {
+__attribute__((used, retain, visibility("default")))
+int32_t (*__cajeta_install_hook)(const char*, int32_t, const char*, int32_t,
+                                 int32_t, char*, int32_t, void*) = nullptr;
+__attribute__((used, retain, visibility("default")))
+void* __cajeta_install_ctx = nullptr;
+__attribute__((used, retain, visibility("default")))
+char __cajeta_install_out[2048] = {0};
+}
+
 namespace {
+
+    // The session whose cell is executing right now. JIT'd
+    // `Packages.install` reaches its host through here — single-threaded
+    // by the same contract the binding registry documents.
+    thread_local KernelSession* g_activeSession = nullptr;
+
+    // Unit 2 keeps constraint matching deliberately small: `*` and a
+    // trailing-wildcard prefix are all the spec's 2.4/2.5 arms need to be
+    // decidable. Unit 3 replaces this with the buildtool's resolver, which
+    // is the only thing that should ever grow a version grammar.
+    bool versionSatisfies(const std::string& version,
+                          const std::string& constraint) {
+        if (constraint.empty() || constraint == "*") return true;
+        if (constraint == version) return true;
+        auto star = constraint.find('*');
+        if (star == std::string::npos) return false;
+        return version.compare(0, star, constraint, 0, star) == 0;
+    }
+
+    void writeOut(char* out, int32_t cap, const std::string& text) {
+        if (!out || cap <= 0) return;
+        auto n = std::min<size_t>(text.size(), (size_t) cap - 1);
+        std::memcpy(out, text.data(), n);
+        out[n] = '\0';
+    }
 
     // --- the compiler-jsonl bridge (spec 4.4; compiler-jsonl §2-§3) -------
     //
@@ -277,6 +328,18 @@ struct KernelSession::Impl {
     // notebook-olla-install U1: canonical paths of archives spliced
     // mid-session — the idempotence key (spec 2.4's substrate).
     std::set<std::string> installedArchives;
+    // U2 (spec 2.4/2.5): what each install DECLARED, so a re-install is
+    // judged against the loaded version rather than the path it arrived
+    // by — two paths can carry the same library.
+    struct InstallRecord {
+        std::string version;
+        std::string path;
+    };
+    std::map<std::string, InstallRecord> installsByName;
+    // Archives acquired by the CURRENTLY executing cell. A cell cannot
+    // import what it just installed (spec 2.3), and this is what lets the
+    // failure say so instead of "unresolved type".
+    std::vector<std::string> installedThisCell;
     // A splice runs compiler passes a half-executed cell's context cannot
     // host (measured: mid-cell ingest failed resolving int32). Mid-cell
     // requests queue here and drain at the cell boundary — same-cell
@@ -532,6 +595,112 @@ CellResult KernelSession::execute(const std::string& source) {
     return execute(source, "In[" + std::to_string(impl_->execCount + 1) + "]");
 }
 
+namespace {
+
+// notebook-olla-install U2 — the host end of `Packages.install`.
+//
+// Resolution is STUBBED for this unit (plan 2.1.1): `name` is a local .cja
+// path and the constraint is matched against the archive's own version.
+// Unit 3 swaps NativeResolver in behind this same signature.
+//
+// The version and conflict arms (spec 2.4/2.5) are answered HERE, before
+// the splice, because they only need the archive's manifest. The splice
+// itself still queues to the cell boundary — a half-executed cell cannot
+// host the ingest (measured, U1 1.2.3).
+int32_t sessionInstallHook(const char* name, int32_t nameLen,
+                           const char* constraint, int32_t constraintLen,
+                           int32_t save, char* out, int32_t outCap,
+                           void* ctx) {
+    auto* session = static_cast<KernelSession*>(ctx);
+    std::string request(name ? name : "", nameLen > 0 ? nameLen : 0);
+    std::string want(constraint ? constraint : "",
+                     constraintLen > 0 ? constraintLen : 0);
+
+    if (!session || session != g_activeSession) {
+        writeOut(out, outCap,
+                 "Packages.install: no live session — installing into a "
+                 "running session requires a session host (the Jupyter "
+                 "kernel); declare the dependency in cajeta.json instead");
+        return 1;
+    }
+    if (save) {
+        writeOut(out, outCap,
+                 "Packages.installAndSave: writing the dependency to "
+                 "cajeta.json is not wired yet — use Packages.install for a "
+                 "session-only install and add the pin with `cajeta add`");
+        return 1;
+    }
+    return session->installFromHook(request, want, out, outCap) ? 0 : 1;
+}
+
+}  // namespace
+
+bool KernelSession::installFromHook(const std::string& request,
+                                    const std::string& constraint,
+                                    char* out, int32_t outCap) {
+    Impl& impl = *impl_;
+    std::error_code ec;
+    auto canon = std::filesystem::weakly_canonical(request, ec);
+    if (ec || !std::filesystem::exists(canon)) {
+        writeOut(out, outCap,
+                 "Packages.install: cannot acquire '" + request
+                 + "' — no archive at that path, and repository resolution "
+                   "is not wired yet");
+        return false;
+    }
+
+    std::string archiveName;
+    std::string archiveVersion;
+    try {
+        auto archive = CajetaArchive::readFrom(canon.string());
+        archiveName = archive.getName();
+        archiveVersion = archive.getVersion();
+    } catch (std::exception& e) {
+        writeOut(out, outCap,
+                 std::string("Packages.install: cannot read archive '")
+                 + canon.string() + "': " + e.what());
+        return false;
+    }
+
+    // Already loaded? Judge the LOADED version against this constraint —
+    // a satisfying re-install is a no-op so run-all is safe (2.4), and an
+    // excluded one cannot be honoured without a restart (2.5), because
+    // JIT'd code from the loaded copy may be live.
+    auto it = impl.installsByName.find(archiveName);
+    if (it != impl.installsByName.end()) {
+        const std::string& loaded = it->second.version;
+        if (versionSatisfies(loaded, constraint)) {
+            writeOut(out, outCap, loaded);
+            return true;
+        }
+        writeOut(out, outCap,
+                 "Packages.install: '" + archiveName + "' is already loaded "
+                 "at " + loaded + ", which '" + constraint + "' excludes. A "
+                 "session cannot replace a loaded archive — restart the "
+                 "session to change versions.");
+        return false;
+    }
+
+    if (!versionSatisfies(archiveVersion, constraint)) {
+        writeOut(out, outCap,
+                 "Packages.install: '" + archiveName + "' is available at "
+                 + archiveVersion + ", which '" + constraint
+                 + "' excludes; no other version was found.");
+        return false;
+    }
+
+    std::string err;
+    if (!installArchive(canon.string(), &err)) {
+        writeOut(out, outCap, "Packages.install: " + err);
+        return false;
+    }
+    impl.installsByName[archiveName] = Impl::InstallRecord{archiveVersion,
+                                                           canon.string()};
+    impl.installedThisCell.push_back(archiveName);
+    writeOut(out, outCap, archiveVersion);
+    return true;
+}
+
 CellResult KernelSession::execute(const std::string& source,
                                   const std::string& cellName) {
     CellResult result;
@@ -543,8 +712,16 @@ CellResult KernelSession::execute(const std::string& source,
         Impl& impl;
         ExecGuard(KernelSession* s, Impl& impl) : s(s), impl(impl) {
             impl.cellExecuting = true;
+            impl.installedThisCell.clear();
+            // U2: arm the runtime bridge for the duration of the cell, so
+            // `Packages.install` from JIT'd code finds this session and a
+            // call outside one still reports "no live session".
+            g_activeSession = s;
+            __cajeta_session_set_install_hook(&sessionInstallHook, s);
         }
         ~ExecGuard() {
+            g_activeSession = nullptr;
+            __cajeta_session_set_install_hook(nullptr, nullptr);
             impl.cellExecuting = false;
             auto pending = std::move(impl.pendingInstalls);
             impl.pendingInstalls.clear();
@@ -862,6 +1039,18 @@ CellResult KernelSession::execute(const std::string& source,
         result.message = e.getMessage();
         result.file = e.getFile().empty() ? cellName : e.getFile();
         result.line = e.getLine();
+        // notebook-olla-install 2.2.3 / spec 2.3 — a cell that installs
+        // cannot also import what it installed. The signal has to be the
+        // cell's SOURCE, not the install registry the plan first named:
+        // the import fails while COMPILING, so the install has not run yet
+        // and the registry is still empty. Without this the failure reads
+        // as a broken install rather than an ordering rule.
+        if (source.find("Packages.install") != std::string::npos) {
+            result.message +=
+                " — this cell calls Packages.install, and a cell cannot "
+                "import what it installs: the cell is compiled before the "
+                "install runs. Import it from the next cell.";
+        }
         // A SYNTAX error arrives here as a COUNT ("source has 2 syntax
         // error(s)") with no coordinates: the parse aborts after the
         // listener has already emitted the real, located diagnostics, and

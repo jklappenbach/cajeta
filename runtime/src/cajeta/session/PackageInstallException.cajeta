@@ -1,0 +1,32 @@
+package cajeta.session;
+
+import cajeta.error.RecoverableException;
+
+/**
+ * A `Packages.install` that could not proceed: no live session, a
+ * constraint excluding an already-loaded version, a name collision with
+ * session state, or an archive that could not be acquired.
+ *
+ * Recoverable by design — a failed install leaves the session serving, so
+ * the next cell still runs.
+ *
+ * ```cajeta
+ * try {
+ *     Packages.install("dev.cajeta.ml", "0.10.*");
+ * } catch (PackageInstallException e) {
+ *     // reached: the install was rejected; the session is still usable
+ * }
+ * ```
+ *
+ * @See cajeta.session.Packages
+ */
+public class PackageInstallException extends RecoverableException {
+    /**
+     * Wrap a heap `#String` message naming what was rejected and why.
+     *
+     * @EntryPoint
+     */
+    public PackageInstallException(#String message) {
+        super(#message);
+    }
+}

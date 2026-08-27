@@ -1,0 +1,96 @@
+package cajeta.session;
+
+/**
+ * Install a library into a LIVE session, so later cells can import it.
+ *
+ * Acquisition and binding are separate, exactly as they are in a compiled
+ * project: `install` puts an archive on the session's classpath, and
+ * `import` names packages from archives already acquired. `install` never
+ * imports anything itself.
+ *
+ * ```cajeta
+ * // cell 1
+ * Packages.install("dev.cajeta.ml", "0.10.*");
+ *
+ * // cell 2 — the import resolves now, not before
+ * import dev.cajeta.ml.Frame;
+ * ```
+ *
+ * The surface is an ordinary stdlib API rather than a `%`-magic, so it
+ * behaves identically in every host and is testable like any other call.
+ * A host with no live session throws rather than silently no-opping.
+ *
+ * Installs are additive: a session cannot unload or replace an archive it
+ * has already loaded, because JIT'd code from it may be live. Changing
+ * versions needs a session restart.
+ *
+ * @See cajeta.session.PackageInstallException
+ */
+public class Packages {
+
+    /**
+     * Acquire `name` at `constraint` for the RUNNING session and return
+     * the resolved version.
+     *
+     * Re-installing at a version already loaded and satisfying is a no-op
+     * that returns the loaded version, so re-running a notebook top to
+     * bottom is safe.
+     *
+     * @param name        library to acquire.
+     * @param constraint  version constraint, e.g. `0.10.*` or `*`.
+     * @returns the resolved version.
+     * @throws PackageInstallException when there is no live session, when
+     *         the constraint excludes an already-loaded version, or when
+     *         the archive cannot be acquired.
+     * @EntryPoint
+     */
+    public static #String install(String name, String constraint) {
+        return #Packages.run(name, constraint, 0);
+    }
+
+    /**
+     * As `install`, and also write the dependency into the governing
+     * project's `cajeta.json` so a restart still has it.
+     *
+     * A separate named method on purpose: persisting is its own act at
+     * the call site, not a boolean to misread.
+     *
+     * @param name        library to acquire.
+     * @param constraint  version constraint to record.
+     * @returns the resolved version.
+     * @throws PackageInstallException when no project governs the session,
+     *         plus every failure `install` reports.
+     * @EntryPoint
+     */
+    public static #String installAndSave(String name, String constraint) {
+        return #Packages.run(name, constraint, 1);
+    }
+
+    /**
+     * One path in and out of the host: the bridge reports success or
+     * failure as a status, and the accompanying text is fetched with the
+     * same call either way.
+     */
+    private static #String run(String name, String constraint, int32 save) {
+        int32 status = Packages.installNative(name, constraint, save);
+        // `#=`: messageNative returns an owned result, and the acquisition
+        // is recorded where it happens.
+        String text #= Packages.messageNative(name);
+        if (status != 0) {
+            throw heap PackageInstallException(#text);
+        }
+        return #text;
+    }
+
+    // --- @Native bridges ---------------------------------------------
+    //
+    // `messageNative` takes the name back purely to borrow a String
+    // vtable: a static native has no receiver to take one from.
+
+    @Native("__cajeta_session_install")
+    private static int32 installNative(String name, String constraint,
+                                       int32 save);
+
+    @Native("__cajeta_session_install_message")
+    private static #String messageNative(String donor);
+}
