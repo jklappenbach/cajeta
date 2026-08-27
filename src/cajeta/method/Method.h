@@ -692,6 +692,9 @@ namespace cajeta {
         // arena and register no drop entry. usesArena() is true iff the method has
         // any such local (gates Block's mark/reset so arena-free methods pay zero).
         std::set<std::string> arenaEligibleNames;
+        // Unit 2: set by resolveBody, read by it — a method whose body has been
+        // resolved is not resolved again (see resolveBody).
+        bool bodyResolved = false;
         bool methodUsesArena = false;
         bool usesArena() const { return methodUsesArena; }
         bool isArenaEligibleLocal(const std::string& n) const {
@@ -701,6 +704,23 @@ namespace cajeta {
         // stored/aliased) and String-concat decls; flag the non-escaping concats'
         // BinaryOpExpression nodes arena-eligible and record their names here.
         void computeArenaEligibility();
+
+        // xref-lint-emission-gap Unit 2 — the body's type-resolver pass, callable
+        // on its own.
+        //
+        // This ran only inside generateCode, which is why `--lint` (which stops
+        // before codegen, deliberately) produced an xref export carrying no call
+        // edges and no field references at all: both are recorded during body
+        // resolution. Extracted so lint can run it without paying for codegen.
+        //
+        // IDEMPOTENT: the second call is a no-op, not a second walk. Lint runs it
+        // and codegen would run it again in any process that does both.
+        void resolveBody(CajetaModulePtr module);
+        bool isBodyResolved() const { return bodyResolved; }
+        // 2.3.2 — proof that a build does no NEW work: this counts actual walks,
+        // not calls, so "runs exactly once per method" is verified by counter
+        // rather than by reading the code.
+        static int64_t bodyResolveWalks();
 
         // Push a fresh (empty) drop frame onto the stack. Block::generateCode
         // calls this at its entry; the frame collects every owned local
