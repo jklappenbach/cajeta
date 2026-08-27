@@ -121,7 +121,7 @@ jobs:
       - name: Fetch prebuilt LLVM toolchain (cajeta-spirv fork)
         env:
           # Keep in lockstep with release.yml's LLVM_RELEASE_TAG.
-          LLVM_RELEASE_TAG: cajeta-llvm-23-r9
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r10
         run: |
           set -euo pipefail
           ASSET="${LLVM_RELEASE_TAG}-${{ matrix.asset_os }}.tar.zst"
