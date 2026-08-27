@@ -77,3 +77,34 @@ zero, so `data == null` is exactly "empty".
 
 Landed alongside the `owned-interface-return-fault` fix (same session); both
 pinned in `PlaceholderOwnedFieldTests`, 10/10.
+
+## 5. Residue closed — the two shapes §4 did not reach (2026-08-27)
+
+§4's fix loaded the body's DATA word whenever an operand arrived as a POINTER
+to the 24-byte fat body. Two shapes do not arrive that way, and both were still
+broken:
+
+- **A STATIC field** loads as the fat VALUE, not a pointer, so the
+  interface-vs-null block never fired at all and the struct reached
+  `CreateICmp` against a null pointer — `ICmpInst::AssertOK(): Both operands
+  to ICmp instruction are not of the same type!`, a COMPILER crash. Now the
+  value shape takes its data word via `extractvalue`.
+- **An unbound local** (`Sink s = null; if (s == null)`) — the shape §4
+  assumed already worked. The pointer to the body is itself null when the
+  reference was never bound, and the data-word load ran unconditionally:
+  SIGSEGV, fault addr (nil). The compare now branches — a null pointer IS a
+  null reference — and only a live one gets its data word read, joined by a phi.
+
+Fixed in `2a689d4f` (BinaryOpExpression.cpp), pinned by
+`InterfaceStaticNullCompareTests`. Both directions are pinned deliberately: a
+fix that always answered "null" would satisfy a one-sided test while breaking
+every guard written this way. The instance-field and bound-local shapes §4
+fixed get their own controls so this cannot regress them.
+
+Found writing an opt-in diagnostics hook for cajeta-llm — "a static sink field,
+null when nobody is listening" — the most obvious way to write that shape, and
+it was unwritable. The second defect was found only because the control test
+for "the shapes that already work" was written; see [[controls-must-vary-the-mechanism]].
+
+**This spec is now closed for real**, and its INDEX row is dropped.
+
