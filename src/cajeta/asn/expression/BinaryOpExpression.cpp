@@ -4419,15 +4419,77 @@ namespace cajeta {
                             && llvm::isa<llvm::ConstantPointerNull>(lv)) {
                         ifaceCls = ifaceOf(rhsAst); bodyPtr = rv;
                     }
-                    if (ifaceCls && bodyPtr && bodyPtr->getType()->isPointerTy()) {
+                    if (ifaceCls && bodyPtr) {
                         llvm::Type* bodyTy = ifaceCls->getLlvmType();
-                        if (bodyTy && bodyTy->isStructTy()) {
-                            llvm::Type* ptrTy = llvm::PointerType::get(
-                                *module->getLlvmContext(), 0);
+                        llvm::Type* ptrTy = llvm::PointerType::get(
+                            *module->getLlvmContext(), 0);
+                        llvm::Value* data = nullptr;
+                        // An interface local initialized to `null` collapses to
+                        // a literal null POINTER rather than a materialized fat
+                        // struct, and the load below would then dereference it —
+                        // a SIGSEGV at fault addr (nil) inside otherwise valid
+                        // code. There is nothing to load: the answer is known.
+                        if (llvm::isa<llvm::ConstantPointerNull>(bodyPtr)) {
+                            result = builder->getInt1(
+                                binaryOp == BINARY_OP_EQ);
+                            break;
+                        }
+                        if (bodyPtr->getType()->isPointerTy()
+                                && bodyTy && bodyTy->isStructTy()) {
+                            // An interface reference is a POINTER to a fat
+                            // struct, and that pointer is itself null for a
+                            // reference that was never bound. Loading the data
+                            // word unconditionally dereferences it — SIGSEGV at
+                            // fault addr (nil) on the wholly ordinary
+                            // `Sink s = null; if (s == null)`. So branch: a null
+                            // pointer IS a null reference, and only a live one
+                            // gets its data word read.
+                            llvm::Value* nulP =
+                                llvm::ConstantPointerNull::get(
+                                    llvm::cast<llvm::PointerType>(ptrTy));
+                            llvm::Function* fn =
+                                builder->GetInsertBlock()->getParent();
+                            llvm::BasicBlock* entryBB =
+                                builder->GetInsertBlock();
+                            llvm::BasicBlock* loadBB = llvm::BasicBlock::Create(
+                                *module->getLlvmContext(), "iface.null.load", fn);
+                            llvm::BasicBlock* doneBB = llvm::BasicBlock::Create(
+                                *module->getLlvmContext(), "iface.null.done", fn);
+                            llvm::Value* ptrIsNull = builder->CreateICmpEQ(
+                                bodyPtr, nulP, "iface.ptrnull");
+                            builder->CreateCondBr(ptrIsNull, doneBB, loadBB);
+
+                            builder->SetInsertPoint(loadBB);
                             llvm::Value* dataSlot = builder->CreateStructGEP(
                                 bodyTy, bodyPtr, 0, "iface_null_data");
-                            llvm::Value* data =
-                                builder->CreateLoad(ptrTy, dataSlot);
+                            llvm::Value* dw = builder->CreateLoad(ptrTy, dataSlot);
+                            llvm::Value* dwIsNull = builder->CreateICmpEQ(
+                                dw, nulP, "iface.datanull");
+                            builder->CreateBr(doneBB);
+
+                            builder->SetInsertPoint(doneBB);
+                            llvm::PHINode* phi = builder->CreatePHI(
+                                builder->getInt1Ty(), 2, "iface.isnull.phi");
+                            phi->addIncoming(builder->getTrue(), entryBB);
+                            phi->addIncoming(dwIsNull, loadBB);
+                            result = (binaryOp == BINARY_OP_EQ)
+                                ? static_cast<llvm::Value*>(phi)
+                                : builder->CreateNot(phi, "iface.notnull");
+                            break;
+                        } else if (bodyPtr->getType()->isStructTy()) {
+                            // A STATIC field of interface type loads as the fat
+                            // value itself, not as a pointer to it — locals and
+                            // instance fields hand back the pointer, which is why
+                            // only the static shape ever crashed. Without this the
+                            // whole block was skipped and the struct reached
+                            // CreateICmp against a null POINTER:
+                            //   ICmpInst::AssertOK(): "Both operands to ICmp
+                            //   instruction are not of the same type!"
+                            // Take the data word straight out of the value.
+                            data = builder->CreateExtractValue(
+                                bodyPtr, 0, "iface_null_data");
+                        }
+                        if (data && data->getType()->isPointerTy()) {
                             llvm::Value* nul =
                                 llvm::ConstantPointerNull::get(
                                     llvm::cast<llvm::PointerType>(ptrTy));
