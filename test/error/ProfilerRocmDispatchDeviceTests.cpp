@@ -19,10 +19,12 @@
 #include "cajeta/xpu/XpuTarget.h"
 #include "cajeta/xpu/amd/HipDriver.h"
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
 
 using cajeta_test::CajetaJit;
@@ -196,6 +198,24 @@ TEST(ProfilerRocmDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
     ASSERT_NE(run, nullptr);
     EXPECT_FLOAT_EQ(run(), 4096.0f) << "the kernel did not produce the right answer, so "
                                        "whatever was timed was not this computation";
+
+    // Wait for the SDK to DELIVER before collecting, and flush — never
+    // collect — while waiting. `collect` is flush + drain_pending: it
+    // publishes every still-parked launch at host tier and destroys its
+    // chance, so a record arriving one flush too late finds nothing to claim.
+    // `s.sync()` guarantees the kernel finished, not that its record has been
+    // buffered; the gap is small and real, and it made this test flaky (two
+    // runs of the same binary on the same tree, 2026-08-27: one NULL device
+    // record, one clean 11,331 ns span). Bounded at ~500 ms: the contract is
+    // that records arrive promptly, so a wait this long failing IS the
+    // finding.
+    auto rocmFlush = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_rocm_flush"));
+    ASSERT_NE(rocmFlush, nullptr);
+    for (int i = 0; i < 100 && rocmRecords() == 0; ++i) {
+        rocmFlush();
+        if (rocmRecords() > 0) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
 
     gpuCollect(CAJ_GPU_BACKEND_HIP);
     gpuFlush();
