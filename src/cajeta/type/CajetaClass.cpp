@@ -2949,8 +2949,25 @@ namespace cajeta {
             if (!prop->getType() || !prop->getType()->getLlvmType()) continue;
             llvm::Type* storedType = prop->getType()->getLlvmType();
             if (!(prop->getType()->getTypeFlags() & PRIMITIVE_FLAG)) {
-                storedType = llvm::PointerType::get(
-                    *module->getLlvmContext(), 0);
+                // A class instance is referenced by pointer, so ptr-sized is
+                // right for it. An INTERFACE is not: its value IS the fat
+                // struct (data/type/vtable), stored and loaded BY VALUE, so
+                // a `ptr` global under-allocates it by 16 bytes. The emitted
+                // code then memcpy'd 24 bytes into an 8-byte global and read
+                // the struct back out — tolerated unoptimized, but under
+                // --release LLVM knows the object's size and folds the
+                // out-of-bounds reads, so an ASSIGNED static interface field
+                // compared equal to null. Silent miscompile in the shipping
+                // configuration. Both sites that derive this type must agree,
+                // or the extern decl mismatches the definition.
+                auto ifaceCls = std::dynamic_pointer_cast<CajetaClass>(
+                    prop->getType());
+                bool isInterfaceValue = ifaceCls && ifaceCls->isInterface()
+                    && storedType && storedType->isStructTy();
+                if (!isInterfaceValue) {
+                    storedType = llvm::PointerType::get(
+                        *module->getLlvmContext(), 0);
+                }
             }
             if (foldStaticInitializer(prop->getInitializer(), storedType)) {
                 continue;
@@ -3223,8 +3240,25 @@ namespace cajeta {
         } else {
             llvm::Type* storedType = prop->getType()->getLlvmType();
             if (!(prop->getType()->getTypeFlags() & PRIMITIVE_FLAG)) {
-                storedType = llvm::PointerType::get(
-                    *module->getLlvmContext(), 0);
+                // A class instance is referenced by pointer, so ptr-sized is
+                // right for it. An INTERFACE is not: its value IS the fat
+                // struct (data/type/vtable), stored and loaded BY VALUE, so
+                // a `ptr` global under-allocates it by 16 bytes. The emitted
+                // code then memcpy'd 24 bytes into an 8-byte global and read
+                // the struct back out — tolerated unoptimized, but under
+                // --release LLVM knows the object's size and folds the
+                // out-of-bounds reads, so an ASSIGNED static interface field
+                // compared equal to null. Silent miscompile in the shipping
+                // configuration. Both sites that derive this type must agree,
+                // or the extern decl mismatches the definition.
+                auto ifaceCls = std::dynamic_pointer_cast<CajetaClass>(
+                    prop->getType());
+                bool isInterfaceValue = ifaceCls && ifaceCls->isInterface()
+                    && storedType && storedType->isStructTy();
+                if (!isInterfaceValue) {
+                    storedType = llvm::PointerType::get(
+                        *module->getLlvmContext(), 0);
+                }
             }
             // Constant-fold the declared initializer if shape allows;
             // otherwise zero-init. Folding handles `= 100`, `= -7`, and

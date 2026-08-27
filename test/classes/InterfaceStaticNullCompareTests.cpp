@@ -141,3 +141,115 @@ TEST(InterfaceStaticNullCompareTests, instanceFieldInterfaceShapeStillCompares) 
     auto fn = jit->lookup<int64_t (*)()>("run");
     EXPECT_EQ(fn(), 11);
 }
+
+// ── the --release arm ───────────────────────────────────────────────────
+//
+// The JIT tests above all run in ONE codegen configuration, and that is
+// exactly how the worst half of this defect survived them: the global for a
+// static interface field was declared `ptr` (8 bytes) while the emitted code
+// memcpy'd the 24-byte fat struct into it and loaded the struct back out.
+// Unoptimized builds tolerate the overrun and read back what was written;
+// under --release LLVM knows the object's size, folds the out-of-bounds
+// reads, and an ASSIGNED field compares EQUAL TO NULL. A silent miscompile in
+// the SHIPPING configuration, invisible to every test that only builds one
+// way. It surfaced in cajeta-llm, whose suite runs twice — the second pass
+// under `--release --live-set=bounded` — and only the second pass failed.
+//
+// So this arm drives the real compiler binary end to end in each mode and
+// runs the program. Both assignment shapes are covered: direct
+// (`Held.field = obj`) and through an interface-typed PARAMETER, since the
+// two take different paths to the same store.
+
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <random>
+
+namespace {
+namespace rfs = std::filesystem;
+
+std::string releaseCompilerBinary() {
+    const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string r;
+    if (envRoot && *envRoot) r = envRoot;
+    else {
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        r = CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        r = ".";
+#endif
+    }
+    return r + "/build/src/cajeta";
+}
+
+// Compile + run the fixture under `mode`; returns the program's stdout.
+std::string buildAndRun(const std::string& mode, int& exitCode) {
+    static std::mt19937_64 rng(std::random_device{}());
+    rfs::path root = rfs::temp_directory_path()
+        / ("cajeta_ifacerel_" + std::to_string(rng()));
+    rfs::create_directories(root / "src" / "pkg");
+    rfs::create_directories(root / "out");
+
+    std::ofstream(root / "src" / "pkg" / "Sink.cajeta")
+        << "package pkg;\npublic interface Sink { public int64 tag(); }\n";
+    std::ofstream(root / "src" / "pkg" / "Impl.cajeta")
+        << "package pkg;\n"
+           "public final class Impl implements Sink {\n"
+           "    public Impl() { return; }\n"
+           "    public int64 tag() { return 7; }\n"
+           "}\n";
+    std::ofstream(root / "src" / "pkg" / "Main.cajeta")
+        << "package pkg;\n"
+           "import cajeta.lang.String;\n"
+           "import cajeta.lang.System;\n"
+           "public final class Main {\n"
+           "    static Sink direct;\n"
+           "    static Sink viaParam;\n"
+           "    static void install(Sink s) { Main.viaParam = s; return; }\n"
+           "    public static int32 main(String[] args) {\n"
+           "        Impl a = heap Impl();\n"
+           "        Main.direct = a;\n"
+           "        if (Main.direct == null) { System.stdout.println(\"DIRECT-NULL\"); }\n"
+           "        else { System.stdout.println(\"DIRECT-OK\"); }\n"
+           "        Impl b = heap Impl();\n"
+           "        Main.install(b);\n"
+           "        if (Main.viaParam == null) { System.stdout.println(\"PARAM-NULL\"); }\n"
+           "        else { System.stdout.println(\"PARAM-OK\"); }\n"
+           "        return 0;\n"
+           "    }\n"
+           "}\n";
+
+    rfs::path prog = root / "prog";
+    rfs::path log  = root / "run.log";
+    std::string cmd = "\"" + releaseCompilerBinary() + "\" --emit=exe " + mode
+        + " -o \"" + prog.string() + "\" pkg.Main.main \""
+        + (root / "src").string() + "\" \"" + (root / "out").string()
+        + "\" > /dev/null 2>&1 && \"" + prog.string() + "\" > \""
+        + log.string() + "\" 2>&1";
+    exitCode = std::system(cmd.c_str());
+    std::ifstream in(log);
+    std::string out((std::istreambuf_iterator<char>(in)),
+                    std::istreambuf_iterator<char>());
+    std::error_code ec;
+    rfs::remove_all(root, ec);
+    return out;
+}
+}  // namespace
+
+TEST(InterfaceStaticNullCompareTests, assignedStaticIsNonNullInEveryCodegenMode) {
+    for (const std::string& mode :
+         {std::string(""), std::string("--release"),
+          std::string("--release --live-set=bounded")}) {
+        int rc = 0;
+        std::string out = buildAndRun(mode, rc);
+        EXPECT_NE(std::string::npos, out.find("DIRECT-OK"))
+            << "mode[" << mode << "]: an assigned static interface field read "
+               "as NULL (direct assignment). Output:\n" << out;
+        EXPECT_NE(std::string::npos, out.find("PARAM-OK"))
+            << "mode[" << mode << "]: an assigned static interface field read "
+               "as NULL (assigned through an interface-typed parameter). "
+               "Output:\n" << out;
+        EXPECT_EQ(std::string::npos, out.find("-NULL"))
+            << "mode[" << mode << "]: something read null. Output:\n" << out;
+    }
+}
