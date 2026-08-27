@@ -954,6 +954,38 @@ int main(int argc, const char* argv[]) {
         return 1;
     }
 
+    // ...and the HIGH side, which went unguarded until 2026-08-27. Only the
+    // first three positionals are ever read, so a fourth was discarded in
+    // silence -- and the damage was not the discard but the SHIFT: someone
+    // reaching for a two-source-root build (`... Main.main srcA srcB out`) got
+    // srcB bound to the output directory. Exit 0, `out` left empty, object
+    // files written into a source tree, and not one of srcB's types compiled.
+    // It reads as a type-resolution failure, and cost a day of chasing one.
+    //
+    // A compile has ONE source root by construction; a second tree is a
+    // dependency, so the remedy is --classpath, and the diagnostic has to say
+    // so or the user's next move is another guess.
+    if (positional.size() > 3) {
+        static const char* kSlot[3] = {"entry.method", "source-root ",
+                                       "output-dir  "};
+        std::cerr << "cajeta: the compile verb takes exactly 3 positional "
+                     "arguments, got " << positional.size() << ".\n";
+        for (size_t i = 0; i < positional.size(); ++i) {
+            if (i < 3) {
+                std::cerr << "  " << kSlot[i] << " : " << positional[i]
+                          << (i == 2 ? "   <-- read as the OUTPUT DIRECTORY\n"
+                                     : "\n");
+            } else {
+                std::cerr << "  ignored      : " << positional[i] << "\n";
+            }
+        }
+        std::cerr << "  A compile reads ONE source root. To build across two "
+                     "source trees, emit the first\n"
+                     "  as an archive (--emit=cja) and compile the second "
+                     "against it with --classpath=<a>.cja.\n";
+        return 1;
+    }
+
     // The xpuArch default ("sm_89") is NVPTX-shaped; for the amdgpu backend
     // default to a GFX target instead, and for vulkan a SPIR-V target env,
     // unless the user pinned --xpu-arch.
