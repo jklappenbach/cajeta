@@ -48,6 +48,11 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         // so warm lints are sub-second instead of the ~19s cold one-shot compile.
         // Off falls back to a fresh one-shot `cajeta --lint` per edit.
         var useLintServer: Boolean = true,
+        // variable-inspection §3.1.4: rows returned per page when expanding an
+        // array or collection in the Variables view. Passed to the debug server
+        // at launch; the server keeps its own hard fallback for a missing or
+        // nonsensical value, so a bad setting degrades rather than breaks.
+        var debugPageSize: Int = DEFAULT_DEBUG_PAGE_SIZE,
     )
 
     private var state = State()
@@ -130,6 +135,10 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         get() = state.useLintServer
         set(value) { state.useLintServer = value }
 
+    var debugPageSize: Int
+        get() = state.debugPageSize
+        set(value) { state.debugPageSize = value }
+
     companion object {
         // Default points at the in-tree cajeta build. Users override
         // in Settings | Languages & Frameworks | Cajeta.
@@ -141,6 +150,13 @@ class CajetaSettings : PersistentStateComponent<CajetaSettings.State> {
         const val AUTO_RELOAD_PROMPT = "prompt"
         const val AUTO_RELOAD_ALWAYS = "always"
         const val AUTO_RELOAD_NEVER = "never"
+
+        // variable-inspection §3.1.4. The bounds are the settings screen's
+        // contract, not the server's: 1 makes expansion useless, and a page
+        // large enough to hang the UI is the thing paging exists to prevent.
+        const val DEFAULT_DEBUG_PAGE_SIZE = 50
+        const val MIN_DEBUG_PAGE_SIZE = 1
+        const val MAX_DEBUG_PAGE_SIZE = 10_000
 
         // In-comment markdown rendering surfaces (spec: markdown JCEF prototype).
         const val MARKDOWN_SURFACE_SWING = "swing"

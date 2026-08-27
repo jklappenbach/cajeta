@@ -104,6 +104,12 @@ class CajetaDebugProcess(
         arrayOf(breakpointHandler, exceptionBreakpointHandler)
 
     override fun sessionInitialized() {
+        // variable-inspection 4.2.6: double-click a scalar row to edit it.
+        // Installed before the early return below so a misconfigured compiler
+        // path does not silently drop the gesture for a session that recovers.
+        VariablesInplaceEdit.install()
+        inplaceEditInstalled = true
+
         val binary = CajetaSettings.instance.compilerPath
         if (binary.isBlank() || !File(binary).canExecute()) {
             processHandler.emitError(
@@ -173,6 +179,10 @@ class CajetaDebugProcess(
                 classpath = dev.cajeta.idea.xref.CajetaSourceMountGlue
                     .dependencyArchives(session.project.basePath)
                     .map { it.toString() },
+                // variable-inspection §3.1.4: expansion page size, read fresh
+                // at launch so the settings screen is live-adjustable — the
+                // next session pages at the new size with no restart.
+                pageSize = dev.cajeta.idea.settings.CajetaSettings.instance.debugPageSize,
             )
             ds.launch(
                 params,
@@ -393,8 +403,18 @@ class CajetaDebugProcess(
         }
     }
 
+    /** Balances the 4.2.6 listener exactly once, however the session ends. */
+    private var inplaceEditInstalled = false
+
+    private fun releaseInplaceEdit() {
+        if (!inplaceEditInstalled) return
+        inplaceEditInstalled = false
+        VariablesInplaceEdit.uninstall()
+    }
+
     override fun stop() {
         clearDecorations()
+        releaseInplaceEdit()
         // End the SESSION; the resident server stays for the next one
         // (resident-debug-server §2). A hung debuggee is unstuck by
         // releaseForRespawn from the service, not by killing here.

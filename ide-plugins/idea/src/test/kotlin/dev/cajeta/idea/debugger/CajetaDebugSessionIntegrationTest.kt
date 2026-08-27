@@ -19,6 +19,27 @@ import java.util.concurrent.TimeUnit
  */
 class CajetaDebugSessionIntegrationTest {
 
+    companion object {
+        /**
+         * `launch()` does not return until `configurationDone` is answered, and
+         * the server answers that only once the JIT compile is finished — so
+         * this budget covers a COLD whole-program compile, not a round trip.
+         *
+         * Measured 2026-08-24 by driving the DAP server by hand on this
+         * machine: 0.4s to the launch response, 4s to the first compile line,
+         * 8s codegen, 7.5s JIT prep, breakpoint hit at **20.0s**. The previous
+         * 15s budget was below that floor, so all four launching tests failed
+         * on every run against a perfectly healthy debugger — and a suite that
+         * is always red is a suite nobody reads.
+         *
+         * These tests pass no `cacheDir`, so every launch is cold by
+         * construction; the warm path (fast-debug-launch) is not what they
+         * exercise. Wide enough that a healthy cold launch never trips it,
+         * bounded so a real hang still fails instead of hanging forever.
+         */
+        private const val HANDSHAKE_SECONDS = 90L
+    }
+
     private val kProg = """
         package demo;
         public class Calc {
@@ -56,7 +77,7 @@ class CajetaDebugSessionIntegrationTest {
             session.launch(
                 CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
                 listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
-            ).get(15, TimeUnit.SECONDS)
+            ).get(HANDSHAKE_SECONDS, TimeUnit.SECONDS)
 
             assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
             assertEquals("breakpoint", stopReason)
@@ -102,7 +123,7 @@ class CajetaDebugSessionIntegrationTest {
             session.launch(
                 CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
                 listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
-            ).get(15, TimeUnit.SECONDS)
+            ).get(HANDSHAKE_SECONDS, TimeUnit.SECONDS)
             assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
 
             val st = session.stackTrace().get(10, TimeUnit.SECONDS)
@@ -147,7 +168,7 @@ class CajetaDebugSessionIntegrationTest {
             session.launch(
                 CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
                 listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 6)),
-            ).get(15, TimeUnit.SECONDS)
+            ).get(HANDSHAKE_SECONDS, TimeUnit.SECONDS)
             assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
 
             val st = session.stackTrace().get(10, TimeUnit.SECONDS)
@@ -251,7 +272,7 @@ class CajetaDebugSessionIntegrationTest {
                 CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
                 breakpoints = emptyList(),
                 exceptionBreakpoints = true,
-            ).get(15, TimeUnit.SECONDS)
+            ).get(HANDSHAKE_SECONDS, TimeUnit.SECONDS)
             assertTrue("throw never parked", stopped.await(20, TimeUnit.SECONDS))
             assertEquals("exception", stopReason)
 
@@ -293,7 +314,7 @@ class CajetaDebugSessionIntegrationTest {
             session.launch(
                 CajetaDebugSession.LaunchParams("demo.Calc.main", root.absolutePath),
                 listOf(CajetaDebugSession.LineBreakpoint("Calc.cajeta", 4)), // inside worker
-            ).get(15, TimeUnit.SECONDS)
+            ).get(HANDSHAKE_SECONDS, TimeUnit.SECONDS)
             assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
             assertTrue("expected a spawned fiber (id >= 1), got $stoppedTid", stoppedTid >= 1)
 

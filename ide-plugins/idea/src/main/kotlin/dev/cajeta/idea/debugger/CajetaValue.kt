@@ -29,6 +29,13 @@ class CajetaValue(
     private val session: CajetaDebugSession? = null,
 ) : XValue() {
 
+    /**
+     * A leaf is a value the server minted no expansion handle for — the same
+     * fact `hasChildren` is drawn from (§3.1.2). 4.2.6 reads it to decide
+     * whether a double-click edits or falls through to expand/collapse.
+     */
+    val isLeaf: Boolean get() = variable.variablesReference == 0
+
     override fun computePresentation(node: XValueNode, place: XValuePlace) {
         val facets = variable.facets
         // CP7-5 (FR-7.3): the Variables-view encoding is independently toggleable.
@@ -36,7 +43,7 @@ class CajetaValue(
             // No metadata (non-cajeta or undetermined): the original plain leaf.
             node.setPresentation(
                 AllIcons.Debugger.Value,
-                variable.type.ifBlank { null },
+                shortType(),
                 variable.value,
                 variable.variablesReference != 0,
             )
@@ -46,7 +53,7 @@ class CajetaValue(
         val pres = facets.present()
         val icon = ownershipIcon(facets.ownership)
         val valueColor = allocColor(facets.alloc)
-        val typeText = variable.type.ifBlank { null }
+        val typeText = shortType()
         val hasChildren = variable.variablesReference != 0
 
         node.setPresentation(icon, object : XValuePresentation() {
@@ -116,6 +123,16 @@ class CajetaValue(
             }
         }
     }
+
+    /**
+     * §4.1.5 — the type column carries the SIMPLE type. The server sends the
+     * canonical FQN (it re-narrows through the vtable on every decode), so the
+     * shortening happens here, at the only place it is a presentation concern.
+     * A blank type stays null so the platform omits the column rather than
+     * drawing an empty one.
+     */
+    private fun shortType(): String? =
+        variable.type.ifBlank { null }?.let { TypeColumn.short(it) }
 
     private fun ownershipIcon(role: OwnershipRole): Icon = when (role) {
         OwnershipRole.OWNER -> AllIcons.Nodes.Field

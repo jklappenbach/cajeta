@@ -39,6 +39,10 @@ class CajetaDebugSession(private val client: DapClient) {
          *  fails to compile at launch with CAJETA_ERROR_UNRESOLVED_TYPE.
          *  Empty stays off the wire (absence = no dependencies). */
         val classpath: List<String> = emptyList(),
+        /** Rows per page when expanding an aggregate (variable-inspection
+         *  §3.1.4). 0 = unset = off the wire, which the server reads as "use
+         *  my hard fallback" — never send a 0 it would have to defend. */
+        val pageSize: Int = 0,
     )
 
     /** A line breakpoint, optionally conditional (CP6f). A blank condition is
@@ -307,6 +311,7 @@ class CajetaDebugSession(private val client: DapClient) {
             p.classpath.forEach { cp.add(Json.of(it)) }
             args["classpath"] = cp
         }
+        if (p.pageSize > 0) args["pageSize"] = Json.of(p.pageSize)
         return args
     }
 
