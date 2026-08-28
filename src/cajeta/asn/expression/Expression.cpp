@@ -4140,7 +4140,26 @@ bool cajetaRhsCarriesRedundantSharp(
         // aren't yet pinned (bare-identifier lambdas waiting for
         // target-type inference at generateCode time).
         bool pushedScope = false;
-        if (body && paramTypes.size() == paramNames.size()
+        // xref-lint-emission-gap 5.1.2. A bare-identifier lambda parses with
+        // EMPTY paramTypes, so the guard below never fired for one and its
+        // body went unresolved — leaving `(acc, p) -> acc + p.x` with no field
+        // reference for `p.x`, the last one missing across the whole tour.
+        // Under lint the types are available early: MethodCallExpression::
+        // resolveTypes resolves the callee BEFORE its arguments and pins the
+        // formal here via setExpectedType. Derived exactly as generateCode
+        // derives it, but into a LOCAL vector — assigning `paramTypes` (as
+        // generateCode does) is real state the build path owns, and this pass
+        // must not touch it.
+        std::vector<CajetaTypePtr> effectiveParamTypes = paramTypes;
+        if (module->isResolutionOnly()
+                && effectiveParamTypes.size() < paramNames.size()) {
+            if (auto expectedFn =
+                    std::dynamic_pointer_cast<CajetaFunctionType>(expectedType)) {
+                if (expectedFn->getParameterTypes().size() == paramNames.size())
+                    effectiveParamTypes = expectedFn->getParameterTypes();
+            }
+        }
+        if (body && effectiveParamTypes.size() == paramNames.size()
                 && !paramNames.empty()) {
             auto paramScope = std::make_shared<Scope>(
                 std::string("__lambda_resolve"), module);
@@ -4150,7 +4169,7 @@ bool cajetaRhsCarriesRedundantSharp(
                 // (this scope is dropped after resolveTypes), so the
                 // codegen-only branches of StackField stay unused.
                 auto fld = std::make_shared<StackField>(
-                    module, paramNames[i], paramTypes[i]);
+                    module, paramNames[i], effectiveParamTypes[i]);
                 paramScope->putField(fld);
             }
             // Pre-register top-level body locals so body resolveTypes

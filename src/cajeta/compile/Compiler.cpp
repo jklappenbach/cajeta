@@ -1997,13 +1997,24 @@ namespace cajeta {
         // (lint-source-root-spec §3/§4).
 
         // xref (ide-symbol-index §2.0.2): armed BEFORE the stdlib parse so every
-        // AST node interns its source and template members are captured. What
-        // lint-mode capture yields, honestly: declarations, inheritance, enums,
-        // template members, and parse-time type references. NOT calls or field
-        // accesses — body resolveTypes runs only inside Method::generateCode,
-        // the codegen phase lint deliberately stops before. Per-edit, the
-        // buffer's own declarations are what must stay fresh; edges refresh on
-        // build or whole-root export.
+        // AST node interns its source and template members are captured.
+        //
+        // THE CONTRACT (one statement, shared with lintRoot below —
+        // xref-lint-emission-gap §5). Lint-mode capture yields declarations,
+        // inheritance, enums, template members, type references, AND — since
+        // Units 3/4 — call edges and field references, because
+        // Method::resolveBodyForLint now resolves bodies without codegen.
+        // Per-edit that covers the TARGET module's own bodies only; siblings
+        // stay signature-only (lint-source-root-spec §3).
+        //
+        // Two honest limits, both measured over samples/tour rather than
+        // assumed. Callee resolution is unique-or-nothing, so a receiver lint
+        // cannot resolve — chiefly a CHAINED generic (`xs.stream().fold(...)`,
+        // whose receiver type is an unsubstituted template return) — yields no
+        // edge rather than a guessed one. And stdlib bodies are deliberately
+        // not resolved. The result is that lint may carry FEWER edges than a
+        // build, never different ones: every edge it does emit resolves within
+        // its own export.
         xref::resetCapture();
         xref::setCaptureEnabled(!flags.emitXref.empty());
 
@@ -2274,10 +2285,16 @@ namespace cajeta {
     int Compiler::lintRoot(const string& root) {
         // Whole-root export (§2.0.3): cold indexing. No entry method exists for
         // a library or the stdlib, so this parses everything and stops where
-        // lint stops — declarations, inheritance, enums, template members, and
-        // parse-time type references, for EVERY file under the root. Call and
-        // field-access edges need body resolution (codegen) and come from a
-        // real build's --emit-xref instead.
+        // lint stops — but "where lint stops" now INCLUDES resolved method
+        // bodies (Method::resolveBodyForLint), so this carries declarations,
+        // inheritance, enums, template members, type references, call edges and
+        // field references, for every file under the root.
+        //
+        // Same contract, same two limits, as Compiler::lint states above — an
+        // unresolvable receiver yields no edge rather than a guessed one, and
+        // stdlib bodies are not resolved. These two docstrings previously
+        // disagreed with each other about whether this export carries edges
+        // (spec §1.4.1); they now state one contract, and it is the true one.
         xref::resetCapture();
         xref::setCaptureEnabled(!flags.emitXref.empty());
 

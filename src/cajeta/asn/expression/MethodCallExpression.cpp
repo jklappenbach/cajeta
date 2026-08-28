@@ -1714,14 +1714,48 @@ namespace cajeta {
         xref::CallSiteScope xrefSite(getSourceFile(),
                                      getSourceLine(), getSourceColumn());
 
-        // Receiver first (children), then the arguments — which live in
-        // `parameters`, outside `children`, so nothing else would reach them.
-        // Per-node best-effort: one argument that cannot resolve must not cost
-        // the siblings their records, and must never fail the lint.
+        // Receiver first (children) — the callee cannot be resolved without it.
+        // Per-node best-effort throughout: one part that cannot resolve must
+        // not cost the others their records, and must never fail the lint.
         for (auto& child : children) {
             if (!child) continue;
             try { child->resolveTypes(module); } catch (...) { }
         }
+
+        // Then the CALLEE, BEFORE the arguments. The order matters: a lambda
+        // argument has bare-identifier parameters whose types come from the
+        // enclosing call's formal, so `(acc, p) -> acc + p.x` can only resolve
+        // `p` once we know what `fold` declares. Resolving arguments first
+        // left every lambda body unresolved — which is why a field access
+        // inside one was the last reference missing after Unit 4 (5.1.2).
+        // `resolveArgCalleeShallow` matches on name+arity, which needs no
+        // argument types, so it is available this early.
+        MethodPtr callee;
+        try {
+            callee = resolveArgCalleeShallow(
+                std::dynamic_pointer_cast<MethodCallExpression>(shared_from_this()),
+                module);
+        } catch (...) { callee = nullptr; }
+
+        // Hand each lambda argument the formal it is being passed as, and pin
+        // this call's own resolvedType from the callee's return — a chained
+        // receiver (`pts.stream().fold(...)`) has no type otherwise, and the
+        // outer call then cannot resolve at all.
+        if (callee) {
+            auto pl = callee->getParameterList();
+            size_t off = (!pl.empty() && pl.front()->getName() == "this") ? 1 : 0;
+            for (size_t i = 0; i < parameters.size() && i + off < pl.size(); i++) {
+                auto lam = std::dynamic_pointer_cast<LambdaExpression>(
+                    parameters[i].expression);
+                if (lam && pl[i + off] && pl[i + off]->getType())
+                    lam->setExpectedType(pl[i + off]->getType());
+            }
+            if (!resolvedType && callee->getReturnType())
+                resolvedType = callee->getReturnType();
+        }
+
+        // Now the arguments. They live in `parameters`, outside `children`, so
+        // nothing else would reach them at all.
         for (auto& p : parameters) {
             if (!p.expression) continue;
             try { p.expression->resolveTypes(module); } catch (...) { }
@@ -1729,25 +1763,18 @@ namespace cajeta {
 
         if (!xref::captureEnabled()) return;
 
-        // Resolve the callee by unique name+arity (the conservative peek that
-        // already exists for the `#T`-formal checks) and record through
-        // CajetaClass's own recording half. `resolveArgCalleeShallow` answers
-        // null on an ambiguous overload or an unresolvable receiver, and null
-        // is the right answer: a wrong edge sends "who calls this" to the
-        // wrong place, which is worse than no edge (spec 2.1.2, plan 4.2.4).
-        MethodPtr callee;
-        try {
-            callee = resolveArgCalleeShallow(
-                std::dynamic_pointer_cast<MethodCallExpression>(shared_from_this()),
-                module);
-            // `resolveArgCalleeShallow` matches on name+arity alone, so it
-            // answers null for same-arity overloads (`f(int32)` vs
-            // `f(String)`) — right for its own callers, who must not guess,
-            // but it would collapse every overloaded call site to no edge at
-            // all. Since the arguments were just resolved above, discriminate
-            // by their types. Still unique-or-nothing: a tie records nothing.
-            if (!callee) callee = resolveCalleeByArgTypes(module);
-        } catch (...) { return; }
+        // A same-arity overload set (`f(int32)` vs `f(String)`) leaves the
+        // shallow peek null — right for its own callers, who must not guess,
+        // but it would collapse every overloaded call site to no edge at all.
+        // Now that the arguments have resolved, discriminate by their types.
+        // Unique-or-nothing: a tie records nothing, because a wrong edge sends
+        // "who calls this" to the wrong place, which is worse than no edge
+        // (spec 2.1.2, plan 4.2.4).
+        if (!callee) {
+            try { callee = resolveCalleeByArgTypes(module); } catch (...) { return; }
+            if (callee && !resolvedType && callee->getReturnType())
+                resolvedType = callee->getReturnType();
+        }
         if (!callee) return;
 
         CajetaClass::noteResolvedCallXref(callee, /*isConstructor=*/false, module);

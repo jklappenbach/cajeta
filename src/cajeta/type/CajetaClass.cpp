@@ -5825,6 +5825,17 @@ namespace cajeta {
             calleeKey = xref::templateKeyFor(ownerCanon.substr(0, lt),
                                              resolved->getName(),
                                              (int) resolved->getParameters().size());
+        } else if (Method* origin = resolved->getTemplateOrigin()) {
+            // A generic METHOD on a NON-generic owner (`Sort::binarySearch<T>`,
+            // `Pick::first<T>`) also resolves to a monomorphized instantiation
+            // — `first(int32[])` — but the branch above never fires, because
+            // the OWNER carries no `<`. The instantiation is just as absent
+            // from source as a generic class's member, and lint (which sees
+            // only the declared template) names `first(T[])`, so without this
+            // the two paths name the same call site differently and an index
+            // merged from both fragments "who calls first".
+            // xref-lint-emission-gap 5.1.3.
+            calleeKey = origin->toCanonical(/*labeled=*/false);
         }
 
         std::string callerKey;
