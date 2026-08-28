@@ -224,9 +224,20 @@ cajeta coverage <cmd>        Manage coverage-exclusion config (ignore/list/remov
 cajeta trust <cmd>           Manage the launcher's signature-verification trust store
 cajeta toolchain <cmd>       Manage the toolchain store (list/install/pin/which/show/…)
 cajeta workspace <cmd>       Workspace-wide operations (multi-package projects)
+cajeta artifact-path         Print the absolute path of this project's build
+                                artifact, without building it
 cajeta verify-reproducible   Re-run the build and check for byte-identical output
 cajeta sandbox-info          Print the resolved sandbox/capability policy
 ```
+
+`artifact-path` exists so consuming scripts stop hard-coding
+`ls -t build/archive/<name>-*.cja | head -1`, which breaks as soon as a
+project sets `settings.output` (build-output-layout §3.3). It reads the
+`build` task's build action (`--task=<name>` selects another) and reports
+where that action writes — the same resolution the action itself uses, so
+the two cannot disagree. `--flavor=<name>` resolves `${flavor}` in an
+`output-path` the way the task runner would; the default layout does not
+vary by flavor. Exits non-zero when the manifest declares no artifact.
 
 This is the set `dispatchBuildTool` claims directly
 (`src/cajeta/buildtool/BuildToolCommands.cpp`). `cajeta vendor` (copy

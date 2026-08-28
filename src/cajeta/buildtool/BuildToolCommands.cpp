@@ -13,6 +13,7 @@
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/OutputLayout.h"
 #include "cajeta/buildtool/repo/FilesystemRepository.h"
 #include "cajeta/buildtool/Properties.h"
 #include "cajeta/buildtool/Provenance.h"
@@ -3158,6 +3159,224 @@ namespace cajeta::buildtool {
             return anyErr ? 1 : 0;
         }
 
+        // ─── `cajeta artifact-path` — build-output-layout §5.2 ──────────
+        //
+        // Consumers hard-code `ls -t build/archive/$name-*.cja | head -1`.
+        // That was already duplicated version-resolution logic across
+        // cajeta-llm, cajeta-cabra and others, and settings.output (unit 3)
+        // makes it outright wrong for any project that moves its artifacts.
+        // This verb answers the question instead, WITHOUT building.
+        //
+        // It shares every step of the resolution with the build action (see
+        // OutputLayout.h) so it cannot report somewhere the build does not
+        // write. What it does not share is the build itself: the path is
+        // where the artifact IS or WOULD BE, so a project that has never
+        // been built still gets an answer, and the caller decides whether a
+        // missing file matters.
+
+        // Collect every `build` invocation reachable in a task's action list,
+        // descending into parallel groups. run-task entries are deliberately
+        // NOT followed: the artifact of a task that delegates is the callee's
+        // to report, and `--task <callee>` says so unambiguously.
+        void collectBuildInvocations(
+            const std::vector<ActionEntry>& entries,
+            std::vector<const ActionInvocation*>& out) {
+            for (const auto& e : entries) {
+                if (e.kind == ActionEntry::Kind::Invocation) {
+                    if (e.invocation.action == "build") out.push_back(&e.invocation);
+                } else if (e.kind == ActionEntry::Kind::Parallel && e.parallel) {
+                    collectBuildInvocations(e.parallel->children, out);
+                }
+            }
+        }
+
+        void artifactPathUsage(std::ostream& os) {
+            os << "Usage: cajeta artifact-path [options]\n"
+                  "\n"
+                  "Print the absolute path of this project's build artifact,\n"
+                  "without building it. Exits non-zero when the manifest\n"
+                  "declares no artifact.\n"
+                  "\n"
+                  "Options:\n"
+                  "  --flavor=<name>     resolve as that flavor (default:"
+                  " release)\n"
+                  "  --task=<name>       read the build action from this task\n"
+                  "                      (default: `build`, else the only task"
+                  " that builds)\n"
+                  "  --manifest=<path>   manifest to read"
+                  " (default: ./cajeta.json)\n";
+        }
+
+        int artifactPathCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string taskName;
+            PropertyOverrides overrides;
+            loadEnvOverrides(overrides);
+
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = std::move(value);
+                } else if (match(arg, "flavor", value)) {
+                    overrides.flavor = value;
+                } else if (match(arg, "task", value)) {
+                    taskName = std::move(value);
+                } else if (arg == "--flavor" && i + 1 < argc) {
+                    overrides.flavor = argv[++i];
+                } else if (arg == "--task" && i + 1 < argc) {
+                    taskName = argv[++i];
+                } else if (arg == "--help" || arg == "-h") {
+                    artifactPathUsage(std::cout);
+                    return 0;
+                } else {
+                    std::cerr << "cajeta artifact-path: unknown argument '"
+                              << arg << "'\n";
+                    artifactPathUsage(std::cerr);
+                    return 2;
+                }
+            }
+
+            auto project = loadProject(manifestPath, overrides);
+            if (!project) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << project.takeError();
+                std::cerr << "cajeta artifact-path: " << msg << "\n";
+                return 1;
+            }
+
+            // Pick the task. An explicit --task is taken as given; otherwise
+            // `build` by convention, and failing that the only task that
+            // builds anything. Several candidates is ambiguity, not a
+            // default — guessing here would hand a script the wrong binary.
+            const Task* task = nullptr;
+            if (!taskName.empty()) {
+                auto it = project->tasks.find(taskName);
+                if (it == project->tasks.end()) {
+                    std::cerr << "cajeta artifact-path: no task '" << taskName
+                              << "' in " << manifestPath << "\n";
+                    return 1;
+                }
+                task = &it->second;
+            } else {
+                std::vector<const Task*> candidates;
+                for (const auto& kv : project->tasks) {
+                    std::vector<const ActionInvocation*> builds;
+                    collectBuildInvocations(kv.second.actions, builds);
+                    if (builds.empty()) continue;
+                    if (kv.first == "build") { task = &kv.second; break; }
+                    candidates.push_back(&kv.second);
+                }
+                if (!task && candidates.size() == 1) task = candidates[0];
+                if (!task && candidates.size() > 1) {
+                    std::cerr << "cajeta artifact-path: several tasks build an"
+                                 " artifact and none is named 'build';"
+                                 " pass --task=<name> (";
+                    for (size_t i = 0; i < candidates.size(); ++i) {
+                        if (i) std::cerr << ", ";
+                        std::cerr << candidates[i]->name;
+                    }
+                    std::cerr << ")\n";
+                    return 1;
+                }
+            }
+
+            std::vector<const ActionInvocation*> builds;
+            if (task) collectBuildInvocations(task->actions, builds);
+            if (builds.empty()) {
+                std::cerr << "cajeta artifact-path: no build action in "
+                          << manifestPath
+                          << (task ? " task '" + task->name + "'"
+                                   : std::string(" (no task builds anything)"))
+                          << " — this project declares no artifact\n";
+                return 1;
+            }
+            if (builds.size() > 1) {
+                std::cerr << "cajeta artifact-path: task '" << task->name
+                          << "' has " << builds.size()
+                          << " build actions, so it has no single artifact;"
+                             " split them into separate tasks and select one"
+                             " with --task=<name>\n";
+                return 1;
+            }
+            const llvm::json::Object& params = builds.front()->params;
+
+            // Substitute ${...} in the params this command reads. The task
+            // runner does the same at invocation time (task params are
+            // deliberately left un-rewritten at load, since they can carry
+            // late-bound `${id.field}` action outputs) — so a `${flavor}` in
+            // an output-path resolves here exactly as it would there.
+            auto sub = [&](const char* key,
+                           std::string& out) -> llvm::Error {
+                auto v = params.getString(key);
+                if (!v) return llvm::Error::success();
+                auto r = substitute(v->str(), project->props,
+                                    std::string("artifact-path ") + key);
+                if (!r) return r.takeError();
+                out = *r;
+                return llvm::Error::success();
+            };
+            std::string outputPathParam;
+            if (auto e = sub("output-path", outputPathParam)) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << std::move(e);
+                std::cerr << "cajeta artifact-path: " << msg
+                          << "\n  (an output-path that depends on another"
+                             " action's output cannot be known without"
+                             " building)\n";
+                return 1;
+            }
+
+            auto emit = resolveEmitMode(params, &project->manifest);
+            if (!emit) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << emit.takeError();
+                std::cerr << "cajeta artifact-path: " << msg << "\n";
+                return 1;
+            }
+            auto layout = resolveOutputLayout(&project->manifest);
+            if (!layout) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << layout.takeError();
+                std::cerr << "cajeta artifact-path: " << msg << "\n";
+                return 1;
+            }
+            auto loc = resolveArtifactLocation(
+                *layout, *emit, project->manifest.details.name,
+                project->manifest.details.version);
+            if (!loc) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << loc.takeError();
+                std::cerr << "cajeta artifact-path: " << msg << "\n";
+                return 1;
+            }
+
+            std::filesystem::path result =
+                outputPathParam.empty() ? loc->path
+                                        : std::filesystem::path(outputPathParam);
+            if (result.empty()) {
+                std::cerr << "cajeta artifact-path: this project emits '"
+                          << loc->emit << "', whose deliverable is the tree at "
+                          << loc->archiveRoot.string()
+                          << " rather than a single file\n";
+                return 1;
+            }
+
+            // Absolute, so the caller can use it from any directory. Resolved
+            // against the CURRENT directory rather than the manifest's, which
+            // is where the build action would have written it — matching the
+            // build matters more here than looking tidy under --manifest.
+            std::cout << std::filesystem::weakly_canonical(
+                             std::filesystem::absolute(result)).string()
+                      << "\n";
+            return 0;
+        }
+
     } // namespace
 
     bool dispatchBuildTool(int argc, const char* argv[], int* exitCodeOut) {
@@ -3206,6 +3425,10 @@ namespace cajeta::buildtool {
         }
         if (cmd == "workspace") {
             *exitCodeOut = workspaceCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "artifact-path") {
+            *exitCodeOut = artifactPathCommand(argc, argv);
             return true;
         }
         if (cmd == "verify-reproducible") {

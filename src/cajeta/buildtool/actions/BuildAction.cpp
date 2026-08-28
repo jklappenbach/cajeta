@@ -26,6 +26,7 @@
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/OutputLayout.h"
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/SourceDigest.h"
@@ -92,46 +93,9 @@ namespace cajeta::buildtool {
             return "cajeta";
         }
 
-        // Resolve the action's effective entry method per the four-
-        // step precedence in the header comment. Returns empty
-        // string when none resolvable (caller decides if that's an
-        // error based on emit).
-        llvm::Expected<std::string> resolveEntryMethod(
-            const llvm::json::Object& params,
-            const Manifest* manifest) {
-            if (auto v = params.getString("entry-method")) {
-                return v->str();
-            }
-            if (auto v = params.getString("binary")) {
-                if (!manifest) {
-                    return err("build: 'binary' param requires a manifest "
-                               "(settings.build.binaries lookup); none "
-                               "provided to the runner");
-                }
-                auto sb = parseSettingsBuild(*manifest);
-                if (!sb) return sb.takeError();
-                auto it = sb->binaries.find(v->str());
-                if (it == sb->binaries.end()) {
-                    std::string available;
-                    for (const auto& kv : sb->binaries) {
-                        if (!available.empty()) available += ", ";
-                        available += kv.first;
-                    }
-                    return err("build: 'binary' '" + v->str() +
-                               "' not found in settings.build.binaries "
-                               "(available: " +
-                               (available.empty() ? "<none>" : available) +
-                               ")");
-                }
-                return it->second.entryMethod;
-            }
-            if (manifest) {
-                auto sb = parseSettingsBuild(*manifest);
-                if (!sb) return sb.takeError();
-                if (sb->entryMethod) return *sb->entryMethod;
-            }
-            return std::string("");
-        }
+        // resolveEntryMethod now lives in OutputLayout.cpp — the default emit
+        // mode depends on it, and emit is what picks the artifact's home, so
+        // `cajeta artifact-path` needs the identical answer.
 
         // Compute SHA-256 of a file's contents. Returns empty on
         // error (the caller can decide whether to surface it).
@@ -176,16 +140,10 @@ namespace cajeta::buildtool {
             // Resolve emit. Defaults: executable when entry-method
             // resolved; archived-ir otherwise. exploded-ir always
             // explicit.
-            std::string emit;
-            if (auto v = params.getString("emit")) emit = v->str();
-            else emit = entry->empty() ? "archived-ir" : "executable";
+            auto emitOr = resolveEmitMode(params, ctx.manifest());
+            if (!emitOr) return emitOr.takeError();
+            std::string emit = *emitOr;
 
-            if (emit != "exploded-ir" && emit != "archived-ir" &&
-                emit != "executable") {
-                return err("build: 'emit' must be one of "
-                           "exploded-ir / archived-ir / executable; "
-                           "got '" + emit + "'");
-            }
             if (emit == "executable" && entry->empty()) {
                 return err("build: emit='executable' requires an entry "
                            "method; supply 'entry-method', 'binary' "
@@ -231,35 +189,20 @@ namespace cajeta::buildtool {
             // defaults).
             namespace fs = std::filesystem;
             std::string sourceRoot = "src/main/cajeta";
-            std::string outputDir  = "build";
-            SettingsOutput outCfg;
             if (ctx.manifest()) {
                 auto sb = parseSettingsBuild(*ctx.manifest());
                 if (!sb) return sb.takeError();
                 if (sb->sourceRoot) sourceRoot = *sb->sourceRoot;
-                if (sb->outputDir)  outputDir  = *sb->outputDir;
-                // settings.output (spec §3.3). Validated on LOAD, so a bad
-                // value stops the build here rather than at first write.
-                auto parsed = parseSettingsOutput(*ctx.manifest());
-                if (!parsed) return parsed.takeError();
-                outCfg = std::move(*parsed);
             }
-            // `root` is the one knob most projects touch; the other three
-            // override it individually. settings.build.output-dir stays
-            // honoured as the legacy spelling of the same idea, so projects
-            // that already set it keep working — output.root wins when both
-            // are present, being the newer and more specific setting.
-            if (outCfg.root) outputDir = *outCfg.root;
-            fs::path interRoot = outCfg.intermediates
-                ? fs::path(*outCfg.intermediates) : fs::path(outputDir) / "obj";
-            fs::path artRoot = outCfg.artifacts
-                ? fs::path(*outCfg.artifacts) : fs::path(outputDir) / "archive";
-            // <root>/exe, not §3.1's build/bin: unit 2 kept the executable
-            // where the toolchain skill and check-guide-part1.sh expect it.
-            // The KEY is `binaries`, so adopting bin later is a default
-            // change rather than a new setting.
-            fs::path binRoot = outCfg.binaries
-                ? fs::path(*outCfg.binaries) : fs::path(outputDir) / "exe";
+            // The four output roots — settings.output (spec §3.3) over
+            // settings.build.output-dir, validated on LOAD so a bad value
+            // stops the build here rather than at first write. Resolved by
+            // the shared module so `cajeta artifact-path` reports exactly
+            // where this build writes.
+            auto layoutOr = resolveOutputLayout(ctx.manifest());
+            if (!layoutOr) return layoutOr.takeError();
+            const OutputLayout layout = std::move(*layoutOr);
+            std::string outputDir = layout.root.string();
 
             // Decide archive-root + output-path per emit. The
             // compiler binary takes <entry> <source-root> <archive-root>
@@ -295,25 +238,17 @@ namespace cajeta::buildtool {
             // tree IS the deliverable, so its artifact home and its output
             // directory are legitimately one path.
             fs::path compilerOut;
-            if (emit == "exploded-ir") {
-                compilerEmit = "ir";
-                formatLabel = "exploded-ir";
-                archiveRoot = fs::path(outputDir) / "ir";
-                compilerOut = archiveRoot;
-            } else if (emit == "archived-ir") {
-                compilerEmit = "cja";
-                formatLabel = "archived-ir";
-                archiveRoot = artRoot;
-                compilerOut = interRoot;
-                outputPath = archiveRoot /
-                             (detailsName + "-" + version + ".cja");
-            } else {
-                compilerEmit = "exe";
-                formatLabel = "executable";
-                archiveRoot = binRoot;
-                compilerOut = interRoot;
-                outputPath = archiveRoot / detailsName;
+            {
+                auto locOr = resolveArtifactLocation(layout, emit, detailsName,
+                                                     version);
+                if (!locOr) return locOr.takeError();
+                archiveRoot = locOr->archiveRoot;
+                compilerOut = locOr->intermediates;
+                outputPath  = locOr->path;
             }
+            if (emit == "exploded-ir")      { compilerEmit = "ir";  formatLabel = "exploded-ir"; }
+            else if (emit == "archived-ir") { compilerEmit = "cja"; formatLabel = "archived-ir"; }
+            else                            { compilerEmit = "exe"; formatLabel = "executable"; }
 
             // Override output path if the user specified one.
             if (auto v = params.getString("output-path")) {

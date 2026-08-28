@@ -82,10 +82,14 @@ struct LayoutProject {
     // `outputBlock` is spliced verbatim as `settings.output` when non-empty —
     // unit 3's knob. Passed as raw JSON so a test can hand in a malformed
     // value and watch the parse reject it.
+    // `tasksBlock`, when non-empty, replaces the default `tasks` object
+    // verbatim — unit 4 needs a project with no build action at all, and one
+    // whose build action carries a `${flavor}`-bearing output-path.
     static std::unique_ptr<LayoutProject> create(const std::string& projName,
                                                  const std::string& entry,
                                                  const std::string& pkg = "t",
-                                                 const std::string& outputBlock = "") {
+                                                 const std::string& outputBlock = "",
+                                                 const std::string& tasksBlock = "") {
         static std::mt19937_64 rng(std::random_device{}());
         auto p = std::make_unique<LayoutProject>();
         p->name = projName;
@@ -124,6 +128,10 @@ struct LayoutProject {
         }
         // `clean` is a TASK, not a built-in verb — every archetype ships one,
         // and without it `cajeta clean` falls through to printing help.
+        if (!tasksBlock.empty()) {
+            m << "  \"tasks\": " << tasksBlock << "\n}\n";
+            return p;
+        }
         m << "  \"tasks\": {\n"
              "    \"build\": { \"actions\": [\n"
              "      { \"action\": \"build\", \"flavor\": \"debug\","
@@ -153,6 +161,29 @@ struct LayoutProject {
         std::ifstream in(log);
         output.assign(std::istreambuf_iterator<char>(in),
                       std::istreambuf_iterator<char>());
+        return rc;
+    }
+
+    // `cajeta artifact-path [args]`. stdout and stderr are captured
+    // SEPARATELY: the verb's whole contract is that stdout is one path a
+    // script can consume, so a test that merged the streams could not tell a
+    // clean answer from one with a warning glued to the front of it.
+    int artifactPath(const std::string& args, std::string& out,
+                     std::string& errOut) const {
+        fs::path o = root / "ap.out";
+        fs::path e = root / "ap.err";
+        std::string cmd = "cd " + root.string() + " && \""
+            + layoutCompilerBinary() + "\" artifact-path " + args
+            + " > " + o.string() + " 2> " + e.string();
+        int rc = layoutExit(std::system(cmd.c_str()));
+        std::ifstream oi(o), ei(e);
+        out.assign(std::istreambuf_iterator<char>(oi),
+                   std::istreambuf_iterator<char>());
+        errOut.assign(std::istreambuf_iterator<char>(ei),
+                      std::istreambuf_iterator<char>());
+        while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) {
+            out.pop_back();
+        }
         return rc;
     }
 
@@ -435,4 +466,121 @@ TEST(BuildOutputLayoutTests, projectNamedAfterItsTopLevelPackageStillLinks) {
         << "details.name == top-level package must not collide:\n" << out;
     EXPECT_EQ(std::string::npos, out.find("Is a directory")) << out;
     EXPECT_TRUE(fs::exists(p->root / "build" / "exe" / "t"));
+}
+
+// ─── unit 4 — consumer discovery, `cajeta artifact-path` ────────────────
+//
+// §5.1: every consumer hard-codes `ls -t build/archive/$name-*.cja | head -1`,
+// which unit 3 just made wrong — a project can now point `artifacts`
+// anywhere. §3.4 decided output destinations are the BUILD TOOL's alone, so a
+// script invoking `cajeta` directly learns nothing from the manifest; asking
+// the tool is the only way it finds out.
+//
+// The tests that matter here are the AGREEMENT ones. A verb that prints a
+// plausible path is worthless: it has to print the path the build actually
+// wrote to, which is why these build first and then compare against a located
+// file rather than against a string the test also computed.
+
+// 4.1.1 — a library project, absolute, exit 0.
+TEST(BuildOutputLayoutTests, artifactPathPrintsOneAbsolutePathForALibrary) {
+    auto p = LayoutProject::create("t.lib", /*entry=*/"");
+    std::string out, errOut;
+    ASSERT_EQ(0, p->artifactPath("", out, errOut)) << errOut;
+
+    EXPECT_TRUE(fs::path(out).is_absolute())
+        << "the verb prints an ABSOLUTE path so a script can use it from any"
+           " working directory; got: " << out;
+    EXPECT_EQ(fs::weakly_canonical(p->root / "build" / "archive"
+                                   / "t.lib-0.1.0.cja"),
+              fs::path(out))
+        << "stderr:\n" << errOut;
+    EXPECT_EQ(std::string::npos, out.find('\n'))
+        << "exactly one line, or `$(cajeta artifact-path)` breaks";
+}
+
+// 4.1.1 / 4.3.1 — the agreement test, and the reason the resolution is shared
+// code rather than reimplemented in the verb. Asserted for BOTH emit modes,
+// because they take different branches of the layout: a library's artifact
+// lands under `artifacts`, an executable's under `binaries`.
+TEST(BuildOutputLayoutTests, artifactPathNamesTheFileTheBuildActuallyWrote) {
+    for (const char* entry : {"", "t.Main::run"}) {
+        std::string name = *entry ? "t.app" : "t.lib";
+        auto p = LayoutProject::create(name, entry);
+        std::string buildOut;
+        ASSERT_EQ(0, p->build(buildOut)) << buildOut;
+
+        std::string out, errOut;
+        ASSERT_EQ(0, p->artifactPath("", out, errOut)) << errOut;
+        EXPECT_TRUE(fs::exists(fs::path(out)))
+            << "the verb must name a file the build wrote, not a path it"
+               " merely computed. name=" << name << " reported=" << out
+            << "\nbuild log:\n" << buildOut;
+    }
+}
+
+// 4.1.1 — `--flavor`. The default layout is flavor-INDEPENDENT (flavor picks
+// compiler flags and re-keys the cache; it is not in the path), so asserting
+// that `--flavor release` prints the default path would pass no matter what
+// the flag did. This drives it through a manifest that genuinely makes the
+// path depend on the flavor — `${flavor}` in the action's output-path, the
+// same late-bound substitution the task runner performs — so the two flavors
+// MUST disagree, and each must name the one it was asked for.
+TEST(BuildOutputLayoutTests, artifactPathHonorsTheRequestedFlavor) {
+    auto p = LayoutProject::create(
+        "t.lib", /*entry=*/"", "t", /*outputBlock=*/"",
+        /*tasksBlock=*/"{\n"
+        "    \"build\": { \"actions\": [ { \"action\": \"build\","
+        " \"id\": \"art\","
+        " \"output-path\": \"build/archive/${flavor}/t.lib.cja\" } ] }\n"
+        "  }");
+
+    std::string rel, dbg, errOut;
+    ASSERT_EQ(0, p->artifactPath("--flavor=release", rel, errOut)) << errOut;
+    ASSERT_EQ(0, p->artifactPath("--flavor=debug", dbg, errOut)) << errOut;
+
+    EXPECT_NE(rel, dbg) << "--flavor changed nothing: " << rel;
+    EXPECT_NE(std::string::npos, rel.find("/release/")) << rel;
+    EXPECT_NE(std::string::npos, dbg.find("/debug/")) << dbg;
+}
+
+// 4.1.2 — no artifact declared. A project can legitimately have tasks and no
+// build action (a script-only project); the verb must say so and exit
+// non-zero rather than print a guess at where a build WOULD have put one.
+TEST(BuildOutputLayoutTests, artifactPathFailsWhenNoArtifactIsDeclared) {
+    auto p = LayoutProject::create(
+        "t.lib", /*entry=*/"", "t", /*outputBlock=*/"",
+        /*tasksBlock=*/"{\n"
+        "    \"hello\": { \"actions\": [ { \"action\": \"exec\","
+        " \"command\": \"true\" } ] }\n"
+        "  }");
+
+    std::string out, errOut;
+    EXPECT_NE(0, p->artifactPath("", out, errOut))
+        << "exit 0 with output '" << out << "' would let a consumer script"
+           " carry on with a path nothing produces";
+    EXPECT_TRUE(out.empty())
+        << "nothing on stdout when there is no answer: a script reading"
+           " stdout must not receive a half-answer. got: " << out;
+    EXPECT_NE(std::string::npos, errOut.find("no build action"))
+        << "the message must name the actual problem. got:\n" << errOut;
+}
+
+// 4.1.3 — the override. This is the case that breaks every hard-coded glob,
+// so it is asserted against the built file rather than against the string.
+TEST(BuildOutputLayoutTests, artifactPathReflectsASettingsOutputOverride) {
+    auto p = LayoutProject::create(
+        "t.lib", /*entry=*/"", "t",
+        /*outputBlock=*/"{ \"artifacts\": \"dist/jars\" }");
+    std::string buildOut;
+    ASSERT_EQ(0, p->build(buildOut)) << buildOut;
+
+    std::string out, errOut;
+    ASSERT_EQ(0, p->artifactPath("", out, errOut)) << errOut;
+
+    EXPECT_EQ(fs::weakly_canonical(p->root / "dist" / "jars"
+                                   / "t.lib-0.1.0.cja"),
+              fs::path(out))
+        << "the verb still reported the DEFAULT location, which is exactly"
+           " the hard-coding it exists to replace:\n" << errOut;
+    EXPECT_TRUE(fs::exists(fs::path(out))) << buildOut;
 }
