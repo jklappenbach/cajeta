@@ -37,21 +37,39 @@
 // Six cajeta-llama tests once looked like engine bugs and were this trap.
 // If one of these fails, check the reader before touching PluginHost.
 //
-// ── What is NOT covered here ──
+// ── Two levels of assertion, on purpose ──
 //
-// 1.1.5 and 1.1.7 want the records read by the BUILD TOOL's own reader (the C++
-// `checkPluginRecord`, plan §0) rather than by the stdlib's. That needs the
-// record bytes to cross the JIT boundary into C++, and §3 has not yet wired the
-// validator into `PluginRuntime` — until it does, the running path still reads
-// fields ad-hoc with `getString`, so "the build tool's reader" is not one thing
-// to test against. Recorded as a DISABLED test at the bottom rather than faked
-// against a fixture, which 1.1.5 explicitly rules out.
+// The §1.1 cases below assert the ESCAPE BYTES. The §1.3 cases added later
+// assert a DECODING ROUND-TRIP — the record re-parses to the original value,
+// via `currentDecodedString()`. Escaping correctly and decoding back to what
+// went in are two different claims, and only the second is what a consumer
+// depends on.
+//
+// The last group crosses the JIT boundary and hands the bytes to the BUILD
+// TOOL's own reader (`checkPluginStream` / `checkPluginRecord`, plan §0, and
+// `parseJsonC`, which is what `PluginRuntime` actually parses with). That is
+// producer and consumer tested against each other rather than each against a
+// fixture either could drift from — 1.1.5, 1.1.7, 1.3.3 and 1.3.4.
+//
+// ── A trap that cost a wrong bug report ──
+//
+// A `jit-run` probe uses `build/src/cajeta`, which a test sweep does NOT
+// rebuild. On 2026-08-28 that binary was four days stale and predated
+// `bc825d85` (JsonWriter escaping control characters), so a probe showed raw
+// newlines in a record and looked exactly like an emitter defect. The stdlib
+// is embedded: `ninja -C build cajeta` before believing a probe.
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 
+#include "cajeta/buildtool/JsonC.h"
+#include "cajeta/buildtool/PluginRecord.h"
+
 #include <cstdint>
 #include <memory>
+#include <set>
+#include <string>
+#include <vector>
 
 using cajeta_test::CajetaJit;
 
@@ -68,6 +86,8 @@ const char* MODULE_SRC =
     "import cajeta.buildtool.plugin.PluginHost;\n"
     "import cajeta.buildtool.plugin.RecordingActionContext;\n"
     "import cajeta.buildtool.plugin.Severity;\n"
+    "import cajeta.codec.json.JsonReader;\n"
+    "import cajeta.codec.json.JsonToken;\n"
     "import cajeta.collection.ArrayList;\n"
     "public final class D {\n"
 
@@ -234,6 +254,211 @@ const char* MODULE_SRC =
     "        return 0;\n"
     "    }\n"
 
+
+    // ---- 1.3.1 — a decoding round-trip, not an escape-shape check ----
+    //
+    // The tests above assert the ESCAPE BYTES because that is cheap and it is the
+    // emitter's contract. 1.3.1 asks for something stronger and different: that a
+    // record re-parses to the ORIGINAL values. Escaping correctly and decoding
+    // back to what went in are two claims, and only the second one is what a
+    // consumer actually depends on.
+    //
+    // Decoding needs `currentDecodedString()` — `asString()`/`getString()` return
+    // escapes VERBATIM (see the header). This is that SAX walk, done once here so
+    // every kind can be checked through it.
+
+    "static boolean fieldEquals(String rec, String key, String expected) {\n"
+    "    int8[] b #= rec.toBytes();\n"
+    "    JsonReader r #= heap JsonReader(b, (int64) rec.byteLength());\n"
+    "    JsonToken t = r.next();\n"
+    "    while (t != JsonToken.END) {\n"
+    "        if (t == JsonToken.KEY) {\n"
+    "            String k #= r.currentDecodedString();\n"
+    "            t = r.next();\n"
+    "            if (t == JsonToken.STRING) {\n"
+    "                if (k.equals(key)) {\n"
+    "                    String v #= r.currentDecodedString();\n"
+    "                    return v.equals(expected);\n"
+    "                }\n"
+    "            }\n"
+    "        } else {\n"
+    "            t = r.next();\n"
+    "        }\n"
+    "    }\n"
+    "    return false;\n"
+    "}\n"
+
+    "static boolean hasKey(String rec, String key) {\n"
+    "    int8[] b #= rec.toBytes();\n"
+    "    JsonReader r #= heap JsonReader(b, (int64) rec.byteLength());\n"
+    "    JsonToken t = r.next();\n"
+    "    while (t != JsonToken.END) {\n"
+    "        if (t == JsonToken.KEY) {\n"
+    "            String k #= r.currentDecodedString();\n"
+    "            if (k.equals(key)) { return true; }\n"
+    "        }\n"
+    "        t = r.next();\n"
+    "    }\n"
+    "    return false;\n"
+    "}\n"
+
+    // 0 quote, 1 backslash, 2 newline, 3 tab, 4 non-ASCII, 5 empty. The failure
+    // codes below are base+index, so a red test names the character as well as
+    // the field.
+    "static #ArrayList<String> hostiles() {\n"
+    "    ArrayList<String> a #= heap ArrayList<String>();\n"
+    "    a.add(\"a\\\"b\");\n"
+    "    a.add(\"C:\\\\x\");\n"
+    "    a.add(\"a\\nb\");\n"
+    "    a.add(\"a\\tb\");\n"
+    "    a.add(\"café — naïve\");\n"
+    "    a.add(\"\");\n"
+    "    return #a;\n"
+    "}\n"
+
+    "public static int32 run_logRoundTrip() {\n"
+    "    ArrayList<String> hs #= D.hostiles();\n"
+    "    int32 i = 0;\n"
+    "    while (i < hs.count()) {\n"
+    "        String h = hs.get(i);\n"
+    "        String r #= PluginHost.logRecord(h, \"info\");\n"
+    "        if (!D.fieldEquals(r, \"message\", h)) { return 10 + i; }\n"
+    "        if (!D.fieldEquals(r, \"level\", \"info\")) { return 20 + i; }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return 0;\n"
+    "}\n"
+
+    "public static int32 run_warnRoundTrip() {\n"
+    "    ArrayList<String> hs #= D.hostiles();\n"
+    "    int32 i = 0;\n"
+    "    while (i < hs.count()) {\n"
+    "        String h = hs.get(i);\n"
+    "        String r #= PluginHost.warnRecord(h);\n"
+    "        if (!D.fieldEquals(r, \"message\", h)) { return 10 + i; }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return 0;\n"
+    "}\n"
+
+    "public static int32 run_writeRoundTrip() {\n"
+    "    ArrayList<String> hs #= D.hostiles();\n"
+    "    int32 i = 0;\n"
+    "    while (i < hs.count()) {\n"
+    "        String h = hs.get(i);\n"
+    "        String r #= PluginHost.writeRecord(h);\n"
+    "        if (!D.fieldEquals(r, \"text\", h)) { return 10 + i; }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // Keys are as plugin-controlled as values, so both sides are hostile here.
+    "public static int32 run_outputRoundTrip() {\n"
+    "    ArrayList<String> hs #= D.hostiles();\n"
+    "    int32 i = 0;\n"
+    "    while (i < hs.count()) {\n"
+    "        String h = hs.get(i);\n"
+    "        String r #= PluginHost.outputRecord(h, h);\n"
+    "        if (!D.fieldEquals(r, \"key\", h))   { return 10 + i; }\n"
+    "        if (!D.fieldEquals(r, \"value\", h)) { return 20 + i; }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // message for every hostile string; rule and file only where non-empty,
+    // since an empty rule or file means ABSENT and is asserted elsewhere.
+    "public static int32 run_findingRoundTrip() {\n"
+    "    ArrayList<String> hs #= D.hostiles();\n"
+    "    int32 i = 0;\n"
+    "    while (i < hs.count()) {\n"
+    "        String h = hs.get(i);\n"
+    "        Finding f #= Finding.error(\"r\", \"f\", 1, 1, h);\n"
+    "        String r #= PluginHost.findingRecord(f);\n"
+    "        if (!D.fieldEquals(r, \"message\", h)) { return 10 + i; }\n"
+    "        if (h.byteLength() > 0) {\n"
+    "            Finding g #= Finding.warning(h, h, 4, 9, \"m\");\n"
+    "            String q #= PluginHost.findingRecord(g);\n"
+    "            if (!D.fieldEquals(q, \"rule\", h)) { return 20 + i; }\n"
+    "            if (!D.fieldEquals(q, \"file\", h)) { return 30 + i; }\n"
+    "        }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return 0;\n"
+    "}\n"
+
+    "public static int32 run_resultRoundTrip() {\n"
+    "    ArrayList<String> hs #= D.hostiles();\n"
+    "    int32 i = 0;\n"
+    "    while (i < hs.count()) {\n"
+    "        String h = hs.get(i);\n"
+    "        String r #= PluginHost.errorResultRecord(h);\n"
+    "        if (!D.fieldEquals(r, \"message\", h)) { return 10 + i; }\n"
+    "        if (!D.fieldEquals(r, \"status\", \"error\")) { return 20 + i; }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    String ok #= PluginHost.okResultRecord();\n"
+    "    if (!D.fieldEquals(ok, \"status\", \"ok\")) { return 30; }\n"
+        // An ok result carries no message. A fabricated empty one would read as a
+        // message the plugin never set.
+    "    if (D.hasKey(ok, \"message\")) { return 31; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // The control. A decoder that returned true for everything — or that never
+    // found a key and fell through to `false` on the negative cases only by
+    // accident — would make every round-trip above vacuous.
+    "public static int32 run_decodeIsNotVacuous() {\n"
+    "    String r #= PluginHost.logRecord(\"a\\nb\", \"info\");\n"
+    "    if (D.fieldEquals(r, \"message\", \"a\\\\nb\"))   { return 1; }\n"
+    "    if (D.fieldEquals(r, \"message\", \"wrong\"))   { return 2; }\n"
+    "    if (D.fieldEquals(r, \"nosuchkey\", \"a\\nb\"))  { return 3; }\n"
+    "    if (D.hasKey(r, \"nosuchkey\"))               { return 4; }\n"
+    "    if (!D.fieldEquals(r, \"message\", \"a\\nb\"))   { return 5; }\n"
+    "    if (!D.hasKey(r, \"message\"))                { return 6; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // ---- 1.3.3 / 1.3.4 — the records cross into C++ and face the build tool ----
+    //
+    // Everything above is the stdlib checking itself. These bytes go to the
+    // CONSUMER: `checkPluginStream` (plan §0), the build tool's own definition of
+    // a valid record. Producer and consumer meet here rather than each being
+    // compared to a fixture that either could drift from.
+    //
+    // An action written on the SHIPPED API — `ActionContext` only, no `PluginHost`
+    // call — so what is validated is what a plugin author can actually write.
+    // Every string is hostile, because a conformance pass on tame input proves
+    // nothing about the case the spec exists for.
+    "static void emitEveryKind(ActionContext ctx) {\n"
+    "    ctx.log(\"log \\\"quoted\\\"\\nsecond line\");\n"
+    "    ctx.warn(\"warn\\twith a tab\");\n"
+    "    ctx.write(\"write C:\\\\path — café\");\n"
+    "    ctx.output(\"key\\\"with quote\", \"value\\nwith newline\");\n"
+    "    Finding located #= Finding.error(\"rule\\\"r\", \"src/A\\n.cajeta\", 7, 3, \"msg\\ttab\");\n"
+    "    ctx.finding(located);\n"
+    "    Finding bare #= Finding.info(\"\", \"\", 0, 0, \"no position at all\");\n"
+    "    ctx.finding(bare);\n"
+    "}\n"
+
+    // The records as NDJSON, exactly the shape the runtime reads off a plugin's
+    // stdout. Returned as `#int8[]`, which crosses to C++ as the array HEADER:
+    // `{ i64 count, [N x i8] data }` — count at +0, payload at +8.
+    "public static #int8[] run_everyKindThroughTheApi() {\n"
+    "    RecordingActionContext ctx #= heap RecordingActionContext(\"/w\", \"proj\", \"1.0.0\");\n"
+    "    D.emitEveryKind(ctx);\n"
+    "    ArrayList<String> rs = ctx.records();\n"
+    "    String all = \"\";\n"
+    "    int32 i = 0;\n"
+    "    while (i < rs.count()) {\n"
+    "        all = all + rs.get(i) + \"\\n\";\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return all.toBytes();\n"
+    "}\n"
+
+
     "}\n";
 
 class PluginEmitterTests : public ::testing::Test {
@@ -248,6 +473,31 @@ protected:
         auto fn = jit->lookup<int32_t (*)()>(name);
         return fn();
     }
+
+    // A cajeta `#int8[]` return crosses to C++ as the ARRAY HEADER —
+    // `{ i64 count, [N x i8] data }` — so the count is at +0 and the payload
+    // at +8. Reading the header pointer as bytes would take the count word as
+    // data; the classic signature is a byte stream that begins with the length.
+    // Precedent: `__cajeta_sha1_update` (runtime/native/cajeta_sha1.c).
+    static std::vector<std::string> ndjson(const char* name) {
+        auto fn = jit->lookup<void* (*)()>(name);
+        const void* hdr = fn();
+        if (hdr == nullptr) return {};
+        const auto count = *reinterpret_cast<const int64_t*>(hdr);
+        const char* payload = reinterpret_cast<const char*>(hdr) + 8;
+        const std::string all(payload, static_cast<size_t>(count));
+
+        std::vector<std::string> lines;
+        size_t start = 0;
+        while (start < all.size()) {
+            size_t nl = all.find('\n', start);
+            if (nl == std::string::npos) nl = all.size();
+            if (nl > start) lines.push_back(all.substr(start, nl - start));
+            start = nl + 1;
+        }
+        return lines;
+    }
+
     static std::unique_ptr<CajetaJit> jit;
 };
 
@@ -279,25 +529,127 @@ TEST_F(PluginEmitterTests, contextEscaping)     { EXPECT_EQ(i32("run_contextEsca
 TEST_F(PluginEmitterTests, findingMidStream)    { EXPECT_EQ(i32("run_findingMidStream"), 0); }
 
 // ---- 1.1.5 / 1.1.7 — the build tool's own reader --------------------------------
+// 1.3.1 — the round-trip: every record kind re-parses to the ORIGINAL value
 //
-// DISABLED deliberately, not skipped by accident.
-//
-// These want the emitted records validated by `checkPluginRecord` (plan §0) —
-// producer and consumer tested against each other rather than against a fixture
-// either could drift from. Two things block it, and neither is worth faking:
-//
-//   1. The record bytes must cross the JIT boundary into C++. A cajeta static
-//      returning `#int8[]` hands back an array HEADER with the payload at +8;
-//      that ABI is real but has to be exercised once to pin the length field's
-//      offset.
-//   2. §3 has not wired the validator into `PluginRuntime`. Until it does, the
-//      running path still reads fields ad-hoc with `getString`, so there is not
-//      yet ONE reader to test against — which is plan §0.3.2's open `[~]` and
-//      exactly what §3 closes.
-//
-// Enable with §3, not before.
+// Six hostile strings (quote, backslash, newline, tab, non-ASCII, empty)
+// through every field of every kind. Failure codes are base+index, so a red
+// test names the character as well as the field.
 
-TEST(PluginEmitterConformance, DISABLED_everyRecordKindPassesTheConformanceSuite) {
-    FAIL() << "1.1.5/1.1.7: needs the §0 validator wired into PluginRuntime (§3) "
-              "and the int8[] JIT-boundary crossing pinned by a real run.";
+TEST_F(PluginEmitterTests, logRoundTrip)     { EXPECT_EQ(i32("run_logRoundTrip"), 0); }
+TEST_F(PluginEmitterTests, warnRoundTrip)    { EXPECT_EQ(i32("run_warnRoundTrip"), 0); }
+TEST_F(PluginEmitterTests, writeRoundTrip)   { EXPECT_EQ(i32("run_writeRoundTrip"), 0); }
+TEST_F(PluginEmitterTests, outputRoundTrip)  { EXPECT_EQ(i32("run_outputRoundTrip"), 0); }
+TEST_F(PluginEmitterTests, findingRoundTrip) { EXPECT_EQ(i32("run_findingRoundTrip"), 0); }
+TEST_F(PluginEmitterTests, resultRoundTrip)  { EXPECT_EQ(i32("run_resultRoundTrip"), 0); }
+
+// The negative arm. A decoder that returned true for everything would make
+// all six of the above vacuous, and a decode test that only ever passes is
+// indistinguishable from one that never ran.
+TEST_F(PluginEmitterTests, decodeIsNotVacuous) {
+    EXPECT_EQ(i32("run_decodeIsNotVacuous"), 0);
+}
+
+// 1.1.7 — records from the SHIPPED API against §0's conformance suite
+//
+// Emitted through `ActionContext` alone — no `PluginHost` call — so what is
+// validated is what a plugin author can actually write. Every string is
+// hostile: conformance on tame input proves nothing about the case the spec
+// exists for.
+//
+// ── 1.3.3 is BLOCKED by this test, and the block is the point ──
+//
+// A plugin written entirely on the shipped API cannot pass §0's suite today.
+// Not because a record is wrong — every one of them is valid — but because
+// the suite requires exactly one `result` record and `ActionContext` has no
+// way to emit one. `PluginHost` can build both result records; nothing
+// reaches them.
+//
+// So the assertion is the precise shape of the gap: every record conforms,
+// and the ONLY complaint is the missing result. §2 gives the context a
+// result, and this test then flips to `report.passed` with no problems at
+// all — which is what closes plan 1.3.3 and 2.3.3.
+//
+// Asserting the exact problem rather than skipping the test keeps the gap
+// measured. A DISABLED test here would say "conformance is untested"; this
+// says "conformance fails in exactly one known way, and here it is."
+
+TEST_F(PluginEmitterTests, theOnlyConformanceGapIsTheResultTheApiCannotEmitYet) {
+    const auto lines = ndjson("run_everyKindThroughTheApi");
+    ASSERT_EQ(lines.size(), 6u) << "the action emits six records";
+
+    const auto report = cajeta::buildtool::checkPluginStream(lines);
+
+    std::string why;
+    for (const auto& p : report.problems) why += "\n  " + p;
+
+    // Every RECORD is conformant. Anything else in this list is a real
+    // regression in the emitter and must fail here.
+    ASSERT_EQ(report.problems.size(), 1u)
+        << "expected exactly one gap (the missing result), got:" << why;
+    EXPECT_EQ(report.problems[0],
+              "no result record: the action never reported how it finished")
+        << "the emitter has a conformance problem beyond the known §2 gap:" << why;
+    EXPECT_FALSE(report.passed) << "if this now passes, §2 has landed — close"
+                                  " plan 1.3.3 / 2.3.3 and assert passed==true";
+}
+
+// 1.1.5 — and under the parser the RUNTIME actually uses
+//
+// `checkPluginStream` parses with `llvm::json::parse`; `PluginRuntime` parses
+// with `parseJsonC`. Two readers today — §3 unifies them (plan §0.3.2). Until
+// it does, passing only one of them would leave the running path unproven, so
+// the records face both.
+TEST_F(PluginEmitterTests, everyKindParsesUnderTheRuntimesReader) {
+    const auto lines = ndjson("run_everyKindThroughTheApi");
+    ASSERT_FALSE(lines.empty());
+
+    for (const auto& line : lines) {
+        auto parsed = cajeta::buildtool::parseJsonC(line);
+        if (!parsed) {
+            ADD_FAILURE() << "PluginRuntime's parser rejects: " << line << "\n  "
+                          << llvm::toString(parsed.takeError());
+            continue;
+        }
+        const llvm::json::Object* obj = parsed->getAsObject();
+        ASSERT_NE(obj, nullptr) << "not a JSON object: " << line;
+
+        const auto check = cajeta::buildtool::checkPluginRecord(*obj);
+        EXPECT_EQ(check.verdict, cajeta::buildtool::RecordVerdict::Valid)
+            << check.reason << " in: " << line;
+    }
+}
+
+// 1.3.4 — the implementation and the consumer agree on the vocabulary
+//
+// `ActionContext` shipped as an interface with no implementation and no
+// consumer, so nothing connected the two ends. This pins them: every kind the
+// API can emit is a kind the build tool KNOWS, not merely one it tolerates.
+// `checkPluginStream` passes an unknown kind on purpose (forward
+// compatibility), so a test that only checked conformance would stay green
+// while the two ends drifted apart.
+//
+// `result` is absent by design — the context cannot emit one yet. §2 adds it,
+// and this assertion is what will require the consumer to be taught about it.
+TEST_F(PluginEmitterTests, theShippedApiEmitsOnlyKindsTheBuildToolKnows) {
+    const auto lines = ndjson("run_everyKindThroughTheApi");
+    ASSERT_FALSE(lines.empty());
+
+    std::set<std::string> kinds;
+    for (const auto& line : lines) {
+        auto parsed = cajeta::buildtool::parseJsonC(line);
+        ASSERT_TRUE(!!parsed) << line;
+        const llvm::json::Object* obj = parsed->getAsObject();
+        ASSERT_NE(obj, nullptr);
+
+        const auto kind = obj->getString("kind");
+        ASSERT_TRUE(kind.has_value()) << "record has no kind: " << line;
+        kinds.insert(kind->str());
+
+        EXPECT_NE(cajeta::buildtool::checkPluginRecord(*obj).verdict,
+                  cajeta::buildtool::RecordVerdict::UnknownKind)
+            << "the API emits a kind the build tool does not know: " << line;
+    }
+
+    const std::set<std::string> expected{"finding", "log", "output", "warn", "write"};
+    EXPECT_EQ(kinds, expected);
 }
