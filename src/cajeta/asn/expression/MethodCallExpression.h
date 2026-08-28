@@ -220,11 +220,44 @@ namespace cajeta {
         static MethodPtr resolveArgCalleeShallow(
             const std::shared_ptr<MethodCallExpression>& call,
             CajetaModulePtr module);
+
+        // The receiver half of the above, shared with the xref
+        // overload-discrimination path so both apply the same rules.
+        // `allowSuper` additionally resolves a `super.m()` receiver to the
+        // parent class; the ownership checks leave it off so their
+        // conservatism is unchanged.
+        static shared_ptr<CajetaClass> resolveReceiverClassShallow(
+            const std::shared_ptr<MethodCallExpression>& call,
+            CajetaModulePtr module, bool allowSuper = false);
         void setMethodCallName(const string& name) { methodCallName = name; }
         bool isSuperCtorCall() const { return superCtorCall; }
         const vector<CajetaTypePtr>& getExplicitMethodTypeArgs() const {
             return explicitMethodTypeArgs;
         }
+
+        // xref-lint-emission-gap 4.2.1/4.2.2. Two jobs, both of which the
+        // default (children-only) walk cannot do:
+        //
+        //  1. Walk the ARGUMENTS. They are not in `children` (see
+        //     getParameters above), so the default walk never visits them and
+        //     a field access like `f(b.v)` is never recorded — while the same
+        //     access in `x = b.v` is. That was Unit 3's residual gap (3.3.2).
+        //  2. Resolve the callee under an open CallSiteScope, so lint records
+        //     a call edge where previously only codegen could.
+        //
+        // Deliberately does NOT cache into `resolvedMethod`: that member is
+        // codegen's, set from full overload resolution over resolved argument
+        // types, whereas this pass resolves by unique name+arity and is
+        // allowed to answer "don't know". Writing a weaker answer where
+        // codegen expects its own would change what a BUILD compiles.
+        void resolveTypes(CajetaModulePtr module) override;
+
+    private:
+        // 4.2.4 — break a same-arity overload tie by the arguments' resolved
+        // types. Unique-or-nothing; an unresolved argument type disqualifies
+        // the attempt rather than acting as a wildcard.
+        MethodPtr resolveCalleeByArgTypes(CajetaModulePtr module);
+    public:
 
         /**
          * First, get the full name of the object.

@@ -31,6 +31,33 @@ namespace cajeta {
     // Emits `malloc(sizeof(struct))` (or, when stackAlloc is set, an entry-
     // block alloca) then dispatches to the matching constructor with the
     // user-supplied arguments. Returns the instance pointer either way.
+    void ClassCreatorRest::resolveTypes(CajetaModulePtr module) {
+        // LINT ONLY — see MethodCallExpression::resolveTypes. Resolving ctor
+        // args this early pins their types before template substitution and
+        // breaks real builds; the build path records constructor edges from
+        // generateCode as it always has.
+        if (!module || !module->isResolutionOnly()) {
+            AbstractSyntaxNode::resolveTypes(module);
+            return;
+        }
+        // Constructor args live in `parameters`, not `children` — the same
+        // split MethodCallExpression has — so the default walk never reaches
+        // them and a field read inside `heap Foo(b.v)` goes unrecorded.
+        // Best-effort per argument: one that cannot resolve must not cost the
+        // others theirs (xref-lint-emission-gap 4.2.3).
+        for (auto& child : children) {
+            if (!child) continue;
+            try { child->resolveTypes(module); } catch (...) { }
+        }
+        for (auto& p : parameters) {
+            if (!p.expression) continue;
+            try { p.expression->resolveTypes(module); } catch (...) { }
+        }
+        // The constructor EDGE is recorded by NewExpression::resolveTypes,
+        // which is where the created type is known — `targetType` here is set
+        // by generateCode and is still null on the lint path.
+    }
+
     llvm::Value* ClassCreatorRest::generateCode(CajetaModulePtr module) {
         // xref (ide-symbol-index §2): `heap Foo(args)` / `stack Foo(args)` resolves a
         // CONSTRUCTOR through CajetaClass::resolveMethod, so open this call site or

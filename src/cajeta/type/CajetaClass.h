@@ -1328,6 +1328,13 @@ namespace cajeta {
             const vector<CajetaTypePtr>& explicitMethodTypeArgs = {},
             CajetaModulePtr activeModule = nullptr);
 
+        // The recording half of resolveMethod, callable on its own so the LINT
+        // path records edges through the same key/caller/virtual computation
+        // rather than a parallel copy that could drift
+        // (xref-lint-emission-gap 4.2.1). Takes an ALREADY-resolved callee.
+        static void noteResolvedCallXref(const MethodPtr& resolved,
+            bool isConstructor, CajetaModulePtr activeModule);
+
     private:
         MethodPtr resolveMethodImpl(string& methodName, vector<ParameterEntry>& parameters,
             bool isConstructor, bool floatingParams,

@@ -81,6 +81,13 @@ namespace cajeta {
             AbstractSyntaxNode::forEachSubNode(fn);
         }
 
+        // xref-lint-emission-gap 4.2.3 — the constructor twin of
+        // MethodCallExpression::resolveTypes. Walks the ctor args (which are
+        // in `parameters`, not `children`) and records the constructor edge,
+        // so Ctrl-click on `heap Derived(7)` lands on Derived's constructor
+        // under lint and not only in a build.
+        void resolveTypes(CajetaModulePtr module) override;
+
         llvm::Value* generateCode(CajetaModulePtr module) override;
     };
 

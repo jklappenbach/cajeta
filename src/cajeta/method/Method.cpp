@@ -2402,17 +2402,28 @@ namespace cajeta {
             module->getScopeStack().peek()->putField(field);
         }
 
+        // The CALLER half of every call edge this body records
+        // (xref-lint-emission-gap 4.2.1). CajetaClass::noteResolvedCallXref
+        // reads it from the module, which codegen sets and a resolve-only walk
+        // otherwise never would — leaving lint's edges caller-less, so the
+        // call GRAPH has no direction even though each callee is right.
+        MethodPtr priorMethod = module->getCurrentMethod();
+        module->setCurrentMethod(
+            static_pointer_cast<Method>(shared_from_this()));
+
         const bool priorMode = module->isResolutionOnly();
         module->setResolutionOnly(true);
         try {
             resolveBody(module);
         } catch (...) {
             module->setResolutionOnly(priorMode);
+            module->setCurrentMethod(priorMethod);
             module->getScopeStack().pop();
             if (pushedClass) module->getStructureStack().pop_back();
             throw;
         }
         module->setResolutionOnly(priorMode);
+        module->setCurrentMethod(priorMethod);
         module->getScopeStack().pop();
         if (pushedClass) module->getStructureStack().pop_back();
     }

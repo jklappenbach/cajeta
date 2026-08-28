@@ -220,6 +220,13 @@ namespace cajeta {
         // normal compile never runs it; a resolution miss or throw records no
         // edge rather than affecting the compile.
         void recordCreatedTypeXref(antlr4::Token* tok);
+
+        // ide-symbol-index / xref-lint-emission-gap 4.2.3: record the
+        // CONSTRUCTOR call edge for `heap Foo(args)` under lint, where the
+        // creator's own targetType is not yet set. Unique-arity match only;
+        // an ambiguous constructor set records nothing.
+        void recordConstructorCallXref(const CajetaTypePtr& type,
+                                       CajetaModulePtr module);
     };
 
 } // code

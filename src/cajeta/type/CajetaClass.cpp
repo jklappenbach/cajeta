@@ -5794,10 +5794,23 @@ namespace cajeta {
         MethodPtr resolved = resolveMethodImpl(methodName, parameters, isConstructor,
                                                floatingParams, explicitMethodTypeArgs,
                                                activeModule);
-        if (!xref::captureEnabled() || !resolved) return resolved;
+        noteResolvedCallXref(resolved, isConstructor, activeModule);
+        return resolved;
+    }
+
+    // The recording half of resolveMethod, factored out so the LINT path can
+    // record an edge through exactly this code (xref-lint-emission-gap 4.2.1).
+    // Lint resolves a callee with MethodCallExpression::resolveArgCalleeShallow
+    // — a unique name+arity match — rather than by running overload resolution
+    // over argument types it cannot always resolve; but once it HAS a callee,
+    // the key, the caller and the virtual bit must be computed identically or
+    // the two paths silently disagree about what the same call site means.
+    void CajetaClass::noteResolvedCallXref(const MethodPtr& resolved,
+            bool isConstructor, CajetaModulePtr activeModule) {
+        if (!xref::captureEnabled() || !resolved) return;
 
         CajetaClassPtr owner = resolved->getParent();
-        if (!owner) return resolved;
+        if (!owner || !owner->getQName()) return;
 
         std::string calleeKey = resolved->toCanonical(/*labeled=*/false);
         const std::string ownerCanon = owner->getQName()->toCanonical();
@@ -5829,7 +5842,6 @@ namespace cajeta {
                             && !resolved->getModifiers().count(Modifier::STATIC);
 
         xref::noteResolvedCall(calleeKey, callerKey, isVirtual);
-        return resolved;
     }
 
     MethodPtr CajetaClass::resolveMethodImpl(string& methodName, vector<ParameterEntry>& parameters,

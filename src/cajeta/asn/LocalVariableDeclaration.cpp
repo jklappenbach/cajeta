@@ -291,10 +291,15 @@ namespace cajeta {
             if (!declarator) continue;
             // The initializer's own types first: a receiver inside it (`heap
             // Probe()`, a call argument) is resolvable on the same terms.
+            //
+            // Resolve the Initializer NODE, not a cast of it. Initializer
+            // derives from AbstractSyntaxNode and NOT from Expression, so a
+            // dynamic_pointer_cast<Expression> here always failed and silently
+            // skipped every initializer — which is why `Counter c = stack
+            // Counter()` recorded no constructor edge (4.2.3). The base walk
+            // reaches the wrapped expression as a child.
             if (InitializerPtr init = declarator->getInitializer()) {
-                if (auto expr = dynamic_pointer_cast<Expression>(init)) {
-                    expr->resolveTypes(module);
-                }
+                try { init->resolveTypes(module); } catch (...) { }
             }
             if (!type) continue;
             const string name = declarator->getIdentifier();

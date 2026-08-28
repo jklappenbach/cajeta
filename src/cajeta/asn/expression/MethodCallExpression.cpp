@@ -1526,11 +1526,13 @@ namespace cajeta {
                                    /*importTensor*/ false, outResolvedType);
     }
 
-    MethodPtr MethodCallExpression::resolveArgCalleeShallow(
+    // The receiver half of resolveArgCalleeShallow, extracted so the xref
+    // overload-discrimination path resolves a receiver by exactly the same
+    // rules (bare call -> enclosing class; `X.m()` -> X as a type name;
+    // `expr.m()` -> expr's resolved type). Pure extraction, no rule change.
+    CajetaClassPtr MethodCallExpression::resolveReceiverClassShallow(
             const std::shared_ptr<MethodCallExpression>& call,
-            CajetaModulePtr module) {
-        if (!call || !module) return nullptr;
-        if (auto rm = call->getResolvedMethod()) return rm;
+            CajetaModulePtr module, bool allowSuper) {
         CajetaClassPtr recv;
         auto& kids = call->getChildren();
         if (kids.empty()) {
@@ -1541,10 +1543,20 @@ namespace cajeta {
             auto recvExpr = std::dynamic_pointer_cast<Expression>(kids.front());
             if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(recvExpr)) {
                 if (id->getTextValue() == "this") {
-                    // `this.m()` — the receiver is the enclosing class; the
-                    // bare `this` identifier resolves only at codegen.
                     if (!module->getStructureStack().empty()) {
                         recv = module->getStructureStack().back();
+                    }
+                } else if (allowSuper && id->getTextValue() == "super") {
+                    // `super.m()` names the PARENT's member, so the edge must
+                    // point at the parent — resolving it to the enclosing
+                    // class would make `super.bump()` look like a self-call.
+                    // Off by default: the ownership checks share this helper
+                    // and deliberately stay silent on receivers they cannot
+                    // resolve, so only the xref path opts in.
+                    if (!module->getStructureStack().empty()) {
+                        auto& supers =
+                            module->getStructureStack().back()->getSuperClasses();
+                        if (!supers.empty()) recv = supers.front();
                     }
                 } else {
                     recv = std::dynamic_pointer_cast<CajetaClass>(
@@ -1561,6 +1573,96 @@ namespace cajeta {
                     recvExpr->getResolvedType());
             }
         }
+        return recv;
+    }
+
+    // xref-lint-emission-gap 4.2.4 — the callee search the xref path uses when
+    // `resolveArgCalleeShallow` declines. It differs from that helper in two
+    // ways, each needed for an edge the shallow peek structurally cannot find:
+    //
+    //  * it walks the INHERITANCE chain, because a derived class's methodList
+    //    holds only its own members (`resolveMethodImpl` says so and walks the
+    //    hierarchy at lookup time for the same reason) — so `d.value()` on a
+    //    Doubler that inherits `value` from Counter finds nothing locally; and
+    //  * on a same-arity tie it discriminates by the arguments' resolved
+    //    types, which the shallow peek must not do because its callers depend
+    //    on it staying silent.
+    //
+    // Unique-or-nothing throughout. An argument whose type did not resolve
+    // disqualifies the tiebreak rather than acting as a wildcard: guessing an
+    // overload points "who calls this" at the wrong declaration (spec 2.1.2).
+    MethodPtr MethodCallExpression::resolveCalleeByArgTypes(CajetaModulePtr module) {
+        auto self = std::dynamic_pointer_cast<MethodCallExpression>(shared_from_this());
+        if (!self || !module) return nullptr;
+        CajetaClassPtr recv = resolveReceiverClassShallow(self, module,
+                                                          /*allowSuper=*/true);
+        if (!recv) return nullptr;
+
+        // Candidates by name+arity over the receiver and its ancestors. A
+        // derived override shadows the ancestor it overrides, so the FIRST
+        // class in the walk that declares a given signature wins.
+        std::vector<MethodPtr> candidates;
+        std::set<std::string> seenSignatures;
+        std::set<CajetaClass*> visited;
+        std::vector<CajetaClassPtr> queue{recv};
+        while (!queue.empty()) {
+            CajetaClassPtr k = queue.front();
+            queue.erase(queue.begin());
+            if (!k || !visited.insert(k.get()).second) continue;
+            for (auto& mm : k->getMethodList()) {
+                if (!mm || mm->getName() != methodCallName) continue;
+                auto pl = mm->getParameterList();
+                size_t off = (!pl.empty() && pl.front()->getName() == "this") ? 1 : 0;
+                if (pl.size() - off != parameters.size()) continue;
+                // Key on the parameter types, not the owner, so an override
+                // does not also admit the method it overrides.
+                std::string sig;
+                for (size_t i = off; i < pl.size(); i++)
+                    sig += (pl[i] && pl[i]->getType())
+                         ? pl[i]->getType()->toCanonical() + "," : "?,";
+                if (!seenSignatures.insert(sig).second) continue;
+                candidates.push_back(mm);
+            }
+            for (auto& parent : k->getSuperClasses()) queue.push_back(parent);
+        }
+
+        if (candidates.size() == 1) return candidates.front();
+        if (candidates.empty()) return nullptr;
+
+        // Same-arity overloads: discriminate by the arguments' resolved types.
+        std::vector<std::string> argKeys;
+        for (auto& p : parameters) {
+            if (!p.expression) return nullptr;
+            auto t = p.expression->getResolvedType();
+            if (!t) return nullptr;
+            argKeys.push_back(t->toCanonical());
+        }
+
+        MethodPtr match;
+        for (auto& mm : candidates) {
+            auto pl = mm->getParameterList();
+            size_t off = (!pl.empty() && pl.front()->getName() == "this") ? 1 : 0;
+            bool allMatch = true;
+            for (size_t i = 0; i < argKeys.size(); i++) {
+                auto ft = pl[i + off] ? pl[i + off]->getType() : nullptr;
+                if (!ft || ft->toCanonical() != argKeys[i]) { allMatch = false; break; }
+            }
+            if (!allMatch) continue;
+            if (match) return nullptr;      // still ambiguous — stay quiet
+            match = mm;
+        }
+        return match;
+    }
+
+    MethodPtr MethodCallExpression::resolveArgCalleeShallow(
+            const std::shared_ptr<MethodCallExpression>& call,
+            CajetaModulePtr module) {
+        if (!call || !module) return nullptr;
+        if (auto rm = call->getResolvedMethod()) return rm;
+        // `this.m()` resolves to the enclosing class here — the bare `this`
+        // identifier itself resolves only at codegen. See
+        // resolveReceiverClassShallow, which holds these rules.
+        CajetaClassPtr recv = resolveReceiverClassShallow(call, module);
         if (!recv) return nullptr;
         MethodPtr match;
         for (auto& mm : recv->getMethodList()) {
@@ -1589,6 +1691,66 @@ namespace cajeta {
             if (!id) continue;
             scope->rejectTransferOfBorrow(id->getTextValue());
         }
+    }
+
+    void MethodCallExpression::resolveTypes(CajetaModulePtr module) {
+        // LINT ONLY. In a build this must behave exactly as the base did —
+        // walking children and nothing else. Resolving a call's ARGUMENTS
+        // during the type pass pins each argument's resolvedType before
+        // template substitution has run, and codegen then resolves the
+        // enclosing call against `Tensor<?>` instead of `Tensor<float32>`:
+        // measured, it broke the samples/tour build outright
+        // (CAJETA_ERROR_NO_MATCHING_CONSTRUCTOR on Column<float32>). The
+        // build path already records its edges from generateCode, so it needs
+        // nothing from here.
+        if (!module || !module->isResolutionOnly()) {
+            AbstractSyntaxNode::resolveTypes(module);
+            return;
+        }
+
+        // The site comes from THIS NODE, for the same reason generateCode's
+        // does: a stdlib body resolved while a user module is active must not
+        // attribute its own calls to the user's file.
+        xref::CallSiteScope xrefSite(getSourceFile(),
+                                     getSourceLine(), getSourceColumn());
+
+        // Receiver first (children), then the arguments — which live in
+        // `parameters`, outside `children`, so nothing else would reach them.
+        // Per-node best-effort: one argument that cannot resolve must not cost
+        // the siblings their records, and must never fail the lint.
+        for (auto& child : children) {
+            if (!child) continue;
+            try { child->resolveTypes(module); } catch (...) { }
+        }
+        for (auto& p : parameters) {
+            if (!p.expression) continue;
+            try { p.expression->resolveTypes(module); } catch (...) { }
+        }
+
+        if (!xref::captureEnabled()) return;
+
+        // Resolve the callee by unique name+arity (the conservative peek that
+        // already exists for the `#T`-formal checks) and record through
+        // CajetaClass's own recording half. `resolveArgCalleeShallow` answers
+        // null on an ambiguous overload or an unresolvable receiver, and null
+        // is the right answer: a wrong edge sends "who calls this" to the
+        // wrong place, which is worse than no edge (spec 2.1.2, plan 4.2.4).
+        MethodPtr callee;
+        try {
+            callee = resolveArgCalleeShallow(
+                std::dynamic_pointer_cast<MethodCallExpression>(shared_from_this()),
+                module);
+            // `resolveArgCalleeShallow` matches on name+arity alone, so it
+            // answers null for same-arity overloads (`f(int32)` vs
+            // `f(String)`) — right for its own callers, who must not guess,
+            // but it would collapse every overloaded call site to no edge at
+            // all. Since the arguments were just resolved above, discriminate
+            // by their types. Still unique-or-nothing: a tie records nothing.
+            if (!callee) callee = resolveCalleeByArgTypes(module);
+        } catch (...) { return; }
+        if (!callee) return;
+
+        CajetaClass::noteResolvedCallXref(callee, /*isConstructor=*/false, module);
     }
 
     llvm::Value* MethodCallExpression::generateCode(CajetaModulePtr module) {
