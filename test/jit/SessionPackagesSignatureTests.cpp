@@ -9,6 +9,7 @@
 // session reads through CAJETA_TRUST_KEYS_DIR.
 
 #include "gtest/gtest.h"
+#include "../PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 
 #include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/kernel/KernelSession.h"
@@ -152,7 +153,9 @@ fs::path freshRoot(const std::string& tag) {
 // Point the trust store at the fixture's key directory. Each test runs in
 // its own process under the harness, so this cannot leak between tests.
 void trustFixtureKeys(const fs::path& root) {
-    setenv("CAJETA_TRUST_KEYS_DIR", (root / "trust").c_str(), 1);
+    // .string().c_str(), not .c_str(): fs::path::c_str() hands back
+    // const wchar_t* on Windows, which does not convert to const char*.
+    setenv("CAJETA_TRUST_KEYS_DIR", (root / "trust").string().c_str(), 1);
 }
 
 std::string cell(const std::string& body) {
