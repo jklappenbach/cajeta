@@ -14,6 +14,7 @@
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 
 #include "llvm/TargetParser/Host.h"
 

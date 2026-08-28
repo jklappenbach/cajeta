@@ -25,6 +25,7 @@
 #include "gtest/gtest.h"
 
 #include "../jit/JitTestHelper.h"
+#include "../PortableEnv.h"   // setenv/unsetenv — absent from the MinGW CRT
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/xpu/XpuTarget.h"
 
