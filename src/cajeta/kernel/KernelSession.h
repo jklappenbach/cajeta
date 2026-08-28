@@ -269,6 +269,14 @@ namespace cajeta::kernel {
                              bool save,
                              char* out, int32_t outCap);
 
+        // notebook-olla-install 6.1.2 (spec 4.3): true when the archive
+        // declares a canonical name the session already holds. Safe to
+        // call MID-CELL — archive I/O and registry lookups only, no
+        // compiler pass — which is what lets a queued splice reject
+        // through the installing call rather than silently at drain.
+        bool collidesWithSession(const std::string& archivePath,
+                                 std::string* error);
+
         // notebook-olla-install U5 (spec 5.2-5.4): graduate an installed
         // dependency into the governing project's cajeta.json, through the
         // same format-preserving editor `cajeta add` uses. False with
