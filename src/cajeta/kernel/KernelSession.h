@@ -266,7 +266,18 @@ namespace cajeta::kernel {
         // path until Unit 3 wires in the resolver.
         bool installFromHook(const std::string& request,
                              const std::string& constraint,
+                             bool save,
                              char* out, int32_t outCap);
+
+        // notebook-olla-install U5 (spec 5.2-5.4): graduate an installed
+        // dependency into the governing project's cajeta.json, through the
+        // same format-preserving editor `cajeta add` uses. False with
+        // `errorOut` set when there is no project to write to, or when the
+        // rewrite would not parse. An unchanged pin writes nothing.
+        bool saveToManifest(
+            const std::string& name, const std::string& constraint,
+            const std::function<void(const std::string&)>& phase,
+            std::string* errorOut);
 
         // notebook-olla-install U3 (spec 3.1, 3.2, 3.4, 2.6): resolve a
         // library NAME + constraint to a verified local archive through the
