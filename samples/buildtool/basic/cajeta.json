@@ -49,15 +49,24 @@
         }
     },
 
-    // First-party lint + coverage plugins. Optional — comment out
-    // when not in use; `lint` + `test` tasks fall back to native-only
-    // actions. A TOP-LEVEL block: the manifest loader types
-    // `root.plugins` (Manifest.pluginsRaw) — nested under `settings`
-    // it is invisible to the plugin system.
-    "plugins": {
-        "cajeta.lint.security": "1.0.*",
-        "cajeta.coverage":      "1.0.*"
-    },
+    // First-party lint + coverage plugins. SHIPPED COMMENTED OUT, on
+    // purpose: neither is published to a repository yet, so an enabled
+    // block made `cajeta init basic && cajeta build` fail on every fresh
+    // project with "no repository has a satisfying version". They are
+    // real (build-tools/plugins/security-lint, .../coverage) — uncomment
+    // once they are published, or point them at a local path repository.
+    //
+    // The `lint` + `test` tasks fall back to native-only actions without
+    // them. A TOP-LEVEL block: the manifest loader types `root.plugins`
+    // (Manifest.pluginsRaw) — nested under `settings` it is invisible to
+    // the plugin system. Either spelling of a version works: the string
+    // shorthand below, or `{ "version": "1.0.*", "config": { … } }` when
+    // the plugin takes config.
+    //
+    // "plugins": {
+    //     "cajeta.lint.security": "1.0.*",
+    //     "cajeta.coverage":      "1.0.*"
+    // },
 
     "tasks": {
 
