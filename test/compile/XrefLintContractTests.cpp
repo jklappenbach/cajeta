@@ -216,6 +216,64 @@ TEST(XrefLintContract, AFieldAccessInsideALambdaBodyIsRecorded) {
            "resolving the callee BEFORE its arguments.";
 }
 
+// ── 5.1.4 — a CHAINED generic receiver ────────────────────────────────────
+//
+// `pts.stream().fold<int32>(0, (acc, p) -> acc + p.x)` — the tour's own shape,
+// and the last field reference the build found that lint did not. Two distinct
+// causes, both measured rather than guessed (the plan's original hypothesis,
+// "the receiver type is an unsubstituted template return", was WRONG — the
+// receiver resolves to `ArrayStream<Point>` correctly):
+//
+//   1. `fold` is declared on the PARENT `Stream<T>`, so the shallow peek (which
+//      scans only the receiver's own methodList) missed it, and the hierarchy
+//      walk that finds it ran only AFTER arguments resolved — while the lambda
+//      argument could not resolve until the callee was known. A deadlock.
+//   2. Even once resolved, the edge was dropped: `templateKeyFor` assumed a
+//      non-static method's parameter list includes the receiver, which a
+//      generic METHOD's does not, so the key came back empty for `fold`, `map`
+//      and `collect` while `filter` and `forEach` worked.
+TEST(XrefLintContract, AChainedGenericReceiverResolvesThroughToTheLambdaBody) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    auto root = freshTempDir("chain");
+    writeUnit(root, "demo/Pt.cajeta",
+        "package demo;\n"
+        "public class Pt {\n"
+        "    public int32 x;\n"
+        "    public Pt(int32 v) { this.x = v; }\n"
+        "}\n");
+    writeUnit(root, "demo/Chain.cajeta",
+        "package demo;\n"                                          // 1
+        "import cajeta.collection.ArrayList;\n"                    // 2
+        "public class Chain {\n"                                   // 3
+        "    public void run() {\n"                                // 4
+        "        ArrayList<Pt> pts #= heap ArrayList<Pt>();\n"     // 5
+        "        int32 a #= pts.stream().fold<int32>(0,\n"         // 6
+        "            (acc, p) -> acc + p.x);\n"                    // 7
+        "    }\n"                                                  // 8
+        "}\n");                                                    // 9
+
+    const std::string doc = lintRoot(root);
+    ASSERT_FALSE(doc.empty());
+
+    bool sawFieldInLambda = false;
+    for (const auto& r : relation(doc, "references")) {
+        if (!has(r, "\"kind\": \"field\"")) continue;
+        if (strField(r, "target") == "demo.Pt.x"
+            && has(strField(r, "file"), "Chain.cajeta")) sawFieldInLambda = true;
+    }
+    EXPECT_TRUE(sawFieldInLambda)
+        << "`p.x` inside the lambda emitted no field reference — the chain "
+           "pts.stream() -> fold(...) -> lambda formal did not resolve through";
+
+    bool sawFoldEdge = false;
+    for (const auto& c : relation(doc, "calls"))
+        if (has(strField(c, "callee"), "::fold")) sawFoldEdge = true;
+    EXPECT_TRUE(sawFoldEdge)
+        << "no call edge for `fold` — it resolves (the field reference above "
+           "proves it) but templateKeyFor returned an empty key, and an empty "
+           "key is dropped silently";
+}
+
 // ── 5.1.3 — a generic METHOD on a NON-generic owner ───────────────────────
 //
 // `templateKeyFor` is applied only when the OWNER canonical carries `<`, so a

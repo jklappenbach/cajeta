@@ -1735,6 +1735,17 @@ namespace cajeta {
             callee = resolveArgCalleeShallow(
                 std::dynamic_pointer_cast<MethodCallExpression>(shared_from_this()),
                 module);
+            // ...and, still before the arguments, the hierarchy walk. The
+            // shallow peek scans only the receiver's OWN methodList, so an
+            // INHERITED method misses — `xs.stream().fold(...)` resolves
+            // `stream()` to an `ArrayStream<Pt>`, but `fold` is declared on its
+            // parent `Stream<T>`. Left to the post-argument fallback, that was
+            // a deadlock: the lambda argument cannot resolve without the
+            // callee's formal, and the callee was not looked for until the
+            // arguments had resolved. resolveCalleeByArgTypes answers from
+            // name+arity alone whenever that is unique, which needs no
+            // argument types (5.1.4).
+            if (!callee) callee = resolveCalleeByArgTypes(module);
         } catch (...) { callee = nullptr; }
 
         // Hand each lambda argument the formal it is being passed as, and pin
