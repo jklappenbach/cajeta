@@ -846,6 +846,44 @@ namespace cajeta::buildtool {
             return err("cajeta.plugin: " + plugin.name + "." +
                        actionName + ": " + state.resultMessage);
         }
+
+        // §7a — an `error` finding fails the task that produced it.
+        //
+        // Severity stops being decorative here: a plugin that says `error`
+        // means the build is wrong, and coco's coverage floor becomes one
+        // instance of the general rule rather than its own mechanism.
+        //
+        // Checked AFTER the plugin's own result, which is its explicit verdict
+        // and the more specific statement. What this adds is the case the rule
+        // exists for: an action that finished cleanly — `result: ok` — and
+        // reported an error finding anyway. That is coco's migrated gate.
+        //
+        // Every finding has ALREADY been reported by the time this runs: the
+        // read loop rendered or emitted each one as it arrived. Failing here
+        // cannot truncate the report that explains the failure, which is the
+        // ordering §7a use case 3 requires — and it is ordering by
+        // construction, not by a rule someone has to remember.
+        int errorFindings = 0;
+        const ActionFinding* firstError = nullptr;
+        for (const auto& f : state.result.findings) {
+            if (f.severity != "error") continue;
+            ++errorFindings;
+            if (firstError == nullptr) firstError = &f;
+        }
+        if (errorFindings > 0) {
+            // Named by Olla key, so a failing build says WHICH plugin failed
+            // it — the same string as the `plugins` entry that declared it.
+            std::string why = "cajeta.plugin: " + plugin.name + "." +
+                              actionName + ": " +
+                              std::to_string(errorFindings) +
+                              (errorFindings == 1 ? " error finding"
+                                                  : " error findings");
+            if (firstError != nullptr) {
+                why += " (first: " + renderFinding(*firstError, plugin.name) + ")";
+            }
+            return err(why);
+        }
+
         return state.result;
     }
 
