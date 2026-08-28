@@ -87,6 +87,22 @@ struct ToolWorld {
         return dir;
     }
 
+    // `cajeta coverage ignore` edits `plugins.cajeta.coverage`, so a project
+    // must DECLARE that plugin first. The basic archetype used to ship the
+    // declaration, and these tests inherited it; it no longer does, because a
+    // declaration of an unpublished plugin made `cajeta init basic &&
+    // cajeta build` fail outright. Declaring it here makes the precondition
+    // the test's own rather than a side effect of archetype content — and it
+    // uses the string shorthand, which is the spelling users write.
+    void declareCoveragePlugin(const fs::path& dir) const {
+        std::string m = manifestOf(dir);
+        size_t brace = m.find('{');
+        ASSERT_NE(brace, std::string::npos) << "manifest has no object";
+        m.insert(brace + 1,
+                 "\n    \"plugins\": { \"cajeta.coverage\": \"1.0.*\" },\n");
+        std::ofstream(dir / "cajeta.json") << m;
+    }
+
     std::string manifestOf(const fs::path& dir) const {
         std::ifstream in(dir / "cajeta.json");
         std::stringstream ss;
@@ -167,6 +183,7 @@ TEST(BuildToolCommandTests, addAndRemoveDependencyEditTheManifest) {
 TEST(BuildToolCommandTests, coverageIgnoreListRemoveRoundTrip) {
     ToolWorld w;
     fs::path dir = w.initProject();
+    w.declareCoveragePlugin(dir);
 
     EXPECT_EQ(w.runIn(dir,
         "coverage ignore --kind=file --pattern=src/Gen.cajeta "

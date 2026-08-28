@@ -232,9 +232,11 @@ TEST(IncrementalBuild, SecondBuildSkipsAllSourcesUserObjectsUnchanged) {
     ASSERT_EQ(p.runExe(), 7);
     EXPECT_EQ(p.cacheFileCount(".bc"), 2) << "one .bc slot per source";
     EXPECT_EQ(p.cacheFileCount(".obligations"), 2);
-    auto exeDir = p.root / "build" / "exe" / "t";
-    auto mainO1 = readAll(exeDir / "Main.o");
-    auto utilO1 = readAll(exeDir / "Util.o");
+    // build-output-layout unit 2: intermediates moved out of the artifact
+    // directory into build/obj/ (spec §3.1), so the objects live here now.
+    auto objDir = p.root / "build" / "obj" / "t";
+    auto mainO1 = readAll(objDir / "Main.o");
+    auto utilO1 = readAll(objDir / "Util.o");
     ASSERT_FALSE(mainO1.empty());
 
     p.dropArtifactCache();   // exercise the manifest path, not the Phase-0 hit
@@ -247,9 +249,9 @@ TEST(IncrementalBuild, SecondBuildSkipsAllSourcesUserObjectsUnchanged) {
         << out;
     EXPECT_TRUE(contains(out, "[incremental] skip t/Util.cajeta")) << out;
     EXPECT_EQ(p.runExe(), 7);
-    EXPECT_EQ(readAll(exeDir / "Main.o"), mainO1)
+    EXPECT_EQ(readAll(objDir / "Main.o"), mainO1)
         << "cache round-trip must reproduce the user module object";
-    EXPECT_EQ(readAll(exeDir / "Util.o"), utilO1);
+    EXPECT_EQ(readAll(objDir / "Util.o"), utilO1);
 }
 
 // Touching Main (which nothing imports) dirties only Main: the second build

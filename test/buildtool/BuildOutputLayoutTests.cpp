@@ -1,0 +1,200 @@
+// build-output-layout unit 2 — generated files have declared homes.
+//
+// Spec §3.1 gives the three roles distinct defaults: intermediates (per-class
+// objects, bitcode, staging) under `build/obj/`, artifacts under
+// `build/archive/` (a .cja) and the exe directory. Today an --emit=exe build
+// puts BOTH in one place:
+//
+//     build/exe/app/Main.o                    <- intermediate
+//     build/exe/cajeta.runtime.__stdlib__.o   <- intermediate
+//     build/exe/com.example.library           <- the artifact
+//
+// That is what §2.5's incident was about at the compiler level, and it is
+// also the cause of a separate open defect (cajeta-five's
+// buildtool-exe-package-name-collision): because the exe is written to
+// `build/exe/<details.name>` while the project's own objects go to a
+// package-mirroring tree UNDER THE SAME DIRECTORY, a `details.name` equal to
+// a top-level package name makes the linker try to write a file over a
+// directory. That spec guessed "the asymmetry looks unintentional and
+// removing it may fix the defect outright" — separating the roles is exactly
+// that removal, so a regression test for the collision lives here too.
+//
+// Everything is asserted by LOCATING FILES, never by reading a log line: the
+// plan asks for that specifically, because a build that prints the right path
+// and writes somewhere else is the failure this unit exists to prevent.
+//
+// What deliberately does NOT move: the `.cja` stays at
+// `build/archive/<name>-<version>.cja` (already the spec's default, and
+// ~10 sibling scripts glob it), and the executable stays at
+// `build/exe/<name>` (documented in runtime/skills/toolchain and asserted by
+// scripts/check-guide-part1.sh). Spec §3.1 names `build/bin/` for binaries;
+// moving there is a rename with real breakage and no correctness gain, so it
+// is left for an explicit decision rather than taken as a side effect here.
+
+#include <gtest/gtest.h>
+
+#include <cstdio>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <random>
+#include <string>
+#include <vector>
+
+namespace fs = std::filesystem;
+
+namespace {
+
+std::string layoutCompilerBinary() {
+    const char* envRoot = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string r;
+    if (envRoot && *envRoot) r = envRoot;
+    else {
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        r = CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        r = ".";
+#endif
+    }
+    return r + "/build/src/cajeta";
+}
+
+int layoutExit(int status) {
+#ifdef _WIN32
+    return status;
+#else
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+#endif
+}
+
+struct LayoutProject {
+    fs::path root;
+    std::string name;
+
+    ~LayoutProject() {
+        std::error_code ec;
+        fs::remove_all(root, ec);
+    }
+
+    // `entry` empty => a library project (emits .cja); otherwise an exe.
+    static std::unique_ptr<LayoutProject> create(const std::string& projName,
+                                                 const std::string& entry,
+                                                 const std::string& pkg = "t") {
+        static std::mt19937_64 rng(std::random_device{}());
+        auto p = std::make_unique<LayoutProject>();
+        p->name = projName;
+        p->root = fs::temp_directory_path()
+                / ("cajeta_layout_" + std::to_string(rng()));
+        fs::path src = p->root / "src" / "main" / "cajeta" / pkg;
+        fs::create_directories(src);
+
+        std::ofstream(src / "Util.cajeta")
+            << "package " << pkg << ";\n"
+               "public final class Util {\n"
+               "    public static int32 ten() { return 10; }\n"
+               "}\n";
+        std::ofstream(src / "Main.cajeta")
+            << "package " << pkg << ";\n"
+               "import " << pkg << ".Util;\n"
+               "public final class Main {\n"
+               "    public static int32 run() { return Util.ten(); }\n"
+               "}\n";
+
+        std::ofstream m(p->root / "cajeta.json");
+        m << "{\n"
+             "  \"details\": { \"name\": \"" << projName << "\","
+             " \"version\": \"0.1.0\",\n"
+             "                 \"cajeta-lang-version\": \"1.0\" },\n";
+        if (!entry.empty()) {
+            m << "  \"settings\": { \"build\": {"
+                 " \"entry-method\": \"" << entry << "\" } },\n";
+        }
+        m << "  \"tasks\": { \"build\": { \"actions\": [\n"
+             "      { \"action\": \"build\", \"flavor\": \"debug\","
+             " \"id\": \"art\" } ] } }\n"
+             "}\n";
+        return p;
+    }
+
+    int build(std::string& output) const {
+        fs::path log = root / "out.log";
+        std::string cmd = "cd " + root.string() + " && \""
+            + layoutCompilerBinary() + "\" build > " + log.string() + " 2>&1";
+        int rc = layoutExit(std::system(cmd.c_str()));
+        std::ifstream in(log);
+        output.assign(std::istreambuf_iterator<char>(in),
+                      std::istreambuf_iterator<char>());
+        return rc;
+    }
+
+    // Every generated intermediate found under `dir`, relative to it.
+    std::vector<std::string> intermediatesUnder(const fs::path& dir) const {
+        std::vector<std::string> out;
+        if (!fs::exists(dir)) return out;
+        for (const auto& e : fs::recursive_directory_iterator(dir)) {
+            if (!e.is_regular_file()) continue;
+            std::string ext = e.path().extension().string();
+            if (ext == ".o" || ext == ".obj" || ext == ".bc") {
+                out.push_back(fs::relative(e.path(), dir).string());
+            }
+        }
+        return out;
+    }
+};
+
+std::string join(const std::vector<std::string>& v) {
+    std::string s;
+    for (const auto& x : v) s += "\n    " + x;
+    return s;
+}
+
+}  // namespace
+
+// 2.1.1 — the executable build. Intermediates under build/obj/, and the exe
+// directory holding no intermediates at all.
+TEST(BuildOutputLayoutTests, executableBuildPutsObjectsUnderBuildObj) {
+    auto p = LayoutProject::create("t.app", "t.Main::run");
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    auto inObj = p->intermediatesUnder(p->root / "build" / "obj");
+    auto inExe = p->intermediatesUnder(p->root / "build" / "exe");
+
+    EXPECT_FALSE(inObj.empty())
+        << "per-class objects belong under build/obj/ (spec §3.1); found none";
+    EXPECT_TRUE(inExe.empty())
+        << "build/exe/ is an ARTIFACT directory and must hold no"
+           " intermediates, but it holds:" << join(inExe);
+    EXPECT_TRUE(fs::exists(p->root / "build" / "exe" / "t.app"))
+        << "the executable itself stays at build/exe/<name> — scripts and the"
+           " toolchain skill document that path";
+}
+
+// 2.1.1 — the library build. The .cja must stay exactly where consumers glob
+// for it; this is the arm that fails if the artifact role is moved.
+TEST(BuildOutputLayoutTests, libraryBuildLeavesTheCjaInBuildArchive) {
+    auto p = LayoutProject::create("t.lib", /*entry=*/"");
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    fs::path cja = p->root / "build" / "archive" / "t.lib-0.1.0.cja";
+    EXPECT_TRUE(fs::exists(cja))
+        << "the .cja must stay at build/archive/<name>-<version>.cja:\n" << out;
+    EXPECT_TRUE(p->intermediatesUnder(p->root / "build" / "archive").empty())
+        << "build/archive/ is an ARTIFACT directory and must hold no"
+           " intermediates";
+}
+
+// The collision this separation resolves: a details.name equal to a top-level
+// package name. With objects in a package tree under build/exe/, the linker
+// was asked to write the file build/exe/t over the directory build/exe/t —
+// "cannot open output file build/exe/t: Is a directory". With intermediates
+// moved out, the two names no longer share a parent.
+TEST(BuildOutputLayoutTests, projectNamedAfterItsTopLevelPackageStillLinks) {
+    auto p = LayoutProject::create("t", "t.Main::run");
+    std::string out;
+    EXPECT_EQ(0, p->build(out))
+        << "details.name == top-level package must not collide:\n" << out;
+    EXPECT_EQ(std::string::npos, out.find("Is a directory")) << out;
+    EXPECT_TRUE(fs::exists(p->root / "build" / "exe" / "t"));
+}

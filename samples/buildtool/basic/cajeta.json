@@ -57,16 +57,16 @@
     // once they are published, or point them at a local path repository.
     //
     // The `lint` + `test` tasks fall back to native-only actions without
-    // them. A TOP-LEVEL block: the manifest loader types `root.plugins`
-    // (Manifest.pluginsRaw) — nested under `settings` it is invisible to
-    // the plugin system. Either spelling of a version works: the string
-    // shorthand below, or `{ "version": "1.0.*", "config": { … } }` when
-    // the plugin takes config.
+    // them. To enable one, add a TOP-LEVEL plugins block (the manifest
+    // loader types root.plugins as Manifest.pluginsRaw — nested under
+    // settings it is invisible to the plugin system) mapping each plugin
+    // name to a version constraint, either as a bare string or as an
+    // object carrying version plus config.
     //
-    // "plugins": {
-    //     "cajeta.lint.security": "1.0.*",
-    //     "cajeta.coverage":      "1.0.*"
-    // },
+    // Deliberately NOT written here as commented-out JSON: the manifest
+    // editors behind `cajeta coverage ignore` find keys by text search and
+    // do not skip comments, so a commented block reads as a real one and
+    // the rewrite corrupts the file.
 
     "tasks": {
 
