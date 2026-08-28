@@ -11,6 +11,7 @@
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/OllaStore.h"
 #include "cajeta/buildtool/Plugin.h"
 #include "cajeta/buildtool/PluginRuntime.h"
 #include "cajeta/buildtool/Properties.h"
@@ -227,21 +228,330 @@ TEST(PluginRuntimeTests, toolchainPathsResolveOnThisMachine) {
 }
 
 
-TEST(PluginRuntimeTests, malformedLineFailsDispatch) {
-    auto dir = tempDir("bad");
-    auto bin = stageScript(dir, "p.sh", R"(
-cat > /dev/null
+// ---- §3 — bad input is survivable, and reported once ----------------------
+//
+// INVERTED 2026-08-28. This block replaces `malformedLineFailsDispatch`,
+// which asserted that one unreadable line aborted the dispatch. That is the
+// opposite of the approved spec (§4): a plugin that emits a malformed record
+// keeps working, the record is dropped, and the build tool warns once.
+//
+// The inversion is the point of the section. Failing the action on a bad line
+// makes the build tool a ceiling on every plugin that ever shipped a typo —
+// and `dev.cajeta.coverage` 0.5.x is in the wild emitting unescaped messages
+// today. Being lenient here and strict in the CONFORMANCE suite (§0) is what
+// lets the protocol tighten without breaking anyone mid-build.
+
+namespace {
+
+    // Run a plugin whose stdout is `body`, capturing the build tool's stderr.
+    struct Ran {
+        bool ok = false;
+        std::string error;
+        std::string stderrText;
+        ActionResult result;
+    };
+
+    Ran runPlugin(const std::string& tag, const std::string& body) {
+        auto dir = tempDir(tag);
+        auto bin = stageScript(dir, "p.sh", "cat > /dev/null\n" + body);
+        auto m = makeManifest();
+        auto props = makeProps(m);
+        TaskContext ctx(props, &m);
+        auto plugin = makePlugin("acme." + tag, "acme." + tag + ".go", bin);
+
+        llvm::json::Object params;
+        Ran out;
+        testing::internal::CaptureStderr();
+        auto r = invokePluginAction(plugin, "acme." + tag + ".go", params, ctx);
+        out.ok = (bool) r;
+        if (out.ok) {
+            out.result = std::move(*r);
+        } else {
+            out.error = errorText(r.takeError());
+        }
+        out.stderrText = testing::internal::GetCapturedStderr();
+        return out;
+    }
+
+    // Lines that BEGIN with `prefix`. The substring alone is the wrong test:
+    // an escaped payload may legitimately contain the word `warning:` — that
+    // is exactly what being escaped means, and counting it would report a
+    // forgery where the quoting had just done its job.
+    int countLinesStartingWith(const std::string& hay, const std::string& prefix) {
+        int n = 0;
+        size_t i = 0;
+        while (i < hay.size()) {
+            size_t nl = hay.find('\n', i);
+            if (nl == std::string::npos) nl = hay.size();
+            if (hay.compare(i, prefix.size(), prefix) == 0) ++n;
+            i = nl + 1;
+        }
+        return n;
+    }
+
+}  // namespace
+
+// 3.1.4 — raw non-JSON text is `printf` debugging, not a protocol violation.
+// It is accepted and surfaced as a log; no warning, no failure. This is the
+// exact script the old malformedLineFailsDispatch used to prove the opposite.
+TEST(PluginRuntimeTests, rawTextIsAcceptedAsALog) {
+    auto r = runPlugin("rawtext", R"(
 printf 'not even close to json\n'
 printf '{"kind":"result","status":"ok"}\n'
 )");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(r.stderrText.find("warning:"), std::string::npos)
+        << "raw text is deliberate, so it must not warn: " << r.stderrText;
+}
+
+// 3.1.1 — a line that ATTEMPTED a record and is not valid JSON is dropped.
+// The leading brace is what separates this from the case above.
+TEST(PluginRuntimeTests, malformedJsonIsDroppedAndTheActionContinues) {
+    auto r = runPlugin("badjson", R"(
+printf '{"kind":"log","message":"unterminated\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.stderrText.find("warning:"), std::string::npos);
+    EXPECT_NE(r.stderrText.find("not valid JSON"), std::string::npos)
+        << r.stderrText;
+}
+
+// 3.1.2 — an unknown kind is a NEWER plugin talking to an older build tool.
+// Dropped and warned, never fatal: refusing it would make this build a
+// ceiling on every plugin released after it.
+TEST(PluginRuntimeTests, anUnknownKindIsDroppedAndTheActionContinues) {
+    auto r = runPlugin("unknownkind", R"(
+printf '{"kind":"telemetry","spans":3}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.stderrText.find("unrecognised record kind"), std::string::npos)
+        << r.stderrText;
+}
+
+// 3.1.3 — a known kind missing a required field. The record is dropped and
+// the ones around it still land, so one bad record costs one record.
+TEST(PluginRuntimeTests, aRecordMissingARequiredFieldIsDropped) {
+    auto r = runPlugin("missingfield", R"(
+printf '{"kind":"output","key":"only-a-key"}\n'
+printf '{"kind":"output","key":"good","value":"kept"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.stderrText.find("required field"), std::string::npos)
+        << r.stderrText;
+    EXPECT_EQ(r.result.outputs.count("only-a-key"), 0u);
+    ASSERT_EQ(r.result.outputs.count("good"), 1u)
+        << "a dropped record must not take its neighbours with it";
+    EXPECT_EQ(r.result.outputs["good"], "kept");
+}
+
+// 3.1.5 — ten bad records, ONE warning. A plugin in a bad state can emit
+// thousands; repeating the warning would bury the build's real output, which
+// is the same failure this spec exists to remove, one layer up.
+TEST(PluginRuntimeTests, manyBadRecordsProduceOneWarning) {
+    auto r = runPlugin("flood", R"(
+i=0
+while [ $i -lt 10 ]; do printf '{"kind":"nope","n":%d}\n' "$i"; i=$((i+1)); done
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(countLinesStartingWith(r.stderrText, "warning:"), 1) << r.stderrText;
+    EXPECT_NE(r.stderrText.find("10 records"), std::string::npos)
+        << "the warning should say how many were dropped: " << r.stderrText;
+}
+
+// 3.1.6 / 3.3.3 — the warning names the offending line. Telling an author
+// that "something" was unreadable without showing what leaves them guessing
+// at the one thing the build tool actually knows.
+TEST(PluginRuntimeTests, theWarningNamesTheOffendingLine) {
+    auto r = runPlugin("namesline", R"(
+printf '{"kind":"marker-xyzzy","payload":1}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.stderrText.find("marker-xyzzy"), std::string::npos)
+        << r.stderrText;
+    EXPECT_NE(r.stderrText.find("acme.namesline"), std::string::npos)
+        << "and names the plugin: " << r.stderrText;
+}
+
+// 3.1.7 — the offending line is bytes the PLUGIN controls. Echoing it must
+// not damage the stream reporting it: a quote or backslash is escaped, so a
+// diagnostic carrying it still parses.
+TEST(PluginRuntimeTests, theWarningEscapesQuotesAndBackslashes) {
+    auto r = runPlugin("hostilequote", R"(
+printf '{"kind":"nope","p":"a\\"b C:\\\\x"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    // Escaped, not reproduced: no bare quote-backslash pair survives.
+    EXPECT_NE(r.stderrText.find("\\\""), std::string::npos) << r.stderrText;
+}
+
+// 3.1.8 — a control character in the offending line cannot forge a second
+// console line. A carriage return reaching a terminal verbatim would let a
+// plugin overwrite the warning about itself.
+TEST(PluginRuntimeTests, theWarningCannotForgeASecondConsoleLine) {
+    auto r = runPlugin("forge", R"(
+printf '{"kind":"nope"\rwarning: forged and harmless\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    // The forged text is present but INERT: it sits inside the escaped
+    // payload of the one real warning, on the same console line.
+    EXPECT_EQ(countLinesStartingWith(r.stderrText, "warning:"), 1)
+        << "the plugin forged a second warning line: " << r.stderrText;
+    EXPECT_EQ(r.stderrText.find('\r'), std::string::npos)
+        << "a raw CR reached the console: " << r.stderrText;
+    EXPECT_NE(r.stderrText.find("\\rwarning: forged"), std::string::npos)
+        << "the CR should be escaped in place, not dropped: " << r.stderrText;
+}
+
+// 3.1.9 — a megabyte of garbage cannot flood the build log.
+TEST(PluginRuntimeTests, anOverlongOffendingLineIsTruncated) {
+    auto r = runPlugin("overlong", R"(
+printf '{"kind":"nope","p":"'
+i=0
+while [ $i -lt 2000 ]; do printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; i=$((i+1)); done
+printf '"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.stderrText.find("truncated"), std::string::npos)
+        << "an overlong line must be cut with an explicit marker";
+    EXPECT_LT(r.stderrText.size(), 1024u)
+        << "64 KB of plugin garbage reached the log";
+}
+
+// 3.1.10 — invalid UTF-8 is reported without corrupting the output encoding.
+// The bytes are shown as escapes, so whatever the plugin emitted, the log
+// stays decodable.
+TEST(PluginRuntimeTests, invalidUtf8IsReportedWithoutCorruptingTheEncoding) {
+    auto r = runPlugin("badutf8", R"(
+printf '{"kind":"nope","p":"ok\200\377"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    for (unsigned char c : r.stderrText) {
+        EXPECT_LT(c, 0x80u) << "a raw high byte reached the log";
+    }
+}
+
+// 3.3.2 — every hostile shape at once still leaves the build alive, still
+// warns once, and still delivers the records that were fine.
+TEST(PluginRuntimeTests, aStreamOfHostileLinesLeavesTheBuildAlive) {
+    auto r = runPlugin("hostileall", R"(
+printf '{"kind":"log","message":"unterminated\n'
+printf '{"kind":"telemetry"}\n'
+printf '{"kind":"output","key":"no-value"}\n'
+printf 'plain printf debugging\n'
+printf '{"kind":"nope","p":"ok\200\377"}\n'
+printf '{"kind":"output","key":"survivor","value":"still here"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(countLinesStartingWith(r.stderrText, "warning:"), 1) << r.stderrText;
+    ASSERT_EQ(r.result.outputs.count("survivor"), 1u);
+    EXPECT_EQ(r.result.outputs["survivor"], "still here");
+}
+
+// The negative arm. Dropping bad records must not have made the runtime
+// accept ANYTHING — a plugin that never reports still fails, and a plugin
+// whose only result record was unreadable is a plugin that did not report.
+TEST(PluginRuntimeTests, aDroppedResultIsStillNoResult) {
+    auto r = runPlugin("noresult", R"(
+printf '{"kind":"log","level":"info","message":"working"}\n'
+printf '{"kind":"result","status":"maybe"}\n'
+)");
+    EXPECT_FALSE(r.ok) << "an uninterpretable status is not a report";
+    EXPECT_NE(r.error.find("no 'result' record"), std::string::npos) << r.error;
+    EXPECT_NE(r.stderrText.find("unknown status"), std::string::npos)
+        << r.stderrText;
+}
+
+// 3.3.1 — the compatibility promise, against the PUBLISHED artifact
+//
+// "Nothing published breaks" is the whole point of §3, and the only way to
+// know is to run what is actually out there. A rebuild from current source
+// would prove nothing: it would be built by this toolchain, against this
+// stdlib, with this session's fixes already in it. The fixture is the binary
+// in the local olla store, exactly as it was published.
+//
+// The plan named 0.5.2. The store's `versions.json` lists 0.3.0, 0.4.0,
+// 0.5.0 and 0.5.1 — there is no 0.5.2, so this takes the newest version that
+// is actually there and the plan/spec were corrected to match.
+//
+// SKIPS when the store has no such artifact: this is a machine-local fixture,
+// and a test that silently passed on a machine without it would be worse than
+// one that says why it did not run.
+TEST(PluginRuntimeTests, thePublishedCoveragePluginStillRuns) {
+    namespace fs = std::filesystem;
+
+    const fs::path pkg =
+        fs::path(cajeta::buildtool::OllaStore::resolveRoot()) /
+        "dev.cajeta.coverage";
+    if (!fs::is_directory(pkg)) {
+        GTEST_SKIP() << "no dev.cajeta.coverage in the olla store at " << pkg;
+    }
+
+    std::string version;
+    fs::path binary;
+    for (const auto& e : fs::directory_iterator(pkg)) {
+        if (!e.is_directory()) continue;
+        auto candidate = e.path() / "bin" / "dev.cajeta.coverage";
+        if (!fs::is_regular_file(candidate)) continue;
+        if (e.path().filename().string() > version) {
+            version = e.path().filename().string();
+            binary = candidate;
+        }
+    }
+    if (version.empty()) {
+        GTEST_SKIP() << "no built dev.cajeta.coverage binary under " << pkg;
+    }
+
     auto m = makeManifest();
     auto props = makeProps(m);
     TaskContext ctx(props, &m);
-    auto plugin = makePlugin("acme.bad", "acme.bad.go", bin);
+
+    ResolvedPlugin plugin;
+    plugin.name = "dev.cajeta.coverage";
+    plugin.version = version;
+    plugin.resolvedFromRepo = "olla";
+    plugin.artifactPath = binary.string();
+    plugin.binaryPath = binary.string();
+    plugin.actionNames = {"cajeta.coverage.report"};
+    plugin.entries["cajeta.coverage.report"] =
+        "cajeta.coco.plugin.PluginHost::serve";
+    plugin.capabilities = {"filesystem", "process"};
 
     llvm::json::Object params;
-    auto r = invokePluginAction(plugin, "acme.bad.go", params, ctx);
-    ASSERT_FALSE((bool)r);
-    auto msg = errorText(r.takeError());
-    EXPECT_NE(msg.find("not valid JSON"), std::string::npos);
+    testing::internal::CaptureStderr();
+    auto r = invokePluginAction(plugin, "cajeta.coverage.report", params, ctx);
+    const bool ok = (bool) r;
+    std::string error;
+    if (!ok) error = errorText(r.takeError());
+    const std::string err = testing::internal::GetCapturedStderr();
+
+    // The action itself may well fail — with no instrument pass there are no
+    // sites to report on, and that is the PLUGIN's own logic. What must not
+    // happen is a PROTOCOL failure: the new validating path must read
+    // everything this artifact emits.
+    EXPECT_EQ(error.find("not valid JSON"), std::string::npos) << error;
+    EXPECT_EQ(error.find("protocol violation"), std::string::npos) << error;
+    EXPECT_EQ(error.find("no 'result' record"), std::string::npos) << error;
+    EXPECT_EQ(countLinesStartingWith(err, "warning:"), 0)
+        << "a published plugin emitted a record this build dropped: " << err;
+
+    // Non-vacuity: the subprocess really ran and its result really was read.
+    // Without this the test would pass just as happily against a binary that
+    // never executed, which is the failure mode a compatibility fixture is
+    // least able to afford.
+    if (!ok) {
+        EXPECT_EQ(error.rfind("cajeta.plugin: dev.cajeta.coverage", 0), 0u)
+            << "expected a result the PLUGIN reported, got: " << error;
+    }
+    RecordProperty("pluginVersion", version);
+    RecordProperty("pluginOutcome", ok ? std::string("ok") : error);
 }
