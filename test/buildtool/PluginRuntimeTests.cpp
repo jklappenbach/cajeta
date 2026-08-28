@@ -316,10 +316,17 @@ namespace {
 
     // One plugin emitting one of everything. Shared so the JSON and text
     // assertions below are about the same input.
+    //
+    // Deliberately NON-FAILING: since §7a an `error` finding fails the task,
+    // and this fixture exists to exercise every record KIND, not to gate. Its
+    // located finding is a warning for that reason. Error severity is
+    // exercised in §6, where failing is the point — when that rule landed, 12
+    // tests here went red at once, which was the rule working rather than a
+    // regression.
     const char* kEveryKindScript = R"(
 printf '{"kind":"log","level":"info","message":"progress"}\n'
 printf '{"kind":"warn","message":"config is odd"}\n'
-printf '{"kind":"finding","severity":"error","rule":"cov","file":"src/A.cajeta","line":12,"column":5,"message":"uncovered"}\n'
+printf '{"kind":"finding","severity":"warning","rule":"cov","file":"src/A.cajeta","line":12,"column":5,"message":"uncovered"}\n'
 printf '{"kind":"finding","severity":"info","message":"no position"}\n'
 printf '{"kind":"write","text":"78.2%% covered"}\n'
 printf '{"kind":"output","key":"path","value":"build/report.html"}\n'
@@ -631,7 +638,7 @@ TEST(PluginRuntimeTests, jsonModeTurnsALocatedFindingIntoANavigableDiagnostic) {
         }
     }
     ASSERT_NE(located, nullptr) << r.stderrText;
-    EXPECT_EQ(field(*located, "severity"), "error");
+    EXPECT_EQ(field(*located, "severity"), "warning");
     EXPECT_EQ(field(*located, "code"), "cov");
     EXPECT_EQ(field(*located, "file"), "src/A.cajeta");
     EXPECT_EQ(located->getInteger("line").value_or(0), 12);
@@ -805,7 +812,7 @@ TEST(PluginRuntimeTests, textModeOutputIsUnchangedByJsonMode) {
     // byte-identical, which is the guarantee that mattered.
     EXPECT_EQ(r.stderrText,
               "warning: config is odd\n"
-              "acme.textmode: src/A.cajeta:12:5: error: uncovered [cov]\n"
+              "acme.textmode: src/A.cajeta:12:5: warning: uncovered [cov]\n"
               "acme.textmode: info: no position\n");
 
     // Not one structured record escaped into text mode.
@@ -863,7 +870,7 @@ TEST(PluginRuntimeTests, textModeRendersALocatedFindingAsADiagnostic) {
     auto r = runPlugin("textlocated", kEveryKindScript);
     ASSERT_TRUE(r.ok) << r.error;
 
-    const std::string line = "acme.textlocated: src/A.cajeta:12:5: error: uncovered [cov]";
+    const std::string line = "acme.textlocated: src/A.cajeta:12:5: warning: uncovered [cov]";
     EXPECT_NE(r.stderrText.find(line + "\n"), std::string::npos) << r.stderrText;
 
     std::smatch m;
@@ -873,7 +880,7 @@ TEST(PluginRuntimeTests, textModeRendersALocatedFindingAsADiagnostic) {
     EXPECT_EQ(m[2].str(), "src/A.cajeta");
     EXPECT_EQ(m[3].str(), "12");
     EXPECT_EQ(m[4].str(), "5");
-    EXPECT_EQ(m[5].str(), "error");
+    EXPECT_EQ(m[5].str(), "warning");
 }
 
 // The other half of 5.3.1: the SAME grammar matches what the compiler emits,
@@ -949,7 +956,7 @@ TEST(PluginRuntimeTests, progressLinesAreByteIdenticalAfterFindingsWereAdded) {
     auto r = runPlugin("progressbytes", R"(
 printf '{"kind":"log","level":"info","message":"coco: [1/6] reference pass"}\n'
 printf '{"kind":"log","level":"info","message":"coco: [3/6] instrumenting"}\n'
-printf '{"kind":"finding","severity":"error","file":"a.cajeta","line":2,"column":1,"message":"boom"}\n'
+printf '{"kind":"finding","severity":"warning","file":"a.cajeta","line":2,"column":1,"message":"boom"}\n'
 printf '{"kind":"result","status":"ok"}\n'
 )");
     ASSERT_TRUE(r.ok) << r.error;
@@ -959,7 +966,7 @@ printf '{"kind":"result","status":"ok"}\n'
     EXPECT_EQ(r.stdoutText,
               "[plugin] coco: [1/6] reference pass\n"
               "[plugin] coco: [3/6] instrumenting\n");
-    EXPECT_EQ(r.stderrText, "acme.progressbytes: a.cajeta:2:1: error: boom\n");
+    EXPECT_EQ(r.stderrText, "acme.progressbytes: a.cajeta:2:1: warning: boom\n");
 }
 
 // A finding's message is plugin-controlled text on one console line. A raw
@@ -968,7 +975,7 @@ printf '{"kind":"result","status":"ok"}\n'
 // no amount of validation catches it.
 TEST(PluginRuntimeTests, aFindingMessageCannotSplitItsOwnRenderedLine) {
     auto r = runPlugin("splitline", R"(
-printf '{"kind":"finding","severity":"error","file":"a.cajeta","line":1,"column":1,"message":"first\\nacme.other: b.cajeta:9:9: error: forged"}\n'
+printf '{"kind":"finding","severity":"warning","file":"a.cajeta","line":1,"column":1,"message":"first\\nacme.other: b.cajeta:9:9: error: forged"}\n'
 printf '{"kind":"result","status":"ok"}\n'
 )");
     ASSERT_TRUE(r.ok) << r.error;
@@ -994,4 +1001,112 @@ printf '{"kind":"result","status":"ok"}\n'
     ASSERT_TRUE(r.ok) << r.error;
     EXPECT_NE(r.stderrText.find("café — naïve"), std::string::npos)
         << r.stderrText;
+}
+
+// ---- §6 / spec §7a — an `error` finding fails the task ---------------------
+//
+// Severity stops being decorative. A plugin that says `error` means the build
+// is wrong, and coco's coverage floor becomes one instance of the general rule
+// rather than a mechanism of its own.
+
+// 6.1.1 / 6.1.4 / 6.3.3 — it fails, and the failure names the plugin by the
+// Olla key that declared it. A failing build that does not say which plugin
+// failed it sends the reader to the wrong repository.
+TEST(PluginRuntimeTests, anErrorFindingFailsTheTaskAndNamesThePlugin) {
+    auto r = runPlugin("gate", R"(
+printf '{"kind":"finding","severity":"error","rule":"min","file":"src/A.cajeta","line":12,"column":5,"message":"coverage 73.5%% < min 80%%"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_FALSE(r.ok) << "an error finding must fail the task";
+    EXPECT_NE(r.error.find("acme.gate"), std::string::npos) << r.error;
+    EXPECT_NE(r.error.find("1 error finding"), std::string::npos) << r.error;
+    EXPECT_NE(r.error.find("coverage 73.5% < min 80%"), std::string::npos)
+        << "the failure should carry the finding: " << r.error;
+}
+
+// The case the rule exists for, stated on its own: the action finished
+// CLEANLY — `result: ok` — and still fails, because a finding said error.
+// coco's migrated gate is exactly this shape.
+TEST(PluginRuntimeTests, anOkResultDoesNotRescueAnErrorFinding) {
+    auto r = runPlugin("okbuterror", R"(
+printf '{"kind":"finding","severity":"error","message":"floor breached"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_FALSE(r.ok) << "result:ok must not override an error finding";
+}
+
+// 6.1.2 / 6.3.2 — the negative arm. warning and info findings are REPORTED and
+// the task succeeds; a rule that failed on any finding would make severity
+// decorative in the other direction.
+TEST(PluginRuntimeTests, warningAndInfoFindingsDoNotFailTheTask) {
+    auto r = runPlugin("warnonly", R"(
+printf '{"kind":"finding","severity":"warning","file":"a.cajeta","line":1,"column":1,"message":"a surviving mutant"}\n'
+printf '{"kind":"finding","severity":"info","message":"dead code"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_EQ(r.result.findings.size(), 2u) << "still reported";
+    EXPECT_NE(r.stderrText.find("warning: a surviving mutant"), std::string::npos)
+        << r.stderrText;
+    EXPECT_NE(r.stderrText.find("info: dead code"), std::string::npos)
+        << r.stderrText;
+}
+
+// 6.1.3 / 6.3.1 — failing must not truncate the report that explains the
+// failure. Asserted by COUNTING the rendered findings, not by the exit code:
+// an implementation that failed on the first error and stopped reading would
+// pass an exit-code-only assertion and lose four findings.
+TEST(PluginRuntimeTests, failingDoesNotTruncateTheFindingReport) {
+    auto r = runPlugin("manyfindings", R"(
+printf '{"kind":"finding","severity":"warning","file":"a.cajeta","line":1,"column":1,"message":"one"}\n'
+printf '{"kind":"finding","severity":"error","file":"b.cajeta","line":2,"column":1,"message":"two"}\n'
+printf '{"kind":"finding","severity":"info","file":"c.cajeta","line":3,"column":1,"message":"three"}\n'
+printf '{"kind":"finding","severity":"error","file":"d.cajeta","line":4,"column":1,"message":"four"}\n'
+printf '{"kind":"finding","severity":"warning","file":"e.cajeta","line":5,"column":1,"message":"five"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_FALSE(r.ok);
+    EXPECT_EQ(countLinesStartingWith(r.stderrText, "acme.manyfindings: "), 5)
+        << "every finding must still be reported: " << r.stderrText;
+    EXPECT_NE(r.error.find("2 error findings"), std::string::npos) << r.error;
+    // The ones AFTER the first error are the ones a truncating implementation
+    // would lose.
+    EXPECT_NE(r.stderrText.find("info: three"), std::string::npos);
+    EXPECT_NE(r.stderrText.find("warning: five"), std::string::npos);
+}
+
+// 6.1.5 — under json the failure is visible in the STREAM, not only in the
+// exit code. A CI consumer reading the diagnostic stream must be able to see
+// why the build failed without also capturing the process status.
+TEST(PluginRuntimeTests, jsonModeMakesTheFailingFindingVisibleInTheStream) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsongate", R"(
+printf '{"kind":"finding","severity":"error","rule":"min","file":"src/A.cajeta","line":12,"column":5,"message":"coverage 73.5%% < min 80%%"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_FALSE(r.ok);
+
+    const auto recs = records(r.stderrText);
+    const llvm::json::Object* failing = nullptr;
+    for (const auto& o : recs) {
+        if (field(o, "kind") == "diagnostic" && field(o, "severity") == "error") {
+            failing = &o;
+        }
+    }
+    ASSERT_NE(failing, nullptr)
+        << "the failure is invisible to a stream consumer: " << r.stderrText;
+    EXPECT_EQ(field(*failing, "message"), "coverage 73.5% < min 80%");
+    EXPECT_EQ(field(*failing, "source"), "acme.jsongate")
+        << "and attributed, so a failing build says who failed it";
+}
+
+// The control for the whole section: a plugin with NO findings at all still
+// succeeds. Without this, "an error finding fails the task" could hold because
+// something else was failing every task.
+TEST(PluginRuntimeTests, noFindingsMeansNoFindingFailure) {
+    auto r = runPlugin("nofindings", R"(
+printf '{"kind":"log","level":"info","message":"nothing to report"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    EXPECT_TRUE(r.ok) << r.error;
 }
