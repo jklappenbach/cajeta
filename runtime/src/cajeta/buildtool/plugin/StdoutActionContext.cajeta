@@ -32,9 +32,11 @@ public class StdoutActionContext implements ActionContext {
     String root;
     String name;
     String version;
+    boolean resultDone;
 
     public StdoutActionContext(#String workdir, #String projectName,
                                #String projectVersion) {
+        this.resultDone = false;
         this.root    #= workdir;
         this.name    #= projectName;
         this.version #= projectVersion;
@@ -66,6 +68,20 @@ public class StdoutActionContext implements ActionContext {
 
     public void output(String key, String value) {
         String line #= PluginHost.outputRecord(key, value);
+        System.stdout.println(line);
+    }
+
+    public boolean resultEmitted() { return this.resultDone; }
+
+    /**
+     * The last record a plugin writes. Outputs and findings the result carries
+     * go first, so the runtime has them before it is told the action finished.
+     */
+    public void result(ActionResult r) {
+        if (this.resultDone) { return; }
+        this.resultDone = true;
+        PluginAction.emitPayload(this, r);
+        String line #= PluginHost.resultRecord(r);
         System.stdout.println(line);
     }
 }

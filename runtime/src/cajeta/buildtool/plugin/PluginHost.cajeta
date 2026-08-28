@@ -150,6 +150,19 @@ public final class PluginHost {
     }
 
     /**
+     * The record for an `ActionResult`: ok, or error carrying its message.
+     *
+     * One place decides which of the two shapes a result takes, so an action
+     * that fails cannot report `ok` because a caller forgot to ask `isError`.
+     */
+    public static #String resultRecord(ActionResult r) {
+        if (r.isError()) {
+            return PluginHost.errorResultRecord(r.errorMessage());
+        }
+        return PluginHost.okResultRecord();
+    }
+
+    /**
      * Take the writer's bytes as a String.
      *
      * `size()` is read BEFORE `toBytes()`, which resets it — reading after
