@@ -466,3 +466,81 @@ int32_t __cajeta_throwable_frame(void* v, int32_t idx, const char** type,
     pthread_mutex_unlock(&__cajeta_trace_mutex);
     return 1;
 }
+
+// ---------------------------------------------------------------------
+// notebook-olla-install Unit 2 (spec 2.1, 2.7) — the Packages install
+// bridge.
+//
+// JIT'd `cajeta.session.Packages` calls in here; the host installs the
+// hook. A host with no live session leaves the hook null, and the call
+// reports "no live session" instead of crashing or silently no-opping —
+// the spec 2.7 arm, and the reason the default lives here rather than in
+// the kernel.
+//
+// Single-threaded like the binding registry above: the hook is set on the
+// session thread and called from cell code on that same thread.
+
+typedef int32_t (*cajeta_install_hook_fn)(const char* name, int32_t nameLen,
+                                          const char* constraint,
+                                          int32_t constraintLen,
+                                          int32_t save,
+                                          char* out, int32_t outCap,
+                                          void* ctx);
+
+// DEFINED IN THE HOST, deliberately not here. This file is compiled
+// TWICE: once into the compiler binary, and once (textually, via
+// cajeta_runtime.c) to the bitcode embedded in every JIT session. A static
+// here would give JIT'd cell code its own second copy, so the host's
+// registration would be invisible to the very code that needs it — and the
+// call would report "no live session" from inside a live one. One
+// definition in the host, declared extern here, means both copies address
+// the same object: the JIT resolves these through the process generator.
+extern cajeta_install_hook_fn __cajeta_install_hook;
+extern void* __cajeta_install_ctx;
+// The resolved version on success, the failure message on failure. Read
+// back by __cajeta_session_install_message on the very next call.
+extern char __cajeta_install_out[2048];
+
+extern const char* __cajeta_string_bytes(void* s_v);
+extern int32_t __cajeta_string_byte_len(void* s_v);
+extern void* __cajeta_string_from_buf(const char* data, int64_t len,
+                                      void* vtable);
+
+void __cajeta_session_set_install_hook(cajeta_install_hook_fn fn, void* ctx) {
+    __cajeta_install_hook = fn;
+    __cajeta_install_ctx = ctx;
+}
+
+// 0 = installed (out holds the resolved version), non-zero = rejected
+// (out holds the located message).
+int32_t __cajeta_session_install(void* nameStr, void* conStr, int32_t save) {
+    __cajeta_install_out[0] = '\0';
+    if (!__cajeta_install_hook) {
+        const char* msg = "Packages.install: no live session — installing "
+                          "into a running session requires a session host "
+                          "(the Jupyter kernel); declare the dependency in "
+                          "cajeta.json instead";
+        strncpy(__cajeta_install_out, msg, sizeof(__cajeta_install_out) - 1);
+        __cajeta_install_out[sizeof(__cajeta_install_out) - 1] = '\0';
+        return 1;
+    }
+    return __cajeta_install_hook(__cajeta_string_bytes(nameStr),
+                                 __cajeta_string_byte_len(nameStr),
+                                 __cajeta_string_bytes(conStr),
+                                 __cajeta_string_byte_len(conStr),
+                                 save,
+                                 __cajeta_install_out,
+                                 (int32_t) sizeof(__cajeta_install_out),
+                                 __cajeta_install_ctx);
+}
+
+// Wrap the stored text as a fresh String. `donor` supplies the String
+// vtable — a static native has no receiver to take it from, and every
+// caller already holds the `name` argument.
+void* __cajeta_session_install_message(void* donor) {
+    if (!donor) return 0;
+    void* vtable = *(void**) donor;      // vtable is the layout's first field
+    return __cajeta_string_from_buf(__cajeta_install_out,
+                                    (int64_t) strlen(__cajeta_install_out),
+                                    vtable);
+}

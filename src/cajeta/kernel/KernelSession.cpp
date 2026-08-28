@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -36,8 +38,13 @@
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
+#include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
+#include "cajeta/buildtool/Signature.h"
+#include "cajeta/cli/TrustStore.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/compile/CajetaArchive.h"
@@ -49,7 +56,53 @@
 
 namespace cajeta::kernel {
 
+// notebook-olla-install U2 (spec 2.1, 2.7) — the runtime's install bridge.
+// Declared here rather than in a header: the C side is the runtime's, and
+// the kernel is only one of its hosts.
+extern "C" void __cajeta_session_set_install_hook(
+    int32_t (*fn)(const char* name, int32_t nameLen,
+                  const char* constraint, int32_t constraintLen,
+                  int32_t save, char* out, int32_t outCap, void* ctx),
+    void* ctx);
+
+// The bridge's state lives HERE, in the host, and cajeta_rt_session.c only
+// declares it. The runtime is compiled twice — into this binary, and to the
+// bitcode embedded in every JIT session — so a definition on the runtime
+// side would give cell code a second copy of the hook and the registration
+// below would never be seen by the code that calls it. Retained and
+// default-visibility so the JIT's process generator can bind them.
+extern "C" {
+__attribute__((used, retain, visibility("default")))
+int32_t (*__cajeta_install_hook)(const char*, int32_t, const char*, int32_t,
+                                 int32_t, char*, int32_t, void*) = nullptr;
+__attribute__((used, retain, visibility("default")))
+void* __cajeta_install_ctx = nullptr;
+__attribute__((used, retain, visibility("default")))
+char __cajeta_install_out[2048] = {0};
+}
+
 namespace {
+
+    // The session whose cell is executing right now. JIT'd
+    // `Packages.install` reaches its host through here — single-threaded
+    // by the same contract the binding registry documents.
+    thread_local KernelSession* g_activeSession = nullptr;
+
+    // Unit 3: the buildtool's semver matcher, not a second one. Unit 2
+    // shipped a two-line prefix match as a placeholder; a version grammar
+    // must have exactly one implementation, and the resolver's is it.
+    bool versionSatisfies(const std::string& version,
+                          const std::string& constraint) {
+        if (constraint.empty() || constraint == "*") return true;
+        return cajeta::buildtool::versionSatisfies(version, constraint);
+    }
+
+    void writeOut(char* out, int32_t cap, const std::string& text) {
+        if (!out || cap <= 0) return;
+        auto n = std::min<size_t>(text.size(), (size_t) cap - 1);
+        std::memcpy(out, text.data(), n);
+        out[n] = '\0';
+    }
 
     // --- the compiler-jsonl bridge (spec 4.4; compiler-jsonl §2-§3) -------
     //
@@ -277,6 +330,21 @@ struct KernelSession::Impl {
     // notebook-olla-install U1: canonical paths of archives spliced
     // mid-session — the idempotence key (spec 2.4's substrate).
     std::set<std::string> installedArchives;
+    // U3: the project governing this session, kept because an install
+    // has to read its `settings.repositories` long after create() ran.
+    std::string projectDir;
+    // U2 (spec 2.4/2.5): what each install DECLARED, so a re-install is
+    // judged against the loaded version rather than the path it arrived
+    // by — two paths can carry the same library.
+    struct InstallRecord {
+        std::string version;
+        std::string path;
+    };
+    std::map<std::string, InstallRecord> installsByName;
+    // Archives acquired by the CURRENTLY executing cell. A cell cannot
+    // import what it just installed (spec 2.3), and this is what lets the
+    // failure say so instead of "unresolved type".
+    std::vector<std::string> installedThisCell;
     // A splice runs compiler passes a half-executed cell's context cannot
     // host (measured: mid-cell ingest failed resolving int32). Mid-cell
     // requests queue here and drain at the cell boundary — same-cell
@@ -419,6 +487,7 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     // Spec 6 — the project classpath, resolved FIRST because it decides how
     // the stdlib is built. Pure manifest/file work; no compiler needed yet.
     std::vector<std::string> archives;
+    impl.projectDir = options.projectDir;
     if (!options.projectDir.empty()) {
         note("resolving project dependencies");
         std::string resolveError;
@@ -532,6 +601,388 @@ CellResult KernelSession::execute(const std::string& source) {
     return execute(source, "In[" + std::to_string(impl_->execCount + 1) + "]");
 }
 
+namespace {
+
+// notebook-olla-install U2 — the host end of `Packages.install`.
+//
+// Resolution is STUBBED for this unit (plan 2.1.1): `name` is a local .cja
+// path and the constraint is matched against the archive's own version.
+// Unit 3 swaps NativeResolver in behind this same signature.
+//
+// The version and conflict arms (spec 2.4/2.5) are answered HERE, before
+// the splice, because they only need the archive's manifest. The splice
+// itself still queues to the cell boundary — a half-executed cell cannot
+// host the ingest (measured, U1 1.2.3).
+int32_t sessionInstallHook(const char* name, int32_t nameLen,
+                           const char* constraint, int32_t constraintLen,
+                           int32_t save, char* out, int32_t outCap,
+                           void* ctx) {
+    auto* session = static_cast<KernelSession*>(ctx);
+    std::string request(name ? name : "", nameLen > 0 ? nameLen : 0);
+    std::string want(constraint ? constraint : "",
+                     constraintLen > 0 ? constraintLen : 0);
+
+    if (!session || session != g_activeSession) {
+        writeOut(out, outCap,
+                 "Packages.install: no live session — installing into a "
+                 "running session requires a session host (the Jupyter "
+                 "kernel); declare the dependency in cajeta.json instead");
+        return 1;
+    }
+    if (save) {
+        writeOut(out, outCap,
+                 "Packages.installAndSave: writing the dependency to "
+                 "cajeta.json is not wired yet — use Packages.install for a "
+                 "session-only install and add the pin with `cajeta add`");
+        return 1;
+    }
+    return session->installFromHook(request, want, out, outCap) ? 0 : 1;
+}
+
+}  // namespace
+
+// notebook-olla-install U4 (spec 3.3) — is this archive vouched for by a
+// key THIS MACHINE trusts?
+//
+// The trust store is the answer to "whose signature counts": `cajeta trust
+// add` puts a key in the user tier, and env/user/system precedence is
+// already defined there. A repository cannot make itself trusted by
+// shipping a key alongside the artifact — that is the whole point.
+//
+// An unsigned archive reaching here is allowed: the require-signatures
+// floor is enforced by the caller, which knows the policy. What is never
+// allowed is a signature that fails to verify.
+bool KernelSession::verifySignatureOrFail(
+        const std::string& archivePath, const std::string& name,
+        const std::string& version, const std::string& repoName,
+        const std::string& signature,
+        const std::function<void(const std::string&)>& phase,
+        std::string* errorOut) {
+    namespace bt = cajeta::buildtool;
+    if (signature.empty()) return true;      // policy already decided above
+
+    phase("checking signature for " + name + " " + version);
+    auto layout = cajeta::cli::resolveTrustStoreLayout();
+    std::vector<std::string> keys;
+    for (const auto& entry : cajeta::cli::listTrustedKeys(layout)) {
+        keys.push_back(entry.path);
+    }
+    if (keys.empty()) {
+        if (errorOut) {
+            *errorOut = "Packages.install: '" + name + "' " + version
+                      + " is signed, but this machine trusts no signing "
+                        "keys, so the signature cannot be checked. Add the "
+                        "publisher's key with `cajeta trust add`.";
+        }
+        return false;
+    }
+
+    auto verified = bt::verifyAgainstAnyKey(archivePath, signature, keys);
+    if (!verified) {
+        llvm::consumeError(verified.takeError());
+        if (errorOut) {
+            *errorOut = "Packages.install: the signature for '" + name
+                      + "' " + version + " could not be checked.";
+        }
+        return false;
+    }
+    if (!verified->has_value()) {
+        if (errorOut) {
+            *errorOut = "Packages.install: the signature for '" + name + "' "
+                      + version + " from " + repoName + " does not match any "
+                        "trusted key (" + std::to_string(keys.size())
+                      + " checked). Nothing was installed. If this publisher "
+                        "is new, add their key with `cajeta trust add`.";
+        }
+        return false;
+    }
+    return true;
+}
+
+// notebook-olla-install U3 (spec 3.1, 3.2, 3.4, 2.6) — name + constraint
+// to a verified local archive, through the buildtool's own resolver stack.
+// There is no second fetch path here: repositories, cache, and checksums
+// are the ones `cajeta build` uses.
+bool KernelSession::resolveForInstall(
+        const std::string& name, const std::string& constraint,
+        const std::function<void(const std::string&)>& phase,
+        std::string* pathOut, std::string* versionOut,
+        std::string* errorOut) {
+    namespace bt = cajeta::buildtool;
+    Impl& impl = *impl_;
+    auto fail = [&](const std::string& m) {
+        if (errorOut) *errorOut = m;
+        return false;
+    };
+
+    // Spec 3.1 — the governing project's repositories, else the default
+    // central. A session with no project still installs.
+    std::vector<bt::RepositorySpec> specs;
+    bool requireSignatures = false;
+    std::string projectRoot = impl.projectDir;
+    if (!projectRoot.empty()) {
+        auto manifestPath =
+            (std::filesystem::path(projectRoot) / "cajeta.json").string();
+        if (std::filesystem::exists(manifestPath)) {
+            auto m = bt::loadManifestFile(manifestPath);
+            if (!m) {
+                llvm::consumeError(m.takeError());
+                return fail("Packages.install: the governing project's "
+                            "cajeta.json could not be read: " + manifestPath);
+            }
+            auto parsed = bt::parseRepositories(*m);
+            if (!parsed) {
+                llvm::consumeError(parsed.takeError());
+                return fail("Packages.install: settings.repositories in "
+                            + manifestPath + " could not be parsed");
+            }
+            specs = *parsed;
+            // Spec 3.5 — the policy floor. Read straight off settings: the
+            // loader validates top-level blocks only, so this needs no
+            // manifest-schema change.
+            if (auto b = m->settingsRaw.getBoolean("require-signatures")) {
+                requireSignatures = *b;
+            }
+        }
+    }
+    if (specs.empty()) {
+        bt::RepositorySpec central;
+        central.name = "central";
+        central.type = "http";
+        central.url = "https://olla.cajeta.dev";
+        specs.push_back(central);
+    }
+
+    std::string stage = projectRoot.empty()
+        ? (std::filesystem::temp_directory_path() / "cajeta-session-downloads")
+              .string()
+        : (std::filesystem::path(projectRoot) / ".cajeta" / "cache"
+           / "downloads").string();
+    auto repos = bt::buildRepositories(specs, stage);
+    if (!repos) {
+        llvm::consumeError(repos.takeError());
+        return fail("Packages.install: the session's repositories could not "
+                    "be opened");
+    }
+
+    // Highest satisfying version wins, first repository that carries one.
+    phase("resolving " + name + " " + constraint);
+    std::vector<std::string> consulted;
+    bt::RepositoryPtr chosen;
+    std::string chosenVersion;
+    for (const auto& repo : *repos) {
+        consulted.push_back(repo->name());
+        auto versions = repo->listVersions(name);
+        if (!versions) {          // a repo that cannot answer is not fatal
+            llvm::consumeError(versions.takeError());
+            continue;
+        }
+        for (const auto& v : *versions) {
+            if (!versionSatisfies(v, constraint)) continue;
+            if (chosenVersion.empty()
+                || bt::compareVersions(v, chosenVersion) > 0) {
+                chosenVersion = v;
+                chosen = repo;
+            }
+        }
+        if (chosen) break;
+    }
+    if (!chosen) {
+        // Spec 2.6 — name the constraint AND every repository consulted, so
+        // the reader knows whether to fix the constraint or add a repo.
+        std::string where;
+        for (const auto& c : consulted) {
+            if (!where.empty()) where += ", ";
+            where += c;
+        }
+        return fail("Packages.install: no version of '" + name
+                    + "' satisfies '" + constraint + "'. Repositories "
+                      "consulted: " + (where.empty() ? "(none)" : where));
+    }
+
+    // Spec 3.4 — a cache hit is served without touching the network. The
+    // published checksum IS the cache key, so this is only reachable when
+    // the repository publishes one.
+    bt::ArtifactCache cache(projectRoot.empty() ? stage : projectRoot);
+    std::string published;
+    if (auto pc = chosen->publishedChecksum(name, chosenVersion)) {
+        if (pc->has_value()) published = **pc;
+    } else {
+        llvm::consumeError(pc.takeError());
+    }
+    // Spec 3.3/3.5 — the signature the repository publishes, resolved
+    // BEFORE the cache arm so a cached artifact is held to the same policy
+    // as a freshly fetched one. A cache hit is a shortcut past the network,
+    // never past the checks.
+    std::string signature;
+    if (auto ps = chosen->publishedSignature(name, chosenVersion)) {
+        if (ps->has_value()) signature = **ps;
+    } else {
+        llvm::consumeError(ps.takeError());
+    }
+    if (signature.empty() && requireSignatures) {
+        return fail("Packages.install: '" + name + "' " + chosenVersion
+                    + " from " + chosen->name() + " publishes no signature, "
+                      "and this project sets require-signatures. Install a "
+                      "signed release, or drop require-signatures to accept "
+                      "checksum-only verification.");
+    }
+
+    if (!published.empty()) {
+        if (auto hit = cache.lookup(published)) {
+            if (!verifySignatureOrFail(*hit, name, chosenVersion,
+                                       chosen->name(), signature, phase,
+                                       errorOut)) {
+                return false;
+            }
+            phase("cached " + name + " " + chosenVersion);
+            if (pathOut) *pathOut = *hit;
+            if (versionOut) *versionOut = chosenVersion;
+            return true;
+        }
+    }
+
+    phase("fetching " + name + " " + chosenVersion + " from "
+          + chosen->name());
+    auto fetched = chosen->fetch(name, chosenVersion);
+    if (!fetched) {
+        llvm::consumeError(fetched.takeError());
+        return fail("Packages.install: '" + name + "' " + chosenVersion
+                    + " could not be fetched from " + chosen->name()
+                    + ". Cache checked: " + cache.projectCacheDir());
+    }
+
+    // Spec 3.2 — verify before trusting. A mismatch discards the bytes and
+    // fails; there is never a half-installed state, because nothing has
+    // been spliced yet.
+    if (!published.empty()) {
+        phase("verifying " + name + " " + chosenVersion);
+        std::string actual = bt::ArtifactCache::sha256OfFile(*fetched);
+        if (actual != published) {
+            std::error_code rm;
+            std::filesystem::remove(*fetched, rm);
+            return fail("Packages.install: checksum mismatch for '" + name
+                        + "' " + chosenVersion + " from " + chosen->name()
+                        + " — published " + published + ", got "
+                        + (actual.empty() ? std::string("nothing") : actual)
+                        + ". The download was discarded and nothing was "
+                          "installed.");
+        }
+        if (!verifySignatureOrFail(*fetched, name, chosenVersion,
+                                   chosen->name(), signature, phase,
+                                   errorOut)) {
+            std::error_code rm;
+            std::filesystem::remove(*fetched, rm);
+            return false;
+        }
+        if (auto stored = cache.insert(*fetched)) {
+            if (pathOut) *pathOut = *stored;
+            if (versionOut) *versionOut = chosenVersion;
+            return true;
+        } else {
+            llvm::consumeError(stored.takeError());   // cache is best-effort
+        }
+    } else if (!verifySignatureOrFail(*fetched, name, chosenVersion,
+                                      chosen->name(), signature, phase,
+                                      errorOut)) {
+        std::error_code rm;
+        std::filesystem::remove(*fetched, rm);
+        return false;
+    }
+
+    if (pathOut) *pathOut = *fetched;
+    if (versionOut) *versionOut = chosenVersion;
+    return true;
+}
+
+bool KernelSession::installFromHook(const std::string& request,
+                                    const std::string& constraint,
+                                    char* out, int32_t outCap) {
+    Impl& impl = *impl_;
+
+    // Spec 6.1 — a network fetch is never a silent stall. The phases go to
+    // the cell's own stream, which is what the notebook is already showing.
+    auto phase = [](const std::string& text) {
+        std::fputs(("  " + text + "\n").c_str(), stdout);
+        std::fflush(stdout);
+    };
+
+    std::error_code ec;
+    auto canon = std::filesystem::weakly_canonical(request, ec);
+    if (ec || !std::filesystem::exists(canon)) {
+        // Not a path — resolve it as a library name against the session's
+        // repositories (spec 3.1).
+        std::string resolvedPath;
+        std::string resolvedVersion;
+        std::string failure;
+        if (!resolveForInstall(request, constraint, phase, &resolvedPath,
+                               &resolvedVersion, &failure)) {
+            writeOut(out, outCap, failure);
+            return false;
+        }
+        canon = std::filesystem::weakly_canonical(resolvedPath, ec);
+        if (ec || !std::filesystem::exists(canon)) {
+            writeOut(out, outCap,
+                     "Packages.install: '" + request + "' resolved to "
+                     + resolvedVersion + " but its archive is missing at "
+                     + resolvedPath);
+            return false;
+        }
+    }
+
+    std::string archiveName;
+    std::string archiveVersion;
+    try {
+        auto archive = CajetaArchive::readFrom(canon.string());
+        archiveName = archive.getName();
+        archiveVersion = archive.getVersion();
+    } catch (std::exception& e) {
+        writeOut(out, outCap,
+                 std::string("Packages.install: cannot read archive '")
+                 + canon.string() + "': " + e.what());
+        return false;
+    }
+
+    // Already loaded? Judge the LOADED version against this constraint —
+    // a satisfying re-install is a no-op so run-all is safe (2.4), and an
+    // excluded one cannot be honoured without a restart (2.5), because
+    // JIT'd code from the loaded copy may be live.
+    auto it = impl.installsByName.find(archiveName);
+    if (it != impl.installsByName.end()) {
+        const std::string& loaded = it->second.version;
+        if (versionSatisfies(loaded, constraint)) {
+            writeOut(out, outCap, loaded);
+            return true;
+        }
+        writeOut(out, outCap,
+                 "Packages.install: '" + archiveName + "' is already loaded "
+                 "at " + loaded + ", which '" + constraint + "' excludes. A "
+                 "session cannot replace a loaded archive — restart the "
+                 "session to change versions.");
+        return false;
+    }
+
+    if (!versionSatisfies(archiveVersion, constraint)) {
+        writeOut(out, outCap,
+                 "Packages.install: '" + archiveName + "' is available at "
+                 + archiveVersion + ", which '" + constraint
+                 + "' excludes; no other version was found.");
+        return false;
+    }
+
+    phase("splicing " + archiveName + " " + archiveVersion);
+    std::string err;
+    if (!installArchive(canon.string(), &err)) {
+        writeOut(out, outCap, "Packages.install: " + err);
+        return false;
+    }
+    impl.installsByName[archiveName] = Impl::InstallRecord{archiveVersion,
+                                                           canon.string()};
+    impl.installedThisCell.push_back(archiveName);
+    writeOut(out, outCap, archiveVersion);
+    return true;
+}
+
 CellResult KernelSession::execute(const std::string& source,
                                   const std::string& cellName) {
     CellResult result;
@@ -543,8 +994,16 @@ CellResult KernelSession::execute(const std::string& source,
         Impl& impl;
         ExecGuard(KernelSession* s, Impl& impl) : s(s), impl(impl) {
             impl.cellExecuting = true;
+            impl.installedThisCell.clear();
+            // U2: arm the runtime bridge for the duration of the cell, so
+            // `Packages.install` from JIT'd code finds this session and a
+            // call outside one still reports "no live session".
+            g_activeSession = s;
+            __cajeta_session_set_install_hook(&sessionInstallHook, s);
         }
         ~ExecGuard() {
+            g_activeSession = nullptr;
+            __cajeta_session_set_install_hook(nullptr, nullptr);
             impl.cellExecuting = false;
             auto pending = std::move(impl.pendingInstalls);
             impl.pendingInstalls.clear();
@@ -862,6 +1321,18 @@ CellResult KernelSession::execute(const std::string& source,
         result.message = e.getMessage();
         result.file = e.getFile().empty() ? cellName : e.getFile();
         result.line = e.getLine();
+        // notebook-olla-install 2.2.3 / spec 2.3 — a cell that installs
+        // cannot also import what it installed. The signal has to be the
+        // cell's SOURCE, not the install registry the plan first named:
+        // the import fails while COMPILING, so the install has not run yet
+        // and the registry is still empty. Without this the failure reads
+        // as a broken install rather than an ordering rule.
+        if (source.find("Packages.install") != std::string::npos) {
+            result.message +=
+                " — this cell calls Packages.install, and a cell cannot "
+                "import what it installs: the cell is compiled before the "
+                "install runs. Import it from the next cell.";
+        }
         // A SYNTAX error arrives here as a COUNT ("source has 2 syntax
         // error(s)") with no coordinates: the parse aborts after the
         // listener has already emitted the real, located diagnostics, and
