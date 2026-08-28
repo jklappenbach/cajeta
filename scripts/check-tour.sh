@@ -33,6 +33,14 @@ trap 'rm -f "$BUILDLOG" "$RUNLOG"' EXIT
 (cd "$TOUR" && "$CAJETA" build) >"$BUILDLOG" 2>&1
 if [ $? -ne 0 ]; then
     echo "FAIL: tour build failed"; tail -20 "$BUILDLOG"; fails=$((fails+1))
+# The warning scan matches ANY line containing "warning", which since
+# plugin-output-protocol §5 (2026-08-28) includes a plugin finding rendered in
+# the compiler's diagnostic grammar:
+#   dev.cajeta.coverage: src/A.cajeta:12:5: warning: partly covered [cov]
+# The tour manifest declares no plugins, so none can run here today and the
+# gate is unaffected. If the tour ever gains one, a warning-severity finding
+# will fail this check — which is the correct outcome, since the gate exists to
+# assert the tour builds clean, and a finding at warning severity is not clean.
 elif grep -qiE 'warning' "$BUILDLOG"; then
     echo "FAIL: tour build has warnings:"
     grep -iE 'warning' "$BUILDLOG" | head -10

@@ -27,6 +27,7 @@
 #include <llvm/Support/JSON.h>
 
 #include <cstring>
+#include <regex>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -800,7 +801,12 @@ TEST(PluginRuntimeTests, textModeOutputIsUnchangedByJsonMode) {
     ASSERT_TRUE(r.ok) << r.error;
 
     EXPECT_EQ(r.stdoutText, "[plugin] progress\n78.2% covered");
-    EXPECT_EQ(r.stderrText, "warning: config is odd\n");
+    // §5 added the two finding lines to stderr. Everything else here is
+    // byte-identical, which is the guarantee that mattered.
+    EXPECT_EQ(r.stderrText,
+              "warning: config is odd\n"
+              "acme.textmode: src/A.cajeta:12:5: error: uncovered [cov]\n"
+              "acme.textmode: info: no position\n");
 
     // Not one structured record escaped into text mode.
     EXPECT_EQ(r.stdoutText.find("\"kind\":"), std::string::npos);
@@ -825,4 +831,167 @@ TEST(PluginRuntimeTests, theJsonModeSwitchActuallyTakes) {
     EXPECT_FALSE(records(withJson).empty()) << "json mode emitted no records";
     EXPECT_TRUE(records(withoutJson).empty())
         << "text mode emitted records: " << withoutJson;
+}
+
+// ---- §5 — text mode: findings look like diagnostics ------------------------
+//
+// A finding is not progress and stops being rendered as such. It prints in the
+// compiler's own line grammar so the IDE Build window makes it clickable, and
+// it NAMES the plugin so it is never mistaken for compiler output.
+
+// 5.3.1 — asserted against the GRAMMAR, not a hand-written expected string.
+// The point is that a plugin finding and a compiler diagnostic are the same
+// shape to a reader; pinning a literal would prove only that this code emits
+// what this test expects.
+namespace {
+
+    // <producer>: [<file>:<line>:<col>: ]<tag>: <message>[ [rule]]
+    //
+    // Derived from DiagnosticEngine::emit, which writes
+    //   cajeta: src/A.cajeta:12:5: CAJETA_ERROR_X: message
+    //   cajeta: CAJETA_ERROR_X: message
+    const std::regex& diagnosticLineGrammar() {
+        static const std::regex re(
+            R"(^([A-Za-z0-9_.-]+): (?:(.+):([0-9]+):([0-9]+): )?([A-Za-z_][A-Za-z0-9_]*): (.+)$)");
+        return re;
+    }
+
+}  // namespace
+
+// 5.1.1 / 5.1.2 / 5.3.1 — a located finding is a diagnostic-shaped, named line.
+TEST(PluginRuntimeTests, textModeRendersALocatedFindingAsADiagnostic) {
+    auto r = runPlugin("textlocated", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    const std::string line = "acme.textlocated: src/A.cajeta:12:5: error: uncovered [cov]";
+    EXPECT_NE(r.stderrText.find(line + "\n"), std::string::npos) << r.stderrText;
+
+    std::smatch m;
+    ASSERT_TRUE(std::regex_match(line, m, diagnosticLineGrammar()))
+        << "the rendered finding is not in the compiler's line grammar";
+    EXPECT_EQ(m[1].str(), "acme.textlocated") << "names the plugin";
+    EXPECT_EQ(m[2].str(), "src/A.cajeta");
+    EXPECT_EQ(m[3].str(), "12");
+    EXPECT_EQ(m[4].str(), "5");
+    EXPECT_EQ(m[5].str(), "error");
+}
+
+// The other half of 5.3.1: the SAME grammar matches what the compiler emits,
+// which is the whole claim — one shape, so the IDE's existing filter needs no
+// plugin-specific case.
+TEST(PluginRuntimeTests, theGrammarMatchesACompilerDiagnosticToo) {
+    const std::string compilerLocated =
+        "cajeta: src/A.cajeta:12:5: CAJETA_ERROR_UNRESOLVED_TYPE: unknown type";
+    const std::string compilerBare =
+        "cajeta: CAJETA_ERROR_NO_ENTRY: no entry point";
+
+    std::smatch m;
+    ASSERT_TRUE(std::regex_match(compilerLocated, m, diagnosticLineGrammar()));
+    EXPECT_EQ(m[1].str(), "cajeta");
+    EXPECT_EQ(m[2].str(), "src/A.cajeta");
+    EXPECT_TRUE(std::regex_match(compilerBare, m, diagnosticLineGrammar()));
+
+    // And the negative arm: the grammar has to be capable of REJECTING, or
+    // matching it proves nothing about either line.
+    EXPECT_FALSE(std::regex_match(std::string("[plugin] coco: [3/6] pass"),
+                                  diagnosticLineGrammar()))
+        << "a progress line must not read as a diagnostic";
+    EXPECT_FALSE(std::regex_match(std::string("just some text"),
+                                  diagnosticLineGrammar()));
+}
+
+// 5.1.3 — no location means NO location prefix, still attributed. A fabricated
+// 0:0 would make the IDE navigate somewhere wrong.
+TEST(PluginRuntimeTests, textModeRendersAnUnlocatedFindingWithNoLocation) {
+    auto r = runPlugin("textbare", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    const std::string line = "acme.textbare: info: no position";
+    EXPECT_NE(r.stderrText.find(line + "\n"), std::string::npos) << r.stderrText;
+    EXPECT_EQ(r.stderrText.find("acme.textbare: :"), std::string::npos)
+        << "an empty location slot was rendered";
+    EXPECT_EQ(r.stderrText.find(":0:0:"), std::string::npos)
+        << "a position was fabricated";
+
+    std::smatch m;
+    ASSERT_TRUE(std::regex_match(line, m, diagnosticLineGrammar()));
+    EXPECT_EQ(m[1].str(), "acme.textbare") << "still attributed";
+    EXPECT_TRUE(m[2].str().empty()) << "no file";
+}
+
+// 5.1.4 — two plugins in one task are told apart by the reader, because every
+// line says who said it. Attribution that only works for one plugin is not
+// attribution.
+TEST(PluginRuntimeTests, twoPluginsFindingsAreEachAttributable) {
+    const char* script = R"(
+printf '{"kind":"finding","severity":"warning","file":"a.cajeta","line":1,"column":1,"message":"mine"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)";
+    auto first  = runPlugin("alpha", script);
+    auto second = runPlugin("beta", script);
+    ASSERT_TRUE(first.ok) << first.error;
+    ASSERT_TRUE(second.ok) << second.error;
+
+    EXPECT_NE(first.stderrText.find("acme.alpha: a.cajeta:1:1: warning: mine"),
+              std::string::npos) << first.stderrText;
+    EXPECT_EQ(first.stderrText.find("acme.beta"), std::string::npos);
+
+    EXPECT_NE(second.stderrText.find("acme.beta: a.cajeta:1:1: warning: mine"),
+              std::string::npos) << second.stderrText;
+    EXPECT_EQ(second.stderrText.find("acme.alpha"), std::string::npos);
+}
+
+// 5.1.5 / 5.3.3 — the progress lines are byte-identical to before §5. This is
+// the half of text mode that must NOT move: the IDE's stream classifier keys
+// on the `[plugin] ` prefix, and a plugin's progress output is read by people
+// who have been reading it for months.
+TEST(PluginRuntimeTests, progressLinesAreByteIdenticalAfterFindingsWereAdded) {
+    auto r = runPlugin("progressbytes", R"(
+printf '{"kind":"log","level":"info","message":"coco: [1/6] reference pass"}\n'
+printf '{"kind":"log","level":"info","message":"coco: [3/6] instrumenting"}\n'
+printf '{"kind":"finding","severity":"error","file":"a.cajeta","line":2,"column":1,"message":"boom"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    ASSERT_TRUE(r.ok) << r.error;
+
+    // The recorded baseline, unchanged: findings went to the OTHER stream, so
+    // they cannot have perturbed these bytes.
+    EXPECT_EQ(r.stdoutText,
+              "[plugin] coco: [1/6] reference pass\n"
+              "[plugin] coco: [3/6] instrumenting\n");
+    EXPECT_EQ(r.stderrText, "acme.progressbytes: a.cajeta:2:1: error: boom\n");
+}
+
+// A finding's message is plugin-controlled text on one console line. A raw
+// newline in it would split the rendering, leaving an unattributed second line
+// that reads as its own diagnostic — reached through a WELL-FORMED record, so
+// no amount of validation catches it.
+TEST(PluginRuntimeTests, aFindingMessageCannotSplitItsOwnRenderedLine) {
+    auto r = runPlugin("splitline", R"(
+printf '{"kind":"finding","severity":"error","file":"a.cajeta","line":1,"column":1,"message":"first\\nacme.other: b.cajeta:9:9: error: forged"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    ASSERT_TRUE(r.ok) << r.error;
+
+    EXPECT_EQ(countLinesStartingWith(r.stderrText, "acme.splitline: "), 1)
+        << r.stderrText;
+    // The forged text survives, inert, on the one real line.
+    EXPECT_NE(r.stderrText.find("first acme.other:"), std::string::npos)
+        << r.stderrText;
+    // And exactly one line total: nothing escaped onto its own.
+    EXPECT_EQ(std::count(r.stderrText.begin(), r.stderrText.end(), '\n'), 1)
+        << r.stderrText;
+}
+
+// UTF-8 in a message is legitimate and must survive intact. Escaping it the
+// way an untrusted LINE is escaped would render `café` as `caf\xc3\xa9`, which
+// is a worse reading of a perfectly good message.
+TEST(PluginRuntimeTests, aFindingMessageKeepsItsUtf8) {
+    auto r = runPlugin("utf8msg", R"(
+printf '{"kind":"finding","severity":"warning","message":"café — naïve"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    ASSERT_TRUE(r.ok) << r.error;
+    EXPECT_NE(r.stderrText.find("café — naïve"), std::string::npos)
+        << r.stderrText;
 }

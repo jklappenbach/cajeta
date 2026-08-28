@@ -484,10 +484,73 @@ namespace cajeta::buildtool {
             return "note";
         }
 
+        // A finding, in the compiler's own text grammar (spec §6).
+        //
+        // The compiler writes
+        //     cajeta: src/A.cajeta:12:5: CAJETA_ERROR_X: message
+        //     cajeta: CAJETA_ERROR_X: message            (unlocated)
+        // so the slots are <producer>: <location>: <tag>: <message>. A finding
+        // fills the producer slot with the PLUGIN's name — which is its Olla
+        // key and its `plugins` entry, so a reader goes straight from the line
+        // to the manifest — and the tag slot with its severity, which is what
+        // §6 use case 1 asks for and what makes a finding legible as a
+        // problem rather than as narration.
+        //
+        // Naming the producer is what keeps a plugin finding from being read
+        // as compiler output, and what tells two plugins' findings apart in
+        // one task: every line says who said it.
+        //
+        // The rule goes in trailing brackets — the clang-tidy convention —
+        // because the tag slot is spoken for. Omitted when the finding has no
+        // rule, rather than printed as an empty pair.
+        //
+        // Location is emitted ONLY when there is one. A fabricated 0:0 would
+        // make the IDE's filter navigate somewhere, which is worse than not
+        // navigating at all.
+        // A finding's message is plugin-controlled text on ONE console line.
+        // A raw newline in it would split the rendering in two, leaving an
+        // unattributed second line that reads as its own diagnostic — the
+        // §4.1 problem one layer up, reached through a WELL-FORMED record
+        // rather than a malformed one, so validation never sees it.
+        //
+        // Control characters become spaces rather than escapes: this is text a
+        // person reads, and `caf\xc3\xa9` would be a worse rendering of a
+        // legitimate message than `café`. `quoteUntrustedLine` is the right
+        // tool for a line that is malformed by definition, not for a valid
+        // message that merely contains a newline.
+        std::string oneLine(const std::string& text) {
+            std::string out;
+            out.reserve(text.size());
+            for (unsigned char c : text) {
+                out += (c == '\n' || c == '\r' || c == '\t' || c < 0x20)
+                           ? ' '
+                           : static_cast<char>(c);
+            }
+            return out;
+        }
+
+        std::string renderFinding(const ActionFinding& f,
+                                  const std::string& pluginName) {
+            std::string out = pluginName;
+            out += ": ";
+            if (!f.file.empty() && f.line > 0) {
+                out += f.file;
+                out += ":" + std::to_string(f.line);
+                out += ":" + std::to_string(f.column);
+                out += ": ";
+            }
+            out += oneLine(f.severity.empty() ? "info" : f.severity);
+            out += ": ";
+            out += oneLine(f.message);
+            if (!f.rule.empty()) { out += " [" + oneLine(f.rule) + "]"; }
+            return out;
+        }
+
         void applyResponseLine(
             const std::string& line,
             ProtocolState& state,
             bool jsonMode,
+            const std::string& pluginName,
             TaskContext& /*ctx*/) {
             // Allow blank lines — plugin emitters might add them for
             // readability when piping through a debugger.
@@ -636,6 +699,14 @@ namespace cajeta::buildtool {
                     f.message = s->str();
                 }
                 if (f.severity.empty()) f.severity = "info";
+                if (!jsonMode) {
+                    // Text mode: a finding is a problem, so it goes to the
+                    // error channel like a compiler diagnostic — and it does
+                    // NOT carry the `[plugin] ` progress prefix, which is what
+                    // keeps the IDE's stream classifier from painting it as
+                    // narration.
+                    std::cerr << renderFinding(f, pluginName) << "\n";
+                }
                 if (jsonMode) {
                     // A located finding becomes a NAVIGABLE diagnostic; an
                     // unlocated one becomes a diagnostic with no location.
@@ -761,7 +832,7 @@ namespace cajeta::buildtool {
         {
             cajeta::JsonSourceScope provenance(plugin.name, plugin.version);
             while (std::getline(lines, line)) {
-                applyResponseLine(line, state, jsonMode, ctx);
+                applyResponseLine(line, state, jsonMode, plugin.name, ctx);
             }
         }
         reportDropped(state, plugin.name);
