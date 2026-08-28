@@ -1720,6 +1720,41 @@ namespace cajeta {
                 // reproducible across build roots.
                 extMod->setSourcePath(entryName);
                 extMod->setClasspathOrigin(true);
+                // build-output-layout §3.2 — a dependency's classes are not
+                // this project's source, so their objects get their own
+                // subtree instead of sitting beside the project's own with a
+                // flat dotted name (`out/dlib.Helper.o` next to
+                // `out/app/Main.o`). That asymmetry is what cajeta-five's
+                // exe-package-name-collision spec noticed, and `deps/` is
+                // already this codebase's word for it: the archive format
+                // nests a dependency's own entries under
+                // `deps/<name>-<version>/`.
+                //
+                // Keyed on the FILE STEM with its version suffix trimmed, not
+                // on arc.getName(): a library archive's internal name is the
+                // placeholder "cajeta-archive" (emitCja only derives a real
+                // one from an entry method, which a library has none of), so
+                // getName() would put every dependency in one bucket. The
+                // build tool writes the identity into the filename —
+                // `com.example.dlib-0.2.0.cja` — so the stem is what actually
+                // carries it. Trailing `-<version>` is trimmed because within
+                // one build a module resolves to exactly one version and the
+                // spec asks for `deps/<module>/`; an archive named without a
+                // version keeps its whole stem.
+                {
+                    std::string depModule =
+                        std::filesystem::path(cpPath).stem().string();
+                    auto dash = depModule.rfind('-');
+                    if (dash != std::string::npos && dash + 1 < depModule.size()
+                        && std::isdigit(
+                               static_cast<unsigned char>(depModule[dash + 1]))) {
+                        depModule.resize(dash);
+                    }
+                    if (depModule.empty()) depModule = "unnamed";
+                    extMod->setArchivePath("deps/" + depModule + "/"
+                                           + qName->toCanonical()
+                                           + CAJETA_IR_EXTENSION);
+                }
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();

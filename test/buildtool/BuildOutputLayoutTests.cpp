@@ -185,6 +185,72 @@ TEST(BuildOutputLayoutTests, libraryBuildLeavesTheCjaInBuildArchive) {
            " intermediates";
 }
 
+// 2.1.2 — a dependency's classes are not this project's source, so their
+// objects get their own subtree (spec §3.2). Driven through the compiler's
+// --classpath rather than the build tool on purpose: the compiler is what
+// chooses object paths, and a `path` dependency never reaches the build
+// tool's classpath anyway (Dependency.cpp leaves path/git entries with no
+// version constraint and "downstream resolution skips entries with no
+// constraint") — a separate gap, filed, not fixed here.
+//
+// Before this, a dependency's object sat beside the project's own with a
+// FLAT dotted name — `out/dlib.Helper.o` next to `out/app/Main.o` — the same
+// asymmetry cajeta-five's collision spec noticed. `deps/<module>/` also
+// matches the archive format's own nesting of dependency entries under
+// `deps/<name>-<version>/`.
+TEST(BuildOutputLayoutTests, dependencyObjectsLandUnderTheirOwnDepsSubtree) {
+    auto p = LayoutProject::create("t.app", "t.Main::run", "app");
+    // A separate library, built to a .cja, consumed via --classpath.
+    fs::path libRoot = p->root / "dep";
+    fs::path libSrc  = libRoot / "src" / "dlib";
+    fs::create_directories(libSrc);
+    fs::create_directories(libRoot / "out");
+    std::ofstream(libSrc / "Helper.cajeta")
+        << "package dlib;\n"
+           "public final class Helper {\n"
+           "    public static int32 five() { return 5; }\n"
+           "}\n";
+    fs::path cja = libRoot / "com.example.dlib-0.2.0.cja";
+    {
+        std::string cmd = "\"" + layoutCompilerBinary() + "\" --emit=cja -o \""
+            + cja.string() + "\" '*' \"" + (libRoot / "src").string()
+            + "\" \"" + (libRoot / "out").string() + "\" > /dev/null 2>&1";
+        ASSERT_EQ(0, layoutExit(std::system(cmd.c_str())))
+            << "could not build the dependency archive";
+    }
+    ASSERT_TRUE(fs::exists(cja));
+
+    // The consumer calls into it, so the dependency class is really compiled.
+    fs::path appSrc = p->root / "src" / "main" / "cajeta" / "app";
+    std::ofstream(appSrc / "Main.cajeta")
+        << "package app;\n"
+           "import dlib.Helper;\n"
+           "public final class Main {\n"
+           "    public static int32 run() { return Helper.five(); }\n"
+           "}\n";
+
+    fs::path out = p->root / "cout";
+    fs::create_directories(out);
+    std::string log = (p->root / "cp.log").string();
+    std::string cmd = "\"" + layoutCompilerBinary() + "\" --emit=exe"
+        " --classpath=\"" + cja.string() + "\" -o \""
+        + (out / "prog").string() + "\" app.Main.run \""
+        + (p->root / "src" / "main" / "cajeta").string() + "\" \""
+        + out.string() + "\" > " + log + " 2>&1";
+    ASSERT_EQ(0, layoutExit(std::system(cmd.c_str())))
+        << "classpath build failed";
+
+    bool depUnderDeps = fs::exists(out / "deps" / "com.example.dlib"
+                                       / "dlib.Helper.o");
+    EXPECT_TRUE(depUnderDeps)
+        << "a dependency's object belongs under deps/<module>/ (spec §3.2)";
+    EXPECT_FALSE(fs::exists(out / "dlib.Helper.o"))
+        << "the flat dotted object beside the project's own must be gone";
+    // The negative arm: the project's OWN classes must NOT be relocated.
+    EXPECT_TRUE(fs::exists(out / "app" / "Main.o"))
+        << "the project's own objects keep their package tree";
+}
+
 // The collision this separation resolves: a details.name equal to a top-level
 // package name. With objects in a package tree under build/exe/, the linker
 // was asked to write the file build/exe/t over the directory build/exe/t —
