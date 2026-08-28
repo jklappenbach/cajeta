@@ -1,7 +1,8 @@
 # Build output layout — where generated files go, and who knows
 
-STATUS: DRAFT — two decisions open (§3.4, §5.3), marked **DECIDE**.
-Plan: `agents/build-output-layout-plan.md`.
+STATUS: ACTIVE — both decisions made by Julian 2026-08-27: §3.4 build tool
+only (the compiler's positionals are unchanged), §5.3 dependency
+intermediates per-project. Plan: `agents/build-output-layout-plan.md`.
 
 ## 1. Definition
 
@@ -86,13 +87,24 @@ the project root unless absolute:
 ```
 Setting `root` moves the others unless they are set explicitly.
 
-### 3.4 **DECIDE** — compiler flags, or build tool only?
-The positional is what failed, so the recommendation is that the COMPILER
-grows explicit `--obj-dir` / `--artifact-dir`, the bare positional becomes
-deprecated-but-accepted, and the build tool always passes the flags. The
-alternative — build-tool settings only, positional unchanged — leaves the
-failing interface in place for everyone invoking `cajeta` directly, which
-is every script in every repo today.
+### 3.4 DECIDED (Julian, 2026-08-27) — build tool only
+Output destinations are the BUILD TOOL's concern. The compiler keeps its
+three positionals unchanged; no `--obj-dir` / `--artifact-dir` is added.
+`settings.output` is read by the build tool, which resolves the layout and
+passes the already-correct output directory down.
+
+The recommendation had been to add compiler flags, on the grounds that the
+positional is the interface that failed. Overruled, and the consequence is
+explicit: **every script that invokes `cajeta` directly keeps the bare
+positional**, so the layout gives them nothing. That makes §4.1 the whole
+of their protection rather than a belt-and-braces addition — it is the one
+mechanism that guards a hand-written invocation, and it is why §4.1 sits
+in unit 1 with the hygiene work instead of alongside the layout.
+
+Corollary for §5.2: discovery matters MORE under this decision, not less.
+A direct invoker cannot be told where things go by a manifest it never
+reads, so `cajeta artifact-path` is how a script learns the location
+instead of hard-coding it.
 
 ## 4. Rules
 
@@ -124,14 +136,18 @@ written, without a build. Shape: `cajeta artifact-path [--flavor debug|
 release]` printing one absolute path, exit non-zero if the manifest does
 not define one.
 
-### 5.3 **DECIDE** — dependency intermediates: shared or per-project?
-Per-project under `build/obj/deps/` is simple and always correct, at the
-cost of recompiling the same dependency classes in every consumer. A
-shared cache keyed by (module, version, flavor, compiler version) is
-faster and is the natural extension of `.cajeta/cache/`, but needs
-invalidation discipline and a story for concurrent builds. Recommendation:
-per-project now (this spec), shared cache as its own later spec — the
-correctness win here is the layout, not the speed.
+### 5.3 DECIDED (Julian, 2026-08-27) — per-project
+Dependency intermediates live under `build/obj/deps/<module>/`, inside the
+consuming project. Always correct, no invalidation protocol, no concurrent-
+build story needed, and `clean` stays `rm -rf build`.
+
+The cost is accepted and stated: the same dependency classes recompile in
+every consumer, so a machine building codec, jinja, llm and cabra compiles
+`dev.cajeta.codec.*` four times. A shared cache keyed by (module, version,
+flavor, compiler version) — the natural extension of `.cajeta/cache/` —
+remains available as its own later spec if that cost becomes the thing
+worth fixing. It is a SPEED optimization; this spec is about correctness,
+and correctness should not wait on an invalidation design.
 
 ## 6. Repository hygiene (the existing damage)
 
