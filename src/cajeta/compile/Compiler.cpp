@@ -2104,18 +2104,7 @@ namespace cajeta {
             for (auto& [__, method] : klass->getMethods()) {
                 if (!method) continue;
                 try {
-                    // Same minimal context lintRoot establishes: `this` (and
-                    // the implicit-this shorthand) resolve against the class
-                    // on the structure stack, which codegen's prologue
-                    // normally pushes and lint never did.
-                    module->getStructureStack().push_back(klass);
-                    try {
-                        method->resolveBody(module);
-                    } catch (...) {
-                        module->getStructureStack().pop_back();
-                        throw;
-                    }
-                    module->getStructureStack().pop_back();
+                    method->resolveBodyForLint(module);
                 } catch (cajeta::Exception& e) {
                     if (json)
                         emitJsonDiagnostic("error", e.getErrorId(), e.getMessage());
@@ -2391,14 +2380,7 @@ namespace cajeta {
                         std::cerr << "[bodyresolve] " << klass->getQName()->toCanonical()
                                   << "::" << method->getName() << "\n";
                     }
-                    guarded("body-resolve", [&] {
-                        m->getStructureStack().push_back(klass);
-                        try { method->resolveBody(m); } catch (...) {
-                            m->getStructureStack().pop_back();
-                            throw;
-                        }
-                        m->getStructureStack().pop_back();
-                    });
+                    guarded("body-resolve", [&] { method->resolveBodyForLint(m); });
                 }
             }
         }

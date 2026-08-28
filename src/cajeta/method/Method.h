@@ -717,6 +717,22 @@ namespace cajeta {
         // and codegen would run it again in any process that does both.
         void resolveBody(CajetaModulePtr module);
         bool isBodyResolved() const { return bodyResolved; }
+
+        // Resolve this body from OUTSIDE codegen — what `--lint` calls.
+        //
+        // resolveBody alone is not enough, and measuring is what showed it:
+        // body resolution assumes the context codegen's prologue establishes,
+        // so with an empty structure stack and no scope, receivers resolve to
+        // nothing and not one reference is recorded. This sets up the minimum
+        // that resolution (not emission) needs — the owning class on the
+        // structure stack so `this` types, and a scope carrying the formals so
+        // a parameter receiver types — then tears it down.
+        //
+        // Deliberately NOT folded into resolveBody: codegen has already built
+        // the real context when it calls that, and pushing a second one would
+        // change what a build resolves. The build path must stay byte-identical
+        // (plan 2.1.1), so lint gets its own door.
+        void resolveBodyForLint(CajetaModulePtr module);
         // 2.3.2 — proof that a build does no NEW work: this counts actual walks,
         // not calls, so "runs exactly once per method" is verified by counter
         // rather than by reading the code.

@@ -8,6 +8,7 @@
 #include <functional>
 #include <unordered_set>
 #include "../type/CajetaClass.h"
+#include "../field/StackField.h"
 #include "../type/CajetaView.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaFunctionType.h"
@@ -2370,6 +2371,50 @@ namespace cajeta {
             remapScriptException(module, e);
             throw;
         }
+    }
+
+    // The lint-side door onto resolveBody — see the header for why it is a
+    // separate entry point rather than a flag inside resolveBody.
+    //
+    // The context here is the minimum RESOLUTION needs, not what codegen
+    // needs: no llvm::Function, no allocas, no drop entries. A formal becomes
+    // a plain Field carrying its declared type, which is all
+    // IdentifierExpression::resolveTypes reads (`field->getType()`), and the
+    // scope's parent is cleared for the isolation reason createScope()
+    // documents at length — without it, an identifier can bind to a
+    // same-named local of a DIFFERENT type from an unrelated method that
+    // happens to be on the stack, and pin a wrong type on a shared AST node.
+    void Method::resolveBodyForLint(CajetaModulePtr module) {
+        if (bodyResolved || !block || !module) return;
+
+        const bool pushedClass = (parent != nullptr);
+        if (pushedClass) module->getStructureStack().push_back(parent);
+        module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
+        module->getScopeStack().peek()->setParent(nullptr);
+
+        for (auto& parameter : parameterList) {
+            if (!parameter) continue;
+            // StackField: the concrete Field shape that needs only a name and
+            // a declared type. No alloca is created — resolution reads
+            // getType() and nothing else.
+            auto field = make_shared<StackField>(module, parameter->getName(),
+                                                 parameter->getType());
+            module->getScopeStack().peek()->putField(field);
+        }
+
+        const bool priorMode = module->isResolutionOnly();
+        module->setResolutionOnly(true);
+        try {
+            resolveBody(module);
+        } catch (...) {
+            module->setResolutionOnly(priorMode);
+            module->getScopeStack().pop();
+            if (pushedClass) module->getStructureStack().pop_back();
+            throw;
+        }
+        module->setResolutionOnly(priorMode);
+        module->getScopeStack().pop();
+        if (pushedClass) module->getStructureStack().pop_back();
     }
 
     void Method::computeArenaEligibility() {
