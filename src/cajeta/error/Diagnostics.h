@@ -79,6 +79,48 @@ namespace cajeta {
     // survive line-wrapping cleanly in terminal output.
     std::string formatDidYouMean(const std::vector<std::string>& suggestions);
 
+    // Who produced the records being written RIGHT NOW (compiler-jsonl 1.1,
+    // plugin-output-protocol §1.2 / §5.1.1). Every record carries it, compiler
+    // records included: provenance is stated, never inferred from absence.
+    //
+    // Distinct from `jsonProducer()`, which is per-STREAM and says who ran the
+    // build. This is per-RECORD and says who made that particular claim — the
+    // stream is no longer single-producer now that plugin output joins it
+    // rather than forming a parallel one.
+    //
+    // Defaults to the compiler. The build tool swings it to a plugin's Olla key
+    // for the span in which it ingests that plugin's records, with
+    // `JsonSourceScope`.
+    void setJsonSource(const std::string& name, const std::string& version);
+    const std::string& jsonSourceName();
+    const std::string& jsonSourceVersion();
+
+    // Stamp records as coming from `name`@`version` for this scope, then
+    // restore whatever was in force. RAII rather than a set/reset pair because
+    // the ingest path has early returns on every malformed record, and a
+    // missed reset would silently attribute the REST OF THE BUILD to a plugin
+    // — a provenance bug that reads as a plugin emitting things it never did.
+    class JsonSourceScope {
+    public:
+        JsonSourceScope(std::string name, std::string version);
+        ~JsonSourceScope();
+        JsonSourceScope(const JsonSourceScope&) = delete;
+        JsonSourceScope& operator=(const JsonSourceScope&) = delete;
+    private:
+        std::string prevName;
+        std::string prevVersion;
+    };
+
+    // A named value a plugin published (`${id.key}` in the manifest).
+    // Structural: an output is data the build consumes, and flattening it into
+    // a message would leave the consumer parsing prose.
+    void emitJsonOutput(const std::string& key, const std::string& value);
+
+    // Text a plugin composed for a human to read as-is. Its own kind rather
+    // than a `log`, because the plugin controls the whole line — no prefix, no
+    // added newline.
+    void emitJsonWrite(const std::string& text);
+
     // Emit one machine-readable diagnostic as a single self-contained NDJSON
     // line to stderr — the payload of `--diag-format=json` (docs/CompilerModes.md
     // § --diag-format). Fields: severity ("error" | "warning" | "note"), code
@@ -136,7 +178,11 @@ namespace cajeta {
     // rather than guess; MINOR bumps when a record kind or field is ADDED,
     // which existing consumers skip or ignore (2.1.5/2.1.6).
     constexpr int kJsonlSchemaMajor = 1;
-    constexpr int kJsonlSchemaMinor = 0;
+    // 1.1 (2026-08-28): every record may carry `source`/`sourceVersion`, and
+    // `output`/`write` joined the kinds — plugin output shares this stream
+    // rather than forming a parallel one (plugin-output-protocol §5). Additive
+    // throughout, so a 1.0 reader keeps working.
+    constexpr int kJsonlSchemaMinor = 1;
 
     // Emit one compile-phase progress record as an NDJSON line to stderr, on the
     // SAME stream as the diagnostics above and only under `--diag-format=json`.

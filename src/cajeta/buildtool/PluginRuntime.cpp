@@ -74,7 +74,9 @@
 
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/PluginRecord.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
@@ -473,9 +475,82 @@ namespace cajeta::buildtool {
         // dropped and counted; the caller warns once at the end. Before this,
         // a single unreadable line aborted the whole dispatch, which made the
         // build tool a ceiling on every plugin that had ever shipped a typo.
+        // Findings carry error | warning | info; the diagnostic stream carries
+        // error | warning | note. INFO -> note is the mapping `Severity`'s own
+        // docstring already states for SARIF, not a new choice made here.
+        const char* diagnosticSeverity(const std::string& findingSeverity) {
+            if (findingSeverity == "error")   return "error";
+            if (findingSeverity == "warning") return "warning";
+            return "note";
+        }
+
+        // A finding, in the compiler's own text grammar (spec §6).
+        //
+        // The compiler writes
+        //     cajeta: src/A.cajeta:12:5: CAJETA_ERROR_X: message
+        //     cajeta: CAJETA_ERROR_X: message            (unlocated)
+        // so the slots are <producer>: <location>: <tag>: <message>. A finding
+        // fills the producer slot with the PLUGIN's name — which is its Olla
+        // key and its `plugins` entry, so a reader goes straight from the line
+        // to the manifest — and the tag slot with its severity, which is what
+        // §6 use case 1 asks for and what makes a finding legible as a
+        // problem rather than as narration.
+        //
+        // Naming the producer is what keeps a plugin finding from being read
+        // as compiler output, and what tells two plugins' findings apart in
+        // one task: every line says who said it.
+        //
+        // The rule goes in trailing brackets — the clang-tidy convention —
+        // because the tag slot is spoken for. Omitted when the finding has no
+        // rule, rather than printed as an empty pair.
+        //
+        // Location is emitted ONLY when there is one. A fabricated 0:0 would
+        // make the IDE's filter navigate somewhere, which is worse than not
+        // navigating at all.
+        // A finding's message is plugin-controlled text on ONE console line.
+        // A raw newline in it would split the rendering in two, leaving an
+        // unattributed second line that reads as its own diagnostic — the
+        // §4.1 problem one layer up, reached through a WELL-FORMED record
+        // rather than a malformed one, so validation never sees it.
+        //
+        // Control characters become spaces rather than escapes: this is text a
+        // person reads, and `caf\xc3\xa9` would be a worse rendering of a
+        // legitimate message than `café`. `quoteUntrustedLine` is the right
+        // tool for a line that is malformed by definition, not for a valid
+        // message that merely contains a newline.
+        std::string oneLine(const std::string& text) {
+            std::string out;
+            out.reserve(text.size());
+            for (unsigned char c : text) {
+                out += (c == '\n' || c == '\r' || c == '\t' || c < 0x20)
+                           ? ' '
+                           : static_cast<char>(c);
+            }
+            return out;
+        }
+
+        std::string renderFinding(const ActionFinding& f,
+                                  const std::string& pluginName) {
+            std::string out = pluginName;
+            out += ": ";
+            if (!f.file.empty() && f.line > 0) {
+                out += f.file;
+                out += ":" + std::to_string(f.line);
+                out += ":" + std::to_string(f.column);
+                out += ": ";
+            }
+            out += oneLine(f.severity.empty() ? "info" : f.severity);
+            out += ": ";
+            out += oneLine(f.message);
+            if (!f.rule.empty()) { out += " [" + oneLine(f.rule) + "]"; }
+            return out;
+        }
+
         void applyResponseLine(
             const std::string& line,
             ProtocolState& state,
+            bool jsonMode,
+            const std::string& pluginName,
             TaskContext& /*ctx*/) {
             // Allow blank lines — plugin emitters might add them for
             // readability when piping through a debugger.
@@ -496,7 +571,13 @@ namespace cajeta::buildtool {
             // strict there is what lets the protocol tighten without
             // breaking anyone mid-build.)
             if (trimmed[0] != '{') {
-                std::cout << "[plugin] " << trimmed << "\n";
+                if (jsonMode) {
+                    // Still narration, so still a note — but structured, and
+                    // attributed, so a consumer can filter it out.
+                    cajeta::emitJsonDiagnostic("note", "", trimmed);
+                } else {
+                    std::cout << "[plugin] " << trimmed << "\n";
+                }
                 return;
             }
 
@@ -553,22 +634,50 @@ namespace cajeta::buildtool {
                 if (msg) {
                     auto level = obj->getString("level");
                     const bool isWarn = level && level->str() == "warn";
-                    std::ostream& os = isWarn ? std::cerr : std::cout;
-                    os << "[plugin] " << msg->str() << "\n";
+                    if (jsonMode) {
+                        // A log is a note (spec §5). Its `level` is honoured
+                        // rather than flattened: text mode already routes a
+                        // warn-level log to the error channel, and JSON mode
+                        // knowing less than text mode would make the
+                        // structured stream the worse of the two.
+                        cajeta::emitJsonDiagnostic(isWarn ? "warning" : "note",
+                                                   "", msg->str());
+                    } else {
+                        std::ostream& os = isWarn ? std::cerr : std::cout;
+                        os << "[plugin] " << msg->str() << "\n";
+                    }
                 }
             } else if (k == "warn") {
                 auto msg = obj->getString("message");
                 if (msg) {
-                    std::cerr << "warning: " << msg->str() << "\n";
+                    if (jsonMode) {
+                        cajeta::emitJsonDiagnostic("warning", "", msg->str());
+                    } else {
+                        std::cerr << "warning: " << msg->str() << "\n";
+                    }
                 }
             } else if (k == "write") {
                 auto text = obj->getString("text");
                 if (text) {
-                    std::cout << text->str();
+                    if (jsonMode) {
+                        // Its own kind, never a message: the plugin composed
+                        // this for a human to read as-is, and wrapping it in a
+                        // diagnostic would add a prefix it did not ask for.
+                        cajeta::emitJsonWrite(text->str());
+                    } else {
+                        std::cout << text->str();
+                    }
                 }
             } else if (k == "output") {
-                state.result.outputs[obj->getString("key")->str()] =
-                    obj->getString("value")->str();
+                const std::string key = obj->getString("key")->str();
+                const std::string value = obj->getString("value")->str();
+                state.result.outputs[key] = value;
+                if (jsonMode) {
+                    // Structural in both directions: the value still reaches
+                    // the invoking task through `${id.key}`, AND it reaches a
+                    // stream consumer as data rather than as prose.
+                    cajeta::emitJsonOutput(key, value);
+                }
             } else if (k == "finding") {
                 // Structured findings — parsed into the typed
                 // ActionResult.findings list. The lint task
@@ -590,9 +699,38 @@ namespace cajeta::buildtool {
                     f.message = s->str();
                 }
                 if (f.severity.empty()) f.severity = "info";
+                if (!jsonMode) {
+                    // Text mode: a finding is a problem, so it goes to the
+                    // error channel like a compiler diagnostic — and it does
+                    // NOT carry the `[plugin] ` progress prefix, which is what
+                    // keeps the IDE's stream classifier from painting it as
+                    // narration.
+                    std::cerr << renderFinding(f, pluginName) << "\n";
+                }
+                if (jsonMode) {
+                    // A located finding becomes a NAVIGABLE diagnostic; an
+                    // unlocated one becomes a diagnostic with no location.
+                    // `emitJsonDiagnostic` writes null for an empty file and a
+                    // non-positive line/column, so absence stays absence
+                    // rather than becoming a position of 0:0 that navigates
+                    // somewhere wrong.
+                    cajeta::emitJsonDiagnostic(diagnosticSeverity(f.severity),
+                                               f.rule, f.message, f.file,
+                                               f.line, f.column);
+                }
                 state.result.findings.push_back(std::move(f));
             } else if (k == "result") {
                 const std::string status = obj->getString("status")->str();
+                if (status == "ok" || status == "error") {
+                    if (jsonMode) {
+                        // Its own kind, attributed. The compiler's terminal
+                        // `result` says whether the BUILD succeeded; this one
+                        // says whether the plugin action did, and `source`
+                        // is what tells them apart.
+                        auto m = obj->getString("message");
+                        cajeta::emitJsonResult(status, m ? m->str() : "");
+                    }
+                }
                 if (status == "ok") {
                     state.resultSeen = true;
                     state.resultOk = true;
@@ -682,8 +820,20 @@ namespace cajeta::buildtool {
         ProtocolState state;
         std::istringstream lines(stdoutBuf);
         std::string line;
-        while (std::getline(lines, line)) {
-            applyResponseLine(line, state, ctx);
+        // 4.2.3 — provenance is stamped HERE, from the plugin the build tool
+        // chose to invoke, and never read from the record. A plugin claiming
+        // to be the compiler, or to be another plugin, has the claim
+        // discarded: the field it emits is not a field this code reads.
+        //
+        // RAII because the ingest below has an early return on every dropped
+        // record; a missed reset would attribute the rest of the build to
+        // this plugin, which reads as a plugin emitting things it never did.
+        const bool jsonMode = diagnosticFormat() == DiagFormat::Json;
+        {
+            cajeta::JsonSourceScope provenance(plugin.name, plugin.version);
+            while (std::getline(lines, line)) {
+                applyResponseLine(line, state, jsonMode, plugin.name, ctx);
+            }
         }
         reportDropped(state, plugin.name);
 

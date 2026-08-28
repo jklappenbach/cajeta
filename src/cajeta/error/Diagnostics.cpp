@@ -97,10 +97,19 @@ namespace cajeta {
         // leads with its `kind`, so a consumer dispatches on the discriminator
         // instead of inferring the type from which payload fields happen to be
         // present. Callers append their own fields and close with `}`.
+        // Per-record provenance. Defaults to the compiler; the build tool
+        // swings it per plugin while ingesting that plugin's output.
+        std::string g_sourceName;      // lazily defaulted, see jsonSourceName
+        std::string g_sourceVersion;
+
         std::string openRecord(const char* kind) {
             std::string o = "{\"kind\":\"";
             o += kind;
             o += "\",";
+            // Stamped HERE, at the one place a record is opened, so a new
+            // record kind cannot be added without provenance by forgetting.
+            strOrNull(o, "source", jsonSourceName());        o += ",";
+            strOrNull(o, "sourceVersion", jsonSourceVersion()); o += ",";
             return o;
         }
 
@@ -157,6 +166,30 @@ namespace cajeta {
         if (!producer.empty()) g_jsonProducer = producer;
     }
     const std::string& jsonProducer() { return g_jsonProducer; }
+
+    // Per-RECORD provenance, as distinct from the per-STREAM producer above.
+    // Defaulted lazily from the same build-stamped version, so an in-process
+    // stream names the same source as one written by the `cajeta` binary.
+    const std::string& jsonSourceName() {
+        if (g_sourceName.empty()) g_sourceName = "cajeta";
+        return g_sourceName;
+    }
+    const std::string& jsonSourceVersion() {
+        if (g_sourceVersion.empty()) g_sourceVersion = CAJETA_VERSION;
+        return g_sourceVersion;
+    }
+    void setJsonSource(const std::string& name, const std::string& version) {
+        g_sourceName = name.empty() ? std::string("cajeta") : name;
+        g_sourceVersion = version.empty() ? std::string(CAJETA_VERSION) : version;
+    }
+
+    JsonSourceScope::JsonSourceScope(std::string name, std::string version)
+        : prevName(jsonSourceName()), prevVersion(jsonSourceVersion()) {
+        setJsonSource(name, version);
+    }
+    JsonSourceScope::~JsonSourceScope() {
+        setJsonSource(prevName, prevVersion);
+    }
 
     bool resolveDiagFormatFromArgv(int argc, const char* argv[]) {
         // Only the `--diag-format=<value>` form exists (main.cpp's `match`
@@ -237,6 +270,21 @@ namespace cajeta {
         std::string o = openRecord("result");
         strOrNull(o, "status", status);
         if (!message.empty()) { o += ","; strOrNull(o, "message", message); }
+        writeRecord(o);
+    }
+
+    void emitJsonOutput(const std::string& key, const std::string& value) {
+        if (!jsonProgressEnabled()) return;
+        std::string o = openRecord("output");
+        strOrNull(o, "key", key); o += ",";
+        strOrNull(o, "value", value);
+        writeRecord(o);
+    }
+
+    void emitJsonWrite(const std::string& text) {
+        if (!jsonProgressEnabled()) return;
+        std::string o = openRecord("write");
+        strOrNull(o, "text", text);
         writeRecord(o);
     }
 

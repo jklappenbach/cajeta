@@ -2,9 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cajeta.dev/schemas/compiler-jsonl-v1.json",
   "title": "cajeta compiler NDJSON stream",
-  "version": { "major": 1, "minor": 0 },
+  "version": { "major": 1, "minor": 1 },
 
-  "description": "One JSON object per line on stderr under --diag-format=json. Every record carries a `kind`; the stream opens with a `stream` record announcing this version. Text mode (the default) emits none of this. See specs/compiler-jsonl-spec.md.",
+  "description": "One JSON object per line on stderr under --diag-format=json. Every record carries a `kind`; the stream opens with a `stream` record announcing this version. Text mode (the default) emits none of this. Since 1.1 every record also names WHO produced it (`source`/`sourceVersion`) — the stream is no longer single-producer: plugin output joins it rather than forming a parallel one. See specs/compiler-jsonl-spec.md and specs/plugin-output-protocol-spec.md §5.",
 
   "versionPolicy": {
     "major": "Bumped on any breaking change. A consumer that does not recognise the major MUST refuse the whole stream rather than parse the records it happens to recognise — the point of the bump is that recognition is no longer reliable.",
@@ -15,7 +15,11 @@
 
   "type": "object",
   "required": ["kind"],
-  "properties": { "kind": { "type": "string" } },
+  "properties": {
+    "kind": { "type": "string" },
+    "source": { "$ref": "#/$defs/source" },
+    "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
+  },
   "oneOf": [
     { "$ref": "#/$defs/stream" },
     { "$ref": "#/$defs/diagnostic" },
@@ -23,10 +27,24 @@
     { "$ref": "#/$defs/cache" },
     { "$ref": "#/$defs/log" },
     { "$ref": "#/$defs/result" },
+    { "$ref": "#/$defs/output" },
+    { "$ref": "#/$defs/write" },
     { "$ref": "#/$defs/xref" }
   ],
 
   "$defs": {
+    "source": {
+      "type": ["string", "null"],
+      "description": "Who produced this record. A plugin's name, which is the same string as its Olla library key and its `plugins` entry in cajeta.json (e.g. \"dev.cajeta.coverage\") — there is no separate internal id, so a reader can go from a diagnostic straight to the entry that declared the plugin. Compiler-produced records name the compiler (\"cajeta\"). Stated, never inferred from absence. Stamped by the BUILD TOOL at ingest from the plugin it invoked, never read from the record: a plugin claiming to be the compiler, or another plugin, has the claim discarded.",
+      "$comment": "Optional in the schema, always emitted in practice. Requiring it would be a major bump and would invalidate every existing reader for no gain the emitter does not already deliver. Added in 1.1."
+    },
+
+    "sourceVersion": {
+      "type": ["string", "null"],
+      "description": "The producer's version — \"0.24.0\", never concatenated into `source`. Separate because plugin names contain dots and versions contain hyphens, so a joined string has no reliable split (`dev.cajeta.coverage-v1.0.0-rc1`); because grouping a stream by originator would otherwise mean parsing every line; and because a version field can be ordered semantically while a substring cannot.",
+      "$comment": "Not the SCHEMA version and not `stream.producer`. Three versions, three jobs: `stream.major`/`minor` tells a consumer how to parse; `stream.producer` says who ran the build; `sourceVersion` says which build made THIS claim. Added in 1.1."
+    },
+
     "stream": {
       "title": "stream — the version announcement",
       "description": "First record of every stream, emitted even when the run has nothing else to say so a consumer can tell a clean run from a process that died before producing output.",
@@ -39,7 +57,9 @@
         "producer": {
           "type": ["string", "null"],
           "description": "Build provenance, e.g. \"cajeta 0.10.0\". Identifies the compiler that wrote the stream, not the process — it is the same whether the emitter is the cajeta binary or anything else linking the compiler library."
-        }
+        },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     },
 
@@ -55,7 +75,9 @@
         "message": { "type": ["string", "null"] },
         "file": { "type": ["string", "null"] },
         "line": { "type": ["integer", "null"], "description": "1-based; null when unlocated." },
-        "column": { "type": ["integer", "null"], "description": "1-based; null when unlocated." }
+        "column": { "type": ["integer", "null"], "description": "1-based; null when unlocated." },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     },
 
@@ -69,7 +91,9 @@
         "phase": { "type": ["string", "null"], "description": "Stable id: prescan | parse | resolve | codegen | emit | link." },
         "state": { "enum": ["start", "finish"] },
         "label": { "type": ["string", "null"], "description": "Human-readable phase name." },
-        "elapsedMs": { "type": "integer", "description": "Present on finish only." }
+        "elapsedMs": { "type": "integer", "description": "Present on finish only." },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     },
 
@@ -81,7 +105,9 @@
       "properties": {
         "kind": { "const": "cache" },
         "state": { "enum": ["hit"] },
-        "artifact": { "type": ["string", "null"], "description": "The re-published output path." }
+        "artifact": { "type": ["string", "null"], "description": "The re-published output path." },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     },
 
@@ -93,19 +119,50 @@
       "properties": {
         "kind": { "const": "log" },
         "level": { "enum": ["debug", "info", "warn", "error"] },
-        "message": { "type": ["string", "null"] }
+        "message": { "type": ["string", "null"] },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     },
 
     "result": {
       "title": "result — the terminal record",
-      "description": "Exactly one per run, last. Whether the run succeeded must be answerable from the stream alone, never inferred from an exit code plus silence.",
+      "description": "Whether a run succeeded must be answerable from the stream alone, never inferred from an exit code plus silence. Since 1.1 the stream is no longer single-producer: each producer emits one, and `source` tells them apart — a plugin action's result says whether THAT ACTION finished, the compiler's terminal record (still last) says whether the build did. A consumer wanting the build's outcome reads the one whose source is the compiler.",
       "type": "object",
       "required": ["kind", "status"],
       "properties": {
         "kind": { "const": "result" },
         "status": { "enum": ["ok", "error"] },
-        "message": { "type": ["string", "null"], "description": "Why it failed; omitted on success." }
+        "message": { "type": ["string", "null"], "description": "Why it failed; omitted on success." },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
+      }
+    },
+
+    "output": {
+      "title": "output — a named value a plugin published",
+      "description": "Data the build consumes, readable by the task that invoked the action as `${id.key}`. Structural on purpose: an output is not a message, and flattening it into diagnostic text would leave the consumer parsing prose. Added in 1.1 — the compiler stream had no such kind, because until plugin output joined the stream nothing produced one.",
+      "type": "object",
+      "required": ["kind", "key", "value"],
+      "properties": {
+        "kind": { "const": "output" },
+        "key": { "type": "string" },
+        "value": { "type": "string", "description": "Always a string — the build tool's substitution surface is string-typed." },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
+      }
+    },
+
+    "write": {
+      "title": "write — text a plugin put on the build tool's stdout",
+      "description": "The console mode some plugins have (a coverage percentage summary, a rendered report). Its own kind rather than a `log`, because it is output the plugin composed for a human to read as-is, with no prefix and no trailing newline added. Added in 1.1.",
+      "type": "object",
+      "required": ["kind", "text"],
+      "properties": {
+        "kind": { "const": "write" },
+        "text": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     },
 
@@ -117,7 +174,9 @@
       "properties": {
         "kind": { "const": "xref" },
         "rel": { "type": "string", "description": "Relation name: declarations | inheritance | references | overrides | calls | version. An unknown relation is data to ignore at use time, not a parse failure." },
-        "record": { "type": "object", "description": "The relation's record, verbatim — the same shape the whole-root xref document carries." }
+        "record": { "type": "object", "description": "The relation's record, verbatim — the same shape the whole-root xref document carries." },
+        "source": { "$ref": "#/$defs/source" },
+        "sourceVersion": { "$ref": "#/$defs/sourceVersion" }
       }
     }
   }
