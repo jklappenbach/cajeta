@@ -2376,10 +2376,6 @@ namespace cajeta {
                 if (!klass) continue;
                 for (auto& [__, method] : klass->getMethods()) {
                     if (!method) continue;
-                    if (getenv("CAJETA_DBG_BODYRESOLVE")) {
-                        std::cerr << "[bodyresolve] " << klass->getQName()->toCanonical()
-                                  << "::" << method->getName() << "\n";
-                    }
                     guarded("body-resolve", [&] { method->resolveBodyForLint(m); });
                 }
             }
