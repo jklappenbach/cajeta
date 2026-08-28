@@ -26,10 +26,12 @@ public class RecordingActionContext implements ActionContext {
     String root;
     String name;
     String version;
+    boolean resultDone;
 
     public RecordingActionContext(#String workdir, #String projectName,
                                   #String projectVersion) {
         this.lines   #= heap ArrayList<String>();
+        this.resultDone = false;
         this.root    #= workdir;
         this.name    #= projectName;
         this.version #= projectVersion;
@@ -71,6 +73,16 @@ public class RecordingActionContext implements ActionContext {
 
     public void output(String key, String value) {
         String line #= PluginHost.outputRecord(key, value);
+        this.lines.add(#line);
+    }
+
+    public boolean resultEmitted() { return this.resultDone; }
+
+    public void result(ActionResult r) {
+        if (this.resultDone) { return; }
+        this.resultDone = true;
+        PluginAction.emitPayload(this, r);
+        String line #= PluginHost.resultRecord(r);
         this.lines.add(#line);
     }
 }

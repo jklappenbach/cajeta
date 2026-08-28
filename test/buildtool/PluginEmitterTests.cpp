@@ -82,6 +82,11 @@ const char* MODULE_SRC =
     "package test;\n"
     "import cajeta.lang.String;\n"
     "import cajeta.buildtool.plugin.ActionContext;\n"
+    "import cajeta.buildtool.plugin.ActionResult;\n"
+    "import cajeta.buildtool.plugin.PluginAction;\n"
+    "import cajeta.buildtool.plugin.PluginEntry;\n"
+    "import cajeta.codec.json.JsonObject;\n"
+    "import cajeta.error.Exception;\n"
     "import cajeta.buildtool.plugin.Finding;\n"
     "import cajeta.buildtool.plugin.PluginHost;\n"
     "import cajeta.buildtool.plugin.RecordingActionContext;\n"
@@ -89,6 +94,69 @@ const char* MODULE_SRC =
     "import cajeta.codec.json.JsonReader;\n"
     "import cajeta.codec.json.JsonToken;\n"
     "import cajeta.collection.ArrayList;\n"
+
+    // ---- §2 — the actions a result is guaranteed FOR ----
+    //
+    // Four shapes, because the guarantee is about what happens when an action does
+    // NOT do the obvious thing. An action that emits its own well-formed result
+    // needs no guarantee; these are the ones that would otherwise leave the build
+    // tool guessing.
+
+    // Returns ok and never touches the context. Its outputs and findings ride on
+    // the ActionResult, which is the style `ActionResult.output` exists for and
+    // which nothing transmitted before §2.
+    "public final class OkEntry implements PluginEntry {\n"
+    "    public #ActionResult invoke(ActionContext ctx, JsonObject params) {\n"
+    "        ActionResult r #= heap ActionResult();\n"
+    "        r.output(\"path\", \"build/out\\nx\");\n"
+    "        Finding f #= Finding.warning(\"r1\", \"A.cajeta\", 3, 2, \"watch out\");\n"
+    "        r.addFinding(#f);\n"
+    "        return #r;\n"
+    "    }\n"
+    "}\n"
+
+    // Emits nothing at all and returns an empty ok result — 2.3.1's action.
+    "public final class SilentEntry implements PluginEntry {\n"
+    "    public #ActionResult invoke(ActionContext ctx, JsonObject params) {\n"
+    "        ActionResult r #= heap ActionResult();\n"
+    "        return #r;\n"
+    "    }\n"
+    "}\n"
+
+    // Fails without emitting. Note `r.fail(...); return #r;` and NOT
+    // `return r.fail(...)` — the fluent form returns a borrow of a local and
+    // crashed the first time an action was ever run. See ActionResult's docstring.
+    "public final class FailEntry implements PluginEntry {\n"
+    "    public #ActionResult invoke(ActionContext ctx, JsonObject params) {\n"
+    "        ActionResult r #= heap ActionResult();\n"
+    "        r.fail(\"coverage 73.5% < min 80%\");\n"
+    "        return #r;\n"
+    "    }\n"
+    "}\n"
+
+    // Reports its own result and then returns a DIFFERENT one. The runner must
+    // not emit the second: first call wins.
+    "public final class ExplicitEntry implements PluginEntry {\n"
+    "    public #ActionResult invoke(ActionContext ctx, JsonObject params) {\n"
+    "        ActionResult mine #= heap ActionResult();\n"
+    "        mine.fail(\"I reported this myself\");\n"
+    "        ctx.result(mine);\n"
+    "        ActionResult other #= heap ActionResult();\n"
+    "        other.fail(\"and this one must not be emitted\");\n"
+    "        return #other;\n"
+    "    }\n"
+    "}\n"
+
+    // Dies after emitting a log. The log must survive and the result must still
+    // arrive — silence here is the case that makes a build tool guess.
+    "public final class ThrowEntry implements PluginEntry {\n"
+    "    public #ActionResult invoke(ActionContext ctx, JsonObject params) {\n"
+    "        ctx.log(\"about to die\");\n"
+    "        throw heap Exception(\"kaboom\");\n"
+    "    }\n"
+    "}\n"
+
+
     "public final class D {\n"
 
     // ---- 1.1.1 — hostile strings survive the emitter ----
@@ -440,6 +508,8 @@ const char* MODULE_SRC =
     "    ctx.finding(located);\n"
     "    Finding bare #= Finding.info(\"\", \"\", 0, 0, \"no position at all\");\n"
     "    ctx.finding(bare);\n"
+    "    ActionResult done #= heap ActionResult();\n"
+    "    ctx.result(done);\n"
     "}\n"
 
     // The records as NDJSON, exactly the shape the runtime reads off a plugin's
@@ -456,6 +526,149 @@ const char* MODULE_SRC =
     "        i = i + 1;\n"
     "    }\n"
     "    return all.toBytes();\n"
+    "}\n"
+
+
+
+
+    // ---- §2 — a result always reaches the runtime ----
+
+    "static int32 countResults(RecordingActionContext ctx) {\n"
+    "    ArrayList<String> rs = ctx.records();\n"
+    "    int32 n = 0;\n"
+    "    int32 i = 0;\n"
+    "    while (i < rs.count()) {\n"
+    "        if (rs.get(i).contains(\"\\\"kind\\\":\\\"result\\\"\")) { n = n + 1; }\n"
+    "        i = i + 1;\n"
+    "    }\n"
+    "    return n;\n"
+    "}\n"
+
+    "static #RecordingActionContext ran(PluginEntry e) {\n"
+    "    RecordingActionContext ctx #= heap RecordingActionContext(\"/w\", \"proj\", \"1.0.0\");\n"
+    "    PluginAction.run(ctx, e, null);\n"
+    "    return #ctx;\n"
+    "}\n"
+
+    // 2.1.1 — returns ok without calling result: exactly one ok result record.
+    "public static int32 run_implicitOkResult() {\n"
+    "    OkEntry e #= heap OkEntry();\n"
+    "    RecordingActionContext ctx #= D.ran(e);\n"
+    "    if (D.countResults(ctx) != 1) { return 1; }\n"
+    "    ArrayList<String> rs = ctx.records();\n"
+    "    String last = rs.get(rs.count() - 1);\n"
+    "    if (!last.contains(\"\\\"kind\\\":\\\"result\\\"\")) { return 2; }\n"
+    "    if (!last.contains(\"\\\"status\\\":\\\"ok\\\"\")) { return 3; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // 2.1.2 — returns a failing result: one error result carrying the message.
+    "public static int32 run_implicitErrorResult() {\n"
+    "    FailEntry e #= heap FailEntry();\n"
+    "    RecordingActionContext ctx #= D.ran(e);\n"
+    "    if (D.countResults(ctx) != 1) { return 1; }\n"
+    "    String r = ctx.records().get(0);\n"
+    "    if (!r.contains(\"\\\"status\\\":\\\"error\\\"\")) { return 2; }\n"
+    "    if (!D.fieldEquals(r, \"message\", \"coverage 73.5% < min 80%\")) { return 3; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // 2.1.3 — the action reported already: ONE result, and it is the action's own.
+    "public static int32 run_explicitResultIsNotDoubled() {\n"
+    "    ExplicitEntry e #= heap ExplicitEntry();\n"
+    "    RecordingActionContext ctx #= D.ran(e);\n"
+    "    if (D.countResults(ctx) != 1) { return 1; }\n"
+    "    String r = ctx.records().get(0);\n"
+    "    if (!D.fieldEquals(r, \"message\", \"I reported this myself\")) { return 2; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // 2.1.4 — a throw becomes an error result, not silence. The log the action
+    // managed to emit before dying is still there: the runner reports the failure
+    // without discarding what came before it.
+    "public static int32 run_throwingActionYieldsErrorResult() {\n"
+    "    ThrowEntry e #= heap ThrowEntry();\n"
+    "    RecordingActionContext ctx #= D.ran(e);\n"
+    "    if (D.countResults(ctx) != 1) { return 1; }\n"
+    "    ArrayList<String> rs = ctx.records();\n"
+    "    if (rs.count() != 2) { return 2; }\n"
+    "    if (!rs.get(0).contains(\"\\\"kind\\\":\\\"log\\\"\")) { return 3; }\n"
+    "    String last = rs.get(1);\n"
+    "    if (!last.contains(\"\\\"status\\\":\\\"error\\\"\")) { return 4; }\n"
+    "    if (!D.fieldEquals(last, \"message\", \"action threw: kaboom\")) { return 5; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // 2.3.1 — an action that emits NOTHING still completes.
+    "public static int32 run_silentActionStillCompletes() {\n"
+    "    SilentEntry e #= heap SilentEntry();\n"
+    "    RecordingActionContext ctx #= D.ran(e);\n"
+    "    if (ctx.count() != 1) { return 1; }\n"
+    "    if (!D.fieldEquals(ctx.records().get(0), \"status\", \"ok\")) { return 2; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // 2.3.2 — exactly one result in EVERY shape, asserted by counting, so a
+    // double-emit fails rather than being hidden by an assertion on the first
+    // record.
+    "public static int32 run_exactlyOneResultInEveryShape() {\n"
+    "    OkEntry a #= heap OkEntry();\n"
+    "    RecordingActionContext ca #= D.ran(a);\n"
+    "    if (D.countResults(ca) != 1) { return 1; }\n"
+
+    "    FailEntry b #= heap FailEntry();\n"
+    "    RecordingActionContext cb #= D.ran(b);\n"
+    "    if (D.countResults(cb) != 1) { return 2; }\n"
+
+    "    ExplicitEntry c #= heap ExplicitEntry();\n"
+    "    RecordingActionContext cc #= D.ran(c);\n"
+    "    if (D.countResults(cc) != 1) { return 3; }\n"
+
+    "    ThrowEntry d #= heap ThrowEntry();\n"
+    "    RecordingActionContext cd #= D.ran(d);\n"
+    "    if (D.countResults(cd) != 1) { return 4; }\n"
+
+    "    SilentEntry s #= heap SilentEntry();\n"
+    "    RecordingActionContext cs #= D.ran(s);\n"
+    "    if (D.countResults(cs) != 1) { return 5; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // The result's outputs and findings travel as their own records, BEFORE the
+    // status. Without this `ActionResult.output` and `.findings` would be
+    // unreachable in the subprocess protocol — a result that cannot travel is not
+    // a result. Order matters: the runtime has the payload before it is told the
+    // action finished.
+    "public static int32 run_resultCarriesOutputsAndFindings() {\n"
+    "    OkEntry e #= heap OkEntry();\n"
+    "    RecordingActionContext ctx #= D.ran(e);\n"
+    "    ArrayList<String> rs = ctx.records();\n"
+    "    if (rs.count() != 3) { return 1; }\n"
+    "    if (!rs.get(0).contains(\"\\\"kind\\\":\\\"output\\\"\")) { return 2; }\n"
+    "    if (!D.fieldEquals(rs.get(0), \"value\", \"build/out\\nx\")) { return 3; }\n"
+    "    if (!rs.get(1).contains(\"\\\"kind\\\":\\\"finding\\\"\")) { return 4; }\n"
+    "    if (!D.fieldEquals(rs.get(1), \"message\", \"watch out\")) { return 5; }\n"
+    "    if (!rs.get(2).contains(\"\\\"kind\\\":\\\"result\\\"\")) { return 6; }\n"
+    "    return 0;\n"
+    "}\n"
+
+    // The control for the suppression rule: a context that has emitted a result
+    // says so, and a fresh one does not. Without this, "exactly one" could hold
+    // because the second emit silently failed for an unrelated reason.
+    "public static int32 run_resultEmittedTracksState() {\n"
+    "    RecordingActionContext ctx #= heap RecordingActionContext(\"/w\", \"proj\", \"1.0.0\");\n"
+    "    if (ctx.resultEmitted()) { return 1; }\n"
+    "    ActionResult a #= heap ActionResult();\n"
+    "    ctx.result(a);\n"
+    "    if (!ctx.resultEmitted()) { return 2; }\n"
+    "    if (ctx.count() != 1) { return 3; }\n"
+        // A second call is dropped, not appended.
+    "    ActionResult b #= heap ActionResult();\n"
+    "    b.fail(\"second\");\n"
+    "    ctx.result(b);\n"
+    "    if (ctx.count() != 1) { return 4; }\n"
+    "    if (!D.fieldEquals(ctx.records().get(0), \"status\", \"ok\")) { return 5; }\n"
+    "    return 0;\n"
     "}\n"
 
 
@@ -549,48 +762,28 @@ TEST_F(PluginEmitterTests, decodeIsNotVacuous) {
     EXPECT_EQ(i32("run_decodeIsNotVacuous"), 0);
 }
 
-// 1.1.7 — records from the SHIPPED API against §0's conformance suite
+// 1.1.7 / 1.3.3 — records from the SHIPPED API pass §0's conformance suite
 //
 // Emitted through `ActionContext` alone — no `PluginHost` call — so what is
 // validated is what a plugin author can actually write. Every string is
 // hostile: conformance on tame input proves nothing about the case the spec
 // exists for.
 //
-// ── 1.3.3 is BLOCKED by this test, and the block is the point ──
-//
-// A plugin written entirely on the shipped API cannot pass §0's suite today.
-// Not because a record is wrong — every one of them is valid — but because
-// the suite requires exactly one `result` record and `ActionContext` has no
-// way to emit one. `PluginHost` can build both result records; nothing
-// reaches them.
-//
-// So the assertion is the precise shape of the gap: every record conforms,
-// and the ONLY complaint is the missing result. §2 gives the context a
-// result, and this test then flips to `report.passed` with no problems at
-// all — which is what closes plan 1.3.3 and 2.3.3.
-//
-// Asserting the exact problem rather than skipping the test keeps the gap
-// measured. A DISABLED test here would say "conformance is untested"; this
-// says "conformance fails in exactly one known way, and here it is."
+// This was RED until §2. Not because a record was wrong — every one of them
+// validated — but because the suite requires exactly one `result` and the
+// context had no way to emit one, so no plugin written on the shipped API
+// could pass. `ActionContext.result` is what closed it.
 
-TEST_F(PluginEmitterTests, theOnlyConformanceGapIsTheResultTheApiCannotEmitYet) {
+TEST_F(PluginEmitterTests, everyKindPassesTheConformanceSuite) {
     const auto lines = ndjson("run_everyKindThroughTheApi");
-    ASSERT_EQ(lines.size(), 6u) << "the action emits six records";
+    ASSERT_EQ(lines.size(), 7u) << "six emitted records plus the result";
 
     const auto report = cajeta::buildtool::checkPluginStream(lines);
-
     std::string why;
     for (const auto& p : report.problems) why += "\n  " + p;
-
-    // Every RECORD is conformant. Anything else in this list is a real
-    // regression in the emitter and must fail here.
-    ASSERT_EQ(report.problems.size(), 1u)
-        << "expected exactly one gap (the missing result), got:" << why;
-    EXPECT_EQ(report.problems[0],
-              "no result record: the action never reported how it finished")
-        << "the emitter has a conformance problem beyond the known §2 gap:" << why;
-    EXPECT_FALSE(report.passed) << "if this now passes, §2 has landed — close"
-                                  " plan 1.3.3 / 2.3.3 and assert passed==true";
+    EXPECT_TRUE(report.passed)
+        << "records emitted through the shipped API do not conform:" << why;
+    EXPECT_TRUE(report.problems.empty()) << why;
 }
 
 // 1.1.5 — and under the parser the RUNTIME actually uses
@@ -628,8 +821,8 @@ TEST_F(PluginEmitterTests, everyKindParsesUnderTheRuntimesReader) {
 // compatibility), so a test that only checked conformance would stay green
 // while the two ends drifted apart.
 //
-// `result` is absent by design — the context cannot emit one yet. §2 adds it,
-// and this assertion is what will require the consumer to be taught about it.
+// `result` joined this set in §2. A context method that emitted some new kind
+// without the build tool learning it would fail here and nowhere else.
 TEST_F(PluginEmitterTests, theShippedApiEmitsOnlyKindsTheBuildToolKnows) {
     const auto lines = ndjson("run_everyKindThroughTheApi");
     ASSERT_FALSE(lines.empty());
@@ -650,6 +843,49 @@ TEST_F(PluginEmitterTests, theShippedApiEmitsOnlyKindsTheBuildToolKnows) {
             << "the API emits a kind the build tool does not know: " << line;
     }
 
-    const std::set<std::string> expected{"finding", "log", "output", "warn", "write"};
+    const std::set<std::string> expected{"finding", "log", "output", "result",
+                                         "warn", "write"};
     EXPECT_EQ(kinds, expected);
+}
+
+// ---- §2 — a result always reaches the runtime ------------------------------
+//
+// A build tool that gets no result has to guess: call silence success and a
+// crashed action passes the build; call it failure and an action that merely
+// forgot to report fails one. Both are wrong for someone, so there is no
+// silence. These are the four shapes where that guarantee does work.
+
+TEST_F(PluginEmitterTests, implicitOkResult) {          // 2.1.1
+    EXPECT_EQ(i32("run_implicitOkResult"), 0);
+}
+TEST_F(PluginEmitterTests, implicitErrorResult) {       // 2.1.2
+    EXPECT_EQ(i32("run_implicitErrorResult"), 0);
+}
+TEST_F(PluginEmitterTests, explicitResultIsNotDoubled) {  // 2.1.3
+    EXPECT_EQ(i32("run_explicitResultIsNotDoubled"), 0);
+}
+TEST_F(PluginEmitterTests, throwingActionYieldsErrorResult) {  // 2.1.4
+    EXPECT_EQ(i32("run_throwingActionYieldsErrorResult"), 0);
+}
+TEST_F(PluginEmitterTests, silentActionStillCompletes) {  // 2.3.1
+    EXPECT_EQ(i32("run_silentActionStillCompletes"), 0);
+}
+
+// 2.3.2 — counted, not inferred from the first record. A double-emit is
+// exactly the bug a "the result says ok" assertion would sail past.
+TEST_F(PluginEmitterTests, exactlyOneResultInEveryShape) {
+    EXPECT_EQ(i32("run_exactlyOneResultInEveryShape"), 0);
+}
+
+// An ActionResult's outputs and findings travel as their own records, before
+// the status. Without this `ActionResult.output` and `.findings` would be
+// unreachable in the subprocess protocol.
+TEST_F(PluginEmitterTests, resultCarriesOutputsAndFindings) {
+    EXPECT_EQ(i32("run_resultCarriesOutputsAndFindings"), 0);
+}
+
+// The control for suppression: "exactly one" must hold because the second
+// emit was DROPPED, not because it failed for some unrelated reason.
+TEST_F(PluginEmitterTests, resultEmittedTracksState) {
+    EXPECT_EQ(i32("run_resultEmittedTracksState"), 0);
 }

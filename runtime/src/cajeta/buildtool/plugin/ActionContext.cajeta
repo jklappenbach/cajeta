@@ -84,6 +84,28 @@ public interface ActionContext {
     void finding(Finding f);
 
     /**
+     * Report how the action finished.
+     *
+     * AT MOST ONE result is emitted per action: the first call wins and every
+     * later one is dropped. That is what lets [PluginAction] emit a result on
+     * the action's behalf without having to know whether the action already
+     * did — the action does not have to declare its intent, and there is no
+     * shape in which the runtime receives two.
+     *
+     * The result's outputs and findings are emitted first, as their own
+     * records, then the status. An action may equally emit those as it goes
+     * through `output` / `finding`; both styles work, and doing BOTH with the
+     * same value reports it twice.
+     */
+    void result(ActionResult r);
+
+    /**
+     * Whether a result has already been emitted. Lets a caller skip building
+     * one it would only have dropped.
+     */
+    boolean resultEmitted();
+
+    /**
      * Set a named output, readable by the task that invoked the action
      * (`${id.key}` in the manifest).
      *

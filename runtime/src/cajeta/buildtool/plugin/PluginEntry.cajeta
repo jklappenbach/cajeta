@@ -1,0 +1,29 @@
+package cajeta.buildtool.plugin;
+
+import cajeta.codec.json.JsonObject;
+
+/**
+ * One plugin action, as something that can be CALLED.
+ *
+ * An action's entry is a static method — `cajeta.coverage.Collect::run` — and
+ * a static cannot be handed to a runner. This interface is the handle: the
+ * shim that bridges the runtime's `entry` symbol to the action implements it
+ * and forwards, and [PluginAction] runs whatever it is given.
+ *
+ * ## Why it exists at all
+ *
+ * Nothing in the tree called an action entry. The signature
+ * `run(ActionContext, JsonObject) -> #ActionResult` was a convention with no
+ * invoker, so "the action returned a failing result" and "the action threw"
+ * had no code path between them and the runtime — spec §3's guarantee had
+ * nowhere to live. A test could not run an action either, which is the same
+ * gap that left the whole API untested.
+ */
+public interface PluginEntry {
+
+    /**
+     * Run the action. Emit through `ctx` as it goes; the returned
+     * `ActionResult` is what [PluginAction] reports if nothing was emitted.
+     */
+    #ActionResult invoke(ActionContext ctx, JsonObject params);
+}
