@@ -74,7 +74,9 @@
 
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/PluginRecord.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
@@ -473,9 +475,19 @@ namespace cajeta::buildtool {
         // dropped and counted; the caller warns once at the end. Before this,
         // a single unreadable line aborted the whole dispatch, which made the
         // build tool a ceiling on every plugin that had ever shipped a typo.
+        // Findings carry error | warning | info; the diagnostic stream carries
+        // error | warning | note. INFO -> note is the mapping `Severity`'s own
+        // docstring already states for SARIF, not a new choice made here.
+        const char* diagnosticSeverity(const std::string& findingSeverity) {
+            if (findingSeverity == "error")   return "error";
+            if (findingSeverity == "warning") return "warning";
+            return "note";
+        }
+
         void applyResponseLine(
             const std::string& line,
             ProtocolState& state,
+            bool jsonMode,
             TaskContext& /*ctx*/) {
             // Allow blank lines — plugin emitters might add them for
             // readability when piping through a debugger.
@@ -496,7 +508,13 @@ namespace cajeta::buildtool {
             // strict there is what lets the protocol tighten without
             // breaking anyone mid-build.)
             if (trimmed[0] != '{') {
-                std::cout << "[plugin] " << trimmed << "\n";
+                if (jsonMode) {
+                    // Still narration, so still a note — but structured, and
+                    // attributed, so a consumer can filter it out.
+                    cajeta::emitJsonDiagnostic("note", "", trimmed);
+                } else {
+                    std::cout << "[plugin] " << trimmed << "\n";
+                }
                 return;
             }
 
@@ -553,22 +571,50 @@ namespace cajeta::buildtool {
                 if (msg) {
                     auto level = obj->getString("level");
                     const bool isWarn = level && level->str() == "warn";
-                    std::ostream& os = isWarn ? std::cerr : std::cout;
-                    os << "[plugin] " << msg->str() << "\n";
+                    if (jsonMode) {
+                        // A log is a note (spec §5). Its `level` is honoured
+                        // rather than flattened: text mode already routes a
+                        // warn-level log to the error channel, and JSON mode
+                        // knowing less than text mode would make the
+                        // structured stream the worse of the two.
+                        cajeta::emitJsonDiagnostic(isWarn ? "warning" : "note",
+                                                   "", msg->str());
+                    } else {
+                        std::ostream& os = isWarn ? std::cerr : std::cout;
+                        os << "[plugin] " << msg->str() << "\n";
+                    }
                 }
             } else if (k == "warn") {
                 auto msg = obj->getString("message");
                 if (msg) {
-                    std::cerr << "warning: " << msg->str() << "\n";
+                    if (jsonMode) {
+                        cajeta::emitJsonDiagnostic("warning", "", msg->str());
+                    } else {
+                        std::cerr << "warning: " << msg->str() << "\n";
+                    }
                 }
             } else if (k == "write") {
                 auto text = obj->getString("text");
                 if (text) {
-                    std::cout << text->str();
+                    if (jsonMode) {
+                        // Its own kind, never a message: the plugin composed
+                        // this for a human to read as-is, and wrapping it in a
+                        // diagnostic would add a prefix it did not ask for.
+                        cajeta::emitJsonWrite(text->str());
+                    } else {
+                        std::cout << text->str();
+                    }
                 }
             } else if (k == "output") {
-                state.result.outputs[obj->getString("key")->str()] =
-                    obj->getString("value")->str();
+                const std::string key = obj->getString("key")->str();
+                const std::string value = obj->getString("value")->str();
+                state.result.outputs[key] = value;
+                if (jsonMode) {
+                    // Structural in both directions: the value still reaches
+                    // the invoking task through `${id.key}`, AND it reaches a
+                    // stream consumer as data rather than as prose.
+                    cajeta::emitJsonOutput(key, value);
+                }
             } else if (k == "finding") {
                 // Structured findings — parsed into the typed
                 // ActionResult.findings list. The lint task
@@ -590,9 +636,30 @@ namespace cajeta::buildtool {
                     f.message = s->str();
                 }
                 if (f.severity.empty()) f.severity = "info";
+                if (jsonMode) {
+                    // A located finding becomes a NAVIGABLE diagnostic; an
+                    // unlocated one becomes a diagnostic with no location.
+                    // `emitJsonDiagnostic` writes null for an empty file and a
+                    // non-positive line/column, so absence stays absence
+                    // rather than becoming a position of 0:0 that navigates
+                    // somewhere wrong.
+                    cajeta::emitJsonDiagnostic(diagnosticSeverity(f.severity),
+                                               f.rule, f.message, f.file,
+                                               f.line, f.column);
+                }
                 state.result.findings.push_back(std::move(f));
             } else if (k == "result") {
                 const std::string status = obj->getString("status")->str();
+                if (status == "ok" || status == "error") {
+                    if (jsonMode) {
+                        // Its own kind, attributed. The compiler's terminal
+                        // `result` says whether the BUILD succeeded; this one
+                        // says whether the plugin action did, and `source`
+                        // is what tells them apart.
+                        auto m = obj->getString("message");
+                        cajeta::emitJsonResult(status, m ? m->str() : "");
+                    }
+                }
                 if (status == "ok") {
                     state.resultSeen = true;
                     state.resultOk = true;
@@ -682,8 +749,20 @@ namespace cajeta::buildtool {
         ProtocolState state;
         std::istringstream lines(stdoutBuf);
         std::string line;
-        while (std::getline(lines, line)) {
-            applyResponseLine(line, state, ctx);
+        // 4.2.3 — provenance is stamped HERE, from the plugin the build tool
+        // chose to invoke, and never read from the record. A plugin claiming
+        // to be the compiler, or to be another plugin, has the claim
+        // discarded: the field it emits is not a field this code reads.
+        //
+        // RAII because the ingest below has an early return on every dropped
+        // record; a missed reset would attribute the rest of the build to
+        // this plugin, which reads as a plugin emitting things it never did.
+        const bool jsonMode = diagnosticFormat() == DiagFormat::Json;
+        {
+            cajeta::JsonSourceScope provenance(plugin.name, plugin.version);
+            while (std::getline(lines, line)) {
+                applyResponseLine(line, state, jsonMode, ctx);
+            }
         }
         reportDropped(state, plugin.name);
 

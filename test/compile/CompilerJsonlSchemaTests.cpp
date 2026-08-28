@@ -80,7 +80,19 @@ std::set<std::string> kindsDocumentedInSchema(const std::string& text,
     if (!obj) { *parseError = "schema root is not an object"; return kinds; }
     auto* defs = obj->getObject("$defs");
     if (!defs) { *parseError = "schema has no $defs"; return kinds; }
-    for (const auto& kv : *defs) kinds.insert(kv.first.str());
+    // Only the RECORD KINDS. A `$defs` entry is a kind when it pins
+    // `properties.kind` to a const; anything else is shared factoring —
+    // `source`/`sourceVersion` are defined once there and $ref'd from every
+    // kind, which is schema hygiene, not a claim that a record exists.
+    for (const auto& kv : *defs) {
+        const auto* def = kv.second.getAsObject();
+        if (!def) continue;
+        const auto* props = def->getObject("properties");
+        if (!props) continue;
+        const auto* kindProp = props->getObject("kind");
+        if (!kindProp || !kindProp->get("const")) continue;
+        kinds.insert(kv.first.str());
+    }
     return kinds;
 }
 
@@ -142,4 +154,22 @@ TEST(CompilerJsonlSchema, SchemaVersionMatchesTheEmittedVersion) {
         << "schema major disagrees with what the compiler emits";
     EXPECT_EQ(*minor, cajeta::kJsonlSchemaMinor)
         << "schema minor disagrees with what the compiler emits";
+}
+
+// The negative arm for the kind detector. It reads `$defs` entries and has to
+// tell a record kind from shared factoring; one that matched everything would
+// demand an emitter for `source`, and one that matched nothing would report a
+// perfectly documented schema forever.
+TEST(CompilerJsonlSchema, theKindDetectorTellsRecordsFromSharedDefinitions) {
+    std::string err;
+    const auto kinds = kindsDocumentedInSchema(readAll(schemaPath()), &err);
+    ASSERT_TRUE(err.empty()) << err;
+
+    EXPECT_GT(kinds.size(), 5u) << "the detector found almost no kinds";
+    EXPECT_TRUE(kinds.count("diagnostic")) << "missed a real record kind";
+    EXPECT_TRUE(kinds.count("stream")) << "missed a real record kind";
+    EXPECT_FALSE(kinds.count("source"))
+        << "counted a shared definition as a record kind";
+    EXPECT_FALSE(kinds.count("sourceVersion"))
+        << "counted a shared definition as a record kind";
 }

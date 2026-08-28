@@ -11,7 +11,9 @@
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Plugin.h"
 #include "cajeta/buildtool/PluginRuntime.h"
 #include "cajeta/buildtool/Properties.h"
@@ -248,8 +250,44 @@ namespace {
         bool ok = false;
         std::string error;
         std::string stderrText;
+        std::string stdoutText;
         ActionResult result;
     };
+
+    // --diag-format=json is process-global (two switches: the build tool's
+    // format and the emitter's gate — `resolveDiagFormatFromArgv` ties them in
+    // the real binary, and a test that set only one would silently emit
+    // nothing). RAII so a failing assertion cannot leave JSON mode on for
+    // every test that runs after it.
+    struct JsonModeForTest {
+        JsonModeForTest() {
+            cajeta::buildtool::setDiagnosticFormat(cajeta::DiagFormat::Json);
+            cajeta::setJsonProgressEnabled(true);
+        }
+        ~JsonModeForTest() {
+            cajeta::buildtool::setDiagnosticFormat(cajeta::DiagFormat::Text);
+            cajeta::setJsonProgressEnabled(false);
+        }
+    };
+
+    // Every NDJSON object on stderr, in order.
+    std::vector<llvm::json::Object> records(const std::string& text) {
+        std::vector<llvm::json::Object> out;
+        std::istringstream in(text);
+        std::string line;
+        while (std::getline(in, line)) {
+            if (line.empty()) continue;
+            auto parsed = llvm::json::parse(line);
+            if (!parsed) { llvm::consumeError(parsed.takeError()); continue; }
+            if (auto* o = parsed->getAsObject()) out.push_back(*o);
+        }
+        return out;
+    }
+
+    std::string field(const llvm::json::Object& o, const char* k) {
+        auto v = o.getString(k);
+        return v ? v->str() : std::string();
+    }
 
     Ran runPlugin(const std::string& tag, const std::string& body) {
         auto dir = tempDir(tag);
@@ -261,6 +299,7 @@ namespace {
 
         llvm::json::Object params;
         Ran out;
+        testing::internal::CaptureStdout();
         testing::internal::CaptureStderr();
         auto r = invokePluginAction(plugin, "acme." + tag + ".go", params, ctx);
         out.ok = (bool) r;
@@ -270,8 +309,21 @@ namespace {
             out.error = errorText(r.takeError());
         }
         out.stderrText = testing::internal::GetCapturedStderr();
+        out.stdoutText = testing::internal::GetCapturedStdout();
         return out;
     }
+
+    // One plugin emitting one of everything. Shared so the JSON and text
+    // assertions below are about the same input.
+    const char* kEveryKindScript = R"(
+printf '{"kind":"log","level":"info","message":"progress"}\n'
+printf '{"kind":"warn","message":"config is odd"}\n'
+printf '{"kind":"finding","severity":"error","rule":"cov","file":"src/A.cajeta","line":12,"column":5,"message":"uncovered"}\n'
+printf '{"kind":"finding","severity":"info","message":"no position"}\n'
+printf '{"kind":"write","text":"78.2%% covered"}\n'
+printf '{"kind":"output","key":"path","value":"build/report.html"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)";
 
     // Lines that BEGIN with `prefix`. The substring alone is the wrong test:
     // an escaped payload may legitimately contain the word `warning:` — that
@@ -554,4 +606,223 @@ TEST(PluginRuntimeTests, thePublishedCoveragePluginStillRuns) {
     }
     RecordProperty("pluginVersion", version);
     RecordProperty("pluginOutcome", ok ? std::string("ok") : error);
+}
+
+// ---- §4 — JSON mode: one stream, one grammar -------------------------------
+//
+// Under --diag-format=json a plugin's output JOINS the diagnostic stream
+// rather than forming a parallel one. A consumer that already parses compiler
+// diagnostics gets coco's findings with no new parsing, and can tell they came
+// from a plugin.
+
+// 4.1.1 / 4.1.2 — a located finding is a navigable diagnostic at its own
+// severity. This is the use case the section exists for.
+TEST(PluginRuntimeTests, jsonModeTurnsALocatedFindingIntoANavigableDiagnostic) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonfinding", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    const auto recs = records(r.stderrText);
+    const llvm::json::Object* located = nullptr;
+    for (const auto& o : recs) {
+        if (field(o, "kind") == "diagnostic" && field(o, "message") == "uncovered") {
+            located = &o;
+        }
+    }
+    ASSERT_NE(located, nullptr) << r.stderrText;
+    EXPECT_EQ(field(*located, "severity"), "error");
+    EXPECT_EQ(field(*located, "code"), "cov");
+    EXPECT_EQ(field(*located, "file"), "src/A.cajeta");
+    EXPECT_EQ(located->getInteger("line").value_or(0), 12);
+    EXPECT_EQ(located->getInteger("column").value_or(0), 5);
+}
+
+// 4.1.3 — the negative arm, and the one that matters. A fabricated 0:0
+// navigates SOMEWHERE, which is worse than navigating nowhere.
+TEST(PluginRuntimeTests, jsonModeGivesAnUnlocatedFindingNoLocation) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonbare", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    const auto recs = records(r.stderrText);
+    const llvm::json::Object* bare = nullptr;
+    for (const auto& o : recs) {
+        if (field(o, "kind") == "diagnostic" && field(o, "message") == "no position") {
+            bare = &o;
+        }
+    }
+    ASSERT_NE(bare, nullptr) << r.stderrText;
+    EXPECT_EQ(field(*bare, "severity"), "note") << "info maps to note (SARIF)";
+    EXPECT_TRUE(bare->get("file") && bare->getString("file") == std::nullopt)
+        << "file must be null, not a path";
+    EXPECT_FALSE(bare->getInteger("line").has_value()) << "line must be null";
+    EXPECT_FALSE(bare->getInteger("column").has_value()) << "column must be null";
+}
+
+// 4.1.4 — warn becomes a warning; an info log becomes a note.
+TEST(PluginRuntimeTests, jsonModeMapsWarnToWarningAndLogToNote) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonlevels", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    bool sawWarning = false, sawNote = false;
+    for (const auto& o : records(r.stderrText)) {
+        if (field(o, "kind") != "diagnostic") continue;
+        if (field(o, "message") == "config is odd" &&
+            field(o, "severity") == "warning") sawWarning = true;
+        if (field(o, "message") == "progress" &&
+            field(o, "severity") == "note") sawNote = true;
+    }
+    EXPECT_TRUE(sawWarning) << r.stderrText;
+    EXPECT_TRUE(sawNote) << r.stderrText;
+}
+
+// 4.1.5 — output, result and write stay their OWN kinds. Flattening them into
+// messages would leave a consumer parsing prose to recover data it was handed
+// structurally.
+TEST(PluginRuntimeTests, jsonModeKeepsOutputResultAndWriteStructural) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonstructural", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    // Bound to a named local: `records()` returns by value, and pointers into
+    // the temporary a range-for iterates would dangle the moment the loop ends.
+    const auto recs = records(r.stderrText);
+    const llvm::json::Object* output = nullptr;
+    const llvm::json::Object* write = nullptr;
+    const llvm::json::Object* result = nullptr;
+    for (const auto& o : recs) {
+        const auto k = field(o, "kind");
+        if (k == "output") output = &o;
+        if (k == "write")  write  = &o;
+        if (k == "result") result = &o;
+    }
+    ASSERT_NE(output, nullptr) << r.stderrText;
+    EXPECT_EQ(field(*output, "key"), "path");
+    EXPECT_EQ(field(*output, "value"), "build/report.html");
+
+    ASSERT_NE(write, nullptr) << r.stderrText;
+    EXPECT_EQ(field(*write, "text"), "78.2% covered");
+
+    ASSERT_NE(result, nullptr) << r.stderrText;
+    EXPECT_EQ(field(*result, "status"), "ok");
+
+    // And the output still reaches the invoking task, which is the other half
+    // of "structural": a stream consumer AND ${id.key} both get it.
+    ASSERT_EQ(r.result.outputs.count("path"), 1u);
+    EXPECT_EQ(r.result.outputs["path"], "build/report.html");
+}
+
+// 4.1.7 — every record the plugin caused carries the plugin's Olla key: the
+// same string as its `plugins` entry in cajeta.json, so a reader goes from a
+// diagnostic straight to the entry that declared it, with no translation.
+TEST(PluginRuntimeTests, everyRecordCarriesTheEmittingPluginsKey) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonprov", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    const auto recs = records(r.stderrText);
+    ASSERT_FALSE(recs.empty()) << r.stderrText;
+    for (const auto& o : recs) {
+        EXPECT_EQ(field(o, "source"), "acme.jsonprov")
+            << "record without the plugin's key: " << field(o, "kind");
+        EXPECT_EQ(field(o, "sourceVersion"), "1.0.0");
+    }
+}
+
+// 4.1.8 / 4.1.9 / 4.3.3 — a plugin's CLAIM about its own origin is discarded.
+// Provenance is stamped by the build tool from the plugin it chose to invoke,
+// so a plugin cannot launder a diagnostic into looking like the compiler's, or
+// like another plugin's. The claim is not rejected, it is simply never read.
+TEST(PluginRuntimeTests, aPluginCannotForgeItsOwnProvenance) {
+    JsonModeForTest json;
+    auto r = runPlugin("liar", R"(
+printf '{"kind":"warn","message":"I am the compiler","source":"cajeta","sourceVersion":"99.0.0"}\n'
+printf '{"kind":"warn","message":"I am someone else","source":"dev.cajeta.coverage"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)");
+    ASSERT_TRUE(r.ok) << r.error;
+
+    const auto recs = records(r.stderrText);
+    ASSERT_FALSE(recs.empty()) << r.stderrText;
+    for (const auto& o : recs) {
+        EXPECT_EQ(field(o, "source"), "acme.liar")
+            << "a plugin's claimed origin was recorded: " << r.stderrText;
+        EXPECT_NE(field(o, "sourceVersion"), "99.0.0");
+    }
+}
+
+// 4.3.2 — the stream filters by provenance ALONE. No plugin-specific parsing,
+// no kind allowlist: a consumer that wants compiler-only, or one plugin's,
+// reads one field.
+TEST(PluginRuntimeTests, theStreamFiltersByProvenanceAlone) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonfilter", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    int fromPlugin = 0, fromCompiler = 0;
+    for (const auto& o : records(r.stderrText)) {
+        if (field(o, "source") == "acme.jsonfilter") ++fromPlugin;
+        else if (field(o, "source") == "cajeta") ++fromCompiler;
+        else ADD_FAILURE() << "record with no usable source: " << field(o, "kind");
+    }
+    EXPECT_GT(fromPlugin, 0);
+    EXPECT_EQ(fromCompiler, 0) << "nothing here was the compiler's";
+}
+
+// 4.3.1 — the findings parse with the compiler's OWN diagnostic reader. The
+// point of joining the stream is that a consumer needs no plugin-specific
+// code, so this asserts the shape a diagnostic consumer requires and nothing
+// plugin-shaped at all.
+TEST(PluginRuntimeTests, pluginFindingsParseAsOrdinaryDiagnostics) {
+    JsonModeForTest json;
+    auto r = runPlugin("jsonreader", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    int diagnostics = 0;
+    for (const auto& o : records(r.stderrText)) {
+        if (field(o, "kind") != "diagnostic") continue;
+        ++diagnostics;
+        const auto sev = field(o, "severity");
+        EXPECT_TRUE(sev == "error" || sev == "warning" || sev == "note")
+            << "severity outside the diagnostic vocabulary: " << sev;
+        EXPECT_TRUE(o.get("message") != nullptr) << "diagnostic with no message";
+    }
+    EXPECT_GE(diagnostics, 4) << "log, warn and two findings: " << r.stderrText;
+}
+
+// 4.1.6 / 4.3.4 — text mode is untouched by all of the above. Pinned as exact
+// bytes rather than "contains", because the guarantee is byte-identical output
+// and a `contains` assertion would pass while the format drifted around it.
+TEST(PluginRuntimeTests, textModeOutputIsUnchangedByJsonMode) {
+    // No JsonModeForTest — this is the default path.
+    auto r = runPlugin("textmode", kEveryKindScript);
+    ASSERT_TRUE(r.ok) << r.error;
+
+    EXPECT_EQ(r.stdoutText, "[plugin] progress\n78.2% covered");
+    EXPECT_EQ(r.stderrText, "warning: config is odd\n");
+
+    // Not one structured record escaped into text mode.
+    EXPECT_EQ(r.stdoutText.find("\"kind\":"), std::string::npos);
+    EXPECT_EQ(r.stderrText.find("\"kind\":"), std::string::npos);
+
+    // And the structured data still reached the task.
+    ASSERT_EQ(r.result.outputs.count("path"), 1u);
+    EXPECT_EQ(r.result.findings.size(), 2u);
+}
+
+// The control for JsonModeForTest. If the switch did not actually take, every
+// §4 assertion above would be reading an empty stream and passing on an empty
+// loop — the failure mode a mode-scoped test is least able to see.
+TEST(PluginRuntimeTests, theJsonModeSwitchActuallyTakes) {
+    std::string withJson, withoutJson;
+    {
+        JsonModeForTest json;
+        withJson = runPlugin("switchon", kEveryKindScript).stderrText;
+    }
+    withoutJson = runPlugin("switchoff", kEveryKindScript).stderrText;
+
+    EXPECT_FALSE(records(withJson).empty()) << "json mode emitted no records";
+    EXPECT_TRUE(records(withoutJson).empty())
+        << "text mode emitted records: " << withoutJson;
 }
