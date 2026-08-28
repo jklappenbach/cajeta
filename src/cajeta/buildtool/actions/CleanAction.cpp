@@ -92,16 +92,48 @@ namespace cajeta::buildtool {
             bool keepCache = false;
             if (auto v = params.getBoolean("keep-cache")) keepCache = *v;
 
-            // Resolve the build directory from settings.build.
+            // Resolve the build directory from settings.build, then let
+            // settings.output override it (spec §3.3). Clean MUST follow the
+            // same resolution the build action uses — a clean that wipes
+            // `build/` while the build writes to `out/` silently leaves
+            // everything behind, which is the failure mode `clean` exists to
+            // prevent.
             std::string outputDir = "build";
+            SettingsOutput so;
             if (ctx.manifest()) {
                 auto sb = parseSettingsBuild(*ctx.manifest());
                 if (!sb) return sb.takeError();
                 if (sb->outputDir) outputDir = *sb->outputDir;
+                auto parsed = parseSettingsOutput(*ctx.manifest());
+                if (!parsed) return parsed.takeError();
+                so = std::move(*parsed);
             }
+            if (so.root) outputDir = *so.root;
 
             auto buildWipe = wipeTree(fs::path(outputDir));
             if (!buildWipe) return buildWipe.takeError();
+
+            // A key pointed OUTSIDE the root is still this project's output,
+            // so clean owns it too. Skipped when it already sits under the
+            // root, so the common case wipes exactly one tree.
+            std::vector<std::string> extraRootsWiped;
+            {
+                fs::path rootPath = fs::path(outputDir).lexically_normal();
+                for (const auto* p : {&so.intermediates, &so.artifacts,
+                                      &so.binaries}) {
+                    if (!*p) continue;
+                    fs::path candidate = fs::path(**p).lexically_normal();
+                    auto rel = candidate.lexically_relative(rootPath);
+                    bool insideRoot = !rel.empty()
+                        && rel.native().compare(0, 2, "..") != 0;
+                    if (insideRoot) continue;
+                    auto w = wipeTree(candidate);
+                    if (!w) return w.takeError();
+                    buildWipe->entries += w->entries;
+                    buildWipe->bytes   += w->bytes;
+                    extraRootsWiped.push_back(candidate.string());
+                }
+            }
 
             WipeResult cacheWipe;
             if (!keepCache) {
@@ -117,10 +149,17 @@ namespace cajeta::buildtool {
             r.outputs["removed-bytes"]   = std::to_string(totalBytes);
             r.outputs["cache-cleaned"] = keepCache ? "false" : "true";
             // Say what was removed — `clean` used to print nothing at all, so
-            // there was no way to tell it apart from a no-op.
+            // there was no way to tell it apart from a no-op. NAME EVERY ROOT
+            // actually wiped: with settings.output pointing a key outside the
+            // root, clean removes trees this line would otherwise not mention,
+            // and "removed 15 entries from build" while also deleting an
+            // absolute scratch directory is a report that hides a deletion.
+            std::string roots = outputDir;
+            for (const auto& extra : extraRootsWiped) roots += ", " + extra;
+            if (!keepCache) roots += " and .cajeta/cache";
             llvm::outs() << "[clean] removed " << totalEntries << " entries ("
-                         << (totalBytes / 1024) << " KiB) from " << outputDir
-                         << (keepCache ? "" : " and .cajeta/cache") << "\n";
+                         << (totalBytes / 1024) << " KiB) from " << roots
+                         << "\n";
             return r;
         }
     };

@@ -70,6 +70,20 @@ namespace cajeta::buildtool {
         uint64_t cacheMaxAgeSeconds = 0;
     };
 
+    // settings.output block — where generated files go
+    // (build-output-layout-spec §3.3). All optional, all relative to the
+    // project root unless absolute. `root` is the one knob most projects
+    // touch; the other three override it individually.
+    //
+    // Defaults live in the build action, not here, so an absent key stays
+    // distinguishable from one set to its default value.
+    struct SettingsOutput {
+        std::optional<std::string> root;           // default: build
+        std::optional<std::string> intermediates;  // default: <root>/obj
+        std::optional<std::string> artifacts;      // default: <root>/archive
+        std::optional<std::string> binaries;       // default: <root>/exe
+    };
+
     // settings.native-libraries entry — a native C/C++ library a Cajeta
     // library binds via @Native. Keyed by lib-id. See
     // docs/specification/buildtool/native-deps-spec.md §2.
@@ -134,6 +148,12 @@ namespace cajeta::buildtool {
     // structurally invalid shapes (e.g. binaries entry without
     // `entry-method`).
     llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m);
+
+    // Parse + VALIDATE settings.output. Validation happens here, on load,
+    // rather than at first write (spec §4.5): a bad value should stop the
+    // build before anything is generated, and the diagnostic names the
+    // offending value so it can be found in the manifest.
+    llvm::Expected<SettingsOutput> parseSettingsOutput(const Manifest& m);
 
     // Parse one native-library entry object (the value under a lib-id key).
     // `where` is the diagnostic prefix. Shared by the manifest parser and the

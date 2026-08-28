@@ -293,6 +293,61 @@ namespace cajeta::buildtool {
         return m;
     }
 
+    llvm::Expected<SettingsOutput> parseSettingsOutput(const Manifest& m) {
+        SettingsOutput out;
+        const auto* output = m.settingsRaw.getObject("output");
+        if (!output) return out;   // absent → defaults; valid
+
+        // One validator for all four keys, so they cannot drift apart.
+        // ABSOLUTE PATHS ARE LEGAL (§3.3 says values are relative to the
+        // project root "unless absolute", and §3.3.1 wants intermediates
+        // redirected to tmpfs) — what is rejected is a value that is not a
+        // string, is empty, or ESCAPES the project root. An escape is the
+        // real hazard: `../..` would put generated files somewhere the
+        // project does not own and `clean` would never find them again.
+        auto read = [&](const char* key,
+                        std::optional<std::string>& slot)
+                -> llvm::Error {
+            const auto* v = output->get(key);
+            if (!v) return llvm::Error::success();
+            auto s = v->getAsString();
+            if (!s) {
+                return llvm::createStringError(
+                    llvm::inconvertibleErrorCode(),
+                    std::string("settings.output.") + key +
+                    ": value must be a string path");
+            }
+            if (s->empty()) {
+                return llvm::createStringError(
+                    llvm::inconvertibleErrorCode(),
+                    std::string("settings.output.") + key +
+                    ": value must not be empty");
+            }
+            std::filesystem::path p(s->str());
+            if (p.is_relative()) {
+                std::filesystem::path norm = p.lexically_normal();
+                auto it = norm.begin();
+                if (it != norm.end() && it->string() == "..") {
+                    return llvm::createStringError(
+                        llvm::inconvertibleErrorCode(),
+                        std::string("settings.output.") + key + ": '"
+                        + s->str() + "' escapes the project root; generated"
+                        " files must stay inside it (an absolute path is"
+                        " allowed if you mean somewhere else entirely)");
+                }
+            }
+            slot = s->str();
+            return llvm::Error::success();
+        };
+
+        if (auto e = read("root", out.root)) return std::move(e);
+        if (auto e = read("intermediates", out.intermediates))
+            return std::move(e);
+        if (auto e = read("artifacts", out.artifacts)) return std::move(e);
+        if (auto e = read("binaries", out.binaries)) return std::move(e);
+        return out;
+    }
+
     llvm::Expected<SettingsBuild> parseSettingsBuild(const Manifest& m) {
         auto err = [](const std::string& where, const std::string& msg) {
             return llvm::createStringError(

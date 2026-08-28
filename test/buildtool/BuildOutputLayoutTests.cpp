@@ -79,9 +79,13 @@ struct LayoutProject {
     }
 
     // `entry` empty => a library project (emits .cja); otherwise an exe.
+    // `outputBlock` is spliced verbatim as `settings.output` when non-empty —
+    // unit 3's knob. Passed as raw JSON so a test can hand in a malformed
+    // value and watch the parse reject it.
     static std::unique_ptr<LayoutProject> create(const std::string& projName,
                                                  const std::string& entry,
-                                                 const std::string& pkg = "t") {
+                                                 const std::string& pkg = "t",
+                                                 const std::string& outputBlock = "") {
         static std::mt19937_64 rng(std::random_device{}());
         auto p = std::make_unique<LayoutProject>();
         p->name = projName;
@@ -107,9 +111,16 @@ struct LayoutProject {
              "  \"details\": { \"name\": \"" << projName << "\","
              " \"version\": \"0.1.0\",\n"
              "                 \"cajeta-lang-version\": \"1.0\" },\n";
-        if (!entry.empty()) {
-            m << "  \"settings\": { \"build\": {"
-                 " \"entry-method\": \"" << entry << "\" } },\n";
+        if (!entry.empty() || !outputBlock.empty()) {
+            m << "  \"settings\": {\n";
+            if (!entry.empty()) {
+                m << "    \"build\": { \"entry-method\": \"" << entry
+                  << "\" }" << (outputBlock.empty() ? "\n" : ",\n");
+            }
+            if (!outputBlock.empty()) {
+                m << "    \"output\": " << outputBlock << "\n";
+            }
+            m << "  },\n";
         }
         // `clean` is a TASK, not a built-in verb — every archetype ships one,
         // and without it `cajeta clean` falls through to printing help.
@@ -328,6 +339,88 @@ TEST(BuildOutputLayoutTests, cleanRemovesGeneratedFilesAndNothingElse) {
         ss << in.rdbuf();
         EXPECT_EQ(ss.str(), bytes) << "clean modified " << rel;
     }
+}
+
+// ─── unit 3: settings.output ──────────────────────────────────────────
+//
+// Spec §3.3. Four keys, all optional, all relative to the project root
+// unless absolute: `root` is the one knob most projects touch, and
+// `intermediates` / `artifacts` / `binaries` override it individually.
+//
+// `binaries` defaults to <root>/exe, NOT §3.1's `build/bin`: unit 2 kept the
+// executable at build/exe/<name> because that path is documented in the
+// toolchain skill and asserted by scripts/check-guide-part1.sh. The KEY is
+// still `binaries`, so adopting build/bin later is a one-line default change
+// rather than a new setting.
+
+// 3.1.1 — `root` moves intermediates AND artifacts together.
+TEST(BuildOutputLayoutTests, outputRootMovesIntermediatesAndArtifactsTogether) {
+    auto p = LayoutProject::create("t.app", "t.Main::run", "t",
+                                   R"({ "root": "out" })");
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    EXPECT_FALSE(p->intermediatesUnder(p->root / "out" / "obj").empty())
+        << "intermediates follow output.root";
+    EXPECT_TRUE(fs::exists(p->root / "out" / "exe" / "t.app"))
+        << "the binary follows output.root";
+    EXPECT_FALSE(fs::exists(p->root / "build"))
+        << "nothing may be left at the default root once it is overridden";
+}
+
+// 3.1.2 — an explicit `artifacts` overrides `root` for ARTIFACTS ONLY, and
+// intermediates stay under `root`. This is the arm that fails if the four
+// keys are collapsed into one path.
+TEST(BuildOutputLayoutTests, explicitArtifactsOverridesRootForArtifactsOnly) {
+    auto p = LayoutProject::create(
+        "t.lib", /*entry=*/"", "t",
+        R"({ "root": "out", "artifacts": "dist" })");
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    EXPECT_TRUE(fs::exists(p->root / "dist" / "t.lib-0.1.0.cja"))
+        << "the .cja follows output.artifacts:\n" << out;
+    EXPECT_FALSE(fs::exists(p->root / "out" / "archive" / "t.lib-0.1.0.cja"))
+        << "artifacts must NOT also land under root once overridden";
+}
+
+// 3.1.3 — a bad value fails at MANIFEST PARSE naming the offending value
+// (§4.5), not at first write. Absolute paths are legal (§3.3, and 3.3.1
+// wants intermediates on tmpfs), so the rejected shapes are escapes and
+// non-strings — never "it starts with /".
+TEST(BuildOutputLayoutTests, badOutputSettingIsRejectedAtParseNamingTheValue) {
+    struct Case { const char* block; const char* needle; };
+    const Case cases[] = {
+        { R"({ "root": "../escape" })",   "../escape" },
+        { R"({ "intermediates": "" })",   "intermediates" },
+        { R"({ "artifacts": 42 })",       "artifacts" },
+        { R"({ "binaries": ["a"] })",     "binaries" },
+    };
+    for (const auto& c : cases) {
+        auto p = LayoutProject::create("t.app", "t.Main::run", "t", c.block);
+        std::string out;
+        EXPECT_NE(0, p->build(out)) << "accepted a bad output setting: "
+                                    << c.block;
+        EXPECT_NE(std::string::npos, out.find(c.needle))
+            << "the diagnostic must name the offending value.\nblock: "
+            << c.block << "\ngot:\n" << out;
+        // Rejected at PARSE means nothing was written first.
+        EXPECT_TRUE(p->intermediatesUnder(p->root).empty())
+            << "a rejected manifest must not have produced output first";
+    }
+}
+
+// 3.1.4 — no `output` block is byte-identical to unit 2. The negative arm:
+// adding the setting must not change the default layout for the projects
+// that never opt in.
+TEST(BuildOutputLayoutTests, noOutputBlockKeepsTheUnitTwoDefaults) {
+    auto p = LayoutProject::create("t.app", "t.Main::run");
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    EXPECT_FALSE(p->intermediatesUnder(p->root / "build" / "obj").empty());
+    EXPECT_TRUE(p->intermediatesUnder(p->root / "build" / "exe").empty());
+    EXPECT_TRUE(fs::exists(p->root / "build" / "exe" / "t.app"));
 }
 
 // The collision this separation resolves: a details.name equal to a top-level

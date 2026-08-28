@@ -232,12 +232,34 @@ namespace cajeta::buildtool {
             namespace fs = std::filesystem;
             std::string sourceRoot = "src/main/cajeta";
             std::string outputDir  = "build";
+            SettingsOutput outCfg;
             if (ctx.manifest()) {
                 auto sb = parseSettingsBuild(*ctx.manifest());
                 if (!sb) return sb.takeError();
                 if (sb->sourceRoot) sourceRoot = *sb->sourceRoot;
                 if (sb->outputDir)  outputDir  = *sb->outputDir;
+                // settings.output (spec §3.3). Validated on LOAD, so a bad
+                // value stops the build here rather than at first write.
+                auto parsed = parseSettingsOutput(*ctx.manifest());
+                if (!parsed) return parsed.takeError();
+                outCfg = std::move(*parsed);
             }
+            // `root` is the one knob most projects touch; the other three
+            // override it individually. settings.build.output-dir stays
+            // honoured as the legacy spelling of the same idea, so projects
+            // that already set it keep working — output.root wins when both
+            // are present, being the newer and more specific setting.
+            if (outCfg.root) outputDir = *outCfg.root;
+            fs::path interRoot = outCfg.intermediates
+                ? fs::path(*outCfg.intermediates) : fs::path(outputDir) / "obj";
+            fs::path artRoot = outCfg.artifacts
+                ? fs::path(*outCfg.artifacts) : fs::path(outputDir) / "archive";
+            // <root>/exe, not §3.1's build/bin: unit 2 kept the executable
+            // where the toolchain skill and check-guide-part1.sh expect it.
+            // The KEY is `binaries`, so adopting bin later is a default
+            // change rather than a new setting.
+            fs::path binRoot = outCfg.binaries
+                ? fs::path(*outCfg.binaries) : fs::path(outputDir) / "exe";
 
             // Decide archive-root + output-path per emit. The
             // compiler binary takes <entry> <source-root> <archive-root>
@@ -281,15 +303,15 @@ namespace cajeta::buildtool {
             } else if (emit == "archived-ir") {
                 compilerEmit = "cja";
                 formatLabel = "archived-ir";
-                archiveRoot = fs::path(outputDir) / "archive";
-                compilerOut = fs::path(outputDir) / "obj";
+                archiveRoot = artRoot;
+                compilerOut = interRoot;
                 outputPath = archiveRoot /
                              (detailsName + "-" + version + ".cja");
             } else {
                 compilerEmit = "exe";
                 formatLabel = "executable";
-                archiveRoot = fs::path(outputDir) / "exe";
-                compilerOut = fs::path(outputDir) / "obj";
+                archiveRoot = binRoot;
+                compilerOut = interRoot;
                 outputPath = archiveRoot / detailsName;
             }
 
