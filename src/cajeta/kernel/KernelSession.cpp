@@ -500,6 +500,29 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     archives.insert(archives.end(), options.classpath.begin(),
                     options.classpath.end());
 
+    // U6 — an archive already on the classpath at session start IS loaded,
+    // so record it the way a mid-session install is recorded. Without this
+    // the idempotence registry only knows about installs performed by cells,
+    // and re-installing a dependency the manifest already pins falls past
+    // spec 2.4's no-op arm into the collision scan — which is exactly what
+    // `installAndSave` on an already-pinned dependency does. Found by
+    // SessionPackagesSaveTests once 6.1.2 made that collision visible
+    // instead of a swallowed drain-time warning.
+    for (const auto& path : archives) {
+        std::error_code archEc;
+        auto canon = std::filesystem::weakly_canonical(path, archEc);
+        if (archEc) continue;
+        try {
+            auto archive = CajetaArchive::readFrom(canon.string());
+            impl.installedArchives.insert(canon.string());
+            impl.installsByName[archive.getName()] =
+                Impl::InstallRecord{archive.getVersion(), canon.string()};
+        } catch (std::exception&) {
+            // Unreadable here is not this code's problem to report: the
+            // ingest below fails with a far better message.
+        }
+    }
+
     // 7.2.5 — RESIDENT STDLIB ONLY WHEN THERE IS NO CLASSPATH.
     //
     // The reuse core's baseline is captured once per thread, before any
@@ -1047,6 +1070,18 @@ bool KernelSession::installFromHook(const std::string& request,
     if (it != impl.installsByName.end()) {
         const std::string& loaded = it->second.version;
         if (versionSatisfies(loaded, constraint)) {
+            // A no-op INSTALL is still a real SAVE request (spec 5.4): the
+            // manifest can need the new constraint written even when the
+            // loaded version already satisfies it, which is precisely the
+            // `installAndSave` re-run case.
+            if (save) {
+                std::string saveError;
+                if (!saveToManifest(archiveName, constraint, phase,
+                                    &saveError)) {
+                    writeOut(out, outCap, saveError);
+                    return false;
+                }
+            }
             writeOut(out, outCap, loaded);
             return true;
         }
@@ -2165,6 +2200,77 @@ void KernelSession::describeThrow(void* thrown, const std::string& cellName,
     }
 }
 
+// notebook-olla-install 6.1.2 (spec 4.3) — does this archive declare a
+// canonical name the session already holds?
+//
+// Pure archive I/O plus registry lookups: no compiler pass, so unlike the
+// ingest it CAN run while a cell is mid-execution. That is the whole point.
+// Before this existed, a mid-cell install queued its splice to the cell
+// boundary and only discovered the collision at drain — after `install`
+// had already handed the cell a version string. The rejection landed in a
+// log line no notebook user ever sees, and the next cell failed to import
+// with no stated reason.
+bool KernelSession::collidesWithSession(const std::string& archivePath,
+                                        std::string* error) {
+    try {
+        auto archive = CajetaArchive::readFrom(archivePath);
+        auto& cmap = CajetaType::getCanonicalMap();
+        for (const auto& e : archive.getEntries()) {
+            if (e.kindTag != CajetaArchive::EntryKind::ClassSource) continue;
+            std::string canonical = e.name;
+            const std::string suffix = ".cajeta";
+            if (canonical.size() > suffix.size()
+                && canonical.compare(canonical.size() - suffix.size(),
+                                     suffix.size(), suffix) == 0) {
+                canonical.resize(canonical.size() - suffix.size());
+            }
+            std::replace(canonical.begin(), canonical.end(), '/', '.');
+            if (cmap.find(canonical) != cmap.end()) {
+                if (error) {
+                    *error = "'" + canonical + "' is already loaded in this "
+                             "session — an install never shadows session "
+                             "state";
+                }
+                return true;
+            }
+            // Spec 4.3's OTHER arm: "or from an earlier cell". A cell's
+            // classes do not keep the package they declare — the script-unit
+            // pass rewrites them into the reserved `cajeta.script` package
+            // (measured 2026-08-28: `package depx; class Answer` in a cell
+            // registers as `cajeta.script.Answer`, never `depx.Answer`). So
+            // a canonical-only comparison can never match a cell-declared
+            // class, and this arm silently never fired.
+            //
+            // Compare on the SIMPLE name under that one reserved package.
+            // Narrow on purpose: matching bare simple names against the whole
+            // registry would reject any archive sharing a class name with the
+            // stdlib, and only `cajeta.script` holds cell declarations.
+            auto dot = canonical.rfind('.');
+            std::string simple = dot == std::string::npos
+                ? canonical : canonical.substr(dot + 1);
+            std::string asCellDeclared =
+                std::string(cajeta::scriptDefaultPackage()) + "." + simple;
+            if (cmap.find(asCellDeclared) != cmap.end()) {
+                if (error) {
+                    *error = "'" + simple + "' was declared by an earlier "
+                             "cell, and '" + canonical + "' would collide "
+                             "with it — an install never shadows session "
+                             "state. Rename the cell's class, or restart the "
+                             "session to install cleanly.";
+                }
+                return true;
+            }
+        }
+    } catch (std::exception& e) {
+        if (error) {
+            *error = std::string("cannot read archive '") + archivePath
+                   + "': " + e.what();
+        }
+        return true;      // unreadable is not "no collision"
+    }
+    return false;
+}
+
 bool KernelSession::installArchive(const std::string& cjaPath,
                                    std::string* error) {
     Impl& impl = *impl_;
@@ -2180,6 +2286,14 @@ bool KernelSession::installArchive(const std::string& cjaPath,
     }
     const std::string key = canon.string();
     if (impl.installedArchives.count(key)) return true;   // idempotent
+
+    // 6.1.2 — answer the CALLER, not the drain. A queued splice reports
+    // success to the installing cell, so a collision found later would be
+    // invisible; this arm makes the rejection reach the call that caused it.
+    std::string collision;
+    if (collidesWithSession(key, &collision)) {
+        return fail("installArchive: " + collision);
+    }
     if (impl.cellExecuting) {
         impl.pendingInstalls.push_back(key);   // spliced at the cell boundary
         return true;
@@ -2196,6 +2310,12 @@ bool KernelSession::installArchive(const std::string& cjaPath,
             // archive declares must be new to the session. Entry names are
             // path-like ("depx/Answer.cajeta"); the canonical is the dotted
             // stem. find(), never operator[] (registry-poisoning rule).
+            //
+            // NOT redundant with the eager scan in the caller above: a
+            // QUEUED splice drains at the cell boundary, and the rest of
+            // that cell can define classes after the eager scan ran. This
+            // is the authoritative check; the eager one exists so the
+            // common rejection reaches the cell that asked for it.
             auto archive = CajetaArchive::readFrom(key);
             auto& cmap = CajetaType::getCanonicalMap();
             for (const auto& e : archive.getEntries()) {
