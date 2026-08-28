@@ -121,4 +121,28 @@ namespace cajeta::buildtool {
         return std::optional<std::string>{text};
     }
 
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::publishedSignature(
+        const std::string& packageName,
+        const std::string& version) const {
+        namespace fs = std::filesystem;
+        fs::path sidecar = fs::path(root_) / packageName / version /
+                           (packageName + "-" + version + ".cja.sig");
+        std::error_code ec;
+        if (!fs::is_regular_file(sidecar, ec)) {
+            return std::optional<std::string>{};
+        }
+        std::ifstream in(sidecar, std::ios::binary);
+        if (!in) {
+            return err("filesystem repository '" + name_ +
+                       "': cannot open signature sidecar '" +
+                       sidecar.string() + "'");
+        }
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        // Raw signature bytes, NOT text: no trimming here, unlike the
+        // checksum sidecar. A stripped byte is a failed verification.
+        return std::optional<std::string>{buf.str()};
+    }
+
 } // namespace cajeta::buildtool

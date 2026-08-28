@@ -43,6 +43,8 @@
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
+#include "cajeta/buildtool/Signature.h"
+#include "cajeta/cli/TrustStore.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
 #include "cajeta/compile/CajetaArchive.h"
@@ -639,6 +641,64 @@ int32_t sessionInstallHook(const char* name, int32_t nameLen,
 
 }  // namespace
 
+// notebook-olla-install U4 (spec 3.3) — is this archive vouched for by a
+// key THIS MACHINE trusts?
+//
+// The trust store is the answer to "whose signature counts": `cajeta trust
+// add` puts a key in the user tier, and env/user/system precedence is
+// already defined there. A repository cannot make itself trusted by
+// shipping a key alongside the artifact — that is the whole point.
+//
+// An unsigned archive reaching here is allowed: the require-signatures
+// floor is enforced by the caller, which knows the policy. What is never
+// allowed is a signature that fails to verify.
+bool KernelSession::verifySignatureOrFail(
+        const std::string& archivePath, const std::string& name,
+        const std::string& version, const std::string& repoName,
+        const std::string& signature,
+        const std::function<void(const std::string&)>& phase,
+        std::string* errorOut) {
+    namespace bt = cajeta::buildtool;
+    if (signature.empty()) return true;      // policy already decided above
+
+    phase("checking signature for " + name + " " + version);
+    auto layout = cajeta::cli::resolveTrustStoreLayout();
+    std::vector<std::string> keys;
+    for (const auto& entry : cajeta::cli::listTrustedKeys(layout)) {
+        keys.push_back(entry.path);
+    }
+    if (keys.empty()) {
+        if (errorOut) {
+            *errorOut = "Packages.install: '" + name + "' " + version
+                      + " is signed, but this machine trusts no signing "
+                        "keys, so the signature cannot be checked. Add the "
+                        "publisher's key with `cajeta trust add`.";
+        }
+        return false;
+    }
+
+    auto verified = bt::verifyAgainstAnyKey(archivePath, signature, keys);
+    if (!verified) {
+        llvm::consumeError(verified.takeError());
+        if (errorOut) {
+            *errorOut = "Packages.install: the signature for '" + name
+                      + "' " + version + " could not be checked.";
+        }
+        return false;
+    }
+    if (!verified->has_value()) {
+        if (errorOut) {
+            *errorOut = "Packages.install: the signature for '" + name + "' "
+                      + version + " from " + repoName + " does not match any "
+                        "trusted key (" + std::to_string(keys.size())
+                      + " checked). Nothing was installed. If this publisher "
+                        "is new, add their key with `cajeta trust add`.";
+        }
+        return false;
+    }
+    return true;
+}
+
 // notebook-olla-install U3 (spec 3.1, 3.2, 3.4, 2.6) — name + constraint
 // to a verified local archive, through the buildtool's own resolver stack.
 // There is no second fetch path here: repositories, cache, and checksums
@@ -658,6 +718,7 @@ bool KernelSession::resolveForInstall(
     // Spec 3.1 — the governing project's repositories, else the default
     // central. A session with no project still installs.
     std::vector<bt::RepositorySpec> specs;
+    bool requireSignatures = false;
     std::string projectRoot = impl.projectDir;
     if (!projectRoot.empty()) {
         auto manifestPath =
@@ -676,6 +737,12 @@ bool KernelSession::resolveForInstall(
                             + manifestPath + " could not be parsed");
             }
             specs = *parsed;
+            // Spec 3.5 — the policy floor. Read straight off settings: the
+            // loader validates top-level blocks only, so this needs no
+            // manifest-schema change.
+            if (auto b = m->settingsRaw.getBoolean("require-signatures")) {
+                requireSignatures = *b;
+            }
         }
     }
     if (specs.empty()) {
@@ -743,8 +810,31 @@ bool KernelSession::resolveForInstall(
     } else {
         llvm::consumeError(pc.takeError());
     }
+    // Spec 3.3/3.5 — the signature the repository publishes, resolved
+    // BEFORE the cache arm so a cached artifact is held to the same policy
+    // as a freshly fetched one. A cache hit is a shortcut past the network,
+    // never past the checks.
+    std::string signature;
+    if (auto ps = chosen->publishedSignature(name, chosenVersion)) {
+        if (ps->has_value()) signature = **ps;
+    } else {
+        llvm::consumeError(ps.takeError());
+    }
+    if (signature.empty() && requireSignatures) {
+        return fail("Packages.install: '" + name + "' " + chosenVersion
+                    + " from " + chosen->name() + " publishes no signature, "
+                      "and this project sets require-signatures. Install a "
+                      "signed release, or drop require-signatures to accept "
+                      "checksum-only verification.");
+    }
+
     if (!published.empty()) {
         if (auto hit = cache.lookup(published)) {
+            if (!verifySignatureOrFail(*hit, name, chosenVersion,
+                                       chosen->name(), signature, phase,
+                                       errorOut)) {
+                return false;
+            }
             phase("cached " + name + " " + chosenVersion);
             if (pathOut) *pathOut = *hit;
             if (versionOut) *versionOut = chosenVersion;
@@ -778,6 +868,13 @@ bool KernelSession::resolveForInstall(
                         + ". The download was discarded and nothing was "
                           "installed.");
         }
+        if (!verifySignatureOrFail(*fetched, name, chosenVersion,
+                                   chosen->name(), signature, phase,
+                                   errorOut)) {
+            std::error_code rm;
+            std::filesystem::remove(*fetched, rm);
+            return false;
+        }
         if (auto stored = cache.insert(*fetched)) {
             if (pathOut) *pathOut = *stored;
             if (versionOut) *versionOut = chosenVersion;
@@ -785,6 +882,12 @@ bool KernelSession::resolveForInstall(
         } else {
             llvm::consumeError(stored.takeError());   // cache is best-effort
         }
+    } else if (!verifySignatureOrFail(*fetched, name, chosenVersion,
+                                      chosen->name(), signature, phase,
+                                      errorOut)) {
+        std::error_code rm;
+        std::filesystem::remove(*fetched, rm);
+        return false;
     }
 
     if (pathOut) *pathOut = *fetched;

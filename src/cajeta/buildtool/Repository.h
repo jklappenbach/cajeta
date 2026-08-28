@@ -187,6 +187,25 @@ namespace cajeta::buildtool {
             (void) version;
             return std::optional<std::string>{};
         }
+
+        // The detached ed25519 signature this repository publishes for
+        // `name@version` — raw signature bytes, the form
+        // `cajeta archive sign` writes (notebook-olla-install spec 3.3).
+        //
+        // A checksum says the bytes are the bytes the repository meant to
+        // serve; a signature says someone the MACHINE trusts vouched for
+        // them. Whose keys count is not decided here — the caller resolves
+        // that against the trust store.
+        //
+        // `std::nullopt` means no signature is published, which the caller
+        // treats as acceptable or fatal depending on `require-signatures`.
+        virtual llvm::Expected<std::optional<std::string>>
+        publishedSignature(const std::string& name,
+                           const std::string& version) const {
+            (void) name;
+            (void) version;
+            return std::optional<std::string>{};
+        }
     };
 
     using RepositoryPtr = std::shared_ptr<Repository>;

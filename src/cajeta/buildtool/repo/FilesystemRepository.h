@@ -48,6 +48,12 @@ namespace cajeta::buildtool {
         publishedChecksum(const std::string& packageName,
                           const std::string& version) const override;
 
+        // Reads `<root>/<name>/<version>/<name>-<version>.cja.sig` when
+        // present — the default output path of `cajeta archive sign`.
+        llvm::Expected<std::optional<std::string>>
+        publishedSignature(const std::string& packageName,
+                           const std::string& version) const override;
+
     private:
         std::string name_;
         std::string root_;

@@ -274,6 +274,17 @@ namespace cajeta::kernel {
         // checksums. `phase` narrates resolve/fetch/verify to the cell's
         // stream (6.1). False with `errorOut` set on any rejection —
         // nothing is spliced, so a failure leaves no half-installed state.
+        // notebook-olla-install U4 (spec 3.3): true when `signature` is
+        // empty (policy is the caller's) or verifies against a key in the
+        // machine's trust store. False with `errorOut` set otherwise — a
+        // signature that does not verify is never merely a warning.
+        bool verifySignatureOrFail(
+            const std::string& archivePath, const std::string& name,
+            const std::string& version, const std::string& repoName,
+            const std::string& signature,
+            const std::function<void(const std::string&)>& phase,
+            std::string* errorOut);
+
         bool resolveForInstall(
             const std::string& name, const std::string& constraint,
             const std::function<void(const std::string&)>& phase,
