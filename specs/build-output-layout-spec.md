@@ -184,3 +184,11 @@ All other cajeta repos are clean on both counts.
   other clones have already pulled, so a force-push is a per-repo
   decision by the developer, not a default. cajeta-cabra was different —
   it had never been pushed, so its history was rewritten before creation.
+
+  DECIDED (Julian, 2026-08-28) — **purge all of them**. Done for the five
+  affected repos and force-pushed. 275 artifact objects were still in
+  history after every tip was clean, because untracking removes a file
+  from the next commit and never from the ones already written: an audit
+  of tips reports clean while the weight remains. The rewrite was gated
+  on the tip TREE hash being identical before and after — history
+  changes, content does not — which held on all five.
