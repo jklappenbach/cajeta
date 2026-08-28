@@ -39,6 +39,8 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include <map>
+#include <sstream>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -109,9 +111,14 @@ struct LayoutProject {
             m << "  \"settings\": { \"build\": {"
                  " \"entry-method\": \"" << entry << "\" } },\n";
         }
-        m << "  \"tasks\": { \"build\": { \"actions\": [\n"
+        // `clean` is a TASK, not a built-in verb — every archetype ships one,
+        // and without it `cajeta clean` falls through to printing help.
+        m << "  \"tasks\": {\n"
+             "    \"build\": { \"actions\": [\n"
              "      { \"action\": \"build\", \"flavor\": \"debug\","
-             " \"id\": \"art\" } ] } }\n"
+             " \"id\": \"art\" } ] },\n"
+             "    \"clean\": { \"actions\": [ { \"action\": \"clean\" } ] }\n"
+             "  }\n"
              "}\n";
         return p;
     }
@@ -120,6 +127,17 @@ struct LayoutProject {
         fs::path log = root / "out.log";
         std::string cmd = "cd " + root.string() + " && \""
             + layoutCompilerBinary() + "\" build > " + log.string() + " 2>&1";
+        int rc = layoutExit(std::system(cmd.c_str()));
+        std::ifstream in(log);
+        output.assign(std::istreambuf_iterator<char>(in),
+                      std::istreambuf_iterator<char>());
+        return rc;
+    }
+
+    int clean(std::string& output) const {
+        fs::path log = root / "clean.log";
+        std::string cmd = "cd " + root.string() + " && \""
+            + layoutCompilerBinary() + "\" clean > " + log.string() + " 2>&1";
         int rc = layoutExit(std::system(cmd.c_str()));
         std::ifstream in(log);
         output.assign(std::istreambuf_iterator<char>(in),
@@ -249,6 +267,67 @@ TEST(BuildOutputLayoutTests, dependencyObjectsLandUnderTheirOwnDepsSubtree) {
     // The negative arm: the project's OWN classes must NOT be relocated.
     EXPECT_TRUE(fs::exists(out / "app" / "Main.o"))
         << "the project's own objects keep their package tree";
+}
+
+// 2.1.3 — `clean` removes everything generated and NOTHING a human wrote.
+//
+// Asserted as a byte-identical source tree, not as "the sources still exist":
+// a clean that truncated or rewrote a file would pass the weaker check. The
+// snapshot covers content, so it also catches a clean that helpfully
+// reformats something.
+//
+// The positive half matters just as much. `clean` that deletes nothing also
+// leaves the sources untouched, so the test first proves there WAS generated
+// output to remove, then that none of it survives — under `build/` and under
+// `.cajeta/cache/`, which are two separate roots and were the two places the
+// repo audit found committed junk.
+TEST(BuildOutputLayoutTests, cleanRemovesGeneratedFilesAndNothingElse) {
+    auto p = LayoutProject::create("t.app", "t.Main::run");
+
+    // Snapshot every hand-written file: relative path -> exact bytes.
+    std::map<std::string, std::string> before;
+    for (const auto& e : fs::recursive_directory_iterator(p->root)) {
+        if (!e.is_regular_file()) continue;
+        std::ifstream in(e.path(), std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        before[fs::relative(e.path(), p->root).string()] = ss.str();
+    }
+    ASSERT_FALSE(before.empty()) << "fixture wrote no files";
+
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    // The instrument check: there must be something to clean, or the
+    // assertions below are vacuous.
+    ASSERT_TRUE(fs::exists(p->root / "build"))
+        << "nothing was generated, so this proves nothing";
+    ASSERT_FALSE(p->intermediatesUnder(p->root / "build").empty())
+        << "no intermediates were produced, so this proves nothing";
+
+    std::string cleanOut;
+    ASSERT_EQ(0, p->clean(cleanOut)) << cleanOut;
+
+    // Nothing generated survives, in either root.
+    EXPECT_TRUE(p->intermediatesUnder(p->root / "build").empty())
+        << "clean left intermediates:"
+        << join(p->intermediatesUnder(p->root / "build"));
+    EXPECT_FALSE(fs::exists(p->root / "build" / "exe" / "t.app"))
+        << "clean left the executable behind";
+    EXPECT_FALSE(fs::exists(p->root / ".cajeta" / "cache"))
+        << "clean left the compiler cache behind — the audit found 313 of"
+           " these committed across four repos";
+
+    // And every hand-written file is byte-for-byte what it was.
+    for (const auto& [rel, bytes] : before) {
+        fs::path f = p->root / rel;
+        ASSERT_TRUE(fs::exists(f)) << "clean deleted a hand-written file: "
+                                   << rel;
+        std::ifstream in(f, std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        EXPECT_EQ(ss.str(), bytes) << "clean modified " << rel;
+    }
 }
 
 // The collision this separation resolves: a details.name equal to a top-level
