@@ -41,6 +41,7 @@
 #include "cajeta/buildtool/ArtifactCache.h"
 #include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Signature.h"
@@ -629,14 +630,8 @@ int32_t sessionInstallHook(const char* name, int32_t nameLen,
                  "kernel); declare the dependency in cajeta.json instead");
         return 1;
     }
-    if (save) {
-        writeOut(out, outCap,
-                 "Packages.installAndSave: writing the dependency to "
-                 "cajeta.json is not wired yet — use Packages.install for a "
-                 "session-only install and add the pin with `cajeta add`");
-        return 1;
-    }
-    return session->installFromHook(request, want, out, outCap) ? 0 : 1;
+    return session->installFromHook(request, want, save != 0, out, outCap)
+        ? 0 : 1;
 }
 
 }  // namespace
@@ -895,8 +890,96 @@ bool KernelSession::resolveForInstall(
     return true;
 }
 
+// notebook-olla-install U5 (spec 5.2-5.4) — the manifest write.
+//
+// `install` is session-only and the manifest is the reproducibility
+// record; this is the separate, named act that graduates one into the
+// other. It goes through the SAME format-preserving editor `cajeta add`
+// uses, so a hand-maintained cajeta.json keeps its comments and layout —
+// a notebook must not be the reason a project's manifest gets reformatted.
+bool KernelSession::saveToManifest(
+        const std::string& name, const std::string& constraint,
+        const std::function<void(const std::string&)>& phase,
+        std::string* errorOut) {
+    namespace bt = cajeta::buildtool;
+    Impl& impl = *impl_;
+    auto fail = [&](const std::string& m) {
+        if (errorOut) *errorOut = m;
+        return false;
+    };
+
+    // Spec 5.3 — no project governs this session, so there is nowhere to
+    // record the dependency. Say what to do about it.
+    if (impl.projectDir.empty()) {
+        return fail("Packages.installAndSave: no project governs this "
+                    "session, so there is no cajeta.json to write. Start the "
+                    "kernel in a project directory, or create one with "
+                    "`cajeta init notebook`. (Packages.install still works — "
+                    "it just does not survive a restart.)");
+    }
+    auto manifestPath =
+        (std::filesystem::path(impl.projectDir) / "cajeta.json").string();
+    if (!std::filesystem::exists(manifestPath)) {
+        return fail("Packages.installAndSave: no cajeta.json at "
+                    + impl.projectDir + " — create one with "
+                      "`cajeta init notebook`.");
+    }
+
+    // Spec 5.4 — an unchanged pin writes NOTHING. Rewriting a file to the
+    // same bytes still churns its mtime and any watcher looking at it.
+    auto current = bt::loadManifestFile(manifestPath);
+    if (!current) {
+        llvm::consumeError(current.takeError());
+        return fail("Packages.installAndSave: " + manifestPath
+                    + " could not be read.");
+    }
+    std::string previous;
+    bool alreadyPinned = false;
+    if (auto deps = bt::parseDependencies(*current)) {
+        for (const auto& d : *deps) {
+            if (d.name != name) continue;
+            alreadyPinned = true;
+            previous = d.versionConstraint;
+            break;
+        }
+    } else {
+        llvm::consumeError(deps.takeError());
+    }
+    if (alreadyPinned && previous == constraint) {
+        phase("cajeta.json already pins " + name + " " + constraint);
+        return true;
+    }
+
+    std::ifstream in(manifestPath, std::ios::binary);
+    if (!in) return fail("Packages.installAndSave: cannot open "
+                         + manifestPath);
+    std::ostringstream buf;
+    buf << in.rdbuf();
+    in.close();
+
+    auto rewritten = bt::addDependencyToManifest(buf.str(), name, constraint);
+    if (!rewritten) {
+        llvm::consumeError(rewritten.takeError());
+        return fail("Packages.installAndSave: writing " + name + " to "
+                    + manifestPath + " would not produce a valid manifest; "
+                      "nothing was changed.");
+    }
+
+    std::ofstream outFile(manifestPath, std::ios::binary | std::ios::trunc);
+    if (!outFile) return fail("Packages.installAndSave: cannot write "
+                              + manifestPath);
+    outFile << *rewritten;
+    outFile.close();
+
+    phase(alreadyPinned
+              ? ("cajeta.json: " + name + " " + previous + " -> " + constraint)
+              : ("cajeta.json: added " + name + " " + constraint));
+    return true;
+}
+
 bool KernelSession::installFromHook(const std::string& request,
                                     const std::string& constraint,
+                                    bool save,
                                     char* out, int32_t outCap) {
     Impl& impl = *impl_;
 
@@ -906,6 +989,19 @@ bool KernelSession::installFromHook(const std::string& request,
         std::fputs(("  " + text + "\n").c_str(), stdout);
         std::fflush(stdout);
     };
+
+    // Spec 5.3 — decided BEFORE anything is fetched or spliced. Installing
+    // and only then discovering there is nowhere to record it would leave
+    // the session holding an archive while reporting a failure.
+    if (save && impl.projectDir.empty()) {
+        writeOut(out, outCap,
+                 "Packages.installAndSave: no project governs this session, "
+                 "so there is no cajeta.json to write. Start the kernel in a "
+                 "project directory, or create one with `cajeta init "
+                 "notebook`. (Packages.install still works — it just does "
+                 "not survive a restart.)");
+        return false;
+    }
 
     std::error_code ec;
     auto canon = std::filesystem::weakly_canonical(request, ec);
@@ -979,6 +1075,17 @@ bool KernelSession::installFromHook(const std::string& request,
     impl.installsByName[archiveName] = Impl::InstallRecord{archiveVersion,
                                                            canon.string()};
     impl.installedThisCell.push_back(archiveName);
+
+    // The manifest write comes LAST: a failed save must not leave the
+    // session claiming an install it then reports as an error, and the
+    // splice above is the part that cannot be undone.
+    if (save) {
+        std::string saveError;
+        if (!saveToManifest(archiveName, constraint, phase, &saveError)) {
+            writeOut(out, outCap, saveError);
+            return false;
+        }
+    }
     writeOut(out, outCap, archiveVersion);
     return true;
 }
