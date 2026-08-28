@@ -164,7 +164,10 @@ makes `ActionResult.output` decorative.
 ## 4. Validation, and what happens to bad input
 
 Nothing published breaks. A plugin that emits a malformed record — including
-`dev.cajeta.coverage` 0.5.2 in the wild — keeps working.
+`dev.cajeta.coverage` 0.5.1 in the wild — keeps working. (This said 0.5.2
+until 2026-08-28; the store's `versions.json` publishes 0.3.0, 0.4.0, 0.5.0
+and 0.5.1, and there is no 0.5.2. The compatibility fixture is the newest
+artifact that actually exists.)
 
 **Use cases**
 

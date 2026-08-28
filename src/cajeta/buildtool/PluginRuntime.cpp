@@ -74,6 +74,7 @@
 
 #include "cajeta/buildtool/JsonC.h"
 #include "cajeta/buildtool/OllaStore.h"
+#include "cajeta/buildtool/PluginRecord.h"
 #include "cajeta/buildtool/Resolver.h"
 
 #include <llvm/Support/Error.h>
@@ -420,12 +421,59 @@ namespace cajeta::buildtool {
             bool resultOk = true;
             std::string resultMessage;
             ActionResult result;
+
+            // §3 — a record this build cannot read is DROPPED, never fatal.
+            // Failing the action on one bad line would mean a plugin that
+            // emits a malformed record stops working the day the build tool
+            // learns to notice it, which is the opposite of what a protocol
+            // spec is for. `dev.cajeta.coverage` 0.5.2 is in the wild
+            // emitting exactly that.
+            int dropped = 0;
+            std::string firstDroppedReason;
+            std::string firstDroppedLine;   // raw; quoted at report time
         };
 
-        // Parse one line of the plugin's stdout stream into the
-        // protocol state. Lines that don't parse as JSON-objects with
-        // a string `kind` are reported back as protocol errors.
-        llvm::Error applyResponseLine(
+        // Record a dropped line. Only the FIRST is kept: the warning names
+        // one line and counts the rest, so a plugin emitting a thousand bad
+        // records costs one warning rather than a flood that buries the
+        // build's real output.
+        void dropRecord(ProtocolState& state,
+                        const std::string& reason,
+                        const std::string& line) {
+            if (state.dropped == 0) {
+                state.firstDroppedReason = reason;
+                state.firstDroppedLine = line;
+            }
+            ++state.dropped;
+        }
+
+        // One warning per plugin per invocation (spec §4 use case 5).
+        //
+        // The line is bytes the plugin controls and is malformed by
+        // definition, so it goes through `quoteUntrustedLine` rather than
+        // into the stream verbatim — a bad record must not be able to break
+        // the diagnostic reporting it (spec §4.1).
+        void reportDropped(const ProtocolState& state,
+                           const std::string& pluginName) {
+            if (state.dropped == 0) return;
+            std::cerr << "warning: plugin '" << pluginName << "' emitted "
+                      << state.dropped << " record"
+                      << (state.dropped == 1 ? "" : "s")
+                      << " this build could not read; dropped, action"
+                         " continued. First: "
+                      << state.firstDroppedReason << ": \""
+                      << quoteUntrustedLine(state.firstDroppedLine)
+                      << "\"\n";
+        }
+
+        // Parse one line of the plugin's stdout stream into the protocol
+        // state.
+        //
+        // NOTHING here fails the action (§3). A line either dispatches or is
+        // dropped and counted; the caller warns once at the end. Before this,
+        // a single unreadable line aborted the whole dispatch, which made the
+        // build tool a ceiling on every plugin that had ever shipped a typo.
+        void applyResponseLine(
             const std::string& line,
             ProtocolState& state,
             TaskContext& /*ctx*/) {
@@ -437,29 +485,50 @@ namespace cajeta::buildtool {
                     trimmed.back() == ' '  || trimmed.back() == '\t')) {
                 trimmed.pop_back();
             }
-            if (trimmed.empty()) return llvm::Error::success();
+            if (trimmed.empty()) return;
+
+            // A line that never even attempted a record is `printf`
+            // debugging, not a protocol violation, and it keeps working
+            // (spec §4 use case 4). The discriminator is the leading brace:
+            // anything else was not trying to be JSON, so reporting it as
+            // malformed would warn about the one case that is deliberate.
+            // (It still fails CONFORMANCE — being lenient at runtime and
+            // strict there is what lets the protocol tighten without
+            // breaking anyone mid-build.)
+            if (trimmed[0] != '{') {
+                std::cout << "[plugin] " << trimmed << "\n";
+                return;
+            }
 
             auto parsed = parseJsonC(trimmed);
             if (!parsed) {
                 llvm::consumeError(parsed.takeError());
-                return err("plugin response line is not valid JSON: " +
-                           trimmed);
+                dropRecord(state, "not valid JSON", trimmed);
+                return;
             }
             const auto* obj = parsed->getAsObject();
             if (!obj) {
-                return err("plugin response line is not a JSON object: " +
-                           trimmed);
-            }
-            auto kind = obj->getString("kind");
-            if (!kind) {
-                return err("plugin response line missing 'kind': " +
-                           trimmed);
+                dropRecord(state, "not a JSON object", trimmed);
+                return;
             }
 
-            // Dispatch by kind. Unknown kinds are accepted but ignored
-            // (forward-compat: future plugin versions can emit new
-            // record kinds without breaking older build tools).
-            std::string k = kind->str();
+            // ONE definition of valid (plan §0.2.1). The runtime dispatches
+            // on exactly the rules the conformance suite asserts, so
+            // "conforms to spec" cannot mean two different things depending
+            // on who is asking — and the ad-hoc `getString` guards that used
+            // to live in each arm below are gone, because a record that
+            // reaches the dispatch has its required fields.
+            const auto check = checkPluginRecord(*obj);
+            if (check.verdict != RecordVerdict::Valid) {
+                // Malformed and unknown-kind are both dropped, but they are
+                // not the same thing: an unknown kind is a NEWER plugin
+                // talking to an older build tool, and refusing it would make
+                // every build tool a ceiling on every plugin.
+                dropRecord(state, check.reason, trimmed);
+                return;
+            }
+
+            std::string k = obj->getString("kind")->str();
             if (k == "log") {
                 // Progress, not a problem — stdout unless the record says
                 // otherwise.
@@ -498,13 +567,8 @@ namespace cajeta::buildtool {
                     std::cout << text->str();
                 }
             } else if (k == "output") {
-                auto key   = obj->getString("key");
-                auto value = obj->getString("value");
-                if (!key || !value) {
-                    return err("plugin 'output' record missing key or value: " +
-                               trimmed);
-                }
-                state.result.outputs[key->str()] = value->str();
+                state.result.outputs[obj->getString("key")->str()] =
+                    obj->getString("value")->str();
             } else if (k == "finding") {
                 // Structured findings — parsed into the typed
                 // ActionResult.findings list. The lint task
@@ -528,28 +592,27 @@ namespace cajeta::buildtool {
                 if (f.severity.empty()) f.severity = "info";
                 state.result.findings.push_back(std::move(f));
             } else if (k == "result") {
-                state.resultSeen = true;
-                auto status = obj->getString("status");
-                if (!status) {
-                    return err("plugin 'result' record missing 'status': " +
-                               trimmed);
-                }
-                if (status->str() == "ok") {
+                const std::string status = obj->getString("status")->str();
+                if (status == "ok") {
+                    state.resultSeen = true;
                     state.resultOk = true;
-                } else if (status->str() == "error") {
+                } else if (status == "error") {
+                    state.resultSeen = true;
                     state.resultOk = false;
                     auto msg = obj->getString("message");
                     state.resultMessage = msg ? msg->str()
                                               : std::string("plugin reported error");
                 } else {
-                    return err("plugin 'result' record has unknown "
-                               "status '" + status->str() +
-                               "' (expected 'ok' or 'error'): " +
+                    // A status this build cannot interpret is not a report.
+                    // Dropped rather than fatal like everything else — and
+                    // `resultSeen` stays false, so the action still fails as
+                    // "produced no result", which is what actually happened.
+                    dropRecord(state,
+                               "'result' record has unknown status '" +
+                                   status + "' (expected 'ok' or 'error')",
                                trimmed);
                 }
             }
-            // Unknown kind: ignore (forward-compat).
-            return llvm::Error::success();
         }
 
     } // namespace
@@ -620,10 +683,9 @@ namespace cajeta::buildtool {
         std::istringstream lines(stdoutBuf);
         std::string line;
         while (std::getline(lines, line)) {
-            if (auto e = applyResponseLine(line, state, ctx)) {
-                return std::move(e);
-            }
+            applyResponseLine(line, state, ctx);
         }
+        reportDropped(state, plugin.name);
 
         if (!state.resultSeen) {
             return err("plugin '" + plugin.name +
