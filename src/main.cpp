@@ -986,6 +986,67 @@ int main(int argc, const char* argv[]) {
         return 1;
     }
 
+    // build-output-layout §4.1: generated files never land in a source tree.
+    //
+    // The arity check above closes one way in. This closes the rest: whatever
+    // path arrives at the output position, if it holds cajeta SOURCES it is a
+    // source tree and we refuse it. That is the precise hazard — 180 object
+    // files landed in cajeta-cabra/src and 75 in cajeta-llm/src on
+    // 2026-08-27, at exit 0, and were then committed by a routine `git add`.
+    //
+    // Keyed on "contains sources" rather than on containment against the
+    // source root, which over-fires: source root `.` with output `./build` is
+    // ordinary and correct, and a containment rule rejects it. A build
+    // directory holds no sources, so it can never trip this.
+    //
+    // §3.4 settled that output destinations belong to the BUILD TOOL and the
+    // compiler keeps its bare positional, so for every script that invokes
+    // `cajeta` directly this guard is the whole of the protection.
+    {
+        const std::string& outDir = positional[2];
+        std::error_code ec;
+        if (std::filesystem::is_directory(outDir, ec)) {
+            // RECURSIVE: a source root normally holds package directories,
+            // not loose files — `src/main/cajeta` contains `dev/`, and the
+            // .cajeta files sit several levels down. An immediate-children
+            // scan sees only directories and waves the source tree through.
+            // Bounded so a large pre-existing output directory cannot make
+            // this expensive; a source tree hits a .cajeta long before the
+            // cap.
+            std::string offender;
+            int examined = 0;
+            constexpr int kMaxExamined = 20000;
+            std::filesystem::recursive_directory_iterator it(
+                outDir,
+                std::filesystem::directory_options::skip_permission_denied,
+                ec), end;
+            for (; !ec && it != end && offender.empty(); it.increment(ec)) {
+                if (++examined > kMaxExamined) break;
+                if (it->path().extension() == ".cajeta"
+                        && it->is_regular_file(ec)) {
+                    offender = std::filesystem::relative(it->path(), outDir, ec)
+                        .string();
+                    if (offender.empty()) {
+                        offender = it->path().filename().string();
+                    }
+                }
+            }
+            if (!offender.empty()) {
+                std::cerr
+                    << "cajeta: refusing to write build output into a source "
+                       "tree.\n"
+                       "  output-dir : " << outDir << "\n"
+                       "  it holds   : " << offender << " (and possibly more "
+                       ".cajeta sources)\n"
+                       "  Generated files do not belong beside sources. Point "
+                       "the output directory at\n"
+                       "  a build location (e.g. build/), which is what the "
+                       "build tool does by default.\n";
+                return 1;
+            }
+        }
+    }
+
     // The xpuArch default ("sm_89") is NVPTX-shaped; for the amdgpu backend
     // default to a GFX target instead, and for vulkan a SPIR-V target env,
     // unless the user pinned --xpu-arch.

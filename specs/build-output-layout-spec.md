@@ -108,10 +108,22 @@ instead of hard-coding it.
 
 ## 4. Rules
 
-- **4.1 Generated files never land inside a source root.** The compiler
-  rejects an output directory that is, contains, or is contained by a
-  declared source root. This is the direct guard for §2.5, and it is
-  independent of the arity fix — it catches the mistake however it arrives.
+- **4.1 Generated files never land inside a source tree.** The compiler
+  rejects an output directory that **contains cajeta sources** (searched
+  recursively, bounded). Direct guard for §2.5, independent of the arity
+  fix — it catches the mistake however it arrives, and under §3.4 it is
+  the ONLY protection a direct `cajeta` invocation has.
+
+  REVISED while writing the tests (2026-08-27). The first wording was
+  "is, contains, or is contained by the source root", which over-fires on
+  an ordinary correct invocation: source root `.` with output `./build`
+  has the output contained by the source root, yet nothing is polluted —
+  sources live in `./src`, artifacts in `./build`. Keying on *contains
+  sources* catches every real case (the output dir being the source root,
+  or any directory of `.cajeta` files) and cannot fire on a build
+  directory, which by definition holds none. The search must be RECURSIVE:
+  a source root holds package directories, not loose files, so an
+  immediate-children scan sees only directories and waves it through.
 - **4.2 Everything generated lives under one root** so `clean` is
   `rm -rf build` and `.gitignore` is `build/`.
 - **4.3 The layout is discoverable, not guessed.** A consumer asks the
