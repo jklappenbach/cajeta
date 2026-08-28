@@ -86,6 +86,80 @@ TEST(PortableEnvGuardTests, everyCallerOfSetenvObtainsItPortably) {
         << "\n\nFix: #include \"../PortableEnv.h\" (adjust the depth).";
 }
 
+// A host-side symbol that JIT'd code must reach needs a Windows bridge entry.
+//
+// Same family, different mechanism. `__attribute__((visibility("default")))`
+// is how a host symbol is published to the JIT's process-symbol generator on
+// ELF — and it is a NO-OP on COFF, where a PE exports nothing regardless. So
+// a symbol marked that way and not also listed in CajetaJitWinSymbols.cpp
+// resolves on Linux and macOS and is invisible on Windows.
+//
+// Measured 2026-08-28: the three __cajeta_install_* symbols behind
+// Packages.install were marked visibility("default") and never bridged. They
+// are referenced from cajeta_rt_session.c, which is part of the STANDARD
+// embedded runtime, so the unresolved reference poisoned the runtime module
+// for every JIT'd cell — 82 failures across suites as unrelated as Protobuf,
+// Avro, Vmap and Varargs, from one missing table entry. This scan is the
+// cheapest possible statement of that invariant, and it runs on any host.
+TEST(PortableEnvGuardTests, hostSymbolsPublishedToTheJitAreBridgedForWindows) {
+    fs::path src = testSourceRoot().parent_path() / "src";
+    ASSERT_TRUE(fs::is_directory(src)) << "cannot locate src at " << src;
+
+    const fs::path bridge = src / "cajeta" / "jit" / "CajetaJitWinSymbols.cpp";
+    ASSERT_TRUE(fs::exists(bridge))
+        << "the Windows symbol bridge has moved — update this test: " << bridge;
+    std::string bridgeSrc;
+    {
+        std::ifstream in(bridge);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        bridgeSrc = ss.str();
+    }
+
+    const std::regex identRe(R"(\b(__cajeta_[A-Za-z0-9_]+))");
+    std::vector<std::string> unbridged;
+
+    for (const auto& e : fs::recursive_directory_iterator(src)) {
+        if (!e.is_regular_file()) continue;
+        std::string ext = e.path().extension().string();
+        if (ext != ".cpp" && ext != ".h") continue;
+        if (e.path() == bridge) continue;
+
+        std::ifstream in(e.path());
+        std::string line;
+        bool armed = false;
+        while (std::getline(in, line)) {
+            if (line.find("visibility(\"default\")") != std::string::npos) {
+                armed = true;
+                continue;
+            }
+            if (!armed) continue;
+            // The declaration follows the attribute; take the first
+            // __cajeta_* identifier on it. Blank lines don't disarm.
+            std::smatch m;
+            if (std::regex_search(line, m, identRe)) {
+                const std::string sym = m[1].str();
+                if (bridgeSrc.find("\"" + sym + "\"") == std::string::npos) {
+                    unbridged.push_back(
+                        sym + "  (" + fs::relative(e.path(), src).string() + ")");
+                }
+                armed = false;
+            } else if (!line.empty()) {
+                armed = false;
+            }
+        }
+    }
+
+    std::string joined;
+    for (const auto& u : unbridged) joined += "\n  " + u;
+    EXPECT_TRUE(unbridged.empty())
+        << "these host symbols are published to the JIT via visibility"
+           "(\"default\"), which does nothing on COFF, and are NOT in the"
+           " Windows bridge. They resolve here and fail on MinGW:" << joined
+        << "\n\nFix: add a CJ_SYM entry in src/cajeta/jit/CajetaJitWinSymbols"
+           ".cpp (and test/jit/JitWinSymbols.c if tests JIT them too).";
+}
+
 // The negative arm: the guard must be capable of firing. A scanner whose
 // pattern silently matched nothing would report a clean run forever, which is
 // the failure mode that makes checks like this worthless.

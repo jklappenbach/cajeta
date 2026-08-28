@@ -52,6 +52,17 @@
 // C++ + needs the driver loader, so it can't live in JIT bitcode). Without
 // registering them here, every JIT module on Windows fails to materialize. (On
 // Linux the JIT's -rdynamic export table resolves them; this bridge is _WIN32.)
+// The Packages.install bridge, defined in src/cajeta/kernel/KernelSession.cpp
+// (linked in via libcajeta_lib). DATA rather than functions, so the real types
+// matter here — the JIT'd runtime loads through them. Taking their addresses
+// also forces the archive member to be pulled in, which a static link would
+// otherwise be free to drop.
+extern int32_t (*__cajeta_install_hook)(const char*, int32_t, const char*,
+                                        int32_t, int32_t, char*, int32_t,
+                                        void*);
+extern void* __cajeta_install_ctx;
+extern char  __cajeta_install_out[2048];
+
 extern int     cajeta_xpu_optix_available(void);
 extern int64_t cajeta_xpu_optix_accel_build_aabbs(const float* boxes, unsigned count);
 extern int64_t cajeta_xpu_optix_accel_build_triangles(const float* verts,
@@ -222,6 +233,13 @@ static const CajetaJitWinSym kSymbols[] = {
     CJ_SYM("cajeta_xpu_optix_accel_boxes",            &cajeta_xpu_optix_accel_boxes),
     CJ_SYM("cajeta_xpu_optix_launch",                 &cajeta_xpu_optix_launch),
     CJ_SYM("cajeta_xpu_optix_launch_tri",             &cajeta_xpu_optix_launch_tri),
+    // Packages.install bridge — DATA symbols defined in KernelSession.cpp.
+    // cajeta_rt_session.c is part of the STANDARD embedded runtime, so every
+    // JIT module references these, not just the notebook ones. See the extern
+    // block above and the matching entries in CajetaJitWinSymbols.cpp.
+    CJ_SYM("__cajeta_install_hook",                   &__cajeta_install_hook),
+    CJ_SYM("__cajeta_install_ctx",                    &__cajeta_install_ctx),
+    CJ_SYM("__cajeta_install_out",                    &__cajeta_install_out),
 };
 
 const CajetaJitWinSym* cajeta_jit_win_symbols(size_t* count) {
