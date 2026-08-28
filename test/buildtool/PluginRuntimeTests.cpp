@@ -556,19 +556,20 @@ TEST(PluginRuntimeTests, thePublishedCoveragePluginStillRuns) {
         GTEST_SKIP() << "no dev.cajeta.coverage in the olla store at " << pkg;
     }
 
-    std::string version;
-    fs::path binary;
-    for (const auto& e : fs::directory_iterator(pkg)) {
-        if (!e.is_directory()) continue;
-        auto candidate = e.path() / "bin" / "dev.cajeta.coverage";
-        if (!fs::is_regular_file(candidate)) continue;
-        if (e.path().filename().string() > version) {
-            version = e.path().filename().string();
-            binary = candidate;
-        }
-    }
-    if (version.empty()) {
-        GTEST_SKIP() << "no built dev.cajeta.coverage binary under " << pkg;
+    // PINNED, not "newest available", and the pin is the whole point.
+    //
+    // 0.5.1 is the last version published BEFORE this protocol work. Taking
+    // the newest instead would silently retarget this test the moment coco's
+    // migrated build is installed locally (§7 does exactly that to run its
+    // tour gate) — and it would still pass, because a migrated coco conforms.
+    // A compatibility test that quietly starts measuring the new thing is
+    // worse than one that does not run: it reports a guarantee nobody
+    // checked.
+    const std::string version = "0.5.1";
+    const fs::path binary = pkg / version / "bin" / "dev.cajeta.coverage";
+    if (!fs::is_regular_file(binary)) {
+        GTEST_SKIP() << "no published dev.cajeta.coverage " << version
+                     << " binary at " << binary;
     }
 
     auto m = makeManifest();
