@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -37,7 +38,10 @@
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/error/Exception.h"
 #include "cajeta/compile/ScriptUnitSynthesis.h"
+#include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
+#include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/jit/JitModulePrep.h"
 #include "cajeta/jit/CajetaSymbolIndex.h"
@@ -82,17 +86,13 @@ namespace {
     // by the same contract the binding registry documents.
     thread_local KernelSession* g_activeSession = nullptr;
 
-    // Unit 2 keeps constraint matching deliberately small: `*` and a
-    // trailing-wildcard prefix are all the spec's 2.4/2.5 arms need to be
-    // decidable. Unit 3 replaces this with the buildtool's resolver, which
-    // is the only thing that should ever grow a version grammar.
+    // Unit 3: the buildtool's semver matcher, not a second one. Unit 2
+    // shipped a two-line prefix match as a placeholder; a version grammar
+    // must have exactly one implementation, and the resolver's is it.
     bool versionSatisfies(const std::string& version,
                           const std::string& constraint) {
         if (constraint.empty() || constraint == "*") return true;
-        if (constraint == version) return true;
-        auto star = constraint.find('*');
-        if (star == std::string::npos) return false;
-        return version.compare(0, star, constraint, 0, star) == 0;
+        return cajeta::buildtool::versionSatisfies(version, constraint);
     }
 
     void writeOut(char* out, int32_t cap, const std::string& text) {
@@ -328,6 +328,9 @@ struct KernelSession::Impl {
     // notebook-olla-install U1: canonical paths of archives spliced
     // mid-session — the idempotence key (spec 2.4's substrate).
     std::set<std::string> installedArchives;
+    // U3: the project governing this session, kept because an install
+    // has to read its `settings.repositories` long after create() ran.
+    std::string projectDir;
     // U2 (spec 2.4/2.5): what each install DECLARED, so a re-install is
     // judged against the loaded version rather than the path it arrived
     // by — two paths can carry the same library.
@@ -482,6 +485,7 @@ std::unique_ptr<KernelSession> KernelSession::create(const SessionOptions& optio
     // Spec 6 — the project classpath, resolved FIRST because it decides how
     // the stdlib is built. Pure manifest/file work; no compiler needed yet.
     std::vector<std::string> archives;
+    impl.projectDir = options.projectDir;
     if (!options.projectDir.empty()) {
         note("resolving project dependencies");
         std::string resolveError;
@@ -635,18 +639,192 @@ int32_t sessionInstallHook(const char* name, int32_t nameLen,
 
 }  // namespace
 
+// notebook-olla-install U3 (spec 3.1, 3.2, 3.4, 2.6) — name + constraint
+// to a verified local archive, through the buildtool's own resolver stack.
+// There is no second fetch path here: repositories, cache, and checksums
+// are the ones `cajeta build` uses.
+bool KernelSession::resolveForInstall(
+        const std::string& name, const std::string& constraint,
+        const std::function<void(const std::string&)>& phase,
+        std::string* pathOut, std::string* versionOut,
+        std::string* errorOut) {
+    namespace bt = cajeta::buildtool;
+    Impl& impl = *impl_;
+    auto fail = [&](const std::string& m) {
+        if (errorOut) *errorOut = m;
+        return false;
+    };
+
+    // Spec 3.1 — the governing project's repositories, else the default
+    // central. A session with no project still installs.
+    std::vector<bt::RepositorySpec> specs;
+    std::string projectRoot = impl.projectDir;
+    if (!projectRoot.empty()) {
+        auto manifestPath =
+            (std::filesystem::path(projectRoot) / "cajeta.json").string();
+        if (std::filesystem::exists(manifestPath)) {
+            auto m = bt::loadManifestFile(manifestPath);
+            if (!m) {
+                llvm::consumeError(m.takeError());
+                return fail("Packages.install: the governing project's "
+                            "cajeta.json could not be read: " + manifestPath);
+            }
+            auto parsed = bt::parseRepositories(*m);
+            if (!parsed) {
+                llvm::consumeError(parsed.takeError());
+                return fail("Packages.install: settings.repositories in "
+                            + manifestPath + " could not be parsed");
+            }
+            specs = *parsed;
+        }
+    }
+    if (specs.empty()) {
+        bt::RepositorySpec central;
+        central.name = "central";
+        central.type = "http";
+        central.url = "https://olla.cajeta.dev";
+        specs.push_back(central);
+    }
+
+    std::string stage = projectRoot.empty()
+        ? (std::filesystem::temp_directory_path() / "cajeta-session-downloads")
+              .string()
+        : (std::filesystem::path(projectRoot) / ".cajeta" / "cache"
+           / "downloads").string();
+    auto repos = bt::buildRepositories(specs, stage);
+    if (!repos) {
+        llvm::consumeError(repos.takeError());
+        return fail("Packages.install: the session's repositories could not "
+                    "be opened");
+    }
+
+    // Highest satisfying version wins, first repository that carries one.
+    phase("resolving " + name + " " + constraint);
+    std::vector<std::string> consulted;
+    bt::RepositoryPtr chosen;
+    std::string chosenVersion;
+    for (const auto& repo : *repos) {
+        consulted.push_back(repo->name());
+        auto versions = repo->listVersions(name);
+        if (!versions) {          // a repo that cannot answer is not fatal
+            llvm::consumeError(versions.takeError());
+            continue;
+        }
+        for (const auto& v : *versions) {
+            if (!versionSatisfies(v, constraint)) continue;
+            if (chosenVersion.empty()
+                || bt::compareVersions(v, chosenVersion) > 0) {
+                chosenVersion = v;
+                chosen = repo;
+            }
+        }
+        if (chosen) break;
+    }
+    if (!chosen) {
+        // Spec 2.6 — name the constraint AND every repository consulted, so
+        // the reader knows whether to fix the constraint or add a repo.
+        std::string where;
+        for (const auto& c : consulted) {
+            if (!where.empty()) where += ", ";
+            where += c;
+        }
+        return fail("Packages.install: no version of '" + name
+                    + "' satisfies '" + constraint + "'. Repositories "
+                      "consulted: " + (where.empty() ? "(none)" : where));
+    }
+
+    // Spec 3.4 — a cache hit is served without touching the network. The
+    // published checksum IS the cache key, so this is only reachable when
+    // the repository publishes one.
+    bt::ArtifactCache cache(projectRoot.empty() ? stage : projectRoot);
+    std::string published;
+    if (auto pc = chosen->publishedChecksum(name, chosenVersion)) {
+        if (pc->has_value()) published = **pc;
+    } else {
+        llvm::consumeError(pc.takeError());
+    }
+    if (!published.empty()) {
+        if (auto hit = cache.lookup(published)) {
+            phase("cached " + name + " " + chosenVersion);
+            if (pathOut) *pathOut = *hit;
+            if (versionOut) *versionOut = chosenVersion;
+            return true;
+        }
+    }
+
+    phase("fetching " + name + " " + chosenVersion + " from "
+          + chosen->name());
+    auto fetched = chosen->fetch(name, chosenVersion);
+    if (!fetched) {
+        llvm::consumeError(fetched.takeError());
+        return fail("Packages.install: '" + name + "' " + chosenVersion
+                    + " could not be fetched from " + chosen->name()
+                    + ". Cache checked: " + cache.projectCacheDir());
+    }
+
+    // Spec 3.2 — verify before trusting. A mismatch discards the bytes and
+    // fails; there is never a half-installed state, because nothing has
+    // been spliced yet.
+    if (!published.empty()) {
+        phase("verifying " + name + " " + chosenVersion);
+        std::string actual = bt::ArtifactCache::sha256OfFile(*fetched);
+        if (actual != published) {
+            std::error_code rm;
+            std::filesystem::remove(*fetched, rm);
+            return fail("Packages.install: checksum mismatch for '" + name
+                        + "' " + chosenVersion + " from " + chosen->name()
+                        + " — published " + published + ", got "
+                        + (actual.empty() ? std::string("nothing") : actual)
+                        + ". The download was discarded and nothing was "
+                          "installed.");
+        }
+        if (auto stored = cache.insert(*fetched)) {
+            if (pathOut) *pathOut = *stored;
+            if (versionOut) *versionOut = chosenVersion;
+            return true;
+        } else {
+            llvm::consumeError(stored.takeError());   // cache is best-effort
+        }
+    }
+
+    if (pathOut) *pathOut = *fetched;
+    if (versionOut) *versionOut = chosenVersion;
+    return true;
+}
+
 bool KernelSession::installFromHook(const std::string& request,
                                     const std::string& constraint,
                                     char* out, int32_t outCap) {
     Impl& impl = *impl_;
+
+    // Spec 6.1 — a network fetch is never a silent stall. The phases go to
+    // the cell's own stream, which is what the notebook is already showing.
+    auto phase = [](const std::string& text) {
+        std::fputs(("  " + text + "\n").c_str(), stdout);
+        std::fflush(stdout);
+    };
+
     std::error_code ec;
     auto canon = std::filesystem::weakly_canonical(request, ec);
     if (ec || !std::filesystem::exists(canon)) {
-        writeOut(out, outCap,
-                 "Packages.install: cannot acquire '" + request
-                 + "' — no archive at that path, and repository resolution "
-                   "is not wired yet");
-        return false;
+        // Not a path — resolve it as a library name against the session's
+        // repositories (spec 3.1).
+        std::string resolvedPath;
+        std::string resolvedVersion;
+        std::string failure;
+        if (!resolveForInstall(request, constraint, phase, &resolvedPath,
+                               &resolvedVersion, &failure)) {
+            writeOut(out, outCap, failure);
+            return false;
+        }
+        canon = std::filesystem::weakly_canonical(resolvedPath, ec);
+        if (ec || !std::filesystem::exists(canon)) {
+            writeOut(out, outCap,
+                     "Packages.install: '" + request + "' resolved to "
+                     + resolvedVersion + " but its archive is missing at "
+                     + resolvedPath);
+            return false;
+        }
     }
 
     std::string archiveName;
@@ -689,6 +867,7 @@ bool KernelSession::installFromHook(const std::string& request,
         return false;
     }
 
+    phase("splicing " + archiveName + " " + archiveVersion);
     std::string err;
     if (!installArchive(canon.string(), &err)) {
         writeOut(out, outCap, "Packages.install: " + err);

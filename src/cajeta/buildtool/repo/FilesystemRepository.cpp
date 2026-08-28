@@ -91,4 +91,34 @@ namespace cajeta::buildtool {
         return std::optional<std::string>{buf.str()};
     }
 
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::publishedChecksum(
+        const std::string& packageName,
+        const std::string& version) const {
+        namespace fs = std::filesystem;
+        fs::path sidecar = fs::path(root_) / packageName / version /
+                           (packageName + "-" + version + ".cja.sha256");
+        std::error_code ec;
+        if (!fs::is_regular_file(sidecar, ec)) {
+            return std::optional<std::string>{};
+        }
+        std::ifstream in(sidecar, std::ios::binary);
+        if (!in) {
+            return err("filesystem repository '" + name_ +
+                       "': cannot open checksum sidecar '" +
+                       sidecar.string() + "'");
+        }
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        std::string text = buf.str();
+        // Tolerate a trailing newline and the `<hex>  <file>` shape
+        // `sha256sum` writes, so a sidecar can be produced by the
+        // ordinary tool without post-processing.
+        auto cut = text.find_first_of(" \t\r\n");
+        if (cut != std::string::npos) text.resize(cut);
+        if (text.empty()) return std::optional<std::string>{};
+        if (text.rfind("sha256:", 0) != 0) text = "sha256:" + text;
+        return std::optional<std::string>{text};
+    }
+
 } // namespace cajeta::buildtool

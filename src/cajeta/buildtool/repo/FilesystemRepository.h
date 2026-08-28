@@ -39,6 +39,15 @@ namespace cajeta::buildtool {
             const std::string& packageName,
             const std::string& version) const override;
 
+        // Reads `<root>/<name>/<version>/<name>-<version>.cja.sha256`
+        // when present — the filesystem layout's answer to the HTTP
+        // driver's resolve metadata. Absent sidecar means this repo
+        // publishes no checksum, which is not an error: pre-staged and
+        // vendored trees routinely carry only the archive.
+        llvm::Expected<std::optional<std::string>>
+        publishedChecksum(const std::string& packageName,
+                          const std::string& version) const override;
+
     private:
         std::string name_;
         std::string root_;

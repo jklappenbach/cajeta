@@ -169,6 +169,24 @@ namespace cajeta::buildtool {
         fetchManifestJson(
             const std::string& name,
             const std::string& version) const = 0;
+
+        // The checksum this repository PUBLISHES for `name@version`,
+        // in "sha256:<hex>" form — what a fetched artifact is checked
+        // against before it is trusted (notebook-olla-install spec
+        // 3.2). Distinct from hashing the bytes we just downloaded,
+        // which only proves the download was self-consistent.
+        //
+        // `std::nullopt` means this repository publishes no checksum
+        // for that artifact; the caller proceeds on the fetch alone.
+        // Defaulted rather than pure so drivers that have nothing to
+        // publish need no change.
+        virtual llvm::Expected<std::optional<std::string>>
+        publishedChecksum(const std::string& name,
+                          const std::string& version) const {
+            (void) name;
+            (void) version;
+            return std::optional<std::string>{};
+        }
     };
 
     using RepositoryPtr = std::shared_ptr<Repository>;

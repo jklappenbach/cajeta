@@ -268,6 +268,18 @@ namespace cajeta::kernel {
                              const std::string& constraint,
                              char* out, int32_t outCap);
 
+        // notebook-olla-install U3 (spec 3.1, 3.2, 3.4, 2.6): resolve a
+        // library NAME + constraint to a verified local archive through the
+        // buildtool's repositories, artifact cache, and published
+        // checksums. `phase` narrates resolve/fetch/verify to the cell's
+        // stream (6.1). False with `errorOut` set on any rejection —
+        // nothing is spliced, so a failure leaves no half-installed state.
+        bool resolveForInstall(
+            const std::string& name, const std::string& constraint,
+            const std::function<void(const std::string&)>& phase,
+            std::string* pathOut, std::string* versionOut,
+            std::string* errorOut);
+
         const SessionStats& stats() const;
 
     private:
