@@ -244,31 +244,19 @@ TEST(SessionPackagesFailureTests, saveWithNoProjectLeavesTheKernelServing) {
     fs::remove_all(root);
 }
 
-// 6.1.2 / spec 4.3 — DISABLED: a MEASURED GAP, not a flaky test.
+// 6.1.2 / spec 4.3 — the OTHER collision arm: a class an earlier CELL
+// declared. This silently never fired until 2026-08-28.
 //
-// Spec 4.3 says an archive declaring a canonical name the session already
-// holds "from an earlier cell or another archive" must be rejected. The
-// second half works (SessionInstallTests.collidingArchiveIsRejectedAnd
-// SessionSurvives, archive vs archive). The FIRST half does not fire at
-// all.
+// Cause, measured: a cell's classes do not keep the package they declare.
+// The script-unit pass rewrites them into the reserved `cajeta.script`
+// package, so `package depx; class Answer` in a cell registers as
+// `cajeta.script.Answer` — never `depx.Answer`. The scan compared
+// canonicals only, so an archive declaring `depx.Answer` matched nothing
+// and spliced straight over the session's class.
 //
-// Measured 2026-08-28: after a cell declares `package depx; class Answer`,
-// `installArchive` on an archive that also declares depx.Answer returns
-// TRUE with no error — and it does so on the direct, outside-a-cell path
-// too, so this is not about the eager scan or the deferred splice. The
-// session's canonical map simply does not hold a cell-declared class under
-// its plain canonical name, so the scan's `cmap.find("depx.Answer")` misses.
-// (The cell's own class does keep winning afterwards — `Answer.v()` still
-// returns the cell's value — so the observable damage here is two
-// definitions of one canonical coexisting, which is the ODR hazard 7.2.5
-// documented, rather than immediate shadowing.)
-//
-// Worth noting that jupyter-kernel 1.1.3 is WORDED as this case ("defined
-// in an earlier cell") but its test uses two archives, which is why the
-// gap survived.
-//
-// Enable this test when the cause is fixed; it is written to pass then.
-TEST(SessionPackagesFailureTests, DISABLED_collisionWithACellDefinedClassIsRejected) {
+// The scan now also compares the simple name under `cajeta.script`, which
+// is the one package that holds cell declarations.
+TEST(SessionPackagesFailureTests, collisionWithACellDefinedClassIsRejected) {
     auto root = freshRoot("collision");
     auto cja = buildDep(root);
     ASSERT_FALSE(cja.empty()) << "fixture archive failed to build";
@@ -284,8 +272,12 @@ TEST(SessionPackagesFailureTests, DISABLED_collisionWithACellDefinedClassIsRejec
     CellResult r = s->execute(cell("Packages.install(\"depx\", \"1.*\");\n"));
     EXPECT_FALSE(r.ok)
         << "an install must never shadow a class the session already holds";
-    EXPECT_TRUE(contains(r.message, "already loaded"))
-        << "must name the collision; got: " << r.message;
+    EXPECT_TRUE(contains(r.message, "declared by an earlier cell"))
+        << "must say WHICH kind of collision this is — the archive arm's "
+           "\"already loaded\" would leave the reader hunting for another "
+           "archive; got: " << r.message;
+    EXPECT_TRUE(contains(r.message, "Answer"))
+        << "must name the class; got: " << r.message;
 
     CellResult still = s->execute("Answer.v();\n");
     ASSERT_TRUE(still.ok) << still.errorId << ": " << still.message;

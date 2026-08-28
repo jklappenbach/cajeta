@@ -2233,6 +2233,33 @@ bool KernelSession::collidesWithSession(const std::string& archivePath,
                 }
                 return true;
             }
+            // Spec 4.3's OTHER arm: "or from an earlier cell". A cell's
+            // classes do not keep the package they declare — the script-unit
+            // pass rewrites them into the reserved `cajeta.script` package
+            // (measured 2026-08-28: `package depx; class Answer` in a cell
+            // registers as `cajeta.script.Answer`, never `depx.Answer`). So
+            // a canonical-only comparison can never match a cell-declared
+            // class, and this arm silently never fired.
+            //
+            // Compare on the SIMPLE name under that one reserved package.
+            // Narrow on purpose: matching bare simple names against the whole
+            // registry would reject any archive sharing a class name with the
+            // stdlib, and only `cajeta.script` holds cell declarations.
+            auto dot = canonical.rfind('.');
+            std::string simple = dot == std::string::npos
+                ? canonical : canonical.substr(dot + 1);
+            std::string asCellDeclared =
+                std::string(cajeta::scriptDefaultPackage()) + "." + simple;
+            if (cmap.find(asCellDeclared) != cmap.end()) {
+                if (error) {
+                    *error = "'" + simple + "' was declared by an earlier "
+                             "cell, and '" + canonical + "' would collide "
+                             "with it — an install never shadows session "
+                             "state. Rename the cell's class, or restart the "
+                             "session to install cleanly.";
+                }
+                return true;
+            }
         }
     } catch (std::exception& e) {
         if (error) {
