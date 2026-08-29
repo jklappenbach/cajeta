@@ -274,6 +274,83 @@ TEST(XrefLintContract, AChainedGenericReceiverResolvesThroughToTheLambdaBody) {
            "key is dropped silently";
 }
 
+// ── 5.1.5 — an advisory resolve must not invent a second call edge ────────
+//
+// `CajetaClass::resolveMethod` is the xref recording choke point, so ANY
+// resolution during codegen writes an edge at whatever call site is open —
+// including the advisory throws-lint resolve inside
+// MethodCallExpression::generateCode. That probe did not thread the call's
+// explicit method type-args, so a templated call resolved against the OTHER
+// same-name overload and the wrong answer landed in the index as a second edge
+// at the user's line, naming an overload the source never calls.
+//
+// Two properties are asserted together, because fixing either alone is wrong:
+// the bad edge is gone, AND the site still has its real edge. Masking the probe
+// out of the index removes both — measured: it took 71 legitimate edges with it
+// over samples/tour, being their only recorder.
+TEST(XrefLintContract, AnAdvisoryResolveDoesNotInventASecondCallEdge) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    auto root = freshTempDir("advisory");
+    writeUnit(root, "demo/Pick.cajeta",
+        "package demo;\n"
+        "public class Pick {\n"
+        "    public static int32 at<T>(T[] a, int32 n, T key,\n"
+        "                              (T, T) -> int32 cmp) {\n"
+        "        return 0;\n"
+        "    }\n"
+        "    public static int32 at<T>(T[] a, int32 n, T key) {\n"
+        "        return at<T>(a, n, key, (x, y) -> { return 0; });\n"
+        "    }\n"
+        "}\n");
+    // The comparator overload must ALREADY be instantiated when line 6
+    // resolves — that is the trigger, and without line 5 this reproduces
+    // nothing. `SortDemo` in samples/tour has exactly this shape: it calls the
+    // comparator forms of sort/binarySearch before reaching the 3-arg
+    // lowerBound. A first attempt at this test omitted the prior call and
+    // passed against the BROKEN compiler, which is the only reason this
+    // comment exists.
+    writeUnit(root, "demo/Main.cajeta",
+        "package demo;\n"                                             // 1
+        "public class Main {\n"                                       // 2
+        "    public static int32 run() {\n"                           // 3
+        "        int32[] xs = stack int32[4];\n"                      // 4
+        "        int32 a = Pick.at<int32>(xs, 4, 2, (x, y) -> { return 0; });\n" // 5
+        "        int32 b = Pick.at<int32>(xs, 4, 2);\n"               // 6
+        "        return a + b;\n"                                     // 7
+        "    }\n"                                                     // 8
+        "}\n");                                                       // 9
+
+    const std::string doc = buildExport(root, "demo.Main.run");
+    ASSERT_FALSE(doc.empty()) << "the build export is empty";
+
+    std::vector<std::string> atLine6;
+    for (const auto& c : relation(doc, "calls")) {
+        if (!has(strField(c, "file"), "Main.cajeta")) continue;
+        if (intField(c, "line") != 6) continue;
+        if (has(strField(c, "callee"), "::at")) atLine6.push_back(strField(c, "callee"));
+    }
+
+    ASSERT_EQ(atLine6.size(), 1u)
+        << "line 6 calls ONE overload of `at`; the export carries "
+        << atLine6.size() << " edge(s) for it. A second edge here names an "
+           "overload the source never calls and sends \"who calls this\" to the "
+           "wrong declaration.";
+    EXPECT_FALSE(has(atLine6[0], "->"))
+        << "the edge names the 4-arg comparator overload, not the 3-arg form "
+           "actually called: " << atLine6[0];
+
+    // The real edge is still there. Masking the advisory resolve out of the
+    // index would also satisfy the assertions above while destroying 71
+    // legitimate edges over samples/tour — measured.
+    bool sawComparatorCallOnItsOwnLine = false;
+    for (const auto& c : relation(doc, "calls"))
+        if (has(strField(c, "file"), "Main.cajeta") && intField(c, "line") == 5
+            && has(strField(c, "callee"), "::at")) sawComparatorCallOnItsOwnLine = true;
+    EXPECT_TRUE(sawComparatorCallOnItsOwnLine)
+        << "line 5's own call lost its edge — the advisory resolve must keep "
+           "recording, it is the only recorder for many real edges";
+}
+
 // ── 5.1.3 — a generic METHOD on a NON-generic owner ───────────────────────
 //
 // `templateKeyFor` is applied only when the OWNER canonical carries `<`, so a

@@ -8370,9 +8370,22 @@ namespace cajeta {
         // in bringMethodTemplateInstantiationToLife falls back to the emit module's
         // (dangling) builder → freed-builder SEGV. See memory
         // method-template-tparam-in-param-heapcorrupt.
+        // Thread the call's explicit method type-args, for the same reason the
+        // return-type resolve further down already does: without them, a
+        // templated call resolves here against the OTHER same-name overload.
+        // `Sort.lowerBound<int32>(a, n, k)` landed on the 4-arg
+        // `lowerBound(T[],int32,T,cmp)` — and because `resolveMethod` is the
+        // xref recording choke point, that wrong answer was written into the
+        // index as a second call edge at the user's line, naming an overload
+        // the source never calls (xref-lint-emission-gap 5.1.5).
+        //
+        // This resolve cannot simply be masked out of the index: it is the
+        // ONLY recorder for 71 real call edges over samples/tour — measured by
+        // masking it, which removed all 71 along with the bad one. So the fix
+        // is to make it resolve CORRECTLY, not to stop it recording.
         MethodPtr targetMethod = targetClass->resolveMethod(
             methodCallName, entriesCopy, /*isConstructor=*/false,
-            floatingParamsLint, {}, module);
+            floatingParamsLint, explicitMethodTypeArgs, module);
         if (targetMethod) {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {
