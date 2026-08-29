@@ -1693,6 +1693,60 @@ namespace cajeta {
         }
     }
 
+    // xref-lint-emission-gap 5.1.6 — repair a generic method's return type by
+    // rebinding its METHOD type parameters from this call site.
+    //
+    // Only CLASS type parameters are substituted when a class is instantiated.
+    // A METHOD's own parameter has nothing to bind it at that point, so the
+    // return type arrives with it unresolved, and the next link of a chain has
+    // no receiver. Measured on one chain over `Stream`:
+    //
+    //   filter -> Stream<T>  (CLASS param)  => Stream<int32>, CLOSED (targs=1)
+    //   map<R> -> Stream<R>  (METHOD param) => Stream,        OPEN   (targs=0)
+    //
+    // That asymmetry is what makes this sound rather than a guess: a class
+    // parameter NEVER arrives open, so an open template return identifies the
+    // method-parameter case exactly. Unique-or-nothing still applies — every
+    // shape that does not match exactly is returned untouched rather than
+    // approximated, because a wrong receiver type makes wrong edges downstream
+    // and a wrong edge is worse than a missing one (spec 2.1.2).
+    //
+    // Lint-only by construction: the sole callers are in resolveTypes, which
+    // returns early unless the module is in resolution-only mode.
+    CajetaTypePtr MethodCallExpression::rebindMethodTypeArgs(
+            const CajetaTypePtr& declared, const MethodPtr& callee) {
+        if (!declared || !callee) return declared;
+        if (explicitMethodTypeArgs.empty()) return declared;   // inferred: nothing to bind
+        const auto& tps = callee->getMethodTypeParameters();
+        if (tps.size() != explicitMethodTypeArgs.size()) return declared;
+
+        // (a) The return IS the variable — `R fold<R>(R seed, ...)`.
+        if (declared->getQName()) {
+            const std::string& n = declared->getQName()->getTypeName();
+            for (size_t i = 0; i < tps.size(); i++)
+                if (n == tps[i].name && explicitMethodTypeArgs[i])
+                    return explicitMethodTypeArgs[i];
+        }
+
+        // (b) The return is a template PARAMETERISED BY the variable —
+        // `#Stream<R> map<R>(...)`, which arrives flattened to open `Stream`.
+        // The arity guard is what declines a mixed shape such as a
+        // hypothetical `Map<T,R> pair<R>()`: two template parameters against
+        // one method parameter is not a binding this can make, so it is left
+        // alone instead of filled in positionally.
+        if (auto rk = std::dynamic_pointer_cast<CajetaClass>(declared)) {
+            if (rk->isTemplate()
+                    && rk->getTypeParameters().size() == tps.size()) {
+                for (auto& a : explicitMethodTypeArgs) if (!a) return declared;
+                try {
+                    if (auto inst = rk->instantiate(explicitMethodTypeArgs))
+                        return inst;
+                } catch (...) { /* fall through: keep the declared type */ }
+            }
+        }
+        return declared;
+    }
+
     void MethodCallExpression::resolveTypes(CajetaModulePtr module) {
         // LINT ONLY. In a build this must behave exactly as the base did —
         // walking children and nothing else. Resolving a call's ARGUMENTS
@@ -1762,7 +1816,7 @@ namespace cajeta {
                     lam->setExpectedType(pl[i + off]->getType());
             }
             if (!resolvedType && callee->getReturnType())
-                resolvedType = callee->getReturnType();
+                resolvedType = rebindMethodTypeArgs(callee->getReturnType(), callee);
         }
 
         // Now the arguments. They live in `parameters`, outside `children`, so
@@ -1784,7 +1838,7 @@ namespace cajeta {
         if (!callee) {
             try { callee = resolveCalleeByArgTypes(module); } catch (...) { return; }
             if (callee && !resolvedType && callee->getReturnType())
-                resolvedType = callee->getReturnType();
+                resolvedType = rebindMethodTypeArgs(callee->getReturnType(), callee);
         }
         if (!callee) return;
 

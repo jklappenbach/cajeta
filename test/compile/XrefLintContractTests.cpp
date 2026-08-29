@@ -274,6 +274,63 @@ TEST(XrefLintContract, AChainedGenericReceiverResolvesThroughToTheLambdaBody) {
            "key is dropped silently";
 }
 
+// ── 5.1.6 — a chain through a METHOD-level type argument ──────────────────
+//
+// `xs.stream().map<int64>(fn).reduce(...)`. A generic method's return type
+// arrives with its METHOD type parameters unresolved, because only CLASS
+// parameters are substituted at instantiation. Measured, on the same chain:
+//
+//   filter -> Stream<T>  (CLASS param)  => Stream<int32>, CLOSED, targs=1
+//   map<R> -> Stream<R>  (METHOD param) => Stream,        OPEN,   targs=0
+//
+// So an OPEN template return identifies the method-parameter case exactly —
+// it is not ambiguous with the class-parameter one, which never arrives open.
+// That invariant is what makes rebinding sound rather than a guess, and this
+// test pins BOTH halves of it: the chain resolves through `map<R>`, and the
+// `filter` link that returns the class's own parameter still resolves too.
+TEST(XrefLintContract, AChainThroughAMethodTypeArgumentResolves) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    auto root = freshTempDir("mtarg");
+    writeUnit(root, "demo/Chain.cajeta",
+        "package demo;\n"                                            // 1
+        "import cajeta.collection.ArrayList;\n"                      // 2
+        "public class Chain {\n"                                     // 3
+        "    public void run() {\n"                                  // 4
+        "        ArrayList<int32> xs #= heap ArrayList<int32>();\n"   // 5
+        "        int64 t #= xs.stream()\n"                           // 6
+        "            .filter((x) -> x > 0)\n"                        // 7
+        "            .map<int64>((x) -> (int64) x)\n"                // 8
+        "            .reduce(0L, (a, b) -> a + b);\n"                // 9
+        "    }\n"                                                    // 10
+        "}\n");                                                      // 11
+
+    std::vector<std::string> callees;
+    for (const auto& c : relation(lintRoot(root), "calls"))
+        if (has(strField(c, "file"), "Chain.cajeta"))
+            callees.push_back(strField(c, "callee"));
+
+    auto sawMethod = [&](const std::string& name) {
+        for (const auto& c : callees)
+            if (has(c, "::" + name + "(") || has(c, "::" + name + "()")) return true;
+        return false;
+    };
+
+    // The links before the method-type-argument one already worked; they are
+    // here so a regression in them is not mistaken for this feature failing.
+    EXPECT_TRUE(sawMethod("stream")) << "the chain did not start";
+    EXPECT_TRUE(sawMethod("filter"))
+        << "a CLASS-parameter return (Stream<T>) stopped resolving";
+    EXPECT_TRUE(sawMethod("map"))   << "map<int64> itself did not resolve";
+
+    // The one this test exists for: everything AFTER a method-type-argument
+    // call. Without rebinding, `map<R>`'s return is the open template `Stream`
+    // and `reduce`'s receiver resolves to nothing.
+    EXPECT_TRUE(sawMethod("reduce"))
+        << "no call edge for `reduce` — the receiver is `map<int64>`'s return, "
+           "which arrives as the OPEN template `Stream` with R unbound, so the "
+           "chain stops one link short of the end";
+}
+
 // ── 5.1.5 — an advisory resolve must not invent a second call edge ────────
 //
 // `CajetaClass::resolveMethod` is the xref recording choke point, so ANY
