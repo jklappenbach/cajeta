@@ -304,6 +304,19 @@ namespace cajeta::kernel {
                 for (const auto& f : result.traceback) {
                     traceback.push_back(f.text.empty() ? f.method : f.text);
                 }
+                // The traceback's LAST line is the message — Python's
+                // convention, and what every frontend renders. Without it a
+                // thrown error showed its frames and nothing else: a
+                // frontend displays `traceback` when it is non-empty and
+                // drops `evalue`, so the reason was carried in the payload
+                // and never seen. "Packages.install threw somewhere" is not
+                // a diagnostic; "'demo' is already loaded at 1.0.0, which
+                // '2.*' excludes — restart the session" is.
+                if (!result.message.empty()) {
+                    traceback.push_back(ename.empty()
+                                            ? result.message
+                                            : ename + ": " + result.message);
+                }
             } else {
                 std::string where = result.file;
                 if (result.line > 0) where += ", line " + std::to_string(result.line);

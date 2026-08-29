@@ -186,3 +186,36 @@ TEST(NotebookTourSampleTests, everyCellOfTheTourBehavesAsTheProseSays) {
     s->shutdown();
     fs::remove_all(work);
 }
+
+// The bug that made the tour fail in real Jupyter but pass in-process:
+// the kernel took its launch directory verbatim as the project. Jupyter
+// starts a kernel in the NOTEBOOK's directory, so with the conventional
+// `notebooks/` layout it found no cajeta.json, ran with no classpath, and
+// resolved installs against the default central repository instead of the
+// project's own. The in-process tests all passed because they set
+// projectDir explicitly — nothing exercised the launch path.
+TEST(NotebookTourSampleTests, aKernelLaunchedInNotebooksFindsTheProjectAbove) {
+    auto root = fs::temp_directory_path() / "cajeta-kernel-launch-dir";
+    fs::remove_all(root);
+    auto notebooks = root / "proj" / "notebooks";
+    fs::create_directories(notebooks);
+    std::ofstream(root / "proj" / "cajeta.json") << "{}\n";
+
+    // The Jupyter case: launched one level below the manifest.
+    EXPECT_EQ((root / "proj").string(),
+              cajeta::kernel::projectDirForLaunch(notebooks.string()))
+        << "a kernel launched in notebooks/ must adopt the project above it";
+
+    // Launched AT the project root: itself.
+    EXPECT_EQ((root / "proj").string(),
+              cajeta::kernel::projectDirForLaunch((root / "proj").string()));
+
+    // No manifest anywhere on the chain: cwd, unchanged. A session with no
+    // project is legal — it just has no classpath and no repositories.
+    auto bare = root / "bare";
+    fs::create_directories(bare);
+    EXPECT_EQ(bare.string(), cajeta::kernel::projectDirForLaunch(bare.string()))
+        << "with no manifest on the ancestry chain, cwd is the answer";
+
+    fs::remove_all(root);
+}

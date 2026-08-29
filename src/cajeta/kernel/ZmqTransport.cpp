@@ -20,6 +20,7 @@
 
 #include "cajeta/kernel/JupyterMessage.h"
 #include "cajeta/kernel/KernelProtocol.h"
+#include "cajeta/kernel/KernelSession.h"   // projectDirForLaunch
 
 namespace cajeta::kernel {
 
@@ -323,7 +324,10 @@ namespace cajeta::kernel {
             {
                 std::error_code ec;
                 auto cwd = std::filesystem::current_path(ec);
-                if (!ec) protocol.setProjectDir(cwd.string());
+                if (!ec) {
+                    protocol.setProjectDir(
+                        projectDirForLaunch(cwd.string()));
+                }
             }
             this->protocol.store(&protocol, std::memory_order_release);
 

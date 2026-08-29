@@ -178,6 +178,19 @@ namespace cajeta::kernel {
         std::function<void(const std::string& phase)> progress;
     };
 
+    // The project a kernel launched in `cwd` belongs to: the nearest
+    // ANCESTOR (inclusive) carrying a cajeta.json, or `cwd` itself when
+    // there is none on the chain.
+    //
+    // Jupyter starts a kernel in the NOTEBOOK's directory, and the layout
+    // `cajeta init notebook` writes keeps notebooks in `notebooks/` with
+    // the manifest one level up — so taking cwd verbatim found no manifest
+    // at all, and the session silently ran with no classpath and the
+    // default central repository. Named and exposed because it was
+    // previously an inline loop inside the transport thread, where nothing
+    // could test it.
+    std::string projectDirForLaunch(const std::string& cwd);
+
     class KernelSession {
     public:
         // Build a session: LLJIT + bootstrap dylib with the runtime and the

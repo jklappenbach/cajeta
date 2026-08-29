@@ -82,6 +82,19 @@ __attribute__((used, retain, visibility("default")))
 char __cajeta_install_out[2048] = {0};
 }
 
+std::string projectDirForLaunch(const std::string& cwd) {
+    std::filesystem::path dir(cwd);
+    while (true) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(dir / "cajeta.json", ec)) {
+            return dir.string();
+        }
+        auto parent = dir.parent_path();
+        if (parent.empty() || parent == dir) return cwd;   // none anywhere
+        dir = parent;
+    }
+}
+
 namespace {
 
     // The session whose cell is executing right now. JIT'd

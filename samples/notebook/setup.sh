@@ -96,7 +96,24 @@ build_lib() {
     echo ">> $pkg 1.0.0  (signed: $signing)"
 }
 
-build_lib demo Stats trusted \
+# The four libraries are independent — separate sources, separate outputs,
+# separate repository directories — and each `cajeta` invocation is ~10 s of
+# fixed startup regardless of how little it compiles. Building them
+# concurrently turns 4 x that into 1 x it. The signing keys are generated
+# ABOVE, so nothing here races on them.
+pids=()
+run_lib() { build_lib "$@" & pids+=($!); }
+
+wait_libs() {
+    local pid failed=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || failed=1
+    done
+    pids=()
+    [[ $failed -eq 0 ]] || { echo "setup: a library failed to build" >&2; exit 1; }
+}
+
+run_lib demo Stats trusted \
 "Stats.cajeta:::package demo;
 
 public class Stats {
@@ -111,7 +128,7 @@ public class Greeter {
 }
 "
 
-build_lib plain Plain none \
+run_lib plain Plain none \
 "Plain.cajeta:::package plain;
 
 public class Plain {
@@ -119,7 +136,7 @@ public class Plain {
 }
 "
 
-build_lib rogue Sneaky rogue \
+run_lib rogue Sneaky rogue \
 "Sneaky.cajeta:::package rogue;
 
 public class Sneaky {
@@ -127,7 +144,7 @@ public class Sneaky {
 }
 "
 
-build_lib coll Marker trusted \
+run_lib coll Marker trusted \
 "Marker.cajeta:::package coll;
 
 public class Marker {
@@ -135,13 +152,44 @@ public class Marker {
 }
 "
 
-cat <<'DONE'
+wait_libs
 
-Staged. Now start the kernel with the trust store pointed here:
+# --- a kernelspec for THIS compiler ---------------------------------
+# The stdlib is embedded in the compiler binary, so a kernel older than
+# `cajeta.session.Packages` cannot run the tour: Part 2 fails with
+# "unknown type 'Packages'". Rather than touch whatever `Cajeta` kernel is
+# already installed, register a SEPARATE `cajeta-tour` kernel pointing at
+# the compiler this script just used. Yours is left exactly as it was.
+KDIR="${JUPYTER_DATA_DIR:-$HOME/.local/share/jupyter}/kernels/cajeta-tour"
+mkdir -p "$KDIR"
+cat > "$KDIR/kernel.json" <<KERNEL
+{
+  "argv": ["$CAJETA", "kernel", "-f", "{connection_file}"],
+  "display_name": "Cajeta (tour)",
+  "language": "cajeta",
+  "interrupt_mode": "message"
+}
+KERNEL
+echo ">> kernel: 'Cajeta (tour)' -> $CAJETA"
+echo "   ($KDIR — delete that directory to remove it)"
 
-    CAJETA_TRUST_KEYS_DIR="$PWD/trust" jupyter lab notebooks/tour.ipynb
+if ! "$CAJETA" stdlib list 2>/dev/null | grep -q 'session/Packages'; then
+    echo
+    echo "WARNING: this compiler has no cajeta/session/Packages in its" >&2
+    echo "stdlib, so Part 2 of the tour will fail. Build a current one at" >&2
+    echo "the repo root (./build.sh) and re-run setup.sh." >&2
+fi
 
-(install the kernelspec first if you have not: `cajeta init --kernel`)
+cat <<DONE
+
+Staged. Start Jupyter from THIS directory, with the trust store pointed
+here, and pick the "Cajeta (tour)" kernel:
+
+    CAJETA_TRUST_KEYS_DIR="\$PWD/trust" jupyter lab notebooks/tour.ipynb
+
+Starting here is load-bearing: the kernel resolves the nearest cajeta.json
+upward, and that is what makes this project's local repo the one
+Packages.install resolves against.
 
 Without CAJETA_TRUST_KEYS_DIR the signed installs are refused — which is
 correct, and the tour's Part 4 says so.
