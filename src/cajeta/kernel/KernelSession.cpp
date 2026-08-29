@@ -784,22 +784,6 @@ bool KernelSession::resolveForInstall(
         specs.push_back(central);
     }
 
-    // A manifest's filesystem-repository path is relative to the MANIFEST,
-    // which is the only anchor a reader can reason about. Resolving it
-    // against the process cwd would make it depend on where the kernel
-    // happened to be launched — and Jupyter launches one in the NOTEBOOK's
-    // directory, not the project root, so `"path": "./repo"` beside
-    // cajeta.json would silently resolve to `notebooks/repo` and the
-    // repository would appear to carry no versions at all.
-    if (!projectRoot.empty()) {
-        for (auto& spec : specs) {
-            if (spec.type != "filesystem" || spec.path.empty()) continue;
-            if (std::filesystem::path(spec.path).is_absolute()) continue;
-            spec.path = std::filesystem::weakly_canonical(
-                std::filesystem::path(projectRoot) / spec.path).string();
-        }
-    }
-
     std::string stage = projectRoot.empty()
         ? (std::filesystem::temp_directory_path() / "cajeta-session-downloads")
               .string()
@@ -1148,6 +1132,18 @@ bool KernelSession::installFromHook(const std::string& request,
                  "Packages.install: '" + archiveName + "' is available at "
                  + archiveVersion + ", which '" + constraint
                  + "' excludes; no other version was found.");
+        return false;
+    }
+
+    // Reject BEFORE announcing the splice. installArchive runs this same
+    // scan and is the authoritative one; running it here too costs an
+    // archive read and buys honest narration. Announcing "splicing X" and
+    // then refusing tells the reader an action happened that did not —
+    // seen live in the tour, where a collision printed "splicing coll
+    // 1.0.0" immediately above its own rejection.
+    std::string collision;
+    if (collidesWithSession(canon.string(), &collision)) {
+        writeOut(out, outCap, "Packages.install: " + collision);
         return false;
     }
 

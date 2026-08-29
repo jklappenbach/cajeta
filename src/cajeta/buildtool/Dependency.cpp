@@ -1,5 +1,7 @@
 #include "cajeta/buildtool/Dependency.h"
 
+#include <filesystem>
+
 #include <llvm/Support/Error.h>
 
 #include <algorithm>
@@ -138,6 +140,24 @@ namespace cajeta::buildtool {
             }
 
             out.push_back(std::move(r));
+        }
+
+        // A filesystem repository's `path` is relative to the MANIFEST
+        // that declares it, never to whatever directory the process
+        // happens to be in. Anchoring here fixes every consumer at once —
+        // `cajeta build` usually runs at the project root and got away
+        // with it, but the Jupyter kernel is launched in the NOTEBOOK's
+        // directory, so `"path": "./repo"` beside cajeta.json resolved to
+        // `notebooks/repo` and the repository looked empty. Measured
+        // twice: once on the install path, once at session start.
+        if (!m.sourcePath.empty()) {
+            auto base = std::filesystem::path(m.sourcePath).parent_path();
+            for (auto& r : out) {
+                if (r.type != "filesystem" || r.path.empty()) continue;
+                if (std::filesystem::path(r.path).is_absolute()) continue;
+                r.path = std::filesystem::weakly_canonical(base / r.path)
+                             .string();
+            }
         }
 
         // Sort by priority descending; preserve declaration order
