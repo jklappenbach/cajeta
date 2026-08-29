@@ -1,5 +1,7 @@
 #include "cajeta/compile/IrTools.h"
 
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -105,6 +107,50 @@ namespace cajeta {
 
     } // namespace
 
+    // Give the session-install symbols weak definitions before lowering.
+    //
+    // `cajeta_rt_session.c` declares `__cajeta_install_hook` / `_ctx` / `_out`
+    // extern ON PURPOSE: they are DEFINED IN THE HOST, and that file is
+    // compiled twice — into the compiler binary and into the bitcode every JIT
+    // session carries. A definition there would give JIT'd cell code its own
+    // second copy, so the host's registration would be invisible to the very
+    // code that needs it. That reasoning is right and is not changed here.
+    //
+    // But an object lowered for an AOT link has no host at all, so those three
+    // references have nothing to resolve to and the link fails — and it fails
+    // only SOMETIMES, because whether `__cajeta_session_install` survives DCE
+    // depends on the debug-info level. `70ef31ae` fixed exactly this for
+    // `--emit=exe` with a generated weak stub added to the link line. That fix
+    // could not reach here: `cajeta lower` hands the object back to a CALLER
+    // who builds their own link line, and cajeta-coco does precisely that —
+    // its instrument pass lowered the stdlib and then failed on all three
+    // symbols, with the tour gate as the only thing that noticed.
+    //
+    // So the definitions go in the object itself, where the references are.
+    // WEAK, so a host's strong definitions still win wherever a host exists,
+    // and only for symbols this module already references as undefined — a
+    // module that never mentions them is untouched.
+    //
+    // `cajeta lower` is unambiguously ahead-of-time: no JIT reaches it, so the
+    // shadowing hazard the extern exists to prevent cannot arise here.
+    void defineSessionInstallSymbolsWeakly(llvm::Module& m) {
+        static const char* kSessionSymbols[] = {
+            "__cajeta_install_hook",   // int32_t (*)(...)  — the host's hook
+            "__cajeta_install_ctx",    // void*             — its context
+            "__cajeta_install_out",    // char[2048]        — the result buffer
+        };
+        for (const char* name : kSessionSymbols) {
+            llvm::GlobalVariable* g = m.getNamedGlobal(name);
+            if (g == nullptr || !g->isDeclaration()) continue;
+            // Null pointer / zeroinitializer, which is what the host would
+            // start them at. With a null hook `__cajeta_session_install`
+            // already reports "no live session" — exactly true of an AOT
+            // binary, and a branch it already implements.
+            g->setInitializer(llvm::Constant::getNullValue(g->getValueType()));
+            g->setLinkage(llvm::GlobalValue::WeakAnyLinkage);
+        }
+    }
+
     int irLowerCommand(int argc, const char* argv[]) {
         Args a = parseArgs(argc, argv);
         if (a.help || (a.input.empty() && a.error.empty())) {
@@ -142,6 +188,8 @@ namespace cajeta {
         llvm::LLVMContext ctx;
         auto module = parseInput(ctx, a.input, "lower");
         if (!module) return 1;
+
+        defineSessionInstallSymbolsWeakly(*module);
 
         // The module's own triple wins. coco lowers modules this compiler
         // emitted, so the triple is already right, and overriding it with the
