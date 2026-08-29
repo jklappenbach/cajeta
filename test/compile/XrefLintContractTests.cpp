@@ -274,6 +274,185 @@ TEST(XrefLintContract, AChainedGenericReceiverResolvesThroughToTheLambdaBody) {
            "key is dropped silently";
 }
 
+// ── 5.1.7 — a stream chain rooted on an ARRAY resolves ────────────────────
+//
+// `int32[] xs; xs.stream().filter(...)...` — the dominant residual after
+// 5.1.6, measured: the tour's stream demos run over ARRAYS, and `arr.stream()`
+// is not a method at all. Codegen lowers it inline to
+// `heap ArrayStream<T>(arr, count)` (P6.6), whose ctor resolution records the
+// ArrayStream constructor edge at the user's `stream()` position. Lint's
+// receiver resolver sees a CajetaArray, not a class, finds no callee, and the
+// ENTIRE chain downstream is dead — which is where most of the 134 build-only
+// edges came from (StreamsDemo, ParallelStreamsDemo, CollectorsDemo).
+//
+// The fix mirrors the same resolution under lint: instantiate ArrayStream<T>,
+// record the same ctor edge through the same choke point, and pin the return
+// type so the chain continues.
+TEST(XrefLintContract, AStreamChainRootedOnAnArrayResolves) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    auto root = freshTempDir("arrstream");
+    writeUnit(root, "demo/Arr.cajeta",
+        "package demo;\n"                                            // 1
+        "public class Arr {\n"                                       // 2
+        "    public void run() {\n"                                  // 3
+        "        int32[] xs = [1, 2, 3, 4];\n"                       // 4
+        "        int32 evens = xs.stream()\n"                        // 5
+        "            .filter((x) -> x % 2 == 0)\n"                   // 6
+        "            .count();\n"                                    // 7
+        "    }\n"                                                    // 8
+        "}\n");                                                      // 9
+
+    std::vector<std::string> callees;
+    for (const auto& c : relation(lintRoot(root), "calls"))
+        if (has(strField(c, "file"), "Arr.cajeta"))
+            callees.push_back(strField(c, "callee"));
+
+    auto saw = [&](const std::string& frag) {
+        for (const auto& c : callees) if (has(c, frag)) return true;
+        return false;
+    };
+
+    // The root: the same ctor edge the build's lowering records, at the
+    // user's own `stream()` — the target Ctrl-click gets, since no `stream`
+    // method exists anywhere to open.
+    EXPECT_TRUE(saw("ArrayStream::ArrayStream("))
+        << "`xs.stream()` on an array produced no edge — the intrinsic "
+           "resolves only in codegen's lowering, which lint never runs";
+    // The chain past the root. Before the fix these die not because filter
+    // or count fail, but because the RECEIVER type was never established.
+    EXPECT_TRUE(saw("::filter("))
+        << "the chain died at the array root — filter has no receiver type";
+    EXPECT_TRUE(saw("::count("))
+        << "the chain died before its terminal count()";
+}
+
+// ── 5.1.7b — a static generic call on the OPEN template ───────────────────
+//
+// `Tensor.zeros<float32>(s8)` — 49 of the residual edges, the largest block
+// after the array-stream root. The receiver identifier resolves to the OPEN
+// template class, which holds NO Method objects at all: a template's body
+// walk is skipped at parse time and its members live only in the
+// template-member table (that is why templateKeyFor exists). So name+arity
+// matching can never succeed on it, the callee is never found, and the edge —
+// plus everything chained after it — is missing.
+//
+// The explicit type args name a class INSTANTIATION, and an instantiation is
+// a real class with real methods. Lint already materializes instantiations
+// (ArrayList<int32> resolves fine); the gap was only that a bare
+// `Template.method<Args>(...)` receiver never took that step.
+TEST(XrefLintContract, AStaticGenericCallOnTheOpenTemplateResolves) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    auto root = freshTempDir("opentmpl");
+    writeUnit(root, "demo/Box.cajeta",
+        "package demo;\n"                                            // 1
+        "public class Box<E> {\n"                                    // 2
+        "    int32 n;\n"                                             // 3
+        "    public static #Box<E> make(int32 count) {\n"            // 4
+        "        return heap Box<E>();\n"                            // 5
+        "    }\n"                                                    // 6
+        "    public int32 size() { return this.n; }\n"               // 7
+        "}\n");                                                      // 8
+    writeUnit(root, "demo/Use.cajeta",
+        "package demo;\n"                                            // 1
+        "public class Use {\n"                                       // 2
+        "    public void run() {\n"                                  // 3
+        "        int32 k = Box.make<int32>(3).size();\n"             // 4
+        "    }\n"                                                    // 5
+        "}\n");                                                      // 6
+
+    std::vector<std::string> callees;
+    for (const auto& c : relation(lintRoot(root), "calls"))
+        if (has(strField(c, "file"), "Use.cajeta"))
+            callees.push_back(strField(c, "callee"));
+
+    bool sawMake = false, sawSize = false, sawMono = false;
+    for (const auto& c : callees) {
+        if (has(c, "::make(")) {
+            sawMake = true;
+            // Named by the TEMPLATE member key, never the instantiation —
+            // the same rule every generic edge follows (spec 2.2.3).
+            if (has(c, "<")) sawMono = true;
+        }
+        if (has(c, "::size(")) sawSize = true;
+    }
+    EXPECT_TRUE(sawMake)
+        << "`Box.make<int32>(3)` produced no edge — the receiver resolves to "
+           "the OPEN template, which holds no Method objects to match against";
+    EXPECT_FALSE(sawMono) << "the edge names a monomorphized instantiation";
+    EXPECT_TRUE(sawSize)
+        << "the chained `.size()` produced no edge — make's return type never "
+           "closed, so the chain died at the static factory";
+}
+
+// ── 5.1.7c — overloads differing by ONE parameter must not swap keys ──────
+//
+// A wrong-edge regression INTRODUCED by 5.1.4's two-pass arity heuristic in
+// templateKeyFor, caught by the tour diff: the source calls the 3-arg
+// `fold<int64>(seed, fn, combiner)`, the build records the 3-arg key, and
+// lint recorded the 2-ARG key — because a lint-resolved template method's
+// parameter list does not carry `this` while a build-resolved instantiation's
+// does, and the receiver-counted pass matched the smaller overload (2+1==3)
+// before the declared-counted pass could match the right one (3==3). The
+// heuristic is ambiguous precisely when overloads differ by one parameter.
+//
+// The fix removes the guessing entirely: the caller computes the DECLARED
+// parameter count from the resolved method itself and the lookup matches on
+// that alone. Same call, one key, both paths.
+TEST(XrefLintContract, OverloadsDifferingByOneParameterDoNotSwapKeys) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    auto root = freshTempDir("offbyone");
+    // METHOD templates specifically — `tally<R>`, mirroring `Stream::fold<R>`.
+    // A plain method's lint-resolved parameter list carries `this` and the
+    // old heuristic got it right; a METHOD TEMPLATE's does not, and that is
+    // the asymmetry that swapped the keys. A first draft of this corpus used
+    // plain methods and passed against the broken code.
+    writeUnit(root, "demo/Bag.cajeta",
+        "package demo;\n"                                            // 1
+        "public class Bag<T> {\n"                                    // 2
+        "    public final R tally<R>(R seed, (R, T) -> #R fn) {\n"         // 3
+        "        return seed;\n"                                     // 4
+        "    }\n"                                                    // 5
+        "    public final R tally<R>(R seed, (R, T) -> #R fn,\n"           // 6
+        "                      (R, R) -> #R combine) {\n"            // 7
+        "        return seed;\n"                                     // 8
+        "    }\n"                                                    // 9
+        "}\n");                                                      // 10
+    writeUnit(root, "demo/Use.cajeta",
+        "package demo;\n"                                            // 1
+        "public class Use {\n"                                       // 2
+        "    public void run(Bag<int32> b) {\n"                      // 3
+        "        int32 two = b.tally<int32>(0, (a, x) -> a + x);\n"  // 4
+        "        int32 three = b.tally<int32>(0, (a, x) -> a + x,\n" // 5
+        "                                     (l, r) -> l + r);\n"   // 6
+        "    }\n"                                                    // 7
+        "}\n");                                                      // 8
+
+    std::string at4, at5;
+    for (const auto& c : relation(lintRoot(root), "calls")) {
+        if (!has(strField(c, "file"), "Use.cajeta")) continue;
+        if (!has(strField(c, "callee"), "::tally")) continue;
+        if (intField(c, "line") == 4) at4 = strField(c, "callee");
+        if (intField(c, "line") == 5) at5 = strField(c, "callee");
+    }
+    ASSERT_FALSE(at4.empty()) << "the 2-arg call recorded no edge";
+    ASSERT_FALSE(at5.empty()) << "the 3-arg call recorded no edge";
+    // Count the formals in each key: the 3-arg call's key must carry one more
+    // comma-separated parameter than the 2-arg call's.
+    auto commas = [](const std::string& k) {
+        int depth = 0, n = 0;
+        auto open = k.find('(');
+        for (size_t i = open + 1; i < k.size(); i++) {
+            if (k[i] == '(') depth++;
+            else if (k[i] == ')') { if (depth == 0) break; depth--; }
+            else if (k[i] == ',' && depth == 0) n++;
+        }
+        return n;
+    };
+    EXPECT_EQ(commas(at5), commas(at4) + 1)
+        << "the two call sites' keys do not differ by one parameter — an "
+           "overload was swapped. line 4: " << at4 << "  line 5: " << at5;
+}
+
 // ── 5.1.6 — a chain through a METHOD-level type argument ──────────────────
 //
 // `xs.stream().map<int64>(fn).reduce(...)`. A generic method's return type

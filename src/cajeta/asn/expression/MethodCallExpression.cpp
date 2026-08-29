@@ -1598,6 +1598,30 @@ namespace cajeta {
                                                           /*allowSuper=*/true);
         if (!recv) return nullptr;
 
+        // 5.1.7 — a static generic call on the OPEN template:
+        // `Tensor.zeros<float32>(s8)`. An open template holds NO Method
+        // objects (its body walk is skipped at parse; members live only in
+        // the template-member table), so the candidate walk below can never
+        // match on it. When the call's explicit type args exactly fit the
+        // CLASS's parameters, the call names an instantiation — materialize
+        // it and resolve there, where the methods are real and the return
+        // types arrive substituted. Exact-count-or-nothing: a mismatch means
+        // the args are METHOD-level (`Json.toBytes<JsonNum>` on a plain
+        // class) or ambiguous, and the receiver is left as it was.
+        if (recv->isTemplate() && !explicitMethodTypeArgs.empty()
+                && recv->getTypeParameters().size()
+                       == explicitMethodTypeArgs.size()) {
+            bool allBound = true;
+            for (auto& a : explicitMethodTypeArgs) if (!a) allBound = false;
+            if (allBound) {
+                try {
+                    if (auto inst = std::dynamic_pointer_cast<CajetaClass>(
+                            recv->instantiate(explicitMethodTypeArgs)))
+                        recv = inst;
+                } catch (...) { /* keep the open template: no candidates */ }
+            }
+        }
+
         // Candidates by name+arity over the receiver and its ancestors. A
         // derived override shadows the ancestor it overrides, so the FIRST
         // class in the walk that declares a given signature wins.
@@ -1774,6 +1798,55 @@ namespace cajeta {
         for (auto& child : children) {
             if (!child) continue;
             try { child->resolveTypes(module); } catch (...) { }
+        }
+
+        // 5.1.7 — the `arr.stream()` intrinsic. Not a method anywhere:
+        // codegen lowers it inline to `heap ArrayStream<T>(arr, count)`
+        // (P6.6 above), and the ctor resolution inside that lowering records
+        // the ArrayStream constructor edge at the user's `stream()` position.
+        // Lint sees a CajetaArray receiver, finds no callee, and the WHOLE
+        // chain downstream is dead — measured as the dominant residual over
+        // samples/tour (StreamsDemo, ParallelStreamsDemo, CollectorsDemo all
+        // stream over arrays). Mirror the same resolution: the same
+        // instantiation, the same 2-arg ctor, recorded through the same choke
+        // point — so the two paths agree by construction, key computation
+        // included.
+        if (methodCallName == "stream" && parameters.empty()
+                && !children.empty()) {
+            auto recvExpr = std::dynamic_pointer_cast<Expression>(children.front());
+            if (recvExpr) {
+                if (auto arrayType = std::dynamic_pointer_cast<CajetaArray>(
+                        recvExpr->getResolvedType())) {
+                    try {
+                        auto streamKlass = std::dynamic_pointer_cast<CajetaClass>(
+                            CajetaType::of("ArrayStream", "cajeta.lang.stream"));
+                        if (streamKlass && streamKlass->isTemplate()) {
+                            auto instantiated = std::dynamic_pointer_cast<CajetaClass>(
+                                streamKlass->instantiate(
+                                    {arrayType->getElementType()}));
+                            if (instantiated) {
+                                // The (data, limit) ctor the lowering invokes:
+                                // 2 declared formals. Unique-or-nothing, as
+                                // everywhere on this path.
+                                MethodPtr ctor;
+                                for (auto& [_, mm] : instantiated->getMethods()) {
+                                    if (!mm || !mm->isConstructor()) continue;
+                                    auto pl = mm->getParameterList();
+                                    size_t off = (!pl.empty()
+                                        && pl.front()->getName() == "this") ? 1 : 0;
+                                    if (pl.size() - off != 2) continue;
+                                    if (ctor) { ctor = nullptr; break; }
+                                    ctor = mm;
+                                }
+                                if (ctor) CajetaClass::noteResolvedCallXref(
+                                    ctor, /*isConstructor=*/true, module);
+                                resolvedType = instantiated;
+                                return;   // no arguments, no further callee
+                            }
+                        }
+                    } catch (...) { /* unresolved intrinsic: no edge */ }
+                }
+            }
         }
 
         // Then the CALLEE, BEFORE the arguments. The order matters: a lambda
