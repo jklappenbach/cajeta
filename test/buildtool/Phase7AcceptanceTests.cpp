@@ -317,14 +317,71 @@ printf '{"kind":"result","status":"ok"}\n'
 
     auto r = invokePluginAction(
         plugin, "cajeta.lint.security.scan", params, ctx);
+
+    // §7a (spec 2026-08-23, implemented 2026-08-28): a finding at `error`
+    // severity FAILS the task that produced it, even though the plugin exited
+    // 0 and sent `result: ok`. This test predates that rule and used to assert
+    // the opposite — that the action succeeded and its findings came back on
+    // the result. Under §7a the findings no longer ride the result at all, so
+    // what a developer sees is the error text, and that is what is checked.
+    ASSERT_FALSE((bool)r)
+        << "an error-severity finding must fail the task (§7a)";
+    const std::string why = errorText(r.takeError());
+
+    // Named by Olla key, so a failing build says WHICH plugin failed it...
+    EXPECT_NE(why.find("cajeta.lint.security"), std::string::npos) << why;
+    EXPECT_NE(why.find("1 error finding"), std::string::npos) << why;
+    // ...and the finding is rendered in full, so the failure explains itself
+    // without the developer going looking: file:line:col, severity, message,
+    // and the rule that fired.
+    EXPECT_NE(why.find("leaky.cajeta:2:4"), std::string::npos) << why;
+    EXPECT_NE(why.find("error:"), std::string::npos) << why;
+    EXPECT_NE(why.find("AWS"), std::string::npos) << why;
+    EXPECT_NE(why.find("[aws-access-key-id]"), std::string::npos) << why;
+
+    std::filesystem::remove_all(d);
+}
+
+// §7a's other half. The rule above only means something if a NON-error finding
+// still lets the task succeed — otherwise "error findings fail the task" would
+// be indistinguishable from "findings fail the task", and a plugin could never
+// report anything. This is also where the finding FIELDS are checked: at error
+// severity they no longer reach the caller, so without this test the protocol's
+// parsing would go unasserted.
+TEST(Phase7AcceptanceTests, aWarningFindingDoesNotFailTheTask) {
+    auto d = tempDir("secwarn");
+    auto bin = writeExec(d, "secwarn.sh", R"BIN(
+cat > /dev/null
+printf '{"kind":"finding",'
+printf '"rule":"weak-hash",'
+printf '"severity":"warning",'
+printf '"file":"hash.cajeta",'
+printf '"line":7,"column":11,'
+printf '"message":"MD5 is not collision resistant"}\n'
+printf '{"kind":"result","status":"ok"}\n'
+)BIN");
+
+    auto m = makeManifest();
+    auto props = makeProps(m);
+    TaskContext ctx(props, &m);
+    auto plugin = makePlugin("cajeta.lint.security",
+                             "cajeta.lint.security.scan",
+                             bin);
+
+    llvm::json::Object params;
+    params["target-dir"] = d.string();
+
+    auto r = invokePluginAction(
+        plugin, "cajeta.lint.security.scan", params, ctx);
     ASSERT_TRUE((bool)r) << errorText(r.takeError());
 
     ASSERT_EQ(r->findings.size(), 1u);
-    EXPECT_EQ(r->findings[0].rule,     "aws-access-key-id");
-    EXPECT_EQ(r->findings[0].severity, "error");
-    EXPECT_EQ(r->findings[0].file,     "leaky.cajeta");
-    EXPECT_EQ(r->findings[0].line,     2);
-    EXPECT_NE(r->findings[0].message.find("AWS"), std::string::npos);
+    EXPECT_EQ(r->findings[0].rule,     "weak-hash");
+    EXPECT_EQ(r->findings[0].severity, "warning");
+    EXPECT_EQ(r->findings[0].file,     "hash.cajeta");
+    EXPECT_EQ(r->findings[0].line,     7);
+    EXPECT_EQ(r->findings[0].column,   11);
+    EXPECT_NE(r->findings[0].message.find("MD5"), std::string::npos);
 
     std::filesystem::remove_all(d);
 }
