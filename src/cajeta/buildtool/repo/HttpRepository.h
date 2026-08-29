@@ -92,6 +92,18 @@ namespace cajeta::buildtool {
         // wouldn't.
         void invalidateCapabilityCache() const;
 
+        // The checksum the server publishes for `name@version`, in
+        // "sha256:<hex>" form, from the v2 resolve metadata.
+        //
+        // `std::nullopt` when this server cannot answer — a v1-only
+        // repository, or a resolve that fails. That is deliberately not an
+        // error: it means "no published checksum", and the caller decides
+        // what to do with that. The fetch that follows produces the real
+        // diagnostic if the artifact is genuinely missing.
+        llvm::Expected<std::optional<std::string>>
+        publishedChecksum(const std::string& packageName,
+                          const std::string& version) const override;
+
         // GET /v2/resolve?name=...&version=... — returns the typed
         // metadata for the artifact at <name>@<version>. v2-only.
         // Caller-checked: only invoke when capabilities().supportsV2()

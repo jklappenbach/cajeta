@@ -470,3 +470,64 @@ TEST(HttpRepositoryV2Tests, transparencyLogMissingSignatureFails) {
 
 // ─── TarZstd round-trip (foundation for the bundle endpoints) ──
 
+
+// notebook-olla-install 3.2 over HTTP. Until this existed the driver took
+// Repository::publishedChecksum's nullopt default, which quietly disabled
+// checksum verification AND caching for every network install — the cache
+// is keyed by the published digest, so no digest meant no lookup and no
+// insert. The tour notebook never caught it because it runs entirely
+// against the filesystem driver.
+TEST(HttpRepositoryV2Tests, publishedChecksumComesFromResolveMetadata) {
+    TestHttpServer srv;
+    srv.route("/.well-known/cajeta-capabilities.json", 200,
+              R"({"protocol-versions":["v1","v2"],
+                  "content-addressed":true})");
+    srv.route("/v2/resolve?name=acme.lib&version=1.0.0", 200,
+              R"({"sha256":"sha256:deadbeef","size":4})");
+    // A server that sends the digest BARE, without the prefix. The
+    // comparison side always produces the prefixed form, so an
+    // un-normalised value here would fail every verification it touched.
+    srv.route("/v2/resolve?name=acme.bare&version=2.0.0", 200,
+              R"({"sha256":"cafef00d","size":4})");
+
+    auto stage = makeTempDir("published-checksum");
+    HttpRepository repo("test", srv.baseUrl(), RepositoryAuth{},
+                        stage.string());
+
+    auto prefixed = repo.publishedChecksum("acme.lib", "1.0.0");
+    ASSERT_TRUE(!!prefixed) << "publishedChecksum errored";
+    ASSERT_TRUE(prefixed->has_value()) << "a v2 server publishes a checksum";
+    EXPECT_EQ("sha256:deadbeef", **prefixed);
+
+    auto bare = repo.publishedChecksum("acme.bare", "2.0.0");
+    ASSERT_TRUE(!!bare);
+    ASSERT_TRUE(bare->has_value());
+    EXPECT_EQ("sha256:cafef00d", **bare)
+        << "a bare digest must be normalised to the prefixed form";
+
+    // An artifact the server does not know: nullopt, NOT an error. The
+    // fetch that follows is what reports the real problem.
+    auto missing = repo.publishedChecksum("acme.lib", "9.9.9");
+    ASSERT_TRUE(!!missing) << "an unknown artifact must not be an error here";
+    EXPECT_FALSE(missing->has_value());
+
+    rmTree(stage);
+}
+
+// A v1-only server has no resolve metadata to ask, and must not be treated
+// as an error — it simply publishes no checksum.
+TEST(HttpRepositoryV2Tests, publishedChecksumIsAbsentOnAV1OnlyServer) {
+    TestHttpServer srv;
+    srv.route("/.well-known/cajeta-capabilities.json", 200,
+              R"({"protocol-versions":["v1"]})");
+
+    auto stage = makeTempDir("published-checksum-v1");
+    HttpRepository repo("test", srv.baseUrl(), RepositoryAuth{},
+                        stage.string());
+
+    auto none = repo.publishedChecksum("acme.lib", "1.0.0");
+    ASSERT_TRUE(!!none) << "a v1 server is not an error";
+    EXPECT_FALSE(none->has_value());
+
+    rmTree(stage);
+}
