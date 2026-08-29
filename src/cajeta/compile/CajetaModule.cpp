@@ -328,6 +328,14 @@ namespace cajeta {
     }
 
     llvm::AllocaInst* CajetaModule::createEntryAlloca(llvm::Type* ty, const std::string& name) {
+        // No builder at all: this module is being RESOLVED, not generated —
+        // `--lint` resolves method bodies to record xref edges and never
+        // enters codegen (xref-lint-emission-gap Unit 3). There is no function
+        // to hang an alloca off, and a caller in that state wants a slotless
+        // field, which Scope::putField already knows how to handle ("a
+        // slotless field has no alloca to reverse-map"). Dereferencing the
+        // null builder here is what it did before: a SIGSEGV inside lint.
+        if (!builder) return nullptr;
         llvm::BasicBlock* insertBB = builder->GetInsertBlock();
         llvm::Function* fn = insertBB ? insertBB->getParent() : nullptr;
         if (fn) {

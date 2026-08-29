@@ -10,6 +10,7 @@
 #include "cajeta/ownership/ReturnTitleAudit.h"
 #include "cajeta/dbg/DebugCodegen.h"
 #include "../field/HeapField.h"
+#include "../field/StackField.h"
 #include "../field/ParameterField.h"
 #include "../field/StackField.h"
 #include "../type/CajetaArray.h"
@@ -276,6 +277,37 @@ namespace cajeta {
     // Public bridge for post-declaration ownership creation (9.3.1
     // move-assign into a bare-declared local). Same wiring; binds the
     // slot's CURRENT value, so callers invoke it after their store.
+    // xref-lint-emission-gap Unit 3 — see the header. Registers each declared
+    // name with its DECLARED type so a later `local.field` has a typed
+    // receiver during a resolve-only walk. Gated on the module's
+    // resolution-only mode: in a build, codegen registers the real
+    // slot-carrying field and this must not shadow it (the build export has to
+    // stay byte-identical, plan 2.1.1).
+    void LocalVariableDeclaration::resolveTypes(CajetaModulePtr module) {
+        if (!module || !module->isResolutionOnly()) return;
+        ScopePtr scope = module->getScopeStack().peek();
+        if (!scope) return;
+        for (auto& declarator : variableDeclarators) {
+            if (!declarator) continue;
+            // The initializer's own types first: a receiver inside it (`heap
+            // Probe()`, a call argument) is resolvable on the same terms.
+            //
+            // Resolve the Initializer NODE, not a cast of it. Initializer
+            // derives from AbstractSyntaxNode and NOT from Expression, so a
+            // dynamic_pointer_cast<Expression> here always failed and silently
+            // skipped every initializer — which is why `Counter c = stack
+            // Counter()` recorded no constructor edge (4.2.3). The base walk
+            // reaches the wrapped expression as a child.
+            if (InitializerPtr init = declarator->getInitializer()) {
+                try { init->resolveTypes(module); } catch (...) { }
+            }
+            if (!type) continue;
+            const string name = declarator->getIdentifier();
+            if (name.empty() || scope->containsField(name)) continue;
+            scope->putField(make_shared<StackField>(module, name, type));
+        }
+    }
+
     void LocalVariableDeclaration::emitOwnerDropEntry(CajetaModulePtr module,
             FieldPtr field, const std::string& dropFnName, int allocLine) {
         emitDropEntryFor(module, field, dropFnName, allocLine);

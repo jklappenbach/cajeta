@@ -164,7 +164,17 @@ TEST(KernelProtocolTests, throwingCellRepliesError) {
     ASSERT_NE(nullptr, err) << "no error message published";
     EXPECT_NE(std::string::npos, err->content.at("ename").asString().find("Exception"));
     EXPECT_EQ("boom", err->content.at("evalue").asString());
-    ASSERT_GT(err->content.at("traceback").size(), 0u) << "empty traceback";
+    auto tb = err->content.at("traceback");
+    ASSERT_GT(tb.size(), 0u) << "empty traceback";
+
+    // The message must be IN the traceback, as its last line. A frontend
+    // renders `traceback` when it is non-empty and drops `evalue`, so a
+    // traceback of bare frames shows the reader WHERE a cell threw and
+    // never WHY. Asserting evalue alone missed that for real: an install
+    // rejection rendered as two frame lines and no reason at all.
+    std::string last = tb[tb.size() - 1].asString();
+    EXPECT_NE(std::string::npos, last.find("boom"))
+        << "the traceback's last line must carry the message; got: " << last;
 
     const JupyterMessage* reply = h.first("execute_reply");
     ASSERT_NE(nullptr, reply);

@@ -710,4 +710,29 @@ namespace cajeta::buildtool {
         return e;
     }
 
+    llvm::Expected<std::optional<std::string>>
+    HttpRepository::publishedChecksum(const std::string& packageName,
+                                      const std::string& version) const {
+        // v1 servers have no resolve metadata to ask.
+        auto caps = capabilities();
+        if (!caps) {
+            llvm::consumeError(caps.takeError());
+            return std::optional<std::string>{};
+        }
+        if (!caps->supportsV2()) return std::optional<std::string>{};
+
+        auto md = v2Resolve(packageName, version);
+        if (!md) {
+            llvm::consumeError(md.takeError());
+            return std::optional<std::string>{};
+        }
+        std::string sha = md->sha256;
+        if (sha.empty()) return std::optional<std::string>{};
+        // Servers may send the digest bare or already prefixed; the
+        // comparison side (ArtifactCache::sha256OfFile) always produces
+        // the prefixed form.
+        if (sha.rfind("sha256:", 0) != 0) sha = "sha256:" + sha;
+        return std::optional<std::string>{sha};
+    }
+
 } // namespace cajeta::buildtool

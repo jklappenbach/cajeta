@@ -692,6 +692,9 @@ namespace cajeta {
         // arena and register no drop entry. usesArena() is true iff the method has
         // any such local (gates Block's mark/reset so arena-free methods pay zero).
         std::set<std::string> arenaEligibleNames;
+        // Unit 2: set by resolveBody, read by it — a method whose body has been
+        // resolved is not resolved again (see resolveBody).
+        bool bodyResolved = false;
         bool methodUsesArena = false;
         bool usesArena() const { return methodUsesArena; }
         bool isArenaEligibleLocal(const std::string& n) const {
@@ -701,6 +704,39 @@ namespace cajeta {
         // stored/aliased) and String-concat decls; flag the non-escaping concats'
         // BinaryOpExpression nodes arena-eligible and record their names here.
         void computeArenaEligibility();
+
+        // xref-lint-emission-gap Unit 2 — the body's type-resolver pass, callable
+        // on its own.
+        //
+        // This ran only inside generateCode, which is why `--lint` (which stops
+        // before codegen, deliberately) produced an xref export carrying no call
+        // edges and no field references at all: both are recorded during body
+        // resolution. Extracted so lint can run it without paying for codegen.
+        //
+        // IDEMPOTENT: the second call is a no-op, not a second walk. Lint runs it
+        // and codegen would run it again in any process that does both.
+        void resolveBody(CajetaModulePtr module);
+        bool isBodyResolved() const { return bodyResolved; }
+
+        // Resolve this body from OUTSIDE codegen — what `--lint` calls.
+        //
+        // resolveBody alone is not enough, and measuring is what showed it:
+        // body resolution assumes the context codegen's prologue establishes,
+        // so with an empty structure stack and no scope, receivers resolve to
+        // nothing and not one reference is recorded. This sets up the minimum
+        // that resolution (not emission) needs — the owning class on the
+        // structure stack so `this` types, and a scope carrying the formals so
+        // a parameter receiver types — then tears it down.
+        //
+        // Deliberately NOT folded into resolveBody: codegen has already built
+        // the real context when it calls that, and pushing a second one would
+        // change what a build resolves. The build path must stay byte-identical
+        // (plan 2.1.1), so lint gets its own door.
+        void resolveBodyForLint(CajetaModulePtr module);
+        // 2.3.2 — proof that a build does no NEW work: this counts actual walks,
+        // not calls, so "runs exactly once per method" is verified by counter
+        // rather than by reading the code.
+        static int64_t bodyResolveWalks();
 
         // Push a fresh (empty) drop frame onto the stack. Block::generateCode
         // calls this at its entry; the frame collects every owned local

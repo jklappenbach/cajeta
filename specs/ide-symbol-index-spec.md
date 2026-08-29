@@ -117,6 +117,24 @@ view of a source root, source-mapped so the IDE can tie it back to PSI offsets.
   suppress the affected region, not the file.
 - 2.0.6 The JSON contract is versioned and lives in `specs/schemas/`. The plugin
   refuses an unknown major version rather than misreading it.
+- 2.0.7 **What lint mode carries, and what it does not.** 2.0.2 and 2.0.3 say the
+  export is *available* in lint mode; they do not promise it is identical to a
+  build's. Originally lint carried no `calls` and no `references[kind=field]` at
+  all, because body resolution ran only inside codegen — the defect
+  `xref-lint-emission-gap` closed. It now carries every relation in 2.0.1, under
+  two stated limits:
+  - **Unresolvable receivers yield no edge, never a guessed one.** Callee
+    resolution under lint is unique-or-nothing. A receiver it cannot resolve —
+    chiefly a chained generic (`xs.stream().fold(...)`, whose receiver type is an
+    unsubstituted template return) — produces nothing. Measured over
+    `samples/tour`: lint carries 2367 of the build's 2466 own-file call edges.
+  - **Stdlib bodies are not resolved**, so edges *within* the stdlib come from a
+    build, not from lint.
+
+  The consumer-facing guarantee is therefore directional, and consumers should
+  rely on this rather than on equality: lint may carry FEWER edges than a build
+  of the same root, but never different ones, and every edge it emits resolves
+  within its own export (2.1.2's no-dangling rule holds on both paths).
 - 2.0.7 Determinism: the same input yields byte-identical output (the project
   already holds this line — see `verify-reproducible`).
 

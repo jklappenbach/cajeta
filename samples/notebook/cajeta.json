@@ -1,0 +1,49 @@
+{
+    // Tour project for the Cajeta Jupyter kernel. The kernel resolves the
+    // nearest cajeta.json when it launches, so starting Jupyter in this
+    // directory makes THIS the session's governing project: its
+    // repositories are what `Packages.install` resolves against, and its
+    // dependencies are on the classpath from the first cell.
+    //
+    // Run ./setup.sh first — it stages the local repository below.
+
+    "details": {
+        "name":                "com.example.notebook-tour",
+        "version":             "0.1.0",
+        "description":         "Runnable tour of the Cajeta notebook kernel",
+        "license":             "Apache-2.0",
+        "authors":             ["sample"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": ["filesystem", "clock"],
+
+        // Left empty on purpose. Part 5 of the tour calls
+        // `Packages.installAndSave`, which writes an entry HERE — that is
+        // how you see the difference between a session-only install and a
+        // recorded one. `./setup.sh --clean` and `git checkout` put it back.
+        "dependencies": {},
+
+        // A filesystem repository, staged by ./setup.sh. Everything the
+        // tour does is offline: no cajeta.dev, no network.
+        //
+        // To make signatures mandatory rather than opportunistic, add:
+        //     "require-signatures": true
+        // and re-run the tour — Part 4's unsigned install then fails.
+        "repositories": [
+            { "name": "tour-local", "type": "filesystem",
+              "path": "./repo", "priority": 10 }
+        ]
+    },
+
+    "tasks": {
+        "run": {
+            "description": "Open Jupyter Lab on the tour notebook",
+            "actions": [
+                { "exec": "jupyter",
+                  "args": ["lab", "notebooks/tour.ipynb"] }
+            ]
+        }
+    }
+}

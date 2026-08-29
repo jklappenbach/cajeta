@@ -4,9 +4,11 @@
 
 #include "../error/Diagnostics.h"
 #include "Method.h"
+#include <atomic>
 #include <functional>
 #include <unordered_set>
 #include "../type/CajetaClass.h"
+#include "../field/StackField.h"
 #include "../type/CajetaView.h"
 #include "../type/CajetaArray.h"
 #include "../type/CajetaFunctionType.h"
@@ -2332,6 +2334,100 @@ namespace cajeta {
         return it->second == pair<int, int>{line, column};
     }
 
+    // xref-lint-emission-gap Unit 2 — the body type-resolver pass, extracted from
+    // generateCode unchanged.
+    //
+    // Nothing here is new: it is the `block->resolveTypes(module)` that sat inside
+    // generateCode's try, with the same `if (block)` guard and the same script
+    // exception remapping around it. What is new is that it can now be CALLED —
+    // by lint, which stops before codegen and therefore never recorded a call
+    // edge or a field reference in its life (spec §1.4).
+    //
+    // The walk happens at most once per method. In a build that changes nothing
+    // (generateCode is its only caller, once); in a process that lints and then
+    // compiles, the second call is a no-op rather than a second walk.
+    static std::atomic<int64_t> g_bodyResolveWalks{0};
+
+    int64_t Method::bodyResolveWalks() {
+        return g_bodyResolveWalks.load(std::memory_order_relaxed);
+    }
+
+    void Method::resolveBody(CajetaModulePtr module) {
+        if (bodyResolved) return;
+        if (!block) { bodyResolved = true; return; }
+        // Marked BEFORE the walk, not after: a body that throws has still been
+        // attempted, and re-walking it on a later call would re-raise the same
+        // error from a different phase. lintRoot's per-file guard is what decides
+        // whether that error sinks anything (plan 3.1.3).
+        bodyResolved = true;
+        g_bodyResolveWalks.fetch_add(1, std::memory_order_relaxed);
+        // script-units U5: semantic errors escaping a SCRIPT module's body are
+        // rewritten into host coordinates at this boundary. Preserved from the
+        // extraction site — remapScriptException no-ops for ordinary modules, so
+        // this is behaviour-neutral for everything else.
+        try {
+            block->resolveTypes(module);
+        } catch (cajeta::Exception& e) {
+            remapScriptException(module, e);
+            throw;
+        }
+    }
+
+    // The lint-side door onto resolveBody — see the header for why it is a
+    // separate entry point rather than a flag inside resolveBody.
+    //
+    // The context here is the minimum RESOLUTION needs, not what codegen
+    // needs: no llvm::Function, no allocas, no drop entries. A formal becomes
+    // a plain Field carrying its declared type, which is all
+    // IdentifierExpression::resolveTypes reads (`field->getType()`), and the
+    // scope's parent is cleared for the isolation reason createScope()
+    // documents at length — without it, an identifier can bind to a
+    // same-named local of a DIFFERENT type from an unrelated method that
+    // happens to be on the stack, and pin a wrong type on a shared AST node.
+    void Method::resolveBodyForLint(CajetaModulePtr module) {
+        if (bodyResolved || !block || !module) return;
+
+        const bool pushedClass = (parent != nullptr);
+        if (pushedClass) module->getStructureStack().push_back(parent);
+        module->getScopeStack().add(make_shared<Scope>(toCanonical(), module));
+        module->getScopeStack().peek()->setParent(nullptr);
+
+        for (auto& parameter : parameterList) {
+            if (!parameter) continue;
+            // StackField: the concrete Field shape that needs only a name and
+            // a declared type. No alloca is created — resolution reads
+            // getType() and nothing else.
+            auto field = make_shared<StackField>(module, parameter->getName(),
+                                                 parameter->getType());
+            module->getScopeStack().peek()->putField(field);
+        }
+
+        // The CALLER half of every call edge this body records
+        // (xref-lint-emission-gap 4.2.1). CajetaClass::noteResolvedCallXref
+        // reads it from the module, which codegen sets and a resolve-only walk
+        // otherwise never would — leaving lint's edges caller-less, so the
+        // call GRAPH has no direction even though each callee is right.
+        MethodPtr priorMethod = module->getCurrentMethod();
+        module->setCurrentMethod(
+            static_pointer_cast<Method>(shared_from_this()));
+
+        const bool priorMode = module->isResolutionOnly();
+        module->setResolutionOnly(true);
+        try {
+            resolveBody(module);
+        } catch (...) {
+            module->setResolutionOnly(priorMode);
+            module->setCurrentMethod(priorMethod);
+            module->getScopeStack().pop();
+            if (pushedClass) module->getStructureStack().pop_back();
+            throw;
+        }
+        module->setResolutionOnly(priorMode);
+        module->setCurrentMethod(priorMethod);
+        module->getScopeStack().pop();
+        if (pushedClass) module->getStructureStack().pop_back();
+    }
+
     void Method::computeArenaEligibility() {
         arenaEligibleNames.clear();
         methodUsesArena = false;
@@ -3280,7 +3376,7 @@ namespace cajeta {
         // no-ops for ordinary modules, so the catch is behavior-neutral.
         try {
         if (block) {
-            block->resolveTypes(module);
+            resolveBody(module);         // xref U2: was block->resolveTypes(module)
             computeArenaEligibility();   // flag non-escaping concat locals (U2)
             // Frame-arena: now that eligibility is known, capture the arena mark at
             // method entry (still the straight-line entry region, so it dominates

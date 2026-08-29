@@ -689,20 +689,40 @@ namespace cajeta::xref {
     std::string templateKeyFor(const std::string& templateFqn,
                                const std::string& methodName,
                                int instantiationParamCount) {
-        const TemplateMember* hit = nullptr;
-        for (const auto& tm : gTemplateMembers) {
-            if (tm.ownerFqn != templateFqn || tm.name != methodName) continue;
-            if (tm.kind == "field") continue;
-            const int expected = tm.declaredParams + (tm.isStatic ? 0 : 1);
-            if (expected != instantiationParamCount) continue;
-            // Two template members of the same name AND arity cannot be told apart
-            // here: the instantiation's parameter types are substituted (T -> int32)
-            // and no longer comparable with the declared ones. Omit rather than pick
-            // one — a wrong callee renames the wrong code.
-            if (hit) return "";
-            hit = &tm;
+        // Two passes over the same rule, differing only in whether the receiver
+        // is counted. An instance method's parameter list normally carries
+        // `this` (which is why `greet()` keys as `greet(pointer)`) — but a
+        // generic METHOD resolved under lint does NOT: measured, `Stream<T>`'s
+        // `fold(R seed, fn)` arrives with 2 parameters, not 3, while the
+        // plain `filter(pred)` on the same class arrives with 2 for 1 declared.
+        // Assuming the receiver unconditionally made every generic method's key
+        // come back EMPTY, and noteResolvedCall drops an empty key — so lint
+        // silently carried no edge for `fold`, `map` or `collect` while
+        // carrying `filter` and `forEach` fine (xref-lint-emission-gap 5.1.4).
+        //
+        // The receiver-counted interpretation is tried FIRST and alone decides
+        // whenever it matches anything, so no key that resolved before can
+        // change or become ambiguous now. Only a call that previously got
+        // nothing can gain one.
+        for (int pass = 0; pass < 2; pass++) {
+            const TemplateMember* hit = nullptr;
+            for (const auto& tm : gTemplateMembers) {
+                if (tm.ownerFqn != templateFqn || tm.name != methodName) continue;
+                if (tm.kind == "field") continue;
+                const int expected = pass == 0
+                    ? tm.declaredParams + (tm.isStatic ? 0 : 1)
+                    : tm.declaredParams;
+                if (expected != instantiationParamCount) continue;
+                // Two template members of the same name AND arity cannot be told
+                // apart here: the instantiation's parameter types are substituted
+                // (T -> int32) and no longer comparable with the declared ones.
+                // Omit rather than pick one — a wrong callee renames the wrong code.
+                if (hit) return "";
+                hit = &tm;
+            }
+            if (hit) return hit->overloadKey;
         }
-        return hit ? hit->overloadKey : std::string();
+        return std::string();
     }
 
     void collectDeclarationsAndInheritance(XrefIndex& index,

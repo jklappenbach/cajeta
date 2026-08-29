@@ -244,6 +244,58 @@ namespace cajeta {
             }
         }
         resolvedType = type;
+
+        // xref-lint-emission-gap 4.2.3. `creatorRest` is not in `children`
+        // (only forEachSubNode reaches it), so without this the constructor
+        // arguments are never walked at all under lint. LINT ONLY: in a build
+        // this pass must not touch the creator, whose argument types are
+        // resolved later, under template substitution, by generateCode.
+        if (module && module->isResolutionOnly()) {
+            if (creatorRest) {
+                try { creatorRest->resolveTypes(module); } catch (...) { }
+            }
+            recordConstructorCallXref(type, module);
+        }
+    }
+
+    // The constructor call edge, recorded here rather than in ClassCreatorRest
+    // because this is where the created type is known — the creator's own
+    // `targetType` is set by generateCode and is still null on the lint path.
+    // The SITE is the creator's position, matching what
+    // ClassCreatorRest::generateCode opens, so a build and a lint name the
+    // same site and `drainCalls` merges them into one edge.
+    void NewExpression::recordConstructorCallXref(const CajetaTypePtr& type,
+                                                  CajetaModulePtr module) {
+        if (!xref::captureEnabled() || !type || !creatorRest) return;
+        auto ccr = dynamic_pointer_cast<ClassCreatorRest>(creatorRest);
+        if (!ccr) return;
+        auto klass = dynamic_pointer_cast<CajetaClass>(type);
+        if (!klass) return;
+
+        // Unique arity match only. An ambiguous constructor set gets no edge:
+        // a wrong one sends "who constructs this" to the wrong overload, which
+        // is worse than a missing edge (spec 2.1.2, plan 4.2.4).
+        // Scanned over getMethods(), NOT getMethodList(): CajetaClass::addMethod
+        // routes constructors to the constructor maps and `methods` and never
+        // pushes them onto `methodList`, so a methodList scan cannot find a
+        // constructor at all.
+        const size_t argc = ccr->getParameters().size();
+        MethodPtr match;
+        for (auto& [_, mm] : klass->getMethods()) {
+            if (!mm || !mm->isConstructor()) continue;
+            auto pl = mm->getParameterList();
+            size_t formalCount = pl.size();
+            if (!pl.empty() && pl.front()->getName() == "this") formalCount--;
+            if (formalCount != argc) continue;
+            if (match) return;              // ambiguous — stay quiet
+            match = mm;
+        }
+        if (!match) return;
+
+        xref::CallSiteScope xrefSite(creatorRest->getSourceFile(),
+                                     creatorRest->getSourceLine(),
+                                     creatorRest->getSourceColumn());
+        CajetaClass::noteResolvedCallXref(match, /*isConstructor=*/true, module);
     }
 
     llvm::Value* NewExpression::generateCode(CajetaModulePtr module) {

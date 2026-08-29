@@ -82,6 +82,19 @@ __attribute__((used, retain, visibility("default")))
 char __cajeta_install_out[2048] = {0};
 }
 
+std::string projectDirForLaunch(const std::string& cwd) {
+    std::filesystem::path dir(cwd);
+    while (true) {
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(dir / "cajeta.json", ec)) {
+            return dir.string();
+        }
+        auto parent = dir.parent_path();
+        if (parent.empty() || parent == dir) return cwd;   // none anywhere
+        dir = parent;
+    }
+}
+
 namespace {
 
     // The session whose cell is executing right now. JIT'd
@@ -1026,6 +1039,27 @@ bool KernelSession::installFromHook(const std::string& request,
         return false;
     }
 
+    // Spec 2.5 is decided BEFORE resolution, and deliberately so. If this
+    // library is already loaded at a version the constraint excludes, no
+    // answer the repositories give can change the outcome — the session
+    // cannot replace a loaded archive. Resolving first would report
+    // "no version satisfies '2.*'" when the truth is "you have 1.0.0
+    // loaded and swapping it needs a restart", which sends the reader off
+    // to look for a version that would not have helped.
+    {
+        auto loadedIt = impl.installsByName.find(request);
+        if (loadedIt != impl.installsByName.end()
+            && !versionSatisfies(loadedIt->second.version, constraint)) {
+            writeOut(out, outCap,
+                     "Packages.install: '" + request + "' is already loaded "
+                     "at " + loadedIt->second.version + ", which '"
+                     + constraint + "' excludes. A session cannot replace a "
+                     "loaded archive — restart the session to change "
+                     "versions.");
+            return false;
+        }
+    }
+
     std::error_code ec;
     auto canon = std::filesystem::weakly_canonical(request, ec);
     if (ec || !std::filesystem::exists(canon)) {
@@ -1098,6 +1132,18 @@ bool KernelSession::installFromHook(const std::string& request,
                  "Packages.install: '" + archiveName + "' is available at "
                  + archiveVersion + ", which '" + constraint
                  + "' excludes; no other version was found.");
+        return false;
+    }
+
+    // Reject BEFORE announcing the splice. installArchive runs this same
+    // scan and is the authoritative one; running it here too costs an
+    // archive read and buys honest narration. Announcing "splicing X" and
+    // then refusing tells the reader an action happened that did not —
+    // seen live in the tour, where a collision printed "splicing coll
+    // 1.0.0" immediately above its own rejection.
+    std::string collision;
+    if (collidesWithSession(canon.string(), &collision)) {
+        writeOut(out, outCap, "Packages.install: " + collision);
         return false;
     }
 

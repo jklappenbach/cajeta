@@ -150,6 +150,7 @@ task may override any of it per-action.
 | `classpath` | string | derived | Dependency archives, comma-separated. Defaults to the project's resolved dependencies; set it only to override. |
 | `profile` | string | `""` | `@Profile` for both front-end passes. |
 | `min` | int | `0` (off) | Line-percentage gate on `report`. Below it, the action fails the task. |
+| `warn` | int | `0` (off) | Line-percentage level ABOVE `min`. Below it, `report` records a warning finding and the task still SUCCEEDS. Must not be below `min`. |
 | `min-score` | int | `0` (off) | Mutation-score gate on `mutate`. Same semantics as `min`. |
 
 ### `${...}` in these values
@@ -255,7 +256,7 @@ one. An explicit value always wins.
 > the workaround was to hand-write `~/.olla/…` paths into the task and keep
 > them in step with the manifest by hand.
 
-### `min` — the gate
+### `min` and `warn` — the gate, and the level below it
 
 `cajeta.coverage.report` compares the integer part of the line percentage
 against `min` and fails the task when it falls short — JaCoCo `check`
@@ -268,6 +269,42 @@ coverage 12.0% is below min 55%
 
 Leave it at `0` while you are finding your number, then set it to what you
 have and ratchet.
+
+**`warn` is the level that makes the ratchet work.** A gate that only ever
+fails gets raised once and then avoided: the day it fires, the fix is
+expensive and the pressure is to lower the number. Set `warn` above `min` and
+you see the drift while it is still cheap:
+
+```jsonc
+"config": {
+    "min":  75,   // below this the build FAILS
+    "warn": 80    // below this it is REPORTED and the build passes
+}
+```
+
+| Coverage | Result |
+|---|---|
+| below `min` | `error` finding — **task fails** |
+| between `min` and `warn` | `warning` finding — **task succeeds**, drift recorded |
+| at or above `warn` | no finding |
+
+Both land as findings rather than as a bespoke pass/fail, so the number
+reaches the diagnostic stream where a CI consumer reads it directly instead of
+inferring it from an exit code. Under `--diag-format=json` they are ordinary
+diagnostics attributed to `dev.cajeta.coverage`; in text mode they print in the
+compiler's own form, so an IDE makes them clickable:
+
+```
+dev.cajeta.coverage: error: coverage 12.0% is below min 55% [coverage-min]
+```
+
+Setting `warn` BELOW `min` is rejected rather than accepted, because such a
+warning could never fire without the error firing too — the level you set to
+see drift early would never be reached.
+
+Only `min` set is the configuration every project has today, and it behaves
+exactly as it always did. Only `warn` set reports drift and never fails, which
+is a legitimate place to start when a project is not ready to gate.
 
 ### Managing the exclude list from the CLI
 

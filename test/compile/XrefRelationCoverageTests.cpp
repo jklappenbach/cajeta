@@ -263,12 +263,26 @@ TEST(XrefRelationCoverage, LintCarriesEveryCallAndFieldEdgeTheBuildFound) {
     ASSERT_FALSE(built.empty()) << "the build export wrote nothing";
     ASSERT_FALSE(linted.empty()) << "the lint export wrote nothing";
 
+    // Spec 2.1.1 is about "the same SOURCE ROOT". A build export additionally
+    // carries records for the stdlib code it compiled; lint deliberately does
+    // not resolve stdlib bodies — the same policy captureStaticReceivers
+    // already applies ("the project's own files are what a developer
+    // navigates"), and resolving the whole stdlib per edit is not a cost the
+    // per-edit path can take. So the comparison is scoped to the root's own
+    // files, which is what the requirement actually says.
+    auto ownFilesOnly = [](const std::vector<std::string>& recs) {
+        std::vector<std::string> out;
+        for (const auto& r : recs)
+            if (r.find("\"file\": \"demo/") != std::string::npos) out.push_back(r);
+        return out;
+    };
+
     // The build side must itself be non-empty, or the comparison proves
     // nothing (1.3.2: neither check may pass against an empty export).
-    ASSERT_FALSE(relation(built, "calls").empty())
+    ASSERT_FALSE(ownFilesOnly(relation(built, "calls")).empty())
         << "the BUILD export carries no calls — the corpus, not the lint "
            "path, is what is wrong";
-    ASSERT_FALSE(referencesOfKind(built, "field").empty())
+    ASSERT_FALSE(ownFilesOnly(referencesOfKind(built, "field")).empty())
         << "the BUILD export carries no field references — the corpus, not "
            "the lint path, is what is wrong";
 
@@ -281,14 +295,15 @@ TEST(XrefRelationCoverage, LintCarriesEveryCallAndFieldEdgeTheBuildFound) {
         return gone;
     };
 
-    const auto callsGone =
-        missingFrom(relation(built, "calls"), relation(linted, "calls"));
+    const auto callsGone = missingFrom(ownFilesOnly(relation(built, "calls")),
+                                       relation(linted, "calls"));
     EXPECT_TRUE(callsGone.empty())
         << callsGone.size() << " call edge(s) the build found are absent from "
            "the lint export; first: " << (callsGone.empty() ? "" : callsGone[0]);
 
-    const auto fieldsGone = missingFrom(referencesOfKind(built, "field"),
-                                        referencesOfKind(linted, "field"));
+    const auto fieldsGone =
+        missingFrom(ownFilesOnly(referencesOfKind(built, "field")),
+                    referencesOfKind(linted, "field"));
     EXPECT_TRUE(fieldsGone.empty())
         << fieldsGone.size() << " field reference(s) the build found are absent "
            "from the lint export; first: "

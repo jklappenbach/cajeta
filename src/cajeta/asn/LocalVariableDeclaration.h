@@ -25,6 +25,12 @@ namespace cajeta {
         static void emitOwnerDropEntry(CajetaModulePtr module, FieldPtr field,
             const std::string& dropFnName, int allocLine);
 
+        // xref-lint-emission-gap Unit 3 — register this declaration's bindings
+        // during a RESOLVE-ONLY walk, so a later `local.field` has a typed
+        // receiver. No-op in a build: there, generateCode registers the real
+        // (slot-carrying) field and this would only shadow it.
+        void resolveTypes(CajetaModulePtr module) override;
+
         LocalVariableDeclaration(set<Modifier>& modifiers,
             CajetaTypePtr type,
             list<VariableDeclaratorPtr> variableDeclarators,

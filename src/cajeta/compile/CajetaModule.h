@@ -303,6 +303,7 @@ namespace cajeta {
         // unactionable — enforcement belongs to the dependency's own build.
         bool classpathOrigin = false;
 
+        bool resolutionOnly = false;
         map<string, CajetaClassPtr> structures;
         bool lambdaClassPtrReturn = false;
         MethodPtr currentMethod;
@@ -591,6 +592,20 @@ namespace cajeta {
         // check is skipped for script modules.
         void setScriptUnit(bool v) { scriptUnit = v; }
         bool isScriptUnit() const { return scriptUnit; }
+
+        // xref-lint-emission-gap Unit 3 — this module is being RESOLVED with
+        // no intention of generating code (`--lint` resolving bodies to record
+        // xref edges). Read by resolution paths that must behave differently
+        // when there is no function to emit into — notably local declarations,
+        // which register their binding at CODEGEN time and so leave a local
+        // receiver untypeable during a resolve-only walk.
+        //
+        // A mode flag rather than an unconditional change because the codegen
+        // pre-pass runs the same resolveTypes: making local registration
+        // unconditional would alter what a BUILD resolves, and the build
+        // export must stay byte-identical (plan 2.1.1).
+        bool isResolutionOnly() const { return resolutionOnly; }
+        void setResolutionOnly(bool v) { resolutionOnly = v; }
 
         // The unit's session-binding names (script-units spec §4): top-level
         // declarations collected by the synthesis pass. Codegen promotes these
