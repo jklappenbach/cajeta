@@ -122,6 +122,38 @@ TEST(NotebookTourSampleTests, everyCellOfTheTourBehavesAsTheProseSays) {
     ASSERT_TRUE(fs::is_directory(sample))
         << "cannot find samples/notebook from " << fs::current_path();
 
+    // The tour must ship CLEAN: no saved outputs, no execution counts, no
+    // stray trailing cell. Running it in Jupyter Lab autosaves, and "run
+    // and advance" on the last cell appends an empty one — both landed in
+    // the file the first time it was driven live. Saved outputs also bake
+    // one machine's paths into the sample and make every run a diff.
+    {
+        std::string raw = readFile(sample / "notebooks" / "tour.ipynb");
+        auto parsed = llvm::json::parse(raw);
+        ASSERT_TRUE(!!parsed) << "tour.ipynb does not parse";
+        auto* cellsArr = parsed->getAsObject()->getArray("cells");
+        ASSERT_NE(nullptr, cellsArr);
+        for (auto& cell : *cellsArr) {
+            auto* obj = cell.getAsObject();
+            auto kind = obj->getString("cell_type");
+            if (!kind || *kind != "code") continue;
+            auto* outputs = obj->getArray("outputs");
+            EXPECT_TRUE(!outputs || outputs->empty())
+                << "tour.ipynb carries saved outputs — strip them before "
+                   "committing; the reader is meant to run it";
+            std::string body;
+            if (auto* src = obj->getArray("source")) {
+                for (auto& line : *src) {
+                    if (auto v = line.getAsString()) body += v->str();
+                }
+            }
+            EXPECT_FALSE(body.find_first_not_of(" \t\r\n")
+                         == std::string::npos)
+                << "tour.ipynb has an EMPTY code cell — Jupyter appends one "
+                   "when you run the last cell; drop it";
+        }
+    }
+
     auto cells = codeCellsOf(sample / "notebooks" / "tour.ipynb");
     ASSERT_EQ(std::size(kExpected), cells.size())
         << "the tour's code-cell count changed; update kExpected so the "
