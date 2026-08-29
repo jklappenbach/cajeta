@@ -771,6 +771,22 @@ bool KernelSession::resolveForInstall(
         specs.push_back(central);
     }
 
+    // A manifest's filesystem-repository path is relative to the MANIFEST,
+    // which is the only anchor a reader can reason about. Resolving it
+    // against the process cwd would make it depend on where the kernel
+    // happened to be launched — and Jupyter launches one in the NOTEBOOK's
+    // directory, not the project root, so `"path": "./repo"` beside
+    // cajeta.json would silently resolve to `notebooks/repo` and the
+    // repository would appear to carry no versions at all.
+    if (!projectRoot.empty()) {
+        for (auto& spec : specs) {
+            if (spec.type != "filesystem" || spec.path.empty()) continue;
+            if (std::filesystem::path(spec.path).is_absolute()) continue;
+            spec.path = std::filesystem::weakly_canonical(
+                std::filesystem::path(projectRoot) / spec.path).string();
+        }
+    }
+
     std::string stage = projectRoot.empty()
         ? (std::filesystem::temp_directory_path() / "cajeta-session-downloads")
               .string()
@@ -1024,6 +1040,27 @@ bool KernelSession::installFromHook(const std::string& request,
                  "notebook`. (Packages.install still works — it just does "
                  "not survive a restart.)");
         return false;
+    }
+
+    // Spec 2.5 is decided BEFORE resolution, and deliberately so. If this
+    // library is already loaded at a version the constraint excludes, no
+    // answer the repositories give can change the outcome — the session
+    // cannot replace a loaded archive. Resolving first would report
+    // "no version satisfies '2.*'" when the truth is "you have 1.0.0
+    // loaded and swapping it needs a restart", which sends the reader off
+    // to look for a version that would not have helped.
+    {
+        auto loadedIt = impl.installsByName.find(request);
+        if (loadedIt != impl.installsByName.end()
+            && !versionSatisfies(loadedIt->second.version, constraint)) {
+            writeOut(out, outCap,
+                     "Packages.install: '" + request + "' is already loaded "
+                     "at " + loadedIt->second.version + ", which '"
+                     + constraint + "' excludes. A session cannot replace a "
+                     "loaded archive — restart the session to change "
+                     "versions.");
+            return false;
+        }
     }
 
     std::error_code ec;

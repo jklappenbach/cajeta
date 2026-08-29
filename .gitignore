@@ -126,3 +126,9 @@ research/ml/course-material/
 build-cov/
 # analyze.py writes this to the cwd, so it lands at the repo root.
 coverage-optimize.json
+
+# samples/notebook — staged by its setup.sh, never committed
+samples/notebook/repo/
+samples/notebook/trust/
+samples/notebook/.keys/
+samples/notebook/.work/
