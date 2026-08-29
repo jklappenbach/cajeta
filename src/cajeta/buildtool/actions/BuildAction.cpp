@@ -232,12 +232,34 @@ namespace cajeta::buildtool {
             namespace fs = std::filesystem;
             std::string sourceRoot = "src/main/cajeta";
             std::string outputDir  = "build";
+            SettingsOutput outCfg;
             if (ctx.manifest()) {
                 auto sb = parseSettingsBuild(*ctx.manifest());
                 if (!sb) return sb.takeError();
                 if (sb->sourceRoot) sourceRoot = *sb->sourceRoot;
                 if (sb->outputDir)  outputDir  = *sb->outputDir;
+                // settings.output (spec §3.3). Validated on LOAD, so a bad
+                // value stops the build here rather than at first write.
+                auto parsed = parseSettingsOutput(*ctx.manifest());
+                if (!parsed) return parsed.takeError();
+                outCfg = std::move(*parsed);
             }
+            // `root` is the one knob most projects touch; the other three
+            // override it individually. settings.build.output-dir stays
+            // honoured as the legacy spelling of the same idea, so projects
+            // that already set it keep working — output.root wins when both
+            // are present, being the newer and more specific setting.
+            if (outCfg.root) outputDir = *outCfg.root;
+            fs::path interRoot = outCfg.intermediates
+                ? fs::path(*outCfg.intermediates) : fs::path(outputDir) / "obj";
+            fs::path artRoot = outCfg.artifacts
+                ? fs::path(*outCfg.artifacts) : fs::path(outputDir) / "archive";
+            // <root>/exe, not §3.1's build/bin: unit 2 kept the executable
+            // where the toolchain skill and check-guide-part1.sh expect it.
+            // The KEY is `binaries`, so adopting bin later is a default
+            // change rather than a new setting.
+            fs::path binRoot = outCfg.binaries
+                ? fs::path(*outCfg.binaries) : fs::path(outputDir) / "exe";
 
             // Decide archive-root + output-path per emit. The
             // compiler binary takes <entry> <source-root> <archive-root>
@@ -253,20 +275,43 @@ namespace cajeta::buildtool {
                                       ? ctx.manifest()->details.name
                                       : "out";
 
+            // build-output-layout §3.1 separates the two roles that used to
+            // share one directory. `archiveRoot` is the ARTIFACT home — where
+            // the deliverable lands and what the task reports. `compilerOut`
+            // is the INTERMEDIATES home — the compiler's third positional,
+            // where it writes per-class objects, bitcode and staging.
+            //
+            // They were the same path, so an exe build left its objects
+            // beside the binary. Beyond the tidiness, that is what made
+            // `details.name` equal to a top-level package name unlinkable:
+            // the exe `build/exe/t` and the object tree `build/exe/t/` are
+            // the same name, and the linker reported "cannot open output
+            // file build/exe/t: Is a directory". Separating the roles removes
+            // the shared parent, which is what cajeta-five's
+            // buildtool-exe-package-name-collision spec predicted would fix
+            // it outright.
+            //
+            // Exploded IR is the exception on purpose: there the emitted IR
+            // tree IS the deliverable, so its artifact home and its output
+            // directory are legitimately one path.
+            fs::path compilerOut;
             if (emit == "exploded-ir") {
                 compilerEmit = "ir";
                 formatLabel = "exploded-ir";
                 archiveRoot = fs::path(outputDir) / "ir";
+                compilerOut = archiveRoot;
             } else if (emit == "archived-ir") {
                 compilerEmit = "cja";
                 formatLabel = "archived-ir";
-                archiveRoot = fs::path(outputDir) / "archive";
+                archiveRoot = artRoot;
+                compilerOut = interRoot;
                 outputPath = archiveRoot /
                              (detailsName + "-" + version + ".cja");
             } else {
                 compilerEmit = "exe";
                 formatLabel = "executable";
-                archiveRoot = fs::path(outputDir) / "exe";
+                archiveRoot = binRoot;
+                compilerOut = interRoot;
                 outputPath = archiveRoot / detailsName;
             }
 
@@ -275,11 +320,17 @@ namespace cajeta::buildtool {
                 outputPath = v->str();
             }
 
-            // Ensure the output directory exists.
+            // Ensure both homes exist — the artifact's and the
+            // intermediates'. They are the same path only for exploded IR.
             std::error_code ec;
             fs::create_directories(archiveRoot, ec);
             if (ec) {
                 return err("build: cannot create '" + archiveRoot.string() +
+                           "': " + ec.message());
+            }
+            fs::create_directories(compilerOut, ec);
+            if (ec) {
+                return err("build: cannot create '" + compilerOut.string() +
                            "': " + ec.message());
             }
 
@@ -583,7 +634,10 @@ namespace cajeta::buildtool {
             // Positional args: <entry-method> <source-root> <archive-root>
             argv.push_back(entry->empty() ? std::string("*") : *entry);
             argv.push_back(sourceRoot);
-            argv.push_back(archiveRoot.string());
+            // The compiler's third positional is its OUTPUT DIRECTORY, i.e.
+            // where intermediates go — not where the deliverable lands, which
+            // `-o` above already set.
+            argv.push_back(compilerOut.string());
 
             // Run the compiler. Its stdout/stderr pass through to the parent
             // terminal so the developer sees the output.

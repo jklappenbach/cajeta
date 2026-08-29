@@ -30,18 +30,33 @@ import cajeta.collection.HashMap;
  *     ActionResult r #= heap ActionResult();
  *     r.output("path", artifact.toString());
  *     r.findings(#findings);
- *     return r.fail(  // fluent fail path
- *         "coverage 73.5% < min 80%");
+ *     r.fail("coverage 73.5% < min 80%");
+ *     return #r;
  *
  *     // ... or just success:
  *     return #r;
  *
- * The `fail(...)` instance method returns the same result so the
- * caller can `return r.fail(...)` in one line. The static
- * `ActionResult.error(msg)` factory is for "I detected the failure
- * before building any outputs" — common in param-validation paths.
- * (The two need distinct names: a static and an instance method
- * with the same signature collide in one dispatch table.)
+ * ## `return r.fail(...)` is NOT a valid ending — it crashes
+ *
+ * This docstring used to show the fluent form as the fail path. An
+ * action entry returns `#ActionResult`, and `fail` returns a plain
+ * `ActionResult` — a BORROW of the receiver. Returning it where a
+ * title is required hands back a pointer to a local that drops on
+ * the way out, and the caller reads freed memory: measured as a
+ * SIGSEGV the first time an action was ever actually run
+ * (plugin-output-protocol §2, 2026-08-28). Nothing had run one
+ * before, so the recommended pattern had never executed.
+ *
+ * `fail` still returns `this`, which chains fine mid-expression.
+ * It just cannot END a `#ActionResult` method: fail, then
+ * `return #r`.
+ *
+ * The static `ActionResult.error(msg)` factory is for "I detected
+ * the failure before building any outputs" — common in
+ * param-validation paths — and returns `#ActionResult`, so
+ * `return ActionResult.error("...")` IS a valid ending. (The two
+ * need distinct names: a static and an instance method with the
+ * same signature collide in one dispatch table.)
  */
 public class ActionResult {
 
@@ -74,7 +89,12 @@ public class ActionResult {
     }
 
     /**
-     * Mark this result as failed and return it for `return r.fail(...)`.
+     * Mark this result as failed and return it for chaining.
+     *
+     * Do NOT write `return r.fail(...)` from a `#ActionResult` method — the
+     * returned reference is a borrow of the receiver and dangles. See the
+     * class docstring. Write `r.fail(...); return #r;`.
+     *
      * Idempotent — calling `fail()` twice keeps the first message
      * (the action's first detected failure is the truthful one;
      * a later "follow-up" error usually shadows the real cause).

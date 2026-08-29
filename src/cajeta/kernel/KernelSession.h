@@ -258,6 +258,58 @@ namespace cajeta::kernel {
         bool installArchive(const std::string& cjaPath,
                             std::string* error = nullptr);
 
+        // notebook-olla-install U2 (spec 2.1, 2.4-2.6): the host end of
+        // `Packages.install`, called from JIT'd cell code through the
+        // runtime bridge. Writes the resolved version into `out` when it
+        // returns true, and the located failure message when it returns
+        // false. Resolution is stubbed for U2 — `request` is a local .cja
+        // path until Unit 3 wires in the resolver.
+        bool installFromHook(const std::string& request,
+                             const std::string& constraint,
+                             bool save,
+                             char* out, int32_t outCap);
+
+        // notebook-olla-install 6.1.2 (spec 4.3): true when the archive
+        // declares a canonical name the session already holds. Safe to
+        // call MID-CELL — archive I/O and registry lookups only, no
+        // compiler pass — which is what lets a queued splice reject
+        // through the installing call rather than silently at drain.
+        bool collidesWithSession(const std::string& archivePath,
+                                 std::string* error);
+
+        // notebook-olla-install U5 (spec 5.2-5.4): graduate an installed
+        // dependency into the governing project's cajeta.json, through the
+        // same format-preserving editor `cajeta add` uses. False with
+        // `errorOut` set when there is no project to write to, or when the
+        // rewrite would not parse. An unchanged pin writes nothing.
+        bool saveToManifest(
+            const std::string& name, const std::string& constraint,
+            const std::function<void(const std::string&)>& phase,
+            std::string* errorOut);
+
+        // notebook-olla-install U3 (spec 3.1, 3.2, 3.4, 2.6): resolve a
+        // library NAME + constraint to a verified local archive through the
+        // buildtool's repositories, artifact cache, and published
+        // checksums. `phase` narrates resolve/fetch/verify to the cell's
+        // stream (6.1). False with `errorOut` set on any rejection —
+        // nothing is spliced, so a failure leaves no half-installed state.
+        // notebook-olla-install U4 (spec 3.3): true when `signature` is
+        // empty (policy is the caller's) or verifies against a key in the
+        // machine's trust store. False with `errorOut` set otherwise — a
+        // signature that does not verify is never merely a warning.
+        bool verifySignatureOrFail(
+            const std::string& archivePath, const std::string& name,
+            const std::string& version, const std::string& repoName,
+            const std::string& signature,
+            const std::function<void(const std::string&)>& phase,
+            std::string* errorOut);
+
+        bool resolveForInstall(
+            const std::string& name, const std::string& constraint,
+            const std::function<void(const std::string&)>& phase,
+            std::string* pathOut, std::string* versionOut,
+            std::string* errorOut);
+
         const SessionStats& stats() const;
 
     private:

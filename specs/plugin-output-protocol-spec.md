@@ -150,11 +150,24 @@ serializes through one writer that escapes correctly.
 2. An action returns a failing `ActionResult`; the emitted result carries the
    error message.
 3. An action calls `result` explicitly; exactly one result is emitted, not two.
+4. An action throws; an error result naming the throw is emitted rather than
+   silence, and the records it emitted before dying are kept.
+5. An action carries its outputs and findings on the returned `ActionResult`
+   rather than emitting them as it goes; they still reach the runtime, as
+   their own records, before the result.
+
+Use cases 4 and 5 were added 2026-08-28 while building §2. Both are things the
+guarantee is worthless without: silence on a throw is the case where a build
+tool's guess does the most damage, and a result whose outputs cannot travel
+makes `ActionResult.output` decorative.
 
 ## 4. Validation, and what happens to bad input
 
 Nothing published breaks. A plugin that emits a malformed record — including
-`dev.cajeta.coverage` 0.5.2 in the wild — keeps working.
+`dev.cajeta.coverage` 0.5.1 in the wild — keeps working. (This said 0.5.2
+until 2026-08-28; the store's `versions.json` publishes 0.3.0, 0.4.0, 0.5.0
+and 0.5.1, and there is no 0.5.2. The compatibility fixture is the newest
+artifact that actually exists.)
 
 **Use cases**
 

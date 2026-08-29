@@ -1720,6 +1720,41 @@ namespace cajeta {
                 // reproducible across build roots.
                 extMod->setSourcePath(entryName);
                 extMod->setClasspathOrigin(true);
+                // build-output-layout §3.2 — a dependency's classes are not
+                // this project's source, so their objects get their own
+                // subtree instead of sitting beside the project's own with a
+                // flat dotted name (`out/dlib.Helper.o` next to
+                // `out/app/Main.o`). That asymmetry is what cajeta-five's
+                // exe-package-name-collision spec noticed, and `deps/` is
+                // already this codebase's word for it: the archive format
+                // nests a dependency's own entries under
+                // `deps/<name>-<version>/`.
+                //
+                // Keyed on the FILE STEM with its version suffix trimmed, not
+                // on arc.getName(): a library archive's internal name is the
+                // placeholder "cajeta-archive" (emitCja only derives a real
+                // one from an entry method, which a library has none of), so
+                // getName() would put every dependency in one bucket. The
+                // build tool writes the identity into the filename —
+                // `com.example.dlib-0.2.0.cja` — so the stem is what actually
+                // carries it. Trailing `-<version>` is trimmed because within
+                // one build a module resolves to exactly one version and the
+                // spec asks for `deps/<module>/`; an archive named without a
+                // version keeps its whole stem.
+                {
+                    std::string depModule =
+                        std::filesystem::path(cpPath).stem().string();
+                    auto dash = depModule.rfind('-');
+                    if (dash != std::string::npos && dash + 1 < depModule.size()
+                        && std::isdigit(
+                               static_cast<unsigned char>(depModule[dash + 1]))) {
+                        depModule.resize(dash);
+                    }
+                    if (depModule.empty()) depModule = "unnamed";
+                    extMod->setArchivePath("deps/" + depModule + "/"
+                                           + qName->toCanonical()
+                                           + CAJETA_IR_EXTENSION);
+                }
                 externalModules.push_back(extMod);
 
                 auto prevActive = CajetaModule::getActiveModule();
@@ -3605,6 +3640,38 @@ namespace cajeta {
                  "W int      cajeta_xpu_optix_launch_tri(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}\n";
         }
 
+        // Session-install stubs for the AOT link. Same shape as the OptiX
+        // stubs above and the same cause: cajeta_rt_session.c declares
+        // __cajeta_install_hook / _ctx / _out `extern` because they are
+        // DEFINED IN THE HOST (KernelSession.cpp) — a JIT session binds them
+        // through the process-symbol generator so cell code and the host
+        // address one object. An --emit=exe binary has neither a host nor a
+        // generator, so `__cajeta_session_install` left three symbols
+        // undefined and the link failed.
+        //
+        // It failed only SOMETIMES, which is why it shipped: whether the link
+        // succeeds depended on whether DCE happened to drop that one function.
+        // --debug-info=line and the default linked; `full` — the debug
+        // flavor's default, so every `cajeta build` of an executable — and
+        // `none` did not.
+        //
+        // Weak, so the host's strong definitions still win wherever a host
+        // exists (the compiler binary, every JIT session). With only these,
+        // the hook is null and __cajeta_session_install reports "no live
+        // session" — which is exactly true of an AOT executable, and is the
+        // branch that function already implements.
+        std::string sessionStubPath =
+            archiveRootPath + "__cajeta_session_stub.c";
+        {
+            std::ofstream s(sessionStubPath, std::ios::binary);
+            s << "#include <stdint.h>\n"
+                 "#define W __attribute__((weak))\n"
+                 "W int32_t (*__cajeta_install_hook)(const char*,int32_t,"
+                 "const char*,int32_t,int32_t,char*,int32_t,void*);\n"
+                 "W void* __cajeta_install_ctx;\n"
+                 "W char  __cajeta_install_out[2048];\n";
+        }
+
         // Native-dependency link inputs (native-deps unit 7). DCE-aware: only
         // libs whose @Native symbol is still live after tree-shaking (scanned
         // across user + classpath-dep modules); linked as static archives so
@@ -3689,6 +3756,10 @@ namespace cajeta {
             // runtime's CUDA ray-query provider). `--gc-sections` drops them
             // when the entry never reaches GPU AS code.
             opt.argv.push_back(optixStubPath);
+            // Session-install stubs (resolves __cajeta_install_*, referenced
+            // by the stdlib's Packages.install bridge). Weak; the host's
+            // definitions win wherever there is a host.
+            opt.argv.push_back(sessionStubPath);
             // Native-dep archives AFTER the objects that reference them (single-
             // pass linkers pull only the referenced members; --gc-sections drops
             // the rest). DCE-aware + gated above, so empty for non-@Native progs.

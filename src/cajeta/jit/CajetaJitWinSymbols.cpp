@@ -16,6 +16,7 @@
 #endif
 
 #include <io.h>
+#include <stdint.h>   // int32_t — the install-bridge declarations below
 #include <unistd.h>
 #include <sys/stat.h>
 #include <string.h>
@@ -111,6 +112,17 @@ extern "C" {
     float  fmaxf(float, float); double fmax(double, double);
 }
 
+
+// The Packages.install bridge, defined in KernelSession.cpp. These are DATA,
+// so unlike everything else in this file the real types matter: the JIT'd
+// runtime LOADS THROUGH them, and registering an address of the wrong width
+// or shape would corrupt rather than fail to resolve. Declared exactly as
+// defined there.
+extern "C" int32_t (*__cajeta_install_hook)(const char*, int32_t, const char*,
+                                            int32_t, int32_t, char*, int32_t,
+                                            void*);
+extern "C" void* __cajeta_install_ctx;
+extern "C" char  __cajeta_install_out[2048];
 
 // cajeta's OWN native families that live in libcajeta_lib but are absent from
 // the PE export table, so the process-symbol generator cannot see them — the
@@ -260,6 +272,18 @@ static const JitWinSym kSymbols[] = {
     CJ_SYM("_commit",          &::_commit),
     CJ_SYM("getenv",           &::getenv),
     CJ_SYM("_putenv_s",        &::_putenv_s),
+    // The Packages.install bridge — DATA symbols, not functions, and the only
+    // host-side state the embedded runtime reads directly. They are defined in
+    // KernelSession.cpp with visibility("default"), which is an ELF mechanism:
+    // on COFF a PE exports nothing regardless, so the process generator cannot
+    // see them and cajeta_rt_session.c's references go unresolved. Because that
+    // TU is part of the STANDARD embedded runtime, the failure is not confined
+    // to notebook tests — it poisons the runtime module for every JIT'd cell,
+    // which is how one missing bridge produced 82 failures across suites as
+    // unrelated as Protobuf, Avro, Vmap and Varargs.
+    CJ_SYM("__cajeta_install_hook", &__cajeta_install_hook),
+    CJ_SYM("__cajeta_install_ctx",  &__cajeta_install_ctx),
+    CJ_SYM("__cajeta_install_out",  &__cajeta_install_out),
 };
 
 const JitWinSym* winJitSymbols(size_t* count) {

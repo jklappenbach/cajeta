@@ -71,4 +71,62 @@ class ConsoleStreamClassifierTest {
         assertFalse(ConsoleStreamClassifier.renderAsStdout("some tool's chatter", stdout = false))
         assertFalse(ConsoleStreamClassifier.renderAsStdout("", stdout = false))
     }
+
+    /**
+     * plugin-output-protocol §5.3.2 — the finding lines the build tool started
+     * emitting in text mode on 2026-08-28.
+     *
+     * A finding is a PROBLEM, so it must keep the error channel's colour. It
+     * has no `[plugin] ` prefix, which is what makes that fall out of the
+     * existing rule rather than needing a new one — and error/warning findings
+     * are vetoed twice over, by the missing prefix and by PROBLEM_MARKERS.
+     */
+    @Test
+    fun pluginFindingLinesStayRed() {
+        val findings = listOf(
+            "dev.cajeta.coverage: src/A.cajeta:12:5: error: uncovered line [cov]",
+            "dev.cajeta.coverage: src/A.cajeta:12:5: warning: partly covered [cov]",
+            "dev.cajeta.coverage: error: no position",
+            "acme.lint: src/B.cajeta:1:1: error: banned import [imports]",
+        )
+        for (line in findings) {
+            assertFalse("a finding must not render as normal output: $line",
+                ConsoleStreamClassifier.renderAsStdout(line, stdout = false))
+        }
+    }
+
+    /**
+     * An `info` finding also stays red, and that is a DELIBERATE choice rather
+     * than an oversight.
+     *
+     * Whitening it would need a new rule keyed on the severity slot, and the
+     * failure mode of that rule is the one this class exists to prevent: any
+     * line whose text happened to match would be painted as normal output.
+     * An over-alarming info finding costs a reader a glance; a real error
+     * painted white costs them the build.
+     *
+     * If this ever changes, it is a change to the classifier's stated stance
+     * ("anything unrecognised stays red"), not a bug fix.
+     */
+    @Test
+    fun anInfoFindingAlsoStaysRedOnPurpose() {
+        assertFalse(
+            ConsoleStreamClassifier.renderAsStdout(
+                "dev.cajeta.coverage: src/A.cajeta:3:1: info: consider a test [cov]",
+                stdout = false))
+    }
+
+    /**
+     * The line the two halves must not be confused across: progress still
+     * renders white even now that findings are on the same stream.
+     */
+    @Test
+    fun progressStillRendersWhiteAlongsideFindings() {
+        assertTrue(
+            ConsoleStreamClassifier.renderAsStdout(
+                "[plugin] coco: [3/6] instrumenting 6 of 10 modules", stdout = false))
+        assertFalse(
+            ConsoleStreamClassifier.renderAsStdout(
+                "dev.cajeta.coverage: src/A.cajeta:1:1: error: boom", stdout = false))
+    }
 }

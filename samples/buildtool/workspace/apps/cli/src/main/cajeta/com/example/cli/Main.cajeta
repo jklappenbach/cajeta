@@ -5,6 +5,6 @@ import cajeta.lang.System;
 
 public class Main {
     public static void main(String[] args) {
-        System.out.println("cli running; util.add(1,2) = " + Util.add(1, 2));
+        System.stdout.println("cli running; util.add(1,2) = " + Util.add(1, 2));
     }
 }

@@ -49,11 +49,25 @@ namespace cajeta::buildtool {
         for (const auto& kv : m.pluginsRaw) {
             PluginSpec p;
             p.name = kv.first.str();
+            // String shorthand: `"acme.thing": "1.0.*"` means exactly
+            // `{ "version": "1.0.*" }`. It is the form `cajeta init`'s
+            // archetypes ship and it mirrors how `dependencies` is spelled,
+            // so rejecting it made every fresh project unbuildable:
+            //   plugins.cajeta.lint.security: value must be an object …
+            // ManifestEditor already treated the shorthand as accepted (it
+            // rewrites it in place for `cajeta coverage ignore`, calling a
+            // refusal "refusing a manifest the plugin resolver itself
+            // accepts") — this is what makes that true.
+            if (auto shorthand = kv.second.getAsString()) {
+                p.versionConstraint = shorthand->str();
+                out.push_back(std::move(p));
+                continue;
+            }
             const auto* obj = kv.second.getAsObject();
             if (!obj) {
                 return err("plugins." + p.name +
-                           ": value must be an object with "
-                           "'version' (and optional 'config')");
+                           ": value must be a version string, or an object "
+                           "with 'version' (and optional 'config')");
             }
             auto v = obj->getString("version");
             if (!v) {

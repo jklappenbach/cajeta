@@ -1,0 +1,86 @@
+package cajeta.buildtool.plugin;
+
+import cajeta.codec.json.JsonObject;
+import cajeta.collection.ArrayList;
+import cajeta.error.Throwable;
+import cajeta.lang.Optional;
+import cajeta.lang.Pair;
+import cajeta.lang.String;
+import cajeta.lang.stream.Stream;
+
+/**
+ * Runs a plugin action so that a result ALWAYS reaches the runtime.
+ *
+ * ## The guarantee (spec §3)
+ *
+ * A build tool that gets no result from an action has to guess how it went,
+ * and every guess is wrong for someone: treat silence as success and a
+ * crashed action passes the build; treat it as failure and a plugin that
+ * simply forgot to report fails one. So there is no silence. Whatever the
+ * action does — returns, fails, or throws — exactly one result record is
+ * emitted:
+ *
+ *   - returns an ok `ActionResult`  → one ok result
+ *   - returns a failing one         → one error result carrying the message
+ *   - calls `ctx.result` itself     → that one, and no second
+ *   - throws                        → one error result naming the throw
+ *
+ * The suppression lives in the CONTEXT (`result` keeps the first call and
+ * drops the rest), not here, so an action that emits its own result needs to
+ * declare nothing and the runner needs to know nothing about it.
+ */
+public final class PluginAction {
+
+    /**
+     * Run `entry` and report its result, whatever happens.
+     *
+     * The catch is deliberately `Throwable` rather than `Exception`: an action
+     * that dies on something it did not expect is exactly the case where
+     * silence is worst, and narrowing this would let the worst failures be the
+     * quiet ones.
+     */
+    public static void run(ActionContext ctx, PluginEntry entry, JsonObject params) {
+        try {
+            ActionResult r #= entry.invoke(ctx, params);
+            ctx.result(r);
+        } catch (Throwable t) {
+            // `result` would drop this anyway; the guard just avoids building
+            // a message no one will read.
+            if (!ctx.resultEmitted()) {
+                String m = "action threw: " + t.getMessage();
+                ActionResult e #= ActionResult.error(#m);
+                ctx.result(e);
+            }
+        }
+    }
+
+    /**
+     * Emit an `ActionResult`'s outputs and findings as their own records.
+     *
+     * Called by every `ActionContext.result` implementation before the status
+     * record, so an action that builds its outputs on the result rather than
+     * calling `ctx.output` as it goes still delivers them. Without this,
+     * `ActionResult.output` and `ActionResult.findings` would be unreachable
+     * in the subprocess protocol — the result travels as records or it does
+     * not travel.
+     *
+     * Pull-iterated through `Stream.next()` rather than `forEach`, so no
+     * closure captures `ctx`.
+     */
+    static void emitPayload(ActionContext ctx, ActionResult r) {
+        Stream<Pair<String, String>> outs #= r.outputs().entries();
+        Optional<Pair<String, String>> o #= outs.next();
+        while (o.isPresent()) {
+            Pair<String, String> kv = o.get();
+            ctx.output(kv.first(), kv.second());
+            o #= outs.next();
+        }
+
+        ArrayList<Finding> fs = r.findings();
+        int32 i = 0;
+        while (i < fs.count()) {
+            ctx.finding(fs.get(i));
+            i = i + 1;
+        }
+    }
+}

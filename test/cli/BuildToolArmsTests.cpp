@@ -104,6 +104,19 @@ struct ArmWorld {
         return ss.str();
     }
 
+    // `cajeta coverage ignore` edits `plugins.cajeta.coverage`, so the plugin
+    // must be DECLARED first. The basic archetype no longer ships that
+    // declaration — declaring an unpublished plugin made `cajeta init basic
+    // && cajeta build` fail — so a coverage test states its own precondition.
+    void declareCoveragePlugin(const fs::path& dir) const {
+        std::string m = manifestOf(dir);
+        size_t brace = m.find('{');
+        ASSERT_NE(brace, std::string::npos) << "manifest has no object";
+        m.insert(brace + 1,
+                 "\n    \"plugins\": { \"cajeta.coverage\": \"1.0.*\" },\n");
+        std::ofstream(dir / "cajeta.json") << m;
+    }
+
     // A minimal library .cja (no entry-method) for `cajeta install`.
     fs::path writeLibraryArchive(const std::string& file,
                                  const std::string& name = "com.example.lib",
@@ -402,6 +415,7 @@ TEST(BuildToolArmsTests, coverageUsageHelpAndUnknownSubcommand) {
 TEST(BuildToolArmsTests, coverageListFiltersByKindAndRemoveTakesHelp) {
     ArmWorld w;
     fs::path proj = w.initProject("basic", "covproj");
+    w.declareCoveragePlugin(proj);
     ASSERT_EQ(w.runIn(proj, "coverage ignore --kind=file "
                             "--pattern=src/Gen.cajeta --reason=generated"), 0)
         << w.output();

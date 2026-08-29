@@ -140,15 +140,63 @@ TEST(PluginTests, parsePluginsErrorsOnMissingVersion) {
               std::string::npos);
 }
 
-TEST(PluginTests, parsePluginsErrorsOnNonObject) {
+// The string shorthand is the form `cajeta init`'s archetypes SHIP, and it
+// mirrors how `dependencies` is spelled (name -> version constraint). It was
+// rejected here, so `cajeta init basic` wrote a manifest that could not be
+// built: "plugins.cajeta.lint.security: value must be an object with
+// 'version'". ManifestEditor.cpp already documented the shorthand as
+// something "the plugin resolver itself accepts" and rewrites it in place for
+// `cajeta coverage ignore` — that belief was simply not true of parsePlugins,
+// which is the gap this closes.
+//
+// This test replaces `parsePluginsErrorsOnNonObject`, which pinned the
+// rejecting behaviour with this exact input.
+TEST(PluginTests, parsePluginsAcceptsTheStringShorthand) {
     auto m = mustLoad(R"({
         "details": { "name": "p", "version": "0.1.0" },
         "plugins": { "acme.thing": "1.0.0" }
     })");
     auto specs = parsePlugins(m);
-    ASSERT_FALSE((bool)specs);
-    EXPECT_NE(errorText(specs.takeError()).find("must be an object"),
-              std::string::npos);
+    ASSERT_TRUE((bool)specs) << errorText(specs.takeError());
+    ASSERT_EQ(specs->size(), 1u);
+    EXPECT_EQ((*specs)[0].name, "acme.thing");
+    EXPECT_EQ((*specs)[0].versionConstraint, "1.0.0")
+        << "the shorthand's value IS the version constraint";
+    EXPECT_TRUE((*specs)[0].configRaw.empty())
+        << "the shorthand carries no config";
+}
+
+// The exact block `cajeta init basic` writes — the regression that motivated
+// the change, asserted against the real archetype spelling rather than a
+// reconstruction of it.
+TEST(PluginTests, parsePluginsAcceptsWhatTheBasicArchetypeShips) {
+    auto m = mustLoad(R"({
+        "details": { "name": "p", "version": "0.1.0" },
+        "plugins": {
+            "cajeta.lint.security": "1.0.*",
+            "cajeta.coverage":      "1.0.*"
+        }
+    })");
+    auto specs = parsePlugins(m);
+    ASSERT_TRUE((bool)specs) << errorText(specs.takeError());
+    EXPECT_EQ(specs->size(), 2u);
+}
+
+// The arm that must still FIRE: a value that is neither a string nor an
+// object is still an error. Widening the accepted shapes must not turn the
+// check off — a validator that accepts everything reports nothing.
+TEST(PluginTests, parsePluginsStillErrorsOnAValueThatIsNeither) {
+    for (const char* bad : {"42", "[\"1.0.0\"]", "true", "null"}) {
+        std::string src = std::string(R"({
+            "details": { "name": "p", "version": "0.1.0" },
+            "plugins": { "acme.thing": )") + bad + " } }";
+        auto m = mustLoad(src);
+        auto specs = parsePlugins(m);
+        ASSERT_FALSE((bool)specs) << "accepted a bad value: " << bad;
+        EXPECT_NE(errorText(specs.takeError()).find("acme.thing"),
+                  std::string::npos)
+            << "the diagnostic must name the offending plugin, for: " << bad;
+    }
 }
 
 
