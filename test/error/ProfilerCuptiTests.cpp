@@ -45,6 +45,16 @@ struct Cupti {
     int32_t (*tsFirst)(void) = nullptr;
     int64_t (*records)(void) = nullptr;
     int64_t (*rejected)(void) = nullptr;
+    // 12.2.c/d — correlation and the launch chokepoint.
+    int32_t (*decodeExternal)(const void*, int64_t, int32_t*, int64_t*) = nullptr;
+    void    (*corrReset)(void) = nullptr;
+    int32_t (*corrNote)(int32_t, int64_t) = nullptr;
+    int32_t (*corrLookup)(int32_t, int64_t*) = nullptr;
+    int32_t (*corrCapacity)(void) = nullptr;
+    int64_t (*corrDropped)(void) = nullptr;
+    int32_t (*push)(int64_t) = nullptr;
+    int32_t (*pop)(void) = nullptr;
+    int32_t (*tracing)(void) = nullptr;
 };
 
 Cupti& cu() {
@@ -72,6 +82,15 @@ Cupti& cu() {
         x.tsFirst = reinterpret_cast<decltype(x.tsFirst)>(sym("__cajeta_prof_cupti_ts_callback_registered_first"));
         x.records = reinterpret_cast<decltype(x.records)>(sym("__cajeta_prof_cupti_records"));
         x.rejected = reinterpret_cast<decltype(x.rejected)>(sym("__cajeta_prof_cupti_rejected"));
+        x.decodeExternal = reinterpret_cast<decltype(x.decodeExternal)>(sym("__cajeta_prof_cupti_decode_external"));
+        x.corrReset = reinterpret_cast<decltype(x.corrReset)>(sym("__cajeta_prof_cupti_corr_reset"));
+        x.corrNote = reinterpret_cast<decltype(x.corrNote)>(sym("__cajeta_prof_cupti_corr_note"));
+        x.corrLookup = reinterpret_cast<decltype(x.corrLookup)>(sym("__cajeta_prof_cupti_corr_lookup"));
+        x.corrCapacity = reinterpret_cast<decltype(x.corrCapacity)>(sym("__cajeta_prof_cupti_corr_capacity"));
+        x.corrDropped = reinterpret_cast<decltype(x.corrDropped)>(sym("__cajeta_prof_cupti_corr_dropped"));
+        x.push = reinterpret_cast<decltype(x.push)>(sym("__cajeta_prof_cupti_push"));
+        x.pop = reinterpret_cast<decltype(x.pop)>(sym("__cajeta_prof_cupti_pop"));
+        x.tracing = reinterpret_cast<decltype(x.tracing)>(sym("__cajeta_prof_cupti_tracing"));
         return x;
     }();
     return c;
@@ -349,5 +368,118 @@ TEST(ProfilerCupti, theTimestampCallbackIsRegisteredBeforeAnyKindIsEnabled) {
         GTEST_SKIP() << "no CUPTI with a timestamp callback here; reason: "
                      << cu().reason();
     }
+    cu().reset();
+}
+
+// ── 12.2.c/d — correlation ───────────────────────────────────────────────
+//
+// A kernel record does NOT carry our launch id. It carries CUPTI's own
+// correlationId, and a SEPARATE record kind maps that to the external id we
+// pushed. That is why the buffer parse is two-pass: pass one builds the map
+// from EXTERNAL_CORRELATION records, pass two resolves kernels through it.
+// A single pass would drop every kernel whose mapping record came later in
+// the same buffer, which is not a rare ordering - it is the normal one.
+//
+// MEASURED against the same real header:
+//   CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION = 39
+//   CUpti_ActivityExternalCorrelation:
+//     kind=0  externalKind=4  externalId=8  correlationId=16  sizeof=24
+namespace {
+
+constexpr int32_t kKindExternalCorrelation = 39;
+constexpr size_t  kXOffKind = 0, kXOffExtId = 8, kXOffCorr = 16;
+constexpr int64_t kXRecBytes = 24;
+
+struct FakeExternal {
+    unsigned char bytes[24];
+    FakeExternal(int32_t kind, uint64_t externalId, uint32_t corr) {
+        std::memset(bytes, 0xCD, sizeof bytes);
+        std::memcpy(bytes + kXOffKind,  &kind,       sizeof kind);
+        std::memcpy(bytes + kXOffExtId, &externalId, sizeof externalId);
+        std::memcpy(bytes + kXOffCorr,  &corr,       sizeof corr);
+    }
+};
+
+} // namespace
+
+TEST(ProfilerCupti, anExternalCorrelationRecordDecodes) {
+    ASSERT_NE(cu().decodeExternal, nullptr);
+    const FakeExternal r(kKindExternalCorrelation, 4242, 7);
+    int32_t corr = -1; int64_t ext = -1;
+    EXPECT_EQ(cu().decodeExternal(r.bytes, kXRecBytes, &corr, &ext), 1);
+    EXPECT_EQ(corr, 7);
+    EXPECT_EQ(ext, 4242);
+}
+
+TEST(ProfilerCupti, aTruncatedExternalCorrelationRecordIsRefused) {
+    const FakeExternal r(kKindExternalCorrelation, 4242, 7);
+    int32_t corr = -1; int64_t ext = -1;
+    EXPECT_EQ(cu().decodeExternal(r.bytes, kXRecBytes - 1, &corr, &ext), 0);
+    EXPECT_EQ(corr, -1) << "outputs untouched when nothing was decoded";
+    // A kernel record must not be mistaken for a correlation record.
+    const FakeRecord k(kKindConcurrentKernel, 1000, 4000, 7);
+    EXPECT_EQ(cu().decodeExternal(k.bytes, sizeof k.bytes, &corr, &ext), 0);
+}
+
+TEST(ProfilerCupti, theCorrelationMapResolvesWhatWasNoted) {
+    ASSERT_NE(cu().corrNote, nullptr);
+    cu().corrReset();
+    int64_t ext = -1;
+    EXPECT_EQ(cu().corrLookup(7, &ext), 0) << "empty map resolves nothing";
+
+    EXPECT_EQ(cu().corrNote(7, 4242), 1);
+    EXPECT_EQ(cu().corrNote(8, 4243), 1);
+    EXPECT_EQ(cu().corrLookup(7, &ext), 1);
+    EXPECT_EQ(ext, 4242);
+    EXPECT_EQ(cu().corrLookup(8, &ext), 1);
+    EXPECT_EQ(ext, 4243);
+
+    ext = -1;
+    EXPECT_EQ(cu().corrLookup(9, &ext), 0) << "an id never noted must MISS";
+    EXPECT_EQ(ext, -1) << "a miss must not write an output - a stale value here "
+                          "would attribute a kernel to the wrong launch";
+    cu().corrReset();
+    EXPECT_EQ(cu().corrLookup(7, &ext), 0) << "reset clears the map";
+}
+
+// The map is fixed-size, because a buffer callback may not allocate. What
+// matters is that overflow is COUNTED and lookups stay correct rather than
+// wrapping onto a wrong answer: a kernel attributed to the wrong launch is
+// worse than one not attributed at all.
+TEST(ProfilerCupti, correlationOverflowIsCountedAndNeverWrapsOntoAWrongAnswer) {
+    ASSERT_NE(cu().corrCapacity, nullptr);
+    cu().corrReset();
+    const int32_t cap = cu().corrCapacity();
+    ASSERT_GT(cap, 0);
+    const int64_t droppedBefore = cu().corrDropped();
+
+    for (int32_t i = 0; i < cap; ++i) {
+        ASSERT_EQ(cu().corrNote(i + 1, 1000 + i), 1) << "at i=" << i;
+    }
+    EXPECT_EQ(cu().corrDropped() - droppedBefore, 0) << "capacity must fit";
+
+    EXPECT_EQ(cu().corrNote(cap + 1, 999999), 0) << "one past capacity is refused";
+    EXPECT_EQ(cu().corrDropped() - droppedBefore, 1) << "and counted";
+
+    int64_t ext = -1;
+    EXPECT_EQ(cu().corrLookup(cap + 1, &ext), 0) << "the dropped id must MISS";
+    EXPECT_EQ(cu().corrLookup(1, &ext), 1) << "and earlier entries survive";
+    EXPECT_EQ(ext, 1000);
+    cu().corrReset();
+}
+
+// 12.2.d — the launch chokepoint. With no CUPTI here these must be safe
+// no-ops: the seam calls them on every launch, so a null deref would take
+// down any program profiled on a box without CUDA.
+TEST(ProfilerCupti, pushAndPopAreSafeWhenCuptiIsAbsent) {
+    ASSERT_NE(cu().push, nullptr);
+    cu().reset();
+    if (cu().state() == CAJETA_CUPTI_READY) {
+        GTEST_SKIP() << "CUPTI is present here; the absent path is the subject";
+    }
+    EXPECT_EQ(cu().tracing(), 0) << "not tracing without a backend";
+    EXPECT_EQ(cu().push(1234), 0) << "push reports it did nothing";
+    EXPECT_EQ(cu().pop(), 0);
+    EXPECT_EQ(cu().push(0), 0) << "launch id 0 is not a launch";
     cu().reset();
 }

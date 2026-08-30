@@ -415,6 +415,164 @@ int64_t __cajeta_prof_cupti_records(void)  { return caj_cupti.records; }
 int64_t __cajeta_prof_cupti_rejected(void) { return caj_cupti.rejected; }
 
 
+// ── 12.2.c — correlation, and why the parse is TWO passes ────────────────
+//
+// A kernel record does not carry our launch id. It carries CUPTI's own
+// correlationId, and a SEPARATE record kind maps that to the external id we
+// pushed at the launch chokepoint. So a buffer must be walked twice: pass one
+// builds the map from EXTERNAL_CORRELATION records, pass two resolves kernels
+// through it. One pass would drop every kernel whose mapping record happens to
+// sit later in the same buffer, and that is not a rare ordering - CUPTI emits
+// the correlation record when the range CLOSES, so it normally follows.
+//
+// MEASURED against the same real cupti_activity.h:
+//   CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION = 39
+//   CUpti_ActivityExternalCorrelation:
+//     kind=0  externalKind=4  externalId=8  correlationId=16  sizeof=24
+// Read by offset for the same reason kernel records are.
+
+#define CAJ_CUPTI_KIND_EXTERNAL_CORRELATION 39
+#define CAJ_CUPTI_XREC_OFF_KIND    0
+#define CAJ_CUPTI_XREC_OFF_EXT_ID  8
+#define CAJ_CUPTI_XREC_OFF_CORR   16
+#define CAJ_CUPTI_XREC_BYTES      24
+
+/* CUPTI_EXTERNAL_CORRELATION_KIND_CUSTOM0 - the slot NVIDIA reserves for tools
+ * like this one, so pushing here cannot collide with a framework's own. */
+#define CAJ_CUPTI_EXTERNAL_KIND_CUSTOM0 3
+
+/* CUPTI_ERROR_MAX_LIMIT_REACHED - how GetNextRecord says "buffer exhausted".
+ * It is the normal loop terminator, not a failure. */
+#define CAJ_CUPTI_ERR_MAX_LIMIT_REACHED 12
+
+int32_t __cajeta_prof_cupti_decode_external(const void* rec, int64_t bytes,
+                                            int32_t* correlationId,
+                                            int64_t* externalId) {
+    const unsigned char* p = (const unsigned char*) rec;
+    if (!p || bytes < 4) return 0;
+    if ((int32_t) caj_cupti_rd32(p + CAJ_CUPTI_XREC_OFF_KIND)
+            != CAJ_CUPTI_KIND_EXTERNAL_CORRELATION)
+        return 0;
+    if (bytes < CAJ_CUPTI_XREC_BYTES) return 0;
+    if (correlationId) *correlationId =
+        (int32_t) caj_cupti_rd32(p + CAJ_CUPTI_XREC_OFF_CORR);
+    if (externalId) *externalId =
+        (int64_t) caj_cupti_rd64(p + CAJ_CUPTI_XREC_OFF_EXT_ID);
+    return 1;
+}
+
+// The map is FIXED SIZE and lives in static storage, because a buffer-complete
+// callback runs on CUPTI's thread and must not allocate. 1024 entries covers a
+// 64 KiB buffer many times over.
+//
+// On overflow it REFUSES and counts rather than evicting or wrapping. An
+// evicted entry would turn into a lookup miss later, which is merely an
+// unattributed kernel; a wrapped one would attribute a kernel to the WRONG
+// launch, which is a plausible-looking measurement that is simply false. The
+// first is a gap in the data and the second is a lie in it.
+#define CAJ_CUPTI_CORR_CAP 1024
+
+typedef struct {
+    int32_t corr;      /* CUPTI's correlationId; 0 means the slot is free */
+    int64_t external;  /* the launch id we pushed */
+} CajCuptiCorr;
+
+static CajCuptiCorr caj_cupti_corr[CAJ_CUPTI_CORR_CAP];
+static int32_t      caj_cupti_corr_used;
+static int64_t      caj_cupti_corr_dropped;
+
+int32_t __cajeta_prof_cupti_corr_capacity(void) { return CAJ_CUPTI_CORR_CAP; }
+int64_t __cajeta_prof_cupti_corr_dropped(void)  { return caj_cupti_corr_dropped; }
+
+void __cajeta_prof_cupti_corr_reset(void) {
+    memset(caj_cupti_corr, 0, sizeof(caj_cupti_corr));
+    caj_cupti_corr_used = 0;
+}
+
+int32_t __cajeta_prof_cupti_corr_note(int32_t correlationId, int64_t externalId) {
+    if (correlationId == 0) return 0;      /* 0 is the free marker, not an id */
+    if (caj_cupti_corr_used >= CAJ_CUPTI_CORR_CAP) {
+        __atomic_add_fetch(&caj_cupti_corr_dropped, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
+    caj_cupti_corr[caj_cupti_corr_used].corr     = correlationId;
+    caj_cupti_corr[caj_cupti_corr_used].external = externalId;
+    caj_cupti_corr_used++;
+    return 1;
+}
+
+int32_t __cajeta_prof_cupti_corr_lookup(int32_t correlationId, int64_t* externalId) {
+    int32_t i;
+    for (i = 0; i < caj_cupti_corr_used; ++i) {
+        if (caj_cupti_corr[i].corr == correlationId) {
+            if (externalId) *externalId = caj_cupti_corr[i].external;
+            return 1;
+        }
+    }
+    return 0;   /* a MISS leaves the output alone - see the test for why */
+}
+
+// ── 12.2.d — the launch chokepoint ───────────────────────────────────────
+//
+// Pushed before the launch and popped after, so every kernel CUPTI records
+// between them carries our launch id. Both are called on EVERY launch, including
+// on machines with no CUDA at all, so both must be safe no-ops when the backend
+// never bound.
+int32_t __cajeta_prof_cupti_tracing(void) {
+    return caj_cupti.state == CAJETA_CUPTI_READY
+        && !caj_cupti.degraded
+        && caj_cupti.kinds_enabled > 0;
+}
+
+int32_t __cajeta_prof_cupti_push(int64_t launchId) {
+    if (launchId == 0) return 0;           /* 0 is "no launch", not an id */
+    if (!__cajeta_prof_cupti_tracing()) return 0;
+    if (!caj_cupti.api.push_external) return 0;
+    return caj_cupti.api.push_external(CAJ_CUPTI_EXTERNAL_KIND_CUSTOM0,
+                                       (uint64_t) launchId) == 0;
+}
+
+int32_t __cajeta_prof_cupti_pop(void) {
+    uint64_t popped = 0;
+    if (!__cajeta_prof_cupti_tracing()) return 0;
+    if (!caj_cupti.api.pop_external) return 0;
+    return caj_cupti.api.pop_external(CAJ_CUPTI_EXTERNAL_KIND_CUSTOM0,
+                                      &popped) == 0;
+}
+
+// The two-pass walk itself. Reachable only with a bound CUPTI, so it is
+// exercised on the PHOENIX and phoenix-wsl lanes rather than here; every piece
+// it is built from is testable anywhere.
+static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
+    void* rec;
+    if (!caj_cupti.api.activity_get_next_record || validSize == 0) return;
+
+    __cajeta_prof_cupti_corr_reset();
+
+    /* pass 1 - the mapping records */
+    rec = NULL;
+    while (caj_cupti.api.activity_get_next_record(buffer, validSize, &rec) == 0) {
+        int32_t corr = 0; int64_t ext = 0;
+        if (__cajeta_prof_cupti_decode_external(rec, CAJ_CUPTI_XREC_BYTES,
+                                                &corr, &ext) == 1)
+            __cajeta_prof_cupti_corr_note(corr, ext);
+    }
+
+    /* pass 2 - the kernels, resolved through the map built above */
+    rec = NULL;
+    while (caj_cupti.api.activity_get_next_record(buffer, validSize, &rec) == 0) {
+        int64_t start = 0, end = 0, ext = 0;
+        int32_t corr = 0;
+        if (__cajeta_prof_cupti_decode_kernel(rec, CAJ_CUPTI_KREC_PREFIX,
+                                              &start, &end, &corr) != 1)
+            continue;
+        /* An unmapped kernel is one we did not launch - a library's own, say.
+         * Attributing it to any launch would invent a measurement. */
+        if (!__cajeta_prof_cupti_corr_lookup(corr, &ext)) continue;
+        __cajeta_prof_gpu_resolve_dispatch(ext, start, end);
+    }
+}
+
 // ── §6.8 / §12.2.e — the host clock, on both platforms ───────────────────
 //
 // CLOCK_MONOTONIC does not exist on the Windows host, and this file may NOT
@@ -478,6 +636,7 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
     caj_cupti.rejected = 0;
+    __cajeta_prof_cupti_corr_reset();
     memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
     caj_cupti.path[0] = '\0';
     caj_cupti.reason[0] = '\0';
