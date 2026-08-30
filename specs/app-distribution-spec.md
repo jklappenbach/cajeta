@@ -41,10 +41,11 @@ where that field is defined.
 - The release artifact set and platform selection (§6).
 - The installed-application lifecycle: install, list, upgrade, uninstall
   (§7).
+- The publishing pipeline, now that a release has several artifacts (§9).
 
 **1.6 Non-goals.**
 - **Platform binaries as separate registry entries.** DECIDED 2026-08-30
-  (§9.3): a release's platform binaries belong to that release, not to a
+  (§10.3): a release's platform binaries belong to that release, not to a
   list of sibling coordinates. npm's per-platform-package pattern is
   explicitly rejected — it keeps the registry model simple by pushing the
   fan-out into names, and names are what users read.
@@ -169,7 +170,7 @@ never ran.
 **5.2.1** When an application is installed from a PLATFORM BINARY, there
 is no install-time resolution and the lockfile is not consulted. It is
 still published, as the provenance record of what went into that binary,
-and it is what an audit reads. This asymmetry is a consequence of §9.3's
+and it is what an audit reads. This asymmetry is a consequence of §10.3's
 decision: the two artifact forms need different things at install.
 
 **5.3** The published lockfile is covered by the same signed path as the
@@ -256,7 +257,7 @@ applications.
 
 **8.2.1** A release is one catalog entry however many artifacts it
 carries. Platform binaries must not surface as versions, tags, or sibling
-coordinates — the decision in §9.3 is about what a reader sees as much as
+coordinates — the decision in §10.3 is about what a reader sees as much as
 about storage.
 
 **8.3** An upload declaring no kind is refused (§2.3).
@@ -269,20 +270,64 @@ not enter the registry.
 **8.5** The catalog distinguishes the two kinds, so a search for
 something to run does not return libraries.
 
-## 9. Open questions
+## 9. The publishing pipeline
 
-**9.1 Verb naming.** `cajeta install` and `cajeta run` are both taken
+Publishing a release is now a multi-artifact act (§6), and the artifacts
+are produced on different machines. That changes what CI has to do, and it
+is where the requirement belongs — the mechanics are the plan's business.
+
+**9.1** A release's artifacts are published in ONE act. A release is never
+observable in a partial state: not by a resolving client, not in the
+catalog, not as bytes without metadata.
+
+**9.2** When any declared artifact is missing or fails to build, the
+release is not published at all. Publishing the subset that succeeded
+would silently produce a release supporting fewer platforms than its
+publisher intended, and §6.6 would then correctly refuse an install the
+publisher believed they had shipped.
+
+**9.3** A release's artifacts may be built independently and on different
+machines. Building and publishing are therefore separate steps, and the
+publish gathers what the builds produced.
+
+**9.4** The publishing pipeline is SHARED, not reimplemented per project.
+A project declares what to build and for which platforms; it does not
+carry the logic for signing, uploading, or constructing a release.
+
+**9.5** When the shared pipeline changes incompatibly, projects adopt it
+deliberately rather than on their next release. A shared pipeline
+referenced at a moving head applies its own breaking changes to every
+project at once, at whatever moment each happens to tag.
+
+**9.6** When the shared pipeline changes compatibly, projects get it
+without editing anything. The central-upgrade property is most of the
+value of sharing, and a scheme that pins so hard it must be bumped by hand
+for every fix has traded it away.
+
+**9.7** A project publishing a library today continues to publish
+unchanged. Applications are the new case; libraries are not disturbed by
+their arrival.
+
+**9.8** The key that signs a project's artifacts is registered by the
+repository owner, not by the project's own publishing credential
+(`publisher-trust` §7.3). The present flow does the opposite and is
+recorded as a migration in `publisher-trust` §9.4; an application
+publishing pipeline must not be built on top of it.
+
+## 10. Open questions
+
+**10.1 Verb naming.** `cajeta install` and `cajeta run` are both taken
 (§1.7). RECOMMENDATION: a noun-first group — `cajeta app install`,
 `cajeta app list`, `cajeta app upgrade`, `cajeta app uninstall` — which
 leaves both existing verbs unambiguous and gives the lifecycle one home.
 
-**9.2 Where the kind and command are declared.** RECOMMENDATION:
+**10.2 Where the kind and command are declared.** RECOMMENDATION:
 `details.kind` (`library` | `application`), and a `command` field on each
 entry in `settings.build.binaries`, defaulting to the binary's registry
 name. `details` is already the strict-schema identity block, which is
 what the kind is; the command belongs with the binary it launches.
 
-**9.3 Install-time AOT vs prebuilt — DECIDED 2026-08-30 (Julian): BOTH,
+**10.3 Install-time AOT vs prebuilt — DECIDED 2026-08-30 (Julian): BOTH,
 within one release.** A release may carry the portable IR archive, one
 binary per platform, or both. Platform binaries belong to the release
 they came from; they do not register as sibling coordinates in a list of
@@ -302,36 +347,36 @@ Rejected alternatives, and why:
 
 The consequence is that release metadata carries a set of (platform,
 hash) pairs rather than one hash (§6.4). That is a change to
-`publisher-trust`'s shipped signed path — see §10.
+`publisher-trust`'s shipped signed path — see §11.
 
-**9.4 Does an application pin its toolchain version?** A published
+**10.4 Does an application pin its toolchain version?** A published
 lockfile fixes dependencies but not the compiler that will link them. An
 application built and tested on one toolchain may not link on another.
-9.3 keeps the IR path, so this still needs an answer — but only for that
+10.3 keeps the IR path, so this still needs an answer — but only for that
 path: a platform binary is already linked and does not care what compiles
 it. STILL OPEN.
 
-## 10. What 9.3 costs the shipped publisher-trust code
+## 11. What 10.3 costs the shipped publisher-trust code
 
 Recorded here rather than discovered during implementation.
 
-**10.1** `ReleaseMetadata::sha256` is a single field and
+**11.1** `ReleaseMetadata::sha256` is a single field and
 `releaseIntegrityFor` compares fetched bytes against that one value.
 Both grow a platform dimension.
 
-**10.2** `specs/schemas/release-metadata.json` gains the artifact set. The
+**11.2** `specs/schemas/release-metadata.json` gains the artifact set. The
 signed payload is what carries it (§6.4), so this is a schema change on
 the signed path, not an additive field beside it.
 
-**10.3** `specs/schemas/publisher-trust-protocol-v1.md` §3.4 describes a
+**11.3** `specs/schemas/publisher-trust-protocol-v1.md` §3.4 describes a
 release as having one hash. It is a draft awaiting confirmation, so it can
 absorb this before anyone implements against it.
 
-**10.4** Olla's catalog keys one `sha256` per version row
+**11.4** Olla's catalog keys one `sha256` per version row
 (`src/routes/resolve.ts`, `getVersion`). A version becomes one-to-many
 with artifacts. That is a migration on the server side.
 
-**10.5 The timing argument, which is the reason to decide this now.**
+**11.5 The timing argument, which is the reason to decide this now.**
 Olla serves the PLAIN resolve body today: no `signed` member and no
 `/v2/org-keys` — verified in `cajeta-olla/src/routes/resolve.ts`. The
 signed release-metadata format therefore has ZERO production instances,
