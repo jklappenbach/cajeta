@@ -175,6 +175,58 @@ jobs:
             Tee-Object -FilePath captures/windows-audit.txt
           if ($LASTEXITCODE -ne 0) { throw 'probe failed to initialize CUDA' }
 
+      # THE POSITIVE CONTROL, added 2026-08-30 and overdue.
+      # Run 33317956690 set RmProfilingAdminOnly=1, confirmed it live, rebooted,
+      # and ran unprivileged — and T3 returned byte-identical results to the run
+      # with the value absent. An instrument that reads the same before and after
+      # you change the thing it measures is not measuring that thing. So T3's
+      # premise (that GetCounterAvailability / PC_SAMPLING are where the gate
+      # bites) is unverified, and every "gate not enforced" verdict so far rests
+      # on it.
+      #
+      # Nsight Compute is the canonical user-visible manifestation: on a gated
+      # box a non-admin ncu fails with ERR_NVGPUCTRPERM. If ncu is refused while
+      # T1/T2 timing passes, the gate IS active, the CUPTI probes are simply not
+      # gated calls, and that pairing is exactly what spec 5.4.4 asserts. If ncu
+      # is allowed too, the registry value is not governing this driver.
+      - name: Gate positive control (Nsight Compute)
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ncu = $null
+          foreach ($root in @("$env:CUDA_PATH", "$env:ProgramFiles\NVIDIA Corporation")) {
+            if ($root -and (Test-Path $root)) {
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'ncu.exe' -ErrorAction SilentlyContinue |
+                       Select-Object -First 1
+              if ($hit) { $ncu = $hit.FullName; break }
+            }
+          }
+          if (-not $ncu) {
+            Write-Host "CONTROL=UNAVAILABLE (no ncu.exe found; the gate claim stays unverified)"
+            exit 0
+          }
+          Write-Host "using $ncu"
+          # A tiny run: one metric, smallest kernel, just enough to touch the
+          # counter hardware and be refused if the gate is on.
+          $env:PATH = "$env:CUDA_PATH\extras\CUPTI\lib64;$env:CUDA_PATH\bin;$env:PATH"
+          & $ncu --metrics sm__cycles_elapsed.avg --target-processes all `
+                 .\probe_cupti_caps.exe 1000 1 2>&1 |
+            Tee-Object -FilePath captures/ncu-control.txt | Out-Null
+          $txt = Get-Content captures/ncu-control.txt -Raw
+          if ($txt -match 'ERR_NVGPUCTRPERM|insufficient permissions|administrator privileges') {
+            Write-Host "CONTROL=REFUSED_PRIVILEGES — the gate IS active on this box"
+            Write-Host "  => T3's CUPTI probes are NOT gated calls, and T1/T2 passing"
+            Write-Host "     alongside this refusal is spec 5.4.4 demonstrated."
+          } elseif ($txt -match 'sm__cycles_elapsed') {
+            Write-Host "CONTROL=ALLOWED — counter profiling worked UNPRIVILEGED with"
+            Write-Host "  RmProfilingAdminOnly=1, so that value is not governing this driver."
+          } else {
+            Write-Host "CONTROL=INCONCLUSIVE — ncu ran but said neither; see the capture"
+          }
+          Write-Host "--- first 25 lines of the ncu capture ---"
+          Get-Content captures/ncu-control.txt -TotalCount 25
+
       - name: Verdict
         shell: powershell
         run: |
