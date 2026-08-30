@@ -632,6 +632,30 @@ Use cases:
   are batched by the same scheduler the CLI uses — the CLI is one caller of
   the batching API, not a separate single-sequence path.
 
+### 11.8 Diagnostics are records the consumer pulls
+
+*Added 2026-08-30 (Julian): "adding diagnostics to the API as a separate
+buffer, or if it's an API, a collection of records", and "the consumer
+can decide how to publish those or use them".*
+
+`Diag` today is fire-and-forget text pushed into a sink. That cannot
+attribute a line to a session, and with several sequences in flight the
+stream is uncorrelated — which is precisely the case a host serves.
+
+- **11.8.1** When the engine takes a routing or scheduling decision worth
+  observing, it records a structured record — category, session, typed
+  fields — rather than a formatted string.
+- **11.8.2** When a consumer asks for a session's records, it receives
+  them; the engine does not decide where they are published.
+- **11.8.3** Records are held in a BOUNDED buffer. A long-running host
+  must not accumulate them without limit.
+- **11.8.4** When no consumer ever reads them, recording costs filling
+  fields and nothing else — no string formatting. `Diag.say` concatenates
+  today, which is why every call site carries a `Diag.on()` guard.
+- **11.8.5** The engine still chooses no logging backend. A consumer that
+  wants records in a log pulls them and logs them; the library pushes
+  nowhere.
+
 ## 12. Correctness and performance gates
 
 **No gate asserts bitwise reproducibility.** Greedy decoding is deterministic
