@@ -632,29 +632,38 @@ Use cases:
   are batched by the same scheduler the CLI uses — the CLI is one caller of
   the batching API, not a separate single-sequence path.
 
-### 11.8 Diagnostics are records the consumer pulls
+### 11.8 Diagnostics are records pushed to a registered callback
 
-*Added 2026-08-30 (Julian): "adding diagnostics to the API as a separate
-buffer, or if it's an API, a collection of records", and "the consumer
-can decide how to publish those or use them".*
+*Added 2026-08-30 (Julian): diagnostics as "a collection of records", with
+"the consumer can decide how to publish those or use them"; then, rather
+than caching them, "require a call-back as part of registration with the
+host … and not have to cache them until a chat response goes out".*
 
-`Diag` today is fire-and-forget text pushed into a sink. That cannot
-attribute a line to a session, and with several sequences in flight the
-stream is uncorrelated — which is precisely the case a host serves.
+`Diag` today pushes formatted TEXT into a global sink. That cannot
+attribute a line to a session, so with several sequences in flight the
+stream is uncorrelated — the case a host serves.
 
-- **11.8.1** When the engine takes a routing or scheduling decision worth
-  observing, it records a structured record — category, session, typed
-  fields — rather than a formatted string.
-- **11.8.2** When a consumer asks for a session's records, it receives
-  them; the engine does not decide where they are published.
-- **11.8.3** Records are held in a BOUNDED buffer. A long-running host
-  must not accumulate them without limit.
-- **11.8.4** When no consumer ever reads them, recording costs filling
-  fields and nothing else — no string formatting. `Diag.say` concatenates
-  today, which is why every call site carries a `Diag.on()` guard.
-- **11.8.5** The engine still chooses no logging backend. A consumer that
-  wants records in a log pulls them and logs them; the library pushes
-  nowhere.
+- **11.8.1** When a host registers with the engine, it may supply a
+  diagnostics callback. With none supplied the engine records nothing.
+- **11.8.2** When the engine takes a routing or scheduling decision worth
+  observing, it builds a structured record — category, session, typed
+  fields — and hands it to the callback. It does not format a string, and
+  it does not store the record.
+- **11.8.3** The engine holds NO buffer. Buffering is a consumer policy —
+  how much history, per session or global, what to drop — and belongs
+  where that policy is known. A consumer wanting retrospective queries
+  keeps its own ring.
+- **11.8.4** The callback runs on the ENGINE's thread, mid-generation. It
+  must be cheap: take the record and return. Formatting, I/O and
+  forwarding belong on the consumer's own thread, or they become latency
+  on every token.
+- **11.8.5** When a callback throws, the turn survives. A consumer's
+  logging fault is not a generation fault.
+- **11.8.6** The engine chooses no logging backend. It emits records; a
+  consumer that wants them in a log logs them.
+- **11.8.7** Records carry the session they belong to, so a consumer can
+  attribute, filter, or forward a session's diagnostics to the client that
+  owns it.
 
 ## 12. Correctness and performance gates
 
