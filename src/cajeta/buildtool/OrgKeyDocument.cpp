@@ -2,6 +2,8 @@
 
 #include "cajeta/buildtool/Signature.h"
 
+#include <string>
+
 #include <llvm/Support/Base64.h>
 #include <llvm/Support/JSON.h>
 
@@ -87,7 +89,7 @@ namespace cajeta::buildtool {
 
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
             const std::string& envelopeJson,
-            const std::vector<std::string>& rootPemPaths,
+            const std::vector<RootKey>& roots,
             std::time_t now) {
         auto parsed = llvm::json::parse(envelopeJson);
         if (!parsed) {
@@ -131,17 +133,18 @@ namespace cajeta::buildtool {
         // document should influence anything, including which errors are
         // reported about it.
         bool verified = false;
-        for (const auto& rootPath : rootPemPaths) {
-            auto ok = verifyDetachedEd25519Bytes(payload, signature, rootPath);
+        std::string verifiedBy;
+        for (const auto& root : roots) {
+            auto ok = verifyDetachedEd25519PemBytes(payload, signature, root.pem);
             if (!ok) {                    // unusable root, not an answer
                 llvm::consumeError(ok.takeError());
                 continue;
             }
-            if (*ok) { verified = true; break; }
+            if (*ok) { verified = true; verifiedBy = root.id; break; }
         }
         if (!verified) {
             return err("organization key document: signature does not match "
-                       "any trusted root key (" + std::to_string(rootPemPaths.size())
+                       "any trusted root key (" + std::to_string(roots.size())
                        + " checked)");
         }
 
@@ -154,7 +157,11 @@ namespace cajeta::buildtool {
         if (!obj) return err("organization key document: payload is not an object");
 
         OrgKeyDocument doc;
-        doc.rootKeyId = rootKeyId->str();
+        // The id that VERIFIED, not the one the envelope claimed. The
+        // envelope's `root-key-id` is a hint for picking a candidate;
+        // reporting it as fact would let a document name a root that never
+        // signed it (spec §6.3 wants the answer, not the assertion).
+        doc.rootKeyId = verifiedBy;
 
         auto org = obj->getString("organization");
         if (!org || org->empty()) {

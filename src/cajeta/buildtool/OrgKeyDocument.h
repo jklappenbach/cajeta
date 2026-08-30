@@ -22,6 +22,15 @@
 
 namespace cajeta::buildtool {
 
+    // A trust anchor: a root public key this client accepts. Carries PEM
+    // CONTENTS rather than a path because the shipped root lives in the
+    // binary and has no path — and one representation beats two.
+    struct RootKey {
+        std::string id;
+        std::string pem;
+        bool shipped = false;   // came with the toolchain (spec §3.1)
+    };
+
     struct OrgSigningKey {
         std::string id;
         std::string algorithm;      // "ed25519"
@@ -61,7 +70,7 @@ namespace cajeta::buildtool {
     // one and forget to check (spec §2.5).
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
         const std::string& envelopeJson,
-        const std::vector<std::string>& rootPemPaths,
+        const std::vector<RootKey>& roots,
         std::time_t now);
 
     // RFC 3339, UTC, seconds precision, `Z` only — the schema's `timestamp`.

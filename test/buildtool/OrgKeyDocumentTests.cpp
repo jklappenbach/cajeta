@@ -83,6 +83,14 @@ std::string signBytes(const std::string& data, const fs::path& priv,
     return readFile(out);
 }
 
+// A trust anchor built from a generated key file.
+RootKey rootOf(const fs::path& pub, const std::string& id) {
+    RootKey r;
+    r.id = id;
+    r.pem = readFile(pub);
+    return r;
+}
+
 std::string pemOf(const fs::path& pub) {
     std::string pem = readFile(pub);
     // JSON-escape the newlines so the PEM can sit in a string field.
@@ -150,7 +158,7 @@ TEST(OrgKeyDocumentTests, wellFormedDocumentParses) {
     o.keys = {{"k1", org.pub, "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"}};
 
     auto doc = loadOrgKeyDocument(envelope(payloadJson(o), root.priv, "wf"),
-                                  {root.pub.string()},
+                                  {rootOf(root.pub, "olla-root-test")},
                                   at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!doc) << llvm::toString(doc.takeError());
     EXPECT_EQ("dev.cajeta", doc->organization);
@@ -172,14 +180,14 @@ TEST(OrgKeyDocumentTests, signatureByAnUntrustedRootIsRejected) {
     auto now = at("2026-06-01T00:00:00Z");
 
     auto good = loadOrgKeyDocument(envelope(payloadJson(o), root.priv, "sg"),
-                                   {root.pub.string()}, now);
+                                   {rootOf(root.pub, "olla-root-test")}, now);
     EXPECT_TRUE(!!good) << "a document signed by a trusted root must verify";
 
     // Signed by a real key that is simply not a trusted root. This is the
     // arm that matters: the bytes carry a VALID signature, just not one we
     // accept.
     auto bad = loadOrgKeyDocument(envelope(payloadJson(o), other.priv, "sb"),
-                                  {root.pub.string()}, now);
+                                  {rootOf(root.pub, "olla-root-test")}, now);
     EXPECT_FALSE(!!bad) << "an untrusted signer must be refused";
     if (!bad) llvm::consumeError(bad.takeError());
 }
@@ -203,7 +211,7 @@ TEST(OrgKeyDocumentTests, alteringThePayloadBreaksTheSignature) {
       << "\"payload\":\"" << llvm::encodeBase64(payloadJson(widened)) << "\","
       << "\"signature\":\"" << llvm::encodeBase64(sig) << "\"}";
 
-    auto doc = loadOrgKeyDocument(j.str(), {root.pub.string()},
+    auto doc = loadOrgKeyDocument(j.str(), {rootOf(root.pub, "olla-root-test")},
                                   at("2026-06-01T00:00:00Z"));
     EXPECT_FALSE(!!doc) << "a payload that is not the signed one must fail";
     if (!doc) llvm::consumeError(doc.takeError());
@@ -218,11 +226,11 @@ TEST(OrgKeyDocumentTests, anExpiredDocumentIsRejectedDespiteAValidSignature) {
     o.keys = {{"k1", org.pub, "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"}};
     auto env = envelope(payloadJson(o), root.priv, "exp");
 
-    auto live = loadOrgKeyDocument(env, {root.pub.string()},
+    auto live = loadOrgKeyDocument(env, {rootOf(root.pub, "olla-root-test")},
                                    at("2026-01-15T00:00:00Z"));
     EXPECT_TRUE(!!live) << "inside its window the document is usable";
 
-    auto dead = loadOrgKeyDocument(env, {root.pub.string()},
+    auto dead = loadOrgKeyDocument(env, {rootOf(root.pub, "olla-root-test")},
                                    at("2026-03-01T00:00:00Z"));
     EXPECT_FALSE(!!dead)
         << "an expired document must be refused even though it is validly "
@@ -241,7 +249,7 @@ TEST(OrgKeyDocumentTests, keyValidityWindowsAreEnforcedPerKey) {
               {"new", newK.pub, "2026-01-01T00:00:00Z", "2027-01-01T00:00:00Z"}};
 
     auto doc = loadOrgKeyDocument(envelope(payloadJson(o), root.priv, "win"),
-                                  {root.pub.string()},
+                                  {rootOf(root.pub, "olla-root-test")},
                                   at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!doc) << llvm::toString(doc.takeError());
 
@@ -264,7 +272,7 @@ TEST(OrgKeyDocumentTests, overlappingWindowsAcceptEitherKey) {
               {"incoming", b.pub, "2026-06-01T00:00:00Z", "2027-01-01T00:00:00Z"}};
 
     auto doc = loadOrgKeyDocument(envelope(payloadJson(o), root.priv, "rot"),
-                                  {root.pub.string()},
+                                  {rootOf(root.pub, "olla-root-test")},
                                   at("2026-06-15T00:00:00Z"));
     ASSERT_TRUE(!!doc) << llvm::toString(doc.takeError());
 
@@ -280,7 +288,7 @@ TEST(OrgKeyDocumentTests, malformedInputIsRefused) {
     auto root = keyPair("root");
     auto org = keyPair("org");
     auto now = at("2026-06-01T00:00:00Z");
-    std::vector<std::string> roots{root.pub.string()};
+    std::vector<RootKey> roots{rootOf(root.pub, "olla-root-test")};
 
     struct Case { const char* why; std::string envelope; };
     DocOptions ok;

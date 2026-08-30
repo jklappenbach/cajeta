@@ -1,0 +1,22 @@
+// GENERATED at configure time from resources/roots/olla-root.pem.
+// Edit that file, not this one.
+//
+// The trust anchor is compiled in rather than read from disk so a default
+// install verifies with no operator action (publisher-trust spec §3.1), and
+// so the anchor cannot be swapped by editing a file next to the binary —
+// changing it means shipping a new toolchain, which is the point of §3.2.
+
+#include "cajeta/buildtool/RootTrust.h"
+
+namespace cajeta::buildtool {
+
+    const RootKey& shippedRoot() {
+        static const RootKey key{
+            "@CAJETA_ROOT_KEY_ID@",
+            R"CAJETAPEM(@CAJETA_ROOT_KEY_PEM@)CAJETAPEM",
+            true
+        };
+        return key;
+    }
+
+} // namespace cajeta::buildtool
