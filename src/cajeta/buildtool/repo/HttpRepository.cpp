@@ -799,4 +799,22 @@ namespace cajeta::buildtool {
         return std::optional<std::string>{body};
     }
 
+    llvm::Expected<std::optional<std::string>>
+    HttpRepository::repositoryKeys() const {
+        auto caps = capabilities();
+        if (!caps) return caps.takeError();
+        if (!caps->supportsV2()) return std::optional<std::string>{};
+
+        std::string url = joinUrl(baseUrl_, "v2/repository-keys");
+        std::string body;
+        auto code = getToString(state_->curl, url, auth_, body);
+        if (!code) return code.takeError();
+        if (*code == 404) return std::optional<std::string>{};
+        if (*code < 200 || *code >= 300) {
+            return err("HTTP " + std::to_string(*code) +
+                       " fetching the repository delegation from " + url);
+        }
+        return std::optional<std::string>{body};
+    }
+
 } // namespace cajeta::buildtool

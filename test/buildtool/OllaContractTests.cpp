@@ -91,7 +91,7 @@ TEST(OllaContractTests, aConformantServerSatisfiesTheWholeChain) {
 
     // §3.4 — the hash and the owning organization, out of the signed half.
     auto integrity = releaseIntegrityFor(*repo, "dev.cajeta.http", "1.0.0",
-                                         *roots);
+                                         *roots, nullptr, now);
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_TRUE(integrity->fromSignedMetadata);
     EXPECT_EQ("sha256:abc", integrity->sha256);
@@ -178,7 +178,7 @@ TEST(OllaContractTests, theSignedHalfIsAuthoritativeOverThePlainHalf) {
     ASSERT_TRUE(!!roots);
 
     auto integrity = releaseIntegrityFor(*repo, "dev.cajeta.http", "1.0.0",
-                                         *roots);
+                                         *roots, nullptr, at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_EQ("sha256:signed", integrity->sha256);
     EXPECT_EQ("dev.cajeta", integrity->organization);
@@ -200,7 +200,7 @@ TEST(OllaContractTests, aPayloadAlteredAfterSigningIsRefused) {
     ASSERT_TRUE(!!roots);
 
     auto integrity = releaseIntegrityFor(*repo, "dev.cajeta.http", "1.0.0",
-                                         *roots);
+                                         *roots, nullptr, at("2026-06-01T00:00:00Z"));
     ASSERT_FALSE(!!integrity)
         << "an altered payload must not degrade to the unsigned fields "
            "beside it — a mirror would then just strip the signature";
@@ -224,7 +224,7 @@ TEST(OllaContractTests, anUnsignedResolveBindsNoPublisher) {
     ASSERT_TRUE(!!roots);
 
     auto integrity = releaseIntegrityFor(*repo, "dev.cajeta.http", "1.0.0",
-                                         *roots);
+                                         *roots, nullptr, at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_FALSE(integrity->fromSignedMetadata);
     EXPECT_TRUE(integrity->organization.empty())

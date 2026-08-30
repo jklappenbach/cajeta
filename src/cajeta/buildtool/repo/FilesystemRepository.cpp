@@ -203,4 +203,11 @@ namespace cajeta::buildtool {
         return readIfPresent(sidecar, name_, "release metadata");
     }
 
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::repositoryKeys() const {
+        namespace fs = std::filesystem;
+        fs::path doc = fs::path(root_) / ".well-known" / "repository-keys.json";
+        return readIfPresent(doc, name_, "repository delegation");
+    }
+
 } // namespace cajeta::buildtool

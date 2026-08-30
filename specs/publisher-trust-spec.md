@@ -32,7 +32,8 @@ compromised `olla.cajeta.dev` — olla is the authority, so an attacker
 holding olla's root key can assert anything. Surviving that needs
 evidence originating outside olla (a transparency log, threshold
 signing), which is out of scope here and noted as the upgrade path in
-§8.
+§8. §2.7 nonetheless keeps the root OFFLINE, so a compromise of the
+serving infrastructure forges a release, not an organization.
 
 **1.6 Non-goals.** No full TUF deployment (no snapshot or timestamp
 roles, so no rollback- or freeze-attack protection). No per-project keys.
@@ -98,6 +99,40 @@ obtained.
 **2.6** When an organization has more than one key with an overlapping
 validity window, a signature by any one of them is accepted. This is what
 makes rotation possible without a flag day.
+
+**2.7 The root does not sign release metadata directly.** It signs a
+DELEGATION naming the keys that may, and those keys do the per-publish work.
+
+Release metadata is signed on every upload (§5.1), so whatever signs it must
+be reachable by request-handling code. If that were the root, a compromise
+of the serving infrastructure would forge any organization's key document —
+total collapse rather than a bounded loss. §1.5 accepts a fully compromised
+repository as outside the threat model, but that is a statement about what
+is defended, not a licence to force the most valuable key online.
+
+**2.7.1** The delegation is itself root-signed, carries its own validity
+window, and names the repository it speaks for. A delegation fetched from
+one repository does not authorise another.
+
+**2.7.2** A delegated key outside its own window authorises nothing, and a
+delegation whose keys have all lapsed is a REFUSAL — never a fall back to
+verifying against the root. The fallback in 2.7.3 exists for a repository
+that serves no delegation at all, not for one whose delegation has expired.
+
+**2.7.3** When a repository serves no delegation, release metadata verifies
+against the roots directly. This is the pre-delegation shape and stays
+supported, so a repository can adopt delegation without a flag day. A root
+signature is strictly stronger evidence than a delegated one, so accepting
+both costs a client nothing; keeping the root offline is the repository's
+operational discipline, which no client can police.
+
+**2.7.4** A delegation and an organization key document must be
+unmistakable for one another. Both are root-signed envelopes of keys with
+validity windows, and a client that accepted one as the other would let any
+organization's key sign release metadata for every organization. The
+delegation carries a required, signed type discriminator; an organization
+document is identified by the `organization` and `namespaces` a delegation
+never carries.
 
 ## 3. The trust anchor
 

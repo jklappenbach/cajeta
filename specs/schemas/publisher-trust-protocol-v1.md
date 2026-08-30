@@ -21,7 +21,7 @@ Two surfaces, with different audiences and different risks:
   wrong hands an attacker the ability to publish as somebody else.
 
 A server may implement serving alone. The client degrades against one that
-serves none of it (§3.6), which is what makes this deployable
+serves none of it (§3.7), which is what makes this deployable
 incrementally.
 
 ## 2. Terms
@@ -42,8 +42,14 @@ and release metadata. Clients ship with the public half (spec 3.1).
 **Key document** — the signed statement binding an organization to its
 keys and namespaces. Schema: `org-key-document.json`.
 
-**Release metadata** — the signed statement carrying an archive's hash and
-its owning organization. Schema: `release-metadata.json`.
+**Release metadata** — the statement carrying an archive's hash and its
+owning organization, signed by a delegated release key. Schema:
+`release-metadata.json`.
+
+**Repository delegation** — the root-signed statement naming which keys may
+sign release metadata (spec §2.7). Schema: `repository-delegation.json`.
+The root signs this and organization key documents, both rare, and can stay
+OFFLINE; the delegated key does the per-publish signing.
 
 An archive version is **immutable**. The v2 protocol is content-addressed;
 a blob lives at its `sha256` and that URL never changes. Republishing an
@@ -121,7 +127,34 @@ Serve documents with overlapping key windows during rotation. That
 overlap is the entire mechanism by which a publisher rotates without a
 flag day (spec 2.6).
 
-### 3.4 Release metadata (6.2, 5.1)
+### 3.4 Repository delegation (spec 2.7)
+
+```
+GET /v2/repository-keys
+→ 200  the signed envelope
+→ 404  this repository delegates nothing; the root signs releases itself
+```
+
+Payload body: see `repository-delegation.json`. Signed by the ROOT, never by
+a delegated key — a key that could sign its own delegation would be
+self-authorising, and the client refuses it.
+
+`repository` in the payload must match the repository the client fetched it
+from, or one repository's delegation could be replayed by another.
+
+**Serving a 404 here is a supported configuration**, not a degraded one: it
+means the root signs release metadata directly, which is the pre-delegation
+shape. What it costs is that the root key must then be online for every
+publish, so a compromise of the serving infrastructure forges organization
+key documents rather than just releases. Prefer delegating.
+
+Rotate the online key by serving a delegation with two keys whose windows
+overlap, exactly as an organization rotates. A delegation whose keys have
+ALL lapsed is refused outright — the client does not fall back to the root,
+because "no delegation served" and "the delegation expired" are different
+conditions and only the first is a supported configuration.
+
+### 3.5 Release metadata (6.2, 5.1)
 
 ```
 GET /v2/resolve?name=<name>&version=<version>
@@ -157,16 +190,16 @@ coordinate by a future client that checks them.
 the organization that actually owns the name, decided by the same
 authority that gated the upload (§4.1) — never computed from the name.
 
-### 3.5 Blob
+### 3.6 Blob
 
 ```
 GET /v2/blob/<sha256>            → the .cja bytes
 ```
 
-Unchanged from the v2 protocol. The hash in §3.4's signed payload is what
+Unchanged from the v2 protocol. The hash in §3.5's signed payload is what
 the fetched bytes are checked against.
 
-### 3.6 Absence and failure are different answers
+### 3.7 Absence and failure are different answers
 
 This is the single most important behaviour in §3, and the easiest to get
 subtly wrong.

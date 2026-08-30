@@ -16,6 +16,7 @@
 #pragma once
 
 #include "cajeta/buildtool/Repository.h"
+#include "cajeta/buildtool/RepositoryDelegation.h"
 #include "cajeta/buildtool/SignedEnvelope.h"
 
 #include <llvm/Support/Error.h>
@@ -41,6 +42,11 @@ namespace cajeta::buildtool {
         // on one would reintroduce the unbound trust §1.2 describes.
         std::string organization;
         std::string rootKeyId;
+
+        // True when the signature came from a key the root DELEGATED rather
+        // than from the root itself (spec 2.7). Recorded because the two are
+        // different evidence, and a later policy may require one.
+        bool viaDelegation = false;
     };
 
     // What `name@version` from `repo` must hash to, and who published it.
@@ -49,10 +55,16 @@ namespace cajeta::buildtool {
     // and does not verify. That is not the same as serving none: falling
     // back to the unsigned path there would let a mirror strip a signature
     // to reach the weaker route.
+    // `delegation` is the repository's verified delegation, or nullptr when
+    // it serves none. When present, release metadata must be signed by one of
+    // its keys that is valid at `now`; when absent, the roots verify directly,
+    // which is the pre-delegation shape and stays supported.
     llvm::Expected<ReleaseIntegrity> releaseIntegrityFor(
         const Repository& repo,
         const std::string& name,
         const std::string& version,
-        const std::vector<RootKey>& roots);
+        const std::vector<RootKey>& roots,
+        const RepositoryDelegation* delegation,
+        std::time_t now);
 
 } // namespace cajeta::buildtool

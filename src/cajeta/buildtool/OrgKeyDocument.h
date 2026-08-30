@@ -22,6 +22,8 @@
 #include <string>
 #include <vector>
 
+namespace llvm { namespace json { class Array; } }
+
 namespace cajeta::buildtool {
 
     struct OrgSigningKey {
@@ -48,6 +50,13 @@ namespace cajeta::buildtool {
         // must treat it as "cannot verify", never as "verified".
         std::vector<const OrgSigningKey*> usableKeys(std::time_t now) const;
     };
+
+    // Parse a `keys` array — shared by the organization key document and the
+    // repository delegation, so the rules (ed25519 only, not-after strictly
+    // after not-before) have ONE implementation rather than two that can
+    // drift. `what` names the document in error text.
+    llvm::Expected<std::vector<OrgSigningKey>> parseSigningKeys(
+        const llvm::json::Array& keys, const std::string& what);
 
     // Parse and verify an envelope.
     //

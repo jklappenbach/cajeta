@@ -74,4 +74,48 @@ namespace cajeta::buildtool {
         return std::optional<OrgKeyDocument>{*doc};
     }
 
+    llvm::Expected<std::optional<RepositoryDelegation>>
+    OrgKeyCache::delegationFor(const Repository& repo, std::time_t now) {
+        const std::string key = repo.name();
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            auto it = delegations_.find(key);
+            if (it != delegations_.end()) {
+                if (now < it->second.notAfter) {
+                    return std::optional<RepositoryDelegation>{it->second};
+                }
+                delegations_.erase(it);
+            }
+        }
+
+        auto bytes = repo.repositoryKeys();
+        if (!bytes) return bytes.takeError();
+        if (!bytes->has_value()) {
+            return std::optional<RepositoryDelegation>{};
+        }
+
+        auto roots = rootsFor(layout_, repo.name());
+        if (!roots) return roots.takeError();
+        if (roots->empty()) {
+            return err("repository '" + repo.name() + "' serves a delegation, "
+                       "but this machine trusts no root key for it, so it "
+                       "cannot be checked");
+        }
+
+        auto del = loadRepositoryDelegation(**bytes, *roots, now);
+        if (!del) return del.takeError();
+        if (del->repository != repo.name()) {
+            // The delegation has to speak for the repository we asked. Without
+            // this, one repository's delegation could be replayed by another
+            // and its online key would sign for both.
+            return err("repository '" + repo.name() + "' served a delegation "
+                       "for '" + del->repository + "'");
+        }
+
+        std::lock_guard<std::mutex> lk(mu_);
+        ++fetches_;
+        delegations_[key] = *del;
+        return std::optional<RepositoryDelegation>{*del};
+    }
+
 } // namespace cajeta::buildtool

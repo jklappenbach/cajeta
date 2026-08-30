@@ -32,6 +32,10 @@ std::string errText(llvm::Error&& e) {
     return out;
 }
 
+// Delegation is exercised in its own suite; these predate it and verify
+// against roots directly, which stays supported (spec 2.7).
+const std::time_t kNoDelegationTime = 0;
+
 fs::path freshDir(const std::string& tag) {
     auto p = fs::temp_directory_path() / ("cajeta-relint-" + tag);
     rmTree(p);
@@ -80,7 +84,7 @@ TEST(ReleaseIntegrityTests, theHashComesFromTheSignedMetadata) {
 
     auto integrity = releaseIntegrityFor(
         repo, "dev.cajeta.http", "1.0.0",
-        {rootKeyOf(st.root, "fixture-root")});
+        {rootKeyOf(st.root, "fixture-root")}, nullptr, kNoDelegationTime);
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_EQ("sha256:5164ed", integrity->sha256)
         << "the sidecar must not win over a root-signed hash";
@@ -103,7 +107,7 @@ TEST(ReleaseIntegrityTests, aMirrorRewritingTheSidecarIsIgnored) {
 
     auto integrity = releaseIntegrityFor(
         repo, "dev.cajeta.http", "1.0.0",
-        {rootKeyOf(st.root, "fixture-root")});
+        {rootKeyOf(st.root, "fixture-root")}, nullptr, kNoDelegationTime);
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_EQ("sha256:realrelease", integrity->sha256);
     EXPECT_TRUE(integrity->fromSignedMetadata);
@@ -122,7 +126,7 @@ TEST(ReleaseIntegrityTests, theUnsignedSidecarStillWorksAndSaysSoIsUnsigned) {
 
     auto integrity = releaseIntegrityFor(
         repo, "dev.cajeta.http", "1.0.0",
-        {rootKeyOf(st.root, "fixture-root")});
+        {rootKeyOf(st.root, "fixture-root")}, nullptr, kNoDelegationTime);
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_EQ("sha256:deadbeef", integrity->sha256);
     EXPECT_FALSE(integrity->fromSignedMetadata);
@@ -145,7 +149,7 @@ TEST(ReleaseIntegrityTests, unverifiableMetadataDoesNotFallBackToTheSidecar) {
     // A root the client does not hold.
     auto integrity = releaseIntegrityFor(
         repo, "dev.cajeta.http", "1.0.0",
-        {rootKeyOf(stranger, "some-other-root")});
+        {rootKeyOf(stranger, "some-other-root")}, nullptr, kNoDelegationTime);
     ASSERT_FALSE(!!integrity)
         << "an unverifiable envelope must not degrade to the sidecar";
     EXPECT_NE(std::string::npos, errText(integrity.takeError()).find("did not verify"));
@@ -163,7 +167,7 @@ TEST(ReleaseIntegrityTests, aRepositoryPublishingNoHashIsNotAnError) {
 
     auto integrity = releaseIntegrityFor(
         repo, "dev.cajeta.http", "1.0.0",
-        {rootKeyOf(st.root, "fixture-root")});
+        {rootKeyOf(st.root, "fixture-root")}, nullptr, kNoDelegationTime);
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_TRUE(integrity->sha256.empty());
     EXPECT_FALSE(integrity->fromSignedMetadata);
@@ -185,7 +189,7 @@ TEST(ReleaseIntegrityTests, unsignedMetadataDoesNotCountAsSigned) {
 
     auto integrity = releaseIntegrityFor(
         repo, "dev.cajeta.http", "1.0.0",
-        {rootKeyOf(st.root, "fixture-root")});
+        {rootKeyOf(st.root, "fixture-root")}, nullptr, kNoDelegationTime);
     ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
     EXPECT_FALSE(integrity->fromSignedMetadata);
     EXPECT_TRUE(integrity->organization.empty())
