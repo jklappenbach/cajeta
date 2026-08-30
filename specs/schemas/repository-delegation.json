@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olla.cajeta.dev/schemas/repository-delegation.json",
+  "title": "Repository delegation",
+  "description":
+    "The root-signed statement naming which keys may sign RELEASE METADATA (publisher-trust spec §2.7).\n\nWHY THIS EXISTS. Release metadata is signed on every upload, so whatever signs it has to be reachable by request-handling code. If that were the root key, a compromise of the serving infrastructure would forge any organization's key document — total collapse rather than a bounded loss. The root therefore signs only rare things (organization key documents, and this), and can stay offline; the delegated key does the per-publish work.\n\nWHY IT IS NOT AN ORGANIZATION KEY DOCUMENT, despite the near-identical shape: if a client ever accepted one as the other, ANY organization's signing key could sign release metadata for EVERY organization. The `type` discriminator below is required and is inside the signed payload, so it cannot be added or removed in transit; an organization document is identified instead by the `organization` and `namespaces` that a delegation never carries.\n\nSame envelope as org-key-document.json: the payload travels as opaque bytes and the signature covers them exactly as transmitted.",
+  "type": "object",
+  "required": ["format", "root-key-id", "payload", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "description": "Envelope version. A client that does not recognise the value refuses the document rather than guessing at its meaning.",
+      "type": "integer",
+      "const": 1
+    },
+    "root-key-id": {
+      "description": "Which root key signed this. A hint for picking a candidate; the client reports the root that actually verified (spec §6.3).",
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "description": "base64 of the UTF-8 JSON described by $defs/delegation.",
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "signature": {
+      "description": "base64 ed25519 signature over the DECODED payload bytes. Made by the ROOT key — a delegated key signing its own delegation would be self-authorising and is refused.",
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  },
+
+  "$defs": {
+    "delegation": {
+      "title": "The signed delegation",
+      "type": "object",
+      "required": ["type", "repository", "not-after", "keys"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "description": "REQUIRED discriminator. Signed, so it cannot be stripped in transit. A document without it is never read as a delegation.",
+          "type": "string",
+          "const": "repository-delegation"
+        },
+        "repository": {
+          "description": "The repository this speaks for, checked against the one it was fetched from. Without it, one repository's delegation could be replayed by another and its online key would sign for both.",
+          "type": "string",
+          "minLength": 1
+        },
+        "not-after": {
+          "description": "Delegation expiry. Refused once passed, however obtained, including from cache — a stale delegation is how a revoked signing key keeps working.",
+          "$ref": "https://olla.cajeta.dev/schemas/org-key-document.json#/$defs/timestamp"
+        },
+        "keys": {
+          "description": "Keys permitted to sign release metadata. More than one with overlapping windows is what lets the online key rotate without a flag day. A key outside its own window authorises nothing, and a delegation whose keys have ALL lapsed is a refusal rather than a fall back to the root.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "https://olla.cajeta.dev/schemas/org-key-document.json#/$defs/key" }
+        }
+      }
+    }
+  }
+}

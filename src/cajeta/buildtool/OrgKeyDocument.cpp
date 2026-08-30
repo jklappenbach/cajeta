@@ -80,6 +80,45 @@ namespace cajeta::buildtool {
         return out;
     }
 
+    llvm::Expected<std::vector<OrgSigningKey>> parseSigningKeys(
+            const llvm::json::Array& keys, const std::string& what) {
+        std::vector<OrgSigningKey> out;
+        for (auto& entry : keys) {
+            auto* k = entry.getAsObject();
+            if (!k) return err(what + ": a key is not an object");
+            auto id = k->getString("id");
+            auto alg = k->getString("algorithm");
+            auto pem = k->getString("public-key");
+            auto nb = k->getString("not-before");
+            auto na = k->getString("not-after");
+            if (!id || !alg || !pem || !nb || !na) {
+                return err(what + ": a key is missing id, algorithm, "
+                                  "public-key, not-before or not-after");
+            }
+            if (*alg != "ed25519") {
+                return err(what + ": key '" + id->str()
+                           + "' uses unsupported algorithm '" + alg->str() + "'");
+            }
+            auto from = parseUtcTimestamp(nb->str());
+            if (!from) return from.takeError();
+            auto until = parseUtcTimestamp(na->str());
+            if (!until) return until.takeError();
+            if (*until <= *from) {
+                return err(what + ": key '" + id->str()
+                           + "' has a not-after at or before its not-before, "
+                             "so it is never usable");
+            }
+            OrgSigningKey key;
+            key.id = id->str();
+            key.algorithm = alg->str();
+            key.publicKeyPem = pem->str();
+            key.notBefore = *from;
+            key.notAfter = *until;
+            out.push_back(std::move(key));
+        }
+        return out;
+    }
+
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
             const std::string& envelopeJson,
             const std::vector<RootKey>& roots,
@@ -135,39 +174,9 @@ namespace cajeta::buildtool {
             return err("organization key document: '" + doc.organization
                        + "' lists no keys");
         }
-        for (auto& entry : *keys) {
-            auto* k = entry.getAsObject();
-            if (!k) return err("organization key document: a key is not an object");
-            auto id = k->getString("id");
-            auto alg = k->getString("algorithm");
-            auto pem = k->getString("public-key");
-            auto nb = k->getString("not-before");
-            auto na = k->getString("not-after");
-            if (!id || !alg || !pem || !nb || !na) {
-                return err("organization key document: a key is missing id, "
-                           "algorithm, public-key, not-before or not-after");
-            }
-            if (*alg != "ed25519") {
-                return err("organization key document: key '" + id->str()
-                           + "' uses unsupported algorithm '" + alg->str() + "'");
-            }
-            auto from = parseUtcTimestamp(nb->str());
-            if (!from) return from.takeError();
-            auto until = parseUtcTimestamp(na->str());
-            if (!until) return until.takeError();
-            if (*until <= *from) {
-                return err("organization key document: key '" + id->str()
-                           + "' has a not-after at or before its not-before, "
-                             "so it is never usable");
-            }
-            OrgSigningKey key;
-            key.id = id->str();
-            key.algorithm = alg->str();
-            key.publicKeyPem = pem->str();
-            key.notBefore = *from;
-            key.notAfter = *until;
-            doc.keys.push_back(std::move(key));
-        }
+        auto parsedKeys = parseSigningKeys(*keys, "organization key document");
+        if (!parsedKeys) return parsedKeys.takeError();
+        doc.keys = std::move(*parsedKeys);
 
         // Expiry last, so a malformed document reports what is wrong with it
         // rather than only that it is old. An expired document is an ERROR,

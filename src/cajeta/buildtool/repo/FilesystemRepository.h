@@ -69,6 +69,10 @@ namespace cajeta::buildtool {
         releaseMetadataJson(const std::string& packageName,
                             const std::string& version) const override;
 
+        // Reads `<root>/.well-known/repository-keys.json`.
+        llvm::Expected<std::optional<std::string>>
+        repositoryKeys() const override;
+
     private:
         std::string name_;
         std::string root_;

@@ -227,6 +227,17 @@ namespace cajeta::buildtool {
             return std::optional<std::string>{};
         }
 
+        // The signed repository delegation (publisher-trust spec 2.7) — raw
+        // envelope JSON, naming the keys permitted to sign release metadata.
+        // Repository-wide, so no parameter.
+        //
+        // Same contract as `organizationKeys`: unverified bytes, nullopt for
+        // absence, an error for failure.
+        virtual llvm::Expected<std::optional<std::string>>
+        repositoryKeys() const {
+            return std::optional<std::string>{};
+        }
+
         // The release metadata for `name@version` — raw JSON, either a
         // signed envelope or a plain object (spec 5.1, 6.2). Same contract
         // as `organizationKeys`: unverified bytes, nullopt for absence.

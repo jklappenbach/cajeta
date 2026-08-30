@@ -36,7 +36,7 @@ namespace cajeta::buildtool {
 
     llvm::Expected<ReleaseMetadata> loadReleaseMetadata(
             const std::string& json,
-            const std::vector<RootKey>& roots) {
+            const std::vector<RootKey>& verifiers) {
         auto parsed = llvm::json::parse(json);
         if (!parsed) {
             llvm::consumeError(parsed.takeError());
@@ -66,7 +66,7 @@ namespace cajeta::buildtool {
             llvm::raw_string_ostream os(envelopeJson);
             os << value;
             os.flush();
-            auto envelope = openSignedEnvelope(envelopeJson, roots,
+            auto envelope = openSignedEnvelope(envelopeJson, verifiers,
                                                "release metadata");
             if (!envelope) return envelope.takeError();
 

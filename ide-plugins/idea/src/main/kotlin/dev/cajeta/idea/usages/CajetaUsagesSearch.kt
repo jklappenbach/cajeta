@@ -52,7 +52,26 @@ class CajetaUsagesSearch : QueryExecutor<PsiReference, ReferencesSearch.SearchPa
                 // references, and neither needs to know which it is.
                 XrefQuery.usagesOf(project, fqn) +
                     overloadKeyFor(project, target)
-                        ?.let { XrefQuery.callersOf(project, it) }
+                        ?.let { key ->
+                            // A VIRTUAL call names the STATIC receiver's method,
+                            // never the override that will actually run, so an
+                            // override has no callers of its own and Find Usages
+                            // on it reported nothing — while the call plainly
+                            // existed. Measured on the tour 2026-08-30:
+                            // `Tour.cajeta:137` calls `DemoClass::execute`
+                            // through `demos.forEach((d) -> d.execute())`, and
+                            // Find Usages on any demo's `execute()` was empty.
+                            //
+                            // So ask for the callers of everything this method
+                            // overrides as well. Those sites reach it, and are
+                            // the honest answer to "what calls this".
+                            (listOf(key) + overriddenChain(key) { k ->
+                                XrefQuery.overriddenBy(project, k).mapNotNull {
+                                    (it.entries["overrides"]
+                                        as? dev.cajeta.idea.debugger.Json.Str)?.value
+                                }
+                            }).flatMap { XrefQuery.callersOf(project, it) }
+                        }
                         .orEmpty()
             })
         for (site in sites) {
@@ -76,6 +95,43 @@ class CajetaUsagesSearch : QueryExecutor<PsiReference, ReferencesSearch.SearchPa
          * return nothing (or worse, another member's usages) rather than
          * failing visibly. They join when the key is confirmed.
          */
+        /**
+         * Every overload key [start] overrides, transitively and excluding
+         * itself, in discovery order.
+         *
+         * Pure and injected so the WALK is testable without an index: the bug
+         * this exists for was not in any query — both `overriddenBy` and
+         * `callersOf` already worked — it was that nothing joined them.
+         *
+         * The visited set is a cycle guard. A well-formed export cannot
+         * describe a method that transitively overrides itself, but this walks
+         * machine-generated data during Find Usages, on the EDT's search
+         * thread, and a malformed index must not hang the IDE. Depth is capped
+         * for the same reason: an unbounded walk over a corrupt index is a
+         * freeze, and a truncated answer is merely incomplete.
+         */
+        fun overriddenChain(
+            start: String,
+            maxDepth: Int = 32,
+            overriddenBy: (String) -> List<String>,
+        ): List<String> {
+            val seen = LinkedHashSet<String>()
+            var frontier = listOf(start)
+            var depth = 0
+            while (frontier.isNotEmpty() && depth < maxDepth) {
+                val next = ArrayList<String>()
+                for (key in frontier) {
+                    for (parent in overriddenBy(key)) {
+                        if (parent.isBlank() || parent == start) continue
+                        if (seen.add(parent)) next.add(parent)
+                    }
+                }
+                frontier = next
+                depth++
+            }
+            return seen.toList()
+        }
+
         /**
          * The overload key for a MEMBER, read from its own declaration record
          * rather than constructed.

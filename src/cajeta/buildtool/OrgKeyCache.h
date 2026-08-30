@@ -16,6 +16,7 @@
 
 #include "cajeta/buildtool/OrgKeyDocument.h"
 #include "cajeta/buildtool/Repository.h"
+#include "cajeta/buildtool/RepositoryDelegation.h"
 #include "cajeta/buildtool/RootTrust.h"
 
 #include <llvm/Support/Error.h>
@@ -45,6 +46,16 @@ namespace cajeta::buildtool {
         llvm::Expected<std::optional<OrgKeyDocument>> documentFor(
             const Repository& repo, const std::string& org, std::time_t now);
 
+        // The verified delegation naming which keys may sign `repo`'s release
+        // metadata (spec 2.7). Lives here rather than in a second cache so
+        // roots resolution, the validity-window rule, and the
+        // absence-vs-failure distinction have one implementation each.
+        //
+        // Same three outcomes as `documentFor`: a delegation, nullopt when
+        // the repository serves none, or an error.
+        llvm::Expected<std::optional<RepositoryDelegation>> delegationFor(
+            const Repository& repo, std::time_t now);
+
         // How many times a document was actually fetched. Exists so a test
         // can tell a cache hit from a refetch — the only way to show that
         // an expired entry is not served.
@@ -54,6 +65,7 @@ namespace cajeta::buildtool {
         RootTrustLayout layout_;
         mutable std::mutex mu_;
         std::map<std::string, OrgKeyDocument> cache_;
+        std::map<std::string, RepositoryDelegation> delegations_;
         int fetches_ = 0;
     };
 

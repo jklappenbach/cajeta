@@ -10,6 +10,10 @@
 
 #include <gtest/gtest.h>
 
+#include <llvm/Support/JSON.h>
+
+#include "cajeta/buildtool/ArtifactCache.h"
+
 #include <algorithm>   // std::replace — the _WIN32 path separator fixup below
 #include <cstdlib>
 #include <filesystem>
@@ -203,14 +207,69 @@ TEST(LintServer, ReadyRecordThenLintResponse) {
 
     auto ls = lines(r.out);
     ASSERT_FALSE(ls.empty()) << "no stdout at all; stderr:\n" << r.err;
-    EXPECT_EQ(ls[0],
-        "{\"kind\":\"server\",\"proto\":{\"major\":1,\"minor\":0},\"state\":\"ready\"}")
-        << "first record must be the ready record";
+    EXPECT_EQ(ls[0].rfind(
+        "{\"kind\":\"server\",\"proto\":{\"major\":1,\"minor\":1},"
+        "\"state\":\"ready\"", 0), 0u)
+        << "first record must be the ready record, got:\n" << ls[0];
 
     std::string slice;
     ASSERT_TRUE(payloadSlice(r.out, 1, slice)) << "no done marker for id 1:\n" << r.out;
     EXPECT_EQ(slice.find("\"severity\""), std::string::npos)
         << "clean file produced diagnostics:\n" << slice;
+}
+
+// 5.1.a/5.2.a — the ready record names the binary the server is RUNNING, by
+// content. A resident daemon otherwise keeps answering from the image it
+// started with: measured 2026-08-29, a compiler fix built at 15:46 never
+// reached a server started at 15:35, and the symptom ("worked once, then
+// reverted") pointed at the wrong component entirely.
+//
+// The identity must be the CONTENT, not a timestamp: `ninja` touching an
+// unchanged output, or a relink producing identical bytes, must not read as a
+// new compiler. Asserting it equals an independent hash of the same file
+// establishes that directly.
+TEST(LintServer, ReadyRecordCarriesTheRunningBinaryIdentity) {
+    SKIP_WITHOUT_BINARY();
+    auto root = freshTempDir("binid") / "src";
+    auto file = writeUnit(root, "Alpha", HEALTHY);
+
+    auto r = runServer("--diag-format=json", lintRequest(1, file));
+    ASSERT_NE(r.rc, -1);
+    auto ls = lines(r.out);
+    ASSERT_FALSE(ls.empty()) << "no stdout at all; stderr:\n" << r.err;
+
+    auto parsed = llvm::json::parse(ls[0]);
+    ASSERT_TRUE(static_cast<bool>(parsed)) << "ready record is not JSON:\n" << ls[0];
+    const llvm::json::Object* obj = parsed->getAsObject();
+    ASSERT_NE(obj, nullptr);
+    const llvm::json::Object* bin = obj->getObject("binary");
+    ASSERT_NE(bin, nullptr) << "ready record carries no binary identity:\n" << ls[0];
+
+    auto id = bin->getString("id");
+    ASSERT_TRUE(id.has_value()) << "binary record carries no id:\n" << ls[0];
+    EXPECT_EQ(id->str(),
+              cajeta::buildtool::ArtifactCache::sha256OfFile(compilerBinary()))
+        << "the reported identity must be the running binary's CONTENT";
+
+    auto path = bin->getString("path");
+    ASSERT_TRUE(path.has_value()) << "binary record carries no path:\n" << ls[0];
+    EXPECT_FALSE(path->empty());
+}
+
+// The identity is a property of the file, not of the run: two servers started
+// from the same unmodified binary report the same thing. A per-run value (a
+// pid, a start time) would restart a healthy daemon on every edit.
+TEST(LintServer, TheBinaryIdentityIsStableAcrossRuns) {
+    SKIP_WITHOUT_BINARY();
+    auto root = freshTempDir("binid2") / "src";
+    auto file = writeUnit(root, "Alpha", HEALTHY);
+
+    auto first = lines(runServer("--diag-format=json", lintRequest(1, file)).out);
+    auto second = lines(runServer("--diag-format=json", lintRequest(1, file)).out);
+    ASSERT_FALSE(first.empty());
+    ASSERT_FALSE(second.empty());
+    EXPECT_EQ(first[0], second[0])
+        << "the ready record must not carry anything that varies per run";
 }
 
 // 2.1.2 — the payload slice between markers is byte-identical to the

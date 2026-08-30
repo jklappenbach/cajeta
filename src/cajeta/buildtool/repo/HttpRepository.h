@@ -123,6 +123,11 @@ namespace cajeta::buildtool {
         releaseMetadataJson(const std::string& packageName,
                             const std::string& version) const override;
 
+        // GET /v2/repository-keys — the signed delegation naming which keys
+        // may sign release metadata.
+        llvm::Expected<std::optional<std::string>>
+        repositoryKeys() const override;
+
         // GET /v2/resolve?name=...&version=... — returns the typed
         // metadata for the artifact at <name>@<version>. v2-only.
         // Caller-checked: only invoke when capabilities().supportsV2()

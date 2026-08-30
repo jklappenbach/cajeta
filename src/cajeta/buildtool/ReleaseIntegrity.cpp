@@ -17,8 +17,29 @@ namespace cajeta::buildtool {
             const Repository& repo,
             const std::string& name,
             const std::string& version,
-            const std::vector<RootKey>& roots) {
+            const std::vector<RootKey>& roots,
+            const RepositoryDelegation* delegation,
+            std::time_t now) {
         ReleaseIntegrity out;
+
+        // Who is allowed to have signed the release metadata. A delegation
+        // narrows it to the online release keys; without one the roots verify
+        // directly.
+        std::vector<RootKey> verifiers;
+        if (delegation) {
+            for (const auto* k : delegation->usableKeys(now)) {
+                verifiers.push_back(RootKey{k->id, k->publicKeyPem, false});
+            }
+            if (verifiers.empty()) {
+                return err("repository '" + repo.name() + "' delegates release "
+                           "signing, but no delegated key is inside its "
+                           "validity window right now, so nothing it serves "
+                           "can be verified");
+            }
+            out.viaDelegation = true;
+        } else {
+            verifiers = roots;
+        }
 
         auto raw = repo.releaseMetadataJson(name, version);
         if (!raw) {
@@ -28,7 +49,7 @@ namespace cajeta::buildtool {
             // is genuinely broken.
             llvm::consumeError(raw.takeError());
         } else if (raw->has_value()) {
-            auto md = loadReleaseMetadata(**raw, roots);
+            auto md = loadReleaseMetadata(**raw, verifiers);
             if (!md) {
                 return err("the release metadata for '" + name + "' "
                            + version + " from " + repo.name()

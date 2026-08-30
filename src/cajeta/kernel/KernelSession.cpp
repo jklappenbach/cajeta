@@ -924,8 +924,27 @@ bool KernelSession::resolveForInstall(
                     + chosen->name() + "' could not be resolved: "
                     + llvm::toString(roots.takeError()));
     }
-    if (auto integrity = bt::releaseIntegrityFor(*chosen, name, chosenVersion,
-                                                 *roots)) {
+    // publisher-trust 2.7 — the repository's delegation, if it serves one.
+    // Resolved before the metadata so release signatures are checked against
+    // the online release key rather than the root.
+    std::time_t verifyAt = std::time(nullptr);
+    if (!impl.orgKeys) {
+        impl.orgKeys = std::make_unique<bt::OrgKeyCache>(
+            cajeta::cli::rootTrustLayoutOf(
+                cajeta::cli::resolveTrustStoreLayout()));
+    }
+    std::optional<bt::RepositoryDelegation> delegation;
+    if (auto d = impl.orgKeys->delegationFor(*chosen, verifyAt)) {
+        delegation = *d;
+    } else {
+        return fail("Packages.install: the delegation for repository '"
+                    + chosen->name() + "' could not be used: "
+                    + llvm::toString(d.takeError()));
+    }
+
+    if (auto integrity = bt::releaseIntegrityFor(
+            *chosen, name, chosenVersion, *roots,
+            delegation ? &*delegation : nullptr, verifyAt)) {
         published = integrity->sha256;
         signedHash = integrity->fromSignedMetadata;
         // Only a root-SIGNED organization counts. An unsigned one is

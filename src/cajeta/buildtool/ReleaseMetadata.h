@@ -28,9 +28,10 @@ namespace cajeta::buildtool {
         std::string sha256;         // "sha256:<hex>", normalised
         std::string organization;   // who owns the name (spec 6.2)
 
-        // True when the fields above came out of a root-signed envelope.
-        // False means they were read from a plain document, and must not
-        // be used to decide a publisher binding.
+        // True when the fields above came out of a VERIFIED envelope —
+        // signed by a root, or by a key the root delegated to. False means
+        // they were read from a plain document and must not be used to
+        // decide a publisher binding.
         bool signedByRoot = false;
         std::string rootKeyId;      // which root signed it (spec 6.3)
     };
@@ -48,8 +49,16 @@ namespace cajeta::buildtool {
     // When a `signed` envelope is present it is authoritative: the plain
     // fields beside it are never merged in. A mirror that rewrites the
     // unsigned half changes nothing a verifying client reads.
+    // `verifiers` are the public keys permitted to have signed this. That is
+    // the delegated release keys when the repository serves a delegation
+    // (spec 2.7), and the roots themselves when it does not — a repository
+    // whose root signs release metadata directly still works, which is what
+    // makes the delegation adoptable without a flag day. A root signature is
+    // strictly stronger evidence than a delegated one, so accepting both
+    // costs the client nothing; keeping the root offline is olla's
+    // operational discipline, not something a client can police.
     llvm::Expected<ReleaseMetadata> loadReleaseMetadata(
         const std::string& json,
-        const std::vector<RootKey>& roots);
+        const std::vector<RootKey>& verifiers);
 
 } // namespace cajeta::buildtool
