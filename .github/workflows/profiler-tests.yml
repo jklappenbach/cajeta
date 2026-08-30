@@ -201,11 +201,24 @@ jobs:
             rm -rf build/CMakeFiles/CMakeError.log
           fi
           CMAKE_EXTRA=()
+          FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
           if [ "${{ runner.os }}" = "Windows" ]; then
             export CC=gcc CXX=g++
-            FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
             CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang.exe")
             CMAKE_EXTRA+=("-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link.exe")
+          elif [ '${{ matrix.key }}' = 'lavapipe' ]; then
+            # Two LLVM 23s live on this box and they are NOT interchangeable:
+            # the fork (LLVM23.0.0git, fetched above) and apt.llvm.org's
+            # 23.1.0, which setup.sh's dependency phase pulls in as clang-23 /
+            # llvm-23-dev. The fork's clang emits the runtime bitcode and
+            # /usr/bin/llvm-link-23 then refuses to read it:
+            #   Unknown module asm property
+            #   (Producer: 'LLVM23.0.0git' Reader: 'LLVM 23.1.0')
+            # The self-hosted legs never hit this because they skip the
+            # dependency phase and so only ever have the fork. Pin both tools
+            # to the fork, exactly as the Windows leg already does.
+            CMAKE_EXTRA+=("-DCAJETA_CLANG=${FORK_ROOT}/bin/clang")
+            CMAKE_EXTRA+=("-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link")
           fi
           ./setup.sh "${CMAKE_EXTRA[@]+"${CMAKE_EXTRA[@]}"}"
 
