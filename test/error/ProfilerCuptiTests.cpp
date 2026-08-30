@@ -13,7 +13,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <algorithm>
+#include <chrono>
+#include <cstring>
+#include <memory>
 #include <string>
+#include <vector>
 #if defined(_WIN32)
 static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v); }
 static inline int unsetenv(const char* k) { return _putenv_s(k, ""); }
@@ -34,6 +39,25 @@ struct Cupti {
     int32_t (*hasTsCallback)(void) = nullptr;
     int32_t (*versionIsWsl)(const char*) = nullptr;
     int32_t (*onWsl)(void) = nullptr;
+    // Unit 12's record path (12.1.a-e, g).
+    int32_t (*kindAllowed)(int32_t) = nullptr;
+    int32_t (*prefixBytes)(void) = nullptr;
+    int32_t (*decodeKernel)(const void*, int64_t, int64_t*, int64_t*, int32_t*) = nullptr;
+    int32_t (*noteSubscribe)(int32_t) = nullptr;
+    int32_t (*degraded)(void) = nullptr;
+    int32_t (*tsFirst)(void) = nullptr;
+    int64_t (*records)(void) = nullptr;
+    int64_t (*rejected)(void) = nullptr;
+    // 12.2.c/d — correlation and the launch chokepoint.
+    int32_t (*decodeExternal)(const void*, int64_t, int32_t*, int64_t*) = nullptr;
+    void    (*corrReset)(void) = nullptr;
+    int32_t (*corrNote)(int32_t, int64_t) = nullptr;
+    int32_t (*corrLookup)(int32_t, int64_t*) = nullptr;
+    int32_t (*corrCapacity)(void) = nullptr;
+    int64_t (*corrDropped)(void) = nullptr;
+    int32_t (*push)(int64_t) = nullptr;
+    int32_t (*pop)(void) = nullptr;
+    int32_t (*tracing)(void) = nullptr;
 };
 
 Cupti& cu() {
@@ -53,6 +77,23 @@ Cupti& cu() {
         x.hasTsCallback = reinterpret_cast<decltype(x.hasTsCallback)>(sym("__cajeta_prof_cupti_has_timestamp_callback"));
         x.versionIsWsl = reinterpret_cast<decltype(x.versionIsWsl)>(sym("__cajeta_prof_cupti_version_is_wsl"));
         x.onWsl = reinterpret_cast<decltype(x.onWsl)>(sym("__cajeta_prof_cupti_on_wsl"));
+        x.kindAllowed = reinterpret_cast<decltype(x.kindAllowed)>(sym("__cajeta_prof_cupti_kind_is_allowed"));
+        x.prefixBytes = reinterpret_cast<decltype(x.prefixBytes)>(sym("__cajeta_prof_cupti_kernel_prefix_bytes"));
+        x.decodeKernel = reinterpret_cast<decltype(x.decodeKernel)>(sym("__cajeta_prof_cupti_decode_kernel"));
+        x.noteSubscribe = reinterpret_cast<decltype(x.noteSubscribe)>(sym("__cajeta_prof_cupti_note_subscribe_result"));
+        x.degraded = reinterpret_cast<decltype(x.degraded)>(sym("__cajeta_prof_cupti_degraded"));
+        x.tsFirst = reinterpret_cast<decltype(x.tsFirst)>(sym("__cajeta_prof_cupti_ts_callback_registered_first"));
+        x.records = reinterpret_cast<decltype(x.records)>(sym("__cajeta_prof_cupti_records"));
+        x.rejected = reinterpret_cast<decltype(x.rejected)>(sym("__cajeta_prof_cupti_rejected"));
+        x.decodeExternal = reinterpret_cast<decltype(x.decodeExternal)>(sym("__cajeta_prof_cupti_decode_external"));
+        x.corrReset = reinterpret_cast<decltype(x.corrReset)>(sym("__cajeta_prof_cupti_corr_reset"));
+        x.corrNote = reinterpret_cast<decltype(x.corrNote)>(sym("__cajeta_prof_cupti_corr_note"));
+        x.corrLookup = reinterpret_cast<decltype(x.corrLookup)>(sym("__cajeta_prof_cupti_corr_lookup"));
+        x.corrCapacity = reinterpret_cast<decltype(x.corrCapacity)>(sym("__cajeta_prof_cupti_corr_capacity"));
+        x.corrDropped = reinterpret_cast<decltype(x.corrDropped)>(sym("__cajeta_prof_cupti_corr_dropped"));
+        x.push = reinterpret_cast<decltype(x.push)>(sym("__cajeta_prof_cupti_push"));
+        x.pop = reinterpret_cast<decltype(x.pop)>(sym("__cajeta_prof_cupti_pop"));
+        x.tracing = reinterpret_cast<decltype(x.tracing)>(sym("__cajeta_prof_cupti_tracing"));
         return x;
     }();
     return c;
@@ -160,4 +201,403 @@ TEST(ProfilerCupti, theLiveProbeAgreesWithTheParser) {
     // Published so the lanes show the split: 0 on PHOENIX and on this
     // machine, 1 on phoenix-wsl — which is where §12.5's hazard lives.
     std::printf(" RESULT u12_on_wsl=%d\n", c.onWsl());
+}
+
+// ── Unit 12's record path ────────────────────────────────────────────────
+//
+// MEASURED, not recalled. Compiled against a real cupti_activity.h on
+// 2026-08-30, offsetof() across every kernel record version it declares:
+//
+//   version   kind  start  end  correlationId  sizeof
+//   Kernel2      0      8   16             84     112   <-- DIFFERENT
+//   Kernel3      0     16   24             92     120
+//   Kernel4      0     16   24             92     144
+//   Kernel5      0     16   24             92     160
+//   Kernel6      0     16   24             92     168
+//   Kernel7      0     16   24             92     176
+//   Kernel8      0     16   24             92     200
+//   Kernel9      0     16   24             92     208
+//
+// So the struct GROWS at the tail while the prefix through correlationId
+// stays put from Kernel3 on, which is what spec §5.4.5 means by reading only
+// stable prefix fields, and why the backend must never cast a record to a
+// version-specific struct. Kernel2 (pre-CUDA 9) is the floor and would
+// misparse; the plausibility checks below are what stop a misparse becoming a
+// published measurement rather than a crash.
+namespace {
+
+constexpr int32_t kKindKernel           = 3;    // CUPTI_ACTIVITY_KIND_KERNEL
+constexpr int32_t kKindConcurrentKernel  = 10;   // ..._CONCURRENT_KERNEL
+constexpr size_t  kOffKind = 0, kOffStart = 16, kOffEnd = 24, kOffCorr = 92;
+
+// A record built the way CUPTI lays one out, sized like the largest version
+// so a decoder that reads past its prefix has somewhere to go wrong.
+struct FakeRecord {
+    unsigned char bytes[208];
+    FakeRecord(int32_t kind, uint64_t start, uint64_t end, uint32_t corr) {
+        std::memset(bytes, 0xAB, sizeof bytes);   // poison: nothing may read tail
+        std::memcpy(bytes + kOffKind,  &kind,  sizeof kind);
+        std::memcpy(bytes + kOffStart, &start, sizeof start);
+        std::memcpy(bytes + kOffEnd,   &end,   sizeof end);
+        std::memcpy(bytes + kOffCorr,  &corr,  sizeof corr);
+    }
+};
+
+} // namespace
+
+// 12.1.b — CUPTI_ACTIVITY_KIND_KERNEL is never enabled. It SERIALIZES kernel
+// execution; CONCURRENT_KERNEL is the one that measures what actually ran.
+// Enabling the wrong one changes the program being measured.
+TEST(ProfilerCupti, theSerializingKernelKindIsNeverAllowed) {
+    ASSERT_NE(cu().kindAllowed, nullptr);
+    EXPECT_EQ(cu().kindAllowed(kKindConcurrentKernel), 1)
+        << "CONCURRENT_KERNEL is the kind this backend exists to read";
+    EXPECT_EQ(cu().kindAllowed(kKindKernel), 0)
+        << "KIND_KERNEL serializes execution - enabling it would change the "
+           "program being measured, not just observe it";
+}
+
+// 12.1.a — a well-formed record decodes, and its timestamps are non-zero.
+TEST(ProfilerCupti, aConcurrentKernelRecordDecodesWithNonZeroTimestamps) {
+    ASSERT_NE(cu().decodeKernel, nullptr);
+    const FakeRecord r(kKindConcurrentKernel, 1000, 4000, 77);
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, sizeof r.bytes, &start, &end, &corr), 1);
+    EXPECT_EQ(start, 1000);
+    EXPECT_EQ(end, 4000);
+    EXPECT_EQ(corr, 77);
+    EXPECT_GT(start, 0);
+    EXPECT_GT(end, 0);
+}
+
+// 12.1.g — only the stable prefix is read. A record truncated one byte before
+// the end of correlationId must be refused, not read past.
+TEST(ProfilerCupti, aRecordShorterThanTheStablePrefixIsRefused) {
+    ASSERT_NE(cu().prefixBytes, nullptr);
+    EXPECT_EQ(cu().prefixBytes(), 96)
+        << "the prefix runs through correlationId at offset 92 (+4)";
+    const FakeRecord r(kKindConcurrentKernel, 1000, 4000, 77);
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, 95, &start, &end, &corr), 0)
+        << "95 bytes cannot contain correlationId; decoding it would read "
+           "whatever follows the record";
+    EXPECT_EQ(cu().decodeKernel(r.bytes, 96, &start, &end, &corr), 1)
+        << "96 bytes is exactly the prefix and must be enough";
+}
+
+// 12.1.g — a kind this backend did not ask for is skipped, not decoded.
+TEST(ProfilerCupti, aNonKernelRecordIsSkippedRatherThanDecoded) {
+    const FakeRecord r(kKindKernel, 1000, 4000, 77);   // the serializing kind
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, sizeof r.bytes, &start, &end, &corr), 0);
+    EXPECT_EQ(start, -1) << "outputs must be untouched when nothing was decoded";
+}
+
+// 12.1.d — the known CUPTI regression: a kernel record whose timestamps are
+// zero. Zero is not a time; publishing it would put a span at the epoch and
+// make every later duration nonsense.
+TEST(ProfilerCupti, aZeroKernelTimestampIsRejectedAndCounted) {
+    ASSERT_NE(cu().rejected, nullptr);
+    const int64_t before = cu().rejected();
+    int64_t start = -1, end = -1; int32_t corr = -1;
+
+    const FakeRecord zeroStart(kKindConcurrentKernel, 0, 4000, 77);
+    EXPECT_EQ(cu().decodeKernel(zeroStart.bytes, sizeof zeroStart.bytes,
+                                &start, &end, &corr), -1);
+    const FakeRecord zeroEnd(kKindConcurrentKernel, 1000, 0, 77);
+    EXPECT_EQ(cu().decodeKernel(zeroEnd.bytes, sizeof zeroEnd.bytes,
+                                &start, &end, &corr), -1);
+    const FakeRecord bothZero(kKindConcurrentKernel, 0, 0, 77);
+    EXPECT_EQ(cu().decodeKernel(bothZero.bytes, sizeof bothZero.bytes,
+                                &start, &end, &corr), -1);
+
+    EXPECT_EQ(cu().rejected() - before, 3)
+        << "each rejection must be COUNTED - a silently dropped record is how "
+           "a backend reports a clean run while measuring nothing";
+}
+
+// 12.1.d — end before start is the other way a record lies. This is also the
+// shape a Kernel2 misparse takes, which is why it is rejected rather than
+// clamped: a clamp would publish the misparse as a plausible span.
+TEST(ProfilerCupti, anInvertedKernelSpanIsRejected) {
+    const int64_t before = cu().rejected();
+    const FakeRecord r(kKindConcurrentKernel, 4000, 1000, 77);
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, sizeof r.bytes, &start, &end, &corr), -1);
+    EXPECT_EQ(cu().rejected() - before, 1);
+}
+
+// 12.1.e — a second CUPTI subscriber in the process. CUPTI allows exactly one;
+// the second gets CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED. Aborting
+// there would take down a program that merely ran under Nsight, so the
+// backend degrades to a no-op and says so.
+TEST(ProfilerCupti, aSecondSubscriberDegradesInsteadOfAborting) {
+    ASSERT_NE(cu().noteSubscribe, nullptr);
+    cu().reset();
+    EXPECT_EQ(cu().degraded(), 0) << "a fresh backend is not degraded";
+
+    constexpr int32_t kMultipleSubscribers = 39;  // CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED
+    EXPECT_EQ(cu().noteSubscribe(kMultipleSubscribers), 0)
+        << "the call reports failure to attach";
+    EXPECT_EQ(cu().degraded(), 1) << "and the backend is now a no-op";
+
+    const std::string why = cu().reason();
+    EXPECT_NE(why.find("subscriber"), std::string::npos)
+        << "the state must carry an actionable sentence, got: " << why;
+
+    cu().reset();
+    EXPECT_EQ(cu().degraded(), 0);
+    EXPECT_EQ(cu().noteSubscribe(0), 1) << "CUPTI_SUCCESS attaches normally";
+    EXPECT_EQ(cu().degraded(), 0);
+    cu().reset();
+}
+
+// 12.1.c — spec §6.2: records must arrive already in the host clock domain,
+// which requires the timestamp callback to be registered BEFORE any activity
+// kind is enabled. Registering it after leaves the first records in CUPTI's
+// own domain, and run 32439821390 measured exactly that shape on WSL: the
+// callback ACCEPTED and then ignored.
+TEST(ProfilerCupti, theTimestampCallbackIsRegisteredBeforeAnyKindIsEnabled) {
+    ASSERT_NE(cu().tsFirst, nullptr);
+    cu().reset();
+    EXPECT_EQ(cu().tsFirst(), 0) << "nothing registered yet on a fresh backend";
+    cu().init();
+    // Where CUPTI is absent this stays 0 and the claim is vacuous, so the
+    // assertion is conditional on the backend actually being READY.
+    if (cu().state() == CAJETA_CUPTI_READY && cu().hasTsCallback()) {
+        EXPECT_EQ(cu().tsFirst(), 1)
+            << "the callback must be registered before the first enable";
+    } else {
+        GTEST_SKIP() << "no CUPTI with a timestamp callback here; reason: "
+                     << cu().reason();
+    }
+    cu().reset();
+}
+
+// ── 12.2.c/d — correlation ───────────────────────────────────────────────
+//
+// A kernel record does NOT carry our launch id. It carries CUPTI's own
+// correlationId, and a SEPARATE record kind maps that to the external id we
+// pushed. That is why the buffer parse is two-pass: pass one builds the map
+// from EXTERNAL_CORRELATION records, pass two resolves kernels through it.
+// A single pass would drop every kernel whose mapping record came later in
+// the same buffer, which is not a rare ordering - it is the normal one.
+//
+// MEASURED against the same real header:
+//   CUPTI_ACTIVITY_KIND_EXTERNAL_CORRELATION = 39
+//   CUpti_ActivityExternalCorrelation:
+//     kind=0  externalKind=4  externalId=8  correlationId=16  sizeof=24
+namespace {
+
+constexpr int32_t kKindExternalCorrelation = 39;
+constexpr size_t  kXOffKind = 0, kXOffExtId = 8, kXOffCorr = 16;
+constexpr int64_t kXRecBytes = 24;
+
+struct FakeExternal {
+    unsigned char bytes[24];
+    FakeExternal(int32_t kind, uint64_t externalId, uint32_t corr) {
+        std::memset(bytes, 0xCD, sizeof bytes);
+        std::memcpy(bytes + kXOffKind,  &kind,       sizeof kind);
+        std::memcpy(bytes + kXOffExtId, &externalId, sizeof externalId);
+        std::memcpy(bytes + kXOffCorr,  &corr,       sizeof corr);
+    }
+};
+
+} // namespace
+
+TEST(ProfilerCupti, anExternalCorrelationRecordDecodes) {
+    ASSERT_NE(cu().decodeExternal, nullptr);
+    const FakeExternal r(kKindExternalCorrelation, 4242, 7);
+    int32_t corr = -1; int64_t ext = -1;
+    EXPECT_EQ(cu().decodeExternal(r.bytes, kXRecBytes, &corr, &ext), 1);
+    EXPECT_EQ(corr, 7);
+    EXPECT_EQ(ext, 4242);
+}
+
+TEST(ProfilerCupti, aTruncatedExternalCorrelationRecordIsRefused) {
+    const FakeExternal r(kKindExternalCorrelation, 4242, 7);
+    int32_t corr = -1; int64_t ext = -1;
+    EXPECT_EQ(cu().decodeExternal(r.bytes, kXRecBytes - 1, &corr, &ext), 0);
+    EXPECT_EQ(corr, -1) << "outputs untouched when nothing was decoded";
+    // A kernel record must not be mistaken for a correlation record.
+    const FakeRecord k(kKindConcurrentKernel, 1000, 4000, 7);
+    EXPECT_EQ(cu().decodeExternal(k.bytes, sizeof k.bytes, &corr, &ext), 0);
+}
+
+TEST(ProfilerCupti, theCorrelationMapResolvesWhatWasNoted) {
+    ASSERT_NE(cu().corrNote, nullptr);
+    cu().corrReset();
+    int64_t ext = -1;
+    EXPECT_EQ(cu().corrLookup(7, &ext), 0) << "empty map resolves nothing";
+
+    EXPECT_EQ(cu().corrNote(7, 4242), 1);
+    EXPECT_EQ(cu().corrNote(8, 4243), 1);
+    EXPECT_EQ(cu().corrLookup(7, &ext), 1);
+    EXPECT_EQ(ext, 4242);
+    EXPECT_EQ(cu().corrLookup(8, &ext), 1);
+    EXPECT_EQ(ext, 4243);
+
+    ext = -1;
+    EXPECT_EQ(cu().corrLookup(9, &ext), 0) << "an id never noted must MISS";
+    EXPECT_EQ(ext, -1) << "a miss must not write an output - a stale value here "
+                          "would attribute a kernel to the wrong launch";
+    cu().corrReset();
+    EXPECT_EQ(cu().corrLookup(7, &ext), 0) << "reset clears the map";
+}
+
+// The map is fixed-size, because a buffer callback may not allocate. What
+// matters is that overflow is COUNTED and lookups stay correct rather than
+// wrapping onto a wrong answer: a kernel attributed to the wrong launch is
+// worse than one not attributed at all.
+TEST(ProfilerCupti, correlationOverflowIsCountedAndNeverWrapsOntoAWrongAnswer) {
+    ASSERT_NE(cu().corrCapacity, nullptr);
+    cu().corrReset();
+    const int32_t cap = cu().corrCapacity();
+    ASSERT_GT(cap, 0);
+    const int64_t droppedBefore = cu().corrDropped();
+
+    for (int32_t i = 0; i < cap; ++i) {
+        ASSERT_EQ(cu().corrNote(i + 1, 1000 + i), 1) << "at i=" << i;
+    }
+    EXPECT_EQ(cu().corrDropped() - droppedBefore, 0) << "capacity must fit";
+
+    EXPECT_EQ(cu().corrNote(cap + 1, 999999), 0) << "one past capacity is refused";
+    EXPECT_EQ(cu().corrDropped() - droppedBefore, 1) << "and counted";
+
+    int64_t ext = -1;
+    EXPECT_EQ(cu().corrLookup(cap + 1, &ext), 0) << "the dropped id must MISS";
+    EXPECT_EQ(cu().corrLookup(1, &ext), 1) << "and earlier entries survive";
+    EXPECT_EQ(ext, 1000);
+    cu().corrReset();
+}
+
+// 12.2.d — the launch chokepoint. With no CUPTI here these must be safe
+// no-ops: the seam calls them on every launch, so a null deref would take
+// down any program profiled on a box without CUDA.
+TEST(ProfilerCupti, pushAndPopAreSafeWhenCuptiIsAbsent) {
+    ASSERT_NE(cu().push, nullptr);
+    cu().reset();
+    if (cu().state() == CAJETA_CUPTI_READY) {
+        GTEST_SKIP() << "CUPTI is present here; the absent path is the subject";
+    }
+    EXPECT_EQ(cu().tracing(), 0) << "not tracing without a backend";
+    EXPECT_EQ(cu().push(1234), 0) << "push reports it did nothing";
+    EXPECT_EQ(cu().pop(), 0);
+    EXPECT_EQ(cu().push(0), 0) << "launch id 0 is not a launch";
+    cu().reset();
+}
+
+// ── 12.3.b — per-launch overhead, measured against its own noise ─────────
+//
+// Spec §13.2 asks for per-launch overhead "stated per backend and MEASURED,
+// not estimated". There is no numeric budget, so the gate here is not the
+// magnitude but whether the number is real: the audit's T5 measured a
+// 957.5 ns CUPTI delta on the 4090 and reported
+// t5_cupti_overhead_exceeds_noise=NO, because the run-to-run spread was
+// 1320-1405 ns. Publishing 957.5 ns as "the overhead" would have been
+// publishing noise with a decimal point on it.
+//
+// The statistics are factored out of the timing loop deliberately. The loop
+// needs CUPTI and can only run on the PHOENIX / phoenix-wsl lanes; the
+// decision it feeds does not, and a verdict that only executes where nobody
+// reads it is how a harness ships broken.
+namespace {
+
+struct OverheadVerdict {
+    int64_t medianBase;
+    int64_t medianTraced;
+    int64_t delta;         // traced - base, per launch
+    int64_t noise;         // the larger of the two spreads
+    bool    exceedsNoise;  // is the delta a measurement, or is it spread?
+};
+
+int64_t medianOf(std::vector<int64_t> v) {
+    std::sort(v.begin(), v.end());
+    return v.empty() ? 0 : v[v.size() / 2];
+}
+
+int64_t spreadOf(const std::vector<int64_t>& v) {
+    if (v.empty()) return 0;
+    const auto mm = std::minmax_element(v.begin(), v.end());
+    return *mm.second - *mm.first;
+}
+
+OverheadVerdict judgeOverhead(const std::vector<int64_t>& base,
+                              const std::vector<int64_t>& traced) {
+    OverheadVerdict r{};
+    r.medianBase   = medianOf(base);
+    r.medianTraced = medianOf(traced);
+    r.delta        = r.medianTraced - r.medianBase;
+    const int64_t sb = spreadOf(base), st = spreadOf(traced);
+    r.noise        = sb > st ? sb : st;
+    const int64_t mag = r.delta < 0 ? -r.delta : r.delta;
+    r.exceedsNoise = mag > r.noise;
+    return r;
+}
+
+} // namespace
+
+// The verdict logic itself, exercised HERE where there is no CUPTI, because
+// this is the part that decides whether a published number means anything.
+TEST(ProfilerCupti, anOverheadSmallerThanItsSpreadIsNotAMeasurement) {
+    // The audit's real 4090 numbers: a delta smaller than the spread.
+    const auto noisy = judgeOverhead({8077, 8500, 7200, 8300}, {9035, 9400, 8100, 9200});
+    EXPECT_FALSE(noisy.exceedsNoise)
+        << "delta " << noisy.delta << " vs noise " << noisy.noise
+        << " - this is the shape T5 measured on the 4090 and correctly refused "
+           "to call an overhead";
+
+    // Event bracketing's shape: a delta an order of magnitude above spread.
+    const auto real = judgeOverhead({8000, 8100, 8050}, {22000, 22100, 22050});
+    EXPECT_TRUE(real.exceedsNoise);
+    EXPECT_EQ(real.delta, 14000);
+
+    // A NEGATIVE delta is also noise, not a speedup from being measured.
+    const auto backwards = judgeOverhead({9000, 9500, 8500}, {8900, 9400, 8400});
+    EXPECT_FALSE(backwards.exceedsNoise)
+        << "tracing cannot make launches faster; |delta| must be compared";
+}
+
+// The measurement proper. Skips where CUPTI is absent and says so; runs for
+// real on the NVIDIA lanes, where its RESULT lines are what §13.2 publishes.
+TEST(ProfilerCupti, perLaunchOverheadOfTheChokepointIsMeasuredAndPublished) {
+    cu().reset();
+    cu().init();
+    if (cu().state() != CAJETA_CUPTI_READY) {
+        GTEST_SKIP() << "no CUPTI here, so there is no chokepoint to time; "
+                     << cu().reason();
+    }
+    // Only the push/pop pair is per-LAUNCH. Record decoding happens in the
+    // buffer-complete callback, amortised over a whole buffer, and belongs to
+    // a different line in the budget.
+    constexpr int kReps = 9;
+    constexpr int kIters = 20000;
+    std::vector<int64_t> base, traced;
+    for (int rep = 0; rep < kReps; ++rep) {
+        auto t0 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kIters; ++i) { asm volatile("" ::: "memory"); }
+        auto t1 = std::chrono::steady_clock::now();
+        for (int i = 0; i < kIters; ++i) { cu().push(i + 1); cu().pop(); }
+        auto t2 = std::chrono::steady_clock::now();
+        base.push_back(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count() / kIters);
+        traced.push_back(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count() / kIters);
+    }
+    const auto v = judgeOverhead(base, traced);
+    std::printf("RESULT cupti_chokepoint_base_ns_per_launch=%lld\n",   (long long) v.medianBase);
+    std::printf("RESULT cupti_chokepoint_traced_ns_per_launch=%lld\n", (long long) v.medianTraced);
+    std::printf("RESULT cupti_chokepoint_overhead_ns=%lld\n",          (long long) v.delta);
+    std::printf("RESULT cupti_chokepoint_noise_ns=%lld\n",             (long long) v.noise);
+    std::printf("RESULT cupti_chokepoint_overhead_exceeds_noise=%s\n",
+                v.exceedsNoise ? "YES" : "NO");
+
+    // §13.2 wants the number measured, not that it be small, so magnitude is
+    // not asserted. What IS asserted is that the harness did its job: a run
+    // that timed nothing must not publish a number.
+    EXPECT_GT(v.medianTraced, 0) << "the traced loop must have taken time";
+    EXPECT_EQ(cu().tracing(), 0)
+        << "no activity kind was enabled, so push/pop are the no-op path here - "
+           "this measures the floor the chokepoint costs when idle";
+    cu().reset();
 }
