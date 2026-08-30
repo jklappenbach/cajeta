@@ -24,6 +24,13 @@
 # The aarch64 release tarball remains the answer there.
 
 pkgname=cajeta-bin
+# The upstream version EXACTLY as the release names it. Kept separate from
+# pkgver because it may contain hyphens — a dry-run build is versioned
+# `<ver>-dryrun-<run>` — and Arch forbids hyphens in pkgver outright
+# ("pkgver is not allowed to contain colons, forward slashes, hyphens or
+# whitespace"). The tarball filename and the download URL need the real
+# string; pkgver gets the sanitised one.
+_srcver=0.0.0
 pkgver=0.0.0
 pkgrel=1
 pkgdesc="The Cajeta programming language compiler and build tool"
@@ -37,13 +44,21 @@ depends=('glibc' 'gcc-libs')
 provides=('cajeta')
 conflicts=('cajeta')
 install=cajeta-bin.install
+# Ship the binary the release built, byte for byte.
+#
+# Without these makepkg strips it (356MB -> 147MB) and splits the symbols into
+# a separate `cajeta-bin-debug` package, so Arch users would get a DIFFERENT
+# binary from every other format — the `.deb` payload is unstripped — and the
+# release would carry 86MB of debug symbols nobody asked for. Consistency
+# across formats is worth more than the size saving.
+options=('!strip' '!debug')
 
 _triple="x86_64-linux-gnu"
-source=("cajeta-v${pkgver}-${_triple}.tar.gz::${url}/releases/download/v${pkgver}/cajeta-v${pkgver}-${_triple}.tar.gz")
+source=("cajeta-v${_srcver}-${_triple}.tar.gz::${url}/releases/download/v${_srcver}/cajeta-v${_srcver}-${_triple}.tar.gz")
 sha256sums=('SKIP')
 
 package() {
-    local _stage="${srcdir}/cajeta-v${pkgver}-${_triple}"
+    local _stage="${srcdir}/cajeta-v${_srcver}-${_triple}"
 
     # Payload in one directory, symlinked onto PATH (D5 / §2). Same shape the
     # .deb and .rpm produce, and the symlink is RELATIVE for the same reason:

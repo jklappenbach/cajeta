@@ -829,107 +829,24 @@ jobs:
           # ${STAGE_DIR}/ folder.
           cmake -E tar cf "${STAGE_DIR}.zip" --format=zip "${STAGE_DIR}"
 
-      # ---- Arch package (.pkg.tar.zst) ----------------------------------
-      # CPack has no pacman generator, so this runs makepkg in an Arch
-      # container on the x86_64 Linux leg. x86_64 only is correct rather than
-      # a shortcut: Arch Linux upstream supports x86_64 alone, and aarch64 is
-      # Arch Linux ARM, a separate distribution.
+      # ---- Arch package — NOT WIRED, blocked on D2 -----------------------
+      # The PKGBUILD (packaging/arch/cajeta-bin/) is written and was validated
+      # locally end to end: makepkg builds it, the payload and symlink are
+      # right, and `pacman -U` installs it in a clean archlinux:latest.
       #
-      # makepkg refuses to run as root, and a container job is root — hence the
-      # build user. --nodeps because base-devel already carries glibc/gcc-libs
-      # and we do not want makepkg reaching for pacman; --skipinteg because the
-      # tarball is the one this job just built, not a published download whose
-      # checksum could be known yet.
-      - name: Build Arch package
-        id: archpkg
-        if: matrix.target == 'x86_64-linux-gnu'
-        run: |
-          set -euo pipefail
-          V="${{ steps.version.outputs.ref_version }}"
-          rm -rf archbuild && mkdir -p archbuild
-          cp packaging/arch/cajeta-bin/PKGBUILD \
-             packaging/arch/cajeta-bin/cajeta-bin.install archbuild/
-          cp "cajeta-v${V}-x86_64-linux-gnu.tar.gz" archbuild/
-          sed -i "s/^pkgver=.*/pkgver=${V}/" archbuild/PKGBUILD
-          docker run --rm -v "$PWD/archbuild:/pkg" archlinux:base-devel bash -c '
-            set -euo pipefail
-            useradd -m builder
-            cp -r /pkg /home/builder/build
-            chown -R builder:builder /home/builder/build
-            cd /home/builder/build
-            sudo -u builder makepkg --noconfirm --nodeps --skipinteg
-            cp /home/builder/build/*.pkg.tar.zst /pkg/
-          '
-          mkdir -p build
-          mv archbuild/*.pkg.tar.zst build/
-          echo "Arch package(s) produced:"
-          ls -la build/*.pkg.tar.zst
-
-      # Same gate the other formats got: makepkg failing must not go green.
-      - name: Verify Arch package
-        if: matrix.target == 'x86_64-linux-gnu'
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          pkgs=(build/*.pkg.tar.zst)
-          if [ ${#pkgs[@]} -eq 0 ]; then
-            echo "::error::makepkg produced no .pkg.tar.zst — the Arch package build failed."
-            exit 1
-          fi
-          ls -la "${pkgs[@]}"
-
-      # ---- Install-test the Arch package in a CLEAN container -------------
-      # This is the only thing that ever runs the package on Arch. The gate
-      # above proves makepkg emitted a file; this proves the file works.
+      # Then `cajeta --version` dies:
+      #   error while loading shared libraries: libantlr4-runtime.so.4.10
       #
-      # `archlinux:latest`, deliberately NOT base-devel: a clean image is what
-      # catches an under-declared `depends=`. If cajeta needed something beyond
-      # glibc/gcc-libs, base-devel would hide it and a user would find it.
+      # `ldd` on the SHIPPED v0.25.0 binary confirms it: antlr4, zstd, glog,
+      # OpenSSL, curl, zmq, gflags, libunwind are all dynamic. The .deb/.rpm
+      # survive because SHLIBDEPS/AUTOREQ generate their dep lists; a
+      # hand-written Arch `depends=` cannot, because `.so.4.10` is a
+      # Debian-versioned soname that Arch does not ship at all.
       #
-      # namcap lints but does not gate on warnings — it has plenty to say about
-      # a -bin package that is fine by construction. Errors (`E:`) do gate.
-      - name: Install-test the Arch package
-        if: matrix.target == 'x86_64-linux-gnu'
-        run: |
-          set -euo pipefail
-          pkg="$(ls build/*.pkg.tar.zst | head -1)"
-          rm -rf archtest && mkdir -p archtest/src/smoke
-          cp "$pkg" archtest/pkg.tar.zst
-          # Written on the host: a heredoc nested inside docker-bash-inside-
-          # yaml is three levels of quoting and one of them always loses.
-          cat > archtest/src/smoke/Answer.cajeta <<'CAJETA'
-          package smoke;
-          public class Answer {
-              public static int32 v() { return 42; }
-          }
-          CAJETA
-          sed -i 's/^          //' archtest/src/smoke/Answer.cajeta
-
-          echo "--- namcap lint"
-          docker run --rm -v "$PWD/archtest:/w" -w /w archlinux:base-devel bash -c '
-            set -euo pipefail
-            pacman -Sy --noconfirm --needed namcap > /dev/null 2>&1
-            namcap pkg.tar.zst | tee namcap.txt || true
-            if grep -qE " E: " namcap.txt; then
-              echo "::error::namcap reported errors on the Arch package"
-              exit 1
-            fi
-          '
-
-          echo "--- clean-container install + smoke"
-          docker run --rm -v "$PWD/archtest:/w" -w /w archlinux:latest bash -c '
-            set -euo pipefail
-            pacman -Sy --noconfirm > /dev/null 2>&1
-            pacman -U --noconfirm pkg.tar.zst
-            # The symlink has to resolve, not merely exist — that is the exact
-            # defect the .deb shipped once.
-            test -x /usr/bin/cajeta
-            readlink -f /usr/bin/cajeta
-            cajeta --version
-            cajeta smoke.Answer /w/src /w/out --emit=cja
-            test -f /w/out/smoke.cja
-            echo "compile smoke OK"
-          '
+      # So this is blocked on D2 (self-contained linking), not on a bug in the
+      # packaging. Re-add the three steps — build, gate, install-test — from
+      # git history when D2 lands; the release globs below already carry
+      # *.pkg.tar.zst.
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
