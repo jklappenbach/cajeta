@@ -220,18 +220,30 @@ jobs:
           $txt = Get-Content captures/ncu-control.txt -Raw
           if ($null -eq $txt) { $txt = "" }
 
+          # ncu EXITS NON-ZERO when it is refused, so the expected outcome was
+          # failing the job and skipping the verdict on 2026-08-30 (run
+          # 33318238517 - a red badge on the run that actually answered the
+          # question). A recognised finding exits 0; only a control that could
+          # not do its job exits 1.
+          $control = ""
           if ($txt -match 'ERR_NVGPUCTRPERM') {
+            $control = "REFUSED_PRIVILEGES"
             Write-Host "CONTROL=REFUSED_PRIVILEGES - the gate IS active on this box"
             Write-Host "  So T3 CUPTI probes are NOT gated calls, and T1/T2 passing"
             Write-Host "  alongside this refusal is spec 5.4.4 demonstrated."
           } elseif ($txt -match 'sm__cycles_elapsed') {
+            $control = "ALLOWED"
             Write-Host "CONTROL=ALLOWED - counter profiling worked UNPRIVILEGED with"
             Write-Host "  RmProfilingAdminOnly=1, so that value does not govern this driver."
           } else {
+            $control = "INCONCLUSIVE"
             Write-Host "CONTROL=INCONCLUSIVE - ncu ran but matched neither pattern"
           }
+          "GATE_CONTROL=$control" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Write-Host "--- ncu capture, first 30 lines ---"
           Get-Content captures/ncu-control.txt -TotalCount 30
+          if ($control -eq "INCONCLUSIVE") { exit 1 }
+          exit 0
 
       - name: Verdict
         shell: powershell
@@ -251,8 +263,30 @@ jobs:
             Write-Host "::error::privilege readings disagree - outer=$env:OUTER_PRIVILEGED in-process=$inner"
             exit 1
           }
-          if ($v -ne 'EXEMPTION_PROVEN') {
-            Write-Host "::warning::spec 5.4.4 not settled on Windows - verdict=$v"
+          # The probe's own verdict comes from T3, which is blind to this gate
+          # (proved 2026-08-30: identical output with the value absent and set).
+          # The ncu control is the instrument that actually responds, so the
+          # conclusion is the two together - otherwise the capture says
+          # GATE_NOT_ENFORCED right beside a refusal proving it enforced.
+          $c = "$env:GATE_CONTROL"
+          $t1 = (Select-String -Path $cap -Pattern '^RESULT t1_events_work=YES').Count -gt 0
+          $t2 = (Select-String -Path $cap -Pattern '^RESULT t2_activity_timestamps_work=YES').Count -gt 0
+          Write-Host "control=$c  t1=$t1  t2=$t2"
+
+          if ($c -eq 'REFUSED_PRIVILEGES' -and $t1 -and $t2 -and $inner -eq 'NO') {
+            Write-Host "=== SPEC 5.4.4 CONFIRMED ==="
+            Write-Host "  gate active (ncu refused for privileges), process unprivileged,"
+            Write-Host "  and both CUDA events and CUPTI Activity timestamps still work."
+            Write-Host "  NOTE: the refusal and the timing come from TWO processes on one"
+            Write-Host "  box under one account, not from a single process as the probe's"
+            Write-Host "  own design intended. Same privileges, same gate state."
+          } elseif ($c -eq 'REFUSED_PRIVILEGES') {
+            Write-Host "::error::gate is active but timing did NOT survive - spec 5.4.4 is FALSE"
+            exit 1
+          } elseif ($c -eq 'ALLOWED') {
+            Write-Host "::warning::gate not enforced here; 5.4.4 remains untested - probe verdict=$v"
+          } else {
+            Write-Host "::warning::no usable gate control ($c); probe verdict=$v means little"
           }
 
       - name: Upload capture
