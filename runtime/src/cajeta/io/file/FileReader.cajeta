@@ -1,6 +1,7 @@
 package cajeta.io.file;
 
 import cajeta.lang.String;
+import cajeta.time.Clock;
 
 /**
  * Streaming byte reader. See
@@ -90,6 +91,109 @@ public class FileReader {
      */
     public int64 position() {
         return this.pos;
+    }
+
+    /** Portable single-fd readiness probe: `READY` / `TIMEOUT` / `ERROR`.
+     *  `timeoutMs = 0` makes it non-blocking, which is the only way this
+     *  is ever called here — a nonzero native timeout would block the
+     *  CARRIER, and the whole point of `awaitReadable` is that it does
+     *  not. See `cajeta.io.net.reactor.Reactor`, which owns the same
+     *  intrinsic for sockets. */
+    @Native("__cajeta_net_reactor_poll_fd")
+    private static int32 pollFdNative(int32 fd, int32 interest,
+        int32 timeoutMs);
+
+    /**
+     * Wait until this reader's fd is readable, or `timeoutMs` elapses.
+     *
+     * **Readiness is BYTES, not lines.** A true return means at least one
+     * byte can be read without blocking — never that a whole line, record,
+     * or message has arrived. A caller that needs a line must buffer
+     * across calls; see the loop below.
+     *
+     * The wait is cooperative: it probes, then sleeps the FIBER rather
+     * than the carrier, so other fibers keep running while this one waits.
+     * That is the property the call exists for — a blocking read is
+     * already available and is exactly what this replaces.
+     *
+     * @param timeoutMs how long to wait. `0` probes and returns at once;
+     *        negative waits indefinitely.
+     * @return `true` if the fd is readable, `false` if the timeout
+     *         elapsed first.
+     * @throws IoException if the fd is invalid or the probe fails —
+     *         an error is NOT reported as a timeout, because a caller
+     *         that cannot tell them apart spins forever on a dead fd.
+     *
+     * ## Usage
+     *
+     * Read whole lines off stdin without stalling other fibers:
+     *
+     * ```cajeta
+     * FileReader in #= heap FileReader(0);
+     * int8[] buf = heap int8[4096];
+     * while (in.awaitReadable(-1)) {
+     *     int32 n = in.read(buf, 4096);
+     *     if (n == 0) { break; }          // EOF: readable, reads zero
+     *     // append buf[0..n) to a pending buffer and split on '\n';
+     *     // a partial tail stays pending for the next pass.
+     * }
+     * ```
+     *
+     * ## Platforms
+     *
+     * POSIX only. On Windows this throws: Winsock `select()` accepts
+     * only SOCKETs, and a console or pipe HANDLE is not one, so there is
+     * no correct implementation short of a native Win32 path
+     * (`PeekNamedPipe` / `WaitForSingleObject`). The signature will not
+     * change when that lands.
+     */
+    public boolean awaitReadable(int32 timeoutMs) {
+        int32 READ = 1;
+        int32 READY = 1;
+        int32 ERROR = 0 - 1;
+
+        // A zero timeout is a pure probe — answer the fd's real state and
+        // return, no parking.
+        int32 first = FileReader.pollFdNative(this.fd, READ, 0);
+        if (first == ERROR) {
+            throw heap IoException(
+                "awaitReadable: not a pollable descriptor (fd="
+                + this.fd + ")");
+        }
+        if (first == READY) {
+            return true;
+        }
+        if (timeoutMs == 0) {
+            return false;
+        }
+
+        // Deadline loop. `Reactor.pollPark` is the same shape but has no
+        // timeout — it spins until ready or error — so it cannot be reused
+        // directly here.
+        int64 deadline = 0 - 1;
+        if (timeoutMs > 0) {
+            deadline = Clock.nanoTime()
+                + ((int64) timeoutMs) * 1000000L;
+        }
+        int64 backoff = 50000L;         // 50us, doubling to a 2ms cap
+        while (true) {
+            Cajeta.fiberSleepNanos(backoff);
+            if (backoff < 2000000L) {
+                backoff = backoff * 2L;
+            }
+            int32 r = FileReader.pollFdNative(this.fd, READ, 0);
+            if (r == READY) {
+                return true;
+            }
+            if (r == ERROR) {
+                throw heap IoException(
+                    "awaitReadable: probe failed (fd=" + this.fd + ")");
+            }
+            if (deadline >= 0L && Clock.nanoTime() >= deadline) {
+                return false;
+            }
+        }
+        return false;
     }
 
     /**
