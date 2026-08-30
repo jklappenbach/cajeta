@@ -1,0 +1,62 @@
+# Maintainer: Julian Klappenbach <jklappenbach@gmail.com>
+#
+# Arch package for the cajeta compiler (installer-plan §4 / D1).
+#
+# `-bin`, not a from-source `cajeta`, and that is a constraint rather than a
+# convention: cajeta builds against a custom RTTI-enabled LLVM fork
+# (cajeta-llvm), not Arch's `llvm`. A from-source PKGBUILD would have to build
+# that fork first, which is hours of compute no AUR user should be asked for.
+# So this repackages the release tarball, and `-bin` is how Arch names that.
+#
+# Two consumers, one file:
+#   * AUR — `yay -S cajeta-bin` downloads the tarball from the GitHub release
+#     and builds the package locally.
+#   * CI — release.yml runs makepkg against a tarball already staged beside
+#     this file, producing the `.pkg.tar.zst` published as a release asset for
+#     `pacman -U`. makepkg uses a local source file when one is present, so
+#     the same PKGBUILD serves both.
+#
+# RELEASE AUTOMATION rewrites `pkgver` and `sha256sums` per release. The values
+# below are placeholders; CI overrides them in-place.
+#
+# x86_64 ONLY, deliberately. Arch Linux upstream supports x86_64 alone —
+# aarch64 is Arch Linux ARM, a separate distribution with its own repositories.
+# The aarch64 release tarball remains the answer there.
+
+pkgname=cajeta-bin
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="The Cajeta programming language compiler and build tool"
+arch=('x86_64')
+url="https://github.com/jklappenbach/cajeta"
+license=('MIT')
+# Per D2 the binary is self-contained: LLVM, antlr4, zstd, glog, OpenSSL crypto
+# and lld are all statically linked, and the stdlib is embedded. What remains
+# dynamic is the base system runtime only.
+depends=('glibc' 'gcc-libs')
+provides=('cajeta')
+conflicts=('cajeta')
+install=cajeta-bin.install
+
+_triple="x86_64-linux-gnu"
+source=("cajeta-v${pkgver}-${_triple}.tar.gz::${url}/releases/download/v${pkgver}/cajeta-v${pkgver}-${_triple}.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    local _stage="${srcdir}/cajeta-v${pkgver}-${_triple}"
+
+    # Payload in one directory, symlinked onto PATH (D5 / §2). Same shape the
+    # .deb and .rpm produce, and the symlink is RELATIVE for the same reason:
+    # it has to stay valid when the package is unpacked at a staged root
+    # rather than at /.
+    install -Dm755 "${_stage}/bin/cajeta" "${pkgdir}/usr/lib/cajeta/cajeta"
+    install -d "${pkgdir}/usr/bin"
+    ln -s ../lib/cajeta/cajeta "${pkgdir}/usr/bin/cajeta"
+
+    install -Dm644 "${_stage}/README.md" \
+        "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 "${_stage}/VERSION" \
+        "${pkgdir}/usr/share/doc/${pkgname}/VERSION"
+    install -Dm644 "${_stage}/LICENSE" \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

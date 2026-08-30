@@ -1,0 +1,13 @@
+# Arch install hooks — the counterpart to packaging/linux/deb-postinst and
+# rpm-post.sh (installer-plan §4 / D8).
+#
+# The IDE plugin is deliberately NOT auto-installed: pacman runs as root and
+# the plugin has to land in the invoking user's JetBrains directory.
+
+post_install() {
+    echo "cajeta: installed. To add the IntelliJ IDEA plugin, run:  cajeta ide install"
+}
+
+post_upgrade() {
+    post_install
+}

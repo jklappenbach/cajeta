@@ -26,10 +26,10 @@ incrementally.
 
 ## 2. Terms
 
-**Archive** — one `.cja` at a `(name, version)` coordinate, either a
-library (consumed as a dependency) or an application (executed). The
-distinction changes nothing here: both are served, verified and
-administered identically (spec 1.8).
+**Archive** — one `.cja` at a `(name, version)` coordinate, consumed as a
+dependency by a build. Olla distributes libraries and only libraries
+(spec 1.8.1); applications reach users through their platform's own
+channel, so nothing here is written for them.
 
 **Organization** — the publishing entity. It owns one or more dotted
 namespace prefixes and holds signing keys. It is an ATTRIBUTE of an
@@ -310,24 +310,7 @@ exists for display and for a template property, it is used nowhere
 security-relevant, and it must stay that way. A server-side equivalent
 will look reasonable at the moment it is written.
 
-## 8. A gap this contract records but does not close
-
-**The archive kind is stated nowhere a server can read it** (spec 7.11,
-7.12's sibling and now also 5.6's blocker).
-`details` in `cajeta.json` carries no library-or-application field; today
-the distinction is inferred from whether `settings.build.binaries` is set,
-which is a build setting and does not travel in the published archive. If
-olla is to index or present the kind, something must stamp it — a
-`details` field is the obvious candidate. That is a manifest change, out
-of scope here, and it is written down so it is not discovered halfway
-through an implementation.
-
-It is no longer only a presentation concern. Spec 5.6 says verification
-relaxation never extends to applications, and that clause cannot be
-enforced — by client or server — while nothing states which an archive is.
-The `app-distribution` spec is where the field is being specified.
-
-## 9. Conformance
+## 8. Conformance
 
 The contract is executable, not prose alone. `test/buildtool/
 OllaContractStub.h` implements §3 against the shipped client, and

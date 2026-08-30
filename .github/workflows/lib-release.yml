@@ -88,10 +88,6 @@ jobs:
             --repo jklappenbach/cajeta --pattern 'cajeta_*_amd64.deb' --dir /tmp
           sudo apt-get update
           sudo apt-get install -y /tmp/cajeta_*_amd64.deb
-          # Workaround a packaging bug: the .deb's /usr/local/bin/cajeta symlink
-          # targets ../lib/cajeta/cajeta (resolves to /usr/local/lib, wrong) while
-          # the binary is at /usr/lib/cajeta/cajeta — so the shipped symlink dangles.
-          sudo ln -sfn /usr/lib/cajeta/cajeta /usr/local/bin/cajeta
           cajeta --version || cajeta version || true
 
       - name: Build library .cja

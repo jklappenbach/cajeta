@@ -39,13 +39,27 @@ roles, so no rollback- or freeze-attack protection). No per-project keys.
 No keyless/OIDC publishing. No changes to how a publisher authenticates
 to olla when uploading.
 
-**1.8 What olla holds: archives.** Olla holds ARCHIVES. An archive is one
-`.cja` at a `(name, version)` coordinate, and it is either a LIBRARY
-(consumed as a dependency) or an APPLICATION (executed). The distinction
-changes nothing in this spec: both are fetched the same way, verified the
-same way, and a signature binds a publisher to a name whichever it is. It
-is written down because §7 originally said "repository" for this, which
-named nothing in olla's model and left §7.5–7.6 unspecifiable.
+**1.8 What olla holds: library archives.** Olla holds ARCHIVES. An archive
+is one `.cja` at a `(name, version)` coordinate, consumed as a dependency
+by a build. It is written down because §7 originally said "repository" for
+this, which named nothing in olla's model and left §7.5–7.6
+unspecifiable.
+
+**1.8.1 Olla distributes LIBRARIES, and only libraries** (decided
+2026-08-30). Applications reach users through the channel their platform
+already has — apt, dnf, Homebrew, winget, the platform stores, Steam —
+each of which has a trust chain, a review process and an update mechanism
+built for programs that execute. A language registry would be a worse
+version of all of them.
+
+The distinction is structural, not a scoping preference. A library only
+has meaning INSIDE a compile: it is an input to a build, so the compiler
+is necessarily what fetches, verifies and links it, and that is why the
+verification in this spec lives in the cajeta binary. An application has
+no such relationship — whoever runs it never compiles — so nothing about
+this spec's client-side model transfers to it. What cajeta owes the other
+channels is a per-platform installer matrix built and published
+atomically, which is `release.yml`'s job and not a registry protocol.
 
 **1.9 An archive version is immutable.** The v2 protocol is
 content-addressed — a blob lives at its `sha256` and that URL never changes
@@ -163,26 +177,6 @@ this spec.
 **5.5** The relaxation is per repository, not global. Trusting a local
 development repository must not weaken verification of the public one.
 
-**5.6** The relaxation of §5.4 does not extend to APPLICATIONS. An
-application that cannot be verified does not install, whatever policy is
-set for the repository it came from.
-
-The asymmetry is in what the operator is actually consenting to. A
-library's code runs when the consumer's own program runs, under the
-consumer's own capability declaration, which the compiler verifies. An
-application's code runs when a user types a command, under the
-application's declaration and nobody else's — there is no second party
-re-declaring anything. An operator may reasonably accept an unverifiable
-library from a repository they control, and that judgement does not
-transfer to something that will execute on its own account.
-
-**5.6.1** §5.6 is unenforceable until an archive states whether it is a
-library or an application, which today nothing does (§7.11). Until that
-lands the clause is a requirement with no mechanism, and a client that
-cannot tell the two apart must not silently treat every archive as a
-library — that is the reading that makes the clause vacuous exactly when
-it matters. `app-distribution` is where the field is specified.
-
 ## 6. What the repository serves
 
 **6.1** An endpoint returning the signed key document for an
@@ -283,16 +277,7 @@ has no reason to publish. How an organization AUTHENTICATES in order to
 upload is unchanged by this spec (§1.6) — only what that authentication
 is then permitted to reach.
 
-**7.11 The archive kind is not yet stated anywhere olla could read it.**
-`details` in `cajeta.json` carries no library-or-application field; today
-the distinction is inferred from whether `settings.build.binaries` is set,
-which is a build setting and does not travel in the published archive. If
-olla is to index or present the kind, something has to stamp it — a
-`details` field is the obvious candidate. That is a manifest change and is
-out of scope here; it is recorded so the gap is not discovered by an
-implementer halfway through §6.
-
-**7.12** Nothing in §7 may derive an organization from an archive's name.
+**7.11** Nothing in §7 may derive an organization from an archive's name.
 The build tool already has `ManifestDetails::group()`, which splits a
 dotted name at the last `.` — exactly the arity assumption §4.4 forbids.
 It exists for display and for a template property, and it must stay

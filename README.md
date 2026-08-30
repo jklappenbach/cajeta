@@ -409,12 +409,15 @@ the few system libraries they need, so there's nothing else to install.
 |---|---|---|
 | Debian / Ubuntu | `cajeta_<ver>_<arch>.deb` | `sudo apt install ./cajeta_<ver>_<arch>.deb` |
 | Fedora / RHEL | `cajeta-<ver>-1.<arch>.rpm` | `sudo dnf install ./cajeta-<ver>-1.<arch>.rpm` |
+| Arch | `cajeta-bin-<ver>-1-x86_64.pkg.tar.zst` | `sudo pacman -U ./cajeta-bin-<ver>-1-x86_64.pkg.tar.zst` |
 | Windows | `cajeta-<ver>-<arch>.msi` | double-click, or `msiexec /i cajeta-<ver>-<arch>.msi` |
 | macOS | `cajeta-<ver>-<arch>.pkg` | open it, or `sudo installer -pkg cajeta-<ver>-<arch>.pkg -target /` |
 | any Linux / generic | `cajeta-v<ver>-<triple>.tar.gz` | unpack; `bin/cajeta` is the compiler |
 
-The `.deb`/`.rpm`/`.msi` put `cajeta` on your `PATH` automatically (the `.msi`
-also adds it to the system `PATH`). Verify with `cajeta --version`.
+The `.deb`/`.rpm`/`.pkg.tar.zst`/`.msi` put `cajeta` on your `PATH`
+automatically (the `.msi` also adds it to the system `PATH`). Verify with
+`cajeta --version`. Arch is x86_64 only — that is upstream Arch's own scope, and
+aarch64 users want the tarball.
 
 **Stay current with `cvm` (planned).** Distro repos lag, so the package managers
 ship **`cvm`** — the Cajeta Version Manager — rather than the compiler directly.
@@ -425,7 +428,7 @@ published:
 ```sh
 # Debian/Ubuntu (apt repo)      sudo apt install cvm
 # Fedora/RHEL (dnf repo)        sudo dnf install cvm
-# Arch (AUR)                    yay -S cvm
+# Arch (AUR)                    yay -S cvm        # or: yay -S cajeta-bin
 # macOS / Linux (Homebrew)      brew install jklappenbach/tap/cvm
 # Windows (winget)              winget install cvm
 # brewless / repoless bootstrap (rustup-style, writes to ~/.cajeta):
