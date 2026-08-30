@@ -41,6 +41,11 @@
 #include <string>
 #include <vector>
 
+// The install path verifies a fetched archive against the publishing
+// organization's key document, which the repository serves. Forward
+// declared so this header does not pull the build tool in.
+namespace cajeta::buildtool { class Repository; }
+
 namespace cajeta::kernel {
 
     // One compiler diagnostic for a cell, in the compiler's own shape
@@ -306,13 +311,22 @@ namespace cajeta::kernel {
         // checksums. `phase` narrates resolve/fetch/verify to the cell's
         // stream (6.1). False with `errorOut` set on any rejection —
         // nothing is spliced, so a failure leaves no half-installed state.
-        // notebook-olla-install U4 (spec 3.3): true when `signature` is
-        // empty (policy is the caller's) or verifies against a key in the
-        // machine's trust store. False with `errorOut` set otherwise — a
-        // signature that does not verify is never merely a warning.
+        // notebook-olla-install U4 (spec 3.3) + publisher-trust U4 (spec
+        // 4.1-4.3): true when `signature` is empty (policy is the caller's)
+        // or verifies as coming from the organization that owns the name.
+        //
+        // When the repository serves a key document for `owningOrganization`
+        // that path DECIDES — the local trust store is not consulted, so a
+        // key an operator happens to trust cannot rescue an artifact the
+        // owning organization did not sign (publisher-trust 9.2). The trust
+        // store remains the fallback for repositories that serve no
+        // document (9.1). False with `errorOut` naming WHICH check failed;
+        // a signature that does not verify is never merely a warning.
         bool verifySignatureOrFail(
             const std::string& archivePath, const std::string& name,
-            const std::string& version, const std::string& repoName,
+            const std::string& version,
+            const cajeta::buildtool::Repository& repo,
+            const std::string& owningOrganization,
             const std::string& signature,
             const std::function<void(const std::string&)>& phase,
             std::string* errorOut);

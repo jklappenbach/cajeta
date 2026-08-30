@@ -254,4 +254,15 @@ namespace cajeta::cli {
         return hexOf(digest, dlen);
     }
 
+    buildtool::RootTrustLayout rootTrustLayoutOf(
+            const TrustStoreLayout& layout) {
+        buildtool::RootTrustLayout out;
+        // Mutations land in the user tier, matching `trust add`.
+        if (!layout.userRoot.empty()) out.searchDirs.push_back(layout.userRoot);
+        for (const auto& r : layout.roots) {
+            if (!r.empty() && r != layout.userRoot) out.searchDirs.push_back(r);
+        }
+        return out;
+    }
+
 } // namespace cajeta::cli

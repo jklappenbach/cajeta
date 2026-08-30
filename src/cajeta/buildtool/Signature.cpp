@@ -106,6 +106,15 @@ namespace cajeta::buildtool {
         return verifyWith(key.get(), data, signature, "'" + pemPath + "'");
     }
 
+    llvm::Expected<bool> verifyDetachedEd25519File(
+            const std::string& dataPath,
+            const std::string& signature,
+            const std::string& pemContents) {
+        auto data = readAll(dataPath);
+        if (!data) return data.takeError();
+        return verifyDetachedEd25519PemBytes(*data, signature, pemContents);
+    }
+
     llvm::Expected<bool> verifyDetachedEd25519PemBytes(
             const std::string& data,
             const std::string& signature,

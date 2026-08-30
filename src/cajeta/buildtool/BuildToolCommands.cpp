@@ -1831,14 +1831,8 @@ namespace cajeta::buildtool {
         // operator accidentally grants far more than they meant to.
 
         cajeta::buildtool::RootTrustLayout rootLayoutFromTrustStore() {
-            auto layout = cajeta::cli::resolveTrustStoreLayout();
-            cajeta::buildtool::RootTrustLayout out;
-            // Mutations land in the user tier, matching `trust add`.
-            if (!layout.userRoot.empty()) out.searchDirs.push_back(layout.userRoot);
-            for (const auto& r : layout.roots) {
-                if (!r.empty() && r != layout.userRoot) out.searchDirs.push_back(r);
-            }
-            return out;
+            return cajeta::cli::rootTrustLayoutOf(
+                cajeta::cli::resolveTrustStoreLayout());
         }
 
         int trustListRootsCommand(int /*argc*/, const char* /*argv*/[]) {
