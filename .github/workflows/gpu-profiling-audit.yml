@@ -97,13 +97,33 @@ jobs:
           $outer = if ($elevated) { 'YES' } else { 'NO' }
           "OUTER_PRIVILEGED=$outer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+          # "ABSENT means the restricted default applies" was asserted here for
+          # two runs and is an INFERENCE, not a reading. The 2026-08-29 audit
+          # contradicted it: ABSENT, yet an unprivileged process was allowed
+          # PC_SAMPLING and the Profiling API on this very box. So report what
+          # is actually there and stop narrating a default we never measured.
           $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak'
           $val = (Get-ItemProperty -Path $key -Name 'RmProfilingAdminOnly' -ErrorAction SilentlyContinue).RmProfilingAdminOnly
           if ($null -eq $val) {
-            Write-Host "RmProfilingAdminOnly=ABSENT (driver default applies: restricted)"
+            Write-Host "RmProfilingAdminOnly=ABSENT at the documented key"
+            Write-Host "  (what the driver does when unset is NOT established here -"
+            Write-Host "   the probe's T3 measures the gate's actual behaviour instead)"
           } else {
             Write-Host "RmProfilingAdminOnly=$val  (1 = admin-only, 0 = open)"
           }
+
+          # The value may live under a per-adapter key rather than Global, so
+          # sweep the whole service subtree before concluding it is unset
+          # anywhere. Cheap, and it answers "where would I even set this?".
+          Write-Host "--- RmProfilingAdminOnly anywhere under nvlddmkm ---"
+          $found = $false
+          Get-ChildItem -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm' -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $p = $_.PSPath
+              $v = (Get-ItemProperty -Path $p -Name 'RmProfilingAdminOnly' -ErrorAction SilentlyContinue).RmProfilingAdminOnly
+              if ($null -ne $v) { Write-Host "FOUND $($_.Name) = $v"; $script:found = $true }
+            }
+          if (-not $found) { Write-Host "not present under any nvlddmkm subkey" }
 
           nvidia-smi
           nvcc --version | Select-Object -Last 1
