@@ -25,13 +25,29 @@
 
 #include <cstdint>
 #include <string>
-#include <cstring>
-#include <unistd.h>
 
 using cajeta_test::CajetaJit;
 
 namespace {
 
+int32_t runI32(const std::string& src) {
+    auto jit = CajetaJit::compile(src, "test.D");
+    return jit->lookup<int32_t (*)()>("run")();
+}
+
+} // namespace
+
+#if defined(__linux__)
+
+// POSIX-only, and it must live INSIDE the platform guard: a helper at
+// file scope is compiled on every target even when every test that
+// uses it is guarded out. mingw has `_pipe`, not `pipe`, so the first
+// version of this file failed to COMPILE on Windows while its tests
+// were correctly excluded.
+#include <cstring>
+#include <unistd.h>
+
+namespace {
 // Returns the READ end of a pipe whose write end is already closed,
 // optionally after writing `payload`. That is a peer that has hung up.
 int makeClosedPeerPipe(const char* payload) {
@@ -45,14 +61,8 @@ int makeClosedPeerPipe(const char* payload) {
     return fds[0];
 }
 
-int32_t runI32(const std::string& src) {
-    auto jit = CajetaJit::compile(src, "test.D");
-    return jit->lookup<int32_t (*)()>("run")();
-}
-
 } // namespace
 
-#if defined(__linux__)
 
 // [1.1.5] Nothing was ever written and the peer is gone. The wait must say
 // READY (so the caller reaches its read) and the read must say 0 (so the
