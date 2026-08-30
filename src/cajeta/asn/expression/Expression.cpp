@@ -3038,6 +3038,29 @@ bool cajetaRhsCarriesRedundantSharp(
                     value = module->getBuilder()->CreateLoad(
                         a->getAllocatedType(), a);
                 }
+            } else if (llvm::isa<llvm::GlobalVariable>(value)
+                    && (dynamic_pointer_cast<IdentifierExpression>(inner)
+                        || dynamic_pointer_cast<DotExpression>(inner))) {
+                // title-stores §2.1 — `dst #= Type.staticField` (and the
+                // unqualified `dst #= staticField` inside the declaring
+                // class). A static field's slot is a GlobalVariable, never an
+                // AllocaInst, so the alloca-only load above never fired and
+                // the store received the SLOT ADDRESS instead of the
+                // reference it holds. Plain `=` was always correct here
+                // because it goes through loadIfLValue, which has carried a
+                // "static fields land here too" branch for exactly this
+                // shape; only the move path had its own narrower rule.
+                //
+                // Silent wrong code, not a crash: the destination then held
+                // `&slot`, and every read through it returned whatever the
+                // neighbouring statics happened to contain. Measured in
+                // cajeta-llm as `Linear.btXhSrc #= Linear.btXf`, where the
+                // aliased KernelBuffer's `elementCount` read back as
+                // 17592186044448 while the source read 131072 on the same
+                // line, and every Vulkan launch binding it failed to resolve
+                // its buffer — a whole prefill of wrong logits with no error
+                // until the driver refused the dispatch.
+                value = loadIfLValue(module, value, inner);
             }
         }
         // slices 9.2.1 — `#arr[i]`: move an element OUT of an owning local

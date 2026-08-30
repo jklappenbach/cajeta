@@ -99,3 +99,60 @@ TEST(TitleAssignTests, sharpElsewhereUnaffected) {
         "}\n";
     EXPECT_EQ(runI32(src), 8);
 }
+
+// 1.1.4 — `dst #= Type.staticField` must store the REFERENCE the static
+// holds, not the address of the static's slot.
+//
+// A static field's slot is a GlobalVariable; MoveExpression's load-through
+// rule only recognized an AllocaInst, so the move handed the enclosing store
+// `&slot`. Silent wrong code with no diagnostic: reads through the
+// destination returned whatever the neighbouring statics contained, which is
+// pointer-shaped and survives every null check.
+//
+// Found in cajeta-llm, where `Linear.btXhSrc #= Linear.btXf` aliased one
+// device buffer onto another: on the same source line the source read back
+// elementCount 131072 and the alias read 17592186044448, and every Vulkan
+// dispatch binding the alias failed to resolve a buffer — a whole prefill of
+// wrong logits, first visible as a different sampled token.
+//
+// The plain-`=` and via-a-local arms are the discriminating controls: both
+// were correct throughout (plain `=` goes through loadIfLValue, which has
+// always had a static-field branch), so a regression that reintroduces the
+// defect fails exactly one arm rather than the whole test.
+TEST(TitleAssignTests, sharpStoreFromStaticFieldLoadsThroughTheSlot) {
+    std::string src = std::string(kCellSrc) +
+        "public final class Q {\n"
+        "    static Cell a;\n"
+        "    static Cell b;\n"
+        "    static Cell c;\n"
+        "    public static int32 qualified() {\n"
+        "        Q.a #= heap Cell(4096);\n"
+        "        Q.b #= Q.a;\n"
+        "        return Q.b.n;\n"
+        "    }\n"
+        "    public static int32 unqualified() {\n"
+        "        c #= a;\n"
+        "        return c.n;\n"
+        "    }\n"
+        "    public static int32 viaLocal() {\n"
+        "        Cell loc = Q.a;\n"
+        "        Q.b #= loc;\n"
+        "        return Q.b.n;\n"
+        "    }\n"
+        "    public static int32 viaPlainAssign() {\n"
+        "        Q.b = Q.a;\n"
+        "        return Q.b.n;\n"
+        "    }\n"
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        int32 bad = 0;\n"
+        "        if (Q.qualified() != 4096) { bad = bad + 1; }\n"
+        "        if (Q.unqualified() != 4096) { bad = bad + 2; }\n"
+        "        if (Q.viaLocal() != 4096) { bad = bad + 4; }\n"
+        "        if (Q.viaPlainAssign() != 4096) { bad = bad + 8; }\n"
+        "        return bad;\n"
+        "    }\n"
+        "}\n";
+    EXPECT_EQ(runI32(src), 0);
+}

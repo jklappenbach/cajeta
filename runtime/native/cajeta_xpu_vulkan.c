@@ -3671,9 +3671,28 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
             ok = caj_vk_launch_batched(P, bindings, kinds, n, gx, gy, gz);
         }
     }
-    if (!ok)
+    if (!ok) {
         fprintf(stderr, "cajeta.xpu.vulkan: launch FAILED for kernel '%s' "
                 "(n=%d grid=%u,%u,%u)\n", entry ? entry : "?", n, gx, gy, gz);
+        // Say WHICH binding the marshal could not resolve. A bare "launch
+        // FAILED" cannot distinguish "no pipeline for this kernel" from "one
+        // of the bound buffers is a dead handle", and the two have nothing in
+        // common as diagnoses. Found the cajeta-llm static-field alias defect:
+        // every failing dispatch named the same binding, holding a value that
+        // was a slot address rather than a buffer handle.
+        fprintf(stderr, "  pipe=%s", P ? "ok" : "NULL");
+        for (int i = 0; i < n; ++i) {
+            fprintf(stderr, "  b%d[kind=%u h=%lld rec=%s]", i,
+                    (unsigned) kinds[i], (long long) bindings[i],
+                    (kinds[i] == CAJ_VKB_ACCEL || kinds[i] == CAJ_VKB_TEXTURE
+                     || kinds[i] == CAJ_VKB_STORAGE_IMAGE
+                     || kinds[i] == CAJ_VKB_SAMPLER
+                     || kinds[i] == CAJ_VKB_BUFFER_ARRAY)
+                        ? "?"
+                        : (cajeta_xpu_vk_rec(bindings[i]) ? "ok" : "NULL"));
+        }
+        fprintf(stderr, "\n");
+    }
     pthread_mutex_unlock(&g_xpu_vk_submit_mu);
     return ok;
 }
