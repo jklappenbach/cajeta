@@ -287,10 +287,31 @@ const char* __cajeta_string_cstr(void* s_v) {
     if (len == 0) return "";
     if (caj_str_is_pointer(s)) {
         char* base = caj_str_base(s);
-        // Full-window root (offset 0, window == the whole root): builders
-        // guarantee a trailing NUL — hand the data out directly.
+        // Full-window root at offset 0, and the buffer actually CARRIES a
+        // terminator: there is a byte past the window and it is NUL. Only then
+        // is handing the data out directly safe for a strlen reader.
+        //
+        // This used to test `len == masked_count` on the stated grounds that
+        // "builders guarantee a trailing NUL". That condition is exactly
+        // backwards — it succeeds when the array holds precisely `len` bytes,
+        // i.e. when there is NO room for a terminator — and the guarantee was
+        // not true: StringBuilder.toString allocates `allocBytes(len)` and
+        // hands back `String(#out, len)`, so every string built that way took
+        // this path with no NUL after it and `strlen` ran into the next heap
+        // block. Reproduced in ten lines: printing a 48-byte StringBuilder
+        // result emitted the JSON, then a stray 0x31, then the newline.
+        //
+        // In the field this corrupted the build tool's plugin protocol, whose
+        // records are built with a StringBuilder and written with
+        // System.stdout.println: the reader saw `{...}\x31`, failed to parse
+        // it, and dropped the record. A dropped `log` record was invisible; a
+        // dropped `output` record took a task's result with it.
+        //
+        // The order matters — `masked_count > len` is what makes reading
+        // base[8 + len] in-bounds, so it must be tested first.
         if (base && caj_str_off(s) == 0
-                && len == __cajeta_shared_masked_count(base)) {
+                && __cajeta_shared_masked_count(base) > len
+                && base[8 + len] == '\0') {
             return base + 8;
         }
     }
