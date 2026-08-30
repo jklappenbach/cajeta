@@ -878,6 +878,59 @@ jobs:
           fi
           ls -la "${pkgs[@]}"
 
+      # ---- Install-test the Arch package in a CLEAN container -------------
+      # This is the only thing that ever runs the package on Arch. The gate
+      # above proves makepkg emitted a file; this proves the file works.
+      #
+      # `archlinux:latest`, deliberately NOT base-devel: a clean image is what
+      # catches an under-declared `depends=`. If cajeta needed something beyond
+      # glibc/gcc-libs, base-devel would hide it and a user would find it.
+      #
+      # namcap lints but does not gate on warnings — it has plenty to say about
+      # a -bin package that is fine by construction. Errors (`E:`) do gate.
+      - name: Install-test the Arch package
+        if: matrix.target == 'x86_64-linux-gnu'
+        run: |
+          set -euo pipefail
+          pkg="$(ls build/*.pkg.tar.zst | head -1)"
+          rm -rf archtest && mkdir -p archtest/src/smoke
+          cp "$pkg" archtest/pkg.tar.zst
+          # Written on the host: a heredoc nested inside docker-bash-inside-
+          # yaml is three levels of quoting and one of them always loses.
+          cat > archtest/src/smoke/Answer.cajeta <<'CAJETA'
+          package smoke;
+          public class Answer {
+              public static int32 v() { return 42; }
+          }
+          CAJETA
+          sed -i 's/^          //' archtest/src/smoke/Answer.cajeta
+
+          echo "--- namcap lint"
+          docker run --rm -v "$PWD/archtest:/w" -w /w archlinux:base-devel bash -c '
+            set -euo pipefail
+            pacman -Sy --noconfirm --needed namcap > /dev/null 2>&1
+            namcap pkg.tar.zst | tee namcap.txt || true
+            if grep -qE " E: " namcap.txt; then
+              echo "::error::namcap reported errors on the Arch package"
+              exit 1
+            fi
+          '
+
+          echo "--- clean-container install + smoke"
+          docker run --rm -v "$PWD/archtest:/w" -w /w archlinux:latest bash -c '
+            set -euo pipefail
+            pacman -Sy --noconfirm > /dev/null 2>&1
+            pacman -U --noconfirm pkg.tar.zst
+            # The symlink has to resolve, not merely exist — that is the exact
+            # defect the .deb shipped once.
+            test -x /usr/bin/cajeta
+            readlink -f /usr/bin/cajeta
+            cajeta --version
+            cajeta smoke.Answer /w/src /w/out --emit=cja
+            test -f /w/out/smoke.cja
+            echo "compile smoke OK"
+          '
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
