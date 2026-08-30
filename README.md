@@ -469,7 +469,8 @@ The compiler is configured via CMake and built with Ninja. Two scripts wrap the 
 sudo apt install \
     cmake ninja-build clang-23 llvm-23-dev libllvm23 \
     libantlr4-runtime-dev openjdk-21-jre \
-    libgtest-dev libgoogle-glog-dev libzstd-dev vim-common libxxhash-dev
+    libgtest-dev libgoogle-glog-dev libzstd-dev vim-common libxxhash-dev \
+    libssl-dev libcurl4-openssl-dev zlib1g-dev
 ```
 
 Notes:

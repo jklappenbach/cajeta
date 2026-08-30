@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "cajeta/buildtool/SignedEnvelope.h"
+
 #include <llvm/Support/Error.h>
 
 #include <ctime>
@@ -61,7 +63,7 @@ namespace cajeta::buildtool {
     // one and forget to check (spec §2.5).
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
         const std::string& envelopeJson,
-        const std::vector<std::string>& rootPemPaths,
+        const std::vector<RootKey>& roots,
         std::time_t now);
 
     // RFC 3339, UTC, seconds precision, `Z` only — the schema's `timestamp`.

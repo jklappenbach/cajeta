@@ -11,6 +11,7 @@
 #include "cajeta/buildtool/PluginAction.h"
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/ManifestEditor.h"
+#include "cajeta/buildtool/RootTrust.h"
 #include "cajeta/buildtool/Melt.h"
 #include "cajeta/buildtool/OllaStore.h"
 #include "cajeta/buildtool/OutputLayout.h"
@@ -1823,6 +1824,83 @@ namespace cajeta::buildtool {
         // operators can keep one mental model: project tools work
         // on the manifest; trust tools work on `~/.cajeta/trust/`.
 
+        // publisher-trust §3.3 — ROOT keys are a different thing from the
+        // signer keys above, and the subcommand names keep them apart. A
+        // root vouches for an organization's key document; a trusted key
+        // vouches for an artifact directly. Conflating them is how an
+        // operator accidentally grants far more than they meant to.
+
+        cajeta::buildtool::RootTrustLayout rootLayoutFromTrustStore() {
+            return cajeta::cli::rootTrustLayoutOf(
+                cajeta::cli::resolveTrustStoreLayout());
+        }
+
+        int trustListRootsCommand(int /*argc*/, const char* /*argv*/[]) {
+            auto layout = rootLayoutFromTrustStore();
+            auto roots = cajeta::buildtool::rootsFor(layout, "");
+            if (!roots) {
+                std::cerr << "cajeta trust roots: "
+                          << llvm::toString(roots.takeError()) << "\n";
+                return 1;
+            }
+            for (const auto& r : *roots) {
+                std::cout << r.id << "\t"
+                          << (r.shipped ? "shipped" : "operator") << "\n";
+            }
+            return 0;
+        }
+
+        int trustAddRootCommand(int argc, const char* argv[]) {
+            if (argc < 4) {
+                std::cerr << "Usage: cajeta trust add-root <key-id> <pem-path>\n";
+                return 2;
+            }
+            auto e = cajeta::buildtool::addRootKey(rootLayoutFromTrustStore(),
+                                                   argv[2], argv[3]);
+            if (e) {
+                std::cerr << "cajeta trust add-root: "
+                          << llvm::toString(std::move(e)) << "\n";
+                return 1;
+            }
+            std::cout << "added root '" << argv[2] << "'\n";
+            return 0;
+        }
+
+        int trustRemoveRootCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta trust remove-root <key-id>\n";
+                return 2;
+            }
+            auto e = cajeta::buildtool::removeRootKey(rootLayoutFromTrustStore(),
+                                                      argv[2]);
+            if (e) {
+                std::cerr << "cajeta trust remove-root: "
+                          << llvm::toString(std::move(e)) << "\n";
+                return 1;
+            }
+            std::cout << "removed root '" << argv[2] << "'\n";
+            return 0;
+        }
+
+        int trustPinCommand(int argc, const char* argv[]) {
+            if (argc < 3) {
+                std::cerr << "Usage: cajeta trust pin <repository> [<key-id>]\n"
+                             "  with no key-id, clears the pin\n";
+                return 2;
+            }
+            auto layout = rootLayoutFromTrustStore();
+            std::string keyId = argc >= 4 ? argv[3] : "";
+            auto e = cajeta::buildtool::pinRepository(layout, argv[2], keyId);
+            if (e) {
+                std::cerr << "cajeta trust pin: "
+                          << llvm::toString(std::move(e)) << "\n";
+                return 1;
+            }
+            if (keyId.empty()) std::cout << "cleared pin for '" << argv[2] << "'\n";
+            else std::cout << "pinned '" << argv[2] << "' to root '" << keyId << "'\n";
+            return 0;
+        }
+
         int trustListCommand(int /*argc*/, const char* /*argv*/[]) {
             auto layout = cajeta::cli::resolveTrustStoreLayout();
             auto keys = cajeta::cli::listTrustedKeys(layout);
@@ -1952,6 +2030,10 @@ namespace cajeta::buildtool {
             // subcommand parse its own name as the argument ("trust add
             // relkey k.pem" read key-id "add", pem "relkey"), so add/
             // remove/show/verify could never have worked.
+            if (sub == "roots")       return trustListRootsCommand(argc - 1, argv + 1);
+            if (sub == "add-root")    return trustAddRootCommand(argc - 1, argv + 1);
+            if (sub == "remove-root") return trustRemoveRootCommand(argc - 1, argv + 1);
+            if (sub == "pin")         return trustPinCommand(argc - 1, argv + 1);
             if (sub == "list")   return trustListCommand(argc - 1, argv + 1);
             if (sub == "add")    return trustAddCommand(argc - 1, argv + 1);
             if (sub == "remove") return trustRemoveCommand(argc - 1, argv + 1);

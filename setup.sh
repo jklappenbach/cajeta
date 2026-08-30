@@ -175,6 +175,14 @@ install_linux_apt() {
         vim-common
         libxxhash-dev
         libssl-dev
+        # src/CMakeLists.txt asks for these with find_package(... REQUIRED),
+        # so a box without them cannot configure at all. They were absent from
+        # this list until 2026-08-29 and nobody noticed, because every machine
+        # that had ever run setup.sh already carried them as transitive deps of
+        # something else. The first genuinely clean box — a hosted ubuntu-latest
+        # runner — failed at "Could NOT find CURL".
+        libcurl4-openssl-dev
+        zlib1g-dev
     )
     [[ "${CAJETA_NO_LLD:-0}" == "1" ]] || pkgs+=("lld-${LLVM_VER}-dev")
 

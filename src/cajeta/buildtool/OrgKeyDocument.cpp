@@ -1,8 +1,9 @@
 #include "cajeta/buildtool/OrgKeyDocument.h"
 
-#include "cajeta/buildtool/Signature.h"
+#include "cajeta/buildtool/SignedEnvelope.h"
 
-#include <llvm/Support/Base64.h>
+#include <string>
+
 #include <llvm/Support/JSON.h>
 
 
@@ -14,12 +15,6 @@ namespace cajeta::buildtool {
             return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                            "%s", msg.c_str());
         }
-
-        // The envelope version this build understands. A document declaring
-        // anything else is refused rather than interpreted: a future format
-        // may move a security-relevant field, and guessing at it is how a
-        // check silently stops applying.
-        constexpr int kSupportedFormat = 1;
 
         // Days before month m (0-based) in a non-leap year.
         constexpr int kDaysBeforeMonth[12] = {
@@ -87,63 +82,15 @@ namespace cajeta::buildtool {
 
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
             const std::string& envelopeJson,
-            const std::vector<std::string>& rootPemPaths,
+            const std::vector<RootKey>& roots,
             std::time_t now) {
-        auto parsed = llvm::json::parse(envelopeJson);
-        if (!parsed) {
-            llvm::consumeError(parsed.takeError());
-            return err("organization key document: envelope is not valid JSON");
-        }
-        auto* env = parsed->getAsObject();
-        if (!env) return err("organization key document: envelope is not an object");
-
-        auto format = env->getInteger("format");
-        if (!format) return err("organization key document: no format version");
-        if (*format != kSupportedFormat) {
-            return err("organization key document: format version "
-                       + std::to_string(*format) + " is not understood by this "
-                       "toolchain (expected " + std::to_string(kSupportedFormat)
-                       + ")");
-        }
-
-        auto rootKeyId = env->getString("root-key-id");
-        auto payloadB64 = env->getString("payload");
-        auto signatureB64 = env->getString("signature");
-        if (!rootKeyId || !payloadB64 || !signatureB64) {
-            return err("organization key document: envelope is missing "
-                       "root-key-id, payload or signature");
-        }
-
-        std::vector<char> payloadBytes;
-        if (auto e = llvm::decodeBase64(*payloadB64, payloadBytes)) {
-            llvm::consumeError(std::move(e));
-            return err("organization key document: payload is not base64");
-        }
-        std::vector<char> sigBytes;
-        if (auto e = llvm::decodeBase64(*signatureB64, sigBytes)) {
-            llvm::consumeError(std::move(e));
-            return err("organization key document: signature is not base64");
-        }
-        std::string payload(payloadBytes.begin(), payloadBytes.end());
-        std::string signature(sigBytes.begin(), sigBytes.end());
-
         // Verify BEFORE parsing the payload. Nothing inside an unverified
         // document should influence anything, including which errors are
         // reported about it.
-        bool verified = false;
-        for (const auto& rootPath : rootPemPaths) {
-            auto ok = verifyDetachedEd25519Bytes(payload, signature, rootPath);
-            if (!ok) {                    // unusable root, not an answer
-                llvm::consumeError(ok.takeError());
-                continue;
-            }
-            if (*ok) { verified = true; break; }
-        }
-        if (!verified) {
-            return err("organization key document: signature does not match "
-                       "any trusted root key (" + std::to_string(rootPemPaths.size())
-                       + " checked)");
-        }
+        auto envelope = openSignedEnvelope(envelopeJson, roots,
+                                           "organization key document");
+        if (!envelope) return envelope.takeError();
+        const std::string& payload = envelope->payload;
 
         auto body = llvm::json::parse(payload);
         if (!body) {
@@ -154,7 +101,7 @@ namespace cajeta::buildtool {
         if (!obj) return err("organization key document: payload is not an object");
 
         OrgKeyDocument doc;
-        doc.rootKeyId = rootKeyId->str();
+        doc.rootKeyId = envelope->rootKeyId;
 
         auto org = obj->getString("organization");
         if (!org || org->empty()) {

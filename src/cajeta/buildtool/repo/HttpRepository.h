@@ -104,6 +104,25 @@ namespace cajeta::buildtool {
         publishedChecksum(const std::string& packageName,
                           const std::string& version) const override;
 
+        // GET /v2/org-keys/<org> — the signed organization key document
+        // (publisher-trust spec 6.1), returned as raw bytes for the caller
+        // to verify against its own roots.
+        //
+        // `std::nullopt` for a v1-only server or a 404: those mean "this
+        // repository serves no document for that organization", which is
+        // the condition spec 5.4 degrades on. A transport failure or any
+        // other status is an ERROR — degrading on those would turn an
+        // outage into a verification bypass.
+        llvm::Expected<std::optional<std::string>>
+        organizationKeys(const std::string& org) const override;
+
+        // GET /v2/resolve?name=...&version=... returned verbatim, so the
+        // caller sees the `signed` envelope this driver's typed accessors
+        // deliberately do not interpret.
+        llvm::Expected<std::optional<std::string>>
+        releaseMetadataJson(const std::string& packageName,
+                            const std::string& version) const override;
+
         // GET /v2/resolve?name=...&version=... — returns the typed
         // metadata for the artifact at <name>@<version>. v2-only.
         // Caller-checked: only invoke when capabilities().supportsV2()

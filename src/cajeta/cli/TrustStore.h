@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include "cajeta/buildtool/RootTrust.h"
+
 #include <llvm/Support/Error.h>
 
 #include <optional>
@@ -82,6 +84,17 @@ namespace cajeta::cli {
     // the system tier — the "system store unaffected" property.
     llvm::Error removeTrustedKey(const TrustStoreLayout& layout,
                                  const std::string& keyId);
+
+    // The ROOT-key view of the same directories (publisher-trust §3.3).
+    //
+    // Roots and trusted keys are different things — a root vouches for an
+    // organization's key document, a trusted key vouches for an artifact
+    // directly — but they live in the same tiered store, and every caller
+    // has to derive one from the other the same way. One conversion, so a
+    // second caller cannot pick a different tier order and quietly consult
+    // a different set of anchors.
+    buildtool::RootTrustLayout rootTrustLayoutOf(
+        const TrustStoreLayout& layout);
 
     // Compute the SHA-256 fingerprint of an ed25519 public key PEM.
     // Returns the hex digest of the SubjectPublicKeyInfo DER bytes —

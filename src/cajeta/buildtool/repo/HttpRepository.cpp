@@ -462,6 +462,13 @@ namespace cajeta::buildtool {
         if (auto s = obj->getString("published-at")) {
             md.publishedAt = s->str();
         }
+        // The UNSIGNED view of ownership. Useful for diagnostics; never
+        // sufficient to bind a publisher — a mirror writes this field as
+        // freely as any other. The binding reads `ReleaseMetadata`, which
+        // knows whether a root signed it (publisher-trust spec 4.4, 6.2).
+        if (auto s = obj->getString("organization")) {
+            md.organization = s->str();
+        }
         if (auto b = obj->getBoolean("retracted")) md.retracted = *b;
         if (auto s = obj->getString("retracted-reason")) {
             md.retractedReason = s->str();
@@ -733,6 +740,63 @@ namespace cajeta::buildtool {
         // the prefixed form.
         if (sha.rfind("sha256:", 0) != 0) sha = "sha256:" + sha;
         return std::optional<std::string>{sha};
+    }
+
+    // ─── publisher-trust §6.1 / §6.2 ─────────────────────────────
+
+    llvm::Expected<std::optional<std::string>>
+    HttpRepository::organizationKeys(const std::string& org) const {
+        // An org name goes into a URL path; keep it to the character set a
+        // dotted name actually uses rather than escaping it, so a name that
+        // could change the path shape is refused instead of encoded.
+        for (char c : org) {
+            bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                   || (c >= '0' && c <= '9')
+                   || c == '-' || c == '_' || c == '.';
+            if (!ok) {
+                return err("'" + org + "' is not a usable organization name");
+            }
+        }
+        if (org.empty() || org.find("..") != std::string::npos) {
+            return err("'" + org + "' is not a usable organization name");
+        }
+
+        auto caps = capabilities();
+        if (!caps) return caps.takeError();
+        // A v1-only server has no key-document surface at all. That is
+        // absence, not failure: spec 5.4's legacy path is exactly this.
+        if (!caps->supportsV2()) return std::optional<std::string>{};
+
+        std::string url = joinUrl(baseUrl_, "v2/org-keys/" + org);
+        std::string body;
+        auto code = getToString(state_->curl, url, auth_, body);
+        if (!code) return code.takeError();
+        if (*code == 404) return std::optional<std::string>{};
+        if (*code < 200 || *code >= 300) {
+            return err("HTTP " + std::to_string(*code) +
+                       " fetching the organization key document for '" + org +
+                       "' from " + url);
+        }
+        return std::optional<std::string>{body};
+    }
+
+    llvm::Expected<std::optional<std::string>>
+    HttpRepository::releaseMetadataJson(const std::string& packageName,
+                                        const std::string& version) const {
+        auto caps = capabilities();
+        if (!caps) return caps.takeError();
+        if (!caps->supportsV2()) return std::optional<std::string>{};
+
+        std::string url = joinUrl(baseUrl_,
+            "v2/resolve?name=" + packageName + "&version=" + version);
+        std::string body;
+        auto code = getToString(state_->curl, url, auth_, body);
+        if (!code) return code.takeError();
+        if (*code == 404) return std::optional<std::string>{};
+        if (*code < 200 || *code >= 300) {
+            return err("HTTP " + std::to_string(*code) + " from " + url);
+        }
+        return std::optional<std::string>{body};
     }
 
 } // namespace cajeta::buildtool

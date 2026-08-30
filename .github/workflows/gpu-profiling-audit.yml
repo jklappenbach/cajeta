@@ -17,15 +17,32 @@
 #
 # READING THE RESULT
 # The probe prints `RESULT key=value` lines; the verdict is `RESULT verdict=`.
-#   EXEMPTION_PROVEN                  timing worked AND the Profiling API was
-#                                     refused for privileges in the same process
-#   INCONCLUSIVE_PROCESS_PRIVILEGED   the Profiling API was ALLOWED, so this
-#                                     account is privileged or the gate is off.
-#                                     Timing passing proves nothing. Not a pass.
+#   EXEMPTION_PROVEN                  timing worked, this process was measured
+#                                     UNPRIVILEGED, and something the gate
+#                                     covers was refused for privileges in it
+#   INCONCLUSIVE_PROCESS_PRIVILEGED   this process holds the privilege the gate
+#                                     asks for, so timing passing proves nothing
+#                                     about ordinary users. Not a pass.
+#   INCONCLUSIVE_GATE_NOT_ENFORCED    this process was UNPRIVILEGED and nothing
+#                                     gated was refused: the gate is off here,
+#                                     so timing working says nothing about a box
+#                                     where it is on. Not a pass.
+#   INCONCLUSIVE_NO_GATE_PROBE        no gated operation was even supported on
+#                                     this device, so the gate was never tested
 #   TIMING_BROKEN                     the baseline tier does not work here
 #
 # The gate-state steps below run FIRST precisely because the verdict cannot be
 # interpreted without them.
+#
+# REVISED 2026-08-29, and the first two runs are why. Both returned
+# INCONCLUSIVE_PROCESS_PRIVILEGED — read at the time as "the runners are
+# privileged, find an unprivileged account". They were not. This workflow had
+# already measured the opposite in its own gate-state step and never joined the
+# two: RUNNER_ACCOUNT=NT AUTHORITY\NETWORK SERVICE with RUNNER_ELEVATED=False,
+# and UID=1000 with PASSWORDLESS_SUDO=NO. The verdict came from the probe
+# INFERRING privilege from the Profiling API being allowed. The probe now
+# measures its own privilege in-process, and the step below asserts the two
+# agree, so that particular disagreement cannot go unnoticed again.
 #
 # Dispatch-only. Reads state and runs a short probe; changes nothing.
 
@@ -75,14 +92,38 @@ jobs:
           $elevated = $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
           Write-Host "RUNNER_ACCOUNT=$($id.Name)"
           Write-Host "RUNNER_ELEVATED=$elevated"
+          # Hand this to the verdict step so the probe's own in-process reading
+          # can be checked against it. These two disagreed silently for two runs.
+          $outer = if ($elevated) { 'YES' } else { 'NO' }
+          "OUTER_PRIVILEGED=$outer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+          # "ABSENT means the restricted default applies" was asserted here for
+          # two runs and is an INFERENCE, not a reading. The 2026-08-29 audit
+          # contradicted it: ABSENT, yet an unprivileged process was allowed
+          # PC_SAMPLING and the Profiling API on this very box. So report what
+          # is actually there and stop narrating a default we never measured.
           $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak'
           $val = (Get-ItemProperty -Path $key -Name 'RmProfilingAdminOnly' -ErrorAction SilentlyContinue).RmProfilingAdminOnly
           if ($null -eq $val) {
-            Write-Host "RmProfilingAdminOnly=ABSENT (driver default applies: restricted)"
+            Write-Host "RmProfilingAdminOnly=ABSENT at the documented key"
+            Write-Host "  (what the driver does when unset is NOT established here -"
+            Write-Host "   the probe's T3 measures the gate's actual behaviour instead)"
           } else {
             Write-Host "RmProfilingAdminOnly=$val  (1 = admin-only, 0 = open)"
           }
+
+          # The value may live under a per-adapter key rather than Global, so
+          # sweep the whole service subtree before concluding it is unset
+          # anywhere. Cheap, and it answers "where would I even set this?".
+          Write-Host "--- RmProfilingAdminOnly anywhere under nvlddmkm ---"
+          $found = $false
+          Get-ChildItem -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm' -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              $p = $_.PSPath
+              $v = (Get-ItemProperty -Path $p -Name 'RmProfilingAdminOnly' -ErrorAction SilentlyContinue).RmProfilingAdminOnly
+              if ($null -ne $v) { Write-Host "FOUND $($_.Name) = $v"; $script:found = $true }
+            }
+          if (-not $found) { Write-Host "not present under any nvlddmkm subkey" }
 
           nvidia-smi
           nvcc --version | Select-Object -Last 1
@@ -134,13 +175,85 @@ jobs:
             Tee-Object -FilePath captures/windows-audit.txt
           if ($LASTEXITCODE -ne 0) { throw 'probe failed to initialize CUDA' }
 
+      # THE POSITIVE CONTROL, added 2026-08-30 and overdue.
+      # Run 33317956690 set RmProfilingAdminOnly=1, confirmed it live, rebooted,
+      # and ran unprivileged — and T3 returned byte-identical results to the run
+      # with the value absent. An instrument that reads the same before and after
+      # you change the thing it measures is not measuring that thing. So T3's
+      # premise (that GetCounterAvailability / PC_SAMPLING are where the gate
+      # bites) is unverified, and every "gate not enforced" verdict so far rests
+      # on it.
+      #
+      # Nsight Compute is the canonical user-visible manifestation: on a gated
+      # box a non-admin ncu fails with ERR_NVGPUCTRPERM. If ncu is refused while
+      # T1/T2 timing passes, the gate IS active, the CUPTI probes are simply not
+      # gated calls, and that pairing is exactly what spec 5.4.4 asserts. If ncu
+      # is allowed too, the registry value is not governing this driver.
+      - name: Gate positive control (Nsight Compute)
+        shell: powershell
+        run: |
+          # ASCII ONLY in this block. Windows PowerShell 5.1 reads the runner's
+          # temp .ps1 as ANSI, not UTF-8: an em dash mis-decodes, terminates a
+          # string early, and the next apostrophe opens one that never closes.
+          # That is not hypothetical - it silently killed this step on
+          # 2026-08-30 (run 33318146776), and continue-on-error turned the
+          # unparseable script into a green step. Hence no continue-on-error
+          # here either: a control that cannot fail is not a control.
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path captures | Out-Null
+
+          $ncu = $null
+          foreach ($root in @("$env:CUDA_PATH", "$env:ProgramFiles\NVIDIA Corporation")) {
+            if ($root -and (Test-Path $root)) {
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'ncu.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { $ncu = $hit.FullName; break }
+            }
+          }
+          if (-not $ncu) {
+            Write-Host "CONTROL=UNAVAILABLE (no ncu.exe found; the gate claim stays unverified)"
+            exit 0
+          }
+          Write-Host "using $ncu"
+
+          $env:PATH = "$env:CUDA_PATH\extras\CUPTI\lib64;$env:CUDA_PATH\bin;$env:PATH"
+          & $ncu --metrics sm__cycles_elapsed.avg .\probe_cupti_caps.exe 1000 1 2>&1 | Tee-Object -FilePath captures/ncu-control.txt | Out-Null
+          $txt = Get-Content captures/ncu-control.txt -Raw
+          if ($null -eq $txt) { $txt = "" }
+
+          if ($txt -match 'ERR_NVGPUCTRPERM') {
+            Write-Host "CONTROL=REFUSED_PRIVILEGES - the gate IS active on this box"
+            Write-Host "  So T3 CUPTI probes are NOT gated calls, and T1/T2 passing"
+            Write-Host "  alongside this refusal is spec 5.4.4 demonstrated."
+          } elseif ($txt -match 'sm__cycles_elapsed') {
+            Write-Host "CONTROL=ALLOWED - counter profiling worked UNPRIVILEGED with"
+            Write-Host "  RmProfilingAdminOnly=1, so that value does not govern this driver."
+          } else {
+            Write-Host "CONTROL=INCONCLUSIVE - ncu ran but matched neither pattern"
+          }
+          Write-Host "--- ncu capture, first 30 lines ---"
+          Get-Content captures/ncu-control.txt -TotalCount 30
+
       - name: Verdict
         shell: powershell
         run: |
           $ErrorActionPreference = 'Continue'
-          $v = Select-String -Path captures/windows-audit.txt -Pattern '^RESULT verdict=' |
-                 ForEach-Object { $_.Line }
-          Write-Host "=== WINDOWS: $v ==="
+          $cap = 'captures/windows-audit.txt'
+          $v = (Select-String -Path $cap -Pattern '^RESULT verdict=' |
+                  ForEach-Object { $_.Line }) -replace '^RESULT verdict=', ''
+          $inner = (Select-String -Path $cap -Pattern '^RESULT process_privileged=' |
+                      ForEach-Object { $_.Line }) -replace '^RESULT process_privileged=', ''
+          Write-Host "=== WINDOWS verdict=$v ==="
+          Write-Host "privileged: outer=$env:OUTER_PRIVILEGED  in-process=$inner"
+
+          # The whole point of the revision: these are two independent readings
+          # of the same fact, and a disagreement means one of them is lying.
+          if ($inner -ne 'UNKNOWN' -and $inner -ne $env:OUTER_PRIVILEGED) {
+            Write-Host "::error::privilege readings disagree - outer=$env:OUTER_PRIVILEGED in-process=$inner"
+            exit 1
+          }
+          if ($v -ne 'EXEMPTION_PROVEN') {
+            Write-Host "::warning::spec 5.4.4 not settled on Windows - verdict=$v"
+          }
 
       - name: Upload capture
         if: always()
@@ -171,6 +284,15 @@ jobs:
           echo "WSL_DETECTED=$(grep -qi microsoft /proc/version && echo YES || echo NO)"
           echo "UID=$(id -u)  USER=$(id -un)"
           sudo -n true 2>/dev/null && echo "PASSWORDLESS_SUDO=YES" || echo "PASSWORDLESS_SUDO=NO"
+          # The gate accepts root OR CAP_SYS_ADMIN (bit 21), so both count as
+          # privileged. Handed to the verdict step to check the probe against.
+          capeff=$(awk '/^CapEff:/ {print $2}' /proc/self/status)
+          echo "CapEff=$capeff"
+          if [ "$(id -u)" = "0" ] || [ $(( 0x${capeff:-0} >> 21 & 1 )) = 1 ]; then
+            echo "OUTER_PRIVILEGED=YES" >> "$GITHUB_ENV"
+          else
+            echo "OUTER_PRIVILEGED=NO" >> "$GITHUB_ENV"
+          fi
           echo "--- /proc/driver/nvidia/params (expected absent under WSL) ---"
           if [ -r /proc/driver/nvidia/params ]; then
             grep -i profil /proc/driver/nvidia/params || cat /proc/driver/nvidia/params
@@ -215,8 +337,21 @@ jobs:
 
       - name: Verdict
         run: |
-          echo "=== WSL ==="
-          grep -E '^RESULT verdict=' captures/wsl-audit.txt
+          set -uo pipefail
+          v=$(sed -n 's/^RESULT verdict=//p' captures/wsl-audit.txt)
+          inner=$(sed -n 's/^RESULT process_privileged=//p' captures/wsl-audit.txt)
+          echo "=== WSL verdict=$v ==="
+          echo "privileged: outer=${OUTER_PRIVILEGED:-unset}  in-process=${inner:-unset}"
+
+          # Two independent readings of one fact; a disagreement means one lies.
+          if [ -n "$inner" ] && [ "$inner" != "UNKNOWN" ] && \
+             [ "$inner" != "${OUTER_PRIVILEGED:-}" ]; then
+            echo "::error::privilege readings disagree - outer=${OUTER_PRIVILEGED:-unset} in-process=$inner"
+            exit 1
+          fi
+          if [ "$v" != "EXEMPTION_PROVEN" ]; then
+            echo "::warning::spec 5.4.4 not settled on WSL - verdict=$v"
+          fi
 
       - name: Upload capture
         if: always()

@@ -145,4 +145,62 @@ namespace cajeta::buildtool {
         return std::optional<std::string>{buf.str()};
     }
 
+    namespace {
+
+        // An organization name reaches the filesystem here, so it must not
+        // be able to leave the repository root. `../../etc/passwd` as an
+        // org would otherwise read anywhere the process can.
+        bool isSafeOrgName(const std::string& org) {
+            if (org.empty() || org == "." || org == "..") return false;
+            for (char c : org) {
+                bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                       || (c >= '0' && c <= '9')
+                       || c == '-' || c == '_' || c == '.';
+                if (!ok) return false;
+            }
+            return org.find("..") == std::string::npos;
+        }
+
+        llvm::Expected<std::optional<std::string>> readIfPresent(
+                const std::filesystem::path& p, const std::string& repoName,
+                const char* what) {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (!fs::is_regular_file(p, ec)) {
+                return std::optional<std::string>{};
+            }
+            std::ifstream in(p, std::ios::binary);
+            if (!in) {
+                return err("filesystem repository '" + repoName +
+                           "': cannot open " + what + " '" + p.string() + "'");
+            }
+            std::ostringstream buf;
+            buf << in.rdbuf();
+            return std::optional<std::string>{buf.str()};
+        }
+
+    } // namespace
+
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::organizationKeys(const std::string& org) const {
+        namespace fs = std::filesystem;
+        if (!isSafeOrgName(org)) {
+            return err("filesystem repository '" + name_ + "': '" + org +
+                       "' is not a usable organization name");
+        }
+        fs::path doc = fs::path(root_) / ".well-known" / "org-keys"
+                     / (org + ".json");
+        return readIfPresent(doc, name_, "organization key document");
+    }
+
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::releaseMetadataJson(
+        const std::string& packageName,
+        const std::string& version) const {
+        namespace fs = std::filesystem;
+        fs::path sidecar = fs::path(root_) / packageName / version /
+                           (packageName + "-" + version + ".release.json");
+        return readIfPresent(sidecar, name_, "release metadata");
+    }
+
 } // namespace cajeta::buildtool

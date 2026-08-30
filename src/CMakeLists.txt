@@ -697,6 +697,25 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_EMBED})
 set_source_files_properties(${CAJETA_RT_SRC} PROPERTIES LANGUAGE C)
 list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
 
+# --- Embedded trust anchor (publisher-trust spec §3.1) ----------------------
+# The repository root public key is compiled in, not read from disk: a default
+# install must verify with no operator action, and an anchor sitting in a file
+# beside the binary could be swapped without shipping anything. Rotation is a
+# file swap here plus a toolchain release (§3.2), which is a channel that is
+# itself already signed.
+#
+# configure_file re-runs cmake when the PEM changes, so the embedded copy
+# cannot drift from resources/roots/.
+set(CAJETA_ROOT_KEY_ID "olla-root-dev-1")
+file(READ ${PROJECT_SOURCE_DIR}/resources/roots/olla-root.pem
+     CAJETA_ROOT_KEY_PEM)
+set(CAJETA_EMBEDDED_ROOT ${CMAKE_CURRENT_BINARY_DIR}/EmbeddedRoot.cpp)
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cajeta/buildtool/EmbeddedRoot.cpp.in
+    ${CAJETA_EMBEDDED_ROOT}
+    @ONLY)
+list(APPEND GENERATED_SOURCES ${CAJETA_EMBEDDED_ROOT})
+
 # cajeta.io.net TLS engine (NET-5.1). Compiled as a STANDALONE native C object —
 # NOT #included into cajeta_runtime.c — so OpenSSL's headers stay out of the
 # embedded JIT bitcode (which is loaded into every JIT test). The `__cajeta_tls_*`

@@ -52,6 +52,21 @@ namespace cajeta::buildtool {
         const std::string& signature,
         const std::string& pemPath);
 
+    // As above, against a PEM held in memory. The shipped trust anchor is
+    // embedded in the binary, so there is no file to name.
+    llvm::Expected<bool> verifyDetachedEd25519PemBytes(
+        const std::string& data,
+        const std::string& signature,
+        const std::string& pemContents);
+
+    // A file's contents against a PEM held in memory — the shape an
+    // organization key document produces, since its keys arrive over the
+    // wire and never touch disk.
+    llvm::Expected<bool> verifyDetachedEd25519File(
+        const std::string& dataPath,
+        const std::string& signature,
+        const std::string& pemContents);
+
     // Read a detached signature file into raw bytes.
     llvm::Expected<std::string> readSignatureFile(const std::string& path);
 

@@ -54,6 +54,21 @@ namespace cajeta::buildtool {
         publishedSignature(const std::string& packageName,
                            const std::string& version) const override;
 
+        // Reads `<root>/.well-known/org-keys/<org>.json` — the filesystem
+        // layout's answer to the HTTP driver's key-document endpoint, so a
+        // local or vendored repository can participate in publisher
+        // verification instead of only being exempted from it.
+        llvm::Expected<std::optional<std::string>>
+        organizationKeys(const std::string& org) const override;
+
+        // Reads `<root>/<name>/<version>/<name>-<version>.release.json`.
+        // May hold a signed envelope or a plain object; this driver returns
+        // the bytes either way and the caller decides what the difference
+        // buys (publisher-trust spec 5.3.1).
+        llvm::Expected<std::optional<std::string>>
+        releaseMetadataJson(const std::string& packageName,
+                            const std::string& version) const override;
+
     private:
         std::string name_;
         std::string root_;

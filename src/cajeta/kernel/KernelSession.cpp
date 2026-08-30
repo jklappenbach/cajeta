@@ -8,6 +8,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -42,6 +43,9 @@
 #include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/ManifestEditor.h"
+#include "cajeta/buildtool/OrgKeyCache.h"
+#include "cajeta/buildtool/PublisherVerification.h"
+#include "cajeta/buildtool/ReleaseIntegrity.h"
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Signature.h"
@@ -322,6 +326,11 @@ struct KernelSession::Impl {
     SessionStats stats;
     int execCount = 0;
     bool shutdownDone = false;
+
+    // publisher-trust U3/U4 — verified organization key documents, cached
+    // across installs in a session. Built on first use so a session that
+    // never installs never touches the trust store.
+    std::unique_ptr<cajeta::buildtool::OrgKeyCache> orgKeys;
 
     // Modules already delivered to the JIT, by IR-module pointer. A cell's
     // codegen can emit into the stdlib module (template instantiations), so
@@ -685,15 +694,66 @@ int32_t sessionInstallHook(const char* name, int32_t nameLen,
 // allowed is a signature that fails to verify.
 bool KernelSession::verifySignatureOrFail(
         const std::string& archivePath, const std::string& name,
-        const std::string& version, const std::string& repoName,
+        const std::string& version,
+        const cajeta::buildtool::Repository& repo,
+        const std::string& owningOrganization,
         const std::string& signature,
         const std::function<void(const std::string&)>& phase,
         std::string* errorOut) {
     namespace bt = cajeta::buildtool;
+    Impl& impl = *impl_;
+    const std::string repoName = repo.name();
     if (signature.empty()) return true;      // policy already decided above
 
     phase("checking signature for " + name + " " + version);
     auto layout = cajeta::cli::resolveTrustStoreLayout();
+
+    // publisher-trust 4.1-4.3 — the document path. Reached only when signed
+    // release metadata said who owns this name; the client never derives an
+    // organization from a dotted name (spec 4.4).
+    if (!owningOrganization.empty()) {
+        if (!impl.orgKeys) {
+            impl.orgKeys = std::make_unique<bt::OrgKeyCache>(
+                cajeta::cli::rootTrustLayoutOf(layout));
+        }
+        std::time_t now = std::time(nullptr);
+        auto doc = impl.orgKeys->documentFor(repo, owningOrganization, now);
+        if (!doc) {
+            if (errorOut) {
+                *errorOut = "Packages.install: the key document for '"
+                          + owningOrganization + "' from " + repoName
+                          + " could not be used: "
+                          + llvm::toString(doc.takeError())
+                          + " Nothing was installed.";
+            } else {
+                llvm::consumeError(doc.takeError());
+            }
+            return false;
+        }
+        if (doc->has_value()) {
+            phase("verifying publisher " + owningOrganization);
+            auto verdict = bt::verifyAgainstOrgDocument(
+                **doc, name, archivePath, signature, now);
+            if (!verdict.ok()) {
+                // 4.3.1 — name the check. "Verification failed" sends a
+                // reader nowhere; each of these says what to do next.
+                if (errorOut) {
+                    *errorOut = "Packages.install: " + verdict.message
+                              + " Nothing was installed.";
+                }
+                return false;
+            }
+            // 9.2 — the document DECIDES. Falling through to the trust
+            // store on a pass would be harmless; falling through on a
+            // failure is the bypass, and the only way to be sure neither
+            // happens is to return here.
+            return true;
+        }
+        // No document: spec 5.4's degrade path. Until Unit 6 flips the
+        // default this falls through to the trust store rather than
+        // refusing.
+    }
+
     std::vector<std::string> keys;
     for (const auto& entry : cajeta::cli::listTrustedKeys(layout)) {
         keys.push_back(entry.path);
@@ -835,12 +895,7 @@ bool KernelSession::resolveForInstall(
     // published checksum IS the cache key, so this is only reachable when
     // the repository publishes one.
     bt::ArtifactCache cache(projectRoot.empty() ? stage : projectRoot);
-    std::string published;
-    if (auto pc = chosen->publishedChecksum(name, chosenVersion)) {
-        if (pc->has_value()) published = **pc;
-    } else {
-        llvm::consumeError(pc.takeError());
-    }
+
     // Spec 3.3/3.5 — the signature the repository publishes, resolved
     // BEFORE the cache arm so a cached artifact is held to the same policy
     // as a freshly fetched one. A cache hit is a shortcut past the network,
@@ -851,6 +906,41 @@ bool KernelSession::resolveForInstall(
     } else {
         llvm::consumeError(ps.takeError());
     }
+
+    // publisher-trust 5.1 / 6.2 — the hash this install is held to, and
+    // WHO owns the name, both out of the repository's signed release
+    // metadata when it serves one. Resolved before the cache arm for the
+    // same reason the signature is (4.1.5).
+    auto roots = bt::rootsFor(
+        cajeta::cli::rootTrustLayoutOf(cajeta::cli::resolveTrustStoreLayout()),
+        chosen->name());
+    std::string published;
+    bool signedHash = false;
+    std::string owningOrganization;
+    if (!roots) {
+        // No usable anchors for this repository — an unhonourable pin, say.
+        // That is a configuration error, not a reason to install unchecked.
+        return fail("Packages.install: the trust anchors for repository '"
+                    + chosen->name() + "' could not be resolved: "
+                    + llvm::toString(roots.takeError()));
+    }
+    if (auto integrity = bt::releaseIntegrityFor(*chosen, name, chosenVersion,
+                                                 *roots)) {
+        published = integrity->sha256;
+        signedHash = integrity->fromSignedMetadata;
+        // Only a root-SIGNED organization counts. An unsigned one is
+        // written as freely as a name prefix by anyone in the path.
+        if (integrity->fromSignedMetadata) {
+            owningOrganization = integrity->organization;
+        }
+    } else {
+        // Metadata that is present and does not verify is a refusal, not a
+        // fall-through: a mirror able to strip a signature to reach the
+        // unsigned path would make the whole chain optional.
+        return fail("Packages.install: " + llvm::toString(integrity.takeError())
+                    + " Nothing was installed.");
+    }
+
     if (signature.empty() && requireSignatures) {
         return fail("Packages.install: '" + name + "' " + chosenVersion
                     + " from " + chosen->name() + " publishes no signature, "
@@ -861,8 +951,8 @@ bool KernelSession::resolveForInstall(
 
     if (!published.empty()) {
         if (auto hit = cache.lookup(published)) {
-            if (!verifySignatureOrFail(*hit, name, chosenVersion,
-                                       chosen->name(), signature, phase,
+            if (!verifySignatureOrFail(*hit, name, chosenVersion, *chosen,
+                                       owningOrganization, signature, phase,
                                        errorOut)) {
                 return false;
             }
@@ -892,15 +982,23 @@ bool KernelSession::resolveForInstall(
         if (actual != published) {
             std::error_code rm;
             std::filesystem::remove(*fetched, rm);
+            // Name WHERE the expected hash came from. A mismatch against
+            // a root-signed hash means the bytes are not the release the
+            // publisher signed; a mismatch against an unsigned sidecar
+            // means only that the download disagrees with the tree it came
+            // from. The two ask an operator to do different things.
             return fail("Packages.install: checksum mismatch for '" + name
                         + "' " + chosenVersion + " from " + chosen->name()
-                        + " — published " + published + ", got "
+                        + " — " + (signedHash ? "the root-signed release "
+                                                "metadata says "
+                                              : "the published checksum says ")
+                        + published + ", the bytes hash to "
                         + (actual.empty() ? std::string("nothing") : actual)
                         + ". The download was discarded and nothing was "
                           "installed.");
         }
-        if (!verifySignatureOrFail(*fetched, name, chosenVersion,
-                                   chosen->name(), signature, phase,
+        if (!verifySignatureOrFail(*fetched, name, chosenVersion, *chosen,
+                                   owningOrganization, signature, phase,
                                    errorOut)) {
             std::error_code rm;
             std::filesystem::remove(*fetched, rm);
@@ -913,8 +1011,8 @@ bool KernelSession::resolveForInstall(
         } else {
             llvm::consumeError(stored.takeError());   // cache is best-effort
         }
-    } else if (!verifySignatureOrFail(*fetched, name, chosenVersion,
-                                      chosen->name(), signature, phase,
+    } else if (!verifySignatureOrFail(*fetched, name, chosenVersion, *chosen,
+                                      owningOrganization, signature, phase,
                                       errorOut)) {
         std::error_code rm;
         std::filesystem::remove(*fetched, rm);
