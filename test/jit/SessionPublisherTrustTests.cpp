@@ -343,3 +343,56 @@ TEST(SessionPublisherTrustTests, aRepositoryWithNoDocumentUsesTheTrustStore) {
     s->shutdown();
     fs::remove_all(root);
 }
+
+// 5.1.2 + 5.1.3 / spec 5.1, 5.2 — a mirror that rewrites the unsigned
+// sidecar to match tampered bytes achieves nothing, because the hash the
+// install is held to lives inside what the root signed.
+//
+// The discriminator is which failure comes back. Had the sidecar been read,
+// the checksum would have MATCHED the tampered bytes and the refusal would
+// have come later, from the signature. A checksum mismatch naming the
+// signed metadata is only reachable if the signed hash is what was
+// compared.
+TEST(SessionPublisherTrustTests, aMirrorRewritingTheChecksumIsCaught) {
+    auto root = freshRoot("tampered");
+    auto cja = buildDep(root);
+    ASSERT_FALSE(cja.empty()) << "fixture archive failed to build";
+    auto f = stage(root, cja, StageOptions{});
+    auto project = stageProject(root, f.repo);
+
+    // The mirror swaps the bytes and updates the sidecar to match, which
+    // is exactly as far as its powers go: the release metadata is signed
+    // by a root it does not hold.
+    auto archive = f.repo / "dev.cajeta.depx" / "1.0.0"
+                 / "dev.cajeta.depx-1.0.0.cja";
+    {
+        std::ofstream out(archive, std::ios::binary | std::ios::app);
+        out << "\ntampered";
+    }
+    writeWholeFile(fs::path(archive.string() + ".sha256"),
+                   cajeta::buildtool::ArtifactCache::sha256OfFile(
+                       archive.string()));
+
+    auto s = sessionIn(project);
+    ASSERT_NE(nullptr, s.get());
+
+    CellResult r = s->execute(
+        cell("Packages.install(\"dev.cajeta.depx\", \"1.*\");\n"));
+    EXPECT_FALSE(r.ok) << "tampered bytes must not install";
+    EXPECT_TRUE(contains(r.message, "checksum mismatch"))
+        << "the SIGNED hash must be what the bytes were compared against; "
+           "a signature failure here would mean the sidecar was used. Got: "
+        << r.message;
+    EXPECT_TRUE(contains(r.message, "root-signed release metadata"))
+        << "the message must say where the expected hash came from; got: "
+        << r.message;
+
+    // Nothing spliced, session still serving.
+    CellResult use = s->execute("import depx.Answer;\nAnswer.v();\n");
+    EXPECT_FALSE(use.ok) << "a rejected install must splice nothing";
+    CellResult alive = s->execute("1 + 1;\n");
+    ASSERT_TRUE(alive.ok) << alive.errorId << ": " << alive.message;
+
+    s->shutdown();
+    fs::remove_all(root);
+}

@@ -45,7 +45,7 @@
 #include "cajeta/buildtool/ManifestEditor.h"
 #include "cajeta/buildtool/OrgKeyCache.h"
 #include "cajeta/buildtool/PublisherVerification.h"
-#include "cajeta/buildtool/ReleaseMetadata.h"
+#include "cajeta/buildtool/ReleaseIntegrity.h"
 #include "cajeta/buildtool/Repository.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/Signature.h"
@@ -895,12 +895,7 @@ bool KernelSession::resolveForInstall(
     // published checksum IS the cache key, so this is only reachable when
     // the repository publishes one.
     bt::ArtifactCache cache(projectRoot.empty() ? stage : projectRoot);
-    std::string published;
-    if (auto pc = chosen->publishedChecksum(name, chosenVersion)) {
-        if (pc->has_value()) published = **pc;
-    } else {
-        llvm::consumeError(pc.takeError());
-    }
+
     // Spec 3.3/3.5 — the signature the repository publishes, resolved
     // BEFORE the cache arm so a cached artifact is held to the same policy
     // as a freshly fetched one. A cache hit is a shortcut past the network,
@@ -911,41 +906,39 @@ bool KernelSession::resolveForInstall(
     } else {
         llvm::consumeError(ps.takeError());
     }
-    // publisher-trust 4.2.1 / 6.2 — WHO owns this name, read from the
-    // repository's signed release metadata. Resolved BEFORE the cache arm,
-    // for the same reason the signature is: a cache hit is a shortcut past
-    // the network, never past the checks (4.1.5).
-    //
-    // Only a root-SIGNED organization counts. An unsigned one is written as
-    // freely as a name prefix by anyone in the path, so acting on it would
-    // reintroduce exactly the unbound trust this spec exists to remove.
+
+    // publisher-trust 5.1 / 6.2 — the hash this install is held to, and
+    // WHO owns the name, both out of the repository's signed release
+    // metadata when it serves one. Resolved before the cache arm for the
+    // same reason the signature is (4.1.5).
+    auto roots = bt::rootsFor(
+        cajeta::cli::rootTrustLayoutOf(cajeta::cli::resolveTrustStoreLayout()),
+        chosen->name());
+    std::string published;
+    bool signedHash = false;
     std::string owningOrganization;
-    if (auto raw = chosen->releaseMetadataJson(name, chosenVersion)) {
-        if (raw->has_value()) {
-            auto roots = bt::rootsFor(
-                cajeta::cli::rootTrustLayoutOf(
-                    cajeta::cli::resolveTrustStoreLayout()),
-                chosen->name());
-            if (roots) {
-                auto md = bt::loadReleaseMetadata(**raw, *roots);
-                if (md) {
-                    if (md->signedByRoot) owningOrganization = md->organization;
-                } else {
-                    // Metadata that is present and does not verify is a
-                    // refusal, not a fall-through: a mirror that could strip
-                    // a signature to reach the unsigned path would make the
-                    // whole chain optional.
-                    return fail("Packages.install: the release metadata for '"
-                                + name + "' " + chosenVersion + " from "
-                                + chosen->name() + " did not verify: "
-                                + llvm::toString(md.takeError()));
-                }
-            } else {
-                llvm::consumeError(roots.takeError());
-            }
+    if (!roots) {
+        // No usable anchors for this repository — an unhonourable pin, say.
+        // That is a configuration error, not a reason to install unchecked.
+        return fail("Packages.install: the trust anchors for repository '"
+                    + chosen->name() + "' could not be resolved: "
+                    + llvm::toString(roots.takeError()));
+    }
+    if (auto integrity = bt::releaseIntegrityFor(*chosen, name, chosenVersion,
+                                                 *roots)) {
+        published = integrity->sha256;
+        signedHash = integrity->fromSignedMetadata;
+        // Only a root-SIGNED organization counts. An unsigned one is
+        // written as freely as a name prefix by anyone in the path.
+        if (integrity->fromSignedMetadata) {
+            owningOrganization = integrity->organization;
         }
     } else {
-        llvm::consumeError(raw.takeError());
+        // Metadata that is present and does not verify is a refusal, not a
+        // fall-through: a mirror able to strip a signature to reach the
+        // unsigned path would make the whole chain optional.
+        return fail("Packages.install: " + llvm::toString(integrity.takeError())
+                    + " Nothing was installed.");
     }
 
     if (signature.empty() && requireSignatures) {
@@ -989,9 +982,17 @@ bool KernelSession::resolveForInstall(
         if (actual != published) {
             std::error_code rm;
             std::filesystem::remove(*fetched, rm);
+            // Name WHERE the expected hash came from. A mismatch against
+            // a root-signed hash means the bytes are not the release the
+            // publisher signed; a mismatch against an unsigned sidecar
+            // means only that the download disagrees with the tree it came
+            // from. The two ask an operator to do different things.
             return fail("Packages.install: checksum mismatch for '" + name
                         + "' " + chosenVersion + " from " + chosen->name()
-                        + " — published " + published + ", got "
+                        + " — " + (signedHash ? "the root-signed release "
+                                                "metadata says "
+                                              : "the published checksum says ")
+                        + published + ", the bytes hash to "
                         + (actual.empty() ? std::string("nothing") : actual)
                         + ". The download was discarded and nothing was "
                           "installed.");

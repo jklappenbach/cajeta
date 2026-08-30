@@ -1529,6 +1529,33 @@ The path contains a tree:
 Used for dev overrides, vendoring, and CI scenarios that pre-stage
 artifacts.
 
+A release may carry three sidecars beside its `.cja`:
+
+```
+dev.cajeta.http-1.0.0.cja
+dev.cajeta.http-1.0.0.cja.sha256        # unsigned checksum
+dev.cajeta.http-1.0.0.cja.sig           # detached ed25519 signature
+dev.cajeta.http-1.0.0.release.json      # root-signed release metadata
+```
+
+plus, at the repository root, the key documents its organizations
+publish:
+
+```
+.well-known/org-keys/dev.cajeta.json
+```
+
+**The `.sha256` sidecar is a weaker guarantee than it looks.** It
+catches a corrupted or truncated download, which is what a checksum
+alone was ever good for. It cannot catch a hostile mirror: anyone
+able to change the bytes can change the sidecar next to them. When
+`release.json` is present its hash is covered by the repository root's
+signature, that hash is the one an install is held to, and the
+`.sha256` sidecar beside it is ignored rather than compared. A local
+tree that ships only `.sha256` keeps working exactly as before —
+just understand that it is protecting you from disk and network
+faults, not from whoever served the tree.
+
 ### HTTP repository
 
 Default for public + corporate registries. Wire protocol is a
