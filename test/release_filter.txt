@@ -86,6 +86,14 @@ ErrorType.*
 ExceptionLocation.*
 FactoryAssistedTests.*
 FactoryCodegenTests.*
+# FileReader.awaitReadable's platform guard: the ONE OS-conditional arm of
+# pollable-stdin. Windows must refuse (Winsock select() cannot poll a
+# console/pipe HANDLE) and POSIX must not, and only the release matrix ever
+# runs the Windows side. The two sibling suites
+# (FileReaderAwaitReadableTests, FileReaderAwaitRegularFileTests) are
+# deliberately NOT listed: they are `#if defined(__linux__)`, so they would
+# match zero tests elsewhere, which this file treats as a hard error.
+FileReaderAwaitPlatformTests.*
 FlavorTests.*
 FrontMatterParseTests.*
 FrontMatterSplitTests.*

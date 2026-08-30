@@ -115,6 +115,34 @@
 int32_t __cajeta_net_reactor_lifecycle_init(void);
 
 // ---------------------------------------------------------------------------
+// __cajeta_io_await_supported — can this platform wait on an ARBITRARY fd?
+//
+// `__cajeta_net_reactor_poll_fd` below is identical across POSIX fds and
+// Winsock SOCKETs, which is exactly why it is the reactor's portable probe.
+// It is NOT identical across POSIX fds and Windows HANDLES: Winsock select()
+// accepts only SOCKETs, so a Windows console or pipe handle — stdin, the
+// motivating case for `FileReader.awaitReadable` — cannot be polled by it at
+// all. A correct Windows path needs PeekNamedPipe for pipes plus
+// WaitForSingleObject for console handles, i.e. a native subsystem of its own,
+// the same reason the kqueue and IOCP reactor engines are still deferred.
+//
+// So this reports the capability and `FileReader.awaitReadable` refuses up
+// front where it is absent. Without it, a Windows caller would get the generic
+// "bad descriptor" error from select() and reasonably conclude their fd was
+// wrong, when the truth is that the platform cannot do this yet.
+//
+// Returns 1 when an arbitrary-fd readiness wait is supported, 0 otherwise.
+// When the Win32 path lands, this returns 1 there and no caller changes.
+// ---------------------------------------------------------------------------
+int32_t __cajeta_io_await_supported(void) {
+#if defined(_WIN32)
+    return 0;
+#else
+    return 1;
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // __cajeta_net_reactor_poll_fd — portable single-fd readiness probe.
 //
 // Blocks the *calling OS thread* until `fd` is ready for any bit in `interest`

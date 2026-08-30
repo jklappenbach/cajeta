@@ -103,6 +103,12 @@ public class FileReader {
     private static int32 pollFdNative(int32 fd, int32 interest,
         int32 timeoutMs);
 
+    /** `1` where an arbitrary-fd readiness wait is possible, `0` where the
+     *  platform has no way to do it (Windows today — Winsock `select()`
+     *  takes only SOCKETs, and a console/pipe HANDLE is not one). */
+    @Native("__cajeta_io_await_supported")
+    private static int32 awaitSupportedNative();
+
     /**
      * Wait until this reader's fd is readable, or `timeoutMs` elapses.
      *
@@ -151,6 +157,18 @@ public class FileReader {
         int32 READ = 1;
         int32 READY = 1;
         int32 ERROR = 0 - 1;
+
+        // Refuse UP FRONT where the platform cannot do this at all, naming
+        // the platform and the reason. Falling through would hand back the
+        // probe's generic "bad descriptor", which reads as "your fd is
+        // wrong" when the truth is "this OS cannot poll that handle".
+        if (FileReader.awaitSupportedNative() == 0) {
+            throw heap IoException(
+                "awaitReadable: unsupported on Windows — Winsock select() "
+                + "accepts only SOCKETs, and a console or pipe HANDLE is "
+                + "not one. Needs a native PeekNamedPipe / "
+                + "WaitForSingleObject path.");
+        }
 
         // A zero timeout is a pure probe — answer the fd's real state and
         // return, no parking.
