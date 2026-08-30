@@ -190,15 +190,22 @@ jobs:
       # gated calls, and that pairing is exactly what spec 5.4.4 asserts. If ncu
       # is allowed too, the registry value is not governing this driver.
       - name: Gate positive control (Nsight Compute)
-        continue-on-error: true
         shell: powershell
         run: |
+          # ASCII ONLY in this block. Windows PowerShell 5.1 reads the runner's
+          # temp .ps1 as ANSI, not UTF-8: an em dash mis-decodes, terminates a
+          # string early, and the next apostrophe opens one that never closes.
+          # That is not hypothetical - it silently killed this step on
+          # 2026-08-30 (run 33318146776), and continue-on-error turned the
+          # unparseable script into a green step. Hence no continue-on-error
+          # here either: a control that cannot fail is not a control.
           $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Force -Path captures | Out-Null
+
           $ncu = $null
           foreach ($root in @("$env:CUDA_PATH", "$env:ProgramFiles\NVIDIA Corporation")) {
             if ($root -and (Test-Path $root)) {
-              $hit = Get-ChildItem -Path $root -Recurse -Filter 'ncu.exe' -ErrorAction SilentlyContinue |
-                       Select-Object -First 1
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'ncu.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($hit) { $ncu = $hit.FullName; break }
             }
           }
@@ -207,25 +214,24 @@ jobs:
             exit 0
           }
           Write-Host "using $ncu"
-          # A tiny run: one metric, smallest kernel, just enough to touch the
-          # counter hardware and be refused if the gate is on.
+
           $env:PATH = "$env:CUDA_PATH\extras\CUPTI\lib64;$env:CUDA_PATH\bin;$env:PATH"
-          & $ncu --metrics sm__cycles_elapsed.avg --target-processes all `
-                 .\probe_cupti_caps.exe 1000 1 2>&1 |
-            Tee-Object -FilePath captures/ncu-control.txt | Out-Null
+          & $ncu --metrics sm__cycles_elapsed.avg .\probe_cupti_caps.exe 1000 1 2>&1 | Tee-Object -FilePath captures/ncu-control.txt | Out-Null
           $txt = Get-Content captures/ncu-control.txt -Raw
-          if ($txt -match 'ERR_NVGPUCTRPERM|insufficient permissions|administrator privileges') {
-            Write-Host "CONTROL=REFUSED_PRIVILEGES — the gate IS active on this box"
-            Write-Host "  => T3's CUPTI probes are NOT gated calls, and T1/T2 passing"
-            Write-Host "     alongside this refusal is spec 5.4.4 demonstrated."
+          if ($null -eq $txt) { $txt = "" }
+
+          if ($txt -match 'ERR_NVGPUCTRPERM') {
+            Write-Host "CONTROL=REFUSED_PRIVILEGES - the gate IS active on this box"
+            Write-Host "  So T3 CUPTI probes are NOT gated calls, and T1/T2 passing"
+            Write-Host "  alongside this refusal is spec 5.4.4 demonstrated."
           } elseif ($txt -match 'sm__cycles_elapsed') {
-            Write-Host "CONTROL=ALLOWED — counter profiling worked UNPRIVILEGED with"
-            Write-Host "  RmProfilingAdminOnly=1, so that value is not governing this driver."
+            Write-Host "CONTROL=ALLOWED - counter profiling worked UNPRIVILEGED with"
+            Write-Host "  RmProfilingAdminOnly=1, so that value does not govern this driver."
           } else {
-            Write-Host "CONTROL=INCONCLUSIVE — ncu ran but said neither; see the capture"
+            Write-Host "CONTROL=INCONCLUSIVE - ncu ran but matched neither pattern"
           }
-          Write-Host "--- first 25 lines of the ncu capture ---"
-          Get-Content captures/ncu-control.txt -TotalCount 25
+          Write-Host "--- ncu capture, first 30 lines ---"
+          Get-Content captures/ncu-control.txt -TotalCount 30
 
       - name: Verdict
         shell: powershell
