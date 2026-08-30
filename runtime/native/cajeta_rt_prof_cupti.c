@@ -93,6 +93,8 @@ typedef struct {
     // Unit 12's record path.
     int32_t    degraded;          // §5.4.3 — attached elsewhere; we are a no-op
     int32_t    ts_registered;     // the timestamp callback is in place
+    int32_t    ts_status;         // the registration attempt's raw CUptiResult;
+                                  // -1 = never attempted (symbol absent)
     int32_t    kinds_enabled;     // how many activity kinds we have enabled
     int32_t    ts_first;          // ts_registered happened at kinds_enabled == 0
     int64_t    records;           // kernel records decoded and usable
@@ -411,6 +413,12 @@ int32_t __cajeta_prof_cupti_ts_callback_registered_first(void) {
     return caj_cupti.ts_first;
 }
 
+// 0 = registered, -1 = never attempted (symbol absent), >0 = the CUptiResult
+// the driver refused with. The distinction decides whether §6.9's conversion
+// path is a choice or a fallback, so it is reported rather than inferred.
+int32_t __cajeta_prof_cupti_ts_status(void)     { return caj_cupti.ts_status; }
+int32_t __cajeta_prof_cupti_ts_registered(void) { return caj_cupti.ts_registered; }
+
 int64_t __cajeta_prof_cupti_records(void)  { return caj_cupti.records; }
 int64_t __cajeta_prof_cupti_rejected(void) { return caj_cupti.rejected; }
 
@@ -632,6 +640,7 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.has_ts_callback = 0;
     caj_cupti.degraded = 0;
     caj_cupti.ts_registered = 0;
+    caj_cupti.ts_status = -1;
     caj_cupti.kinds_enabled = 0;
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
@@ -709,14 +718,34 @@ int32_t __cajeta_prof_cupti_init(void) {
     // arrive before the callback is in place are stamped in CUPTI's own
     // domain, and nothing downstream can tell them from converted ones.
     if (caj_cupti.has_ts_callback && caj_cupti.api.register_timestamp_callback) {
-        if (caj_cupti.api.register_timestamp_callback(caj_cupti_timestamp_cb) == 0)
-            caj_cupti_note_ts_registered();
+        caj_cupti.ts_status =
+            (int32_t) caj_cupti.api.register_timestamp_callback(caj_cupti_timestamp_cb);
+        if (caj_cupti.ts_status == 0) caj_cupti_note_ts_registered();
     }
-    caj_cupti_say(CAJETA_CUPTI_READY, tried,
-                  caj_cupti.has_ts_callback
-                      ? "CUPTI bound (timestamp callback present)"
-                      : "CUPTI bound (no timestamp callback; §6.9 conversion "
-                        "path will apply)");
+    // THREE outcomes, not two. The symbol can be absent, present and accepted,
+    // or present and REFUSED — and the third is real: phoenix-wsl resolves
+    // cuptiActivityRegisterTimestampCallback and then rejects the registration
+    // (measured 2026-08-30, run 33328180931). Discarding that status made a
+    // platform difference look like an ordering bug, and left the operator
+    // with a backend silently on the §6.9 conversion path and nothing saying
+    // so. Binding is a STATE here and every state owes an actionable sentence.
+    if (!caj_cupti.has_ts_callback) {
+        caj_cupti_say(CAJETA_CUPTI_READY, tried,
+                      "CUPTI bound (no cuptiActivityRegisterTimestampCallback in "
+                      "this toolkit; §6.9 conversion path applies)");
+    } else if (caj_cupti.ts_registered) {
+        caj_cupti_say(CAJETA_CUPTI_READY, tried,
+                      "CUPTI bound (timestamp callback registered; records "
+                      "arrive in the host clock domain)");
+    } else {
+        char why[CAJ_CUPTI_REASON_MAX];
+        snprintf(why, sizeof(why),
+                 "CUPTI bound but the timestamp callback was REFUSED "
+                 "(CUptiResult %d); records arrive in CUPTI's own clock domain "
+                 "and §6.9 conversion applies. Known on WSL2.",
+                 (int) caj_cupti.ts_status);
+        caj_cupti_say(CAJETA_CUPTI_READY, tried, why);
+    }
     pthread_mutex_unlock(&caj_cupti_mutex);
     return 1;
 }
