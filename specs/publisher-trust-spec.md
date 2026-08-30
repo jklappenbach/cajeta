@@ -323,3 +323,28 @@ being added, and a local key has none.
 serves key documents. A client that requires what no server publishes
 rejects every install. Ordering is a hard constraint on any plan built
 from this spec.
+
+**9.4 The current key-registration flow contradicts §7.3, and does so in
+production.** Found 2026-08-30 by reading the deployed code, not inferred:
+olla's `POST /v2/keys` calls `authenticatePublish`
+(`cajeta-olla/src/routes/keys.ts`), the same bearer token a publisher uses
+to upload. A publisher therefore registers its own signing key today, and
+`docs/specification/buildtool/olla-ci-publish.md` documents doing exactly
+that as one-time setup.
+
+That is the compound compromise §7.4 exists to prevent: one stolen
+`OLLA_TOKEN` currently buys both the ability to register a key and the
+ability to publish artifacts signed by it, so account compromise IS
+signing compromise. §7.3 requires key management to be owner-only.
+
+**9.4.1** Moving key registration behind owner authority is a MIGRATION,
+not just a code change. Every library already publishing has a CI key
+registered under the old rule, and those keys must be re-attested by the
+owner rather than silently inherited — a key that got there under an
+authority the spec no longer accepts has no more standing than one added
+tomorrow by the same route.
+
+**9.4.2** This sequences with §6.5. Refusing uploads from an organization
+with no current key document is unenforceable while an organization can
+mint its own key on demand, since the refusal is then one API call away
+from being satisfied by the party it is meant to constrain.
