@@ -119,6 +119,14 @@ static const char* yes_no_unknown(int v) {
     return v < 0 ? "UNKNOWN" : (v ? "YES" : "NO");
 }
 
+// CUPTI_ERROR_LEGACY_PROFILER_NOT_SUPPORTED. Spelled as its value rather than
+// the enum because toolkits older than the one that introduced it do not
+// declare the name, and this probe has to build on whatever CUPTI a runner
+// ships. It means "compute capability 7.5+", not "refused" — the 4090 returned
+// it from T3c on 2026-08-29 and the first classification counted that as a
+// probe that had answered, inflating t3_gate_probes_answering from 3 to 4.
+static const int kCuptiLegacyProfilerNotSupported = 38;
+
 static int g_fail = 0;
 
 #define CU_CHECK(call, what)                                                   \
@@ -512,7 +520,9 @@ int main(int argc, char** argv) {
         if (probe == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)      t3a = "REFUSED_PRIVILEGES";
         else if (probe == CUPTI_SUCCESS)                       t3a = "ALLOWED";
         else if (probe == CUPTI_ERROR_NOT_SUPPORTED ||
-                 probe == CUPTI_ERROR_NOT_COMPATIBLE)          t3a = "UNSUPPORTED_HERE";
+                 probe == CUPTI_ERROR_NOT_COMPATIBLE ||
+                 (int) probe == kCuptiLegacyProfilerNotSupported)
+                                                               t3a = "UNSUPPORTED_HERE";
         else                                                   t3a = "REFUSED_OTHER";
         printf("RESULT t3a_profiler_raw_status=%d\n", (int) probe);
         // Same rule as the other two: an operation this box cannot perform is
@@ -544,7 +554,9 @@ int main(int argc, char** argv) {
             if (r == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)   verd = "REFUSED_PRIVILEGES";
             else if (r == CUPTI_SUCCESS)                    verd = "ALLOWED";
             else if (r == CUPTI_ERROR_NOT_SUPPORTED ||
-                     r == CUPTI_ERROR_NOT_COMPATIBLE)       verd = "UNSUPPORTED_HERE";
+                     r == CUPTI_ERROR_NOT_COMPATIBLE ||
+                     (int) r == kCuptiLegacyProfilerNotSupported)
+                                                            verd = "UNSUPPORTED_HERE";
             else                                            verd = "REFUSED_OTHER";
             printf("RESULT t3b_activity_%s=%s\n", g.name, verd);
             printf("RESULT t3b_activity_%s_raw=%d\n", g.name, (int) r);
@@ -567,7 +579,9 @@ int main(int argc, char** argv) {
         if (r == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)   verd = "REFUSED_PRIVILEGES";
         else if (r == CUPTI_SUCCESS)                    verd = "ALLOWED";
         else if (r == CUPTI_ERROR_NOT_SUPPORTED ||
-                 r == CUPTI_ERROR_NOT_COMPATIBLE)       verd = "UNSUPPORTED_HERE";
+                 r == CUPTI_ERROR_NOT_COMPATIBLE ||
+                 (int) r == kCuptiLegacyProfilerNotSupported)
+                                                        verd = "UNSUPPORTED_HERE";
         else                                            verd = "REFUSED_OTHER";
         printf("RESULT t3c_legacy_events=%s\n", verd);
         printf("RESULT t3c_legacy_events_raw=%d\n", (int) r);
