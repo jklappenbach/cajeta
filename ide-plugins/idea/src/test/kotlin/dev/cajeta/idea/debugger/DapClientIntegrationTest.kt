@@ -115,11 +115,22 @@ class DapClientIntegrationTest {
             // The server runs the program *synchronously* from configurationDone
             // (JIT-compiles + executes until the first stop), so its response is
             // only acked once the breakpoint is hit. A cold first-JIT of the full
-            // compiler binary can take well over 10s on a loaded machine — give it
-            // ample headroom rather than flaking. See CajetaDebugSession.launch().
-            client.sendRequest("configurationDone").get(30, TimeUnit.SECONDS)
+            // compiler binary dominates, and it is SLOW.
+            //
+            // MEASURED 2026-08-29 by hand-driving `cajeta dap` through this exact
+            // sequence on an idle machine: configurationDone acked at 40.9s, with
+            // the stopped event in the same instant. The 30s budget here failed on
+            // an idle box, not a loaded one, so this was a real overrun rather than
+            // the flake the old comment guarded against.
+            //
+            // Worth knowing: the sibling CajetaDebugSessionIntegrationTest measured
+            // this same cold launch at ~20s on 2026-08-27. It has roughly DOUBLED
+            // in two days. 90s is headroom, not a target — if this file starts
+            // failing again, measure before raising it, because the number itself
+            // is the signal.
+            client.sendRequest("configurationDone").get(90, TimeUnit.SECONDS)
 
-            assertTrue("breakpoint never hit", stopped.await(30, TimeUnit.SECONDS))
+            assertTrue("breakpoint never hit", stopped.await(90, TimeUnit.SECONDS))
             assertEquals("breakpoint", stoppedEvent.get().at("body").at("reason").asString())
 
             val st = client.sendRequest("stackTrace").get(10, TimeUnit.SECONDS)
