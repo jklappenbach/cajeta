@@ -1598,6 +1598,30 @@ namespace cajeta {
                                                           /*allowSuper=*/true);
         if (!recv) return nullptr;
 
+        // 5.1.7 — a static generic call on the OPEN template:
+        // `Tensor.zeros<float32>(s8)`. An open template holds NO Method
+        // objects (its body walk is skipped at parse; members live only in
+        // the template-member table), so the candidate walk below can never
+        // match on it. When the call's explicit type args exactly fit the
+        // CLASS's parameters, the call names an instantiation — materialize
+        // it and resolve there, where the methods are real and the return
+        // types arrive substituted. Exact-count-or-nothing: a mismatch means
+        // the args are METHOD-level (`Json.toBytes<JsonNum>` on a plain
+        // class) or ambiguous, and the receiver is left as it was.
+        if (recv->isTemplate() && !explicitMethodTypeArgs.empty()
+                && recv->getTypeParameters().size()
+                       == explicitMethodTypeArgs.size()) {
+            bool allBound = true;
+            for (auto& a : explicitMethodTypeArgs) if (!a) allBound = false;
+            if (allBound) {
+                try {
+                    if (auto inst = std::dynamic_pointer_cast<CajetaClass>(
+                            recv->instantiate(explicitMethodTypeArgs)))
+                        recv = inst;
+                } catch (...) { /* keep the open template: no candidates */ }
+            }
+        }
+
         // Candidates by name+arity over the receiver and its ancestors. A
         // derived override shadows the ancestor it overrides, so the FIRST
         // class in the walk that declares a given signature wins.
@@ -1693,6 +1717,60 @@ namespace cajeta {
         }
     }
 
+    // xref-lint-emission-gap 5.1.6 — repair a generic method's return type by
+    // rebinding its METHOD type parameters from this call site.
+    //
+    // Only CLASS type parameters are substituted when a class is instantiated.
+    // A METHOD's own parameter has nothing to bind it at that point, so the
+    // return type arrives with it unresolved, and the next link of a chain has
+    // no receiver. Measured on one chain over `Stream`:
+    //
+    //   filter -> Stream<T>  (CLASS param)  => Stream<int32>, CLOSED (targs=1)
+    //   map<R> -> Stream<R>  (METHOD param) => Stream,        OPEN   (targs=0)
+    //
+    // That asymmetry is what makes this sound rather than a guess: a class
+    // parameter NEVER arrives open, so an open template return identifies the
+    // method-parameter case exactly. Unique-or-nothing still applies — every
+    // shape that does not match exactly is returned untouched rather than
+    // approximated, because a wrong receiver type makes wrong edges downstream
+    // and a wrong edge is worse than a missing one (spec 2.1.2).
+    //
+    // Lint-only by construction: the sole callers are in resolveTypes, which
+    // returns early unless the module is in resolution-only mode.
+    CajetaTypePtr MethodCallExpression::rebindMethodTypeArgs(
+            const CajetaTypePtr& declared, const MethodPtr& callee) {
+        if (!declared || !callee) return declared;
+        if (explicitMethodTypeArgs.empty()) return declared;   // inferred: nothing to bind
+        const auto& tps = callee->getMethodTypeParameters();
+        if (tps.size() != explicitMethodTypeArgs.size()) return declared;
+
+        // (a) The return IS the variable — `R fold<R>(R seed, ...)`.
+        if (declared->getQName()) {
+            const std::string& n = declared->getQName()->getTypeName();
+            for (size_t i = 0; i < tps.size(); i++)
+                if (n == tps[i].name && explicitMethodTypeArgs[i])
+                    return explicitMethodTypeArgs[i];
+        }
+
+        // (b) The return is a template PARAMETERISED BY the variable —
+        // `#Stream<R> map<R>(...)`, which arrives flattened to open `Stream`.
+        // The arity guard is what declines a mixed shape such as a
+        // hypothetical `Map<T,R> pair<R>()`: two template parameters against
+        // one method parameter is not a binding this can make, so it is left
+        // alone instead of filled in positionally.
+        if (auto rk = std::dynamic_pointer_cast<CajetaClass>(declared)) {
+            if (rk->isTemplate()
+                    && rk->getTypeParameters().size() == tps.size()) {
+                for (auto& a : explicitMethodTypeArgs) if (!a) return declared;
+                try {
+                    if (auto inst = rk->instantiate(explicitMethodTypeArgs))
+                        return inst;
+                } catch (...) { /* fall through: keep the declared type */ }
+            }
+        }
+        return declared;
+    }
+
     void MethodCallExpression::resolveTypes(CajetaModulePtr module) {
         // LINT ONLY. In a build this must behave exactly as the base did —
         // walking children and nothing else. Resolving a call's ARGUMENTS
@@ -1720,6 +1798,55 @@ namespace cajeta {
         for (auto& child : children) {
             if (!child) continue;
             try { child->resolveTypes(module); } catch (...) { }
+        }
+
+        // 5.1.7 — the `arr.stream()` intrinsic. Not a method anywhere:
+        // codegen lowers it inline to `heap ArrayStream<T>(arr, count)`
+        // (P6.6 above), and the ctor resolution inside that lowering records
+        // the ArrayStream constructor edge at the user's `stream()` position.
+        // Lint sees a CajetaArray receiver, finds no callee, and the WHOLE
+        // chain downstream is dead — measured as the dominant residual over
+        // samples/tour (StreamsDemo, ParallelStreamsDemo, CollectorsDemo all
+        // stream over arrays). Mirror the same resolution: the same
+        // instantiation, the same 2-arg ctor, recorded through the same choke
+        // point — so the two paths agree by construction, key computation
+        // included.
+        if (methodCallName == "stream" && parameters.empty()
+                && !children.empty()) {
+            auto recvExpr = std::dynamic_pointer_cast<Expression>(children.front());
+            if (recvExpr) {
+                if (auto arrayType = std::dynamic_pointer_cast<CajetaArray>(
+                        recvExpr->getResolvedType())) {
+                    try {
+                        auto streamKlass = std::dynamic_pointer_cast<CajetaClass>(
+                            CajetaType::of("ArrayStream", "cajeta.lang.stream"));
+                        if (streamKlass && streamKlass->isTemplate()) {
+                            auto instantiated = std::dynamic_pointer_cast<CajetaClass>(
+                                streamKlass->instantiate(
+                                    {arrayType->getElementType()}));
+                            if (instantiated) {
+                                // The (data, limit) ctor the lowering invokes:
+                                // 2 declared formals. Unique-or-nothing, as
+                                // everywhere on this path.
+                                MethodPtr ctor;
+                                for (auto& [_, mm] : instantiated->getMethods()) {
+                                    if (!mm || !mm->isConstructor()) continue;
+                                    auto pl = mm->getParameterList();
+                                    size_t off = (!pl.empty()
+                                        && pl.front()->getName() == "this") ? 1 : 0;
+                                    if (pl.size() - off != 2) continue;
+                                    if (ctor) { ctor = nullptr; break; }
+                                    ctor = mm;
+                                }
+                                if (ctor) CajetaClass::noteResolvedCallXref(
+                                    ctor, /*isConstructor=*/true, module);
+                                resolvedType = instantiated;
+                                return;   // no arguments, no further callee
+                            }
+                        }
+                    } catch (...) { /* unresolved intrinsic: no edge */ }
+                }
+            }
         }
 
         // Then the CALLEE, BEFORE the arguments. The order matters: a lambda
@@ -1762,7 +1889,7 @@ namespace cajeta {
                     lam->setExpectedType(pl[i + off]->getType());
             }
             if (!resolvedType && callee->getReturnType())
-                resolvedType = callee->getReturnType();
+                resolvedType = rebindMethodTypeArgs(callee->getReturnType(), callee);
         }
 
         // Now the arguments. They live in `parameters`, outside `children`, so
@@ -1784,7 +1911,7 @@ namespace cajeta {
         if (!callee) {
             try { callee = resolveCalleeByArgTypes(module); } catch (...) { return; }
             if (callee && !resolvedType && callee->getReturnType())
-                resolvedType = callee->getReturnType();
+                resolvedType = rebindMethodTypeArgs(callee->getReturnType(), callee);
         }
         if (!callee) return;
 
@@ -8370,9 +8497,22 @@ namespace cajeta {
         // in bringMethodTemplateInstantiationToLife falls back to the emit module's
         // (dangling) builder → freed-builder SEGV. See memory
         // method-template-tparam-in-param-heapcorrupt.
+        // Thread the call's explicit method type-args, for the same reason the
+        // return-type resolve further down already does: without them, a
+        // templated call resolves here against the OTHER same-name overload.
+        // `Sort.lowerBound<int32>(a, n, k)` landed on the 4-arg
+        // `lowerBound(T[],int32,T,cmp)` — and because `resolveMethod` is the
+        // xref recording choke point, that wrong answer was written into the
+        // index as a second call edge at the user's line, naming an overload
+        // the source never calls (xref-lint-emission-gap 5.1.5).
+        //
+        // This resolve cannot simply be masked out of the index: it is the
+        // ONLY recorder for 71 real call edges over samples/tour — measured by
+        // masking it, which removed all 71 along with the bad one. So the fix
+        // is to make it resolve CORRECTLY, not to stop it recording.
         MethodPtr targetMethod = targetClass->resolveMethod(
             methodCallName, entriesCopy, /*isConstructor=*/false,
-            floatingParamsLint, {}, module);
+            floatingParamsLint, explicitMethodTypeArgs, module);
         if (targetMethod) {
             auto& throwsList = targetMethod->getThrowsList();
             if (!throwsList.empty()) {

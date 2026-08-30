@@ -5856,9 +5856,17 @@ namespace cajeta {
         // templateKeyFor returns "" and the edge is omitted rather than guessed.
         auto lt = ownerCanon.find('<');
         if (lt != std::string::npos) {
+            // DECLARED arity: the resolved method's own list, minus a leading
+            // `this` when it carries one. Whether it does depends on HOW it
+            // resolved — a build-path instantiation's does, a lint-resolved
+            // METHOD TEMPLATE's does not — so strip here and let the lookup
+            // match declared-to-declared, no receiver arithmetic (5.1.7).
+            auto pl = resolved->getParameterList();
+            size_t off = (!pl.empty() && pl.front()
+                          && pl.front()->getName() == "this") ? 1 : 0;
             calleeKey = xref::templateKeyFor(ownerCanon.substr(0, lt),
                                              resolved->getName(),
-                                             (int) resolved->getParameters().size());
+                                             (int) (pl.size() - off));
         } else if (Method* origin = resolved->getTemplateOrigin()) {
             // A generic METHOD on a NON-generic owner (`Sort::binarySearch<T>`,
             // `Pick::first<T>`) also resolves to a monomorphized instantiation

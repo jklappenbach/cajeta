@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olla.cajeta.dev/schemas/org-key-document.json",
+  "title": "Organization key document",
+  "description":
+    "The signed statement binding an organization to its signing keys and the namespaces it owns (publisher-trust spec §2). Fetched by a client, signed by the repository ROOT key.\n\nTHE PAYLOAD IS CARRIED AS OPAQUE BYTES ON PURPOSE. The signature covers the decoded `payload` exactly as transmitted, so there is no canonical-JSON step: signer and verifier never have to agree on key order, whitespace, or number formatting. Signing a parsed-and-re-serialized object is a well-known source of signature-bypass bugs, and this format makes that class of mistake unrepresentable.",
+  "type": "object",
+  "required": ["format", "root-key-id", "payload", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "description": "Envelope version. A client that does not recognise the value refuses the document rather than guessing at its meaning.",
+      "type": "integer",
+      "const": 1
+    },
+    "root-key-id": {
+      "description": "Which root key signed this, so a client holding several roots knows which to check and can report the answer (spec §6.3).",
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "description": "base64 of the UTF-8 JSON described by $defs/document.",
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "signature": {
+      "description": "base64 ed25519 signature over the DECODED payload bytes.",
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  },
+
+  "$defs": {
+    "document": {
+      "title": "The signed document",
+      "type": "object",
+      "required": ["organization", "namespaces", "not-after", "keys"],
+      "additionalProperties": false,
+      "properties": {
+        "organization": {
+          "description": "The organization this document speaks for.",
+          "type": "string",
+          "minLength": 1
+        },
+        "namespaces": {
+          "description": "Dotted name prefixes this organization owns. Matched SEGMENT-AWARE (spec §4.3.1): `dev.cajeta` owns `dev.cajeta.http` and does NOT own `dev.cajetaevil`. At least one is required — a document owning nothing can authorise nothing.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "not-after": {
+          "description": "Document expiry (spec §2.5). A client refuses an expired document however it was obtained, including from cache.",
+          "$ref": "#/$defs/timestamp"
+        },
+        "keys": {
+          "description": "The organization's signing keys. More than one with overlapping windows is what makes rotation possible without a flag day (spec §2.6).",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/key" }
+        }
+      }
+    },
+
+    "key": {
+      "type": "object",
+      "required": ["id", "algorithm", "public-key", "not-before", "not-after"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Stable identifier, so revocation and audit can name a key.",
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": { "type": "string", "enum": ["ed25519"] },
+        "public-key": {
+          "description": "PEM SubjectPublicKeyInfo, the form `cajeta archive sign` and the trust store already use.",
+          "type": "string",
+          "minLength": 1
+        },
+        "not-before": { "$ref": "#/$defs/timestamp" },
+        "not-after":  { "$ref": "#/$defs/timestamp" }
+      }
+    },
+
+    "timestamp": {
+      "description": "RFC 3339 in UTC, seconds precision, `Z` only. Offsets are rejected rather than converted: a validity window is a security boundary, and accepting several spellings of one instant invites the parser and the signer to disagree.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    }
+  }
+}

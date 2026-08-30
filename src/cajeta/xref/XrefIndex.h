@@ -158,22 +158,28 @@ namespace cajeta::xref {
         std::string kind;          // method | constructor | field
         std::string overloadKey;   // e.g. demo.Box::get(T) — params as written
         std::string signature;     // display label, e.g. `T get(int32 i)` (2.2.6)
-        // Needed to map a resolved INSTANTIATION method back to this template
-        // member. Method::getParameters() includes the receiver for instance
-        // methods (which is why `greet()` keys as `greet(pointer)`), while a
-        // declared parameter list does not — so the expected instantiation arity is
-        // declaredParams + (isStatic ? 0 : 1).
+        // Needed to map a resolved method back to this template member. The
+        // DECLARED count, receiver excluded. The caller computes the same from
+        // the resolved method's parameter list (dropping a leading `this` when
+        // present) — never by adding a receiver back on, because whether a
+        // resolved method's list carries `this` depends on HOW it resolved: a
+        // build-path instantiation's does, a lint-resolved METHOD TEMPLATE's
+        // does not. Guessing with `declaredParams + (isStatic ? 0 : 1)` swapped
+        // the keys of overloads differing by one parameter — the 3-arg
+        // `fold<R>` recorded the 2-arg key (xref-lint-emission-gap 5.1.7).
         int declaredParams = 0;
         bool isStatic = false;
         SourceRef at;
     };
 
     // The template member key for a call resolved to an INSTANTIATION's method.
-    // Returns "" when it cannot be determined unambiguously — omitting the edge,
-    // never guessing at one.
+    // `declaredParamCount` is the resolved callee's own parameter count with
+    // any leading `this` removed — an exact match against declaredParams, no
+    // receiver arithmetic. Returns "" when it cannot be determined
+    // unambiguously — omitting the edge, never guessing at one.
     std::string templateKeyFor(const std::string& templateFqn,
                                const std::string& methodName,
-                               int instantiationParamCount);
+                               int declaredParamCount);
 
     // Off by default: a build that does not ask for xref captures nothing.
     void setCaptureEnabled(bool enabled);

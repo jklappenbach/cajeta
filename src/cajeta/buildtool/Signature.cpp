@@ -59,7 +59,13 @@ namespace cajeta::buildtool {
                                                const std::string& pemPath) {
         auto data = readAll(dataPath);
         if (!data) return data.takeError();
+        return verifyDetachedEd25519Bytes(*data, signature, pemPath);
+    }
 
+    llvm::Expected<bool> verifyDetachedEd25519Bytes(
+            const std::string& data,
+            const std::string& signature,
+            const std::string& pemPath) {
         auto key = loadEd25519Pub(pemPath);
         if (!key) {
             return err("'" + pemPath + "' is not a readable ed25519 public "
@@ -79,8 +85,8 @@ namespace cajeta::buildtool {
             ctx.get(),
             reinterpret_cast<const unsigned char*>(signature.data()),
             signature.size(),
-            reinterpret_cast<const unsigned char*>(data->data()),
-            data->size());
+            reinterpret_cast<const unsigned char*>(data.data()),
+            data.size());
         return rv == 1;
     }
 

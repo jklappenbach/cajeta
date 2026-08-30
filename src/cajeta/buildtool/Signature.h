@@ -44,6 +44,14 @@ namespace cajeta::buildtool {
         const std::string& signature,
         const std::vector<std::string>& pemPaths);
 
+    // As above, over bytes already in hand rather than a file. The
+    // organization key document signs a payload it carries inline, so
+    // there is nothing on disk to point at.
+    llvm::Expected<bool> verifyDetachedEd25519Bytes(
+        const std::string& data,
+        const std::string& signature,
+        const std::string& pemPath);
+
     // Read a detached signature file into raw bytes.
     llvm::Expected<std::string> readSignatureFile(const std::string& path);
 

@@ -257,6 +257,14 @@ namespace cajeta {
         // types. Unique-or-nothing; an unresolved argument type disqualifies
         // the attempt rather than acting as a wildcard.
         MethodPtr resolveCalleeByArgTypes(CajetaModulePtr module);
+
+        // 5.1.6 — rebind a generic method's METHOD type parameters into its
+        // return type from this call site's explicit type args, so a chain
+        // continues past `map<int64>(...)`. Returns `declared` untouched for
+        // every shape that is not an exact match. Lint-only: called only from
+        // resolveTypes, which is gated on resolution-only mode.
+        CajetaTypePtr rebindMethodTypeArgs(const CajetaTypePtr& declared,
+                                           const MethodPtr& callee);
     public:
 
         /**
