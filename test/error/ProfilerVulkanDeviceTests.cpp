@@ -24,6 +24,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <iostream>
 #include <string>
 #include <vector>
 
@@ -32,7 +34,58 @@ using cajeta_test::CajetaJit;
 namespace {
 
 const char* kChildMarker = "CAJETA_VK_PROF_CHILD";
-const char* kLavapipeIcd = "/usr/share/vulkan/icd.d/lvp_icd.json";
+// Lavapipe's ICD manifest is NOT at one fixed path: mesa names it per
+// architecture on Debian/Ubuntu (lvp_icd.x86_64.json) and unsuffixed
+// elsewhere. This was a single hardcoded string until 2026-08-29, which is
+// why 13.3.b never ran anywhere but a developer box — CI skipped it with
+// "no lavapipe ICD at ..." and the leg still reported success. Search the
+// candidates, and let a runner name the file outright.
+const char* kLavapipeIcdCandidates[] = {
+    "/usr/share/vulkan/icd.d/lvp_icd.x86_64.json",
+    "/usr/share/vulkan/icd.d/lvp_icd.json",
+    "/usr/share/vulkan/icd.d/lvp_icd.aarch64.json",
+    "/usr/local/share/vulkan/icd.d/lvp_icd.x86_64.json",
+    "/usr/local/share/vulkan/icd.d/lvp_icd.json",
+};
+
+bool fileExists(const char* path) {
+    FILE* f = ::fopen(path, "rb");
+    if (f == nullptr) return false;
+    ::fclose(f);
+    return true;
+}
+
+// Returns the manifest path, or an empty string when lavapipe is not present.
+// `why` receives a reason when the answer is empty, so the caller can say
+// something better than "not found" — an override naming a file that is not
+// there is a different mistake from lavapipe simply being uninstalled.
+std::string findLavapipeIcd(std::string* why) {
+    if (const char* env = ::getenv("CAJETA_LAVAPIPE_ICD")) {
+        if (*env != '\0') {
+            // The override is honoured only if it points at something real:
+            // an unchecked override would hand a bogus path to the child and
+            // surface as a confusing child failure instead of this message.
+            if (fileExists(env)) return env;
+            if (why != nullptr)
+                *why = std::string("CAJETA_LAVAPIPE_ICD points at '") + env +
+                       "', which does not exist";
+            return std::string();
+        }
+    }
+    for (const char* c : kLavapipeIcdCandidates) {
+        if (fileExists(c)) return c;
+    }
+    if (why != nullptr) *why = "no lavapipe ICD manifest among the known paths";
+    return std::string();
+}
+
+// When a lane exists SPECIFICALLY to exercise lavapipe, skipping is a failure
+// dressed as a pass — the exact shape that hid this for the life of Unit 13.
+// Setting this makes absence fatal instead.
+bool lavapipeIsRequired() {
+    const char* v = ::getenv("CAJETA_REQUIRE_LAVAPIPE");
+    return v != nullptr && *v != '\0' && ::strcmp(v, "0") != 0;
+}
 
 const char* kSaxpySource =
     "package test;\n"
@@ -255,16 +308,28 @@ TEST(ProfilerVulkanDevice, bracketsResolveAtEventTierOnTheDefaultDevice) {
 // clock IS the host clock — which is exactly the documented caveat.
 TEST(ProfilerVulkanDevice, theSamePlumbingRunsOnLavapipe) {
     if (::getenv(kChildMarker) == nullptr) {
-        FILE* f = ::fopen(kLavapipeIcd, "rb");
-        if (!f) GTEST_SKIP() << "no lavapipe ICD at " << kLavapipeIcd;
-        ::fclose(f);
+        std::string why;
+        const std::string icd = findLavapipeIcd(&why);
+        if (icd.empty()) {
+            if (lavapipeIsRequired())
+                FAIL() << "CAJETA_REQUIRE_LAVAPIPE is set but lavapipe is not "
+                          "usable here: " << why
+                       << ". Install mesa's lavapipe driver, or point "
+                          "CAJETA_LAVAPIPE_ICD at the manifest.";
+            GTEST_SKIP() << why;
+        }
+        std::cout << "[ lavapipe ] ICD manifest: " << icd << std::endl;
         std::string out;
         const int rc = runInFreshProcess(
             "ProfilerVulkanDevice.theSamePlumbingRunsOnLavapipe",
-            kLavapipeIcd, out);
+            icd.c_str(), out);
         if (rc != 0) FAIL() << "the lavapipe child failed (exit " << rc << "):\n" << out;
-        if (out.find("[  SKIPPED ]") != std::string::npos)
+        if (out.find("[  SKIPPED ]") != std::string::npos) {
+            if (lavapipeIsRequired())
+                FAIL() << "lavapipe is required on this lane but the child "
+                          "skipped:\n" << out;
             GTEST_SKIP() << "child skipped:\n" << out;
+        }
         SUCCEED() << out;
         return;
     }

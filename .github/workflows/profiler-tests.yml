@@ -29,7 +29,7 @@ on:
         description: 'Which runners to use'
         required: true
         type: choice
-        options: [both, wsl, windows]
+        options: [both, wsl, windows, lavapipe, all]
         default: both
       filter:
         description: 'gtest filter'
@@ -52,12 +52,21 @@ jobs:
           set -euo pipefail
           WSL='{"name":"wsl-nvidia","key":"wsl","os":["self-hosted","wsl"],"asset_os":"linux-x64","shell":"bash"}'
           WIN='{"name":"windows-nvidia","key":"windows","os":["self-hosted","Windows","X64","gpu"],"asset_os":"windows-x64","shell":"msys2 {0}"}'
+          # The lavapipe leg is HOSTED, not self-hosted, and deliberately so:
+          # plan 13.3.b wants the Vulkan plumbing exercised somewhere with no
+          # vendor driver at all, and neither NVIDIA box ships lavapipe. It
+          # runs a narrow filter because a software rasteriser has nothing to
+          # say about the rest of the corpus. Opt-in: it costs a full
+          # from-source build on a hosted runner, so it is not in `both`.
+          LVP='{"name":"lavapipe","key":"lavapipe","os":"ubuntu-latest","asset_os":"linux-x64","shell":"bash"}'
           LEGS='${{ inputs.legs }}'
           [ -z "$LEGS" ] && LEGS=both
           case "$LEGS" in
-            wsl)     INC="[$WSL]" ;;
-            windows) INC="[$WIN]" ;;
-            both)    INC="[$WSL,$WIN]" ;;
+            wsl)      INC="[$WSL]" ;;
+            windows)  INC="[$WIN]" ;;
+            both)     INC="[$WSL,$WIN]" ;;
+            lavapipe) INC="[$LVP]" ;;
+            all)      INC="[$WSL,$WIN,$LVP]" ;;
             *) echo "::error::unknown legs value '$LEGS'"; exit 1 ;;
           esac
           echo "matrix={\"include\":$INC}" >> "$GITHUB_OUTPUT"
@@ -107,6 +116,37 @@ jobs:
             tar
             vim
 
+      # 13.3.b's whole point: a Vulkan stack with NO vendor driver. Installed
+      # rather than assumed, because the test's ICD lookup skipping quietly is
+      # exactly how this item sat unmet while the suite reported green.
+      - name: Install lavapipe (software Vulkan)
+        if: matrix.key == 'lavapipe'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            mesa-vulkan-drivers libvulkan1 vulkan-tools
+          echo "--- ICD manifests present ---"
+          ls -1 /usr/share/vulkan/icd.d/ || true
+          # Name the manifest for the test rather than letting it guess: mesa
+          # names this file per-architecture and the two spellings differ
+          # between Ubuntu and other distributions.
+          ICD=""
+          for c in /usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+                   /usr/share/vulkan/icd.d/lvp_icd.json; do
+            if [ -f "$c" ]; then ICD="$c"; break; fi
+          done
+          if [ -z "$ICD" ]; then
+            echo "::error::mesa installed but no lavapipe ICD manifest appeared"
+            ls -1 /usr/share/vulkan/icd.d/ || true
+            exit 1
+          fi
+          echo "CAJETA_LAVAPIPE_ICD=$ICD" >> "$GITHUB_ENV"
+          # And make its absence fatal on the one leg that exists to run it.
+          echo "CAJETA_REQUIRE_LAVAPIPE=1" >> "$GITHUB_ENV"
+          VK_ICD_FILENAMES="$ICD" vulkaninfo --summary 2>/dev/null |
+            grep -i 'deviceName\|driverName' || echo "(vulkaninfo summary unavailable)"
+
       # Which stacks this box actually offers the profiler: CUPTI is what
       # Unit 12 binds, and the 4090's Vulkan driver is a third data point for
       # Unit 13's backend (proton covered RADV and lavapipe). Non-fatal — the
@@ -147,7 +187,13 @@ jobs:
       - name: Configure
         run: |
           set -euo pipefail
-          export CAJETA_SKIP_DEPS=1
+          # The self-hosted boxes carry antlr4/glog/gtest/zstd/xxhash already,
+          # and re-resolving them there is slow and occasionally destructive.
+          # A HOSTED runner carries none of them, so the lavapipe leg must let
+          # setup.sh do its dependency phase or it cannot configure at all.
+          if [ '${{ matrix.key }}' != 'lavapipe' ]; then
+            export CAJETA_SKIP_DEPS=1
+          fi
           if [ -f build/CMakeCache.txt ] && grep -q 'NOTFOUND' build/CMakeCache.txt; then
             echo "stale CMakeCache holds NOTFOUND entries — removing it to force a clean configure:"
             grep 'NOTFOUND' build/CMakeCache.txt | head -10
@@ -178,7 +224,15 @@ jobs:
         run: |
           set -euo pipefail
           FILTER='${{ inputs.filter }}'
-          [ -z "$FILTER" ] && FILTER='Profiler*'
+          if [ -z "$FILTER" ]; then
+            if [ '${{ matrix.key }}' = 'lavapipe' ]; then
+              # A software rasteriser can speak to the Vulkan plumbing and
+              # nothing else; running the whole corpus here would buy skips.
+              FILTER='ProfilerVulkan*'
+            else
+              FILTER='Profiler*'
+            fi
+          fi
           echo "filter: $FILTER"
           ./build/test/cajeta_test --gtest_filter="$FILTER" 2>&1 | tee profiler-tests.log
 
