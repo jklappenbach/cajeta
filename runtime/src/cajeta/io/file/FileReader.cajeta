@@ -132,18 +132,38 @@ public class FileReader {
      *
      * ## Usage
      *
-     * Read whole lines off stdin without stalling other fibers:
+     * Read whole lines off stdin without stalling other fibers. Readiness
+     * is BYTES, so a read can land mid-line: the tail carries over to the
+     * next pass, which is the whole reason the buffer lives outside the
+     * loop.
      *
      * ```cajeta
      * FileReader in #= heap FileReader(0);
-     * int8[] buf = heap int8[4096];
-     * while (in.awaitReadable(-1)) {
+     * int8[] buf  = heap int8[4096];
+     * int8[] tail = heap int8[65536];   // the partial line, across reads
+     * int32 pending = 0;
+     * int32 lines = 0;
+     * while (in.awaitReadable(0 - 1)) {
      *     int32 n = in.read(buf, 4096);
-     *     if (n == 0) { break; }          // EOF: readable, reads zero
-     *     // append buf[0..n) to a pending buffer and split on '\n';
-     *     // a partial tail stays pending for the next pass.
+     *     if (n == 0) { break; }        // readable + zero bytes == EOF
+     *     int32 i = 0;
+     *     while (i < n) {
+     *         if (buf[i] == 10) {       // '\n' completes tail[0..pending)
+     *             lines = lines + 1;
+     *             pending = 0;
+     *         } else {
+     *             tail[pending] = buf[i];
+     *             pending = pending + 1;
+     *         }
+     *         i = i + 1;
+     *     }
      * }
      * ```
+     *
+     * The loop terminates on EOF rather than spinning: at end of input the
+     * fd reports READY and the read that follows returns 0. An error is
+     * thrown, never reported as a timeout, so a dead fd cannot be mistaken
+     * for an idle one.
      *
      * ## Platforms
      *
