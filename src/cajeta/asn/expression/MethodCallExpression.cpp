@@ -247,11 +247,23 @@ namespace cajeta {
     MethodCallExpression::MethodCallExpression(
         CajetaParser::MethodCallContext* ctx,
         antlr4::Token* token) : Expression(token) {
+        // Default to the node's own position, then narrow to the identifier
+        // where there is one (see the header note on nameLine/nameColumn).
+        nameLine = getSourceLine();
+        nameColumn = getSourceColumn();
         if (ctx->SUPER()) {
             superCtorCall = true;
             methodCallName = "super";
+            if (auto* tok = ctx->SUPER()->getSymbol()) {
+                nameLine = static_cast<int>(tok->getLine());
+                nameColumn = tok->getCharPositionInLine();
+            }
         } else if (ctx->identifier()) {
             methodCallName = ctx->identifier()->getText();
+            if (auto* tok = ctx->identifier()->getStart()) {
+                nameLine = static_cast<int>(tok->getLine());
+                nameColumn = tok->getCharPositionInLine();
+            }
         } else {
             // THIS '(' ... ')' form — explicit this(args) ctor delegation;
             // not implemented today. Mark with a placeholder name so codegen
@@ -1788,9 +1800,10 @@ namespace cajeta {
 
         // The site comes from THIS NODE, for the same reason generateCode's
         // does: a stdlib body resolved while a user module is active must not
-        // attribute its own calls to the user's file.
-        xref::CallSiteScope xrefSite(getSourceFile(),
-                                     getSourceLine(), getSourceColumn());
+        // attribute its own calls to the user's file. The COLUMN is the called
+        // identifier's, not the node's — see the header note; the IDE looks the
+        // site up by the token the developer clicked.
+        xref::CallSiteScope xrefSite(getSourceFile(), nameLine, nameColumn);
 
         // Receiver first (children) — the callee cannot be resolved without it.
         // Per-node best-effort throughout: one part that cannot resolve must
@@ -1928,8 +1941,7 @@ namespace cajeta {
         // The file comes from THIS NODE, not from `module`. A stdlib or instantiated
         // body is generated while a *user* module is active, so the module's file
         // would attribute the stdlib's own calls to whichever demo triggered them.
-        xref::CallSiteScope xrefSite(getSourceFile(),
-                                     getSourceLine(), getSourceColumn());
+        xref::CallSiteScope xrefSite(getSourceFile(), nameLine, nameColumn);
 
         auto* builder = module->getBuilder();
         llvm::LLVMContext& llvmCtx = *module->getLlvmContext();

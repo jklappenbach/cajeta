@@ -154,6 +154,23 @@ fs::path makeCorpus(const std::string& tag) {
 // call argument. Positions are the build export's own, read from a full build
 // of samples/tour on 2026-08-27 — the plan's original "17:47 and 18:26" was
 // stale and is corrected there. Columns are 0-based.
+// Source-text helpers. The point of these is that expectations are DERIVED from
+// the fixture rather than transcribed, so a test cannot quietly agree with a
+// producer that moved.
+static std::string lineOf(const fs::path& file, int oneBasedLine) {
+    std::ifstream in(file);
+    std::string line;
+    for (int i = 0; i < oneBasedLine && std::getline(in, line); ++i) { }
+    return line;
+}
+
+/** 0-based column of [needle] on [oneBasedLine] of [file], or -1. */
+static int colOfIn(const fs::path& file, int oneBasedLine, const std::string& needle) {
+    const std::string text = lineOf(file, oneBasedLine);
+    const auto at = text.find(needle);
+    return at == std::string::npos ? -1 : static_cast<int>(at);
+}
+
 TEST(XrefLintCallEdge, TheReportedClassesDemoCallsResolveUnderLint) {
     if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
     const fs::path tour = fs::path(sourceRoot()) / "samples/tour/src/main/cajeta";
@@ -169,18 +186,98 @@ TEST(XrefLintCallEdge, TheReportedClassesDemoCallsResolveUnderLint) {
     const std::string stream = slurp(errFile);
     ASSERT_FALSE(stream.empty()) << "per-edit lint produced no stream at all";
 
+    // The columns are DERIVED FROM THE SOURCE, not written down. They used to
+    // be the literals 61 and 19, which were transcribed from what the compiler
+    // emitted rather than from what the IDE needs — and what it emitted was the
+    // start of the call EXPRESSION (`c`), while the IDE looks the site up by the
+    // identifier the developer clicked (`value`). The test agreed with the bug
+    // because it was written from the same side as the bug (2026-08-30).
     bool at17 = false, at18 = false;
+    const int col17 = colOfIn(tour / "tour/lang/ClassesDemo.cajeta", 17, "value");
+    const int col18 = colOfIn(tour / "tour/lang/ClassesDemo.cajeta", 18, "value");
+    ASSERT_GE(col17, 0) << "line 17 no longer contains `value`; fix the fixture";
+    ASSERT_GE(col18, 0) << "line 18 no longer contains `value`; fix the fixture";
+
     std::istringstream in(stream);
     for (std::string line; std::getline(in, line); ) {
         if (!has(line, "\"rel\":\"calls\"")) continue;
         if (!has(line, "tour.Counter::value(pointer)")) continue;
-        if (has(line, "\"line\": 17") && has(line, "\"col\": 61")) at17 = true;
-        if (has(line, "\"line\": 18") && has(line, "\"col\": 19")) at18 = true;
+        if (has(line, "\"line\": 17")
+            && has(line, "\"col\": " + std::to_string(col17))) at17 = true;
+        if (has(line, "\"line\": 18")
+            && has(line, "\"col\": " + std::to_string(col18))) at18 = true;
     }
-    EXPECT_TRUE(at17) << "no call edge to tour.Counter::value at 17:61 — this "
-                         "is the reported defect: Ctrl-click on `value` in "
-                         "`c.value()` resolves nowhere";
-    EXPECT_TRUE(at18) << "no call edge to tour.Counter::value at 18:19";
+    EXPECT_TRUE(at17) << "no call edge to tour.Counter::value at 17:" << col17
+                      << " — this is the reported defect: Ctrl-click on `value` "
+                         "in `c.value()` resolves nowhere";
+    EXPECT_TRUE(at18) << "no call edge to tour.Counter::value at 18:" << col18;
+}
+
+// ── The column CONTRACT, which no fixture can satisfy by construction ──────
+//
+// Every call edge must anchor on the CALLEE'S OWN NAME, because that is the
+// token a developer Ctrl-clicks and the key the IDE's reference adapter looks
+// up. This is a property over the real export, checked against the real source
+// text, so it cannot be satisfied by writing the expected answer down.
+//
+// It exists because the disagreement it catches survived every other check:
+// the compiler emitted the call-expression start, the plugin asked for the
+// identifier, the compiler's test hardcoded the compiler's answer, and the
+// plugin's test FABRICATED an index using the plugin's assumption. Both sides
+// were internally consistent and green, and Ctrl-click on a method had never
+// once worked. Measured 2026-08-30 on ClassesDemo.cajeta:18 — export col 19
+// (`c`), plugin lookup col 21 (`value`).
+TEST(XrefLintCallEdge, EveryCallEdgeAnchorsOnTheCalleeName) {
+    if (!haveCompiler()) GTEST_SKIP() << "compiler binary not built";
+    const fs::path tour = fs::path(sourceRoot()) / "samples/tour/src/main/cajeta";
+    const fs::path src = tour / "tour/lang/ClassesDemo.cajeta";
+    if (!fs::exists(src)) GTEST_SKIP() << "samples/tour not present";
+
+    auto errFile = freshTempDir("anchor") / "stderr.txt";
+    (void) std::system((compilerBinary()
+        + " --lint " + src.string()
+        + " --source-root " + tour.string()
+        + " --emit-xref --diag-format=json"
+        + " > " CAJETA_XCE_DEVNULL " 2> " + errFile.string()).c_str());
+    const std::string stream = slurp(errFile);
+    ASSERT_FALSE(stream.empty());
+
+    int checked = 0;
+    std::istringstream in(stream);
+    for (std::string line; std::getline(in, line); ) {
+        if (!has(line, "\"rel\":\"calls\"")) continue;
+        const int ln = intField(line, "line");
+        const int col = intField(line, "col");
+        const std::string callee = strField(line, "callee");
+        if (ln < 0 || col < 0 || callee.empty()) continue;
+
+        // `tour.Counter::value(pointer)` -> `value`
+        const auto colons = callee.find("::");
+        if (colons == std::string::npos) continue;
+        std::string simple = callee.substr(colons + 2);
+        simple = simple.substr(0, simple.find('('));
+
+        // A CONSTRUCTOR anchors on its `heap`/`stack` keyword rather than the
+        // type name, and the type name at that site is separately covered by a
+        // references[kind=type] edge, so clicking it already resolves. Excluded
+        // deliberately rather than silently: see the note in NewExpression.
+        if (simple == callee.substr(0, colons).substr(
+                callee.substr(0, colons).rfind('.') + 1)) continue;
+
+        const std::string text = lineOf(src, ln);
+        ASSERT_FALSE(text.empty()) << "line " << ln << " is empty in " << src;
+        ASSERT_LE(col + simple.size(), text.size())
+            << "call edge at " << ln << ":" << col << " runs past the line";
+        EXPECT_EQ(text.substr(col, simple.size()), simple)
+            << "call edge to " << callee << " at " << ln << ":" << col
+            << " does not sit on `" << simple << "` — it sits on `"
+            << text.substr(col, simple.size()) << "`. The IDE looks this site "
+               "up by the identifier the developer clicked, so an edge anchored "
+               "anywhere else is invisible to Ctrl-click.\n  line: " << text;
+        ++checked;
+    }
+    EXPECT_GT(checked, 0) << "no call edges were checked, so this test proved "
+                             "nothing — the export or the fixture changed";
 }
 
 // ── 4.1.2 — overloads keep distinct callee keys ───────────────────────────

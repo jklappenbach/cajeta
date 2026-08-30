@@ -70,6 +70,19 @@ namespace cajeta {
         // transform-intrinsics U7 — a compiler-built bare combinator call (the
         // annotation-sugar desugar). No parser context; the caller stamps the
         // desugared call site's span via setSourceSpan.
+        // WHERE THE CALLED NAME IS WRITTEN, as distinct from where the call
+        // EXPRESSION starts. For `c.value()` the node begins at `c`; the token
+        // a developer Ctrl-clicks is `value`. The xref `references` relation
+        // has always exported the identifier's own position, and `calls`
+        // exported the node's, so the two relations disagreed about what `col`
+        // meant and the IDE's lookup — which is keyed on the clicked
+        // identifier — missed every call edge. Measured 2026-08-30 on
+        // `ClassesDemo.cajeta:18`: the export said col 19 (`c`), the plugin
+        // asked for col 21 (`value`). Defaults to the node's own position for
+        // the forms with no identifier context (`super`, `this`).
+        int nameLine = 0;
+        int nameColumn = 0;
+
         MethodCallExpression(string name, vector<MethodCallParameter> params)
             : Expression(nullptr), methodCallName(std::move(name)),
               parameters(std::move(params)) { }
