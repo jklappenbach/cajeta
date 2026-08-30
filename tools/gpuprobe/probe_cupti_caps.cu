@@ -6,14 +6,27 @@
 // (NVreg_RestrictProfilingToAdminUsers / RmProfilingAdminOnly), which decides
 // whether our baseline CUDA timing tier works for unprivileged users.
 //
-// The proof requires all three of:
+// The proof requires all four of:
+//   T0  this process does NOT hold the privilege the gate asks for
 //   T1  cuEventElapsedTime returns a sane duration
 //   T2  CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL records arrive with start != 0
-//   T3  the Profiling API path fails with a privilege error IN THE SAME PROCESS
+//   T3  something the gate covers is refused for privileges IN THE SAME PROCESS
 //
-// T3 is what makes T1/T2 meaningful. If T3 *succeeds*, this process is
-// privileged (or the gate is off) and T1/T2 prove nothing about the exemption
-// — the run is INCONCLUSIVE, not a pass. The caller must report the gate state.
+// T0 and T3 are what make T1/T2 meaningful, and T0 is why this probe was
+// revised on 2026-08-29. The first version had no T0: it inferred "this process
+// is privileged" from T3 being ALLOWED, which is circular — T3 is the thing
+// that inference was supposed to help decide. Both audit runs (32485416032,
+// 32439821390) then reported INCONCLUSIVE_PROCESS_PRIVILEGED on processes the
+// workflow had ALREADY measured as unprivileged in an earlier step, and the two
+// measurements were never joined. So T0 is taken here, in-process, and printed
+// beside the verdict it feeds.
+//
+// T3 is likewise no longer a single call. One ALLOWED cannot tell a gate that
+// is off from a gate that does not happen to cover the call we picked, so three
+// independent gated operations are tried and reported separately. The strongest
+// is T3b: gated ACTIVITY KINDS through cuptiActivityEnable — the same call T2
+// used for kernel timing, so the only variable is the kind, and a refusal there
+// beside T2's success IS the exemption rather than an argument for it.
 //
 // Also measured, to replace documentation-derived figures in the research:
 //   T4  cuptiActivityRegisterTimestampCallback actually takes effect
@@ -46,6 +59,7 @@
   #include <windows.h>
 #else
   #include <time.h>
+  #include <unistd.h>
 #endif
 
 // The Profiling API lives in its own header and is the T3 subject. Guard it so
@@ -58,6 +72,52 @@
 #endif
 
 // ---------------------------------------------------------------- utilities
+
+// Whether THIS process holds the privilege NVIDIA's gate asks for. The verdict
+// used to infer this from T3 succeeding, which is circular: it is the thing T3
+// is supposed to help decide. Both CI runners were in fact UNPRIVILEGED
+// (NT AUTHORITY\NETWORK SERVICE, RUNNER_ELEVATED=False; uid 1000 with no
+// passwordless sudo) and still saw the Profiling API ALLOWED, so the inference
+// was wrong on the only two boxes it was ever applied to.
+static int process_is_privileged() {
+#if defined(_WIN32)
+    // The gate tests membership in the local Administrators group, so a
+    // deny-only SID on a filtered token correctly reads as NOT privileged.
+    SID_IDENTIFIER_AUTHORITY nt = SECURITY_NT_AUTHORITY;
+    PSID admins = nullptr;
+    if (!AllocateAndInitializeSid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                  DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
+                                  &admins)) {
+        return -1;
+    }
+    BOOL member = FALSE;
+    const BOOL ok = CheckTokenMembership(nullptr, admins, &member);
+    FreeSid(admins);
+    if (!ok) return -1;
+    return member ? 1 : 0;
+#else
+    if (geteuid() == 0) return 1;
+    // Root is not the only key: the driver also accepts CAP_SYS_ADMIN (bit 21),
+    // so a capability-granted process must not read as unprivileged.
+    FILE* f = fopen("/proc/self/status", "r");
+    if (f == nullptr) return -1;
+    char line[256];
+    int has_sys_admin = -1;
+    while (fgets(line, sizeof line, f) != nullptr) {
+        unsigned long long eff = 0;
+        if (sscanf(line, "CapEff: %llx", &eff) == 1) {
+            has_sys_admin = (eff >> 21) & 1ULL ? 1 : 0;
+            break;
+        }
+    }
+    fclose(f);
+    return has_sys_admin;
+#endif
+}
+
+static const char* yes_no_unknown(int v) {
+    return v < 0 ? "UNKNOWN" : (v ? "YES" : "NO");
+}
 
 static int g_fail = 0;
 
@@ -412,10 +472,29 @@ int main(int argc, char** argv) {
                mag > worst ? "YES" : "NO");
     }
 
-    // ---- T3: the Profiling API privilege gate ------------------------------
-    // THE DECIDING TEST. T1/T2 only prove the exemption if this is REFUSED.
-    printf("\n--- T3: Profiling API privilege gate ---\n");
-    const char* t3 = "NOT_BUILT";
+    // ---- T3: is the profiling gate ACTIVE in this process? -----------------
+    // THE DECIDING TEST. T1/T2 only prove the exemption if something the gate
+    // covers is REFUSED here, in the same process, for privileges.
+    //
+    // This used to be a single call — cuptiProfilerGetCounterAvailability. It
+    // came back ALLOWED on both runners, and the verdict read that as "this
+    // process must be privileged". The privilege measurement above says it was
+    // not, on either box. So one ALLOWED tells us nothing: a gate that is off,
+    // and a gate that simply does not cover the call we picked, look identical
+    // through one probe. Three independent gated operations are tried instead,
+    // each reported separately, so a null result can be told apart from a blind
+    // instrument. The gate is proven ACTIVE if ANY of them refuses.
+    const int privileged = process_is_privileged();
+    printf("RESULT process_privileged=%s\n", yes_no_unknown(privileged));
+
+    printf("\n--- T3: profiling gate, three independent probes ---\n");
+
+    int t3_refusals = 0;   // operations refused specifically for privileges
+    int t3_attempts = 0;   // operations that got far enough to answer
+
+    // T3a — the Profiling API's counter-availability query. Kept as-is so this
+    // run stays comparable with the two already in the record.
+    const char* t3a = "NOT_BUILT";
 #ifdef HAVE_PROFILER_TARGET
     {
         CUpti_Profiler_Initialize_Params ip = { CUpti_Profiler_Initialize_Params_STRUCT_SIZE };
@@ -423,8 +502,6 @@ int main(int argc, char** argv) {
 
         CUptiResult probe = pinit;
         if (pinit == CUPTI_SUCCESS) {
-            // GetCounterAvailability touches the counter hardware and is where
-            // the gate bites, without needing a full session's config images.
             CUpti_Profiler_GetCounterAvailability_Params ga =
                 { CUpti_Profiler_GetCounterAvailability_Params_STRUCT_SIZE };
             ga.ctx = ctx;
@@ -432,36 +509,113 @@ int main(int argc, char** argv) {
                               "cuptiProfilerGetCounterAvailability");
         }
 
-        if (probe == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)      t3 = "REFUSED_PRIVILEGES";
-        else if (probe == CUPTI_SUCCESS)                       t3 = "ALLOWED";
-        else                                                   t3 = "REFUSED_OTHER";
-        printf("RESULT t3_profiler_raw_status=%d\n", (int) probe);
+        if (probe == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)      t3a = "REFUSED_PRIVILEGES";
+        else if (probe == CUPTI_SUCCESS)                       t3a = "ALLOWED";
+        else if (probe == CUPTI_ERROR_NOT_SUPPORTED ||
+                 probe == CUPTI_ERROR_NOT_COMPATIBLE)          t3a = "UNSUPPORTED_HERE";
+        else                                                   t3a = "REFUSED_OTHER";
+        printf("RESULT t3a_profiler_raw_status=%d\n", (int) probe);
+        // Same rule as the other two: an operation this box cannot perform is
+        // not evidence about the gate either way.
+        if (strcmp(t3a, "UNSUPPORTED_HERE") != 0) t3_attempts++;
+        if (probe == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES) t3_refusals++;
     }
 #else
     printf("  cupti_profiler_target.h not present at build time\n");
 #endif
-    printf("RESULT t3_profiling_api=%s\n", t3);
+    printf("RESULT t3a_profiling_api=%s\n", t3a);
+
+    // T3b — the strongest control available: gated ACTIVITY KINDS, reached
+    // through cuptiActivityEnable, the very call T2 used to turn on kernel
+    // timing. Same API, same process, same moment — the only thing that varies
+    // is the KIND. If CONCURRENT_KERNEL is allowed while these are refused for
+    // privileges, that IS the exemption in spec 5.4.4, demonstrated rather than
+    // inferred. A different API refusing would leave the door open to it being
+    // the API, not the gate, that differed.
+    {
+        struct GatedKind { CUpti_ActivityKind kind; const char* name; };
+        const GatedKind gated[] = {
+            { CUPTI_ACTIVITY_KIND_PC_SAMPLING,           "PC_SAMPLING" },
+            { CUPTI_ACTIVITY_KIND_INSTRUCTION_EXECUTION, "INSTRUCTION_EXECUTION" },
+        };
+        for (const GatedKind& g : gated) {
+            const CUptiResult r = cuptiActivityEnable(g.kind);
+            const char* verd;
+            if (r == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)   verd = "REFUSED_PRIVILEGES";
+            else if (r == CUPTI_SUCCESS)                    verd = "ALLOWED";
+            else if (r == CUPTI_ERROR_NOT_SUPPORTED ||
+                     r == CUPTI_ERROR_NOT_COMPATIBLE)       verd = "UNSUPPORTED_HERE";
+            else                                            verd = "REFUSED_OTHER";
+            printf("RESULT t3b_activity_%s=%s\n", g.name, verd);
+            printf("RESULT t3b_activity_%s_raw=%d\n", g.name, (int) r);
+            if (r == CUPTI_SUCCESS) cuptiActivityDisable(g.kind);
+            // An UNSUPPORTED kind answers nothing about the gate, so it must not
+            // count as an attempt — that is how a blind probe reads as a pass.
+            if (strcmp(verd, "UNSUPPORTED_HERE") != 0) t3_attempts++;
+            if (r == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES) t3_refusals++;
+        }
+    }
+
+    // T3c — the legacy Events API. Independent of both paths above, and the
+    // original subject of NVIDIA's restriction. Expected to be UNSUPPORTED on
+    // compute capability 7.5 and newer (the 4090 included), which is why it is
+    // a third opinion and not the deciding one.
+    {
+        CUpti_EventGroup group = nullptr;
+        const CUptiResult r = cuptiEventGroupCreate(ctx, &group, 0);
+        const char* verd;
+        if (r == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES)   verd = "REFUSED_PRIVILEGES";
+        else if (r == CUPTI_SUCCESS)                    verd = "ALLOWED";
+        else if (r == CUPTI_ERROR_NOT_SUPPORTED ||
+                 r == CUPTI_ERROR_NOT_COMPATIBLE)       verd = "UNSUPPORTED_HERE";
+        else                                            verd = "REFUSED_OTHER";
+        printf("RESULT t3c_legacy_events=%s\n", verd);
+        printf("RESULT t3c_legacy_events_raw=%d\n", (int) r);
+        if (r == CUPTI_SUCCESS && group != nullptr) cuptiEventGroupDestroy(group);
+        if (strcmp(verd, "UNSUPPORTED_HERE") != 0) t3_attempts++;
+        if (r == CUPTI_ERROR_INSUFFICIENT_PRIVILEGES) t3_refusals++;
+    }
+
+    const int gate_active = t3_refusals > 0;
+    printf("RESULT t3_gate_probes_answering=%d\n", t3_attempts);
+    printf("RESULT t3_gate_refusals=%d\n", t3_refusals);
+    printf("RESULT t3_gate_active=%s\n",
+           gate_active ? "YES" : (t3_attempts > 0 ? "NO" : "UNKNOWN"));
 
     // ---- verdict -----------------------------------------------------------
-    // The exemption is PROVEN only when the gate is demonstrably active and
-    // timing still works. Anything else is inconclusive, and says so.
+    // The exemption is PROVEN only when the gate is demonstrably active, this
+    // process is demonstrably unprivileged, and timing still works. Every other
+    // combination is inconclusive and now says WHICH way it fell short, because
+    // the two inconclusive cases need opposite remedies: one wants a humbler
+    // account, the other wants the gate actually switched on.
     const char* verdict;
-    if (t1_ok && t2_ok && strcmp(t3, "REFUSED_PRIVILEGES") == 0)
-        verdict = "EXEMPTION_PROVEN";           // timing works, counters refused
-    else if (t1_ok && t2_ok && strcmp(t3, "ALLOWED") == 0)
-        verdict = "INCONCLUSIVE_PROCESS_PRIVILEGED";
-    else if (t1_ok && t2_ok)
-        verdict = "TIMING_OK_GATE_STATE_UNKNOWN";
-    else
+    if (!t1_ok || !t2_ok)
         verdict = "TIMING_BROKEN";
+    else if (privileged == 1)
+        verdict = "INCONCLUSIVE_PROCESS_PRIVILEGED";
+    else if (gate_active)
+        verdict = "EXEMPTION_PROVEN";           // timing works, gated ops refused
+    else if (t3_attempts == 0)
+        verdict = "INCONCLUSIVE_NO_GATE_PROBE";
+    else
+        verdict = "INCONCLUSIVE_GATE_NOT_ENFORCED";
 
     printf("\nRESULT verdict=%s\n", verdict);
     printf("\n");
     if (strcmp(verdict, "INCONCLUSIVE_PROCESS_PRIVILEGED") == 0) {
-        printf("NOTE: the Profiling API was ALLOWED, so this process is privileged\n"
-               "      or the gate is disabled. T1/T2 passing proves nothing about\n"
-               "      unprivileged users. Re-run as a non-admin account with the\n"
-               "      driver at its default setting.\n");
+        printf("NOTE: this process holds the privilege the gate asks for, so\n"
+               "      T1/T2 passing proves nothing about unprivileged users.\n"
+               "      Re-run from a non-admin account (Windows) or a uid without\n"
+               "      CAP_SYS_ADMIN (Linux), with the driver at its default.\n");
+    } else if (strcmp(verdict, "INCONCLUSIVE_GATE_NOT_ENFORCED") == 0) {
+        printf("NOTE: this process is UNPRIVILEGED and nothing the gate covers\n"
+               "      was refused, so the gate is not being enforced on this box.\n"
+               "      Timing working here therefore says nothing about a box\n"
+               "      where it IS enforced. Turn the gate on explicitly and\n"
+               "      re-run:  Windows  RmProfilingAdminOnly=1 under\n"
+               "        HKLM\\SYSTEM\\CurrentControlSet\\Services\\nvlddmkm\\Global\\NVTweak\n"
+               "               Linux    NVreg_RestrictProfilingToAdminUsers=1\n"
+               "      Until then spec 5.4.4 stays an inference.\n");
     }
 
     cudaFree(d_out);

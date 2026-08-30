@@ -17,15 +17,32 @@
 #
 # READING THE RESULT
 # The probe prints `RESULT key=value` lines; the verdict is `RESULT verdict=`.
-#   EXEMPTION_PROVEN                  timing worked AND the Profiling API was
-#                                     refused for privileges in the same process
-#   INCONCLUSIVE_PROCESS_PRIVILEGED   the Profiling API was ALLOWED, so this
-#                                     account is privileged or the gate is off.
-#                                     Timing passing proves nothing. Not a pass.
+#   EXEMPTION_PROVEN                  timing worked, this process was measured
+#                                     UNPRIVILEGED, and something the gate
+#                                     covers was refused for privileges in it
+#   INCONCLUSIVE_PROCESS_PRIVILEGED   this process holds the privilege the gate
+#                                     asks for, so timing passing proves nothing
+#                                     about ordinary users. Not a pass.
+#   INCONCLUSIVE_GATE_NOT_ENFORCED    this process was UNPRIVILEGED and nothing
+#                                     gated was refused: the gate is off here,
+#                                     so timing working says nothing about a box
+#                                     where it is on. Not a pass.
+#   INCONCLUSIVE_NO_GATE_PROBE        no gated operation was even supported on
+#                                     this device, so the gate was never tested
 #   TIMING_BROKEN                     the baseline tier does not work here
 #
 # The gate-state steps below run FIRST precisely because the verdict cannot be
 # interpreted without them.
+#
+# REVISED 2026-08-29, and the first two runs are why. Both returned
+# INCONCLUSIVE_PROCESS_PRIVILEGED — read at the time as "the runners are
+# privileged, find an unprivileged account". They were not. This workflow had
+# already measured the opposite in its own gate-state step and never joined the
+# two: RUNNER_ACCOUNT=NT AUTHORITY\NETWORK SERVICE with RUNNER_ELEVATED=False,
+# and UID=1000 with PASSWORDLESS_SUDO=NO. The verdict came from the probe
+# INFERRING privilege from the Profiling API being allowed. The probe now
+# measures its own privilege in-process, and the step below asserts the two
+# agree, so that particular disagreement cannot go unnoticed again.
 #
 # Dispatch-only. Reads state and runs a short probe; changes nothing.
 
@@ -75,6 +92,10 @@ jobs:
           $elevated = $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
           Write-Host "RUNNER_ACCOUNT=$($id.Name)"
           Write-Host "RUNNER_ELEVATED=$elevated"
+          # Hand this to the verdict step so the probe's own in-process reading
+          # can be checked against it. These two disagreed silently for two runs.
+          $outer = if ($elevated) { 'YES' } else { 'NO' }
+          "OUTER_PRIVILEGED=$outer" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           $key = 'HKLM:\SYSTEM\CurrentControlSet\Services\nvlddmkm\Global\NVTweak'
           $val = (Get-ItemProperty -Path $key -Name 'RmProfilingAdminOnly' -ErrorAction SilentlyContinue).RmProfilingAdminOnly
@@ -138,9 +159,23 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Continue'
-          $v = Select-String -Path captures/windows-audit.txt -Pattern '^RESULT verdict=' |
-                 ForEach-Object { $_.Line }
-          Write-Host "=== WINDOWS: $v ==="
+          $cap = 'captures/windows-audit.txt'
+          $v = (Select-String -Path $cap -Pattern '^RESULT verdict=' |
+                  ForEach-Object { $_.Line }) -replace '^RESULT verdict=', ''
+          $inner = (Select-String -Path $cap -Pattern '^RESULT process_privileged=' |
+                      ForEach-Object { $_.Line }) -replace '^RESULT process_privileged=', ''
+          Write-Host "=== WINDOWS verdict=$v ==="
+          Write-Host "privileged: outer=$env:OUTER_PRIVILEGED  in-process=$inner"
+
+          # The whole point of the revision: these are two independent readings
+          # of the same fact, and a disagreement means one of them is lying.
+          if ($inner -ne 'UNKNOWN' -and $inner -ne $env:OUTER_PRIVILEGED) {
+            Write-Host "::error::privilege readings disagree - outer=$env:OUTER_PRIVILEGED in-process=$inner"
+            exit 1
+          }
+          if ($v -ne 'EXEMPTION_PROVEN') {
+            Write-Host "::warning::spec 5.4.4 not settled on Windows - verdict=$v"
+          }
 
       - name: Upload capture
         if: always()
@@ -171,6 +206,15 @@ jobs:
           echo "WSL_DETECTED=$(grep -qi microsoft /proc/version && echo YES || echo NO)"
           echo "UID=$(id -u)  USER=$(id -un)"
           sudo -n true 2>/dev/null && echo "PASSWORDLESS_SUDO=YES" || echo "PASSWORDLESS_SUDO=NO"
+          # The gate accepts root OR CAP_SYS_ADMIN (bit 21), so both count as
+          # privileged. Handed to the verdict step to check the probe against.
+          capeff=$(awk '/^CapEff:/ {print $2}' /proc/self/status)
+          echo "CapEff=$capeff"
+          if [ "$(id -u)" = "0" ] || [ $(( 0x${capeff:-0} >> 21 & 1 )) = 1 ]; then
+            echo "OUTER_PRIVILEGED=YES" >> "$GITHUB_ENV"
+          else
+            echo "OUTER_PRIVILEGED=NO" >> "$GITHUB_ENV"
+          fi
           echo "--- /proc/driver/nvidia/params (expected absent under WSL) ---"
           if [ -r /proc/driver/nvidia/params ]; then
             grep -i profil /proc/driver/nvidia/params || cat /proc/driver/nvidia/params
@@ -215,8 +259,21 @@ jobs:
 
       - name: Verdict
         run: |
-          echo "=== WSL ==="
-          grep -E '^RESULT verdict=' captures/wsl-audit.txt
+          set -uo pipefail
+          v=$(sed -n 's/^RESULT verdict=//p' captures/wsl-audit.txt)
+          inner=$(sed -n 's/^RESULT process_privileged=//p' captures/wsl-audit.txt)
+          echo "=== WSL verdict=$v ==="
+          echo "privileged: outer=${OUTER_PRIVILEGED:-unset}  in-process=${inner:-unset}"
+
+          # Two independent readings of one fact; a disagreement means one lies.
+          if [ -n "$inner" ] && [ "$inner" != "UNKNOWN" ] && \
+             [ "$inner" != "${OUTER_PRIVILEGED:-}" ]; then
+            echo "::error::privilege readings disagree - outer=${OUTER_PRIVILEGED:-unset} in-process=$inner"
+            exit 1
+          fi
+          if [ "$v" != "EXEMPTION_PROVEN" ]; then
+            echo "::warning::spec 5.4.4 not settled on WSL - verdict=$v"
+          fi
 
       - name: Upload capture
         if: always()
