@@ -17,6 +17,9 @@
 
 #include <llvm/Support/JSON.h>
 
+#include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/util/SelfPath.h"
+
 #include "cajeta/compile/Compiler.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/compile/StdlibReuseCore.h"
@@ -336,8 +339,38 @@ namespace cajeta::lintservice {
         StdlibReuseCore::instance().ensurePrimed();
         Compiler::setSharedContext(nullptr);
 
-        std::cout << "{\"kind\":\"server\",\"proto\":{\"major\":1,\"minor\":0},"
-                     "\"state\":\"ready\"}\n" << std::flush;
+        // Stamp the identity of the binary we are RUNNING on the handshake
+        // (spec §2.8). A resident server otherwise keeps answering from the
+        // image it started with, so a compiler fix silently does not reach the
+        // IDE — and on the xref path a stale shard overwrites a good one. The
+        // identity is the file's CONTENT: a relink producing identical bytes,
+        // or `ninja` touching an unchanged output, must not read as a new
+        // compiler and restart a healthy daemon.
+        //
+        // Hashed here rather than lazily, because by the time a request arrives
+        // the file may already have been replaced — the whole failure this
+        // guards against. Hand-assembled rather than built through
+        // llvm::json::Object because that serializes in DenseMap order, and
+        // both the client and the tests key on `kind` being first.
+        std::string selfPath = cajeta::util::runningExecutablePath();
+        std::string selfId =
+            selfPath.empty() ? std::string()
+                             : buildtool::ArtifactCache::sha256OfFile(selfPath);
+
+        std::string readyRec =
+            "{\"kind\":\"server\",\"proto\":{\"major\":1,\"minor\":1},"
+            "\"state\":\"ready\"";
+        if (!selfId.empty()) {
+            std::error_code sizeEc;
+            auto sz = std::filesystem::file_size(selfPath, sizeEc);
+            readyRec += ",\"binary\":{\"path\":" + jsonEscape(selfPath)
+                      + ",\"id\":" + jsonEscape(selfId);
+            if (!sizeEc)
+                readyRec += ",\"size\":" + std::to_string(sz);
+            readyRec += "}";
+        }
+        readyRec += "}";
+        std::cout << readyRec << "\n" << std::flush;
 
         SiblingContext ctx;   // persists across requests (spec §4)
         std::string line;

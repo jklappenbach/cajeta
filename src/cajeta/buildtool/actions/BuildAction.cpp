@@ -30,6 +30,7 @@
 #include "cajeta/buildtool/Reproducibility.h"
 #include "cajeta/buildtool/Resolver.h"
 #include "cajeta/buildtool/SourceDigest.h"
+#include "cajeta/util/SelfPath.h"
 
 #include <algorithm>
 #include <llvm/Support/JSON.h>
@@ -73,24 +74,11 @@ namespace cajeta::buildtool {
                 llvm::inconvertibleErrorCode(), msg);
         }
 
-        // Find the cajeta binary path. Prefer the running executable
-        // (/proc/self/exe on Linux, GetModuleFileName on Windows); fall
+        // Find the cajeta binary path. Prefer the running executable; fall
         // back to "cajeta" on PATH otherwise.
         std::string findCajetaBinary() {
-            char buf[4096];
-#if defined(_WIN32)
-            DWORD n = ::GetModuleFileNameA(nullptr, buf, sizeof(buf));
-            if (n > 0 && n < sizeof(buf)) {
-                return std::string(buf, n);
-            }
-#else
-            ssize_t n = ::readlink("/proc/self/exe", buf, sizeof(buf) - 1);
-            if (n > 0) {
-                buf[n] = '\0';
-                return std::string(buf);
-            }
-#endif
-            return "cajeta";
+            std::string self = cajeta::util::runningExecutablePath();
+            return self.empty() ? std::string("cajeta") : self;
         }
 
         // resolveEntryMethod now lives in OutputLayout.cpp — the default emit

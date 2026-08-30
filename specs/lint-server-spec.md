@@ -65,9 +65,11 @@ uncontrolled: crash traces, logging). Responses for a request are contiguous
 are byte-identical to what the one-shot lint would emit — parity by
 construction, testable by slice comparison.
 
-- On start: `{"kind":"server","proto":{"major":1,"minor":0},"state":"ready"}`
-  after the stdlib prime. The plugin refuses an unknown major wholesale (the
-  xref version-handshake rule).
+- On start: `{"kind":"server","proto":{"major":1,"minor":1},"state":"ready",
+  "binary":{"path":"<exe>","id":"sha256:<hex>","size":<n>}}` after the stdlib
+  prime. The plugin refuses an unknown major wholesale (the xref
+  version-handshake rule); `binary` arrived at minor 1 and is absent from an
+  older server, which therefore cannot be judged stale.
 - Request: `{"kind":"lint","id":<n>,"file":"<staged-path>","shadow":"<original>",
   "emitXref":<bool>}`.
 - Response: the one-shot lint's diagnostic/xref lines verbatim, then
@@ -95,6 +97,15 @@ construction, testable by slice comparison.
   server started without it reports every dependency type as unknown, and the
   xref stream it returns — which overwrites the whole-root shard — loses every
   dependency navigation target.
+- 2.8 The compiler is rebuilt under a live server: the plugin detects that the
+  daemon is running replaced code and restarts it, rather than serving from an
+  image that predates the fix. The server reports the CONTENT identity of its
+  own binary, so a relink producing identical bytes — or `ninja` touching an
+  unchanged output — does not restart a healthy daemon. A binary that cannot be
+  read has no identity and the server holding it is stale; a fresh server whose
+  identity disagrees with the client's reading of the same path means the two
+  are not looking at the same bytes, and the comparison switches off with one
+  log line rather than restarting on every edit.
 
 ## 3. Warm stdlib between requests
 

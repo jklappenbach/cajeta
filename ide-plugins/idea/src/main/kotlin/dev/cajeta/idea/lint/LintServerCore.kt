@@ -44,6 +44,18 @@ class LintServerCore(
     private val spawn: () -> LintServerTransport,
     private val backoffNanos: Long = 2_000_000_000L,   // 2s between respawns
     private val now: () -> Long = System::nanoTime,
+    /**
+     * The content identity of the binary this core is configured to spawn, or
+     * null when it cannot be read (§2.8). A core built without one never judges
+     * a server stale, which is exactly how this behaved before Unit 5.
+     */
+    private val identityOf: (() -> String?)? = null,
+    /** A live server was found to be running replaced code; it is being torn
+     *  down and respawned. (reported identity, identity on disk now) */
+    private val onStale: (String, String?) -> Unit = { _, _ -> },
+    /** A FRESH server disagreed with the binary we believe we are calling, so
+     *  the comparison is unusable and has been switched off for this core. */
+    private val onCheckDisabled: (String, String?) -> Unit = { _, _ -> },
 ) {
     sealed class Result {
         /** The response payload — the lint's diagnostic/xref lines verbatim. */
@@ -65,6 +77,13 @@ class LintServerCore(
     private var unsupportedLatched = false
     private var nextId = 0
     private var lastFailNanos: Long? = null
+    // The binary identity the live server reported at its handshake; null when
+    // it reported none (a server older than §2.8), which cannot be judged.
+    private var serverBinary: String? = null
+    // Latched when a fresh server's reported identity and ours disagree: the
+    // two are not reading the same bytes, so comparing them again would restart
+    // on every edit.
+    private var identityCheckDisabled = false
 
     @Synchronized
     fun lint(req: LintServerRequest): Result {
@@ -123,7 +142,19 @@ class LintServerCore(
 
     private fun ensureReady(): LintServerTransport? {
         val live = transport
-        if (live != null && live.isAlive() && ready) return live
+        if (live != null && live.isAlive() && ready) {
+            val reported = serverBinary
+            if (identityOf == null || identityCheckDisabled || reported == null) return live
+            val current = currentIdentity()
+            if (current == reported) return live
+            // The compiler was rebuilt (or went missing) under a live daemon.
+            // Serving from it means a fix that silently does not take effect —
+            // and, on the xref path, a stale shard overwriting a good one. A
+            // stale server is not a failure, so no backoff applies: tear it
+            // down and fall through to a fresh spawn.
+            onStale(reported, current)
+            closeTransport()
+        }
 
         // Respawn — but not immediately after a failure (§2.5 backoff), so a
         // binary that crashes on start doesn't get relaunched on every edit.
@@ -155,9 +186,32 @@ class LintServerCore(
         val proto = root.opt("proto") as? Json.Obj
         val major = (proto?.opt("major") as? Json.Num)?.value?.toInt()
         supported = major == SUPPORTED_MAJOR
+        serverBinary =
+            ((root.opt("binary") as? Json.Obj)?.opt("id") as? Json.Str)?.value
         ready = true
         lastFailNanos = null
+
+        // A server we JUST spawned is by definition running the binary we
+        // called. If its identity still disagrees with ours, the two are not
+        // looking at the same bytes — a wrapper, a second install, an
+        // unreadable file — and every later comparison would restart a healthy
+        // daemon. Say so once and stop checking.
+        val reported = serverBinary
+        if (identityOf != null && reported != null && !identityCheckDisabled) {
+            val cur = currentIdentity()
+            if (cur != reported) {
+                identityCheckDisabled = true
+                onCheckDisabled(reported, cur)
+            }
+        }
         return t
+    }
+
+    /** Our reading of the configured binary. A check that throws is a broken
+     *  instrument, not a verdict, so it reads as "cannot tell". */
+    private fun currentIdentity(): String? {
+        val f = identityOf ?: return null
+        return try { f() } catch (_: Exception) { null }
     }
 
     private fun fail(): Result {
@@ -172,6 +226,7 @@ class LintServerCore(
         transport?.let { runCatching { it.close() } }
         transport = null
         ready = false
+        serverBinary = null
     }
 
     private fun controlKind(line: String): String? {
