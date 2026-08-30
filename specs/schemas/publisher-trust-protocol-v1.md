@@ -312,7 +312,8 @@ will look reasonable at the moment it is written.
 
 ## 8. A gap this contract records but does not close
 
-**The archive kind is stated nowhere a server can read it** (spec 7.11).
+**The archive kind is stated nowhere a server can read it** (spec 7.11,
+7.12's sibling and now also 5.6's blocker).
 `details` in `cajeta.json` carries no library-or-application field; today
 the distinction is inferred from whether `settings.build.binaries` is set,
 which is a build setting and does not travel in the published archive. If
@@ -320,6 +321,11 @@ olla is to index or present the kind, something must stamp it — a
 `details` field is the obvious candidate. That is a manifest change, out
 of scope here, and it is written down so it is not discovered halfway
 through an implementation.
+
+It is no longer only a presentation concern. Spec 5.6 says verification
+relaxation never extends to applications, and that clause cannot be
+enforced — by client or server — while nothing states which an archive is.
+The `app-distribution` spec is where the field is being specified.
 
 ## 9. Conformance
 

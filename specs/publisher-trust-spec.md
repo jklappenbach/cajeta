@@ -163,6 +163,26 @@ this spec.
 **5.5** The relaxation is per repository, not global. Trusting a local
 development repository must not weaken verification of the public one.
 
+**5.6** The relaxation of §5.4 does not extend to APPLICATIONS. An
+application that cannot be verified does not install, whatever policy is
+set for the repository it came from.
+
+The asymmetry is in what the operator is actually consenting to. A
+library's code runs when the consumer's own program runs, under the
+consumer's own capability declaration, which the compiler verifies. An
+application's code runs when a user types a command, under the
+application's declaration and nobody else's — there is no second party
+re-declaring anything. An operator may reasonably accept an unverifiable
+library from a repository they control, and that judgement does not
+transfer to something that will execute on its own account.
+
+**5.6.1** §5.6 is unenforceable until an archive states whether it is a
+library or an application, which today nothing does (§7.11). Until that
+lands the clause is a requirement with no mechanism, and a client that
+cannot tell the two apart must not silently treat every archive as a
+library — that is the reading that makes the clause vacuous exactly when
+it matters. `app-distribution` is where the field is specified.
+
 ## 6. What the repository serves
 
 **6.1** An endpoint returning the signed key document for an
