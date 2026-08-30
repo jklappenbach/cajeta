@@ -39,6 +39,22 @@ roles, so no rollback- or freeze-attack protection). No per-project keys.
 No keyless/OIDC publishing. No changes to how a publisher authenticates
 to olla when uploading.
 
+**1.8 What olla holds: archives.** Olla holds ARCHIVES. An archive is one
+`.cja` at a `(name, version)` coordinate, and it is either a LIBRARY
+(consumed as a dependency) or an APPLICATION (executed). The distinction
+changes nothing in this spec: both are fetched the same way, verified the
+same way, and a signature binds a publisher to a name whichever it is. It
+is written down because §7 originally said "repository" for this, which
+named nothing in olla's model and left §7.5–7.6 unspecifiable.
+
+**1.9 An archive version is immutable.** The v2 protocol is
+content-addressed — a blob lives at its `sha256` and that URL never changes
+once published — so republishing under an existing `(name, version)` is
+refused rather than resolved. This is not a policy choice layered on top;
+it is what content addressing already means. Consequently there is no
+UPDATE verb anywhere in §7 for an archive, and withdrawal splits into two
+different acts (§7.5, §7.6).
+
 **1.7 Repository boundary.** `olla.cajeta.dev` is a separate service and
 is not built here. This spec defines CLIENT behaviour and the PROTOCOL
 the service must serve; §6 is the server-side contract, testable here
@@ -205,10 +221,27 @@ recovery need the owner in the loop, which is a bottleneck and a
 response-time risk. §7.8 is what keeps that from being a denial of
 service.
 
-**7.5** The owner can create, read, update and delete repositories.
+**7.5** The owner can REMOVE an archive version outright — the bytes stop
+being served. This breaks every downstream build pinning it, by
+construction, so it is an emergency power (a leaked credential inside a
+release, unlawful content) and never routine withdrawal. It is audited
+under §7.7 like any other mutation.
 
-**7.6** An organization can create, read, update and delete the
-repositories it owns, and only those.
+**7.6** An organization can PUBLISH archives into the namespaces its key
+document claims, and RETRACT ones it has published. Retraction flips the
+release metadata's `retracted` flag: the bytes stay reachable, so a
+lockfile already pinning that version keeps resolving, while new resolves
+warn. That is the withdrawal a publisher performs for a bad release, and
+it is deliberately not deletion — a registry that lets a publisher delete
+is a registry where a dependency can vanish under someone else's build.
+
+**7.6.1** §7.6 is routine self-service and NOT a path into namespaces an
+organization does not own, because §7.3 already put that boundary out of
+its reach. What an org may publish is bounded by the namespaces in its key
+document, and only the owner can change that document. The two clauses
+were written to work together: without §7.3, "an organization manages its
+own archives" would be an escalation path, and with it there is nothing to
+escalate to.
 
 **7.7** Every mutation is authenticated, attributed, and recorded. Who
 changed which key, and when, is the audit question that matters after a
@@ -223,10 +256,29 @@ requiring a new key first would delay the only urgent step.
 root key (§2.3). The administrative API is how documents come to exist;
 it does not introduce a second, unsigned path to the same data.
 
-**7.10** Uploading an artifact remains an organization's own action and
-is unchanged by this section (§1.6). Publishing and key management are
-separate privileges on purpose: the frequent action does not carry the
-dangerous one.
+**7.10** Publishing and key management are separate privileges on purpose:
+the frequent action does not carry the dangerous one. An organization
+publishes constantly and can never touch a key; the owner touches keys and
+has no reason to publish. How an organization AUTHENTICATES in order to
+upload is unchanged by this spec (§1.6) — only what that authentication
+is then permitted to reach.
+
+**7.11 The archive kind is not yet stated anywhere olla could read it.**
+`details` in `cajeta.json` carries no library-or-application field; today
+the distinction is inferred from whether `settings.build.binaries` is set,
+which is a build setting and does not travel in the published archive. If
+olla is to index or present the kind, something has to stamp it — a
+`details` field is the obvious candidate. That is a manifest change and is
+out of scope here; it is recorded so the gap is not discovered by an
+implementer halfway through §6.
+
+**7.12** Nothing in §7 may derive an organization from an archive's name.
+The build tool already has `ManifestDetails::group()`, which splits a
+dotted name at the last `.` — exactly the arity assumption §4.4 forbids.
+It exists for display and for a template property, and it must stay
+there. A server-side implementer reaching for the equivalent rule is
+making the mistake §4.4 describes, and it will look reasonable at the
+moment they make it.
 
 ## 8. Upgrade path
 
