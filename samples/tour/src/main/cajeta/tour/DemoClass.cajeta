@@ -8,14 +8,15 @@ package tour;
 // on each — so adding a new demo means writing a new .cajeta file
 // here and one `demos.add(heap NewDemo());` line in Tour.cajeta.
 //
-// Cajeta has no formal `abstract` keyword today (see
-// runtime/.../Stream.cajeta § "Abstract via empty-default convention"),
-// so execute() lands as an empty concrete method; subclasses override
-// via the `override` modifier. The base body is never invoked because
-// every subclass overrides — but if someone forgets to override, the
-// no-op silently passes rather than failing at compile time. Future
-// work: real abstract-method support so forgetting an override is a
-// compile-time error.
+// execute() is ABSTRACT: every demo must supply one, and forgetting is a
+// compile-time error (CAJETA_ERROR_ABSTRACT_NOT_IMPLEMENTED) rather than a
+// silent no-op that passes.
+//
+// This comment previously said cajeta had no `abstract` keyword and called the
+// empty-body version "future work". That was wrong — the modifier, the
+// `isAbstract()` semantics and the not-implemented check all exist and are
+// enforced (measured 2026-08-30). Note there is NO `override` modifier, which
+// the old comment also claimed: a subclass simply redeclares the method.
 public class DemoClass {
     // Self-check counters, shared by every demo. check() below is the
     // tour's assertion: demos verify their own output instead of only
@@ -24,8 +25,7 @@ public class DemoClass {
     public static int32 checks = 0;
     public static int32 failures = 0;
 
-    public void execute() {
-    }
+    public abstract void execute();
 
     // Assert `cond`; quiet when it holds, loud when it doesn't.
     public void check(boolean cond, String what) {
