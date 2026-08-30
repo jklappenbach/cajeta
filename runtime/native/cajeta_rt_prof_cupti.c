@@ -90,6 +90,13 @@ typedef struct {
     int32_t    state;
     int32_t    bound;
     int32_t    has_ts_callback;
+    // Unit 12's record path.
+    int32_t    degraded;          // §5.4.3 — attached elsewhere; we are a no-op
+    int32_t    ts_registered;     // the timestamp callback is in place
+    int32_t    kinds_enabled;     // how many activity kinds we have enabled
+    int32_t    ts_first;          // ts_registered happened at kinds_enabled == 0
+    int64_t    records;           // kernel records decoded and usable
+    int64_t    rejected;          // kernel records refused as unusable
     CajCuptiApi api;
     char       path[CAJ_CUPTI_PATH_MAX];
     char       reason[CAJ_CUPTI_REASON_MAX];
@@ -255,12 +262,222 @@ static const char* caj_cupti_liberr(void) {
 }
 #endif
 
+// ── Unit 12 — the activity record path (spec §5.4.3, §5.4.5, §6.2) ───────
+//
+// RECORD LAYOUT IS MEASURED, NOT ASSUMED. Compiled against a real
+// cupti_activity.h on 2026-08-30, offsetof() over every kernel record version
+// it declares:
+//
+//   version   kind  start  end  correlationId  sizeof
+//   Kernel2      0      8   16             84     112   <-- the odd one out
+//   Kernel3      0     16   24             92     120
+//   Kernel4      0     16   24             92     144
+//   Kernel5      0     16   24             92     160
+//   Kernel6      0     16   24             92     168
+//   Kernel7      0     16   24             92     176
+//   Kernel8      0     16   24             92     200
+//   Kernel9      0     16   24             92     208
+//
+// The struct grows at the TAIL across eight versions while the prefix through
+// correlationId does not move from Kernel3 on. That is the whole of §5.4.5:
+// read the prefix by offset, never cast the record to a version-specific
+// struct, and a toolkit shipping a newer record version cannot break parsing.
+//
+// Kernel2 (pre-CUDA 9) is the floor and WOULD misparse — its start sits where
+// Kernel3 keeps padding. Nothing in a record identifies its version, so this
+// cannot be detected directly; the plausibility rejections below are what stop
+// a misparse from becoming a published measurement. A Kernel2 record decoded
+// at Kernel3 offsets yields garbage that is overwhelmingly likely to be zero
+// or inverted, which is exactly what they refuse.
+
+#define CAJ_CUPTI_KIND_KERNEL             3   /* CUPTI_ACTIVITY_KIND_KERNEL */
+#define CAJ_CUPTI_KIND_CONCURRENT_KERNEL 10   /* ..._CONCURRENT_KERNEL */
+
+#define CAJ_CUPTI_KREC_OFF_KIND   0
+#define CAJ_CUPTI_KREC_OFF_START 16
+#define CAJ_CUPTI_KREC_OFF_END   24
+#define CAJ_CUPTI_KREC_OFF_CORR  92
+#define CAJ_CUPTI_KREC_PREFIX   (CAJ_CUPTI_KREC_OFF_CORR + 4)   /* 96 */
+
+/* CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED. Spelled as its value for the
+ * same reason every other constant here is: this file must compile on a
+ * machine with no CUDA at all. */
+#define CAJ_CUPTI_ERR_MULTIPLE_SUBSCRIBERS 39
+
+int32_t __cajeta_prof_cupti_kernel_prefix_bytes(void) {
+    return CAJ_CUPTI_KREC_PREFIX;
+}
+
+// §12.1.b — CUPTI_ACTIVITY_KIND_KERNEL SERIALIZES kernel execution. Enabling
+// it would change the program being measured rather than observe it, which is
+// a different failure from being wrong: the numbers would be internally
+// consistent and describe a program the user never ran. CONCURRENT_KERNEL is
+// the only kernel kind this backend may enable.
+int32_t __cajeta_prof_cupti_kind_is_allowed(int32_t kind) {
+    return kind == CAJ_CUPTI_KIND_CONCURRENT_KERNEL ? 1 : 0;
+}
+
+static uint64_t caj_cupti_rd64(const unsigned char* p) {
+    uint64_t v;
+    memcpy(&v, p, sizeof v);
+    return v;
+}
+
+static uint32_t caj_cupti_rd32(const unsigned char* p) {
+    uint32_t v;
+    memcpy(&v, p, sizeof v);
+    return v;
+}
+
+// Returns  1 a usable CONCURRENT_KERNEL record (outputs written)
+//          0 not a record this backend consumes (outputs untouched)
+//         -1 a kernel record REFUSED as unusable (counted; outputs untouched)
+int32_t __cajeta_prof_cupti_decode_kernel(const void* rec, int64_t bytes,
+                                          int64_t* startNs, int64_t* endNs,
+                                          int32_t* correlationId) {
+    const unsigned char* p = (const unsigned char*) rec;
+    uint64_t start, end;
+
+    /* kind lives at offset 0 in every version, so it is readable before we
+     * know anything else about the record. */
+    if (!p || bytes < 4) return 0;
+    if ((int32_t) caj_cupti_rd32(p + CAJ_CUPTI_KREC_OFF_KIND)
+            != CAJ_CUPTI_KIND_CONCURRENT_KERNEL)
+        return 0;
+
+    /* §5.4.5 — a record that cannot hold the stable prefix is not decoded.
+     * Reading past it would pick up whatever the buffer holds next, and the
+     * result would look like a valid span. */
+    if (bytes < CAJ_CUPTI_KREC_PREFIX) return 0;
+
+    start = caj_cupti_rd64(p + CAJ_CUPTI_KREC_OFF_START);
+    end   = caj_cupti_rd64(p + CAJ_CUPTI_KREC_OFF_END);
+
+    /* §12.1.d — the known CUPTI regression, plus the shape a Kernel2 misparse
+     * takes. Zero is not a time: publishing it would put a span at the epoch
+     * and make every duration computed against it nonsense. Refused and
+     * COUNTED, never clamped -- a clamp would republish the lie as plausible. */
+    if (start == 0 || end == 0 || end < start) {
+        __atomic_add_fetch(&caj_cupti.rejected, 1, __ATOMIC_RELAXED);
+        return -1;
+    }
+
+    if (startNs)       *startNs = (int64_t) start;
+    if (endNs)         *endNs   = (int64_t) end;
+    if (correlationId) *correlationId =
+        (int32_t) caj_cupti_rd32(p + CAJ_CUPTI_KREC_OFF_CORR);
+    __atomic_add_fetch(&caj_cupti.records, 1, __ATOMIC_RELAXED);
+    return 1;
+}
+
+// §5.4.3 — CUPTI permits exactly ONE subscriber per process. A program run
+// under Nsight, or one that loads a second profiling library, hands us
+// MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED. Aborting there would take down a
+// perfectly good program for the sake of a measurement it did not ask for, so
+// the backend becomes a no-op and says why.
+int32_t __cajeta_prof_cupti_note_subscribe_result(int32_t result) {
+    if (result == CAJ_CUPTI_ERR_MULTIPLE_SUBSCRIBERS) {
+        caj_cupti.degraded = 1;
+        snprintf(caj_cupti.reason, sizeof(caj_cupti.reason),
+                 "another CUPTI subscriber owns this process (Nsight, nvprof, "
+                 "or a second profiling library); GPU timing degrades to host "
+                 "submit-to-complete rather than failing the run");
+        return 0;
+    }
+    if (result != 0) {
+        caj_cupti.degraded = 1;
+        snprintf(caj_cupti.reason, sizeof(caj_cupti.reason),
+                 "cuptiSubscribe failed (%d); GPU timing degrades to host "
+                 "submit-to-complete", (int) result);
+        return 0;
+    }
+    caj_cupti.degraded = 0;
+    return 1;
+}
+
+int32_t __cajeta_prof_cupti_degraded(void) { return caj_cupti.degraded; }
+
+// §6.2 / §12.1.c — the callback must be in place BEFORE the first activity
+// kind is enabled, or the records that arrive first are stamped in CUPTI's own
+// domain and silently mixed with converted ones. Recorded as a fact about what
+// happened rather than an intention: ts_first is set only if the registration
+// landed while kinds_enabled was still zero.
+static void caj_cupti_note_ts_registered(void) {
+    caj_cupti.ts_registered = 1;
+    if (caj_cupti.kinds_enabled == 0) caj_cupti.ts_first = 1;
+}
+
+int32_t __cajeta_prof_cupti_ts_callback_registered_first(void) {
+    return caj_cupti.ts_first;
+}
+
+int64_t __cajeta_prof_cupti_records(void)  { return caj_cupti.records; }
+int64_t __cajeta_prof_cupti_rejected(void) { return caj_cupti.rejected; }
+
+
+// ── §6.8 / §12.2.e — the host clock, on both platforms ───────────────────
+//
+// CLOCK_MONOTONIC does not exist on the Windows host, and this file may NOT
+// reach for a POSIX symbol it cannot resolve there: the runtime is
+// JIT-materialized, and ONE unresolvable symbol fails materialization of the
+// whole runtime. Run 32776148357 took all 139 Windows tests down at 65-90 s
+// apiece over exactly that mistake, in this file.
+//
+// QPC is the Windows counterpart with the properties §6.8 needs: monotonic,
+// not subject to NTP slew, and consistent across cores on any hardware this
+// targets. The frequency is fixed at boot, so it is read once.
+static int64_t caj_cupti_host_ns(void) {
+#if defined(_WIN32)
+    static LARGE_INTEGER freq;
+    LARGE_INTEGER now;
+    if (freq.QuadPart == 0 && !QueryPerformanceFrequency(&freq)) return 0;
+    if (!QueryPerformanceCounter(&now)) return 0;
+    /* Split to avoid overflowing the multiply: at 10 MHz a raw
+     * ticks * 1e9 overflows int64 after about 29 years of uptime. */
+    return (now.QuadPart / freq.QuadPart) * 1000000000LL
+         + ((now.QuadPart % freq.QuadPart) * 1000000000LL) / freq.QuadPart;
+#else
+    struct timespec t;
+    if (clock_gettime(CLOCK_MONOTONIC, &t) != 0) return 0;
+    return (int64_t) t.tv_sec * 1000000000LL + (int64_t) t.tv_nsec;
+#endif
+}
+
+// What CUPTI calls to stamp every activity record. Handing it OUR clock is
+// what makes records arrive already in the host domain (§6.2) instead of
+// needing §6.9's conversion after the fact.
+static uint64_t caj_cupti_timestamp_cb(void) {
+    return (uint64_t) caj_cupti_host_ns();
+}
+
+int64_t __cajeta_prof_cupti_host_ns(void) { return caj_cupti_host_ns(); }
+
+// §12.1.b — the ONLY way this backend enables a kind. Routing every enable
+// through the policy is what makes "KERNEL is never enabled" a property of
+// the code rather than a promise about it.
+int32_t __cajeta_prof_cupti_enable_kind(int32_t kind) {
+    if (!__cajeta_prof_cupti_kind_is_allowed(kind)) return 0;
+    if (caj_cupti.state != CAJETA_CUPTI_READY || caj_cupti.degraded) return 0;
+    if (!caj_cupti.api.activity_enable) return 0;
+    if (caj_cupti.api.activity_enable(kind) != 0) return 0;
+    caj_cupti.kinds_enabled++;
+    return 1;
+}
+
+int32_t __cajeta_prof_cupti_kinds_enabled(void) { return caj_cupti.kinds_enabled; }
+
 void __cajeta_prof_cupti_reset(void) {
     pthread_mutex_lock(&caj_cupti_mutex);
     if (caj_cupti.lib) { caj_cupti_libclose(caj_cupti.lib); caj_cupti.lib = NULL; }
     caj_cupti.state = CAJETA_CUPTI_UNATTEMPTED;
     caj_cupti.bound = 0;
     caj_cupti.has_ts_callback = 0;
+    caj_cupti.degraded = 0;
+    caj_cupti.ts_registered = 0;
+    caj_cupti.kinds_enabled = 0;
+    caj_cupti.ts_first = 0;
+    caj_cupti.records = 0;
+    caj_cupti.rejected = 0;
     memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
     caj_cupti.path[0] = '\0';
     caj_cupti.reason[0] = '\0';
@@ -328,6 +545,14 @@ int32_t __cajeta_prof_cupti_init(void) {
         if (fn) memcpy(&caj_cupti.api.register_timestamp_callback, &fn, sizeof(fn));
     }
     caj_cupti.lib = lib;
+    // §6.2 / §12.2.b — register the timestamp callback HERE, before any
+    // activity kind can be enabled. Order is the whole point: records that
+    // arrive before the callback is in place are stamped in CUPTI's own
+    // domain, and nothing downstream can tell them from converted ones.
+    if (caj_cupti.has_ts_callback && caj_cupti.api.register_timestamp_callback) {
+        if (caj_cupti.api.register_timestamp_callback(caj_cupti_timestamp_cb) == 0)
+            caj_cupti_note_ts_registered();
+    }
     caj_cupti_say(CAJETA_CUPTI_READY, tried,
                   caj_cupti.has_ts_callback
                       ? "CUPTI bound (timestamp callback present)"
@@ -336,6 +561,7 @@ int32_t __cajeta_prof_cupti_init(void) {
     pthread_mutex_unlock(&caj_cupti_mutex);
     return 1;
 }
+
 
 int32_t     __cajeta_prof_cupti_state(void)         { return caj_cupti.state; }
 const char* __cajeta_prof_cupti_reason(void)        { return caj_cupti.reason; }

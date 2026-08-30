@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstdio>
+#include <cstring>
+#include <memory>
 #include <string>
 #if defined(_WIN32)
 static inline int setenv(const char* k, const char* v, int) { return _putenv_s(k, v); }
@@ -34,6 +36,15 @@ struct Cupti {
     int32_t (*hasTsCallback)(void) = nullptr;
     int32_t (*versionIsWsl)(const char*) = nullptr;
     int32_t (*onWsl)(void) = nullptr;
+    // Unit 12's record path (12.1.a-e, g).
+    int32_t (*kindAllowed)(int32_t) = nullptr;
+    int32_t (*prefixBytes)(void) = nullptr;
+    int32_t (*decodeKernel)(const void*, int64_t, int64_t*, int64_t*, int32_t*) = nullptr;
+    int32_t (*noteSubscribe)(int32_t) = nullptr;
+    int32_t (*degraded)(void) = nullptr;
+    int32_t (*tsFirst)(void) = nullptr;
+    int64_t (*records)(void) = nullptr;
+    int64_t (*rejected)(void) = nullptr;
 };
 
 Cupti& cu() {
@@ -53,6 +64,14 @@ Cupti& cu() {
         x.hasTsCallback = reinterpret_cast<decltype(x.hasTsCallback)>(sym("__cajeta_prof_cupti_has_timestamp_callback"));
         x.versionIsWsl = reinterpret_cast<decltype(x.versionIsWsl)>(sym("__cajeta_prof_cupti_version_is_wsl"));
         x.onWsl = reinterpret_cast<decltype(x.onWsl)>(sym("__cajeta_prof_cupti_on_wsl"));
+        x.kindAllowed = reinterpret_cast<decltype(x.kindAllowed)>(sym("__cajeta_prof_cupti_kind_is_allowed"));
+        x.prefixBytes = reinterpret_cast<decltype(x.prefixBytes)>(sym("__cajeta_prof_cupti_kernel_prefix_bytes"));
+        x.decodeKernel = reinterpret_cast<decltype(x.decodeKernel)>(sym("__cajeta_prof_cupti_decode_kernel"));
+        x.noteSubscribe = reinterpret_cast<decltype(x.noteSubscribe)>(sym("__cajeta_prof_cupti_note_subscribe_result"));
+        x.degraded = reinterpret_cast<decltype(x.degraded)>(sym("__cajeta_prof_cupti_degraded"));
+        x.tsFirst = reinterpret_cast<decltype(x.tsFirst)>(sym("__cajeta_prof_cupti_ts_callback_registered_first"));
+        x.records = reinterpret_cast<decltype(x.records)>(sym("__cajeta_prof_cupti_records"));
+        x.rejected = reinterpret_cast<decltype(x.rejected)>(sym("__cajeta_prof_cupti_rejected"));
         return x;
     }();
     return c;
@@ -160,4 +179,175 @@ TEST(ProfilerCupti, theLiveProbeAgreesWithTheParser) {
     // Published so the lanes show the split: 0 on PHOENIX and on this
     // machine, 1 on phoenix-wsl — which is where §12.5's hazard lives.
     std::printf(" RESULT u12_on_wsl=%d\n", c.onWsl());
+}
+
+// ── Unit 12's record path ────────────────────────────────────────────────
+//
+// MEASURED, not recalled. Compiled against a real cupti_activity.h on
+// 2026-08-30, offsetof() across every kernel record version it declares:
+//
+//   version   kind  start  end  correlationId  sizeof
+//   Kernel2      0      8   16             84     112   <-- DIFFERENT
+//   Kernel3      0     16   24             92     120
+//   Kernel4      0     16   24             92     144
+//   Kernel5      0     16   24             92     160
+//   Kernel6      0     16   24             92     168
+//   Kernel7      0     16   24             92     176
+//   Kernel8      0     16   24             92     200
+//   Kernel9      0     16   24             92     208
+//
+// So the struct GROWS at the tail while the prefix through correlationId
+// stays put from Kernel3 on, which is what spec §5.4.5 means by reading only
+// stable prefix fields, and why the backend must never cast a record to a
+// version-specific struct. Kernel2 (pre-CUDA 9) is the floor and would
+// misparse; the plausibility checks below are what stop a misparse becoming a
+// published measurement rather than a crash.
+namespace {
+
+constexpr int32_t kKindKernel           = 3;    // CUPTI_ACTIVITY_KIND_KERNEL
+constexpr int32_t kKindConcurrentKernel  = 10;   // ..._CONCURRENT_KERNEL
+constexpr size_t  kOffKind = 0, kOffStart = 16, kOffEnd = 24, kOffCorr = 92;
+
+// A record built the way CUPTI lays one out, sized like the largest version
+// so a decoder that reads past its prefix has somewhere to go wrong.
+struct FakeRecord {
+    unsigned char bytes[208];
+    FakeRecord(int32_t kind, uint64_t start, uint64_t end, uint32_t corr) {
+        std::memset(bytes, 0xAB, sizeof bytes);   // poison: nothing may read tail
+        std::memcpy(bytes + kOffKind,  &kind,  sizeof kind);
+        std::memcpy(bytes + kOffStart, &start, sizeof start);
+        std::memcpy(bytes + kOffEnd,   &end,   sizeof end);
+        std::memcpy(bytes + kOffCorr,  &corr,  sizeof corr);
+    }
+};
+
+} // namespace
+
+// 12.1.b — CUPTI_ACTIVITY_KIND_KERNEL is never enabled. It SERIALIZES kernel
+// execution; CONCURRENT_KERNEL is the one that measures what actually ran.
+// Enabling the wrong one changes the program being measured.
+TEST(ProfilerCupti, theSerializingKernelKindIsNeverAllowed) {
+    ASSERT_NE(cu().kindAllowed, nullptr);
+    EXPECT_EQ(cu().kindAllowed(kKindConcurrentKernel), 1)
+        << "CONCURRENT_KERNEL is the kind this backend exists to read";
+    EXPECT_EQ(cu().kindAllowed(kKindKernel), 0)
+        << "KIND_KERNEL serializes execution - enabling it would change the "
+           "program being measured, not just observe it";
+}
+
+// 12.1.a — a well-formed record decodes, and its timestamps are non-zero.
+TEST(ProfilerCupti, aConcurrentKernelRecordDecodesWithNonZeroTimestamps) {
+    ASSERT_NE(cu().decodeKernel, nullptr);
+    const FakeRecord r(kKindConcurrentKernel, 1000, 4000, 77);
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, sizeof r.bytes, &start, &end, &corr), 1);
+    EXPECT_EQ(start, 1000);
+    EXPECT_EQ(end, 4000);
+    EXPECT_EQ(corr, 77);
+    EXPECT_GT(start, 0);
+    EXPECT_GT(end, 0);
+}
+
+// 12.1.g — only the stable prefix is read. A record truncated one byte before
+// the end of correlationId must be refused, not read past.
+TEST(ProfilerCupti, aRecordShorterThanTheStablePrefixIsRefused) {
+    ASSERT_NE(cu().prefixBytes, nullptr);
+    EXPECT_EQ(cu().prefixBytes(), 96)
+        << "the prefix runs through correlationId at offset 92 (+4)";
+    const FakeRecord r(kKindConcurrentKernel, 1000, 4000, 77);
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, 95, &start, &end, &corr), 0)
+        << "95 bytes cannot contain correlationId; decoding it would read "
+           "whatever follows the record";
+    EXPECT_EQ(cu().decodeKernel(r.bytes, 96, &start, &end, &corr), 1)
+        << "96 bytes is exactly the prefix and must be enough";
+}
+
+// 12.1.g — a kind this backend did not ask for is skipped, not decoded.
+TEST(ProfilerCupti, aNonKernelRecordIsSkippedRatherThanDecoded) {
+    const FakeRecord r(kKindKernel, 1000, 4000, 77);   // the serializing kind
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, sizeof r.bytes, &start, &end, &corr), 0);
+    EXPECT_EQ(start, -1) << "outputs must be untouched when nothing was decoded";
+}
+
+// 12.1.d — the known CUPTI regression: a kernel record whose timestamps are
+// zero. Zero is not a time; publishing it would put a span at the epoch and
+// make every later duration nonsense.
+TEST(ProfilerCupti, aZeroKernelTimestampIsRejectedAndCounted) {
+    ASSERT_NE(cu().rejected, nullptr);
+    const int64_t before = cu().rejected();
+    int64_t start = -1, end = -1; int32_t corr = -1;
+
+    const FakeRecord zeroStart(kKindConcurrentKernel, 0, 4000, 77);
+    EXPECT_EQ(cu().decodeKernel(zeroStart.bytes, sizeof zeroStart.bytes,
+                                &start, &end, &corr), -1);
+    const FakeRecord zeroEnd(kKindConcurrentKernel, 1000, 0, 77);
+    EXPECT_EQ(cu().decodeKernel(zeroEnd.bytes, sizeof zeroEnd.bytes,
+                                &start, &end, &corr), -1);
+    const FakeRecord bothZero(kKindConcurrentKernel, 0, 0, 77);
+    EXPECT_EQ(cu().decodeKernel(bothZero.bytes, sizeof bothZero.bytes,
+                                &start, &end, &corr), -1);
+
+    EXPECT_EQ(cu().rejected() - before, 3)
+        << "each rejection must be COUNTED - a silently dropped record is how "
+           "a backend reports a clean run while measuring nothing";
+}
+
+// 12.1.d — end before start is the other way a record lies. This is also the
+// shape a Kernel2 misparse takes, which is why it is rejected rather than
+// clamped: a clamp would publish the misparse as a plausible span.
+TEST(ProfilerCupti, anInvertedKernelSpanIsRejected) {
+    const int64_t before = cu().rejected();
+    const FakeRecord r(kKindConcurrentKernel, 4000, 1000, 77);
+    int64_t start = -1, end = -1; int32_t corr = -1;
+    EXPECT_EQ(cu().decodeKernel(r.bytes, sizeof r.bytes, &start, &end, &corr), -1);
+    EXPECT_EQ(cu().rejected() - before, 1);
+}
+
+// 12.1.e — a second CUPTI subscriber in the process. CUPTI allows exactly one;
+// the second gets CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED. Aborting
+// there would take down a program that merely ran under Nsight, so the
+// backend degrades to a no-op and says so.
+TEST(ProfilerCupti, aSecondSubscriberDegradesInsteadOfAborting) {
+    ASSERT_NE(cu().noteSubscribe, nullptr);
+    cu().reset();
+    EXPECT_EQ(cu().degraded(), 0) << "a fresh backend is not degraded";
+
+    constexpr int32_t kMultipleSubscribers = 39;  // CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED
+    EXPECT_EQ(cu().noteSubscribe(kMultipleSubscribers), 0)
+        << "the call reports failure to attach";
+    EXPECT_EQ(cu().degraded(), 1) << "and the backend is now a no-op";
+
+    const std::string why = cu().reason();
+    EXPECT_NE(why.find("subscriber"), std::string::npos)
+        << "the state must carry an actionable sentence, got: " << why;
+
+    cu().reset();
+    EXPECT_EQ(cu().degraded(), 0);
+    EXPECT_EQ(cu().noteSubscribe(0), 1) << "CUPTI_SUCCESS attaches normally";
+    EXPECT_EQ(cu().degraded(), 0);
+    cu().reset();
+}
+
+// 12.1.c — spec §6.2: records must arrive already in the host clock domain,
+// which requires the timestamp callback to be registered BEFORE any activity
+// kind is enabled. Registering it after leaves the first records in CUPTI's
+// own domain, and run 32439821390 measured exactly that shape on WSL: the
+// callback ACCEPTED and then ignored.
+TEST(ProfilerCupti, theTimestampCallbackIsRegisteredBeforeAnyKindIsEnabled) {
+    ASSERT_NE(cu().tsFirst, nullptr);
+    cu().reset();
+    EXPECT_EQ(cu().tsFirst(), 0) << "nothing registered yet on a fresh backend";
+    cu().init();
+    // Where CUPTI is absent this stays 0 and the claim is vacuous, so the
+    // assertion is conditional on the backend actually being READY.
+    if (cu().state() == CAJETA_CUPTI_READY && cu().hasTsCallback()) {
+        EXPECT_EQ(cu().tsFirst(), 1)
+            << "the callback must be registered before the first enable";
+    } else {
+        GTEST_SKIP() << "no CUPTI with a timestamp callback here; reason: "
+                     << cu().reason();
+    }
+    cu().reset();
 }
