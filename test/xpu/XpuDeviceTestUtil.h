@@ -51,6 +51,17 @@ inline bool cudaAvailable()   { return ::cajeta::xpu::nvidia::CudaDriver::availa
 inline bool hipAvailable()    { return ::cajeta::xpu::amd::HipDriver::available(); }
 inline bool vulkanAvailable() { return ::cajeta::xpu::vulkan::VulkanDriver::available(); }
 
+// "No Vulkan device" and "no Vulkan in this build" produce the SAME false from
+// available(), and they call for opposite responses — plug in a GPU versus
+// install the headers and rebuild. Say which.
+inline const char* vulkanAbsenceReason() {
+    return ::cajeta::xpu::vulkan::VulkanDriver::builtWithVulkan()
+        ? "no Vulkan compute device available (this binary HAS Vulkan support)"
+        : "this binary was built WITHOUT Vulkan support — <vulkan/vulkan.h> was "
+          "absent at compile time, so the driver is a stub and every Vulkan "
+          "test skips regardless of hardware; install libvulkan-dev and rebuild";
+}
+
 } // namespace test
 } // namespace xpu
 } // namespace cajeta
@@ -72,5 +83,5 @@ inline bool vulkanAvailable() { return ::cajeta::xpu::vulkan::VulkanDriver::avai
 #define CAJETA_SKIP_IF_NO_VULKAN()                                          \
     do {                                                                      \
         if (!::cajeta::xpu::test::vulkanAvailable())                          \
-            GTEST_SKIP() << "no Vulkan compute device available";            \
+            GTEST_SKIP() << ::cajeta::xpu::test::vulkanAbsenceReason();      \
     } while (0)

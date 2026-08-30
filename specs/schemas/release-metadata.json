@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olla.cajeta.dev/schemas/release-metadata.json",
+  "title": "Release metadata",
+  "description":
+    "What the repository says about one release: its hash and the organization that owns its name (publisher-trust spec §5.1, §6.2). Signed by the repository ROOT key, in the same envelope as the organization key document.\n\nSERVED AS `signed` INSIDE THE /v2/resolve BODY, beside the plain v2 fields. The signed half is authoritative and the plain half is never merged into it: one response then serves both a verifying and a non-verifying client, and a mirror that rewrites the plain half accomplishes nothing. A bare envelope is also accepted, which is the shape the filesystem driver reads from a `<name>-<version>.release.json` sidecar.\n\nTHE PAYLOAD IS CARRIED AS OPAQUE BYTES ON PURPOSE, exactly as in org-key-document.json: the signature covers the decoded `payload` as transmitted, so there is no canonical-JSON step for signer and verifier to disagree about.",
+  "type": "object",
+  "required": ["format", "root-key-id", "payload", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "description": "Envelope version. A client that does not recognise the value refuses the document rather than guessing at its meaning.",
+      "type": "integer",
+      "const": 1
+    },
+    "root-key-id": {
+      "description": "Which root key signed this. A hint for picking a candidate when a client holds several; the client reports the root that actually verified, not this claim (spec §6.3).",
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "description": "base64 of the UTF-8 JSON described by $defs/release.",
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "signature": {
+      "description": "base64 ed25519 signature over the DECODED payload bytes.",
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  },
+
+  "$defs": {
+    "release": {
+      "title": "The signed release statement",
+      "type": "object",
+      "required": ["sha256", "organization"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "The archive's dotted name. Strongly recommended: it makes the signed statement self-identifying, so a client that checks it cannot be made to accept this statement under another coordinate.",
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "description": "The archive's version. Recommended for the same reason as `name`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "description": "The archive's content hash, `sha256:<hex>` or bare hex (the client normalises to the prefixed form). This is the hash fetched bytes are checked against — the unsigned `.sha256` sidecar beside it is ignored when this is present (spec §5.1).",
+          "type": "string",
+          "minLength": 1
+        },
+        "organization": {
+          "description": "The organization that owns this name. This is what binds the archive to a publisher, and it is the reason verification costs no extra round trip: the resolve the client already performs answers 'who owns this'. It MUST come from the authority that gated the upload and MUST NOT be computed from the name (spec §4.4).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

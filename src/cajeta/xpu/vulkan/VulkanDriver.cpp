@@ -433,6 +433,8 @@ bool VulkanDriver::available() {
     return probe.init();
 }
 
+bool VulkanDriver::builtWithVulkan() { return true; }
+
 bool VulkanDriver::rayQueryAvailable() {
     // Self-contained probe: load libvulkan, create a throwaway 1.3 instance,
     // and check the first compute-capable device for the ray-query extension +
@@ -1022,6 +1024,7 @@ namespace vulkan {
 struct VulkanDriver::Impl {};
 VulkanDriver::~VulkanDriver() = default;
 bool VulkanDriver::available() { return false; }
+bool VulkanDriver::builtWithVulkan() { return false; }
 bool VulkanDriver::rayQueryAvailable() { return false; }
 bool VulkanDriver::coopMatrixAvailable() { return false; }
 bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() { return false; }

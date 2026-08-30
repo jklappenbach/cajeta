@@ -32,9 +32,9 @@ on:
         options: [both, wsl, windows, lavapipe, all]
         default: both
       filter:
-        description: 'gtest filter'
+        description: 'gtest filter (blank = per-leg default)'
         required: false
-        default: 'Profiler*'
+        default: ''
 
 concurrency:
   # The runners are single-box; newest wins.
@@ -124,8 +124,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update -qq
+          # libvulkan-dev is the load-bearing one and the least obvious:
+          # VulkanDriver.cpp keys CAJETA_HAS_VULKAN_HEADER off <vulkan/vulkan.h>
+          # at COMPILE time. Without it the driver compiles to a stub whose
+          # available() returns false forever, and every Vulkan test skips on a
+          # box that has a perfectly good software device. mesa-vulkan-drivers,
+          # libvulkan1 and vulkan-tools ship no headers between them.
           sudo apt-get install -y --no-install-recommends \
-            mesa-vulkan-drivers libvulkan1 vulkan-tools
+            mesa-vulkan-drivers libvulkan1 libvulkan-dev vulkan-tools
           echo "--- ICD manifests present ---"
           ls -1 /usr/share/vulkan/icd.d/ || true
           # Name the manifest for the test rather than letting it guess: mesa
