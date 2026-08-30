@@ -38,16 +38,16 @@ where that field is defined.
 - Capability consent at install and at upgrade (§4).
 - The published lockfile, so an install reproduces what the publisher
   tested (§5).
-- Platform completeness, since for an application install IS the build
-  (§6).
+- The release artifact set and platform selection (§6).
 - The installed-application lifecycle: install, list, upgrade, uninstall
   (§7).
 
 **1.6 Non-goals.**
-- **Prebuilt per-platform binaries.** The model stays bitcode plus local
-  AOT: one artifact per version, no platform matrix in the registry. §6
-  is about knowing whether that link can succeed, not about shipping
-  binaries.
+- **Platform binaries as separate registry entries.** DECIDED 2026-08-30
+  (§9.3): a release's platform binaries belong to that release, not to a
+  list of sibling coordinates. npm's per-platform-package pattern is
+  explicitly rejected — it keeps the registry model simple by pushing the
+  fan-out into names, and names are what users read.
 - **Apple platform distribution.** `apple-targets-spec` owns signing,
   notarization and the App Store, and hands distribution to Xcode.
 - **New sandbox enforcement.** §4 surfaces and gates on the EXISTING
@@ -161,9 +161,16 @@ one application says nothing about another.
 **5.1** An application publishes the lockfile it was built and tested
 against.
 
-**5.2** When an application is installed, its dependency set comes from
-that published lockfile rather than from a fresh resolve. A fresh resolve
-can legitimately choose versions the publisher never ran.
+**5.2** When an application is installed FROM ITS IR ARTIFACT, its
+dependency set comes from that published lockfile rather than from a fresh
+resolve. A fresh resolve can legitimately choose versions the publisher
+never ran.
+
+**5.2.1** When an application is installed from a PLATFORM BINARY, there
+is no install-time resolution and the lockfile is not consulted. It is
+still published, as the provenance record of what went into that binary,
+and it is what an audit reads. This asymmetry is a consequence of §9.3's
+decision: the two artifact forms need different things at install.
 
 **5.3** The published lockfile is covered by the same signed path as the
 release hash, so a mirror cannot substitute a dependency set.
@@ -175,21 +182,43 @@ does not verify, the install fails and nothing is written.
 against their own graph, which is the entire difference between the two
 kinds.
 
-## 6. Platform completeness
+## 6. The release artifact set and platform selection
 
-**6.1** For an application, install IS the build: the local AOT link is
-what produces the command. A missing per-platform native artifact
-therefore surfaces at install rather than at some consumer's later build.
+**6.1** A release carries a SET of artifacts, not one. Each is either the
+portable IR archive or a binary built for one platform.
 
-**6.2** An application records which platforms it can produce a binary
-for.
+**6.2** A release carries at least one artifact. A release carrying none
+is not installable and is refused at upload.
 
-**6.3** When an application is installed on a platform it does not
-support, it fails before fetching, naming the platforms it does support.
+**6.3** At most one IR artifact, and at most one binary per platform. Two
+answers for one platform is an ambiguity nothing downstream can resolve.
 
-**6.4** When an application's dependency closure narrows the supported
-set, the recorded set reflects the closure and not just the application's
-own artifacts.
+**6.4** Every artifact in the set is named, with its own hash, inside the
+signed release metadata. A per-platform hash that a mirror could supply
+unsigned would leave the platform binaries — the ones that execute
+directly, with no compile step in between — as the only unverified thing
+in the chain.
+
+**6.5** When an application is installed, a binary matching the host
+platform is preferred, and the IR artifact is the fallback.
+
+**6.6** When neither a matching binary nor an IR artifact exists for the
+host, the install fails BEFORE fetching anything, naming the platforms the
+release does support. Selection reads the signed metadata, so this costs
+no download.
+
+**6.7** When installing from the IR artifact, the local AOT link is what
+produces the command, so a missing per-platform native artifact inside the
+closure surfaces at install. The release records which platforms its IR
+path can actually link for, so §6.6 answers correctly rather than failing
+late.
+
+**6.8** When an application's dependency closure narrows the set of
+platforms its IR path supports, the recorded set reflects the closure and
+not just the application's own native artifacts.
+
+**6.9** A library release carries exactly one artifact: its IR archive.
+Nothing above changes how a library is published or resolved.
 
 ## 7. Lifecycle
 
@@ -221,13 +250,19 @@ repo — the split `publisher-trust` §1.7 already draws.
 
 **8.1** The kind is served in the signed release metadata (§2.4).
 
-**8.2** The supported platform set (§6.2) and the published lockfile
-(§5.1) are served for applications.
+**8.2** The artifact set (§6.1-6.4), the platforms the IR path can link
+for (§6.7), and the published lockfile (§5.1) are served for
+applications.
+
+**8.2.1** A release is one catalog entry however many artifacts it
+carries. Platform binaries must not surface as versions, tags, or sibling
+coordinates — the decision in §9.3 is about what a reader sees as much as
+about storage.
 
 **8.3** An upload declaring no kind is refused (§2.3).
 
 **8.4** An upload declaring kind APPLICATION with no command name, no
-entry method, or no lockfile is refused. Each is required for the archive
+entry method, no lockfile, or no artifact at all (§6.2) is refused. Each is required for the archive
 to be installable at all, and an archive that cannot be installed should
 not enter the registry.
 
@@ -247,14 +282,61 @@ entry in `settings.build.binaries`, defaulting to the binary's registry
 name. `details` is already the strict-schema identity block, which is
 what the kind is; the command belongs with the binary it launches.
 
-**9.3 Install-time AOT is a real cost.** Installing an application means
-linking it, which needs a toolchain present and takes build-scale time,
-not download-scale time. The alternative is a per-platform prebuilt
-matrix in the registry, which is a much larger change and multiplies what
-must be signed and stored. RECOMMENDATION: local AOT, with §6 making the
-failure mode legible. This is the trade most worth a second opinion.
+**9.3 Install-time AOT vs prebuilt — DECIDED 2026-08-30 (Julian): BOTH,
+within one release.** A release may carry the portable IR archive, one
+binary per platform, or both. Platform binaries belong to the release
+they came from; they do not register as sibling coordinates in a list of
+tags.
+
+Rejected alternatives, and why:
+
+- **IR only.** Installing means linking: a toolchain must be present and
+  it costs build-scale time. Correct as a floor, insufficient as the only
+  answer.
+- **Platform binaries as separate archives** (`dev.acme.tool.linux-x64`,
+  npm's pattern). Keeps the registry's per-release model untouched by
+  pushing the fan-out into names — and names are what users read. A
+  release that fragments across coordinates is worse to browse, worse to
+  retract, and worse to reason about than one that carries its own
+  artifacts.
+
+The consequence is that release metadata carries a set of (platform,
+hash) pairs rather than one hash (§6.4). That is a change to
+`publisher-trust`'s shipped signed path — see §10.
 
 **9.4 Does an application pin its toolchain version?** A published
 lockfile fixes dependencies but not the compiler that will link them. An
 application built and tested on one toolchain may not link on another.
-Deferred pending 9.3; if AOT is the model, this needs an answer.
+9.3 keeps the IR path, so this still needs an answer — but only for that
+path: a platform binary is already linked and does not care what compiles
+it. STILL OPEN.
+
+## 10. What 9.3 costs the shipped publisher-trust code
+
+Recorded here rather than discovered during implementation.
+
+**10.1** `ReleaseMetadata::sha256` is a single field and
+`releaseIntegrityFor` compares fetched bytes against that one value.
+Both grow a platform dimension.
+
+**10.2** `specs/schemas/release-metadata.json` gains the artifact set. The
+signed payload is what carries it (§6.4), so this is a schema change on
+the signed path, not an additive field beside it.
+
+**10.3** `specs/schemas/publisher-trust-protocol-v1.md` §3.4 describes a
+release as having one hash. It is a draft awaiting confirmation, so it can
+absorb this before anyone implements against it.
+
+**10.4** Olla's catalog keys one `sha256` per version row
+(`src/routes/resolve.ts`, `getVersion`). A version becomes one-to-many
+with artifacts. That is a migration on the server side.
+
+**10.5 The timing argument, which is the reason to decide this now.**
+Olla serves the PLAIN resolve body today: no `signed` member and no
+`/v2/org-keys` — verified in `cajeta-olla/src/routes/resolve.ts`. The
+signed release-metadata format therefore has ZERO production instances,
+and `publisher-trust` Unit 6 is fenced precisely on olla not serving it
+yet. Changing the shape now costs code edits. Changing it after olla ships
+the signed path costs a format migration on documents already signed and
+cached in the field. The envelope's `format` version exists for that, and
+not spending it is worth some hurry.
