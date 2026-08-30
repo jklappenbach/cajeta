@@ -4,9 +4,25 @@
 #
 #   jobs:
 #     release:
-#       uses: jklappenbach/cajeta/.github/workflows/lib-release.yml@main
+#       uses: jklappenbach/cajeta/.github/workflows/lib-release.yml@ci/v1
 #       secrets: inherit
 #
+# ── Versioning ───────────────────────────────────────────────────────────
+# Reference this by its `ci/vN` tag, not by `@main`.
+#
+# `ci/v1` MOVES: compatible changes re-point it, so callers still get fixes
+# without touching their repo — the central-upgrade property that makes one
+# shared workflow worth having. An INCOMPATIBLE change gets `ci/v2` instead,
+# and callers move deliberately when they are ready.
+#
+# The `ci/` prefix is deliberate. Every other tag in this repo is a TOOLCHAIN
+# release (`v0.24.0`), and this workflow downloads one by tag a few lines
+# below. A bare `v1` would sit in that namespace and read as a toolchain
+# release that does not exist.
+#
+# `@main` still resolves and is not blocked. It is simply the unpinned
+# option: whatever is on main at the moment your tag fires, breaking changes
+# included.
 # On a v* tag it: installs the cajeta toolchain (from the cajeta .deb release),
 # runs `cajeta build` (emits build/archive/<name>-<version>.cja), publishes a
 # GitHub Release with the .cja, and does a signed publish to Olla. On PRs /
@@ -147,7 +163,11 @@ jobs:
 
       - name: Publish to Olla
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: jklappenbach/cajeta/.github/actions/olla-publish@main
+        # Pinned to the SAME tag as this workflow, and that matters: a caller
+        # pinned to ci/v1 would otherwise still pick up a breaking change to
+        # the action from main, which is the exact failure pinning exists to
+        # prevent. Move both together or neither.
+        uses: jklappenbach/cajeta/.github/actions/olla-publish@ci/v1
         with:
           cja-path: ${{ steps.art.outputs.cja }}
           version: ${{ steps.art.outputs.version }}
