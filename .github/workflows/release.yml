@@ -726,6 +726,44 @@ jobs:
           echo "Windows MSI(s) produced:"
           ls -la "${msis[@]}"
 
+      # ---- Verify the Linux + macOS installers actually built -------------
+      # The same gate the MSI got, now that v0.25.0 has shipped all four
+      # formats: the build step stays continue-on-error (so a future format
+      # can be added without reddening the leg), and these decide whether the
+      # leg is allowed to pass. Without them a cpack failure is invisible —
+      # the step swallows it and `fail_on_unmatched_files: false` on the
+      # upload swallows the absence, so the release goes green missing a
+      # package nobody notices until an install fails.
+      - name: Verify Linux installers (deb + rpm)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(build/*.deb)
+          rpms=(build/*.rpm)
+          missing=()
+          if [ ${#debs[@]} -eq 0 ]; then missing+=(".deb"); fi
+          if [ ${#rpms[@]} -eq 0 ]; then missing+=(".rpm"); fi
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::cpack produced no ${missing[*]} — the Linux installer build failed (masked by continue-on-error on the build step)."
+            exit 1
+          fi
+          echo "Linux installers produced:"
+          ls -la "${debs[@]}" "${rpms[@]}"
+
+      - name: Verify macOS installer (pkg)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          pkgs=(build/*.pkg)
+          if [ ${#pkgs[@]} -eq 0 ]; then
+            echo "::error::cpack -G productbuild produced no .pkg — the macOS installer build failed (masked by continue-on-error on the build step)."
+            exit 1
+          fi
+          echo "macOS installer(s) produced:"
+          ls -la "${pkgs[@]}"
+
       # ---- Package ------------------------------------------------------
       # MSYS2 ships bash + tar + zip, so the staging and archive logic
       # is uniform across all three platforms. cajeta the binary lands
