@@ -37,7 +37,7 @@ int32_t runI32(const std::string& src) {
 
 } // namespace
 
-#if defined(__linux__)
+#if !defined(_WIN32)
 
 // POSIX-only, and it must live INSIDE the platform guard: a helper at
 // file scope is compiled on every target even when every test that
@@ -134,4 +134,4 @@ TEST(FileReaderAwaitEofTests, closedPeerDeliversDataThenEof) {
         << "expected 3 bytes then a 0 read (encoded 30), got " << rc;
 }
 
-#endif // __linux__
+#endif // !_WIN32

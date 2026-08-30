@@ -85,7 +85,7 @@ std::string docExample(const std::string& path) {
 
 } // namespace
 
-#if defined(__linux__)
+#if !defined(_WIN32)
 
 // [4.1.1][4.2.3] Three complete lines plus an unterminated tail of 4
 // bytes. The tail is the point: it proves the buffer survives the read
@@ -116,4 +116,4 @@ TEST(FileReaderAwaitDocExampleTests, documentedLoopTerminatesOnEof) {
     EXPECT_EQ(0, rc) << "an empty input must yield no lines and no tail";
 }
 
-#endif // __linux__
+#endif // !_WIN32

@@ -68,7 +68,26 @@ std::string prog(const std::string& body) {
 
 } // namespace
 
-#if defined(__linux__)
+#if !defined(_WIN32)
+
+#include <unistd.h>
+
+namespace {
+// Inside the guard on purpose: a helper at file scope compiles on every
+// target even when every test using it is guarded out (that is how the
+// mingw leg failed to BUILD on ::pipe).
+struct Pipe {
+    int rd = -1, wr = -1;
+    bool ok() const { return rd >= 0 && wr >= 0; }
+    void closeBoth() { if (rd>=0) ::close(rd); if (wr>=0) ::close(wr); rd=wr=-1; }
+};
+Pipe makePipe() {
+    int fds[2]; Pipe q;
+    if (::pipe(fds) != 0) return q;
+    q.rd = fds[0]; q.wr = fds[1];
+    return q;
+}
+} // namespace
 
 // [2.1.1] A regular file with bytes in it is readable at once. The failure
 // this guards is an EPERM surfacing as an exception, which is what a naive
@@ -120,16 +139,23 @@ TEST(FileReaderAwaitRegularFileTests, regularFileAtEofIsStillReady) {
 // still reports not-ready and still times out. Pairs with 2.1.1 — together
 // they show readiness is fd-KIND-aware rather than uniformly "yes".
 TEST(FileReaderAwaitRegularFileTests, aPipeStillFollowsItsData) {
+    Pipe q = makePipe();
+    ASSERT_TRUE(q.ok()) << "pipe() failed";
     auto src =
         "package test;\n"
         "import cajeta.io.file.FileReader;\n"
+        "import cajeta.io.file.FileWriter;\n"
         "public final class D {\n"
+        "    static int32 RD = " + std::to_string(q.rd) + ";\n"
+        "    static int32 WR = " + std::to_string(q.wr) + ";\n"
         "    public static int32 run() {\n"
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        FileReader r = heap FileReader(fd);\n"
+        "        FileReader r = heap FileReader(D.RD);\n"
         "        boolean idle = r.awaitReadable(50);\n"
-        "        Cajeta.eventfdSignal(fd);\n"
+        "        FileWriter w = heap FileWriter(D.WR);\n"
+        "        int8[] one = heap int8[1];\n"
+        "        one[0] = (int8) 120;\n"
+        "        w.write(one, 1);\n"
+        "        w.flush();\n"
         "        boolean live = r.awaitReadable(50);\n"
         "        if (idle) { return -2; }\n"
         "        if (!live) { return -3; }\n"
@@ -137,9 +163,10 @@ TEST(FileReaderAwaitRegularFileTests, aPipeStillFollowsItsData) {
         "    }\n"
         "}\n";
     int32_t rc = runI32(src);
+    q.closeBoth();
     ASSERT_NE(-2, rc) << "an idle fd reported readable — readiness is "
                          "uniformly true, so 2.1.1 proves nothing";
-    ASSERT_NE(-3, rc) << "a signalled fd reported not readable";
+    ASSERT_NE(-3, rc) << "a written pipe reported not readable";
     EXPECT_EQ(1, rc);
 }
 
@@ -152,4 +179,4 @@ TEST(FileReaderAwaitRegularFileTests, DISABLED_terminalFollowsItsData) {
                     "this as skipped-with-reason rather than passed";
 }
 
-#endif // __linux__
+#endif // !_WIN32

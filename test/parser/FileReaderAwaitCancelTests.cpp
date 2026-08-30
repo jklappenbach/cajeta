@@ -38,10 +38,29 @@
 
 using cajeta_test::CajetaJit;
 
-#if defined(__linux__)
+#if !defined(_WIN32)
+
+#include <unistd.h>
+
+namespace {
+// Inside the guard — see FileReaderAwaitReadableTests for why.
+struct Pipe {
+    int rd = -1, wr = -1;
+    bool ok() const { return rd >= 0 && wr >= 0; }
+    void closeBoth() { if (rd>=0) ::close(rd); if (wr>=0) ::close(wr); rd=wr=-1; }
+};
+Pipe makePipe() {
+    int fds[2]; Pipe q;
+    if (::pipe(fds) != 0) return q;
+    q.rd = fds[0]; q.wr = fds[1];
+    return q;
+}
+} // namespace
 
 // [1.1.8] Returns elapsed ms for the cancel+drain, or a negative code.
 TEST(FileReaderAwaitCancelTests, aParkedWaiterIsCancellable) {
+    Pipe q = makePipe();
+    ASSERT_TRUE(q.ok()) << "pipe() failed";
     auto src =
         "package test;\n"
         "import cajeta.io.file.FileReader;\n"
@@ -50,7 +69,7 @@ TEST(FileReaderAwaitCancelTests, aParkedWaiterIsCancellable) {
         "import cajeta.time.Duration;\n"
         "import cajeta.concurrent.Tasks;\n"
         "public final class D {\n"
-        "    static int32 sharedFd;\n"
+        "    static int32 sharedFd = " + std::to_string(q.rd) + ";\n"
         "    public static int32 waiter() {\n"
         "        FileReader r = heap FileReader(D.sharedFd);\n"
         "        boolean ok = r.awaitReadable(5000);\n"
@@ -58,9 +77,8 @@ TEST(FileReaderAwaitCancelTests, aParkedWaiterIsCancellable) {
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        D.sharedFd = fd;\n"          // never signalled: stays idle
+        // The pipe's write end stays OPEN and nothing is written, so the
+        // read end is idle rather than at EOF — a waiter genuinely parks.
         "        Duration d = Duration.ofMillis(300);\n"
         "        Task<int32> t = spawn waiter();\n"
         "        int64 t0 = Clock.nanoTime();\n"
@@ -74,13 +92,13 @@ TEST(FileReaderAwaitCancelTests, aParkedWaiterIsCancellable) {
     auto jit = CajetaJit::compile(src, "test.D");
     int32_t rc = jit->lookup<int32_t (*)()>("run")();
 
-    ASSERT_NE(-1, rc) << "eventfd creation failed";
     ASSERT_NE(-2, rc) << "the waiter completed — the fd was not idle, so "
                          "this measured nothing";
     EXPECT_LT(rc, 2000)
         << "cancel+drain took " << rc << "ms against a 300ms timeout on a "
            "5000ms wait — the parked fiber never observed the cancellation, "
            "so cabra's shutdown WOULD hang at the join";
+    q.closeBoth();
 }
 
 // INSTRUMENT VALIDATION for the test above, and a pin on the runtime
@@ -141,4 +159,4 @@ TEST(FileReaderAwaitCancelTests, withTimeoutDrainsABodyThatCannotYield) {
            "aParkedWaiterIsCancellable's short elapsed proves nothing";
 }
 
-#endif // __linux__
+#endif // !_WIN32

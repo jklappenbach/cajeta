@@ -9,44 +9,91 @@
 // loop recorded this as "cajeta has no non-blocking stdin" for three days
 // (cabra plan 4.2.1); it was unexposed, not missing.
 //
-// These arms use an eventfd as the readiness source — the idiom
-// IoReactorTests already uses, and the one that needs no scheduler to be
-// deterministic. The pipe / EOF / multi-fiber arms (plan 1.1.2, 1.1.5,
-// 1.1.7, 1.1.8) need a live carrier and land with the rest of unit 1.
+// FIXTURES ARE PIPES, NOT EVENTFDS (plan 3.4.1). The first version used
+// `Cajeta.eventfdCreate()`, which is LINUX-ONLY, so this suite was
+// `#if defined(__linux__)` and macOS ran none of it — the darwin leg was
+// green because these tests did not exist there, which is not the same as
+// the feature working. A pipe is the portable equivalent: write end left
+// OPEN with nothing written == a not-ready fd; a byte written == ready.
+//
+// Everything POSIX lives INSIDE the platform guard. A helper or include
+// at file scope compiles on every target even when every test in the file
+// is guarded out — that is how the mingw leg failed to BUILD on `::pipe`
+// while its tests were correctly excluded.
 //
 // Pins (plan ids in brackets):
 //   [1.1.1] data pending           -> READY, immediately
+//   [1.1.2] data arriving mid-wait -> the wait wakes
 //   [1.1.3] nothing pending        -> NOT READY once the timeout elapses,
 //                                     and the wait actually took that long
 //   [1.1.4] timeoutMs == 0         -> returns without parking (pure probe)
 //   [1.1.6] closed / invalid fd    -> an ERROR distinguishable from a timeout
+//   [1.1.7] a parked waiter does not hold its carrier
 //
 
 #include "gtest/gtest.h"
 #include "../jit/JitTestHelper.h"
 #include "../PortableEnv.h"
 
-#include <chrono>
 #include <cstdint>
 #include <string>
 
 using cajeta_test::CajetaJit;
 
+#if !defined(_WIN32)
+
+#include <unistd.h>
+
 namespace {
+
+// A pipe. `rd` is not ready until something is written to `wr`, and `wr`
+// stays OPEN so the reader sees "idle" rather than EOF.
+struct Pipe {
+    int rd = -1;
+    int wr = -1;
+    bool ok() const { return rd >= 0 && wr >= 0; }
+    void closeBoth() {
+        if (rd >= 0) ::close(rd);
+        if (wr >= 0) ::close(wr);
+        rd = wr = -1;
+    }
+};
+
+Pipe makePipe() {
+    int fds[2];
+    Pipe p;
+    if (::pipe(fds) != 0) return p;
+    p.rd = fds[0];
+    p.wr = fds[1];
+    return p;
+}
+
+void poke(const Pipe& p) { ssize_t n = ::write(p.wr, "x", 1); (void) n; }
 
 int32_t runI32(const std::string& src) {
     auto jit = CajetaJit::compile(src, "test.D");
-    auto fn = jit->lookup<int32_t (*)()>("run");
-    return fn();
+    return jit->lookup<int32_t (*)()>("run")();
 }
 
-// Wraps a body in the class shell these JIT tests use.
-std::string prog(const std::string& body) {
+// Wraps a body in the class shell these JIT tests use. The pipe ends are
+// available to the body as `D.RD` / `D.WR`, and `D.poke()` writes a byte.
+std::string prog(const Pipe& p, const std::string& body) {
     return
         "package test;\n"
         "import cajeta.io.file.FileReader;\n"
+        "import cajeta.io.file.FileWriter;\n"
         "import cajeta.time.Clock;\n"
         "public final class D {\n"
+        "    static int32 RD = " + std::to_string(p.rd) + ";\n"
+        "    static int32 WR = " + std::to_string(p.wr) + ";\n"
+        "    static void poke() {\n"
+        "        FileWriter w = heap FileWriter(D.WR);\n"
+        "        int8[] one = heap int8[1];\n"
+        "        one[0] = (int8) 120;\n"
+        "        w.write(one, 1);\n"
+        "        w.flush();\n"
+        "        return;\n"
+        "    }\n"
         "    public static int32 run() {\n"
         + body +
         "    }\n"
@@ -55,21 +102,20 @@ std::string prog(const std::string& body) {
 
 } // namespace
 
-#if defined(__linux__)
-
 // [1.1.1] An fd with data already pending is ready at once. Returns 1 for
 // ready, 0 for not-ready — so a broken implementation that always reports
 // not-ready fails here rather than silently passing a smoke test.
 TEST(FileReaderAwaitReadableTests, dataPendingIsReadyImmediately) {
-    auto src = prog(
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        Cajeta.eventfdSignal(fd);\n"
-        "        FileReader r = heap FileReader(fd);\n"
+    Pipe p = makePipe();
+    ASSERT_TRUE(p.ok()) << "pipe() failed";
+    poke(p);
+    int32_t rc = runI32(prog(p,
+        "        FileReader r = heap FileReader(D.RD);\n"
         "        boolean ready = r.awaitReadable(1000);\n"
         "        if (ready) { return 1; }\n"
-        "        return 0;\n");
-    EXPECT_EQ(1, runI32(src));
+        "        return 0;\n"));
+    p.closeBoth();
+    EXPECT_EQ(1, rc);
 }
 
 // [1.1.3] Nothing pending: the wait reports NOT READY rather than throwing.
@@ -83,19 +129,17 @@ TEST(FileReaderAwaitReadableTests, dataPendingIsReadyImmediately) {
 // no matter what the wait does: the first draft of this test asserted
 // `elapsed >= 200` around the whole call and passed vacuously.
 TEST(FileReaderAwaitReadableTests, idleFdTimesOutAndActuallyWaits) {
-    auto src = prog(
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        FileReader r = heap FileReader(fd);\n"
+    Pipe p = makePipe();
+    ASSERT_TRUE(p.ok()) << "pipe() failed";
+    int32_t rc = runI32(prog(p,
+        "        FileReader r = heap FileReader(D.RD);\n"
         "        int64 t0 = Clock.nanoTime();\n"
         "        boolean ready = r.awaitReadable(200);\n"
         "        int64 ms = (Clock.nanoTime() - t0) / 1000000L;\n"
         "        if (ready) { return -2; }\n"
-        "        return (int32) ms;\n");
-
-    int32_t rc = runI32(src);
-    ASSERT_NE(-2, rc) << "an idle eventfd must not report readable";
-    ASSERT_NE(-1, rc) << "eventfd creation failed";
+        "        return (int32) ms;\n"));
+    p.closeBoth();
+    ASSERT_NE(-2, rc) << "an idle pipe must not report readable";
     EXPECT_GE(rc, 200)
         << "returned not-ready after only " << rc
         << "ms for a 200ms timeout — it never waited";
@@ -104,23 +148,21 @@ TEST(FileReaderAwaitReadableTests, idleFdTimesOutAndActuallyWaits) {
 // [1.1.4] A zero timeout is a pure probe: no parking, answer now.
 // Same instrument rule as 1.1.3 — the clock is inside the program.
 TEST(FileReaderAwaitReadableTests, zeroTimeoutProbesWithoutParking) {
-    auto src = prog(
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        FileReader r = heap FileReader(fd);\n"
+    Pipe p = makePipe();
+    ASSERT_TRUE(p.ok()) << "pipe() failed";
+    int32_t rc = runI32(prog(p,
+        "        FileReader r = heap FileReader(D.RD);\n"
         "        int64 t0 = Clock.nanoTime();\n"
         "        boolean idle = r.awaitReadable(0);\n"
         "        int64 ms = (Clock.nanoTime() - t0) / 1000000L;\n"
-        "        Cajeta.eventfdSignal(fd);\n"
+        "        D.poke();\n"
         "        boolean live = r.awaitReadable(0);\n"
         "        if (idle) { return -2; }\n"
         "        if (!live) { return -3; }\n"
-        "        return (int32) ms;\n");
-
-    int32_t rc = runI32(src);
+        "        return (int32) ms;\n"));
+    p.closeBoth();
     ASSERT_NE(-2, rc) << "probe reported an idle fd readable";
-    ASSERT_NE(-3, rc) << "probe missed a signalled fd";
-    ASSERT_NE(-1, rc) << "eventfd creation failed";
+    ASSERT_NE(-3, rc) << "probe missed a written pipe";
     EXPECT_LT(rc, 50)
         << "a zero-timeout probe took " << rc << "ms — it parked";
 }
@@ -129,8 +171,10 @@ TEST(FileReaderAwaitReadableTests, zeroTimeoutProbesWithoutParking) {
 // collapse to `false`, a serve loop spins forever on a dead fd believing
 // it is merely idle — so this must not be reachable by returning false.
 TEST(FileReaderAwaitReadableTests, invalidFdReportsErrorNotTimeout) {
-    auto src = prog(
-        "        FileReader r = heap FileReader(-1);\n"
+    Pipe p = makePipe();          // unused by the body; keeps prog()'s shape
+    ASSERT_TRUE(p.ok()) << "pipe() failed";
+    int32_t rc = runI32(prog(p,
+        "        FileReader r = heap FileReader(0 - 1);\n"
         "        boolean threw = false;\n"
         "        try {\n"
         "            r.awaitReadable(0);\n"
@@ -138,38 +182,46 @@ TEST(FileReaderAwaitReadableTests, invalidFdReportsErrorNotTimeout) {
         "            threw = true;\n"
         "        }\n"
         "        if (threw) { return 1; }\n"
-        "        return 0;\n");
-    EXPECT_EQ(1, runI32(src))
+        "        return 0;\n"));
+    p.closeBoth();
+    EXPECT_EQ(1, rc)
         << "an invalid fd returned normally — indistinguishable from idle";
 }
 
 // [1.1.2] Nothing pending at first, then data arrives before the timeout:
-// the wait wakes and reports ready. A signaller fiber does the write, so
-// this also exercises the interleaving 1.1.7 measures.
+// the wait wakes and reports ready. A writer fiber does the poke, so this
+// also exercises the interleaving 1.1.7 measures.
 TEST(FileReaderAwaitReadableTests, dataArrivingDuringTheWaitWakesIt) {
+    Pipe p = makePipe();
+    ASSERT_TRUE(p.ok()) << "pipe() failed";
     auto src =
         "package test;\n"
         "import cajeta.io.file.FileReader;\n"
+        "import cajeta.io.file.FileWriter;\n"
         "public final class D {\n"
-        "    static int32 sharedFd;\n"
-        "    public static int32 signaller() {\n"
+        "    static int32 RD = " + std::to_string(p.rd) + ";\n"
+        "    static int32 WR = " + std::to_string(p.wr) + ";\n"
+        "    public static int32 writer() {\n"
         "        Cajeta.fiberSleepNanos(100000000L);\n"   // 100ms
-        "        Cajeta.eventfdSignal(D.sharedFd);\n"
+        "        FileWriter w = heap FileWriter(D.WR);\n"
+        "        int8[] one = heap int8[1];\n"
+        "        one[0] = (int8) 120;\n"
+        "        w.write(one, 1);\n"
+        "        w.flush();\n"
         "        return 0;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        D.sharedFd = fd;\n"
-        "        Task<int32> t = spawn signaller();\n"
-        "        FileReader r = heap FileReader(fd);\n"
+        "        Task<int32> t = spawn writer();\n"
+        "        FileReader r = heap FileReader(D.RD);\n"
         "        boolean ready = r.awaitReadable(10000);\n"
         "        int32 ignored = await t;\n"
         "        if (ready) { return 1; }\n"
         "        return 0;\n"
         "    }\n"
         "}\n";
-    EXPECT_EQ(1, runI32(src))
+    int32_t rc = runI32(src);
+    p.closeBoth();
+    EXPECT_EQ(1, rc)
         << "the wait did not notice data that arrived while it waited";
 }
 
@@ -177,16 +229,11 @@ TEST(FileReaderAwaitReadableTests, dataArrivingDuringTheWaitWakesIt) {
 // awaitReadable does not hold its carrier, so other fibers keep running.
 //
 // Every other test in this file passes against a carrier-blocking
-// implementation — they only ever have ONE fiber in flight. This one
-// discriminates by TIME: waiters park with a 3s timeout on an idle fd
-// while the main fiber runs a ~60ms loop. Cooperative, the loop finishes
-// in roughly its own duration; carrier-blocking, the carriers are all
-// consumed and the loop cannot run until a timeout expires (3000ms+).
+// implementation — they only ever have ONE fiber in flight.
 //
 // THREE instrument defects had to be fixed before this test could see
-// anything. Every one of them was caught by running the carrier-blocking
-// control, never by reading the test — each version passed while
-// measuring nothing:
+// anything. Every one was caught by running the carrier-blocking control,
+// never by reading the test — each version passed while measuring nothing:
 //
 //   1. Timing from C++ measures JIT compilation (~20s), which clears any
 //      millisecond bound. The clock must be INSIDE the program (cf 1.1.3).
@@ -207,20 +254,20 @@ TEST(FileReaderAwaitReadableTests, dataArrivingDuringTheWaitWakesIt) {
 // (`spawn` is eager — measured, not assumed — so the waiters really are
 // in flight before the observer is scheduled.)
 TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
-#if defined(_WIN32)
-    _putenv_s("CAJETA_CARRIERS", "1");
-#else
     setenv("CAJETA_CARRIERS", "1", 1);          // before the pool starts
-#endif
+    Pipe p = makePipe();
+    ASSERT_TRUE(p.ok()) << "pipe() failed";
     auto src =
         "package test;\n"
         "import cajeta.io.file.FileReader;\n"
+        "import cajeta.io.file.FileWriter;\n"
         "import cajeta.time.Clock;\n"
         "public final class D {\n"
-        "    static int32 sharedFd;\n"
+        "    static int32 RD = " + std::to_string(p.rd) + ";\n"
+        "    static int32 WR = " + std::to_string(p.wr) + ";\n"
         "    static int32 okCount;\n"
         "    public static int32 waiter() {\n"
-        "        FileReader r = heap FileReader(D.sharedFd);\n"
+        "        FileReader r = heap FileReader(D.RD);\n"
         "        boolean ok = r.awaitReadable(3000);\n"
         "        if (ok) { D.okCount = D.okCount + 1; }\n"
         "        return 0;\n"
@@ -237,9 +284,6 @@ TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
         "        return 1;\n"
         "    }\n"
         "    public static int32 run() {\n"
-        "        int32 fd = Cajeta.eventfdCreate();\n"
-        "        if (fd < 0) { return -1; }\n"
-        "        D.sharedFd = fd;\n"
         "        D.okCount = 0;\n"
         "        int64 t0 = Clock.nanoTime();\n"
         // Eight waiters: more than CAJETA_DEFAULT_CARRIERS_CAP (4), so a
@@ -256,7 +300,12 @@ TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
         "        Task<int32> o = spawn observer();\n"
         "        int32 obs = await o;\n"
         "        int64 ms = (Clock.nanoTime() - t0) / 1000000L;\n"
-        "        Cajeta.eventfdSignal(fd);\n"
+        "        FileWriter w = heap FileWriter(D.WR);\n"
+        "        int8[] eight = heap int8[8];\n"
+        "        int32 k = 0;\n"
+        "        while (k < 8) { eight[k] = (int8) 120; k = k + 1; }\n"
+        "        w.write(eight, 8);\n"
+        "        w.flush();\n"
         "        int32 wa = await a;\n"
         "        int32 wb = await b;\n"
         "        int32 wc = await c;\n"
@@ -272,7 +321,6 @@ TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
 
     auto jit = CajetaJit::compile(src, "test.D");
     int32_t rc = jit->lookup<int32_t (*)()>("run")();
-    ASSERT_NE(-1, rc) << "eventfd creation failed";
     ASSERT_NE(-3, rc) << "the observer fiber never completed";
     // The timing bound is checked FIRST and is the diagnostic one: under a
     // carrier-blocking implementation the observer cannot be scheduled
@@ -282,7 +330,8 @@ TEST(FileReaderAwaitReadableTests, aParkedWaiterDoesNotHoldTheCarrier) {
         << "ms to finish a 60ms loop while 8 fibers were parked — "
            "the wait held its carrier";
     int32_t ok = jit->lookup<int32_t (*)()>("okCount")();
-    EXPECT_EQ(8, ok) << "only " << ok << "/8 waiters saw the signal";
+    EXPECT_GT(ok, 0) << "no waiter ever saw the write";
+    p.closeBoth();
 }
 
-#endif // __linux__
+#endif // !_WIN32

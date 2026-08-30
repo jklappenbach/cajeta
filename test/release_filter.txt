@@ -36,6 +36,28 @@
 # discovered tests (a suite was renamed or removed) — so this list can't
 # silently rot into a no-op. When a suite is renamed, fix the line here.
 
+# pollable-stdin (FileReader.awaitReadable). This lowers differently per OS
+# — a native capability guard plus a select()-based probe — so it belongs
+# here rather than in the host-independent front-end set.
+#
+# The guard suite is NOT optional: it has exactly one test on every target
+# (the Windows arm, or the POSIX arm), so it must always match.
+FileReaderAwaitPlatformTests.*
+# The rest are `#if !defined(_WIN32)` and therefore compile to ZERO tests on
+# Windows, which this file treats as a hard error unless marked optional.
+# They are listed so DARWIN runs them: before 3.4.1 their fixtures used
+# eventfd (Linux-only), so macOS executed none of this feature and the
+# darwin leg was green only because the tests did not exist there.
+optional: FileReaderAwaitReadableTests.*     # POSIX-only (pipe fixtures)
+optional: FileReaderAwaitRegularFileTests.*  # POSIX-only (pipe fixtures)
+optional: FileReaderAwaitEofTests.*          # POSIX-only (pipe fixtures)
+optional: FileReaderAwaitCancelTests.*       # POSIX-only (pipe fixtures)
+optional: FileReaderAwaitDocExampleTests.*   # POSIX-only (awaitReadable)
+
+# (Kept ABOVE the generated block below: these are deliberate
+# platform-behaviour pins, not coverage-budget picks, so regenerating the
+# coverage list with build_routine.py must not drop them.)
+
 # --- Codegen / link / dispatch smoke (vtable layout + dispatch are ABI-
 #     sensitive; proves a JIT-compiled program runs on the host) ---------
 #
@@ -86,14 +108,6 @@ ErrorType.*
 ExceptionLocation.*
 FactoryAssistedTests.*
 FactoryCodegenTests.*
-# FileReader.awaitReadable's platform guard: the ONE OS-conditional arm of
-# pollable-stdin. Windows must refuse (Winsock select() cannot poll a
-# console/pipe HANDLE) and POSIX must not, and only the release matrix ever
-# runs the Windows side. The two sibling suites
-# (FileReaderAwaitReadableTests, FileReaderAwaitRegularFileTests) are
-# deliberately NOT listed: they are `#if defined(__linux__)`, so they would
-# match zero tests elsewhere, which this file treats as a hard error.
-FileReaderAwaitPlatformTests.*
 FlavorTests.*
 FrontMatterParseTests.*
 FrontMatterSplitTests.*
