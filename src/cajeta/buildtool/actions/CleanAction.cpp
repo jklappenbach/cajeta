@@ -124,8 +124,11 @@ namespace cajeta::buildtool {
                     if (!*p) continue;
                     fs::path candidate = fs::path(**p).lexically_normal();
                     auto rel = candidate.lexically_relative(rootPath);
-                    bool insideRoot = !rel.empty()
-                        && rel.native().compare(0, 2, "..") != 0;
+                    // Compare the first COMPONENT, not a string prefix:
+                    // path::native() is wstring on Windows (so a narrow
+                    // compare() does not even compile there), and a prefix
+                    // test would also misread a sibling named "..foo".
+                    bool insideRoot = !rel.empty() && *rel.begin() != "..";
                     if (insideRoot) continue;
                     auto w = wipeTree(candidate);
                     if (!w) return w.takeError();

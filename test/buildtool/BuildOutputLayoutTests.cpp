@@ -415,6 +415,36 @@ TEST(BuildOutputLayoutTests, explicitArtifactsOverridesRootForArtifactsOnly) {
         << "artifacts must NOT also land under root once overridden";
 }
 
+// 3.1.2b — clean must also wipe an artifacts tree that sits OUTSIDE the
+// build root. `{root: out, artifacts: dist}` is the only shape that reaches
+// CleanAction's extra-roots branch: "../escape" is rejected at parse (3.1.3),
+// so an escaping root can never get this far, and a `dist` that is merely a
+// SIBLING of `out` is what actually makes lexically_relative return "..".
+// That branch shipped uncompilable on Windows (path::native() is wstring
+// there) because nothing exercised it — 3.1.2 builds this layout but never
+// cleans it.
+TEST(BuildOutputLayoutTests, cleanWipesAnArtifactsTreeOutsideTheBuildRoot) {
+    auto p = LayoutProject::create(
+        "t.lib", /*entry=*/"", "t",
+        R"({ "root": "out", "artifacts": "dist" })");
+    std::string out;
+    ASSERT_EQ(0, p->build(out)) << out;
+
+    // Instrument check: both trees must exist, or the assertions are vacuous.
+    ASSERT_TRUE(fs::exists(p->root / "dist" / "t.lib-0.1.0.cja"))
+        << "nothing landed in the outside-root artifacts tree:\n" << out;
+    ASSERT_TRUE(fs::exists(p->root / "out"))
+        << "nothing landed under the build root, so this proves nothing";
+
+    std::string cleanOut;
+    ASSERT_EQ(0, p->clean(cleanOut)) << cleanOut;
+
+    EXPECT_FALSE(fs::exists(p->root / "dist" / "t.lib-0.1.0.cja"))
+        << "clean left the .cja in the outside-root artifacts tree";
+    EXPECT_FALSE(fs::exists(p->root / "out" / "obj"))
+        << "clean left intermediates under the build root";
+}
+
 // 3.1.3 — a bad value fails at MANIFEST PARSE naming the offending value
 // (§4.5), not at first write. Absolute paths are legal (§3.3, and 3.3.1
 // wants intermediates on tmpfs), so the rejected shapes are escapes and
