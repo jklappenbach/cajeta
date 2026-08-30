@@ -14,6 +14,8 @@
 
 #pragma once
 
+#include "cajeta/buildtool/SignedEnvelope.h"
+
 #include <llvm/Support/Error.h>
 
 #include <ctime>
@@ -21,15 +23,6 @@
 #include <vector>
 
 namespace cajeta::buildtool {
-
-    // A trust anchor: a root public key this client accepts. Carries PEM
-    // CONTENTS rather than a path because the shipped root lives in the
-    // binary and has no path — and one representation beats two.
-    struct RootKey {
-        std::string id;
-        std::string pem;
-        bool shipped = false;   // came with the toolchain (spec §3.1)
-    };
 
     struct OrgSigningKey {
         std::string id;

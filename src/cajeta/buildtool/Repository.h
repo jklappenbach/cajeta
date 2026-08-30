@@ -68,6 +68,11 @@ namespace cajeta::buildtool {
         std::string publishedAt;
         bool retracted = false;
         std::string retractedReason;
+        // The organization that owns this name (publisher-trust spec 6.2).
+        // Carried here because the client already performs this resolve, so
+        // verification costs no extra round trip — and because the client
+        // must never DERIVE an org from a dotted name (spec 4.4).
+        std::string organization;
     };
 
     // Request body for POST /v2/bundle.
@@ -202,6 +207,32 @@ namespace cajeta::buildtool {
         virtual llvm::Expected<std::optional<std::string>>
         publishedSignature(const std::string& name,
                            const std::string& version) const {
+            (void) name;
+            (void) version;
+            return std::optional<std::string>{};
+        }
+
+        // The signed organization key document this repository serves for
+        // `org` — raw envelope JSON (publisher-trust spec 6.1). The bytes
+        // come back unverified: a driver holds no trust anchors, and the
+        // caller that does is the one place verification belongs.
+        //
+        // `std::nullopt` means this repository serves no document for that
+        // organization. Absence and failure are DIFFERENT answers here —
+        // spec 6.4's degrade path exists to be taken on absence, and taking
+        // it on a network error would turn an outage into a bypass.
+        virtual llvm::Expected<std::optional<std::string>>
+        organizationKeys(const std::string& org) const {
+            (void) org;
+            return std::optional<std::string>{};
+        }
+
+        // The release metadata for `name@version` — raw JSON, either a
+        // signed envelope or a plain object (spec 5.1, 6.2). Same contract
+        // as `organizationKeys`: unverified bytes, nullopt for absence.
+        virtual llvm::Expected<std::optional<std::string>>
+        releaseMetadataJson(const std::string& name,
+                            const std::string& version) const {
             (void) name;
             (void) version;
             return std::optional<std::string>{};
