@@ -41,6 +41,15 @@ namespace vulkan {
         // without a prior init() (constructs + tears down a throwaway driver).
         static bool available();
 
+        // Whether Vulkan was COMPILED INTO this binary at all. available()
+        // cannot answer that: with no <vulkan/vulkan.h> at build time the whole
+        // driver becomes a stub whose available() returns false unconditionally,
+        // so a binary built without Vulkan is indistinguishable from a box with
+        // no device. That ambiguity let a hosted CI lane skip every Vulkan test
+        // and report success on 2026-08-30 — mesa and the loader were installed,
+        // the headers were not, and nothing said so.
+        static bool builtWithVulkan();
+
         // True iff the first compute-capable physical device also supports the
         // ray-query path: VK_KHR_acceleration_structure + VK_KHR_ray_query +
         // VK_KHR_deferred_host_operations + buffer-device-address, with the
