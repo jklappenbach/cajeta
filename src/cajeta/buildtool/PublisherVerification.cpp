@@ -33,7 +33,8 @@ namespace cajeta::buildtool {
                                               const std::string& artifactName,
                                               const std::string& artifactPath,
                                               const std::string& signature,
-                                              std::time_t now) {
+                                              std::time_t now,
+                                              const KeyRevocation* revocation) {
         PublisherVerdict v;
         v.organization = doc.organization;
 
@@ -69,7 +70,26 @@ namespace cajeta::buildtool {
         }
 
         bool unreadable = false;
+        // A key that WOULD have verified but is revoked. Held rather than
+        // returned immediately: a document may list a revoked key beside a
+        // good one, and the good one still verifies.
+        const RevokedKey* blockedBy = nullptr;
         for (const auto* key : usable) {
+            if (revocation) {
+                if (const auto* r = revocation->find(key->id, doc.organization)) {
+                    // Check the signature anyway, so the verdict can say
+                    // "the key that signed this is revoked" rather than the
+                    // much weaker "some revoked key exists".
+                    auto match = verifyDetachedEd25519File(
+                        artifactPath, signature, key->publicKeyPem);
+                    if (!match) {
+                        llvm::consumeError(match.takeError());
+                    } else if (*match) {
+                        blockedBy = r;
+                    }
+                    continue;
+                }
+            }
             auto ok = verifyDetachedEd25519File(artifactPath, signature,
                                                 key->publicKeyPem);
             if (!ok) {
@@ -85,6 +105,24 @@ namespace cajeta::buildtool {
                 v.keyId = key->id;
                 return v;
             }
+        }
+
+        // Before the generic mismatch: a revoked key that matches is a
+        // different fact from no key matching, and the two send an operator
+        // to different places.
+        if (blockedBy) {
+            v.check = PublisherCheck::Revoked;
+            v.keyId = blockedBy->id;
+            v.message = "'" + artifactName + "' is signed by key '"
+                      + blockedBy->id + "' of '" + doc.organization
+                      + "', which has been REVOKED"
+                      + (blockedBy->reason.empty()
+                             ? std::string(".")
+                             : ": " + blockedBy->reason)
+                      + " The signature is genuine; the key is not trusted "
+                        "any more. A new release signed by a current key is "
+                        "the only thing that installs.";
+            return v;
         }
 
         if (unreadable) {

@@ -43,6 +43,7 @@
 #include "cajeta/buildtool/Dependency.h"
 #include "cajeta/buildtool/Manifest.h"
 #include "cajeta/buildtool/ManifestEditor.h"
+#include "cajeta/buildtool/KeyRevocation.h"
 #include "cajeta/buildtool/OrgKeyCache.h"
 #include "cajeta/buildtool/PublisherVerification.h"
 #include "cajeta/buildtool/ReleaseIntegrity.h"
@@ -698,6 +699,7 @@ bool KernelSession::verifySignatureOrFail(
         const cajeta::buildtool::Repository& repo,
         const std::string& owningOrganization,
         const std::string& signature,
+        const cajeta::buildtool::RepositoryDelegation* delegation,
         const std::function<void(const std::string&)>& phase,
         std::string* errorOut) {
     namespace bt = cajeta::buildtool;
@@ -731,9 +733,26 @@ bool KernelSession::verifySignatureOrFail(
             return false;
         }
         if (doc->has_value()) {
+            // 2.8 — the revocation statement, consulted before the
+            // signature check. Fails CLOSED once the repository advertises
+            // it: refusing here is the point, since failing open would make
+            // one blocked request equivalent to un-revoking every key.
+            auto revocation = bt::revocationFor(repo, delegation, now, 0);
+            if (!revocation) {
+                if (errorOut) {
+                    *errorOut = "Packages.install: "
+                              + llvm::toString(revocation.takeError())
+                              + " Nothing was installed.";
+                } else {
+                    llvm::consumeError(revocation.takeError());
+                }
+                return false;
+            }
+
             phase("verifying publisher " + owningOrganization);
             auto verdict = bt::verifyAgainstOrgDocument(
-                **doc, name, archivePath, signature, now);
+                **doc, name, archivePath, signature, now,
+                revocation->has_value() ? &**revocation : nullptr);
             if (!verdict.ok()) {
                 // 4.3.1 — name the check. "Verification failed" sends a
                 // reader nowhere; each of these says what to do next.
@@ -989,7 +1008,9 @@ bool KernelSession::resolveForInstall(
     if (!published.empty()) {
         if (auto hit = cache.lookup(published)) {
             if (!verifySignatureOrFail(*hit, name, chosenVersion, *chosen,
-                                       owningOrganization, signature, phase,
+                                       owningOrganization, signature,
+                                       delegation ? &*delegation : nullptr,
+                                       phase,
                                        errorOut)) {
                 return false;
             }
@@ -1035,7 +1056,8 @@ bool KernelSession::resolveForInstall(
                           "installed.");
         }
         if (!verifySignatureOrFail(*fetched, name, chosenVersion, *chosen,
-                                   owningOrganization, signature, phase,
+                                   owningOrganization, signature,
+                                   delegation ? &*delegation : nullptr, phase,
                                    errorOut)) {
             std::error_code rm;
             std::filesystem::remove(*fetched, rm);
@@ -1049,8 +1071,9 @@ bool KernelSession::resolveForInstall(
             llvm::consumeError(stored.takeError());   // cache is best-effort
         }
     } else if (!verifySignatureOrFail(*fetched, name, chosenVersion, *chosen,
-                                      owningOrganization, signature, phase,
-                                      errorOut)) {
+                                      owningOrganization, signature,
+                                      delegation ? &*delegation : nullptr,
+                                      phase, errorOut)) {
         std::error_code rm;
         std::filesystem::remove(*fetched, rm);
         return false;

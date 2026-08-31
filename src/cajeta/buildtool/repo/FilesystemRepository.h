@@ -73,6 +73,9 @@ namespace cajeta::buildtool {
         llvm::Expected<std::optional<std::string>>
         repositoryKeys() const override;
 
+        llvm::Expected<std::optional<std::string>>
+        revocations() const override;
+
     private:
         std::string name_;
         std::string root_;

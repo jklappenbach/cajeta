@@ -91,7 +91,7 @@ TEST(PublisherVerificationTests, anArtifactSignedByAValidOrgKeyVerifies) {
     auto artifact = signedArtifact(dir, orgKey);
 
     auto v = verifyAgainstOrgDocument(doc, "dev.cajeta.http", artifact.path.string(),
-                                      artifact.signature, now);
+                                      artifact.signature, now, nullptr);
     EXPECT_TRUE(v.ok()) << v.message;
     EXPECT_EQ("k1", v.keyId);
     EXPECT_EQ("dev.cajeta", v.organization);
@@ -113,7 +113,7 @@ TEST(PublisherVerificationTests, aKeyFromAnotherOrganizationIsRefused) {
     auto artifact = signedArtifact(dir, theirs);
 
     auto v = verifyAgainstOrgDocument(doc, "dev.cajeta.http", artifact.path.string(),
-                                      artifact.signature, now);
+                                      artifact.signature, now, nullptr);
     EXPECT_FALSE(v.ok());
     EXPECT_EQ(PublisherCheck::Signature, v.check);
     EXPECT_NE(std::string::npos, v.message.find("does not match"));
@@ -135,7 +135,7 @@ TEST(PublisherVerificationTests, aNameOutsideTheNamespacesIsRefused) {
     // Same signature that verified in the ordinary case above.
     auto v = verifyAgainstOrgDocument(doc, "com.someoneelse.thing",
                                       artifact.path.string(), artifact.signature,
-                                      now);
+                                      now, nullptr);
     EXPECT_FALSE(v.ok());
     EXPECT_EQ(PublisherCheck::Namespace, v.check);
 
@@ -143,7 +143,7 @@ TEST(PublisherVerificationTests, aNameOutsideTheNamespacesIsRefused) {
     // the predicate.
     auto evil = verifyAgainstOrgDocument(doc, "dev.cajetaevil",
                                          artifact.path.string(),
-                                         artifact.signature, now);
+                                         artifact.signature, now, nullptr);
     EXPECT_FALSE(evil.ok());
     EXPECT_EQ(PublisherCheck::Namespace, evil.check);
 
@@ -167,7 +167,7 @@ TEST(PublisherVerificationTests, aSignatureByAnExpiredKeyIsRefused) {
 
     auto v = verifyAgainstOrgDocument(doc, "dev.cajeta.http",
                                       artifact.path.string(), artifact.signature,
-                                      now);
+                                      now, nullptr);
     EXPECT_FALSE(v.ok());
     EXPECT_EQ(PublisherCheck::NoUsableKey, v.check)
         << "an out-of-window key must read as 'cannot verify', never as a "
@@ -178,7 +178,7 @@ TEST(PublisherVerificationTests, aSignatureByAnExpiredKeyIsRefused) {
     auto earlier = verifyAgainstOrgDocument(doc, "dev.cajeta.http",
                                             artifact.path.string(),
                                             artifact.signature,
-                                            at("2024-06-01T00:00:00Z"));
+                                            at("2024-06-01T00:00:00Z"), nullptr);
     EXPECT_TRUE(earlier.ok()) << earlier.message;
 
     rmTree(dir);
@@ -218,7 +218,7 @@ TEST(PublisherVerificationTests, eitherOfTwoOverlappingKeysVerifies) {
                                        key == &outgoing ? "out" : "in");
         auto v = verifyAgainstOrgDocument(*parsed, "dev.cajeta.http",
                                           artifact.path.string(),
-                                          artifact.signature, now);
+                                          artifact.signature, now, nullptr);
         EXPECT_TRUE(v.ok()) << v.message;
     }
 
@@ -251,7 +251,7 @@ TEST(PublisherVerificationTests, dottedNamesCarryNoArityAssumption) {
         auto artifact = signedArtifact(dir, orgKey, tag);
 
         auto v = verifyAgainstOrgDocument(doc, c.artifact, artifact.path.string(),
-                                          artifact.signature, now);
+                                          artifact.signature, now, nullptr);
         EXPECT_TRUE(v.ok()) << c.artifact << ": " << v.message;
     }
 
@@ -272,21 +272,21 @@ TEST(PublisherVerificationTests, failureTextsNameWhichCheckFailed) {
     auto theirs = signedArtifact(dir, other, "theirs");
 
     auto ns = verifyAgainstOrgDocument(doc, "com.elsewhere.thing",
-                                       mine.path.string(), mine.signature, now);
+                                       mine.path.string(), mine.signature, now, nullptr);
     EXPECT_NE(std::string::npos, ns.message.find("outside the namespaces"));
     EXPECT_NE(std::string::npos, ns.message.find("dev.cajeta"))
         << "the message must name the organization and what it owns";
 
     auto sig = verifyAgainstOrgDocument(doc, "dev.cajeta.http",
                                         theirs.path.string(), theirs.signature,
-                                        now);
+                                        now, nullptr);
     EXPECT_NE(std::string::npos, sig.message.find("does not match"));
 
     OrgDocumentSpec stale;
     stale.keyNotAfter = "2025-01-01T00:00:00Z";
     auto staleDoc = documentOf(dir, stale, orgKey, root, now, "stale");
     auto win = verifyAgainstOrgDocument(staleDoc, "dev.cajeta.http",
-                                        mine.path.string(), mine.signature, now);
+                                        mine.path.string(), mine.signature, now, nullptr);
     EXPECT_NE(std::string::npos, win.message.find("validity window"));
 
     // Three different failures, three different texts.
@@ -313,7 +313,7 @@ TEST(PublisherVerificationTests, anUnreadableKeyIsNotACleanMismatch) {
     auto artifact = signedArtifact(dir, orgKey);
     auto v = verifyAgainstOrgDocument(doc, "dev.cajeta.http",
                                       artifact.path.string(), artifact.signature,
-                                      now);
+                                      now, nullptr);
     EXPECT_FALSE(v.ok());
     EXPECT_EQ(PublisherCheck::Unreadable, v.check);
     EXPECT_NE(std::string::npos, v.message.find("could not be checked"));

@@ -17,6 +17,7 @@
 #include "TestHttpServer.h"
 
 #include <filesystem>
+#include <sstream>
 #include <string>
 
 namespace cajeta::buildtool::testing {
@@ -28,6 +29,7 @@ namespace cajeta::buildtool::testing {
             : scratch_(std::move(scratch)), rootId_(std::move(rootId)) {
             rootKey_ = makeKeyPair(scratch_ / "server-keys", "root");
             orgKey_ = makeKeyPair(scratch_ / "server-keys", "org");
+            releaseKey_ = makeKeyPair(scratch_ / "server-keys", "release");
             advertiseV2(true);
         }
 
@@ -42,10 +44,54 @@ namespace cajeta::buildtool::testing {
         // contract and forgets this has disabled verification with no error
         // appearing anywhere, which is why it is a knob here.
         void advertiseV2(bool yes) {
-            srv_.route("/.well-known/cajeta-capabilities.json", 200,
-                       yes ? R"({"protocol-versions":["v1","v2"]})"
-                           : R"({"protocol-versions":["v1"]})");
+            v2_ = yes;
+            writeCapabilities();
         }
+
+        // §3.1 — the `revocation` flag. Separate from advertiseV2 because
+        // the two have OPPOSITE failure directions: an unadvertised v2
+        // silently degrades, an advertised revocation that then goes
+        // missing refuses. Both knobs exist so a test can show each.
+        void advertiseRevocation(bool yes) {
+            revocation_ = yes;
+            writeCapabilities();
+        }
+
+        // §3.4 — the delegation naming which keys may sign release metadata
+        // and the revocation statement.
+        void serveDelegation(const std::string& repository = "central") {
+            std::ostringstream p;
+            p << "{\"type\":\"repository-delegation\","
+              << "\"repository\":\"" << repository << "\","
+              << "\"not-after\":\"2030-01-01T00:00:00Z\","
+              << "\"keys\":[{\"id\":\"release-1\",\"algorithm\":\"ed25519\","
+              << "\"public-key\":\"" << jsonEscapePem(readWholeFile(releaseKey_.pub))
+              << "\",\"not-before\":\"2020-01-01T00:00:00Z\","
+              << "\"not-after\":\"2030-01-01T00:00:00Z\"}]}";
+            srv_.route("/v2/repository-keys", 200,
+                       envelopeAround(scratch_, p.str(), rootKey_, rootId_,
+                                      "delegation"));
+        }
+
+        // §3.8 — the revocation statement, signed by the DELEGATED key.
+        // `revokedEntries` is raw JSON array contents; empty is the healthy
+        // steady state and asserts that nothing is revoked.
+        void serveRevocation(const std::string& revokedEntries,
+                             const std::string& repository = "central",
+                             const std::string& issuedAt = "2026-06-01T00:00:00Z",
+                             const std::string& notAfter = "2026-06-01T01:00:00Z") {
+            std::ostringstream p;
+            p << "{\"type\":\"key-revocation\","
+              << "\"repository\":\"" << repository << "\","
+              << "\"issued-at\":\"" << issuedAt << "\","
+              << "\"not-after\":\"" << notAfter << "\","
+              << "\"revoked\":[" << revokedEntries << "]}";
+            srv_.route("/v2/revocations", 200,
+                       envelopeAround(scratch_, p.str(), releaseKey_,
+                                      "release-1", "revocation"));
+        }
+
+        const TestKeyPair& releaseKey() const { return releaseKey_; }
 
         // §3.3 — the organization key document.
         void serveOrganization(const OrgDocumentSpec& spec) {
@@ -152,10 +198,22 @@ namespace cajeta::buildtool::testing {
                        200, body.str());
         }
 
+        void writeCapabilities() {
+            std::ostringstream c;
+            c << "{\"protocol-versions\":"
+              << (v2_ ? R"(["v1","v2"])" : R"(["v1"])")
+              << ",\"revocation\":" << (revocation_ ? "true" : "false")
+              << "}";
+            srv_.route("/.well-known/cajeta-capabilities.json", 200, c.str());
+        }
+
         std::filesystem::path scratch_;
         std::string rootId_;
         TestKeyPair rootKey_;
         TestKeyPair orgKey_;
+        TestKeyPair releaseKey_;
+        bool v2_ = true;
+        bool revocation_ = false;
         TestHttpServer srv_;
     };
 

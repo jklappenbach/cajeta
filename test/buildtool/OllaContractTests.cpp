@@ -15,6 +15,7 @@
 #include "OllaContractStub.h"
 #include "TempTeardown.h"
 
+#include "cajeta/buildtool/KeyRevocation.h"
 #include "cajeta/buildtool/OrgKeyCache.h"
 #include "cajeta/buildtool/PublisherVerification.h"
 #include "cajeta/buildtool/ReleaseIntegrity.h"
@@ -106,7 +107,7 @@ TEST(OllaContractTests, aConformantServerSatisfiesTheWholeChain) {
 
     // §4 of the spec — the binding itself.
     auto verdict = verifyAgainstOrgDocument(**doc, "dev.cajeta.http",
-                                            artifact.string(), signature, now);
+                                            artifact.string(), signature, now, nullptr);
     EXPECT_TRUE(verdict.ok()) << verdict.message;
     EXPECT_EQ("dev.cajeta", verdict.organization);
 
@@ -214,6 +215,95 @@ TEST(OllaContractTests, aServedRetractionSurvivesAClearedPlainFlag) {
     rmTree(dir);
 }
 
+// §3.8 / 10.1.4 — the fail-closed HALF. The repository advertises
+// revocation and then does not serve it. Every other document here would
+// degrade to a weaker path; this must refuse, because failing open makes
+// blocking one request equivalent to un-revoking every key.
+TEST(OllaContractTests, anAdvertisedRepositoryFailsClosed) {
+    auto dir = freshDir("failclosed");
+    OllaContractStub stub(dir);
+    stub.serveDelegation();
+    stub.advertiseRevocation(true);     // ... and no /v2/revocations route
+
+    auto repo = clientFor(stub, dir);
+    auto roots = rootsFor(clientTrusting(dir, stub.root()), "central");
+    ASSERT_TRUE(!!roots);
+    auto now = at("2026-06-01T00:00:00Z");
+
+    auto raw = repo->repositoryKeys();
+    ASSERT_TRUE(!!raw) << errText(raw.takeError());
+    ASSERT_TRUE(raw->has_value());
+    auto del = loadRepositoryDelegation(**raw, *roots, now);
+    ASSERT_TRUE(!!del) << errText(del.takeError());
+
+    auto rev = revocationFor(*repo, &*del, now, 0);
+    ASSERT_FALSE(!!rev)
+        << "an advertised revocation that 404s must refuse — degrading here "
+           "lets one blocked request un-revoke every key";
+    EXPECT_NE(std::string::npos,
+              errText(rev.takeError()).find("serves no statement"));
+
+    rmTree(dir);
+}
+
+// ... and the other half, which is what makes the check a check. The same
+// 404, from a repository that never advertised revocation, PROCEEDS. A
+// rule that only ever fires is indistinguishable from one that always does.
+TEST(OllaContractTests, anUnadvertisedRepositoryProceeds) {
+    auto dir = freshDir("noclaim");
+    OllaContractStub stub(dir);
+    stub.serveDelegation();
+    // advertiseRevocation left false — nothing was promised.
+
+    auto repo = clientFor(stub, dir);
+    auto roots = rootsFor(clientTrusting(dir, stub.root()), "central");
+    ASSERT_TRUE(!!roots);
+    auto now = at("2026-06-01T00:00:00Z");
+
+    auto raw = repo->repositoryKeys();
+    ASSERT_TRUE(!!raw);
+    auto del = loadRepositoryDelegation(**raw, *roots, now);
+    ASSERT_TRUE(!!del) << errText(del.takeError());
+
+    auto rev = revocationFor(*repo, &*del, now, 0);
+    ASSERT_TRUE(!!rev) << errText(rev.takeError());
+    EXPECT_FALSE(rev->has_value())
+        << "no claim, no obligation — this is the legacy path, not a fault";
+
+    rmTree(dir);
+}
+
+// §3.4 / 10.1.10 — the delegation through a SERVED response. It had unit
+// coverage and had never been fetched over the wire; protocol §8.2 recorded
+// that as a gap.
+TEST(OllaContractTests, aServedDelegationVerifiesReleaseMetadata) {
+    auto dir = freshDir("delegated");
+    OllaContractStub stub(dir);
+    stub.serveDelegation();
+    stub.advertiseRevocation(true);
+    stub.serveRevocation("");           // healthy steady state: nothing revoked
+
+    auto repo = clientFor(stub, dir);
+    auto roots = rootsFor(clientTrusting(dir, stub.root()), "central");
+    ASSERT_TRUE(!!roots);
+    auto now = at("2026-06-01T00:00:00Z");
+
+    auto raw = repo->repositoryKeys();
+    ASSERT_TRUE(!!raw) << errText(raw.takeError());
+    ASSERT_TRUE(raw->has_value()) << "the stub routes /v2/repository-keys";
+    auto del = loadRepositoryDelegation(**raw, *roots, now);
+    ASSERT_TRUE(!!del) << errText(del.takeError());
+    EXPECT_EQ("central", del->repository);
+
+    auto rev = revocationFor(*repo, &*del, now, 0);
+    ASSERT_TRUE(!!rev) << errText(rev.takeError());
+    ASSERT_TRUE(rev->has_value());
+    EXPECT_TRUE((*rev)->revoked.empty())
+        << "an empty list is a statement, not an absence";
+
+    rmTree(dir);
+}
+
 // A payload altered after signing is caught, and it is an ERROR rather
 // than a quiet fall-through to the plain fields sitting beside it.
 TEST(OllaContractTests, aPayloadAlteredAfterSigningIsRefused) {
@@ -313,7 +403,7 @@ TEST(OllaContractTests, overlappingKeyWindowsLetAPublisherRotate) {
         ASSERT_TRUE(doc->has_value());
         auto v = verifyAgainstOrgDocument(**doc, "dev.cajeta.http",
                                           artifact.string(), signature,
-                                          at(when));
+                                          at(when), nullptr);
         EXPECT_TRUE(v.ok()) << when << ": " << v.message;
     }
 

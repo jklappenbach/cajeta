@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "cajeta/buildtool/KeyRevocation.h"
 #include "cajeta/buildtool/OrgKeyDocument.h"
 
 #include <ctime>
@@ -30,6 +31,7 @@ namespace cajeta::buildtool {
         Namespace,     // the name is outside what this org owns (4.3)
         NoUsableKey,   // the document has no key valid right now (4.1)
         Signature,     // no valid key of that org signed these bytes (4.2)
+        Revoked,       // a key that would have verified is revoked (2.8)
         Unreadable,    // the artifact or a key could not be read at all
     };
 
@@ -58,10 +60,17 @@ namespace cajeta::buildtool {
     // publishes. `artifactName` is the dotted package name, and `doc` must
     // already be the document of the organization that signed metadata says
     // owns it — this function does not decide ownership, it enforces it.
+    // `revocation` is the repository's current revocation statement, or
+    // nullptr when it serves none. A revoked key is skipped as if it were
+    // outside its window, and a signature that ONLY a revoked key verifies
+    // reports `Revoked` rather than `Signature` — an operator sent to
+    // "the signature is wrong" when the answer is "that key was
+    // compromised" loses the incident (spec 2.8).
     PublisherVerdict verifyAgainstOrgDocument(const OrgKeyDocument& doc,
                                               const std::string& artifactName,
                                               const std::string& artifactPath,
                                               const std::string& signature,
-                                              std::time_t now);
+                                              std::time_t now,
+                                              const KeyRevocation* revocation);
 
 } // namespace cajeta::buildtool

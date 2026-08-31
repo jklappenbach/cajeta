@@ -90,7 +90,7 @@ verification without any error appearing anywhere.
 
 ### 3.2 The signed envelope
 
-Both signed documents share one wrapper:
+Every signed document here shares one wrapper:
 
 ```json
 {
@@ -108,7 +108,10 @@ sign the result — that is a well-known signature-bypass class, and this
 format exists to make it unrepresentable.
 
 `root-key-id` is a HINT, telling a client holding several roots which to
-try first. The client reports the root that actually verified, not the one
+try first. On release metadata (§3.5) and the revocation statement (§3.8)
+it names a DELEGATED key rather than a root — the field keeps its name
+because the wrapper is shared, and a second wrapper differing in one field
+name would be a parser to get wrong for no gain. The client reports the root that actually verified, not the one
 named here (spec 6.3), so a wrong value is a performance bug rather than a
 security one — but it must still name a real root.
 
@@ -277,8 +280,9 @@ GET /v2/revocations
 → 404  this repository does not do fast revocation
 ```
 
-Same envelope as §3.2, with one difference that matters: **it is signed by
-the DELEGATED key, not the root.** It verifies against the keys in §3.4's
+Same envelope as §3.2 — `root-key-id` names the delegated key, as it does
+on release metadata — with one difference that matters: **it is signed by
+the DELEGATED key, and a root signature is NOT accepted here.** It verifies against the keys in §3.4's
 delegation, so a repository serving no delegation cannot serve this
 either — fast revocation is something delegation buys (spec 2.8.2).
 
@@ -592,21 +596,33 @@ publisher, a client holding a different root, and rotation across
 overlapping key windows.
 
 The stub routes `/.well-known/cajeta-capabilities.json`,
-`/v2/org-keys/<org>`, `/v2/resolve` and `/v2/blob`. A server can be
-checked the same way: point `HttpRepository` at it and run the same
-assertions.
+`/v2/org-keys/<org>`, `/v2/repository-keys`, `/v2/revocations`,
+`/v2/resolve` and `/v2/blob`. A server can be checked the same way: point
+`HttpRepository` at it and run the same assertions.
 
 ### 8.2 What it does not reach yet
 
-**`/v2/repository-keys` (§3.4) and `/v2/revocations` (§3.8) are not
-served by the stub**, so neither is contract-tested. Delegation has unit
-coverage (`RepositoryDelegationTests`, 7 tests) but has never been
-exercised through a served response; revocation has no client at all yet.
-The signed `retracted` flag (§5.2) is likewise specified and unread.
+The gaps recorded here on 2026-08-31 — delegation and revocation unserved
+by the stub, and the signed `retracted` flag unread by any client — are
+CLOSED. Units 9 and 10 added the routes and the client, and §8.1 lists
+them.
 
-These are work items, not permanent gaps — plan Units 9 and 10 carry them.
-Until they land, §8.1's suite passing means less than it appears to: it
-proves the paths that existed before this contract grew.
+Three tests are worth knowing about by name, because each pins a rule that
+is easy to implement backwards:
+
+- `aServedRetractionSurvivesAClearedPlainFlag` — the plain half says
+  `retracted: false`, the signed payload says otherwise. Serving them in
+  agreement would prove nothing.
+- `anAdvertisedRepositoryFailsClosed` and `anUnadvertisedRepositoryProceeds`
+  — the same 404, refused in one case and accepted in the other. A rule
+  that only ever fires is indistinguishable from one that always does, so
+  the pair is the check, not either half.
+
+What remains uncovered is rollback protection across invocations.
+`loadKeyRevocation` refuses a statement older than one already seen, but
+nothing persists that value between runs, so a fresh process accepts any
+statement inside its own window. Expiry bounds the exposure to one window
+— minutes to hours — which is why this is a note rather than a unit.
 
 ### 8.3 Self-checks for what no client can see
 

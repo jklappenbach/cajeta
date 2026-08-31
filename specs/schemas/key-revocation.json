@@ -4,7 +4,12 @@
   "title": "Key revocation statement",
   "description": "The fast half of revocation (publisher-trust spec §2.8).\n\nWHY THIS EXISTS. A revoked key must stop being trusted at once, but the durable revocation — a key document re-signed without the key — waits on the offline root ceremony of §7.9.1, measured in hours or days. This statement is signed by the DELEGATED key instead, so it applies in seconds. The statement is the brake; the re-signed document is the repair.\n\nWHY AN ONLINE KEY MAY SIGN IT. It can only SUBTRACT trust. It names key ids and makes them unusable; it can add no key, widen no namespace, and issue no document. A compromised delegated key can therefore cause a loud, recoverable outage and cannot forge anything — which is a trade worth making to avoid being unable to revoke for two days.\n\nFRESHNESS IS THE WHOLE POINT. Yesterday's statement is indistinguishable from 'nothing is revoked', so a stale one is refused and windows are short. This is also the one document whose ABSENCE is a failure rather than a weaker path: once a repository advertises revocation, a missing or expired statement makes the client refuse, because failing open would make blocking one fetch equivalent to un-revoking every key.\n\nSame envelope as org-key-document.json — payload as opaque bytes, signature over exactly what is transmitted — but verified against the DELEGATION's keys (repository-delegation.json), never against a root.",
   "type": "object",
-  "required": ["format", "key-id", "payload", "signature"],
+  "required": [
+    "format",
+    "root-key-id",
+    "payload",
+    "signature"
+  ],
   "additionalProperties": false,
   "properties": {
     "format": {
@@ -12,8 +17,8 @@
       "type": "integer",
       "const": 1
     },
-    "key-id": {
-      "description": "Which DELEGATED key signed this — not a root key id, unlike every other envelope here. A hint for selection; the client reports the key that actually verified.",
+    "root-key-id": {
+      "description": "Which key signed this. Named `root-key-id` because the envelope is shared with every other signed document here (§3.2), not because a root signed it — for this document and for release metadata it names a DELEGATED key. A hint for selection; the client reports the key that actually verified.",
       "type": "string",
       "minLength": 1
     },
@@ -28,12 +33,17 @@
       "contentEncoding": "base64"
     }
   },
-
   "$defs": {
     "revocation": {
       "title": "The signed revocation statement",
       "type": "object",
-      "required": ["type", "repository", "issued-at", "not-after", "revoked"],
+      "required": [
+        "type",
+        "repository",
+        "issued-at",
+        "not-after",
+        "revoked"
+      ],
       "additionalProperties": false,
       "properties": {
         "type": {
@@ -57,14 +67,17 @@
         "revoked": {
           "description": "The revoked key ids. EMPTY IS MEANINGFUL AND NORMAL: it asserts that nothing is revoked as of `issued-at`, which is a different statement from serving nothing at all, and it is the steady state a healthy repository publishes. Revocation is permanent for a key id — there is no un-revoke, and recovery is a new key in a re-signed document. An entry may be pruned once a root-signed document omitting that key is being served (spec §2.8.5, §2.8.6).",
           "type": "array",
-          "items": { "$ref": "#/$defs/revokedKey" }
+          "items": {
+            "$ref": "#/$defs/revokedKey"
+          }
         }
       }
     },
-
     "revokedKey": {
       "type": "object",
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": {
