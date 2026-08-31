@@ -1191,3 +1191,105 @@ questions are appended here as they arise.
   vectorized unpack path (14.6). The live-set mutex stays off the decode loop
   only while §4.3's pooling holds, so that requirement is load-bearing rather
   than an optimization.
+
+## 15. Mixture of Experts
+
+Appended rather than inserted: `12.3`, `13.21`, `13.22` and their
+neighbours are referenced by outline id from the plan, from test names and
+from code comments, so renumbering the existing sections to slot this in
+by topic would break every one of them.
+
+**Definition.** An MoE decoder replaces the dense FFN with a *router* and a
+bank of *experts*. Each token is scored against every expert, a small
+number are selected, and only those run. `Qwen3-Coder-30B-A3B` on this box
+declares 128 experts with 8 used per token — **6.25% of the FFN weights
+touched per token**, which is the entire point of the architecture and the
+thing an implementation is allowed to get wrong only by being slow.
+
+Scope decided with Julian 2026-08-31: the seam is **general** (every gating
+variant the ggml metadata can express, not just Qwen3's), the first working
+run is on the **host**, and restoring batched prefill for QK-norm models is
+**in** this arc rather than deferred.
+
+### Structure
+
+- **15.1** When a checkpoint declares an MoE architecture, the layer's FFN
+  is built from a router plus expert banks rather than three dense
+  projections, and the dense path is unchanged for non-MoE models.
+- **15.2** When expert weights arrive as one rank-3 slab per projection
+  (`ffn_gate_exps`, `ffn_up_exps`, `ffn_down_exps`), each expert's rows are
+  addressed in place; no per-expert copy is made at load. The loader
+  rejects rank 3 today (`Linear.bind`, two sites), and it rejects it
+  loudly, which is the only reason this is a feature request and not a
+  corruption report.
+- **15.3** When an expert slice is taken from a quantized slab, it begins
+  on a block boundary. Qwen3's widths (768, 2048) are multiples of 256 and
+  so satisfy this; a model whose expert width is not is rejected with the
+  width named, never silently mis-sliced.
+- **15.4** When an architecture is MoE but unsupported, the error names the
+  architecture AND which of its features are unimplemented, so the gap is
+  actionable rather than a flat refusal (§4.5 for the general case).
+
+### Routing
+
+- **15.5** When the router runs, it scores every expert for every token and
+  selects exactly `expert_used_count` of them.
+- **15.6** When routing weights are combined, the gating function, the
+  weight normalisation and the weight scale are READ FROM METADATA, never
+  assumed from the architecture name. Two models with the same arch string
+  and different gating are otherwise indistinguishable until the output is
+  wrong.
+- **15.7** When a model declares a router bias (`exp_probs_b`), it is added
+  to the scores **before** top-k selection and excluded from the combining
+  weights — the aux-loss-free balancing shape.
+- **15.8** When gating is sigmoid rather than softmax, selection and
+  normalisation follow the sigmoid convention.
+- **15.9** When a model declares shared experts, they run for every token
+  in addition to the routed ones, and their output is summed before the
+  residual add.
+- **15.10** When `expert_weights_scale` is present, it multiplies the
+  combined expert output.
+
+### Sparsity — the requirement that makes it MoE
+
+- **15.11** When a token is processed, the weights READ are those of the
+  selected experts and the shared experts only. An implementation that
+  evaluates all experts and masks the result is correct and is NOT
+  acceptable: at 8-of-128 it does 16x the work the architecture exists to
+  avoid.
+- **15.12** When prefill batches N tokens whose selections differ, the
+  dispatch groups tokens by expert so each expert's weights are read once
+  per batch, not once per token.
+
+### Every variant is exercised, or it is not shipped
+
+- **15.13** When a gating variant is implemented, a model or fixture that
+  EXERCISES it is named alongside it. Generality bought without an
+  exercising artifact is untested code by construction — the failure mode
+  §13.24's manual gate and the 2026-08-23 vacuously-green amdgpu suite both
+  record. The mapping is part of this spec:
+
+  | variant | exercised by |
+  |---|---|
+  | softmax + top-k + weight-norm | Qwen3-Coder-30B-A3B (on disk) |
+  | no weight-norm | Mixtral-8x7B |
+  | sigmoid gating, router bias, shared experts, weight scale | DeepSeek-V2-Lite (16B — the cheap witness for all four) |
+
+  A variant whose row has no artifact is deferred, not written.
+
+### QK-norm (in this arc, separate subject)
+
+- **15.14** When a model declares per-head q/k norms (`attn_q_norm`,
+  `attn_k_norm`), batched prefill still engages. `batchReady` rejects
+  `qNorm != null` today, so every Qwen3 model — MoE or dense — falls off
+  the batched device path for reasons unrelated to its FFN.
+
+### Gates
+
+- **15.15** When an MoE model runs greedily, its first N tokens match
+  `llama.cpp`'s for the same file, same context (the 20.1.6 shape).
+- **15.16** When sparsity is measured, expert weight bytes read per token
+  are within a small factor of `expert_used_count / expert_count` of the
+  dense equivalent. Asserted on the MECHANISM — a byte or launch count —
+  never on a wall-clock, which cannot separate "ran sparsely" from "ran
+  densely on a fast day".
