@@ -1322,11 +1322,37 @@ files' actual bytes rather than their model cards.
   Qwen3's shape; the Qwen1.5 witness on disk REQUIRES the gated form, so
   an implementation of 15.9 alone would bind the witness and produce
   wrong output.
-- **15.19** When the device path loads expert slabs, their residency is
-  stated, not assumed: this box's unified memory holds the 30B-A3B's
-  ~18 GB resident, and that is the supported v1 shape. Discrete-VRAM
-  expert paging is out of scope until a machine that needs it exists
-  (the 20.1.x geometry rule: no tuning for absent hardware).
+- **15.19** *(Rewritten 2026-08-31 — the first version deferred paging
+  "until hardware that needs it exists", which answered the wrong
+  question: the pressure is model CAPACITY, not device type. A dozen
+  30 GB experts is 360 GB against this box's 122 GB of RAM, and that is
+  DeepSeek-V3-class — a family 15.13 already anticipates.)*
+
+  Expert residency is TIERED, and the v1 tier must not foreclose the v2:
+
+  - **v1 — the OS pages, because the loader already mmaps.** GGUF loads
+    through `MappedFile`, and 15.2 addresses expert rows in place, so an
+    expert that never fires is a page range that is never touched. A
+    bigger-than-RAM MoE therefore LOADS AND RUNS on the host path with
+    zero new machinery; the page cache is the eviction policy. The
+    load-bearing constraint — the reason this works and the thing that
+    must not regress: **nothing may eagerly materialize a full expert
+    slab.** No load-time host repack of all experts, and device uploads
+    per SELECTED expert group only, never per slab. One eager pass over
+    360 GB at load turns "slow on cold experts" into "does not start".
+  - **The floor, stated so nobody is surprised:** a token's cost is
+    bounded below by (bytes of cold selected experts) / (storage
+    bandwidth). Worst-case all-cold on the 360 GB hypothetical at NVMe
+    speed is seconds per token; the real number depends on routing
+    concentration, which is measured, not guessed — 15.20's utilization
+    records exist to answer exactly this BEFORE a cache is built.
+  - **v2 — a managed expert cache** (pinned hot set, router-guided
+    prefetch, per-session affinity): a real subsystem, specified when
+    v1's measured hit rate on a real oversized model says what it must
+    do. The router knows a layer's selections before that layer's FFN
+    runs, and 15.20 knows a session's expert affinity across turns —
+    those two facts are the prefetch seam, and they are why v2 is an
+    innovation surface rather than a port of someone else's LRU.
 - **15.20** When routing runs under a host that observes the engine
   (§11.8's diagnostics records), per-request expert utilization is
   emittable as records — which experts fired, how concentrated the
