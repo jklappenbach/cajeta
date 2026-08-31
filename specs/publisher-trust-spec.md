@@ -134,6 +134,54 @@ delegation carries a required, signed type discriminator; an organization
 document is identified by the `organization` and `namespaces` a delegation
 never carries.
 
+### 2.8 Revocation
+
+**2.8** A revoked key must stop being trusted at once, and §2.7 puts the
+root offline. The durable form of revocation — a re-signed key document
+that omits the key — therefore waits on an offline ceremony measured in
+hours or days. A REVOCATION STATEMENT, signed by the DELEGATED key, is the
+emergency brake that covers the interval.
+
+**2.8.1** It can only SUBTRACT trust. It names key ids and makes them
+unusable; it can add no key, widen no namespace, and issue no document.
+That asymmetry is the entire reason an online key may sign it — a
+compromised delegated key can cause a noisy, recoverable outage and cannot
+forge anything.
+
+**2.8.2** Verification differs from every other document here: a
+revocation statement verifies against the DELEGATION's keys, not against
+the roots. It follows that a repository serving no delegation (§2.7.3) has
+no fast revocation, and its only revocation is the re-signed document.
+Fast revocation is a thing delegation buys.
+
+**2.8.3** The statement is FRESHNESS-BOUNDED and an expired one is
+refused. A revocation an attacker can suppress is not a revocation:
+serving yesterday's statement is indistinguishable from "nothing is
+revoked" unless the statement says how stale it may be. Windows are short
+— minutes to hours — which the delegated key can sustain precisely
+because it is online.
+
+**2.8.4** Suppression therefore fails CLOSED. Where a repository
+advertises revocation, a missing or expired statement is a FAILURE, not an
+absence, and the client refuses rather than proceeding unrevoked. Failing
+open would make blocking a single fetch equivalent to un-revoking every
+key in the repository.
+
+**2.8.5** Revocation is permanent for a key id. There is no un-revoke — a
+compromised key does not become trustworthy again — and recovery is a NEW
+key in a re-signed document. This is the opposite of §7.6's retraction,
+which is reversible on purpose, and the two must not be modelled alike.
+
+**2.8.6** The statement is the brake; the re-signed document is the
+repair. Once a document omitting the key is signed and served, the entry
+has no work left and may be pruned. That is what bounds the list's growth:
+an entry may be dropped once the revoked key falls outside the validity
+window of every document that ever carried it.
+
+**2.8.7** A revocation statement and a delegation must be unmistakable for
+one another, for the reason given in §2.7.4. The statement carries a
+required, signed `type` discriminator.
+
 ## 3. The trust anchor
 
 **3.1** The repository's root public key ships with the cajeta toolchain,
@@ -258,6 +306,22 @@ there is no anonymous write.
 
 **7.2** The owner can create, read, update and delete organizations.
 
+**7.2.1** Deleting an organization removes the key document every archive
+it published verifies against, so installs that worked yesterday stop
+working — with no bytes removed and nothing in the repository looking
+wrong. It is WARN-AND-CONFIRM, showing which archives the deletion will
+make unverifiable, on the same footing as §7.5's remove. It is not a
+refusal: the repository is a delivery hub, not the system of record for
+who an organization is, and it must not become the thing that blocks
+deleting one.
+
+**7.2.2** Recovery is re-onboarding, not restore. The organization is
+created again, a new document is signed, and CI republishes — the release
+pipeline that produced the archives in the first place can produce them
+again, which is what makes §7.2.1 a warning rather than a refusal. It is
+not instant: the new document waits on §7.9.1's offline ceremony like any
+other. Deleting an organization is recoverable, not cheap.
+
 **7.3** The owner can create, read, update and delete an organization's
 public keys. **An organization cannot modify its own keys.**
 
@@ -284,6 +348,14 @@ warn. That is the withdrawal a publisher performs for a bad release, and
 it is deliberately not deletion — a registry that lets a publisher delete
 is a registry where a dependency can vanish under someone else's build.
 
+**7.6.1** §7.6 is routine self-service and NOT a path into namespaces an
+organization does not own, because §7.3 already put that boundary out of
+its reach. What an org may publish is bounded by the namespaces in its key
+document, and only the owner can change that document. The two clauses
+were written to work together: without §7.3, "an organization manages its
+own archives" would be an escalation path, and with it there is nothing to
+escalate to.
+
 **7.6.2** The `retracted` flag is INSIDE the signed release metadata, and
 retraction re-signs it. A flag carried only in the unsigned half of a
 resolve response is one a mirror clears, and clearing it is invisible:
@@ -298,14 +370,6 @@ them is not. §1.9 fixes the first — a change is a new version. §7.6.2
 makes the second mutable on purpose, and the two do not conflict as long
 as no one reads §1.9 as freezing the metadata too.
 
-**7.6.1** §7.6 is routine self-service and NOT a path into namespaces an
-organization does not own, because §7.3 already put that boundary out of
-its reach. What an org may publish is bounded by the namespaces in its key
-document, and only the owner can change that document. The two clauses
-were written to work together: without §7.3, "an organization manages its
-own archives" would be an escalation path, and with it there is nothing to
-escalate to.
-
 **7.7** Every mutation is authenticated, attributed, and recorded. Who
 changed which key, and when, is the audit question that matters after a
 compromise, and it cannot be reconstructed later if it was not recorded
@@ -315,9 +379,25 @@ at the time.
 replacement. Compromise response is "stop trusting this key now", and
 requiring a new key first would delay the only urgent step.
 
+**7.8.1** Because §7.9 stages rather than signs, the durable revocation —
+a re-signed document omitting the key — waits on the offline ceremony, and
+§7.8's urgency would be unachievable on its own. The delegated revocation
+statement of §2.8 is what makes it real: the brake applies in seconds
+against the online key, and the re-signed document follows as the repair.
+
 **7.9** A key document published through this surface is signed by the
 root key (§2.3). The administrative API is how documents come to exist;
 it does not introduce a second, unsigned path to the same data.
+
+**7.9.1** The administrative API STAGES; it does not sign. Its write verbs
+record an intended next document, and the root signature is an explicit
+offline act performed outside the API — the administrative surface never
+holds the root key, because an admin credential that could produce a root
+signature would forge any organization's document, the collapse §2.7
+exists to bound. §7.2 and §7.3's verbs are therefore requests: an
+organization does not exist to a client until its first document is signed
+and served, and a staged change that reads back as applied is how an
+operator concludes a revocation took effect when it did not.
 
 **7.10** Publishing and key management are separate privileges on purpose:
 the frequent action does not carry the dangerous one. An organization

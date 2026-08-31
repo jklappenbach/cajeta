@@ -61,8 +61,14 @@ existing `(name, version)` is refused, not resolved (spec 1.9).
 
 ```
 GET /.well-known/cajeta-capabilities.json
-→ { "protocol-versions": ["v1", "v2"], ... }
+→ { "protocol-versions": ["v1", "v2"], "revocation": true, ... }
 ```
+
+`revocation` is absent or `false` unless the repository serves §3.8, and
+turning it on is a ONE-WAY DOOR in practice: from then on a missing or
+expired revocation statement makes clients refuse. Advertise it only once
+the statement is being served reliably, and understand that turning it
+back off silently disables the fastest protection the repository has.
 
 Everything below is v2. A client that does not see `"v2"` here does not
 ask for any of it, and treats the repository as serving no key documents
@@ -220,6 +226,8 @@ subtly wrong.
 | `200` with a document that does not verify | REFUSE the install |
 | `404` on `/v2/repository-keys` | delegates nothing; the root signs releases (§3.4) |
 | `404` on `/v2/resolve` for a release it will serve a blob for | **must not happen** — see below |
+| `404` on `/v2/revocations`, never advertised | no fast revocation — proceed (§3.8) |
+| `404` or expired on `/v2/revocations`, after advertising it | REFUSE — the one absence that is a failure |
 | `5xx`, timeout, connection reset | ERROR — refuse, do not degrade |
 
 A server must not answer `404` for a transient internal failure. Doing so
@@ -248,6 +256,47 @@ Spec §5.3's default closes it on the client side once it lands, since "no
 verification was possible" becomes a refusal rather than a fallback. Until
 then the invariant is the only thing standing between a selective 404 and a
 silent downgrade.
+
+### 3.8 Revocation statement (spec 2.8)
+
+```
+GET /v2/revocations
+→ 200  a signed envelope
+→ 404  this repository does not do fast revocation
+```
+
+Same envelope as §3.2, with one difference that matters: **it is signed by
+the DELEGATED key, not the root.** It verifies against the keys in §3.4's
+delegation, so a repository serving no delegation cannot serve this
+either — fast revocation is something delegation buys (spec 2.8.2).
+
+The signed payload carries a required `type: "key-revocation"`, the
+repository it speaks for, a short `not-after`, and the revoked key ids.
+See `key-revocation.json`.
+
+It can only SUBTRACT trust: a key id it names becomes unusable, and it can
+add no key, widen no namespace, and issue no document. That asymmetry is
+why an online key is allowed to sign it. A compromised delegated key can
+revoke an organization's key and cause a loud, recoverable outage; it
+cannot forge one (spec 2.8.1).
+
+**Serve it fresh and expect it to be refused when stale.** Windows are
+minutes to hours. A revocation an attacker can suppress is not a
+revocation — yesterday's statement is indistinguishable from "nothing is
+revoked" unless the statement bounds its own age (spec 2.8.3).
+
+**This is the one place in §3 where absence and failure do NOT both
+degrade safely.** Everywhere else a 404 means "this repository does not
+serve that" and the client takes a weaker path. Here, once a repository
+has set `"revocation": true` in §3.1, a missing or expired statement is a
+FAILURE:
+the client refuses rather than proceeding unrevoked, because failing open
+would make blocking one fetch equivalent to un-revoking every key (spec
+2.8.4). A repository that never advertises it is unaffected.
+
+Revocation is permanent for a key id — there is no un-revoke. Entries may
+be pruned once a root-signed document omitting the key is being served,
+which is what bounds the list (spec 2.8.5, 2.8.6).
 
 ## 4. Upload refusals
 
@@ -362,19 +411,57 @@ ORGANIZATION. Every mutation below is one or the other; there is no
 anonymous write (spec 7.1).
 
 **6.1 (7.2)** The owner can create, read, update and delete organizations.
+The write verbs STAGE — see §6.4.
+
+Deleting an organization removes the key document every archive it
+published verifies against: installs that worked yesterday stop working,
+no bytes are removed, and nothing in the repository looks wrong. Treat it
+like §5.3's remove — WARN AND CONFIRM, showing which archives the deletion
+makes unverifiable. Not a refusal: a repository is a delivery hub, not the
+system of record for who an organization is, and recovery is re-onboarding
+plus a CI republish rather than a restore (spec 7.2.1, 7.2.2).
 
 **6.2 (7.3)** The owner can create, read, update and delete an
 organization's public keys. **An organization cannot modify its own
-keys.**
+keys.** These write verbs stage too.
 
 **6.3 (7.8)** Revoking a key is available to the owner WITHOUT waiting for
 a replacement. Compromise response is "stop trusting this key now", and
 requiring a new key first would delay the only urgent step. Do not make
 revocation a special case of update.
 
+§6.4 stages rather than signs, so the durable revocation — a re-signed
+document omitting the key — waits on the offline ceremony, and this clause
+would be unachievable on its own. §3.8's delegated revocation statement is
+what makes it real: the brake applies in seconds against the online key,
+and the re-signed document follows as the repair. Shortening document
+lifetimes is NOT an alternative — it puts the root online and defeats §2.7.
+
+So revocation is two acts with different latencies, and an implementation
+that provides only the slow one has not implemented this clause.
+
 **6.4 (7.9)** A key document published through this surface is signed by
 the root key. The administrative API is how documents come to exist; it
 must not introduce a second, unsigned path to the same data.
+
+**THE ADMINISTRATIVE API STAGES; IT DOES NOT SIGN.** Its write verbs
+record an intended next document and take effect only when a root
+signature arrives. The signature is an explicit offline act performed
+outside this API, and **the administrative surface never holds the root
+key** — if it did, compromising an admin credential would forge any
+organization's document, which is the collapse §2.7 exists to bound.
+
+So §6.1 and §6.2's verbs are requests, not mutations. An organization
+created through them does not exist to a client until its first document
+is signed and served, and a key added to a document authorises nothing
+until the same. Say so in the API: a staged change that reads back as
+applied is how an operator concludes a revocation took effect when it did
+not.
+
+The cost is latency. Every change to a key document — onboarding, key
+rotation, a namespace addition, a revocation — waits on the offline
+ceremony. That is the right trade for the first three and the wrong one
+for the fourth, which is §6.3's problem.
 
 **6.5** An organization's `namespaces` enter its key document at
 issuance, on evidence of control over the corresponding name — a DNS

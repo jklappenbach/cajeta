@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olla.cajeta.dev/schemas/key-revocation.json",
+  "title": "Key revocation statement",
+  "description": "The fast half of revocation (publisher-trust spec §2.8).\n\nWHY THIS EXISTS. A revoked key must stop being trusted at once, but the durable revocation — a key document re-signed without the key — waits on the offline root ceremony of §7.9.1, measured in hours or days. This statement is signed by the DELEGATED key instead, so it applies in seconds. The statement is the brake; the re-signed document is the repair.\n\nWHY AN ONLINE KEY MAY SIGN IT. It can only SUBTRACT trust. It names key ids and makes them unusable; it can add no key, widen no namespace, and issue no document. A compromised delegated key can therefore cause a loud, recoverable outage and cannot forge anything — which is a trade worth making to avoid being unable to revoke for two days.\n\nFRESHNESS IS THE WHOLE POINT. Yesterday's statement is indistinguishable from 'nothing is revoked', so a stale one is refused and windows are short. This is also the one document whose ABSENCE is a failure rather than a weaker path: once a repository advertises revocation, a missing or expired statement makes the client refuse, because failing open would make blocking one fetch equivalent to un-revoking every key.\n\nSame envelope as org-key-document.json — payload as opaque bytes, signature over exactly what is transmitted — but verified against the DELEGATION's keys (repository-delegation.json), never against a root.",
+  "type": "object",
+  "required": ["format", "key-id", "payload", "signature"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "description": "Envelope version. A client that does not recognise the value refuses the statement rather than guessing — and because a refused statement fails closed, an unrecognised version takes the repository's clients down rather than quietly disabling revocation. Bump it deliberately.",
+      "type": "integer",
+      "const": 1
+    },
+    "key-id": {
+      "description": "Which DELEGATED key signed this — not a root key id, unlike every other envelope here. A hint for selection; the client reports the key that actually verified.",
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {
+      "description": "base64 of the UTF-8 JSON described by $defs/revocation.",
+      "type": "string",
+      "contentEncoding": "base64"
+    },
+    "signature": {
+      "description": "base64 ed25519 signature over the DECODED payload bytes, made by a key named in the repository's current delegation. A root signature is NOT accepted here: this document's short lifetime is only sustainable because an online key produces it, and accepting a root signature would invite exactly the long-lived statement §2.8.3 forbids.",
+      "type": "string",
+      "contentEncoding": "base64"
+    }
+  },
+
+  "$defs": {
+    "revocation": {
+      "title": "The signed revocation statement",
+      "type": "object",
+      "required": ["type", "repository", "issued-at", "not-after", "revoked"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "description": "REQUIRED discriminator. Signed, so it cannot be stripped in transit. A document that does not say what it is must never be read as a revocation, nor a revocation as anything else (spec §2.8.7).",
+          "type": "string",
+          "const": "key-revocation"
+        },
+        "repository": {
+          "description": "The repository this speaks for, checked against the one it was fetched from. Without it, one repository's statement could be replayed at another — which revokes nothing it should not, but is still a denial of service someone else gets to trigger.",
+          "type": "string",
+          "minLength": 1
+        },
+        "issued-at": {
+          "description": "When this statement was produced. A client comparing successive statements uses it to reject a rollback to an older list.",
+          "$ref": "https://olla.cajeta.dev/schemas/org-key-document.json#/$defs/timestamp"
+        },
+        "not-after": {
+          "description": "Expiry, deliberately SHORT — minutes to hours. Sustainable because the signing key is online. An expired statement is refused, and once the repository has advertised revocation that refusal fails CLOSED (spec §2.8.4).",
+          "$ref": "https://olla.cajeta.dev/schemas/org-key-document.json#/$defs/timestamp"
+        },
+        "revoked": {
+          "description": "The revoked key ids. EMPTY IS MEANINGFUL AND NORMAL: it asserts that nothing is revoked as of `issued-at`, which is a different statement from serving nothing at all, and it is the steady state a healthy repository publishes. Revocation is permanent for a key id — there is no un-revoke, and recovery is a new key in a re-signed document. An entry may be pruned once a root-signed document omitting that key is being served (spec §2.8.5, §2.8.6).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/revokedKey" }
+        }
+      }
+    },
+
+    "revokedKey": {
+      "type": "object",
+      "required": ["id"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "The key id, matching the `id` of a key in some organization key document.",
+          "type": "string",
+          "minLength": 1
+        },
+        "organization": {
+          "description": "The organization whose document carries the key. Optional but recommended: key ids are only required to be unique within a document, so an id alone can be ambiguous across organizations. When absent the id revokes that key in EVERY document — the safe direction to be wrong in.",
+          "type": "string",
+          "minLength": 1
+        },
+        "revoked-at": {
+          "description": "When the key was revoked, as opposed to when this statement was issued. Recorded so an auditor can tell a fresh compromise from an entry that has been carried for months.",
+          "$ref": "https://olla.cajeta.dev/schemas/org-key-document.json#/$defs/timestamp"
+        },
+        "reason": {
+          "description": "Optional human-readable reason, shown when an install is refused because of this entry.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
