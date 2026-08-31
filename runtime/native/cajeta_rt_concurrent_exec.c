@@ -1642,11 +1642,53 @@ struct cajeta_io_waiter {
 
 #if defined(__linux__)
 
+// Lost-wake instrumentation (2026-08-31): counters over the arm/wake
+// paths, dumped by the reactor thread every ~2s when CAJETA_REACTOR_TRACE=1.
+static int64_t __caj_rt_adds, __caj_rt_mods, __caj_rt_modfail,
+               __caj_rt_events, __caj_rt_matched, __caj_rt_unmatched,
+               __caj_rt_published, __caj_rt_rmfail;
+static int __caj_rt_trace = -1;
+
 static int __cajeta_io_events_to_epoll(int events) {
     int e = 0;
     if (events & CAJETA_IO_READ)  e |= EPOLLIN;
     if (events & CAJETA_IO_WRITE) e |= EPOLLOUT;
     return e | EPOLLONESHOT;
+}
+
+// Union of every LISTED waiter's interest for `fd`. The v1 engine
+// assumed one waiter per fd; in practice a timed wait (deadline read)
+// and a plain wait (the other direction, or a raced re-arm) coexist on
+// one fd, and any single-waiter arm/cancel then destroys the other's
+// registration — the cabra host-mode lost-wake (2026-08-31): a reader
+// parked forever on a disarmed fd while flushed data sat unread.
+// Caller holds task_mutex.
+static int __cajeta_reactor_union_events_locked(int fd) {
+    int u = 0;
+    for (struct cajeta_io_waiter* w = __cajeta_reactor_waiters; w;
+         w = w->next) {
+        if (w->fd == fd) u |= w->events;
+    }
+    return u;
+}
+
+// Re-arm `fd` for whatever waiters remain listed, or DEL when none do.
+// Caller holds task_mutex. EPOLLONESHOT left the registration present
+// but disabled after a fire, so MOD is the normal path; DEL only when
+// the fd has no interest left (keeps the table clean for fd reuse).
+static void __cajeta_reactor_rearm_locked(int fd) {
+    int u = __cajeta_reactor_union_events_locked(fd);
+    if (u == 0) {
+        epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, fd, NULL);
+        return;
+    }
+    struct epoll_event ep;
+    ep.events = __cajeta_io_events_to_epoll(u);
+    ep.data.fd = fd;
+    if (epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep) < 0
+            && errno == ENOENT) {
+        epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    }
 }
 
 // Reactor thread main loop. Polls epoll_wait with a 1-second timeout so
@@ -1674,24 +1716,54 @@ static void* __cajeta_reactor_loop_body(void* arg) {
             if (errno == EINTR) continue;
             return NULL;
         }
+        if (__caj_rt_trace < 0) {
+            const char* t = getenv("CAJETA_REACTOR_TRACE");
+            __caj_rt_trace = (t && t[0] == '1') ? 1 : 0;
+        }
+        if (__caj_rt_trace && n > 0) {
+            fprintf(stderr, "[rt] batch n=%d ev=%lld match=%lld unmatch=%lld "
+                    "pub=%lld rmfail=%lld add=%lld mod=%lld modfail=%lld\n",
+                    n,
+                    (long long) __caj_rt_events, (long long) __caj_rt_matched,
+                    (long long) __caj_rt_unmatched, (long long) __caj_rt_published,
+                    (long long) __caj_rt_rmfail, (long long) __caj_rt_adds,
+                    (long long) __caj_rt_mods, (long long) __caj_rt_modfail);
+        }
         if (n == 0) continue;
         struct cajeta_fiber* to_publish = NULL;
         pthread_mutex_lock(&__cajeta_task_mutex);
         for (int i = 0; i < n; ++i) {
             int fd = ep[i].data.fd;
+            int __matched_this = 0;
+            __caj_rt_events++;
+            if (__caj_rt_trace == 1) {
+                fprintf(stderr, "[ev] fd=%d bits=0x%x\n", fd,
+                        (unsigned) ep[i].events);
+            }
+            // Which DIRECTIONS fired. ERR/HUP wake every waiter on the
+            // fd — both directions' syscalls will surface the error.
+            int fired_mask = 0;
+            if (ep[i].events & (EPOLLIN | EPOLLERR | EPOLLHUP | EPOLLRDHUP))
+                fired_mask |= CAJETA_IO_READ;
+            if (ep[i].events & (EPOLLOUT | EPOLLERR | EPOLLHUP))
+                fired_mask |= CAJETA_IO_WRITE;
             struct cajeta_io_waiter** p = &__cajeta_reactor_waiters;
             while (*p) {
-                if ((*p)->fd == fd) {
+                if ((*p)->fd == fd && ((*p)->events & fired_mask)) {
+                    __matched_this = 1;
+                    __caj_rt_matched++;
                     struct cajeta_io_waiter* w = *p;
                     *p = w->next;
-                    // EPOLLONESHOT disarmed the fd's registration (it stays
-                    // in the interest list, disabled, until DEL or close —
-                    // the ADD→EEXIST→MOD path in io_wait re-arms it); just
-                    // detach + publish the fiber.
+                    // EPOLLONESHOT disarmed the registration; the
+                    // re-arm below restores it for any waiter that
+                    // remains (the other direction, or a same-fd peer).
                     w->fired = 1;
                     if (__cajeta_parked_remove_locked(w->fiber)) {
                         w->fiber->next = to_publish;
                         to_publish = w->fiber;
+                        __caj_rt_published++;
+                    } else {
+                        __caj_rt_rmfail++;
                     }
                     // A stack-owned waiter (timed wait) belongs to the
                     // fiber's frame — the fiber reads `fired` after resume.
@@ -1700,6 +1772,10 @@ static void* __cajeta_reactor_loop_body(void* arg) {
                     p = &(*p)->next;
                 }
             }
+            if (!__matched_this) __caj_rt_unmatched++;
+            // ONESHOT disabled the fd; waiters that did NOT match this
+            // event (other direction) must not be left on a dead arm.
+            __cajeta_reactor_rearm_locked(fd);
         }
         pthread_mutex_unlock(&__cajeta_task_mutex);
         while (to_publish) {
@@ -1732,7 +1808,11 @@ static void __cajeta_reactor_cancel_locked(struct cajeta_io_waiter* w) {
         if (*p == w) { *p = w->next; break; }
         p = &(*p)->next;
     }
-    epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_DEL, w->fd, NULL);
+    // A same-fd peer may still be armed (timed + plain waits coexist on
+    // one fd); an unconditional DEL here destroyed its registration and
+    // parked it forever. Re-arm for the remaining union, DEL only when
+    // no interest is left.
+    __cajeta_reactor_rearm_locked(w->fd);
 }
 
 int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
@@ -1757,6 +1837,10 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
         close(epfd);
         return (n > 0) ? 1 : 0;
     }
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[iw] enter fd=%d ev=%d fib=%p\n", fd, events,
+                (void*) __cajeta_current_fiber);
+    }
     pthread_mutex_lock(&__cajeta_task_mutex);
     __cajeta_reactor_ensure_started_locked();
     if (!__cajeta_reactor_started) {
@@ -1776,11 +1860,17 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     w->next = __cajeta_reactor_waiters;
     __cajeta_reactor_waiters = w;
     struct epoll_event ep;
-    ep.events = __cajeta_io_events_to_epoll(events);
+    // Arm the UNION of every listed waiter's interest for this fd (the
+    // new waiter is already listed): a MOD with only the newcomer's
+    // direction silently disarmed a same-fd peer's wait.
+    ep.events = __cajeta_io_events_to_epoll(
+        __cajeta_reactor_union_events_locked(fd));
     ep.data.fd = fd;
     int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    if (rc >= 0) __caj_rt_adds++;
     if (rc < 0 && errno == EEXIST) {
         rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep);
+        if (rc >= 0) __caj_rt_mods++; else __caj_rt_modfail++;
     }
     if (rc < 0) {
         __cajeta_reactor_cancel_locked(w);
@@ -1795,6 +1885,10 @@ int32_t __cajeta_io_wait(int32_t fd, int32_t events) {
     // and free our waiter in the gap before we park (the EPOLLONESHOT event
     // is one-shot, so a missed wake would hang the fiber permanently).
     __cajeta_fiber_park_locked();
+    if (__caj_rt_trace == 1) {
+        fprintf(stderr, "[iw] woke fd=%d fib=%p\n", fd,
+                (void*) __cajeta_current_fiber);
+    }
     return 1;
 }
 
@@ -1879,11 +1973,17 @@ int32_t __cajeta_io_wait_timed(int32_t fd, int32_t events, int32_t timeout_ms) {
     w.next = __cajeta_reactor_waiters;
     __cajeta_reactor_waiters = &w;
     struct epoll_event ep;
-    ep.events = __cajeta_io_events_to_epoll(events);
+    // Arm the UNION of every listed waiter's interest for this fd (the
+    // new waiter is already listed): a MOD with only the newcomer's
+    // direction silently disarmed a same-fd peer's wait.
+    ep.events = __cajeta_io_events_to_epoll(
+        __cajeta_reactor_union_events_locked(fd));
     ep.data.fd = fd;
     int rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_ADD, fd, &ep);
+    if (rc >= 0) __caj_rt_adds++;
     if (rc < 0 && errno == EEXIST) {
         rc = epoll_ctl(__cajeta_reactor_epfd, EPOLL_CTL_MOD, fd, &ep);
+        if (rc >= 0) __caj_rt_mods++; else __caj_rt_modfail++;
     }
     if (rc < 0) {
         __cajeta_reactor_cancel_locked(&w);
