@@ -21,6 +21,24 @@
 // ============================================================================
 
 // ============================================================================
+// Launch-failure accounting — a refused dispatch must be VISIBLE to code,
+// not only to stderr. Twice in a row (the static-field alias defect, then
+// cajeta-llm's cross-model staging collision) the driver printed "launch
+// FAILED" while the engine went on to print a plausible answer. Backends
+// bump this whenever a dispatch that should have run did not; the stdlib
+// exposes it as Device.launchFailures() so a harness can assert the delta
+// over a run is zero. Monotonic, process-wide, relaxed — nonzero is the
+// signal, exactness under a race is not required.
+// ============================================================================
+static int64_t g_xpu_launch_failures;
+static void cajeta_xpu_note_launch_failure(void) {
+    __atomic_fetch_add(&g_xpu_launch_failures, (int64_t) 1, __ATOMIC_RELAXED);
+}
+int64_t __cajeta_xpu_launch_failures(void) {
+    return __atomic_load_n(&g_xpu_launch_failures, __ATOMIC_RELAXED);
+}
+
+// ============================================================================
 // CUDA Driver API binding (dlopen'd) — backs the real NVPTX device path.
 // ============================================================================
 // Mirrors src/cajeta/xpu/nvidia/CudaDriver.cpp, but lives in the runtime

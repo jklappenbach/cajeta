@@ -167,4 +167,24 @@ public final class Device {
 
     @Native("__cajeta_xpu_kernel_available")
     private static int32 nativeKernelAvailable(int8[] name, int64 len);
+
+    /**
+     * Process-wide count of kernel dispatches that FAILED to run —
+     * refused by the driver, or skipped because a binding would not
+     * marshal. Monotonic; it never resets.
+     *
+     * A failed launch prints one line to stderr and the program keeps
+     * going with whatever the output buffer already held, which reads
+     * as a plausible answer. Anything that must not silently compute on
+     * garbage snapshots this before a run and asserts the delta is zero
+     * after.
+     *
+     * @EntryPoint
+     */
+    public static int64 launchFailures() {
+        return Device.nativeLaunchFailures();
+    }
+
+    @Native("__cajeta_xpu_launch_failures")
+    private static int64 nativeLaunchFailures();
 }

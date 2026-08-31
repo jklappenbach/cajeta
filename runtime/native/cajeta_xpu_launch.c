@@ -877,6 +877,10 @@ static void cajeta_xpu_launch_vulkan(const char* kernelName,
         }
         if (!built) break;
     }
+    if (!built)
+        // A binding that would not marshal skips the dispatch entirely —
+        // as much a failed launch as a refused one, and counted the same.
+        cajeta_xpu_note_launch_failure();
     if (built)
         cajeta_xpu_vk_launch(spirv, len, launchName, bindings, bkinds, n,
                              (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,

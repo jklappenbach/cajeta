@@ -3672,6 +3672,7 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
         }
     }
     if (!ok) {
+        cajeta_xpu_note_launch_failure();
         fprintf(stderr, "cajeta.xpu.vulkan: launch FAILED for kernel '%s' "
                 "(n=%d grid=%u,%u,%u)\n", entry ? entry : "?", n, gx, gy, gz);
         // Say WHICH binding the marshal could not resolve. A bare "launch
