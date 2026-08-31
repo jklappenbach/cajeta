@@ -91,6 +91,7 @@ std::string documentFor(const fs::path& dir, const KeyPair& signer,
     std::ostringstream payload;
     payload << "{\"organization\":\"dev.cajeta\","
             << "\"namespaces\":[\"dev.cajeta\"],"
+            << "\"issued-at\":\"2026-01-01T00:00:00Z\","
             << "\"not-after\":\"2030-01-01T00:00:00Z\","
             << "\"keys\":[{\"id\":\"k1\",\"algorithm\":\"ed25519\","
             << "\"public-key\":\"" << escapePem(readFile(orgKey.pub)) << "\","

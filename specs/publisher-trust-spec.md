@@ -173,14 +173,70 @@ key in a re-signed document. This is the opposite of §7.6's retraction,
 which is reversible on purpose, and the two must not be modelled alike.
 
 **2.8.6** The statement is the brake; the re-signed document is the
-repair. Once a document omitting the key is signed and served, the entry
-has no work left and may be pruned. That is what bounds the list's growth:
-an entry may be dropped once the revoked key falls outside the validity
-window of every document that ever carried it.
+repair. An entry may be pruned once the revoked key falls outside the
+validity window of EVERY document that ever carried it — not merely once a
+document omitting it is being served. Those two rules are not the same and
+the difference is exploitable: while the old document is still unexpired, a
+mirror replays it, the key is listed again, and pruning the entry hands the
+key back. §2.9's `issued-at` closes the replay itself; until a client is
+known to enforce it, the window is what bounds the entry's life.
 
 **2.8.7** A revocation statement and a delegation must be unmistakable for
 one another, for the reason given in §2.7.4. The statement carries a
 required, signed `type` discriminator.
+
+### 2.9 Document freshness
+
+**2.9** An organization key document carries `issued-at`, and a client
+refuses one older than the newest it has already accepted for that
+organization.
+
+**2.9.1** Without it the document is REPLAYABLE. Expiry alone does not
+help: a previous document is still validly signed and still inside its own
+window, so a mirror serves last year's copy and every key the organization
+has since removed is trusted again. Removing a key is exactly how §2.8's
+repair works, which makes this the hole that undoes it.
+
+**2.9.2** `issued-at` is REQUIRED rather than optional. An optional one
+cannot be checked — a document without it would simply skip the comparison,
+which is the whole attack. It is required at no migration cost because no
+repository serves key documents yet, and that is true exactly once.
+
+**2.9.3** Enforcement is per client and needs somewhere to keep the newest
+value seen. Within one session that is the key cache. ACROSS invocations it
+is unsolved, and it is the same gap as the revocation statement's — both
+want one durable store, and neither should get a private one.
+
+### 2.10 The security contact
+
+**2.10** A document may carry a `security-contact`: where to report a
+vulnerability in anything the organization publishes.
+
+**2.10.1** It is inside the signed payload because forging it has a victim.
+An unsigned contact is a phishing vector with a signature-shaped hole in
+it — a mirror shows an attacker's address, and a researcher sends a working
+exploit to them before the maintainer ever hears about it.
+
+**2.10.2** Signing it costs nothing extra. The document already expires and
+is already re-signed on a cycle, so the contact rides along. Only an
+OFF-cycle change costs a ceremony, and that is correct rather than
+friction: self-service security-contact change is itself an attack, since a
+stolen publish token would otherwise redirect every incoming report.
+
+**2.10.3** A URI, not an email address. `mailto:` covers the common case
+and `https:` covers a disclosure page or a `security.txt`, so one field
+serves both.
+
+**2.10.4** It must be SURFACED, or it is a signed field nothing reads —
+which is worse than no field, because it looks authoritative and is never
+checked. The place it earns is a failed publisher verification: the user
+looking at that message is precisely the one who needs an address they can
+trust.
+
+**2.10.5** Only fields whose forgery has a victim belong in this document.
+Display name, homepage and support email do not: forging them is a spoof,
+not an interception, and putting them here would price a typo at an offline
+ceremony. They are not therefore unsigned — see §8.3.
 
 ## 3. The trust anchor
 
@@ -433,6 +489,14 @@ cover the result.
 threat model later extends to a compromised olla, artifact digests
 recorded in a log the repository does not solely control is the natural
 next step, and this design does not preclude it.
+
+**8.3** The cosmetic fields of §2.10.5 — display name, homepage, support
+email — can be signed without a root ceremony by a SECOND document signed
+with the DELEGATED key. The axis is not signed versus unsigned; with two
+keys it is which key signs. A mirror could then rewrite nothing about an
+organization, while a typo still costs only an online signature. Deferred:
+it is a further document type and endpoint for fields whose forgery is a
+spoof, and nothing in §2.9 or §2.10 forecloses it.
 
 **8.2** Snapshot and timestamp roles remain available as a later
 addition if rollback and freeze attacks enter scope.

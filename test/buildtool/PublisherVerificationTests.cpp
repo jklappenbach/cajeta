@@ -198,6 +198,7 @@ TEST(PublisherVerificationTests, eitherOfTwoOverlappingKeysVerifies) {
     std::ostringstream payload;
     payload << "{\"organization\":\"dev.cajeta\","
             << "\"namespaces\":[\"dev.cajeta\"],"
+            << "\"issued-at\":\"2026-01-01T00:00:00Z\","
             << "\"not-after\":\"2030-01-01T00:00:00Z\",\"keys\":["
             << "{\"id\":\"outgoing\",\"algorithm\":\"ed25519\",\"public-key\":\""
             << jsonEscapePem(readWholeFile(outgoing.pub))

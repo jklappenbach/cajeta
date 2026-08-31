@@ -17,6 +17,20 @@ namespace cajeta::buildtool {
             return out.str();
         }
 
+        // Appended to every refusal. The person reading a failed publisher
+        // check is exactly the one who needs an address they can trust, and
+        // a contact nothing surfaces is a signed field nobody reads — worse
+        // than none, because it looks authoritative (spec 2.10.4).
+        std::string contactSuffix(const OrgKeyDocument& doc) {
+            if (doc.securityContact.uri.empty()) return {};
+            std::string out = " Report a problem with '" + doc.organization
+                            + "' to " + doc.securityContact.uri;
+            if (!doc.securityContact.label.empty()) {
+                out += " (" + doc.securityContact.label + ")";
+            }
+            return out + ".";
+        }
+
     } // namespace
 
     bool namespaceOwns(const std::string& nameSpace, const std::string& name) {
@@ -52,7 +66,7 @@ namespace cajeta::buildtool {
                       + joinNamespaces(doc.namespaces) + "). A key valid for "
                         "one organization must not sign another's name, so "
                         "this is refused whether or not the signature is "
-                        "good.";
+                        "good." + contactSuffix(doc);
             return v;
         }
 
@@ -65,7 +79,7 @@ namespace cajeta::buildtool {
             v.message = "'" + doc.organization + "' has no signing key "
                         "inside its validity window right now, so nothing it "
                         "published can be verified. The organization needs a "
-                        "current key published before this installs.";
+                        "current key published before this installs." + contactSuffix(doc);
             return v;
         }
 
@@ -121,7 +135,7 @@ namespace cajeta::buildtool {
                              : ": " + blockedBy->reason)
                       + " The signature is genuine; the key is not trusted "
                         "any more. A new release signed by a current key is "
-                        "the only thing that installs.";
+                        "the only thing that installs." + contactSuffix(doc);
             return v;
         }
 
@@ -130,7 +144,7 @@ namespace cajeta::buildtool {
             v.message = "the signature for '" + artifactName + "' could not "
                         "be checked: no key in '" + doc.organization
                       + "'s key document could be read as an ed25519 public "
-                        "key. This is 'we could not check', not 'it is fine'.";
+                        "key. This is 'we could not check', not 'it is fine'." + contactSuffix(doc);
             return v;
         }
 
@@ -139,7 +153,7 @@ namespace cajeta::buildtool {
                     "any of the " + std::to_string(usable.size())
                   + " key(s) '" + doc.organization + "' has valid right now. "
                     "The bytes are signed, but not by the organization that "
-                    "owns this name.";
+                    "owns this name." + contactSuffix(doc);
         return v;
     }
 

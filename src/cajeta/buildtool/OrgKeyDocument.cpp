@@ -122,7 +122,8 @@ namespace cajeta::buildtool {
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
             const std::string& envelopeJson,
             const std::vector<RootKey>& roots,
-            std::time_t now) {
+            std::time_t now,
+            std::time_t seenIssuedAt) {
         // Verify BEFORE parsing the payload. Nothing inside an unverified
         // document should influence anything, including which errors are
         // reported about it.
@@ -163,6 +164,34 @@ namespace cajeta::buildtool {
             doc.namespaces.push_back(s->str());
         }
 
+        // REQUIRED (spec 2.9.2). An optional issued-at cannot be checked —
+        // a document omitting it would simply skip the comparison, which is
+        // the replay this field exists to stop.
+        auto issued = obj->getString("issued-at");
+        if (!issued) {
+            return err("organization key document for '" + doc.organization
+                       + "' has no issued-at. Without it a previous, still "
+                         "unexpired document can be replayed, reinstating "
+                         "every key this organization has removed.");
+        }
+        auto issuedAt = parseUtcTimestamp(issued->str());
+        if (!issuedAt) return issuedAt.takeError();
+        doc.issuedAt = *issuedAt;
+
+        // Optional, and a half-parsed one is refused: a contact that looks
+        // authoritative and points nowhere is worse than none (spec 2.10).
+        if (const auto* contact = obj->getObject("security-contact")) {
+            auto uri = contact->getString("uri");
+            if (!uri || uri->empty()) {
+                return err("organization key document for '" + doc.organization
+                           + "' carries a security-contact with no uri");
+            }
+            doc.securityContact.uri = uri->str();
+            if (auto l = contact->getString("label")) {
+                doc.securityContact.label = l->str();
+            }
+        }
+
         auto notAfter = obj->getString("not-after");
         if (!notAfter) return err("organization key document: no not-after");
         auto docExpiry = parseUtcTimestamp(notAfter->str());
@@ -187,6 +216,17 @@ namespace cajeta::buildtool {
                        + "' expired at " + notAfter->str()
                        + "; it is validly signed but out of date, and a stale "
                          "document is how revocation-by-expiry gets bypassed");
+        }
+        // Freshness after expiry, so an old document reports as expired
+        // rather than as rolled back — the two send an operator to
+        // different places.
+        if (seenIssuedAt != 0 && doc.issuedAt < seenIssuedAt) {
+            return err("organization key document for '" + doc.organization
+                       + "' is older than one already accepted (issued "
+                       + issued->str() + "). It is validly signed and inside "
+                         "its own window, which is exactly what makes a "
+                         "replayed document useful: it reinstates keys that "
+                         "were removed.");
         }
         return doc;
     }

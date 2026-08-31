@@ -107,6 +107,9 @@ struct DocOptions {
     std::string organization = "dev.cajeta";
     std::string namespaces = R"(["dev.cajeta"])";
     std::string docNotAfter = "2030-01-01T00:00:00Z";
+    // Required since spec 2.9.2. Empty omits it, which is how the
+    // missing-issued-at case is built.
+    std::string issuedAt = "2026-01-01T00:00:00Z";
     // Each entry: {id, pubPath, notBefore, notAfter}
     std::vector<std::tuple<std::string, fs::path, std::string, std::string>> keys;
 };
@@ -114,8 +117,11 @@ struct DocOptions {
 std::string payloadJson(const DocOptions& o) {
     std::ostringstream j;
     j << "{\"organization\":\"" << o.organization << "\","
-      << "\"namespaces\":" << o.namespaces << ","
-      << "\"not-after\":\"" << o.docNotAfter << "\","
+      << "\"namespaces\":" << o.namespaces << ",";
+    if (!o.issuedAt.empty()) {
+        j << "\"issued-at\":\"" << o.issuedAt << "\",";
+    }
+    j << "\"not-after\":\"" << o.docNotAfter << "\","
       << "\"keys\":[";
     for (size_t i = 0; i < o.keys.size(); ++i) {
         const auto& [id, pub, nb, na] = o.keys[i];

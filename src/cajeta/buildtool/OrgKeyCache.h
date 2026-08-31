@@ -65,6 +65,11 @@ namespace cajeta::buildtool {
         RootTrustLayout layout_;
         mutable std::mutex mu_;
         std::map<std::string, OrgKeyDocument> cache_;
+        // Newest `issued-at` accepted per organization. Outlives the cached
+        // document deliberately: eviction on expiry must not reopen the
+        // replay window (spec 2.9). In-session only — across invocations is
+        // unsolved and shares one answer with the revocation statement.
+        std::map<std::string, std::time_t> seenIssuedAt_;
         std::map<std::string, RepositoryDelegation> delegations_;
         int fetches_ = 0;
     };
