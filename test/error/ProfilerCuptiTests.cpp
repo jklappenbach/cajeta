@@ -73,6 +73,7 @@ struct Cupti {
     void    (*pendingReset)(void) = nullptr;
     int32_t (*gpuFlush)(void) = nullptr;
     int32_t (*enableKind)(int32_t) = nullptr;
+    int32_t (*kindsEnabled)(void) = nullptr;
     int32_t (*sinkRegister)(int32_t (*)(const CajetaGpuEvent*, int32_t, void*),
                             void*, int32_t) = nullptr;
     int32_t (*sinkUnregister)(int32_t) = nullptr;
@@ -122,6 +123,7 @@ Cupti& cu() {
         x.pendingReset = reinterpret_cast<decltype(x.pendingReset)>(sym("__cajeta_prof_gpu_pending_reset"));
         x.gpuFlush = reinterpret_cast<decltype(x.gpuFlush)>(sym("__cajeta_prof_gpu_flush"));
         x.enableKind = reinterpret_cast<decltype(x.enableKind)>(sym("__cajeta_prof_cupti_enable_kind"));
+        x.kindsEnabled = reinterpret_cast<decltype(x.kindsEnabled)>(sym("__cajeta_prof_cupti_kinds_enabled"));
         x.sinkRegister = reinterpret_cast<decltype(x.sinkRegister)>(sym("__cajeta_prof_gpu_sink_register"));
         x.sinkUnregister = reinterpret_cast<decltype(x.sinkUnregister)>(sym("__cajeta_prof_gpu_sink_unregister"));
         return x;
@@ -182,6 +184,26 @@ bool armTracing(Cupti& c) {
     c.enableKind(10);   // CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL; the only kind
                         // this backend may enable (12.1.b)
     return c.tracing() != 0;
+}
+
+// Why a lane could not be armed, in the terms `tracing()` actually gates on.
+//
+// `reason()` alone is NOT that: a refused timestamp callback still leaves the
+// state READY (records arrive in CUPTI's own domain and §6.9 converts), so on
+// phoenix-wsl the skip printed a message about the timestamp callback while
+// the thing that actually failed was the activity-kind enable. A skip that
+// names the wrong cause is worse than one that names none — it is what a
+// reader will believe.
+std::string armFailure(Cupti& c) {
+    std::string s = "CUPTI not armed here:";
+    s += " state=" + std::to_string(c.state ? c.state() : -1);
+    s += " kinds_enabled=" + std::to_string(c.kindsEnabled ? c.kindsEnabled() : -1);
+    s += " degraded=" + std::to_string(c.degraded ? c.degraded() : -1);
+    s += " ts_status=" + std::to_string(c.tsStatus ? c.tsStatus() : -1);
+    s += " tracing=" + std::to_string(c.tracing ? c.tracing() : -1);
+    s += "\n  reason(): ";
+    s += (c.reason && c.reason()) ? c.reason() : "(none)";
+    return s;
 }
 
 } // namespace
@@ -534,7 +556,7 @@ TEST(ProfilerCupti, theCorrelationStackIsUntouchedWhenTheBackendNeverBound) {
 TEST(ProfilerCupti, aCudaLaunchSelectsTheCuptiBackendWhenItIsReady) {
     Cupti& c = cu();
     ASSERT_TRUE(c.vtblName && c.tierFor);
-    if (!armTracing(c)) GTEST_SKIP() << "CUPTI not usable here (" << c.reason() << ")";
+    if (!armTracing(c)) GTEST_SKIP() << armFailure(c);
 
     EXPECT_STREQ(c.vtblName(CAJ_GPU_BACKEND_CUDA), "cuda");
 }
@@ -544,7 +566,7 @@ TEST(ProfilerCupti, aCudaLaunchSelectsTheCuptiBackendWhenItIsReady) {
 TEST(ProfilerCupti, everyCudaLaunchPushesAndPopsItsCorrelationId) {
     Cupti& c = cu();
     ASSERT_TRUE(c.launch && c.pushes && c.pops && c.pendingReset);
-    if (!armTracing(c)) GTEST_SKIP() << "CUPTI not usable here (" << c.reason() << ")";
+    if (!armTracing(c)) GTEST_SKIP() << armFailure(c);
 
     ArmedSink armed(c);
     ASSERT_TRUE(armed.ok());
@@ -576,7 +598,7 @@ TEST(ProfilerCupti, everyCudaLaunchPushesAndPopsItsCorrelationId) {
 TEST(ProfilerCupti, perLaunchOverheadIsMeasuredAndPublished) {
     Cupti& c = cu();
     ASSERT_TRUE(c.launch && c.pendingReset && c.gpuFlush && c.sinkRegister);
-    if (!armTracing(c)) GTEST_SKIP() << "CUPTI not usable here (" << c.reason() << ")";
+    if (!armTracing(c)) GTEST_SKIP() << armFailure(c);
     ASSERT_STREQ(c.vtblName(CAJ_GPU_BACKEND_CUDA), "cuda")
         << "measuring the CPU lane and calling it the backend's cost is how "
            "the audit probe's numbers got here in the first place";
