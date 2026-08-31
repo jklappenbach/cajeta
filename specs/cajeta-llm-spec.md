@@ -1274,7 +1274,7 @@ run is on the **host**, and restoring batched prefill for QK-norm models is
   | softmax + top-k + weight-norm | Qwen3-Coder-30B-A3B (on disk) |
   | no weight-norm (top-2) | Mixtral-8x7B |
   | shared experts | Qwen1.5-MoE-A2.7B (also no-norm; 4-of-60) |
-  | sigmoid gating, router bias, weight scale | **DEFERRED — no affordable witness.** |
+  | sigmoid gating, router bias, weight scale | **GLM-4.5-Air** — witness identified 2026-08-31 (verified: `e_score_correction_bias` on all 46 MoE layers, `routed_scaling_factor`, shared expert, dense first layer). ~65 GB at Q4_K_M against 122 GB RAM. Needs the `glm4moe` arch mapping; implementation still waits on that arc being scheduled. |
 
   A variant whose row has no artifact is deferred, not written — and the
   deferred row above is this rule APPLIED, not an oversight. The first
