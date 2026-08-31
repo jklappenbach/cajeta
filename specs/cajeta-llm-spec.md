@@ -1303,3 +1303,33 @@ run is on the **host**, and restoring batched prefill for QK-norm models is
   dense equivalent. Asserted on the MECHANISM — a byte or launch count —
   never on a wall-clock, which cannot separate "ran sparsely" from "ran
   densely on a fast day".
+
+### Post-approval additions (review pass, 2026-08-31)
+
+Added after §15's approval; each one was found by reading the witness
+files' actual bytes rather than their model cards.
+
+- **15.17** When a checkpoint uses the LEGACY split-expert layout
+  (`ffn_gate.0.weight` … one tensor per expert, pre-2024-04 llama.cpp),
+  it is rejected with an error naming the fix: a merged-slab requant of
+  the same model. Measured: TheBloke's Mixtral Q4_K_M (2023-12) is this
+  layout; mradermacher's (2024+) is the merged form. Supporting both
+  layouts would double every dispatch test for files nobody produces
+  anymore.
+- **15.18** When a shared expert carries its own gate
+  (`ffn_gate_inp_shexp` — qwen2moe's learned sigmoid on the shared
+  expert's output), that gate is applied. 15.9's plain "run and sum" is
+  Qwen3's shape; the Qwen1.5 witness on disk REQUIRES the gated form, so
+  an implementation of 15.9 alone would bind the witness and produce
+  wrong output.
+- **15.19** When the device path loads expert slabs, their residency is
+  stated, not assumed: this box's unified memory holds the 30B-A3B's
+  ~18 GB resident, and that is the supported v1 shape. Discrete-VRAM
+  expert paging is out of scope until a machine that needs it exists
+  (the 20.1.x geometry rule: no tuning for absent hardware).
+- **15.20** When routing runs under a host that observes the engine
+  (§11.8's diagnostics records), per-request expert utilization is
+  emittable as records — which experts fired, how concentrated the
+  distribution was. This is the seam cabra-side innovation builds on
+  (per-session routing behavior, expert-affinity scheduling) and it
+  costs one record type now versus a redesign later.
