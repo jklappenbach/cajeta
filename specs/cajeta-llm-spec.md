@@ -1272,10 +1272,20 @@ run is on the **host**, and restoring batched prefill for QK-norm models is
   | variant | exercised by |
   |---|---|
   | softmax + top-k + weight-norm | Qwen3-Coder-30B-A3B (on disk) |
-  | no weight-norm | Mixtral-8x7B |
-  | sigmoid gating, router bias, shared experts, weight scale | DeepSeek-V2-Lite (16B — the cheap witness for all four) |
+  | no weight-norm (top-2) | Mixtral-8x7B |
+  | shared experts | Qwen1.5-MoE-A2.7B (also no-norm; 4-of-60) |
+  | sigmoid gating, router bias, weight scale | **DEFERRED — no affordable witness.** |
 
-  A variant whose row has no artifact is deferred, not written.
+  A variant whose row has no artifact is deferred, not written — and the
+  deferred row above is this rule APPLIED, not an oversight. The first
+  draft named DeepSeek-V2-Lite as the witness for all three; its config
+  refutes that twice (`scoring_func: softmax`, no router bias) and adds a
+  blocker (`kv_lora_rank: 512` — MLA, a compressed-KV attention that is
+  its own architecture work, not a gating knob). The models that DO carry
+  sigmoid+bias are DeepSeek-V3-class (671B) and peers this box cannot
+  hold. The SEAM is shaped so those variants are a small addition
+  (gating-function enum, optional bias tensor, scale scalar read from
+  metadata); their implementations wait for a witness.
 
 ### QK-norm (in this arc, separate subject)
 
