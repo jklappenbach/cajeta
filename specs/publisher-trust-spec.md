@@ -320,6 +320,19 @@ there. A server-side implementer reaching for the equivalent rule is
 making the mistake §4.4 describes, and it will look reasonable at the
 moment they make it.
 
+**7.12** An organization's namespaces enter its key document at issuance,
+on evidence of control over the corresponding name — a DNS record, a file
+in a repository, whatever the operator is willing to accept. The owner
+verifies that evidence once and records it (§7.7); the root signature then
+carries the claim.
+
+A namespace table consulted at publish time refuses the same uploads and
+is not equivalent. The client cannot read it, so §4.3 has no signed list
+to check against and the server's check stops being the client's check; and
+a compromised server rewrites the ownership map with no signature to
+forge. Evidence of control belongs at issuance, where a root signature can
+cover the result.
+
 ## 8. Upgrade path
 
 **8.1** The HTTP driver already has a transparency-log endpoint. If the
@@ -368,3 +381,39 @@ tomorrow by the same route.
 with no current key document is unenforceable while an organization can
 mint its own key on demand, since the refusal is then one API call away
 from being satisfied by the party it is meant to constrain.
+
+**9.4.3 The gap is wider than key registration.** Measured 2026-08-31 in
+the same deployed code. `getTrustKey` (`cajeta-olla/src/lib/catalog.ts:49`)
+resolves a key by `key_id` alone against a repository-global `trust_keys`
+table. The row carries a `principal` column and the publish path never
+compares it to the authenticated principal, so any registered key verifies
+an upload under any organization's name — §7.12's cross-organization case,
+live. Three details compound it: `addTrustKey` rebinds an existing
+`key_id` to new bytes on conflict (`catalog.ts:62`), so a key id is a
+mutable pointer rather than a name for a public key; `POST /v2/keys` takes
+the principal from the request body (`keys.ts:39`); and `trust_keys` has
+no expiry column, which makes §6.7 unrepresentable rather than merely
+unenforced.
+
+**9.5 The namespace check derives ownership from the name, which is the
+§7.11 trap in production.** `domainForPackage`
+(`cajeta-olla/src/lib/namespace.ts:78`) takes the first two segments and
+reverses them, then looks that up in a `namespaces` table proven by DNS
+TXT or a GitHub file. Fixed arity 2 is wrong for any deeper reverse-DNS
+name, and it fails toward collision rather than refusal:
+
+| name | derived owner |
+|---|---|
+| `dev.cajeta.http` | `cajeta.dev` |
+| `uk.co.acme.thing` | `co.uk` |
+| `uk.co.evil.thing` | `co.uk` |
+
+Two unrelated publishers collapse onto one key, and that key is a public
+suffix nobody can hold. The check is also gated behind a
+`REQUIRE_NAMESPACE` environment flag, so it is off unless switched on.
+
+**9.5.1** §7.12 removes the derivation rather than correcting the arity.
+Once namespaces are a signed list in the key document, there is no string
+operation to get wrong and the client can perform the same check. The DNS
+and GitHub proofs are good evidence and should survive the move — as
+issuance-time input to the owner, not as a publish-time lookup.

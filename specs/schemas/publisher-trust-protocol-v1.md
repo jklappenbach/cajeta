@@ -247,27 +247,40 @@ These are the clauses that make §3.6's legacy path a legacy path rather
 than a standing hole. An unverifiable artifact must never enter the
 repository in the first place.
 
-**4.1 (6.5)** An upload is REFUSED when the publishing organization has no
-current key document. Verification is not something a publisher can
-decline by omission.
+**4.1** An upload is REFUSED unless its signature verifies against a key
+that is inside the PUBLISHING ORGANIZATION'S OWN current key document and
+usable at upload time.
 
-**4.2 (6.6)** Registering a key document therefore precedes an
-organization's first upload. It is part of onboarding, not of publishing.
-A server that lets an organization exist before it has a key reintroduces
-4.1's gap at the moment the org is created — so create the org and its
-document in one administrative act, or refuse uploads from a
-document-less org.
+"Own" is the word that gets dropped. A server that verifies against a
+global set of registered keys accepts one organization's key signing an
+upload under another organization's name; the archive then sits in the
+repository looking published and fails verification on every client that
+installs it. Being known to the server is not the test — being in that
+organization's document is.
 
-**4.3 (6.7)** When an organization's only key has expired, its uploads are
-refused until a current document is published. An expired key cannot
+**4.2 (6.5)** So an upload from an organization with no current key
+document is refused: there is no key to verify against. Verification is
+not something a publisher can decline by omission.
+
+**4.3 (6.7)** And when an organization's only key has expired, its uploads
+are refused until a current document is published. An expired key cannot
 produce a verifiable artifact, so accepting the upload would store
 something no client can install.
 
-**4.4** An upload of a name outside the organization's namespaces is
+**4.4 (6.6)** Registering a key document therefore precedes an
+organization's first upload. It is part of onboarding, not of publishing —
+create the organization and its document in one administrative act.
+
+**4.5** An upload of a name outside the organization's namespaces is
 refused. This is the same check the client performs (spec 4.3), and it
 belongs on both sides: the client's copy protects a user from a
 compromised server, and the server's copy protects every user from an
 upload that would otherwise sit there failing verification.
+
+The namespaces are the ones in the organization's current key document —
+the same signed list the client reads, which is what makes the two checks
+one check rather than two mechanisms sharing a name. How a namespace gets
+into that list is §6.5.
 
 The namespace match is SEGMENT-AWARE. `dev.cajeta` owns `dev.cajeta` and
 `dev.cajeta.http`; it does not own `dev.cajetaevil`. A plain string prefix
@@ -279,7 +292,7 @@ against a name chosen adversarially, which is the only case that matters
 
 There are three verbs, not four. `read` is §3 and needs no privilege.
 
-**5.1 Publish** (org). Creates a new `(name, version)`. Gated by §4.1–4.4.
+**5.1 Publish** (org). Creates a new `(name, version)`. Gated by §4.1–4.5.
 Refused if the coordinate already exists — a version is immutable (spec
 1.9), so a change is a new version.
 
@@ -321,14 +334,26 @@ revocation a special case of update.
 the root key. The administrative API is how documents come to exist; it
 must not introduce a second, unsigned path to the same data.
 
-**6.5 (7.7)** Every mutation is authenticated, attributed, and recorded.
+**6.5** An organization's `namespaces` enter its key document at
+issuance, on evidence of control over the corresponding name — a DNS
+record, a file in a repository, whatever the operator is willing to
+accept. The owner checks that evidence once and records it (6.6); the root
+signature then carries the claim.
+
+The alternative is a namespace table consulted at publish time. It refuses
+the same uploads, so it looks equivalent, and it is not: the client cannot
+see it, so §4.5 stops being one check performed twice, and a compromised
+server rewrites the ownership map with no signature to forge. Evidence of
+control belongs at issuance, where a root signature can cover the result.
+
+**6.6 (7.7)** Every mutation is authenticated, attributed, and recorded.
 Who changed which key, and when, is the question that matters after a
 compromise, and it cannot be reconstructed later if it was not recorded at
 the time. Record the actor, the target, the before and after, and the
 time — for administrative mutations and for publish, retract and remove
 alike.
 
-**6.6 (7.10)** Publishing and key management are separate privileges. An
+**6.7 (7.10)** Publishing and key management are separate privileges. An
 organization publishes constantly and can never touch a key; the owner
 touches keys and has no reason to publish. How an organization
 authenticates in order to upload is unchanged by this contract — only what
@@ -354,7 +379,7 @@ have no fixed arity — `uk.co.acme.thing` and `io.foo.bar` place the
 boundary differently — so any rule for "how many leading segments are the
 org" is wrong for someone, and wrong in the direction an attacker selects
 for. Ownership is data this server holds, not a string operation anyone
-performs on a name (spec 4.4, 7.12).
+performs on a name (spec 4.4, 7.11).
 
 The trap is concrete: the build tool already ships
 `ManifestDetails::group()`, which splits a dotted name at the last `.`. It
