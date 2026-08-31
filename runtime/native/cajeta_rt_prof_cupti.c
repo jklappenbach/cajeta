@@ -99,6 +99,13 @@ typedef struct {
     int32_t    ts_first;          // ts_registered happened at kinds_enabled == 0
     int64_t    records;           // kernel records decoded and usable
     int64_t    rejected;          // kernel records refused as unusable
+    // Chokepoint ATTEMPTS, counted at entry before any early return. They
+    // count how often the SEAM called, not how often CUPTI accepted — which
+    // is the only way a test can tell "the launch path is wired to this" from
+    // "these two functions work when called directly". 12.2.d was ticked
+    // without that distinction and the wiring did not exist.
+    int64_t    pushes;
+    int64_t    pops;
     CajCuptiApi api;
     char       path[CAJ_CUPTI_PATH_MAX];
     char       reason[CAJ_CUPTI_REASON_MAX];
@@ -421,6 +428,8 @@ int32_t __cajeta_prof_cupti_ts_registered(void) { return caj_cupti.ts_registered
 
 int64_t __cajeta_prof_cupti_records(void)  { return caj_cupti.records; }
 int64_t __cajeta_prof_cupti_rejected(void) { return caj_cupti.rejected; }
+int64_t __cajeta_prof_cupti_pushes(void)   { return caj_cupti.pushes; }
+int64_t __cajeta_prof_cupti_pops(void)     { return caj_cupti.pops; }
 
 
 // ── 12.2.c — correlation, and why the parse is TWO passes ────────────────
@@ -523,9 +532,11 @@ int32_t __cajeta_prof_cupti_corr_lookup(int32_t correlationId, int64_t* external
 // ── 12.2.d — the launch chokepoint ───────────────────────────────────────
 //
 // Pushed before the launch and popped after, so every kernel CUPTI records
-// between them carries our launch id. Both are called on EVERY launch, including
-// on machines with no CUDA at all, so both must be safe no-ops when the backend
-// never bound.
+// between them carries our launch id. Called from the CUDA vtbl's begin/end in
+// cajeta_rt_prof_gpu.c — and ONLY from there: the vtbl is selected only when
+// tracing() is already true, exactly as the ROCm backend is, so a machine
+// without CUDA runs the host lane and never reaches either of these. They stay
+// defensive about it anyway, since both are reachable from a test.
 int32_t __cajeta_prof_cupti_tracing(void) {
     return caj_cupti.state == CAJETA_CUPTI_READY
         && !caj_cupti.degraded
@@ -533,6 +544,7 @@ int32_t __cajeta_prof_cupti_tracing(void) {
 }
 
 int32_t __cajeta_prof_cupti_push(int64_t launchId) {
+    caj_cupti.pushes++;
     if (launchId == 0) return 0;           /* 0 is "no launch", not an id */
     if (!__cajeta_prof_cupti_tracing()) return 0;
     if (!caj_cupti.api.push_external) return 0;
@@ -542,6 +554,7 @@ int32_t __cajeta_prof_cupti_push(int64_t launchId) {
 
 int32_t __cajeta_prof_cupti_pop(void) {
     uint64_t popped = 0;
+    caj_cupti.pops++;
     if (!__cajeta_prof_cupti_tracing()) return 0;
     if (!caj_cupti.api.pop_external) return 0;
     return caj_cupti.api.pop_external(CAJ_CUPTI_EXTERNAL_KIND_CUSTOM0,
@@ -632,6 +645,16 @@ int32_t __cajeta_prof_cupti_enable_kind(int32_t kind) {
 
 int32_t __cajeta_prof_cupti_kinds_enabled(void) { return caj_cupti.kinds_enabled; }
 
+// Drain CUPTI's completed activity buffers. Each buffer that comes back runs
+// through caj_cupti_consume_buffer, which resolves parked launches; whatever
+// is still unclaimed after this has waited long enough and drains at host
+// tier. Safe when nothing bound.
+int32_t __cajeta_prof_cupti_flush(void) {
+    if (!__cajeta_prof_cupti_tracing()) return 0;
+    if (!caj_cupti.api.activity_flush_all) return 0;
+    return caj_cupti.api.activity_flush_all(0) == 0;
+}
+
 void __cajeta_prof_cupti_reset(void) {
     pthread_mutex_lock(&caj_cupti_mutex);
     if (caj_cupti.lib) { caj_cupti_libclose(caj_cupti.lib); caj_cupti.lib = NULL; }
@@ -645,6 +668,8 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
     caj_cupti.rejected = 0;
+    caj_cupti.pushes = 0;
+    caj_cupti.pops = 0;
     __cajeta_prof_cupti_corr_reset();
     memset(&caj_cupti.api, 0, sizeof(caj_cupti.api));
     caj_cupti.path[0] = '\0';
