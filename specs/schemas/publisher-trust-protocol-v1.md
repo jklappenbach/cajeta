@@ -1,10 +1,16 @@
 # Publisher trust — server contract v1
 
-The half of `publisher-trust` that is not built in this repository. The
-client is complete and shipped (`src/cajeta/buildtool/`: `SignedEnvelope`,
-`OrgKeyDocument`, `OrgKeyCache`, `ReleaseMetadata`, `ReleaseIntegrity`,
-`PublisherVerification`); this document is what a server has to do for that
-client to verify anything.
+The half of `publisher-trust` that is not built in this repository. This
+document is what a server has to do for the cajeta client to verify
+anything.
+
+The client covers §3.2–§3.6 today (`src/cajeta/buildtool/`:
+`SignedEnvelope`, `OrgKeyDocument`, `OrgKeyCache`, `ReleaseMetadata`,
+`ReleaseIntegrity`, `PublisherVerification`, `RepositoryDelegation`). Two
+pieces of this contract are specified and NOT yet implemented client-side:
+the signed `retracted` flag of §5.2, and the revocation statement of §3.8
+— plan Units 9 and 10. A server may implement them ahead of the client;
+nothing breaks, they simply go unread until those units land.
 
 Clause numbers in parentheses cite `specs/publisher-trust-spec.md`.
 
@@ -23,6 +29,12 @@ Two surfaces, with different audiences and different risks:
 A server may implement serving alone. The client degrades against one that
 serves none of it (§3.7), which is what makes this deployable
 incrementally.
+
+**One exception, and it runs the other way.** Revocation (§3.8) fails
+CLOSED once advertised: a repository that turns it on and then cannot
+serve it stops installs rather than degrading. That is deliberate (§7.3),
+and it makes `"revocation": true` the one capability to adopt last and
+deliberately, not incrementally like the rest.
 
 ## 2. Terms
 
@@ -488,20 +500,26 @@ touches keys and has no reason to publish. How an organization
 authenticates in order to upload is unchanged by this contract — only what
 that authentication is then permitted to reach.
 
-## 7. Two consequences not to "fix"
+## 7. Consequences not to "fix"
 
-Both of these look like defects to a reasonable implementer. They are
-deliberate, and quietly relaxing either removes most of what this spec
-buys.
+Every clause below looks like a defect to a reasonable implementer. Each
+is deliberate, and quietly relaxing it removes most of what this contract
+buys. The list carries no count on purpose: it grew three entries in one
+review, and a numbered title goes stale every time the contract does.
 
-**7.1 An organization cannot rotate its own key (6.2), and that is the
+**7.1 An organization cannot rotate its own key (§6.2), and that is the
 point.** Taking over an organization's account does not let an attacker
 swap the key and publish as that organization: account compromise and
-signing compromise stay separate. The cost is real — rotation and
-compromise recovery need the owner in the loop, which is a bottleneck and
-a response-time risk. §6.3 is what keeps that bottleneck from becoming a
-denial of service, so implement revocation-without-replacement before
-anyone asks for self-service rotation as a workaround (spec 7.4).
+signing compromise stay separate.
+
+The cost is larger than "the owner is in the loop", and worth budgeting
+honestly. Because §6.4 stages rather than signs, compromise recovery is
+TWO PHASES with different latencies — revoke against the online delegated
+key in seconds (§3.8), then re-sign a document omitting the key at the
+next offline ceremony. An implementer who reads this clause as costing an
+API call will discover a ceremony. §3.8 is what keeps the bottleneck from
+becoming a denial of service, so build it before anyone proposes
+self-service rotation as the workaround (spec 7.4).
 
 **7.2 Never derive an organization from an archive's name.** Dotted names
 have no fixed arity — `uk.co.acme.thing` and `io.foo.bar` place the
@@ -510,11 +528,56 @@ org" is wrong for someone, and wrong in the direction an attacker selects
 for. Ownership is data this server holds, not a string operation anyone
 performs on a name (spec 4.4, 7.11).
 
-The trap is concrete: the build tool already ships
+This is not hypothetical. Deployed olla derives the owner from the first
+two segments (`cajeta-olla/src/lib/namespace.ts:78`), which maps BOTH
+`uk.co.acme.thing` and `uk.co.evil.thing` to `co.uk` — two unrelated
+publishers collapsed onto one ownership key, and that key a public suffix
+nobody can hold. It fails toward collision rather than refusal. Found by
+reading the code, not by reasoning about the rule (spec 9.5).
+
+The trap is concrete on the client side too: the build tool ships
 `ManifestDetails::group()`, which splits a dotted name at the last `.`. It
 exists for display and for a template property, it is used nowhere
 security-relevant, and it must stay that way. A server-side equivalent
 will look reasonable at the moment it is written.
+
+**7.3 Revocation fails CLOSED (§3.8), including at 3am.** Once a
+repository advertises `"revocation": true`, a missing or expired statement
+makes clients refuse. When that endpoint faults, installs stop across the
+fleet, and every instinct will say to soften it — degrade gracefully,
+warn instead of refuse, serve the last good statement past its window.
+
+Each of those makes blocking a single fetch equivalent to un-revoking
+every key in the repository, which is the exact attack the mechanism
+exists to stop. A revocation an attacker can suppress is not a revocation.
+
+This is the most fixable-looking and most dangerous-to-fix behaviour in
+the contract. The right response to the outage is to make the endpoint
+reliable — it is a short signed blob, cacheable at the edge for its own
+lifetime — not to make its absence harmless. A repository unwilling to
+carry that obligation should not advertise the capability; declining it is
+supported and honest, and softening it while still advertising is neither.
+
+**7.4 Remove deletes shared content (§5.3).** Blobs are content-addressed,
+so removing one release can take out an unrelated coordinate that happened
+to publish identical bytes. The natural fix is to unlink only the
+coordinate — which leaves the leaked credential or the unlawful content
+fetchable under its hash, i.e. leaves undone the one thing the verb exists
+to do.
+
+**7.5 Retraction re-signs (§5.2).** Someone will ask why the flag cannot
+just live in the unsigned half of the resolve body, since retracting is
+then a database write instead of a signing operation. It used to live
+there. That let any mirror clear a retraction invisibly, leaving the one
+signal whose job is to reach a client about to install something bad as
+the only unprotected field in the response (spec 7.6.2).
+
+**7.6 A staged change reads back as STAGED (§6.4).** Because the
+administrative API stages and the root signs offline, a revocation shows
+as pending until the ceremony completes. This will be filed as a bug, and
+the fix — report it as applied — is precisely how an operator concludes a
+revocation took effect when it did not. Report the truth and make the
+pending state legible instead.
 
 ## 8. Conformance
 
