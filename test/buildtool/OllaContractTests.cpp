@@ -187,6 +187,33 @@ TEST(OllaContractTests, theSignedHalfIsAuthoritativeOverThePlainHalf) {
     rmTree(dir);
 }
 
+// A retraction travels through a SERVED response, not just a parsed
+// string. The stub's plain half says `retracted: false` — the shape a
+// mirror clearing the flag produces on the wire — and the signed payload
+// says otherwise. Protocol §8.2 recorded this as a coverage gap; this
+// closes it for retraction (spec 7.6.2).
+TEST(OllaContractTests, aServedRetractionSurvivesAClearedPlainFlag) {
+    auto dir = freshDir("retracted");
+    OllaContractStub stub(dir);
+    stub.serveRetractedRelease("dev.cajeta.http", "1.0.0", "sha256:abc",
+                               "dev.cajeta", "CVE-2026-42");
+
+    auto repo = clientFor(stub, dir);
+    auto roots = rootsFor(clientTrusting(dir, stub.root()), "central");
+    ASSERT_TRUE(!!roots);
+
+    auto integrity = releaseIntegrityFor(*repo, "dev.cajeta.http", "1.0.0",
+                                         *roots, nullptr, at("2026-06-01T00:00:00Z"));
+    ASSERT_TRUE(!!integrity) << errText(integrity.takeError());
+    EXPECT_TRUE(integrity->retracted)
+        << "the signed payload withdrew this release; a plain flag saying "
+           "otherwise is what a mirror writes";
+    EXPECT_EQ("CVE-2026-42", integrity->retractedReason);
+    EXPECT_TRUE(integrity->fromSignedMetadata);
+
+    rmTree(dir);
+}
+
 // A payload altered after signing is caught, and it is an ERROR rather
 // than a quiet fall-through to the plain fields sitting beside it.
 TEST(OllaContractTests, aPayloadAlteredAfterSigningIsRefused) {

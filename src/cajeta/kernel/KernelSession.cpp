@@ -952,6 +952,24 @@ bool KernelSession::resolveForInstall(
         if (integrity->fromSignedMetadata) {
             owningOrganization = integrity->organization;
         }
+        // Retraction WARNS and does not refuse (spec 7.6): a lockfile
+        // already pinning this version has to keep resolving, or a
+        // publisher withdrawing a release would break builds that pinned
+        // it deliberately. Name whether the withdrawal was signed —
+        // unsigned, anyone in the path can assert or clear it.
+        if (integrity->retracted) {
+            std::string why = integrity->retractedReason.empty()
+                                  ? std::string("no reason given")
+                                  : integrity->retractedReason;
+            cajeta::logLine("warn",
+                "[packages] '" + name + "' " + chosenVersion + " from "
+                + chosen->name() + " is RETRACTED by its publisher: " + why
+                + (integrity->fromSignedMetadata
+                       ? ""
+                       : " (unsigned metadata — this withdrawal is not"
+                         " signed, so treat it as advisory)")
+                + "\n");
+        }
     } else {
         // Metadata that is present and does not verify is a refusal, not a
         // fall-through: a mirror able to strip a signature to reach the

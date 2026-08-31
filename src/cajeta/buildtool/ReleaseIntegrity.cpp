@@ -61,11 +61,23 @@ namespace cajeta::buildtool {
                 out.fromSignedMetadata = true;
                 out.organization = md->organization;
                 out.rootKeyId = md->rootKeyId;
+                // From the signed payload, so the plain `retracted` beside
+                // it never reaches here — loadReleaseMetadata ignores the
+                // plain half whenever an envelope is present (spec 7.6.2).
+                out.retracted = md->retracted;
+                out.retractedReason = md->retractedReason;
                 return out;
             }
             // Present but unsigned. It carries no more authority than the
             // sidecar, so it gets no more weight: fall through rather
             // than treating a parsed hash as a verified one.
+            //
+            // The retraction still travels, with `fromSignedMetadata` false
+            // to say what it is worth. Whoever can write this flag can clear
+            // it, so it warns rather than binds — and a warning that might
+            // be spurious beats staying silent about a withdrawn release.
+            out.retracted = md->retracted;
+            out.retractedReason = md->retractedReason;
         }
 
         auto sidecar = repo.publishedChecksum(name, version);

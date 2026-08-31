@@ -30,6 +30,12 @@ namespace cajeta::buildtool {
             if (auto s = obj.getString("organization")) {
                 md.organization = s->str();
             }
+            // Absent means false. Every release published before spec 7.6.2
+            // omits it, and refusing those would be a flag day.
+            if (auto b = obj.getBoolean("retracted")) md.retracted = *b;
+            if (auto s = obj.getString("retracted-reason")) {
+                md.retractedReason = s->str();
+            }
         }
 
     } // namespace

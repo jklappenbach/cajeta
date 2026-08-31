@@ -111,7 +111,26 @@ namespace cajeta::buildtool::testing {
                          ",\"signed\":" + env.str());
         }
 
-        // §3.5 — the bytes.
+        // §5.2 — a RETRACTED release, with the plain half disagreeing.
+        //
+        // The signed payload says retracted; the plain `retracted` says
+        // false, which is what a mirror clearing the flag looks like on the
+        // wire. Serving them in agreement would prove nothing.
+        void serveRetractedRelease(const std::string& name,
+                                   const std::string& version,
+                                   const std::string& sha256,
+                                   const std::string& organization,
+                                   const std::string& reason) {
+            std::string envelope = envelopeAround(
+                scratch_,
+                retractedReleasePayload(name, version, sha256, organization,
+                                        true, reason),
+                rootKey_, rootId_, "retr-" + name + "-" + version);
+            routeRelease(name, version, sha256, organization,
+                         ",\"signed\":" + envelope);
+        }
+
+        // §3.6 — the bytes.
         void serveBlob(const std::string& bareSha256, const std::string& body) {
             srv_.route("/v2/blob/" + bareSha256, 200, body,
                        "application/octet-stream");
@@ -125,6 +144,9 @@ namespace cajeta::buildtool::testing {
             std::ostringstream body;
             body << "{\"sha256\":\"" << plainSha << "\",\"size\":0,"
                  << "\"organization\":\"" << plainOrg << "\","
+                 // Always FALSE in the plain half. serveRetractedRelease
+                 // relies on it: the signed payload says retracted and this
+                 // says otherwise, so a test can tell which one was read.
                  << "\"retracted\":false" << signedMember << "}";
             srv_.route("/v2/resolve?name=" + name + "&version=" + version,
                        200, body.str());

@@ -159,4 +159,24 @@ namespace cajeta::buildtool::testing {
         return p.str();
     }
 
+    // The same, carrying an explicit `retracted` (spec 7.6.2). Separate from
+    // releasePayload so the tests that leave the field ABSENT keep using a
+    // payload that genuinely omits it — absent and false must stay
+    // distinguishable at the fixture level, or 9.1.4 tests nothing.
+    inline std::string retractedReleasePayload(const std::string& name,
+                                               const std::string& version,
+                                               const std::string& sha256,
+                                               const std::string& organization,
+                                               bool retracted,
+                                               const std::string& reason = "") {
+        std::ostringstream p;
+        p << "{\"name\":\"" << name << "\",\"version\":\"" << version
+          << "\",\"sha256\":\"" << sha256 << "\",\"organization\":\""
+          << organization << "\",\"retracted\":"
+          << (retracted ? "true" : "false");
+        if (!reason.empty()) p << ",\"retracted-reason\":\"" << reason << "\"";
+        p << "}";
+        return p.str();
+    }
+
 } // namespace cajeta::buildtool::testing

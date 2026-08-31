@@ -66,6 +66,10 @@ namespace cajeta::buildtool {
         std::vector<std::pair<std::string, std::string>> deps;
         std::vector<std::string> capabilities;
         std::string publishedAt;
+        // The UNSIGNED view of retraction, for a client that does not
+        // verify. A mirror clears it as freely as any other plain field,
+        // so the install path reads `ReleaseIntegrity::retracted`, which
+        // comes out of the signed payload (publisher-trust spec 7.6.2).
         bool retracted = false;
         std::string retractedReason;
         // The organization that owns this name (publisher-trust spec 6.2).

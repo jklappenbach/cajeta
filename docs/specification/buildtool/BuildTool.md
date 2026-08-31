@@ -1812,6 +1812,16 @@ Consequences:
   (downstream builds with the old sha256 in their lockfile keep
   working) but the metadata flips `retracted: true` so new
   resolves emit a warning.
+- `retracted` lives INSIDE the signed release metadata, so
+  retracting re-signs it. The copy in the plain resolve body is
+  advisory — a mirror can clear it — and a verifying client reads
+  only the signed one.
+- Unlike the organization key document, release metadata carries
+  no expiry of its own, so a cached resolve can keep serving a
+  release as un-retracted after it has been withdrawn. A
+  repository that wants retraction to be timely keeps its resolve
+  responses uncacheable or short-lived: a retraction nobody
+  re-fetches is a retraction that did not happen.
 
 #### Pre-computed common bundles
 
