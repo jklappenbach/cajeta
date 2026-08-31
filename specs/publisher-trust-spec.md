@@ -284,6 +284,20 @@ warn. That is the withdrawal a publisher performs for a bad release, and
 it is deliberately not deletion — a registry that lets a publisher delete
 is a registry where a dependency can vanish under someone else's build.
 
+**7.6.2** The `retracted` flag is INSIDE the signed release metadata, and
+retraction re-signs it. A flag carried only in the unsigned half of a
+resolve response is one a mirror clears, and clearing it is invisible:
+the client reads a release the publisher withdrew and is told nothing.
+Retraction is the one lifecycle signal whose entire job is to reach a
+client that is about to install something bad, so it needs the same
+protection §5.1 gives the hash. Re-signing is what the delegated key
+(§2.7) is for; a retraction is rarer than a publish.
+
+**7.6.3** An archive's BYTES are immutable; the signed statement about
+them is not. §1.9 fixes the first — a change is a new version. §7.6.2
+makes the second mutable on purpose, and the two do not conflict as long
+as no one reads §1.9 as freezing the metadata too.
+
 **7.6.1** §7.6 is routine self-service and NOT a path into namespaces an
 organization does not own, because §7.3 already put that boundary out of
 its reach. What an org may publish is bounded by the namespaces in its key

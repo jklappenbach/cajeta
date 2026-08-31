@@ -176,15 +176,23 @@ plus the envelope under `signed`:
 ```
 
 **The `signed` half is authoritative and the plain half is never merged
-into it.** A verifying client reads `sha256` and `organization` out of the
-payload only. This is deliberate: it lets one response serve both kinds of
-client, and it means a mirror rewriting the plain half accomplishes
-nothing.
+into it.** A verifying client reads `sha256`, `organization` AND
+`retracted` out of the payload only. This is deliberate: it lets one
+response serve both kinds of client, and it means a mirror rewriting the
+plain half accomplishes nothing.
+
+`retracted` appears in both halves and they can disagree. The plain one
+exists for non-verifying clients and is advisory; the signed one decides.
+A flag carried only in the plain half would be one a mirror clears
+invisibly, which would leave the single signal whose job is to reach a
+client about to install something bad as the only unprotected field in
+the response (§5.2).
 
 Signed payload body: see `release-metadata.json`. It must carry `sha256`
 and `organization`; `name` and `version` are strongly recommended so a
 signed statement is self-identifying and cannot be replayed under another
-coordinate by a future client that checks them.
+coordinate by a future client that checks them. `retracted` absent means
+false.
 
 `organization` here is what binds the archive to a publisher. It must be
 the organization that actually owns the name, decided by the same
@@ -296,6 +304,9 @@ There are three verbs, not four. `read` is §3 and needs no privilege.
 Refused if the coordinate already exists — a version is immutable (spec
 1.9), so a change is a new version.
 
+What is immutable is the BYTES. The signed statement about them is not:
+§5.2 rewrites it. Do not read this clause as freezing the metadata.
+
 **5.2 Retract** (org). Flips `retracted` in the release metadata. The
 bytes STAY reachable: a lockfile already pinning that version keeps
 resolving, and new resolves warn. This is the withdrawal a publisher
@@ -303,10 +314,41 @@ performs for a bad release, and it is deliberately not deletion — a
 registry where a publisher can delete is one where a dependency vanishes
 under someone else's build (spec 7.6).
 
+**Retracting RE-SIGNS the release metadata** with the delegated key, since
+the flag is inside the signed payload (§3.5). This is the per-publish work
+the delegation exists to authorise, and retractions are rarer than
+publishes, so it adds no new demand on the root (spec 7.6.2).
+
+It follows that a client caching release metadata can serve a stale
+un-retracted view. Release metadata carries no expiry of its own, unlike
+an organization document, so a repository that expects retraction to be
+timely must keep its resolve responses uncacheable or short-lived. A
+retraction nobody re-fetches is a retraction that did not happen.
+
+Un-retraction is permitted — a mistaken withdrawal must be reversible —
+and it re-signs the same way. It is also a downgrade path for stolen
+publish credentials, so it is recorded like every other mutation (§6.6).
+
 **5.3 Remove** (owner only). The bytes stop being served. This breaks
 every downstream build pinning that version, by construction, so it is an
 emergency power — a leaked credential inside a release, unlawful content
 — and never routine withdrawal (spec 7.5).
+
+Blobs are content-addressed (§3.6), so one blob can back several
+coordinates. Remove DELETES THE CONTENT: the blob goes, and any other
+coordinate sharing those bytes stops resolving with it. Both motivating
+cases are about the bytes themselves, and a remove that leaves them
+fetchable under their hash has not done the job. The collateral loss is
+the right trade at this severity — but it is a judgement, so the owner is
+shown which other coordinates the removal will take down before it runs.
+
+**Retire the blob BEFORE the metadata**, or atomically with it. A remove
+that unpublishes the record first and collects the bytes afterwards is
+the natural implementation and it is the wrong order: for that window the
+repository serves a blob whose metadata 404s, which is exactly the
+selective-404 downgrade §3.7 forbids — verifying clients fall back to the
+unsigned sidecar and install the release anyway. The other order merely
+makes a resolve succeed whose fetch then fails, which is noisy and safe.
 
 **5.4** An organization may publish and retract only within the namespaces
 its key document claims. This is routine self-service and NOT a path into
