@@ -210,6 +210,8 @@ subtly wrong.
 | `404` on `/v2/org-keys/<org>` | serves no document for that org — legacy path |
 | `200` with a valid document | verify against it |
 | `200` with a document that does not verify | REFUSE the install |
+| `404` on `/v2/repository-keys` | delegates nothing; the root signs releases (§3.4) |
+| `404` on `/v2/resolve` for a release it will serve a blob for | **must not happen** — see below |
 | `5xx`, timeout, connection reset | ERROR — refuse, do not degrade |
 
 A server must not answer `404` for a transient internal failure. Doing so
@@ -221,6 +223,23 @@ Equally, a server must not return `200` with an empty or placeholder
 document to avoid a `404`. A document that parses and authorises nothing
 is refused, but the failure will be reported as a verification problem
 rather than as absence, which sends operators to the wrong place.
+
+**A v2 repository must not 404 `/v2/resolve` for a release whose blob it
+will serve.** A 404 there reads as "this repository publishes no signed
+metadata for that release", and the client falls back to the unsigned
+`.sha256` sidecar — losing the publisher binding entirely while the install
+still succeeds. That is the same bypass class as the transient-404 case
+above, reached from a different direction.
+
+This one is a SERVER obligation and not client-enforceable: the client
+cannot know a blob exists for a coordinate whose metadata it was told does
+not exist. An implementer has to hold this invariant themselves — serve
+metadata for everything you serve bytes for, or serve neither.
+
+Spec §5.3's default closes it on the client side once it lands, since "no
+verification was possible" becomes a refusal rather than a fallback. Until
+then the invariant is the only thing standing between a selective 404 and a
+silent downgrade.
 
 ## 4. Upload refusals
 
