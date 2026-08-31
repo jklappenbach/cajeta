@@ -14,8 +14,8 @@ nothing breaks, they simply go unread until those units land.
 
 Clause numbers in parentheses cite `specs/publisher-trust-spec.md`.
 
-Status: **draft, pending Julian's confirmation** that it matches what olla
-will build (plan item 7.3.1).
+Status: **approved 2026-08-31** (Julian, plan item 7.3.1), all eight
+sections reviewed clause by clause.
 
 ## 1. Scope
 
@@ -581,18 +581,101 @@ pending state legible instead.
 
 ## 8. Conformance
 
-The contract is executable, not prose alone. `test/buildtool/
-OllaContractStub.h` implements §3 against the shipped client, and
-`OllaContractTests.cpp` runs the client against it — a served document
-verifies, a `404` degrades, a `5xx` refuses, an unsigned resolve binds
-nothing, and a tampered payload is caught.
+### 8.1 What is executable today
 
-A server implementation can be checked the same way: point the client's
-`HttpRepository` at it and run the same assertions. What the stub does NOT
-cover is §4 through §6 — refusals and administration are server-side
-behaviour with no client-observable surface, and they need their own
-tests wherever olla is built.
+`test/buildtool/OllaContractStub.h` serves §3 against the shipped client
+and `OllaContractTests.cpp` runs the client against it — eight tests: the
+whole chain end to end, silent-disable when `v2` is unadvertised,
+absence-degrades vs failure-refuses, the signed half beating the plain
+half, a payload altered after signing, an unsigned resolve binding no
+publisher, a client holding a different root, and rotation across
+overlapping key windows.
 
-Spec 9.3 fixes the deployment order and it is not negotiable: the client
+The stub routes `/.well-known/cajeta-capabilities.json`,
+`/v2/org-keys/<org>`, `/v2/resolve` and `/v2/blob`. A server can be
+checked the same way: point `HttpRepository` at it and run the same
+assertions.
+
+### 8.2 What it does not reach yet
+
+**`/v2/repository-keys` (§3.4) and `/v2/revocations` (§3.8) are not
+served by the stub**, so neither is contract-tested. Delegation has unit
+coverage (`RepositoryDelegationTests`, 7 tests) but has never been
+exercised through a served response; revocation has no client at all yet.
+The signed `retracted` flag (§5.2) is likewise specified and unread.
+
+These are work items, not permanent gaps — plan Units 9 and 10 carry them.
+Until they land, §8.1's suite passing means less than it appears to: it
+proves the paths that existed before this contract grew.
+
+### 8.3 Self-checks for what no client can see
+
+Most of §4 through §6 has no client-observable surface, so it cannot be
+covered the way §3 is. That is a reason for a server to test itself, not a
+reason to leave it untested. Each line below is a check a server
+implementation should hold, phrased so it can be written as a test.
+
+**Refusals (§4).** An upload is refused when it is:
+
+- signed by a key valid in ANOTHER organization's document (§4.1) — the
+  cross-organization case, and the one most likely to pass by accident;
+- from an organization with no current key document (§4.2);
+- from one whose only key has expired (§4.3);
+- for a name outside the organization's namespaces (§4.5), including the
+  negative: `dev.cajeta` does not own `dev.cajetaevil`.
+
+**Lifecycle (§5).**
+
+- Re-publishing an existing `(name, version)` is refused (§5.1).
+- Retracting produces release metadata that still verifies, now with
+  `retracted: true` INSIDE the signed payload (§5.2). Un-retraction works
+  and is recorded.
+- Removing retires the blob before the metadata, never the reverse
+  (§5.3) — the window in between is §3.7's downgrade.
+- Removing a release whose bytes another coordinate shares takes that
+  coordinate down too, and the owner saw it listed first (§5.3).
+
+**Administration (§6).**
+
+- A PUBLISH credential cannot reach any key-management endpoint (§6.7).
+  This is the §9.4 regression test and it belongs in every olla build.
+- A staged change reads back as STAGED until the signature arrives
+  (§6.4), never as applied.
+- Deleting an organization lists the archives it will make unverifiable
+  before proceeding (§6.1).
+- Every mutation — administrative, and publish/retract/remove alike —
+  records actor, target, before, after, time (§6.6).
+
+**Two absences, which are the two findings this review measured.** Both
+are checks that something does NOT exist, so they need a grep or a review
+gate rather than a test:
+
+- The administrative surface holds no root key (§6.4). If an admin
+  credential can produce a root signature, §2.7 bought nothing.
+- No code path computes an organization from an archive name (§7.2). The
+  deployed instance had one and it collapsed two publishers onto a public
+  suffix (spec 9.5).
+
+**One server obligation from §3** belongs here rather than in §8.1,
+because the client cannot check it: never answer `404` on `/v2/resolve`
+for a coordinate whose blob is still served (§3.7).
+
+### 8.4 Adoption order
+
+Three sequencing constraints, and only the first is old.
+
+**8.4.1 Serve before requiring (spec 9.3).** Not negotiable: the client
 default cannot require what the server does not yet serve. Olla serves key
-documents FIRST; the client default flips afterwards.
+documents first; the client default flips afterwards.
+
+**8.4.2 Serve ahead of the client freely.** A server may implement signed
+retraction (§5.2) and revocation (§3.8) before Units 9 and 10 land.
+Nothing breaks — the fields go unread until the client catches up — so
+there is no reason to hold them back.
+
+**8.4.3 Advertise `"revocation": true` LAST.** This one runs opposite to
+every other capability here. Setting it makes a missing or expired
+revocation statement refuse installs fleet-wide (§7.3), so it is adopted
+only once that endpoint is reliably served, and it is not something to
+turn on early and tune later. Everything else in this contract degrades;
+this does not.
