@@ -1346,6 +1346,16 @@ files' actual bytes rather than their model cards.
     speed is seconds per token; the real number depends on routing
     concentration, which is measured, not guessed — 15.20's utilization
     records exist to answer exactly this BEFORE a cache is built.
+  - **The sizing envelope, derived 2026-08-31** from bytes/param
+    measured on the local 8B quant ladder (Q4_K_M 0.61, Q3_K_M 0.50,
+    Q2_K 0.40 B/param) and the measured 205 GB/s decode read rate:
+    resident capacity is ~180B total params at Q4 (~275B at Q2);
+    usable decode needs activated ≤ ~22B (10+ tok/s at moderate
+    context). At the full 128k context the f32 KV read (~49 GB/token on
+    a 94-layer model) dominates every MoE equally — expert sparsity
+    buys nothing on attention, which is Unit 31's subject, not this
+    section's. Qwen3-235B-A22B sits at the corner of both caps and is
+    the largest usable MoE this box supports.
   - **v2 — a managed expert cache** (pinned hot set, router-guided
     prefetch, per-session affinity): a real subsystem, specified when
     v1's measured hit rate on a real oversized model says what it must
