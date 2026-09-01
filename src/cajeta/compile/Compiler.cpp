@@ -2632,7 +2632,11 @@ namespace cajeta {
                         firstSyntaxError = std::current_exception();
                     }
                 }
-                cout << "\n";
+                // No per-file line is printed here any more: 4df17846 moved
+                // compile-phase progress onto the JSON diagnostic stream and
+                // left this terminator behind, so a build emitted one blank
+                // line per source — 90 of them for samples/tour, which reads
+                // from a terminal as the output having gone haywire.
             }
             if (firstSyntaxError) {
                 std::rethrow_exception(firstSyntaxError);
