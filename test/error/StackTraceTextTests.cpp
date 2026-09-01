@@ -15,6 +15,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -44,6 +45,23 @@ int frameLine(const std::string& text, const std::string& prefix) {
     while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q]))) ++q;
     if (q == p || q >= text.size() || text[q] != ')') return -1;
     return std::stoi(text.substr(p, q - p));
+}
+
+// Every line for `prefix`, in the order the frames were printed. frameLine above
+// answers "the first one", which cannot distinguish two lambdas in one method
+// from one lambda reported twice — the question 1.1.4 and 1.1.5 have to ask.
+std::vector<int> allFrameLines(const std::string& text, const std::string& prefix) {
+    std::vector<int> out;
+    size_t at = 0;
+    while ((at = text.find(prefix, at)) != std::string::npos) {
+        size_t p = at + prefix.size(), q = p;
+        while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q]))) ++q;
+        if (q > p && q < text.size() && text[q] == ')') {
+            out.push_back(std::stoi(text.substr(p, q - p)));
+        }
+        at = (q > at) ? q : at + 1;
+    }
+    return out;
 }
 
 std::string compilerBinary() {
@@ -92,6 +110,25 @@ fs::path writeProjectClass(const fs::path& root, const std::string& classBody) {
     src << "package test;\n"
            "import cajeta.error.Exception;\n"
            "public final class App {\n"
+        << classBody
+        << "}\n";
+    src.close();
+    return root;
+}
+
+// Same as writeProjectClass but the caller supplies extra imports. The lambda
+// tests need a collection to drive a stream through, and the fixed preamble
+// above only imports Exception.
+fs::path writeProjectClassImporting(const fs::path& root,
+                                    const std::string& imports,
+                                    const std::string& classBody) {
+    auto dir = root / "test";
+    fs::create_directories(dir);
+    std::ofstream src(dir / "App.cajeta");
+    src << "package test;\n"
+           "import cajeta.error.Exception;\n"
+        << imports
+        << "public final class App {\n"
         << classBody
         << "}\n";
     src.close();
@@ -222,4 +259,177 @@ TEST(StackTraceText, printStackTracePrintsCauseChain) {
     // Ordering: the cause link must follow the top throwable's message.
     EXPECT_LT(err.find("outer failure"), err.find("Caused by: root cause"))
         << "cause must print after the wrapping throwable; stderr:\n" << err;
+}
+
+// ---------------------------------------------------------------------------
+// lambda-frame-line — a lambda's shadow frame must carry a real source line.
+//
+// The frame is pushed by LambdaExpression::generateCode and was only ever given
+// a line by the statement marks its BODY emits. Block::generateCode is the only
+// mark site, so an expression body — `(x) -> f(x)`, the common form — left the
+// frame on the zero it was pushed with. Measured 2026-08-31, same program and
+// same -g build: block body `<lambda>(App.cajeta:10)`, expression body
+// `<lambda>(App.cajeta:0)`, every neighbouring frame real.
+//
+// Neither this suite nor ProfilerEndToEndTests contained a lambda, which is why
+// it went unseen: the frame-push shipped with a comment asserting the behaviour
+// and nothing measuring it.
+// ---------------------------------------------------------------------------
+
+namespace {
+    // The preamble writeProjectClassImporting emits is 4 lines, so a class body
+    // passed to it starts at line 5. Every expected line below is counted from
+    // there, and named rather than spelled twice.
+    const char* kListImport = "import cajeta.collection.ArrayList;\n";
+
+    const char* kBoom =
+        "    public static void boom(int32 x) {\n"
+        "        throw heap Exception(\"boom\");\n"
+        "    }\n";
+
+    const char* kLambdaFrame = "test.App.<lambda>(App.cajeta:";
+}
+
+// 1.1.1 (spec 2.1, 3.1) — the defect. RED before the fix at `:0`.
+TEST(StackTraceText, expressionBodiedLambdaFrameHasARealLine) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamexpr"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) -> App.boom(x));\n"                // 8
+        "    }\n"                                                           // 9
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // frameLine returns -1 when the frame is ABSENT and 0 when it is present
+    // with no line, so this one assertion separates the two (spec 4.1).
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 8)
+        << "the lambda frame must carry the line its body sits on; stderr:\n" << err;
+}
+
+// 1.1.2 (spec 2.2) — the control arm. Green before AND after: deleting the
+// statement marks entirely would fail this while 1.1.1 still passed, and
+// reverting the fix fails 1.1.1 while this still passes (spec 4.2).
+TEST(StackTraceText, blockBodiedLambdaFrameHasARealLine) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamblock"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) -> {\n"                            // 8
+        "            App.boom(x);\n"                                        // 9
+        "        });\n"                                                     // 10
+        "    }\n"                                                           // 11
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // The statement inside the block, which is what the frame advances to.
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 9)
+        << "a block body's frame must report its running statement; stderr:\n" << err;
+}
+
+// 1.1.3 (spec 2.6) — the line is the BODY's, not the parameter list's. Pins
+// which of the two the fix reads: they are the same line in every other test
+// here, so only a split body can tell them apart.
+TEST(StackTraceText, lambdaLineIsTheBodyNotTheParameterList) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamsplit"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) ->\n"                              // 8
+        "            App.boom(x));\n"                                       // 9
+        "    }\n"                                                           // 10
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 9)
+        << "expected the body's line (9), not the arrow's (8); stderr:\n" << err;
+}
+
+// 1.1.4 (spec 2.5) — two lambdas in one method stay distinguishable, which is
+// the whole point of giving a lambda its own frame. Both throws are caught so
+// both traces print.
+TEST(StackTraceText, twoLambdasInOneMethodReportDifferentLines) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamtwo"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        try {\n"                                                   // 8
+        "            xs.stream().forEach((x) -> App.boom(x));\n"            // 9
+        "        } catch (Exception e) {\n"                                 // 10
+        "            e.printStackTrace();\n"                                // 11
+        "        }\n"                                                       // 12
+        "        try {\n"                                                   // 13
+        "            xs.stream().forEach((x) -> App.boom(x));\n"            // 14
+        "        } catch (Exception e) {\n"                                 // 15
+        "            e.printStackTrace();\n"                                // 16
+        "        }\n"                                                       // 17
+        "    }\n"                                                           // 18
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "both throws are caught; the run must succeed. stderr:\n" << err;
+    auto lines = allFrameLines(err, kLambdaFrame);
+    ASSERT_GE(lines.size(), 2u)
+        << "expected a lambda frame from each of the two traces; stderr:\n" << err;
+    EXPECT_EQ(lines[0], 9) << "stderr:\n" << err;
+    EXPECT_EQ(lines[1], 14) << "stderr:\n" << err;
+}
+
+// 1.1.5 (spec 2.4) — nested lambdas each carry their own line. Split across
+// lines deliberately: written on one line the two frames would be
+// indistinguishable even when both are correct, and the test could not fail.
+TEST(StackTraceText, nestedLambdasEachCarryTheirOwnLine) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamnest"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) ->\n"                              // 8
+        "            xs.stream().forEach((y) ->\n"                          // 9
+        "                App.boom(y)));\n"                                  // 10
+        "    }\n"                                                           // 11
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    auto lines = allFrameLines(err, kLambdaFrame);
+    ASSERT_GE(lines.size(), 2u)
+        << "expected an inner and an outer lambda frame; stderr:\n" << err;
+    // Innermost frame prints first: inner body on 10, outer body on 9.
+    EXPECT_EQ(lines[0], 10) << "inner lambda; stderr:\n" << err;
+    EXPECT_EQ(lines[1], 9) << "outer lambda; stderr:\n" << err;
+}
+
+// 1.1.6 (spec 2.7) — the opt-out still holds. Per-statement marks are a
+// full-debug-info feature (measured 3.5-9.4x), and stamping the frame at its
+// push must not slip a line into a build that declined to pay for one.
+TEST(StackTraceText, withoutLineInfoALambdaFrameReportsZero) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamnog"), kListImport,
+        "    public static void run() {\n"
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"
+        "        xs.add(1);\n"
+        "        xs.stream().forEach((x) -> App.boom(x));\n"
+        "    }\n"
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/false);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // 0, not -1: the semantic frame is still there (it is free), it just
+    // carries no line.
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 0)
+        << "a default build must report no line; stderr:\n" << err;
 }

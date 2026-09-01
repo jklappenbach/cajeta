@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
@@ -400,4 +401,119 @@ TEST(ProfilerEndToEnd, longLivedFibersAreSampledOntoTheirOwnTracks) {
     EXPECT_GE(fiberTracks, 1)
         << "two fibers spun for tens of milliseconds and produced no fiber track — "
            "the sampler is reading the wrong offset behind a fiber handle";
+}
+
+// ── lambda-frame-line 3.2 — the profile surface carries the lambda's line ───
+//
+// The IDE flame graph makes each slice clickable through its SourceLocation, so
+// a slice whose line is 0 navigates to the top of the file. `tour.Tour.<lambda>`
+// did exactly that, which is how the defect was reported.
+//
+// Compiled with debug info ON, because per-statement line marks are a
+// full-debug-info feature — without it every frame reports 0 by design and this
+// test could not tell a fixed lambda from a broken one.
+//
+// The lambda's own frame is what is asserted, and its line can only come from
+// the line-info shadow stack: the instrumentation descriptor carries no line
+// field at all. That makes this and StackTraceTextTests two surfaces over one
+// mechanism, which is the pairing spec §4.3 asks for.
+namespace {
+struct LambdaE2E {
+    std::unique_ptr<CajetaJit> jit;
+    int32_t (*arm)(void) = nullptr;
+    void    (*disarm)(void) = nullptr;
+    int64_t (*drain)(const char*) = nullptr;
+    uint64_t (*varintRead)(const uint8_t*, int32_t, int32_t*) = nullptr;
+    int32_t (*spin)(int32_t) = nullptr;
+};
+LambdaE2E& lambdaE2e() {
+    static LambdaE2E x = [] {
+        LambdaE2E e;
+        CajetaJit::Options opts;
+        // Statement marks are gated on full debug info (measured 3.5-9.4x), and
+        // the fix under test rides the same gate.
+        opts.debugInfoEnabled = true;
+        e.jit = CajetaJit::compile(
+            "package test;\n"                                            // 1
+            "import cajeta.collection.ArrayList;\n"                      // 2
+            "\n"                                                         // 3
+            "public final class L {\n"                                   // 4
+            // The accumulator is kept under a modulus deliberately: int32
+            // `+`/`*` TRAP on overflow, so an unbounded sum would abort the
+            // run and this would read an empty trace instead of a wrong line.
+            "    public static int32 burn(int32 x) {\n"                   // 5
+            "        int32 acc = 0;\n"                                    // 6
+            "        int32 i = 0;\n"                                      // 7
+            "        while (i < 20000) {\n"                               // 8
+            "            acc = (acc + x) % 1000;\n"                       // 9
+            "            i = i + 1;\n"                                    // 10
+            "        }\n"                                                 // 11
+            "        return acc;\n"                                       // 12
+            "    }\n"                                                     // 13
+            "    public static int32 spin(int32 n) {\n"                   // 14
+            "        ArrayList<int32> xs = heap ArrayList<int32>();\n"     // 15
+            "        int32 k = 0;\n"                                      // 16
+            "        while (k < 32) { xs.add(k); k = k + 1; }\n"          // 17
+            "        int32 r = 0;\n"                                      // 18
+            "        while (r < n) {\n"                                   // 19
+            "            xs.stream().forEach((x) -> L.burn(x));\n"        // 20  <- the lambda
+            "            r = r + 1;\n"                                    // 21
+            "        }\n"                                                 // 22
+            "        return r;\n"                                         // 23
+            "    }\n"                                                     // 24
+            "}\n", "test.L", opts);                                       // 25
+        auto s = [&](const char* n) { return e.jit->lookupRawSymbol(n); };
+        e.arm     = reinterpret_cast<int32_t (*)(void)>(s("__cajeta_prof_arm"));
+        e.disarm  = reinterpret_cast<void (*)(void)>(s("__cajeta_prof_disarm"));
+        e.drain   = reinterpret_cast<int64_t (*)(const char*)>(s("__cajeta_prof_drain_to_trace"));
+        e.varintRead = reinterpret_cast<uint64_t (*)(const uint8_t*, int32_t, int32_t*)>(
+            s("__cajeta_pb_varint_read"));
+        e.spin    = e.jit->lookup<int32_t (*)(int32_t)>("spin");
+        return e;
+    }();
+    return x;
+}
+// The line `xs.stream().forEach((x) -> L.burn(x));` sits on in the source above.
+constexpr int32_t kLambdaSourceLine = 20;
+} // namespace
+
+TEST(ProfilerEndToEnd, lambdaSliceCarriesASourceLine) {
+    auto& e = lambdaE2e();
+    ASSERT_NE(e.drain, nullptr);
+    ASSERT_NE(e.spin, nullptr);
+    ASSERT_NE(e.varintRead, nullptr) << "__cajeta_pb_varint_read unresolved";
+    std::string path = tmpPath("cajeta-e2e-lambda.pftrace");
+    std::remove(path.c_str());
+
+    setenv("CAJETA_PROFILER", "1", 1);
+    setenv("CAJETA_PROFILER_HZ", "4000", 1);
+    ASSERT_EQ(e.arm(), 0);
+    e.spin(40);
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    e.disarm();
+    int64_t packets = e.drain(path.c_str());
+    unsetenv("CAJETA_PROFILER");
+    unsetenv("CAJETA_PROFILER_HZ");
+    ASSERT_GT(packets, 0) << "drain wrote nothing";
+
+    auto locs = cajeta_test_prof::readSourceLocations(path.c_str(), e.varintRead);
+    ASSERT_FALSE(locs.empty()) << "no interned source locations in the trace";
+
+    bool sawLambda = false;
+    int32_t lambdaLine = -1;
+    for (const auto& s : locs) {
+        if (s.function.find("<lambda>") == std::string::npos) continue;
+        sawLambda = true;
+        if (s.line > lambdaLine) lambdaLine = s.line;
+    }
+    // Asserted separately so "the slice never appeared" and "the slice appeared
+    // carrying 0" are different failures. A check that conflated them would
+    // report the first for a defect that is really the second, which is the
+    // shape that let this survive.
+    ASSERT_TRUE(sawLambda)
+        << "no <lambda> slice in the trace — the sampler never caught the callback";
+    EXPECT_EQ(lambdaLine, kLambdaSourceLine)
+        << "the lambda slice must carry the line its body sits on";
+
+    std::remove(path.c_str());
 }
