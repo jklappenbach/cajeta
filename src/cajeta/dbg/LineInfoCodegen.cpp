@@ -1,5 +1,8 @@
 #include "cajeta/dbg/LineInfoCodegen.h"
 
+#include "cajeta/method/Method.h"
+#include "cajeta/type/CajetaClass.h"
+
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -121,6 +124,22 @@ namespace cajeta::dbg {
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_line_mark");
         if (!fn) return;
         builder->CreateCall(fn, {builder->getInt32(line)});
+    }
+
+    int fileLineFor(const cajeta::CajetaModulePtr& module, int snippetLine) {
+        int delta = 0;
+        if (auto method = module->getCurrentMethod()) {
+            delta = method->getDbgLineDelta();
+            // A CLASS-template instantiation carries the delta on the class:
+            // the methods are produced by the body walk and never get one of
+            // their own, so falling back to the owner is what makes
+            // `Optional<int32>.get` resolvable at all.
+            if (delta == 0)
+                if (auto owner = method->getParent())
+                    delta = owner->getDbgLineDelta();
+        }
+        int line = snippetLine + delta;
+        return line < 1 ? 1 : line;
     }
 
 } // namespace cajeta::dbg

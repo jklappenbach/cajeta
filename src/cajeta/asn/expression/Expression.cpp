@@ -4589,6 +4589,11 @@ bool cajetaRhsCarriesRedundantSharp(
             // safe when neither node carries a position.
             int lambdaLine = body ? body->getSourceLine() : 0;
             if (lambdaLine <= 0) lambdaLine = getSourceLine();
+            // A lambda inside a generic is inside a re-parsed snippet too, so
+            // it needs the same 9.2 correction the statement marks get. Guarded
+            // on > 0 because fileLineFor clamps to 1, and 1 is a real line
+            // whereas 0 means "no line".
+            if (lambdaLine > 0) lambdaLine = dbg::fileLineFor(module, lambdaLine);
             dbg::emitLineMark(module, lambdaLine);
             // U10 (spec §3.1): the lambda gets its own instrumentation probe
             // for the same reason it gets its own shadow frame — a callback is

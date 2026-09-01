@@ -26,4 +26,24 @@ namespace cajeta::dbg {
     // --line-info on or line <= 0.
     void emitLineMark(cajeta::CajetaModulePtr module, int line);
 
+    // Snippet line -> real file line for the method being generated.
+    //
+    // A class- or method-template instantiation is re-parsed from a SYNTHETIC
+    // SNIPPET, so its token lines are snippet lines that merely look plausible
+    // (TemplateInstantiator §9.2). The instantiator records the correction as a
+    // dbgLineDelta on the method, or on its class for class templates.
+    //
+    // The debugger's safepoint path applied this and the line-info path did
+    // not, so F7 landed correctly while STACK TRACES and PROFILE SLICES for
+    // every generic reported a snippet line — measured 2026-09-01 as
+    // `Optional<int32>.get` at Optional.cajeta:83 for a throw on line 112, and
+    // as a controlled 1-line miss in a project generic beside a non-generic
+    // control that was exact. Both land in the doc comment above the method,
+    // which is the symptom §9.2 already names for F7.
+    //
+    // One function so the two paths cannot drift apart again. Clamps to 1: a
+    // delta can overshoot on a deeply nested instantiation, and a non-positive
+    // line means "no line" to every consumer.
+    int fileLineFor(const cajeta::CajetaModulePtr& module, int snippetLine);
+
 } // namespace cajeta::dbg

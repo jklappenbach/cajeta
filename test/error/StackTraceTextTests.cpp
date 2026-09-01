@@ -15,6 +15,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -132,6 +133,20 @@ fs::path writeProjectClassImporting(const fs::path& root,
         << classBody
         << "}\n";
     src.close();
+    return root;
+}
+
+// A project with several files. The generic-instantiation tests need the
+// template in its own compilation unit, the way real code has it.
+fs::path writeProjectFiles(const fs::path& root,
+                           const std::vector<std::pair<std::string, std::string>>& files) {
+    auto dir = root / "test";
+    fs::create_directories(dir);
+    for (const auto& f : files) {
+        std::ofstream src(dir / f.first);
+        src << f.second;
+        src.close();
+    }
     return root;
 }
 
@@ -432,4 +447,183 @@ TEST(StackTraceText, withoutLineInfoALambdaFrameReportsZero) {
     // carries no line.
     EXPECT_EQ(frameLine(err, kLambdaFrame), 0)
         << "a default build must report no line; stderr:\n" << err;
+}
+
+// ---------------------------------------------------------------------------
+// TemplateInstantiator 9.2 — a generic's frame must name a FILE line.
+//
+// A class- or method-template instantiation is re-parsed from a synthetic
+// snippet, so its token lines are snippet lines that merely look plausible.
+// The instantiator records the correction as a dbgLineDelta, and the
+// debugger's safepoint path applied it while the LINE-INFO mark did not — so
+// F7 into a generic landed correctly and its stack trace and profile slice
+// named a line in the doc comment above the method.
+//
+// Measured 2026-09-01: `Optional<int32>.get` reported Optional.cajeta:83 for a
+// throw on line 112, and the tour profile put `Optional<int32>.Optional` on
+// line 44, which is prose inside the class doc comment.
+//
+// The delta scales with the snippet's preamble, so the generic below carries a
+// long doc comment: with a one-line body the miss is one line and hides inside
+// the method, which is how this survived.
+// ---------------------------------------------------------------------------
+
+namespace {
+    // Box.cajeta. The throw is on line 25 — counted, and asserted below rather
+    // than searched for, so a stray edit to this literal fails loudly.
+    const char* kBoxSource =
+        "package test;\n"                                        // 1
+        "import cajeta.error.Exception;\n"                       // 2
+        "\n"                                                     // 3
+        "/**\n"                                                  // 4
+        " * A generic whose doc comment is long on purpose.\n"    // 5
+        " *\n"                                                   // 6
+        " * The snippet a template instantiation is re-parsed\n"  // 7
+        " * from carries a preamble, and the resulting line\n"    // 8
+        " * error is the size of that preamble. A one-line\n"     // 9
+        " * class produces a one-line miss that still lands\n"    // 10
+        " * inside the method; a realistic one lands in prose.\n" // 11
+        " */\n"                                                  // 12
+        "public final class Box<T> {\n"                          // 13
+        "    T v;\n"                                             // 14
+        "    public Box(T v) {\n"                                // 15
+        "        this.v #= v;\n"                                 // 16
+        "    }\n"                                                // 17
+        "    /**\n"                                              // 18
+        "     * Doc comment above the method, which is where a\n" // 19
+        "     * snippet line lands when it is not corrected.\n"   // 20
+        "     */\n"                                              // 21
+        "    public T boom() {\n"                                // 22
+        "        int32 a = 1;\n"                                 // 23
+        "        int32 b = 2;\n"                                 // 24
+        "        throw heap Exception(\"boom\");\n"              // 25
+        "    }\n"                                                // 26
+        "}\n";                                                   // 27
+    constexpr int kBoxThrowLine = 25;
+
+    // Plain.cajeta — the control. Same shape, no type parameter, so no snippet
+    // and no delta. The throw is on line 25 here too, which makes the two
+    // assertions directly comparable.
+    const char* kPlainSource =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "\n"
+        "/**\n"
+        " * A non-generic whose doc comment is long on purpose,\n"
+        " * so it matches the generic above line for line.\n"
+        " *\n"
+        " * If a correction were applied where none is needed,\n"
+        " * this is the test that would catch it: the two files\n"
+        " * agree on every line number.\n"
+        " * (padding to match)\n"
+        " */\n"
+        "public final class Plain {\n"
+        "    int32 v;\n"
+        "    public Plain(int32 v) {\n"
+        "        this.v = v;\n"
+        "    }\n"
+        "    /**\n"
+        "     * Doc comment above the method, matching Box.\n"
+        "     * (padding to match)\n"
+        "     */\n"
+        "    public static int32 boom() {\n"
+        "        int32 a = 1;\n"
+        "        int32 b = 2;\n"
+        "        throw heap Exception(\"boom\");\n"
+        "    }\n"
+        "}\n";
+    constexpr int kPlainThrowLine = 25;
+}
+
+// A class-template instantiation reports the line the statement is ON.
+TEST(StackTraceText, genericInstantiationReportsAFileLineNotASnippetLine) {
+    auto proj = writeProjectFiles(freshTempDir("gen"), {
+        {"Box.cajeta", kBoxSource},
+        {"App.cajeta",
+         "package test;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        Box<int32> b = stack Box<int32>(1);\n"
+         "        int32 x = b.boom();\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    EXPECT_EQ(frameLine(err, "test.Box<int32>.boom(Box.cajeta:"), kBoxThrowLine)
+        << "a generic's frame must name the throw's FILE line, not the snippet's; "
+           "stderr:\n" << err;
+}
+
+// The control: no type parameter, no snippet, no correction. Green before AND
+// after — a fix that shifted every line would pass the test above by moving
+// this one, so the two are asserted as a pair.
+TEST(StackTraceText, aNonGenericMethodNeedsNoCorrection) {
+    auto proj = writeProjectFiles(freshTempDir("plain"), {
+        {"Plain.cajeta", kPlainSource},
+        {"App.cajeta",
+         "package test;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        int32 x = Plain.boom();\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    EXPECT_EQ(frameLine(err, "test.Plain.boom(Plain.cajeta:"), kPlainThrowLine)
+        << "a non-generic frame must be exact and unshifted; stderr:\n" << err;
+}
+
+// The reported case, on the stdlib: `Optional<int32>.get` threw on a line that
+// resolved into the class doc comment. Asserted against the file rather than a
+// hardcoded number, so it survives edits to Optional.cajeta.
+TEST(StackTraceText, aStdlibGenericFrameLandsOnItsThrowNotItsDocComment) {
+    auto proj = writeProjectFiles(freshTempDir("stdgen"), {
+        {"App.cajeta",
+         "package test;\n"
+         "import cajeta.lang.Optional;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        Optional<int32> none = stack Optional<int32>(false);\n"
+         "        int32 v = none.get();\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    int reported = frameLine(err, "cajeta.lang.Optional<int32>.get(Optional.cajeta:");
+    ASSERT_GT(reported, 0) << "no Optional.get frame; stderr:\n" << err;
+
+    // The stdlib source is embedded, so the line is checked against the
+    // repository copy — the same text the embedder consumed.
+    const char* root = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string srcRoot = (root && *root) ? root :
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        ".";
+#endif
+    std::ifstream in(srcRoot + "/runtime/src/cajeta/lang/Optional.cajeta");
+    if (!in) GTEST_SKIP() << "stdlib source unavailable for cross-check";
+    std::string line;
+    int n = 0, throwLine = -1;
+    while (std::getline(in, line)) {
+        ++n;
+        if (throwLine < 0 && line.find("NoOptionalValueException(\"Optional.get") != std::string::npos)
+            throwLine = n;
+    }
+    ASSERT_GT(throwLine, 0) << "could not find the throw in Optional.cajeta";
+    EXPECT_EQ(reported, throwLine)
+        << "Optional.get resolved to line " << reported << ", but its throw is on "
+        << throwLine << " — a snippet line landing in the doc comment; stderr:\n" << err;
 }

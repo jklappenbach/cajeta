@@ -31,13 +31,7 @@ namespace cajeta {
 
         std::string function;
         std::string file;
-        int lineDelta = 0;   // 9.2: snippet -> file line for instantiations
         if (auto method = module->getCurrentMethod()) {
-            lineDelta = method->getDbgLineDelta();
-            // Class-template instantiations carry the delta on the class.
-            if (lineDelta == 0)
-                if (auto owner = method->getParent())
-                    lineDelta = owner->getDbgLineDelta();
             function = method->getLlvmSymbolName();
             // The declaring class's file, remapped — same source as #FrameDesc
             // (external-debug §6). getSourcePath() was the raw ABSOLUTE path,
@@ -58,8 +52,9 @@ namespace cajeta {
         // meaningless to a debugger (it would map a real safepoint to a bogus
         // location) and is un-matchable by the loc-table's entry shape, which
         // breaks the safepoint<->entry invariant. Clamp to a valid line.
-        int dbgLine = statement->getSourceLine() + lineDelta;
-        if (dbgLine < 1) dbgLine = 1;
+        // 9.2 snippet -> file line, shared with the line-info mark below so the
+        // two can never drift apart again (dbg::fileLineFor clamps to 1).
+        int dbgLine = dbg::fileLineFor(module, statement->getSourceLine());
         int32_t locId = module->takeDbgLocId();
         if (locId >= 0) {
             dbg::globalDbgLocTable().setAt(
@@ -258,6 +253,15 @@ namespace cajeta {
             if (module->isScriptUnit()) {
                 markLine = module->mapScriptLine(markLine);
                 module->setScriptCurrentHostLine(markLine);
+            } else {
+                // 9.2 — a generic's body is re-parsed from a synthetic snippet,
+                // so this token's line is a SNIPPET line. The safepoint above
+                // has always corrected it and this mark did not, which is why
+                // F7 into a generic landed correctly while its STACK TRACE and
+                // PROFILE SLICE named a line in the doc comment above the
+                // method. A script unit is never an instantiation, so the two
+                // remappings are alternatives rather than a composition.
+                markLine = dbg::fileLineFor(module, markLine);
             }
             if (lineInfo) dbg::emitLineMark(module, markLine);
             // CP2: statement-boundary safepoint before each statement.
