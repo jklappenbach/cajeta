@@ -56,6 +56,13 @@ struct Collector {
                 return &f;
         return nullptr;
     }
+    size_t countEvents(const std::string& name) const {
+        size_t n = 0;
+        for (const auto& f : frames)
+            if (f.at("type").asString() == "event"
+                    && f.at("event").asString() == name) ++n;
+        return n;
+    }
     std::string dumpAll() const {
         std::string out;
         for (const auto& f : frames) out += f.dump() + "\n";
@@ -86,6 +93,42 @@ struct TempProgram {
             << "}\n";
     }
     ~TempProgram() {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+};
+
+// A program whose breakpoint line sits INSIDE a loop, so a breakpoint that was
+// removed from the registry but never disarmed on the live controller stops
+// again on the next iteration — which is exactly the reported symptom
+// (Julian, 2026-08-31: "Removed breakpoint. Still getting stops at 155").
+// TempProgram's straight-line body cannot show this: its line is reached once.
+struct LoopProgram {
+    std::filesystem::path root;
+    std::filesystem::path file;
+    int bpLine = 0;
+    LoopProgram() {
+        static thread_local std::mt19937_64 rng(std::random_device{}());
+        root = std::filesystem::temp_directory_path()
+             / ("cajeta_dap_loop_" + std::to_string(rng()));
+        std::filesystem::create_directories(root / "test");
+        file = root / "test" / "L.cajeta";
+        std::ofstream out(file);
+        out << "package test;\n"                  // 1
+            << "public final class L {\n"         // 2
+            << "    public static int32 run() {\n"// 3
+            << "        int32 i = 0;\n"           // 4
+            << "        int32 s = 0;\n"           // 5
+            << "        while (i < 5) {\n"        // 6
+            << "            s = s + i;\n"         // 7  <- breakpoint, 5 hits
+            << "            i = i + 1;\n"         // 8
+            << "        }\n"                      // 9
+            << "        return s;\n"              // 10
+            << "    }\n"
+            << "}\n";
+        bpLine = 7;
+    }
+    ~LoopProgram() {
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }
@@ -226,4 +269,123 @@ TEST(DapServerTests, breakpointSessionStopsTracesResumesAndTerminates) {
         ASSERT_NE(r, nullptr) << out.dumpAll();
         EXPECT_TRUE(r->at("success").asBool()) << out.dumpAll();
     }
+}
+
+// Removing a breakpoint mid-session must DISARM it, not merely forget it.
+//
+// setBreakpoints edited `breakpoints_`, which is consumed once — at
+// configurationDone, by startDebugSession — so nothing reached the live
+// controller. DebugController has arm()/disarm() and its header names
+// setBreakpoints as their driver; setBreakpoints called neither. Forty lines
+// below it, setExceptionBreakpoints does the same thing correctly with
+// armException()/disarmException(), which is what makes this an oversight
+// rather than a design.
+TEST(DapServerTests, removingABreakpointMidSessionDisarmsItOnTheLiveController) {
+    LoopProgram prog;
+    DapServer server;
+    Collector out;
+    auto emit = out.emit();
+    int seq = 1;
+
+    ASSERT_TRUE(server.handle(
+        makeRequest(seq++, "initialize", Json::object()), emit)) << out.dumpAll();
+    {
+        Json args = Json::object();
+        args["entry-method"] = std::string("test.L.run");
+        args["sourceRoot"] = prog.root.string();
+        args["stopOnEntry"] = false;
+        ASSERT_TRUE(server.handle(makeRequest(seq++, "launch", args), emit))
+            << out.dumpAll();
+    }
+    auto setBreakpointLines = [&](const std::vector<int>& lines) {
+        Json src = Json::object();
+        src["path"] = prog.file.string();
+        Json bps = Json::array();
+        for (int line : lines) {
+            Json bp = Json::object();
+            bp["line"] = line;
+            bps.push_back(std::move(bp));
+        }
+        Json args = Json::object();
+        args["source"] = std::move(src);
+        args["breakpoints"] = std::move(bps);
+        ASSERT_TRUE(server.handle(
+            makeRequest(seq++, "setBreakpoints", args), emit)) << out.dumpAll();
+    };
+
+    setBreakpointLines({prog.bpLine});
+    ASSERT_TRUE(server.handle(
+        makeRequest(seq++, "configurationDone", Json::object()), emit))
+        << out.dumpAll();
+    const Json* stopped = out.firstEvent("stopped");
+    ASSERT_NE(stopped, nullptr) << "never stopped at all:\n" << out.dumpAll();
+    const int threadId = stopped->at("body").at("threadId").asInt();
+    const size_t stopsWhileArmed = out.countEvents("stopped");
+
+    // The removal: a whole-file replace with an EMPTY set, which is exactly
+    // what the plugin sends when the last breakpoint in a file is deleted.
+    setBreakpointLines({});
+
+    Json cont = Json::object();
+    cont["threadId"] = threadId;
+    ASSERT_TRUE(server.handle(makeRequest(seq++, "continue", cont), emit))
+        << out.dumpAll();
+
+    EXPECT_EQ(out.countEvents("stopped"), stopsWhileArmed)
+        << "stopped again at a removed breakpoint — it was forgotten, not "
+           "disarmed:\n" << out.dumpAll();
+    EXPECT_NE(out.firstEvent("terminated"), nullptr)
+        << "did not run to completion after the breakpoint was removed:\n"
+        << out.dumpAll();
+}
+
+// The other half of the same gap: a breakpoint ADDED after configurationDone
+// never reached the controller either, so it could not bind at all.
+TEST(DapServerTests, addingABreakpointMidSessionArmsItOnTheLiveController) {
+    LoopProgram prog;
+    DapServer server;
+    Collector out;
+    auto emit = out.emit();
+    int seq = 1;
+
+    ASSERT_TRUE(server.handle(
+        makeRequest(seq++, "initialize", Json::object()), emit)) << out.dumpAll();
+    {
+        Json args = Json::object();
+        args["entry-method"] = std::string("test.L.run");
+        args["sourceRoot"] = prog.root.string();
+        args["stopOnEntry"] = true;          // park before the loop runs
+        ASSERT_TRUE(server.handle(makeRequest(seq++, "launch", args), emit))
+            << out.dumpAll();
+    }
+    ASSERT_TRUE(server.handle(
+        makeRequest(seq++, "configurationDone", Json::object()), emit))
+        << out.dumpAll();
+    const Json* entry = out.firstEvent("stopped");
+    ASSERT_NE(entry, nullptr) << "stopOnEntry did not park:\n" << out.dumpAll();
+    const int threadId = entry->at("body").at("threadId").asInt();
+    const size_t stopsBefore = out.countEvents("stopped");
+
+    // Arm a line that was not in the launch set.
+    {
+        Json src = Json::object();
+        src["path"] = prog.file.string();
+        Json bp = Json::object();
+        bp["line"] = prog.bpLine;
+        Json bps = Json::array();
+        bps.push_back(std::move(bp));
+        Json args = Json::object();
+        args["source"] = std::move(src);
+        args["breakpoints"] = std::move(bps);
+        ASSERT_TRUE(server.handle(
+            makeRequest(seq++, "setBreakpoints", args), emit)) << out.dumpAll();
+    }
+
+    Json cont = Json::object();
+    cont["threadId"] = threadId;
+    ASSERT_TRUE(server.handle(makeRequest(seq++, "continue", cont), emit))
+        << out.dumpAll();
+
+    EXPECT_GT(out.countEvents("stopped"), stopsBefore)
+        << "a breakpoint added mid-session never armed:\n" << out.dumpAll();
 }

@@ -622,6 +622,45 @@ TEST(ErrorModelTests, unknownFieldTypeThrowsCleanError) {
     }
 }
 
+// The POSITION, which the test above never asked for — and so the throw used
+// the unlocated two-argument Exception, `hasLocation()` was false, and every
+// consumer anchored the diagnostic at the top of the file. Julian, 2026-08-31,
+// opening cajeta-cabra: "Unknown fieldtype LlmEngine" reported against
+// `package dev.cajeta.cabra;`, which is not where LlmEngine appears. A
+// diagnostic that names one thing and points at another sends the reader to
+// the wrong file entirely.
+//
+// The anchor is the TYPE token, not the field name and not the declaration:
+// the type is the part that could not be resolved.
+TEST(ErrorModelTests, unknownFieldTypeIsReportedAtTheTypeNotTheTopOfTheFile) {
+    auto src =
+        "package test;\n"                    // 1
+        "public class Holder {\n"            // 2
+        "    public flot32 b;\n"             // 3  col 12 = 'f' of flot32
+        "    public Holder() { }\n"          // 4
+        "}\n"
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Holder h = heap Holder();\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n";
+    try {
+        CajetaJit::compile(src, "test.D");
+        FAIL() << "expected cajeta::Exception (unknown type) but compile succeeded";
+    } catch (cajeta::Exception& e) {
+        ASSERT_EQ(e.getErrorId(), "CAJETA_ERROR_UNKNOWN_TYPE");
+        ASSERT_TRUE(e.hasLocation())
+            << "unlocated: every consumer will anchor this at line 1, which is "
+               "the package declaration — not where the type is";
+        EXPECT_EQ(e.getLine(), 3) << "reported at line " << e.getLine();
+        EXPECT_EQ(e.getColumn(), 12)
+            << "column " << e.getColumn() << " is not the start of `flot32`";
+    } catch (std::exception& e) {
+        FAIL() << "expected cajeta::Exception, got std::exception: " << e.what();
+    }
+}
+
 // Same guard fires when an unknown type appears on a parent class —
 // the visit walks each class's field declarations in source order, so
 // Parent's `flot32 g` is rejected before Child is even visited.

@@ -586,8 +586,10 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
         // breakpoints (and their ids) before recording the new set. Appending
         // left stale copies behind on every re-send — which the plugin does
         // each time a breakpoint is added or removed mid-session.
+        std::vector<cajeta::jit::Breakpoint> dropped;
         for (size_t i = breakpoints_.size(); i-- > 0; ) {
             if (breakpoints_[i].file != base) continue;
+            dropped.push_back(breakpoints_[i]);
             breakpoints_.erase(breakpoints_.begin() + i);
             if (i < breakpointIds_.size())
                 breakpointIds_.erase(breakpointIds_.begin() + i);
@@ -613,6 +615,28 @@ bool DapServer::handle(const Json& request, const Emit& emit) {
             b["line"] = line;
             verified.push_back(std::move(b));
         }
+        // Tell a LIVE session. `breakpoints_` is consumed exactly once — at
+        // configurationDone, by startDebugSession — so without this the edit
+        // above is bookkeeping the running program never hears about: a
+        // removed breakpoint keeps stopping and an added one never binds
+        // (Julian, 2026-08-31, on ArrayList.add). setExceptionBreakpoints
+        // below has always done this; line breakpoints got the registration
+        // half and not the live half.
+        //
+        // Disarm what this source dropped, then re-arm the CURRENT WHOLE set
+        // rather than just the new lines: locations match by file BASENAME +
+        // line, so two sources can share a locId, and disarming one file's
+        // breakpoint must not silently disarm another's.
+        if (session_) {
+            auto& controller = session_->controller();
+            for (const auto& bp : dropped)
+                for (int32_t id : cajeta::jit::matchingLocIds(bp))
+                    controller.disarm(id);
+            for (const auto& bp : breakpoints_)
+                for (int32_t id : cajeta::jit::matchingLocIds(bp))
+                    controller.arm(id);
+        }
+
         Json body = Json::object();
         body["breakpoints"] = std::move(verified);
         emit(makeResponse(seq_++, requestSeq, command, true, std::move(body)));
