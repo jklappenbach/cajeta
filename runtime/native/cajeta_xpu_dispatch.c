@@ -358,6 +358,66 @@ int32_t __cajeta_xpu_active_backend_id(void) {
     return (int32_t) cajeta_xpu_active_backend();
 }
 
+// cajeta.xpu.Device.memoryBytes() — the active device's total visible
+// memory in bytes, 0 when the backend cannot answer (an absent optional
+// symbol, a query failure, or no backend). 0 is "unknown", never a
+// budget: callers must treat it as no answer. Like activeBackend, this
+// is a device touch.
+//   cuda   — cuDeviceTotalMem on the selected device.
+//   hip    — hipMemGetInfo's `total`; on a UMA part this is the
+//            GTT-visible pool, which is the honest device-visible
+//            number (Strix Halo reports ~96 GiB of the 122 GiB RAM).
+//   vulkan — the sum of DEVICE_LOCAL heaps from the memory properties
+//            cached at init (heap sizes, not budgets: allocation can
+//            still fail earlier under pressure).
+//   cpu    — total physical RAM (the device IS the host).
+int64_t __cajeta_xpu_device_memory_bytes(void) {
+    int be = cajeta_xpu_active_backend();
+    switch (be) {
+        case CAJ_XPU_CUDA: {
+            size_t total = 0;
+            if (!g_xpu_cuda.cuDeviceTotalMem) return 0;
+            if (g_xpu_cuda.cuDeviceTotalMem(&total, g_xpu_cuda.device) != 0)
+                return 0;
+            return (int64_t) total;
+        }
+        case CAJ_XPU_HIP: {
+            size_t memfree = 0, total = 0;
+            if (!g_xpu_hip.hipMemGetInfo) return 0;
+            if (g_xpu_hip.hipMemGetInfo(&memfree, &total) != 0) return 0;
+            return (int64_t) total;
+        }
+        case CAJ_XPU_VULKAN: {
+#if defined(CAJETA_RT_HAS_VULKAN)
+            int64_t sum = 0;
+            for (uint32_t i = 0; i < g_xpu_vk.memProps.memoryHeapCount; ++i) {
+                if (g_xpu_vk.memProps.memoryHeaps[i].flags
+                        & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                    sum += (int64_t) g_xpu_vk.memProps.memoryHeaps[i].size;
+            }
+            return sum;
+#else
+            return 0;
+#endif
+        }
+        case CAJ_XPU_CPU: {
+#if defined(_WIN32)
+            MEMORYSTATUSEX ms;
+            ms.dwLength = sizeof(ms);
+            if (!GlobalMemoryStatusEx(&ms)) return 0;
+            return (int64_t) ms.ullTotalPhys;
+#else
+            long pages = sysconf(_SC_PHYS_PAGES);
+            long psize = sysconf(_SC_PAGE_SIZE);
+            if (pages <= 0 || psize <= 0) return 0;
+            return (int64_t) pages * (int64_t) psize;
+#endif
+        }
+        default:
+            return 0;
+    }
+}
+
 // Forward decl (the OptiX glue's full extern block is below, near the launch path).
 extern int cajeta_xpu_optix_available(void);
 

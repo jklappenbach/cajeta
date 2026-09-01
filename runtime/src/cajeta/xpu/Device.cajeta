@@ -130,6 +130,31 @@ public final class Device {
         return Device.nativeLastWorkers();
     }
 
+    /**
+     * The active device's total visible memory, in bytes — the number a
+     * residency or working-set budget derives from. Per backend: CUDA
+     * reports the device's total memory; HIP reports `hipMemGetInfo`'s
+     * total, which on a UMA part is the GTT-visible pool (Strix Halo:
+     * ~96 GiB of 122 GiB RAM — the honest device-visible figure, shared
+     * with the host); Vulkan sums the DEVICE_LOCAL heaps; the CPU
+     * backend reports total physical RAM (the device IS the host).
+     *
+     * Returns 0 when the answer is unavailable — an older driver
+     * missing the query, a failed call, or no backend. 0 means
+     * UNKNOWN, never "no memory": derive nothing from it. Heap sizes
+     * are capacities, not budgets — allocation can still fail earlier
+     * under pressure, and on UMA this pool is shared with the host
+     * page cache.
+     *
+     * A DEVICE TOUCH, like {@link #activeBackend}: asking selects the
+     * backend if selection has not happened yet.
+     *
+     * @EntryPoint
+     */
+    public static int64 memoryBytes() {
+        return Device.nativeMemoryBytes();
+    }
+
     // The active backend probes its device features by capability ordinal (the
     // stable Capability contract). Returns 0 / 1.
     @Native("__cajeta_xpu_device_supports")
@@ -150,6 +175,9 @@ public final class Device {
 
     @Native("__cajeta_xpu_active_backend_id")
     private static int32 nativeActiveBackend();
+
+    @Native("__cajeta_xpu_device_memory_bytes")
+    private static int64 nativeMemoryBytes();
 
     /**
      * Is `name`'s device code actually REGISTERED for the active backend?

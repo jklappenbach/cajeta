@@ -66,6 +66,8 @@ struct cajeta_cuda_api {
     // capability probes (__cajeta_xpu_device_supports) — e.g. compute
     // capability for the bf16 tensor-core gate. Null on exotic stubs.
     int (*cuDeviceGetAttribute)(int*, int, int);
+    // Device memory size (Device.memoryBytes); optional — absent → 0.
+    int (*cuDeviceTotalMem)(size_t*, int);
     int (*cuDevicePrimaryCtxRetain)(void**, int);  // R4: share the per-device PRIMARY
                                      // ctx (a process-wide singleton) so the runtime,
                                      // the JIT-embedded runtime, and the OptiX glue
@@ -163,6 +165,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuDeviceGet, "cuDeviceGet");
     *(void**) (&g_xpu_cuda.cuDeviceGetAttribute) =            // optional (non-fatal)
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceGetAttribute");
+    *(void**) (&g_xpu_cuda.cuDeviceTotalMem) =                // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuDeviceTotalMem_v2");
     CAJ_BIND(cuDevicePrimaryCtxRetain, "cuDevicePrimaryCtxRetain");  // NO _v2 suffix
     CAJ_BIND(cuCtxSetCurrent, "cuCtxSetCurrent");
     CAJ_BIND(cuModuleLoadData, "cuModuleLoadData");
@@ -427,6 +431,11 @@ struct cajeta_hip_api {
     int (*hipDeviceGetAttribute)(int*, int, int);
     // Device-to-device copy for the bandwidth probe (optional).
     int (*hipMemcpyDtoD)(void*, void*, size_t);
+    // Device memory size (Device.memoryBytes); optional — absent → 0
+    // (unknown). On a UMA part (Strix Halo) `total` is the GTT-visible
+    // pool, which IS the device-visible number the residency budget
+    // derives from.
+    int (*hipMemGetInfo)(size_t*, size_t*);
 };
 static struct cajeta_hip_api g_xpu_hip;
 
@@ -685,6 +694,7 @@ static int cajeta_xpu_hip_init_locked(void) {
     CAJ_HBIND_OPT(hipGetDevicePropertiesR0600, "hipGetDevicePropertiesR0600");
     CAJ_HBIND_OPT(hipDeviceGetAttribute, "hipDeviceGetAttribute");
     CAJ_HBIND_OPT(hipMemcpyDtoD, "hipMemcpyDtoD");
+    CAJ_HBIND_OPT(hipMemGetInfo, "hipMemGetInfo");
     #undef CAJ_HBIND_OPT
     // cajeta-profiler §5.2.3 — the one window rocprofiler can be configured in.
     // It intercepts HIP by installing itself while HIP loads, so this must
