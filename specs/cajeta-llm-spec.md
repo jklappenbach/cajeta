@@ -1375,3 +1375,33 @@ files' actual bytes rather than their model cards.
   distribution was. This is the seam cabra-side innovation builds on
   (per-session routing behavior, expert-affinity scheduling) and it
   costs one record type now versus a redesign later.
+- **15.21** Reference parity on the serving MoE (added 2026-09-01,
+  Julian's directive): on Qwen3-Coder-30B-A3B Q4_K_M, backend amdgpu,
+  prefill ≤ 0.97 ms/tok @512 and decode ≤ 12 ms/tok — the numbers
+  llama.cpp's Vulkan backend measures on the same box, same file
+  (2026-09-01). These are bandwidth-floor numbers, not tuning targets:
+  decode's activated bytes (~1.0 GB experts + ~0.6 GB dense/head per
+  token) at the measured 205 GB/s read rate is ~8 ms, so parity REQUIRES
+  the reference's dispatch structure, not a faster kernel:
+  - **15.21.1** When a model's shape includes QK-norm or MoE layers,
+    decode still runs device-resident — the per-head norms and the
+    expert FFN get device paths instead of disqualifying the whole
+    layer stack to host attention (measured 2026-09-01: the host attend
+    alone is 110 ms of the 211 ms token at 512 ctx).
+  - **15.21.2** When a decode token is produced, no intermediate value
+    crosses to the host: routing, expert selection, the expert chain,
+    and the combine all run as stream launches, and the only sync is
+    the token's own logits (the llama.cpp graph-submit shape: their
+    routing is softmax/argsort/get_rows as device ops).
+  - **15.21.3** When experts dispatch, a bank's selected experts ride
+    ONE indirected launch against the bank's contiguous weight slab
+    (the GGUF `ffn_*_exps` tensor layout, llama.cpp's `mul_mat_vec_id`
+    / `mul_mat_id` shape) — never one launch per expert. Residency
+    (moe-expert-cache T1) accounts at the granularity it binds.
+  - **15.21.4** When a prefill chunk runs, the expert GEMMs take the
+    same indirected one-launch-per-bank shape over grouped rows, and
+    gather/GLU/scatter run on the device — the host never touches
+    activations between the embedding and the logits.
+  - **15.21.5** Every stage of this work lands with the 12.† parity
+    gates intact: identical greedy generation on the 30B against the
+    pre-stage engine, and the toy-fixture logit bars unchanged.
