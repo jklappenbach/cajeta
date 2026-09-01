@@ -7,11 +7,16 @@ import java.awt.BasicStroke
 import java.awt.Dimension
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.Rectangle
 import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JComponent
 import javax.swing.JPanel
+import javax.swing.JViewport
+import javax.swing.ScrollPaneConstants
+import javax.swing.Scrollable
+import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
 
 /**
@@ -33,17 +38,50 @@ class ProfileTimelinePanel : JPanel(java.awt.BorderLayout()) {
     private var rows: List<TrackNode> = emptyList()
     private var select: ((FlameNode) -> Unit)? = null
 
-    private val canvas = object : JPanel() {
+    // Scrollable, not a bare JPanel: a bare JPanel neither reports a height the
+    // viewport can scroll nor stretches to a viewport wider than itself, which
+    // is why the timeline had no scrollbars and no use for extra width.
+    private val canvas = object : JPanel(), Scrollable {
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
             paintTimeline(g as Graphics2D)
         }
+
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+
+        // A row at a time vertically — the unit the reader actually thinks in.
+        override fun getScrollableUnitIncrement(
+            visible: Rectangle, orientation: Int, direction: Int
+        ): Int = if (orientation == SwingConstants.VERTICAL) ROW_HEIGHT else JBUI.scale(40)
+
+        override fun getScrollableBlockIncrement(
+            visible: Rectangle, orientation: Int, direction: Int
+        ): Int = if (orientation == SwingConstants.VERTICAL) visible.height else visible.width
+
+        override fun getScrollableTracksViewportWidth(): Boolean {
+            val vp = parent as? JViewport ?: return false
+            return TimelineViewport.tracksViewportWidth(vp.width, MIN_CONTENT_WIDTH)
+        }
+
+        override fun getScrollableTracksViewportHeight(): Boolean {
+            val vp = parent as? JViewport ?: return false
+            return TimelineViewport.tracksViewportHeight(vp.height, preferredSize.height)
+        }
     }
+
+    private val scroll = JBScrollPane(canvas)
 
     init {
         canvas.background = UIUtil.getPanelBackground()
         canvas.isOpaque = true
-        add(JBScrollPane(canvas), java.awt.BorderLayout.CENTER)
+        // Stated rather than inherited: these are the behaviour under test.
+        scroll.verticalScrollBarPolicy = ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED
+        scroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
+        // Below this the lanes stop being readable, so the view scrolls instead
+        // of compressing further.
+        canvas.minimumSize = Dimension(MIN_CONTENT_WIDTH, 0)
+        canvas.preferredSize = Dimension(MIN_CONTENT_WIDTH, RULER_HEIGHT + 8)
+        add(scroll, java.awt.BorderLayout.CENTER)
         canvas.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (!SwingUtilities.isLeftMouseButton(e)) return
@@ -60,7 +98,9 @@ class ProfileTimelinePanel : JPanel(java.awt.BorderLayout()) {
         // they carry the hierarchy, even though they hold no slices of their
         // own. Dropping them would leave queues indented under nothing.
         rows = TrackHierarchy.flatten(model.tracks)
-        canvas.preferredSize = Dimension(800, rows.size * ROW_HEIGHT + RULER_HEIGHT + 8)
+        canvas.preferredSize = Dimension(
+            MIN_CONTENT_WIDTH,
+            TimelineViewport.contentHeight(rows.size, ROW_HEIGHT, RULER_HEIGHT, 8))
         canvas.revalidate()
         canvas.repaint()
     }
@@ -177,6 +217,8 @@ class ProfileTimelinePanel : JPanel(java.awt.BorderLayout()) {
         val ROW_HEIGHT = JBUI.scale(22)
         val RULER_HEIGHT = JBUI.scale(18)
         val GUTTER_WIDTH = JBUI.scale(190)
+        // Gutter plus enough lane to tell one span from another.
+        val MIN_CONTENT_WIDTH = GUTTER_WIDTH + JBUI.scale(320)
         const val TICKS = 8
     }
 }

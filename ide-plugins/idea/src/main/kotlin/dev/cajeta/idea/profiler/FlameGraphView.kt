@@ -61,11 +61,44 @@ object FlameColors {
     /** A frame still running when the trace ended. */
     val UNCLOSED: JBColor = JBColor(Color(0x7A, 0x9E, 0xC4), Color(0x5B, 0x7C, 0xA5))
 
-    fun of(quality: MeasurementQuality?, unclosed: Boolean = false): JBColor = when {
+    /**
+     * One hue per stack layer, for TRUSTED work only.
+     *
+     * Colour on this graph was already spoken for — §8.6 needs degraded and
+     * low-confidence measurements visually distinct, and §11.3's flagged spans
+     * must not blend in. Letting depth own the hue everywhere would have erased
+     * that: FLAGGED is hatched as well and would survive, but DEGRADED,
+     * LOW_CONFIDENCE and UNCORRELATED have no encoding but colour.
+     *
+     * So the two live on separate axes. Depth picks the hue where the profiler
+     * trusts the measurement; anything it does not keeps its own colour, which
+     * makes it MORE conspicuous than before — it breaks the rainbow instead of
+     * being a slightly different brown.
+     *
+     * Hues are evenly spaced around the wheel and deliberately kept off the
+     * reds and greys the quality colours occupy.
+     */
+    const val RAINBOW_PERIOD = 12
+
+    private val RAINBOW: List<JBColor> = (0 until RAINBOW_PERIOD).map { i ->
+        val hue = i.toFloat() / RAINBOW_PERIOD
+        JBColor(
+            Color(Color.HSBtoRGB(hue, 0.62f, 0.86f)),   // light theme
+            Color(Color.HSBtoRGB(hue, 0.55f, 0.68f)),   // dark theme
+        )
+    }
+
+    /** The layer hue for [depth]; repeats rather than running out, so a deep
+     *  stack stays coloured instead of flattening to one shade. */
+    fun layer(depth: Int): JBColor =
+        RAINBOW[((depth % RAINBOW_PERIOD) + RAINBOW_PERIOD) % RAINBOW_PERIOD]
+
+    fun of(quality: MeasurementQuality?, unclosed: Boolean = false,
+           depth: Int = 0): JBColor = when {
         unclosed -> UNCLOSED
-        quality == null -> TRUSTED
+        quality == null -> layer(depth)
         else -> when (quality.renderClass) {
-            RenderClass.TRUSTED -> TRUSTED
+            RenderClass.TRUSTED -> layer(depth)
             RenderClass.LOW_CONFIDENCE -> LOW_CONFIDENCE
             RenderClass.DEGRADED -> DEGRADED
             RenderClass.UNCORRELATED -> UNCORRELATED
@@ -81,8 +114,9 @@ object FlameColors {
      */
     fun hatched(quality: MeasurementQuality?): Boolean = quality?.flagged == true
 
-    fun cssOf(quality: MeasurementQuality?, unclosed: Boolean = false): String {
-        val c = of(quality, unclosed)
+    fun cssOf(quality: MeasurementQuality?, unclosed: Boolean = false,
+              depth: Int = 0): String {
+        val c = of(quality, unclosed, depth)
         return "#%02x%02x%02x".format(c.red, c.green, c.blue)
     }
 }

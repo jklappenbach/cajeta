@@ -4,6 +4,8 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import dev.cajeta.idea.coverage.CocoSourceRoots
+import dev.cajeta.idea.settings.CajetaSettings
+import dev.cajeta.idea.xref.CajetaSourceMountGlue
 import java.io.File
 
 /** A frame's location, resolved to something the IDE can open. */
@@ -76,14 +78,63 @@ object ProfileNavigation {
      */
     fun editorLine(traceLine: Int): Int = (traceLine - 1).coerceAtLeast(0)
 
+    /**
+     * Candidate roots: the project's, then the mounted stdlib source.
+     *
+     * A trace records stdlib frames under the STDLIB source root
+     * (`cajeta/lang/stream/Stream.cajeta`), which is not under any project
+     * root, so every `cajeta.*` frame resolved to nothing while every `tour.*`
+     * frame worked (Julian, 2026-08-31, three separate frames). The debugger
+     * already mounts stdlib source for exactly this reason on session start;
+     * the profiler simply never asked for it.
+     *
+     * Memoized per compiler path: `ensureStdlibMounted` spawns
+     * `cajeta --version` and possibly an extract, which is far too slow to do
+     * on a click.
+     */
+    private var mountedFor: String? = null
+    private var mounted: File? = null
+
+    @Synchronized
+    private fun stdlibRoot(): File? {
+        val compiler = CajetaSettings.instance.compilerPath
+        if (compiler != mountedFor) {
+            mountedFor = compiler
+            mounted = runCatching {
+                CajetaSourceMountGlue.ensureStdlibMounted()?.toFile()
+            }.getOrNull()
+        }
+        return mounted
+    }
+
+    /**
+     * Whether stdlib source is mounted and therefore searchable at all.
+     *
+     * When it is not — a blank or stale compiler path, a failed extract — every
+     * `cajeta.*` frame resolves to nothing while every project frame still
+     * works. That asymmetry is exactly what a reader sees as "some rows are
+     * clickable and some are not", so the message says which case it is
+     * instead of making them guess.
+     */
+    fun stdlibAvailable(): Boolean = stdlibRoot() != null
+
+    fun rootsFor(project: Project): List<File> =
+        CocoSourceRoots.of(project) + listOfNotNull(stdlibRoot())
+
     /** Open the frame's location. Returns false when it could not be resolved. */
     fun open(project: Project, location: ProfileSourceLocation): Boolean {
-        val roots = CocoSourceRoots.of(project)
-        val resolved = resolve(location, roots) ?: return false
+        val resolved = resolve(location, rootsFor(project)) ?: return false
         val vf = LocalFileSystem.getInstance().findFileByIoFile(resolved.file) ?: return false
         OpenFileDescriptor(project, vf, editorLine(resolved.line), 0).navigate(true)
+        lastExact = resolved.exact
         return true
     }
+
+    /** Whether the last successful [open] knew the line. The panel reports it:
+     *  a frame with no line opens at the top, which reads as a dead click. */
+    @Volatile
+    var lastExact: Boolean = true
+        private set
 
     /** Open the frame a flame-graph node stands for. */
     fun open(project: Project, node: FlameNode): Boolean {

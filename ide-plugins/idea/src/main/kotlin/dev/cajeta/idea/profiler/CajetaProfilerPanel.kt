@@ -6,9 +6,13 @@ import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBTabbedPane
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.FlowLayout
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
 import java.io.File
 import javax.swing.DefaultComboBoxModel
+import javax.swing.JButton
 import javax.swing.JPanel
 
 /**
@@ -33,6 +37,11 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
     private val status = JBLabel(" ")
     private val tabs = JBTabbedPane()
 
+    // §5.4 — a window holding nothing must say so and say what to do about it.
+    // It used to show bare tabs: no trace, no explanation, no way to get one.
+    private val cards = CardLayout()
+    private val deck = JPanel(cards)
+
     private var model: ProfileViewModel? = null
 
     init {
@@ -56,11 +65,19 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
         tabs.addTab("Flame Graph", flamePane)
         tabs.addTab("Timeline", timeline)
         tabs.addTab("Totals", totals)
-        add(tabs, BorderLayout.CENTER)
 
-        // §8.2 — selecting a frame navigates to its source.
-        flame.onSelect { node -> ProfileNavigation.open(project, node) }
-        timeline.onSelect { node -> ProfileNavigation.open(project, node) }
+        deck.add(buildEmptyState(), EMPTY)
+        deck.add(tabs, LOADED)
+        add(deck, BorderLayout.CENTER)
+        cards.show(deck, if (ProfilerEmptyState.shouldShow(model)) EMPTY else LOADED)
+
+        // §8.2 — selecting a frame navigates to its source, and SAYS what
+        // happened when it does not. The Boolean was dropped here, so a frame
+        // that resolved nowhere did nothing and reported nothing, and one that
+        // resolved without a line opened at the top of the file — which reads
+        // as a dead click (reported three ways on 2026-08-31).
+        flame.onSelect { node -> navigate(node) }
+        timeline.onSelect { node -> navigate(node) }
 
         // §8.4 — and a kernel reaches the line that launched it, which is a
         // DIFFERENT place from the kernel's own location.
@@ -73,13 +90,53 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
             }
         }
 
+        // §8.2 again, on the third surface. This dropped the Boolean exactly as
+        // the flame graph did, so a totals row that reached nowhere was
+        // indistinguishable from one that was not clickable at all — which is
+        // how it was reported ("clickable by tour, not by cajeta", 2026-09-01).
+        // Routed through the same navigate() so all three views answer alike.
         totals.onSelect { total ->
             val m = model ?: return@onSelect
-            m.tracks.asSequence()
+            val node = m.tracks.asSequence()
                 .flatMap { it.roots.asSequence() }
                 .firstNotNullOfOrNull { find(it, total.name) }
-                ?.let { ProfileNavigation.open(project, it) }
+            if (node == null) {
+                // A totals row is aggregated from frames, so this is rare — the
+                // profiler's own run record is one. Saying so beats a dead row.
+                status.text = "no frame in this trace is named ${total.name}"
+            } else {
+                navigate(node)
+            }
         }
+    }
+
+    /** The empty state: what it is, and the same chooser the Tools action uses. */
+    private fun buildEmptyState(): JPanel {
+        val panel = JPanel(GridBagLayout())
+        val column = JPanel()
+        column.layout = javax.swing.BoxLayout(column, javax.swing.BoxLayout.Y_AXIS)
+        column.add(JBLabel(ProfilerEmptyState.TITLE))
+        column.add(JBLabel(ProfilerEmptyState.message()))
+        column.add(JButton("Open Profile…").apply {
+            addActionListener {
+                CajetaProfileLocation.choose(project)?.let { load(it) }
+            }
+        })
+        panel.add(column, GridBagConstraints())
+        return panel
+    }
+
+    private fun navigate(node: FlameNode) {
+        val opened = ProfileNavigation.open(project, node)
+        status.text = NavigationOutcome.describe(
+            frame = node.name,
+            location = node.sourceLocation,
+            opened = opened,
+            exact = if (opened) ProfileNavigation.lastExact else false,
+            // Asked only on failure, and memoized, so this does not spawn a
+            // process on every click.
+            stdlibMounted = if (opened) true else ProfileNavigation.stdlibAvailable(),
+        )
     }
 
     private fun find(node: FlameNode, name: String): FlameNode? {
@@ -102,6 +159,7 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
 
     fun show(model: ProfileViewModel, file: File? = null) {
         this.model = model
+        cards.show(deck, LOADED)
         totals.show(model)
         timeline.show(model)
 
@@ -131,5 +189,10 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
         ns >= 1_000_000_000 -> "%.2f s".format(ns / 1e9)
         ns >= 1_000_000 -> "%.1f ms".format(ns / 1e6)
         else -> "$ns ns"
+    }
+
+    private companion object {
+        const val EMPTY = "empty"
+        const val LOADED = "loaded"
     }
 }

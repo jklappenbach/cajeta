@@ -107,7 +107,7 @@ class SwingFlameGraphView : FlameGraphView {
             val width = (r.width * w).toInt().coerceAtLeast(1)
             val y = r.depth * ROW_HEIGHT
 
-            g.color = FlameColors.of(quality, r.node.unclosed)
+            g.color = FlameColors.of(quality, r.node.unclosed, r.depth)
             g.fillRect(x, y, width, ROW_HEIGHT - 1)
 
             // §11.3 — a flagged span is hatched as well as coloured, so the
