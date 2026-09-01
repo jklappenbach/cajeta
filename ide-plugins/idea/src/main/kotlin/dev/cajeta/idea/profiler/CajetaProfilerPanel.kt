@@ -95,8 +95,20 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
         // indistinguishable from one that was not clickable at all — which is
         // how it was reported ("clickable by tour, not by cajeta", 2026-09-01).
         // Routed through the same navigate() so all three views answer alike.
+        // A totals row names a METHOD, so it navigates to the method — not to
+        // whatever line a sampler happened to catch. Every frame in a trace
+        // resolves past its own declaration (measured: all 53 in the tour
+        // profile, median 6 lines in, worst 146), and for an aggregate of every
+        // occurrence across every track that line is arbitrary.
         totals.onSelect { total ->
             val m = model ?: return@onSelect
+            if (TotalsNavigation.open(project, total.name)) {
+                status.text = ""
+                return@onSelect
+            }
+            // No indexed declaration. The trace's own line still gets the
+            // reader close, but it is mid-method by construction, so say so
+            // rather than leaving them to wonder why it landed there.
             val node = m.tracks.asSequence()
                 .flatMap { it.roots.asSequence() }
                 .firstNotNullOfOrNull { find(it, total.name) }
@@ -106,6 +118,10 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
                 status.text = "no frame in this trace is named ${total.name}"
             } else {
                 navigate(node)
+                if (status.text.isEmpty()) {
+                    status.text = "no indexed declaration for ${total.name} — " +
+                        "this is the line the sampler observed, not the start of the method"
+                }
             }
         }
     }
