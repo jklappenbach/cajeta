@@ -127,16 +127,22 @@ namespace cajeta::dbg {
     }
 
     int fileLineFor(const cajeta::CajetaModulePtr& module, int snippetLine) {
+        // The two deltas COMPOSE; they are not alternatives. A generic method
+        // on a generic class is re-parsed twice: the class body from a class
+        // snippet, then the method from a method snippet cut out of THAT. So
+        // the method's delta maps method-snippet -> class-snippet, and the
+        // class's maps class-snippet -> file. Taking one or the other left
+        // `Holder<?>.boom` (and `Column<?>.of`) short by exactly the class
+        // delta, landing on the `/**` that opens the method's doc comment.
+        //
+        // Summing is safe for the single-snippet cases because the other term
+        // is zero: an ordinary method of a class template has no delta of its
+        // own, and a generic method on a plain class has no class delta.
         int delta = 0;
         if (auto method = module->getCurrentMethod()) {
-            delta = method->getDbgLineDelta();
-            // A CLASS-template instantiation carries the delta on the class:
-            // the methods are produced by the body walk and never get one of
-            // their own, so falling back to the owner is what makes
-            // `Optional<int32>.get` resolvable at all.
-            if (delta == 0)
-                if (auto owner = method->getParent())
-                    delta = owner->getDbgLineDelta();
+            delta += method->getDbgLineDelta();
+            if (auto owner = method->getParent())
+                delta += owner->getDbgLineDelta();
         }
         int line = snippetLine + delta;
         return line < 1 ? 1 : line;

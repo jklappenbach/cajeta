@@ -627,3 +627,66 @@ TEST(StackTraceText, aStdlibGenericFrameLandsOnItsThrowNotItsDocComment) {
         << "Optional.get resolved to line " << reported << ", but its throw is on "
         << throwLine << " — a snippet line landing in the doc comment; stderr:\n" << err;
 }
+
+// The two snippet corrections COMPOSE. A generic method on a generic class is
+// re-parsed twice — the class body from a class snippet, then the method from
+// a method snippet cut out of that — so its method delta maps method-snippet
+// to CLASS-snippet, not to the file.
+//
+// Taking one delta or the other passed every single-snippet case above and
+// still left this one short by exactly the class delta, landing on the `/**`
+// that opens the method's own doc comment. Measured 2026-09-01 at
+// Holder.cajeta:14 for a throw on 20, and seen in the wild as
+// `cajeta.nucleo.column.Column<?>.of` resolving to a blank line between two
+// methods.
+namespace {
+    // Holder.cajeta — generic CLASS with a generic STATIC method. The throw is
+    // on line 20.
+    const char* kHolderSource =
+        "package test;\n"                                          // 1
+        "import cajeta.error.Exception;\n"                         // 2
+        "\n"                                                       // 3
+        "/**\n"                                                    // 4
+        " * Generic class whose doc comment is long on purpose,\n"  // 5
+        " * so the class snippet's delta is not zero and the\n"     // 6
+        " * composition is actually exercised.\n"                   // 7
+        " * padding\n"                                             // 8
+        " */\n"                                                    // 9
+        "public final class Holder<T> {\n"                         // 10
+        "    T v;\n"                                               // 11
+        "    public Holder(T v) {\n"                               // 12
+        "        this.v #= v;\n"                                   // 13
+        "    }\n"                                                  // 14
+        "    /**\n"                                                // 15
+        "     * Doc comment above the generic static method.\n"     // 16
+        "     * padding\n"                                         // 17
+        "     */\n"                                                // 18
+        "    public static int32 boom<E>(E x) {\n"                 // 19
+        "        throw heap Exception(\"boom\");\n"                // 20
+        "    }\n"                                                  // 21
+        "}\n";                                                     // 22
+    constexpr int kHolderThrowLine = 20;
+}
+
+TEST(StackTraceText, aGenericMethodOnAGenericClassComposesBothCorrections) {
+    auto proj = writeProjectFiles(freshTempDir("genboth"), {
+        {"Holder.cajeta", kHolderSource},
+        {"App.cajeta",
+         "package test;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        int32 x = Holder.boom<int32>(1);\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // The frame names the class with a wildcard argument — the static call
+    // binds the METHOD's parameter, not the class's.
+    EXPECT_EQ(frameLine(err, "test.Holder<?>.boom(Holder.cajeta:"), kHolderThrowLine)
+        << "a generic method on a generic class must compose both snippet "
+           "corrections; stderr:\n" << err;
+}
