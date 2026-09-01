@@ -24,7 +24,12 @@ object JsonlTableSupport {
      * survives the next refresh. Call with [JTable.AUTO_RESIZE_OFF] set, or the
      * table will squeeze these widths back into the viewport.
      */
-    fun applyWidths(table: JTable, columns: List<String>, tracked: JsonlColumns) {
+    // Walks the model's KEYS rather than re-deriving `i + 1` from the selected
+    // field list. The old form had to know that column 0 was the line number
+    // and that field `i` lived at `i + 1` — the same off-by-one knowledge the
+    // model held separately, which is exactly how two sides drift.
+    fun applyWidths(table: JTable, tracked: JsonlColumns) {
+        val rows = table.model as? JsonlRowsTableModel ?: return
         val model = table.columnModel
         if (model.columnCount == 0) return
         val metrics = table.getFontMetrics(table.font)
@@ -34,24 +39,26 @@ object JsonlTableSupport {
             val width = metrics.stringWidth(text) + CELL_PADDING
             if (column.preferredWidth < width) column.preferredWidth = width
         }
-        grow(0, "999999")                       // the `#` line column
-        if (columns.isEmpty()) {
-            // Empty selection: the single data column IS the line text
-            // (§3.1.7.3), so it sizes to the widest line rather than a stub.
-            grow(1, tracked.widestLine())
-            return
-        }
-        for ((i, name) in columns.withIndex()) {
-            val chosen = tracked.userWidth(name)
-            if (chosen != null) {
-                // A width the reader set by hand is final (§3.1.9.3): content
-                // growth must not creep it back open, or narrowing a noisy
-                // column would never stick.
-                if (i + 1 < model.columnCount) model.getColumn(i + 1).preferredWidth = chosen
-                continue
+        for ((index, key) in rows.keys().withIndex()) {
+            when (key) {
+                JsonlRowsTableModel.LINE_KEY -> grow(index, "999999")
+                // Empty selection: the single data column IS the line text
+                // (§3.1.7.3), so it sizes to the widest line rather than a stub.
+                JsonlRowsTableModel.LINE_TEXT_KEY -> grow(index, tracked.widestLine())
+                else -> {
+                    val chosen = tracked.userWidth(key)
+                    if (chosen != null) {
+                        // A width the reader set by hand is final (§3.1.9.3):
+                        // content growth must not creep it back open, or
+                        // narrowing a noisy column would never stick.
+                        if (index < model.columnCount)
+                            model.getColumn(index).preferredWidth = chosen
+                    } else {
+                        val widest = tracked.widestCell(key)
+                        grow(index, if (widest.length > key.length) widest else key)
+                    }
+                }
             }
-            val widest = tracked.widestCell(name)
-            grow(i + 1, if (widest.length > name.length) widest else name)
         }
     }
 

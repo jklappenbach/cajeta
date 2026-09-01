@@ -76,7 +76,7 @@ class JsonConsoleWrapper(
         else JsonConsoleLayoutStore.getInstance(project)
 
     private val tableModel = JsonlRowsTableModel()
-    private val table = JBTable(tableModel).apply {
+    private val table = JsonlRowsTable(tableModel).apply {
         setDefaultRenderer(Any::class.java, TintRenderer(tableModel))
         // No width ceiling (§3.1.8): columns size to content and the scroll pane
         // scrolls horizontally, instead of every column being squeezed into the
@@ -176,7 +176,7 @@ class JsonConsoleWrapper(
             controller.visibleColumns() to controller.visibleRows()
         }
         tableModel.update(columns, visible)
-        synchronized(controller) { JsonlTableSupport.applyWidths(table, columns, controller.columns) }
+        synchronized(controller) { JsonlTableSupport.applyWidths(table, controller.columns) }
     }
 
     // --- toolbar: platform ActionToolbar so the flip reads like any other

@@ -18,6 +18,7 @@ import javax.swing.event.DocumentListener
 class CajetaConfigurable : Configurable {
 
     private var compilerPathField: JBTextField? = null
+    private var compilerPathProblem: JBLabel? = null
     private var renderMarkdownCheck: JBCheckBox? = null
     private var markdownSurfaceCombo: ComboBox<String>? = null
     private var fixturesPathField: JBTextField? = null
@@ -46,6 +47,23 @@ class CajetaConfigurable : Configurable {
     override fun createComponent(): JComponent {
         val settings = CajetaSettings.instance
         val pathField = JBTextField(settings.compilerPath, 40).also { compilerPathField = it }
+        // The compiler path had no feedback at all, so an empty or stale one
+        // looked exactly like a working one — and DEFAULT_COMPILER_PATH is an
+        // absolute path to one developer's build directory, so on any other
+        // machine the field shows a confident path to a file that isn't there
+        // and the panel affirms it by silence (Julian, 2026-08-31).
+        val pathProblem = JBLabel().apply { foreground = JBColor.RED }
+            .also { compilerPathProblem = it }
+        fun refreshPathProblem() {
+            pathProblem.text =
+                ExecutablePathValidator.problem(pathField.text, "Compiler path") ?: ""
+        }
+        refreshPathProblem()
+        pathField.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent) = refreshPathProblem()
+            override fun removeUpdate(e: DocumentEvent) = refreshPathProblem()
+            override fun changedUpdate(e: DocumentEvent) = refreshPathProblem()
+        })
         val renderCheck = JBCheckBox(
             "Render markdown in comments (Obsidian-style)",
             settings.renderMarkdownInComments,
@@ -122,6 +140,7 @@ class CajetaConfigurable : Configurable {
 
         panel = FormBuilder.createFormBuilder()
             .addLabeledComponent(JBLabel("cajetac binary:"), pathField, 1, false)
+            .addComponent(pathProblem, 1)
             .addComponent(renderCheck, 1)
             .addLabeledComponent(JBLabel("Markdown render surface (jcef = experimental, full CSS):"), surfaceCombo, 1, false)
             .addSeparator()
@@ -230,6 +249,7 @@ class CajetaConfigurable : Configurable {
 
     override fun disposeUIResources() {
         compilerPathField = null
+        compilerPathProblem = null
         renderMarkdownCheck = null
         markdownSurfaceCombo = null
         fixturesPathField = null

@@ -33,7 +33,7 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
 
     private val tableModel = JsonlRowsTableModel()
     // No width ceiling (§3.1.8): content-sized columns, horizontal scrolling.
-    private val table = JBTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
+    private val table = JsonlRowsTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
     private val rawArea = JBTextArea().apply { isEditable = false }
 
     private val cards = CardLayout()
@@ -116,7 +116,7 @@ class JsonlConsolePanel(structuredByDefault: Boolean = true) : SimpleToolWindowP
         if (controller.isStructured) {
             val columns = controller.visibleColumns()
             tableModel.update(columns, controller.visibleRows())
-            JsonlTableSupport.applyWidths(table, columns, controller.columns)
+            JsonlTableSupport.applyWidths(table, controller.columns)
         } else {
             rawArea.text = controller.rawText()
         }

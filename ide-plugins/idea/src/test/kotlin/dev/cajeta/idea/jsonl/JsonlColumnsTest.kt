@@ -171,6 +171,107 @@ class JsonlColumnsTest {
             """{"level":"info"}""", model.getValueAt(1, 1))
     }
 
+    // A raw line is NOT a field value, and must never be presented as one.
+    //
+    // getValueAt put a raw row's whole text at c == 1 — "the first data
+    // column", whatever it happened to be NAMED. With the engine's default
+    // order (timestamp, time, ts, level, severity, message, …) a stream
+    // without a timestamp field puts `level` first, so every plain line in a
+    // mixed console rendered under a header claiming it was a severity
+    // (Julian, 2026-08-31, for a whole debug run). The existing raw-row tests
+    // asserted only that such rows stay VISIBLE and don't widen a column —
+    // never that their text lands somewhere truthful, which is how this
+    // survived.
+    @Test
+    fun aRawRowNeverOccupiesANamedFieldColumn() {
+        val model = JsonlRowsTableModel()
+        model.update(
+            listOf("level", "message"),
+            listOf(JsonlRow.Raw(1, "warning: [plain-return-yields-title] ...")),
+        )
+
+        assertEquals("", model.getValueAt(0, 1))   // the `level` column
+        assertEquals("", model.getValueAt(0, 2))   // the `message` column
+    }
+
+    // …but it must still be readable: nothing is dropped (§3.1.4). The text is
+    // offered as a row-level span rather than as a cell, which is what the
+    // table paints across the data columns.
+    @Test
+    fun aRawRowOffersItsTextAsARowSpan() {
+        val model = JsonlRowsTableModel()
+        val text = "warning: [plain-return-yields-title] ..."
+        model.update(listOf("level", "message"), listOf(JsonlRow.Raw(1, text)))
+
+        assertTrue(model.isRawRow(0))
+        assertEquals(text, model.rawTextAt(0))
+    }
+
+    @Test
+    fun aRecordRowIsNotASpanAndKeepsItsCells() {
+        val model = JsonlRowsTableModel()
+        model.update(listOf("level", "message"),
+                     listOf(record(1, """{"level":"warn","message":"hi"}""")))
+
+        assertTrue(!model.isRawRow(0))
+        assertEquals(null, model.rawTextAt(0))
+        assertEquals("warn", model.getValueAt(0, 1))
+        assertEquals("hi", model.getValueAt(0, 2))
+    }
+
+    // A column IS its key — there is no ordinal (Julian's call, 2026-08-31).
+    // The line column used to be a magic `c == 0` with every field lookup
+    // spelled `columns[c - 1]`, and that arithmetic was repeated in the model,
+    // the width pass and the renderers. Three copies of one off-by-one is how
+    // two sides drift into self-consistent disagreement, which is the shape of
+    // the xref column bug that opened this workstream.
+    @Test
+    fun everyColumnIsIdentifiedByItsKeyIncludingTheReservedOnes() {
+        val model = JsonlRowsTableModel()
+        model.update(listOf("level", "message"), listOf(record(1, """{"level":"warn"}""")))
+
+        assertEquals(
+            listOf(JsonlRowsTableModel.LINE_KEY, "level", "message"),
+            model.keys(),
+        )
+        assertEquals(JsonlRowsTableModel.LINE_KEY, model.keyAt(0))
+        assertEquals("level", model.keyAt(1))
+        assertEquals("message", model.keyAt(2))
+        assertEquals("", model.keyAt(99))
+        // Headers stay human: the reserved key is displayed as `#`.
+        assertEquals("#", model.getColumnName(0))
+        assertEquals("level", model.getColumnName(1))
+    }
+
+    @Test
+    fun anEmptySelectionIsTwoReservedKeys() {
+        val model = JsonlRowsTableModel()
+        model.update(emptyList(), listOf(JsonlRow.Raw(1, "plain output")))
+
+        assertEquals(
+            listOf(JsonlRowsTableModel.LINE_KEY, JsonlRowsTableModel.LINE_TEXT_KEY),
+            model.keys(),
+        )
+        assertEquals("line", model.getColumnName(1))
+    }
+
+    // The reserved keys cannot be shadowed by a real field: they are
+    // \u0000-prefixed and every emitter produces printable keys. A record
+    // carrying a literal "level" is still read from "level", not from a
+    // reserved slot.
+    @Test
+    fun aReservedKeyCannotCollideWithAFieldName() {
+        val model = JsonlRowsTableModel()
+        model.update(listOf("#", "line"),
+                     listOf(record(1, """{"#":"hash","line":"text"}""")))
+
+        assertEquals(JsonlRowsTableModel.LINE_KEY, model.keyAt(0))
+        assertEquals("#", model.keyAt(1))
+        assertEquals(1, model.getValueAt(0, 0))      // the real line number
+        assertEquals("hash", model.getValueAt(0, 1)) // the field named "#"
+        assertEquals("text", model.getValueAt(0, 2))
+    }
+
     // --- 7.1.5 width tracking ---------------------------------------------
 
     @Test
