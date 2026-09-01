@@ -1363,6 +1363,12 @@ files' actual bytes rather than their model cards.
     runs, and 15.20 knows a session's expert affinity across turns —
     those two facts are the prefetch seam, and they are why v2 is an
     innovation surface rather than a port of someone else's LRU.
+    *(2026-09-01: specified — `moe-expert-cache-spec.md` owns the
+    mechanism from here. Its T1 — first-touch device-resident slots,
+    budget-capped, evictionless, carrying the device decode dispatch —
+    was motivated by units 28/29 measuring the per-group re-upload at
+    ~40x of prefill; its T2 holds the policy half, still gated on
+    15.20's records as this bullet required.)*
 - **15.20** When routing runs under a host that observes the engine
   (§11.8's diagnostics records), per-request expert utilization is
   emittable as records — which experts fired, how concentrated the
