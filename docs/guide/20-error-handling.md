@@ -109,7 +109,7 @@ public class Reporter {
     public void report(Throwable t) {
         String msg = t.getMessage();
         Optional<Throwable> cause = t.getCause(); // empty when none
-        StackFrame[] frames = t.getStackTrace();  // throw-site first
+        StackFrame[] frames #= t.getStackTrace();  // throw-site first; owned
         t.printStackTrace();                      // human-readable, to stderr
         String json #= t.toJson();                // one NDJSON diagnostic object
     }

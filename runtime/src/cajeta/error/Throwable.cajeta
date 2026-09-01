@@ -204,7 +204,10 @@ public class Throwable {
             }
             j = j + "]";
         }
-        StackFrame[] frames = this.getStackTrace();
+        // `#=`, not `=`: getStackTrace is a producer and hands over the
+        // title, so the acquisition is recorded where it happens and this
+        // scope drops the array.
+        StackFrame[] frames #= this.getStackTrace();
         int64 fn = frames.count();
         j = j + ",\"frames\":[";
         int64 i = 0;
@@ -236,9 +239,17 @@ public class Throwable {
      * (declaring type, method, file, line, role); otherwise frames fall back
      * to the raw native return address only.
      *
+     * PRODUCER, so the return is owned: both paths build a fresh
+     * `heap StackFrame[]` and hand it out, and a plain return would give the
+     * caller a title its signature never mentions. Declared as a borrow this
+     * tripped `plain-return-yields-title` on every compile that touched
+     * Throwable, and codegen rejects the shape outright
+     * (CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER) — a latent hard error, not a
+     * style note. The caller owns the array and drops it at scope exit.
+     *
      * @EntryPoint
      */
-    public StackFrame[] getStackTrace() {
+    public #StackFrame[] getStackTrace() {
         // Preferred: semantic frames from the line-info shadow snapshot.
         int32 sc = shadowCount(this);
         if (sc > 0) {

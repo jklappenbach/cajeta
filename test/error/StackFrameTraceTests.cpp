@@ -25,7 +25,7 @@ TEST(StackFrameTrace, stdlibFrameCarriesStdlibRole) {
         "            Guid g #= Guid.parse(\"not-a-valid-guid\");\n"
         "            return 9;\n"
         "        } catch (Exception e) {\n"
-        "            StackFrame[] fs = e.getStackTrace();\n"
+        "            StackFrame[] fs #= e.getStackTrace();\n"
         "            if (fs.count() == 0) { return 0; }\n"
         "            StackFrame f = fs[0];\n"
         "            String dt = f.declaringType;\n"
