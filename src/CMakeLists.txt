@@ -113,7 +113,7 @@ else()
                 ${_cajeta_zmq_win_hint}
                 /opt/homebrew/opt/zeromq/include
                 /usr/local/opt/zeromq/include
-            PATHS /nonexistent/vkgate NO_DEFAULT_PATH)
+            PATHS /usr/include /usr/local/include)
     find_library(ZMQ_LIBRARY
             NAMES zmq libzmq libzmq.so.5 libzmq.dylib
             HINTS
