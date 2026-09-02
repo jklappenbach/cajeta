@@ -51,6 +51,10 @@ struct Seam {
     void    (*line_mark)(int32_t) = nullptr;
     void    (*line_leave)(void) = nullptr;
     int64_t (*now_ns)(void) = nullptr;
+    int32_t (*capture_arm)(int32_t) = nullptr;
+    void    (*capture_disarm)(void) = nullptr;
+    int64_t (*captured)(void) = nullptr;
+    int64_t (*capture_dropped)(void) = nullptr;
 };
 
 Seam& seam() {
@@ -66,6 +70,10 @@ Seam& seam() {
         x.sink_count = reinterpret_cast<decltype(x.sink_count)>(sym("__cajeta_prof_gpu_sink_count"));
         x.sink_enabled = reinterpret_cast<decltype(x.sink_enabled)>(sym("__cajeta_prof_gpu_sink_enabled"));
         x.sink_dropped = reinterpret_cast<decltype(x.sink_dropped)>(sym("__cajeta_prof_gpu_sink_dropped"));
+        x.capture_arm = reinterpret_cast<decltype(x.capture_arm)>(sym("__cajeta_prof_gpu_capture_arm"));
+        x.capture_disarm = reinterpret_cast<decltype(x.capture_disarm)>(sym("__cajeta_prof_gpu_capture_disarm"));
+        x.captured = reinterpret_cast<decltype(x.captured)>(sym("__cajeta_prof_gpu_captured"));
+        x.capture_dropped = reinterpret_cast<decltype(x.capture_dropped)>(sym("__cajeta_prof_gpu_capture_dropped"));
         x.sink_delivered = reinterpret_cast<decltype(x.sink_delivered)>(sym("__cajeta_prof_gpu_sink_delivered"));
         x.sink_granularity = reinterpret_cast<decltype(x.sink_granularity)>(sym("__cajeta_prof_gpu_sink_granularity"));
         x.set_queue_cap = reinterpret_cast<decltype(x.set_queue_cap)>(sym("__cajeta_prof_gpu_set_queue_cap"));
@@ -516,4 +524,66 @@ TEST(ProfilerGpuSeam, liveSinkDeliveryCostIsMeasuredAndBounded) {
     EXPECT_LT(live - unarmed, 5000.0)
         << "live-sink publication costs " << (live - unarmed)
         << "ns per launch — delivery is no longer decoupled from dispatch";
+}
+
+// ── the capture ring accounts for what it drops ──────────────────────────────
+//
+// CAJETA_PROFILER_GPU_RING sizes the CAPTURE ring (default 8192). It overwrites
+// rather than blocking, so a busy kernel loop silently keeps only the most
+// recent `capacity` records — a run kept 8,192 of 56,843 launches and the run
+// record said nothing, because samples_dropped covers the host sampler alone
+// (Julian, 2026-09-02).
+//
+// The counter existed the whole time and had no production reader. These tests
+// pin the ARITHMETIC; the trace writer publishing it is asserted end-to-end by
+// the sample (ring 16 -> kept 16, dropped 128, 888 per mille).
+//
+// Note which ring: the per-sink queue's counters look adjacent and are a
+// different ring. Reporting those here would read zero while launches were
+// being lost, which is how the first version of this was written.
+
+TEST(ProfilerGpuSeam, aFullCaptureRingCountsWhatItOverwrites) {
+    auto& s = seam();
+    ASSERT_NE(s.capture_arm, nullptr) << "__cajeta_prof_gpu_capture_arm unresolved";
+    ASSERT_NE(s.captured, nullptr);
+    ASSERT_NE(s.capture_dropped, nullptr);
+    ASSERT_NE(s.launch, nullptr);
+
+    s.capture_disarm();
+    ASSERT_EQ(s.capture_arm(8), 0) << "arming an 8-slot capture ring";
+    EXPECT_EQ(s.captured(), 0);
+    EXPECT_EQ(s.capture_dropped(), 0) << "a fresh ring has dropped nothing";
+
+    constexpr int kLaunches = 40;
+    for (int i = 0; i < kLaunches; i++) {
+        s.launch("k", 0, 1, 1, 1, 1, 1, 0u, 0, 0, 0, nullptr, nullptr);
+    }
+    if (s.flush) s.flush();
+
+    const int64_t kept = s.captured();
+    const int64_t dropped = s.capture_dropped();
+    // Both halves: the ring is FULL (not merely non-empty), and every record
+    // beyond its capacity is accounted for rather than vanishing. A counter
+    // that simply stopped incrementing would pass "kept <= 8" alone.
+    EXPECT_EQ(kept, 8) << "a full ring holds exactly its capacity";
+    EXPECT_EQ(kept + dropped, (int64_t) kLaunches)
+        << "every launch is either kept or counted as dropped — "
+           "kept=" << kept << " dropped=" << dropped;
+    s.capture_disarm();
+}
+
+// The control. Without it, "always report everything as dropped" passes the
+// test above.
+TEST(ProfilerGpuSeam, aRingLargerThanTheRunDropsNothing) {
+    auto& s = seam();
+    if (!s.capture_arm) GTEST_SKIP() << "capture seam unresolved";
+    s.capture_disarm();
+    ASSERT_EQ(s.capture_arm(1024), 0);
+    for (int i = 0; i < 40; i++) {
+        s.launch("k", 0, 1, 1, 1, 1, 1, 0u, 0, 0, 0, nullptr, nullptr);
+    }
+    if (s.flush) s.flush();
+    EXPECT_EQ(s.capture_dropped(), 0) << "a ring with room must drop nothing";
+    EXPECT_EQ(s.captured(), 40);
+    s.capture_disarm();
 }

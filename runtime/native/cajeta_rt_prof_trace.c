@@ -1184,10 +1184,32 @@ int32_t __cajeta_prof_trace_metadata(CajProfWriter* w, uint64_t ts,
     int64_t total = samples + dropped;
     n += caj_prof_anno_int(te + n, "dropped_per_mille",
                            total > 0 ? (dropped * 1000) / total : 0);
-    // §7.8's remaining three: driver identity, active layers, calibration
-    // quality. Without them a reader can see that a timeline was produced but
-    // not whether it was produced WELL — a 12-confidence fit and a
-    // 99-confidence fit render identically.
+#ifndef CAJETA_PROF_TRACE_STANDALONE
+    // The DEVICE side of the same question. samples_dropped covers the host
+    // sampler only, so the guide's "check the drop count first" had no answer
+    // for a GPU ring that overflowed: a run keeping 8192 of 56,843 launches
+    // produced the same record as one that kept every launch (Julian,
+    // 2026-09-02).
+    //
+    // The CAPTURE ring, which is the one CAJETA_PROFILER_GPU_RING sizes and the
+    // one that overflows under a busy kernel loop. NOT the per-sink queue: its
+    // counters look adjacent and are a different ring entirely, so reporting
+    // them here would read zero while launches were being lost — worse than
+    // saying nothing. Measured while writing this: capture ring 8 vs sink
+    // counters, which stayed at 0.
+    //
+    // The ring OVERWRITES, so what survives is the most recent `capacity`
+    // records and what is lost is the oldest.
+    {
+        int64_t gpu_dropped = __cajeta_prof_gpu_capture_dropped();
+        int64_t gpu_kept    = __cajeta_prof_gpu_captured();
+        int64_t gpu_total   = gpu_kept + gpu_dropped;
+        n += caj_prof_anno_int(te + n, "gpu_records_dropped", gpu_dropped);
+        n += caj_prof_anno_int(te + n, "gpu_records_kept", gpu_kept);
+        n += caj_prof_anno_int(te + n, "gpu_dropped_per_mille",
+                               gpu_total > 0 ? (gpu_dropped * 1000) / gpu_total : 0);
+    }
+#endif
     n += caj_prof_calibration_annos(te + n, (int32_t) sizeof(te) - n);
     // §3.5/§3.12/§3.13 — present only on a build that actually carries probes.
     n += caj_prof_instr_annos(te + n, (int32_t) sizeof(te) - n);

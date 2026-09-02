@@ -46,6 +46,7 @@ profile, or --debug-info=full to also get exact line numbers.
 | `CAJETA_PROFILER` | unset | Set to anything to profile the run. Unset = off. |
 | `CAJETA_PROFILER_HZ` | `1000` | Samples per second. |
 | `CAJETA_PROFILER_RING` | `4096` | Samples buffered between the sampler and the writer. |
+| `CAJETA_PROFILER_GPU_RING` | capture default (`8192`) | **Device** records buffered between the GPU capture layer and the writer. Separate ring, separate limit: a busy kernel loop overflows this long before the sampler's. |
 | `CAJETA_PROFILER_OUT` | `cajeta.pftrace` | Where to write the trace. |
 
 The trace is written when `main` returns, and also when a program ends through
@@ -74,6 +75,98 @@ fills rather than blocking, because blocking would perturb the very program it
 is measuring — but a profile that lost a third of its samples looks exactly as
 authoritative as a complete one. If `dropped_per_mille` is not near zero, raise
 `CAJETA_PROFILER_RING` or lower `CAJETA_PROFILER_HZ` and run again.
+
+A program that keeps a GPU busy needs a bigger ring than the default: a tight
+kernel loop measured **40% sample drops** at `4096`, and `CAJETA_PROFILER_RING=65536`
+brought it to nothing.
+
+### Device records drop separately
+
+The run record carries a second set for the device side — **`gpu_records_dropped`**,
+`gpu_records_kept`, and `gpu_dropped_per_mille`. They count what the GPU capture
+ring lost, which is a *different* ring from the sampler's and fills far faster:
+one kernel launch is one record, so a loop issuing tens of thousands of launches
+overruns the `8192` default while `samples_dropped` stays at zero. A run that
+kept 8,192 of 56,843 launches is not a quiet profile — it is a profile missing
+six launches in seven.
+
+The capture ring **overwrites**, so what survives is the *most recent* records
+and what is lost is the oldest — a truncated profile of the end of the run, not
+a thinned sample of all of it. Raise `CAJETA_PROFILER_GPU_RING` until
+`gpu_dropped_per_mille` reads zero; it costs one `CajetaGpuEvent` per slot and
+nothing at all when the profiler is off.
+
+### A per-kernel table without opening the IDE
+
+The common question about a GPU run — *which kernel cost what* — is a query, not
+a picture. `cajeta profile summary` answers it from the trace:
+
+```
+$ cajeta profile summary cajeta.pftrace
+kernel    count         self        total          avg          max   share
+saxpy        48    761.43 us    761.43 us     15.86 us     66.17 us   37.7%
+vecAdd       48    712.02 us    712.02 us     14.83 us     32.14 us   35.2%
+scale        48    547.19 us    547.19 us     11.40 us     16.71 us   27.1%
+
+144 slice(s) over 2 track(s); self 2.02 ms, wall 29.31 ms
+```
+
+Rows are ordered by **self** time, so the answer to "where did the time go" is
+the first one.
+
+| option | |
+|---|---|
+| `--from=<dur>`, `--to=<dur>` | Window, **relative to the first slice**. Absolute timestamps are host-clock nanoseconds and differ every run, so a relative window is the only one reusable between two runs of the same program. |
+| `--host` | Total host frames instead of device kernels. |
+| `--csv` | Machine-readable output. |
+
+`<dur>` is nanoseconds unless suffixed: `500us`, `20ms`, `1s`.
+
+```
+$ cajeta profile summary cajeta.pftrace --to=5ms --csv
+name,count,total_ns,self_ns,avg_ns,max_ns
+saxpy,24,399994,399994,16666,66165
+vecAdd,24,360437,360437,15018,32141
+scale,24,271832,271832,11326,15669
+```
+
+#### self vs total
+
+**`self` is the frame's own work; `total` includes its children.** They differ
+only where frames nest, which on a device queue is never — a kernel slice
+contains nothing, so its `self` equals its `total`, and the two columns above
+agree on every row.
+
+Host frames are the opposite case, and it matters:
+
+```
+$ cajeta profile summary cajeta.pftrace --host
+frame                                    count         self        total    share
+cajeta.xpu.Device.activeBackend              1    175.91 ms    175.91 ms    63.8%
+kernelprofile.KernelProfile.runStream        2     41.05 ms     55.79 ms    14.9%
+kernelprofile.KernelProfile.run              1      3.16 ms    275.90 ms     1.1%
+
+11 slice(s) over 2 track(s); self 275.90 ms, wall 275.90 ms
+```
+
+`run` spans the whole program, so its **total** is the entire 275.90 ms — but
+almost all of that is its children, and its own work is 3.16 ms. Reading the
+inclusive column as cost would put `run` at the top of the table and blame the
+entry point for the program. Ordering and `share` therefore use `self`.
+
+The footer is the check on this: **self 275.90 ms against a wall of 275.90 ms**.
+Exclusive times partition the run — every nanosecond lands in exactly one frame
+— so they sum to the wall clock, while the inclusive column for the same run
+sums to 563 ms. Self time can still exceed the wall span when several threads
+or queues are genuinely busy at once; that is real concurrency, not
+double-counting, and is why no single "utilisation" percentage is offered.
+
+Two outcomes that are not the same thing, and are not reported as one:
+
+- **No device queue in the trace** — a run that never touched an accelerator.
+- **Tracks present, but the window excluded every slice** — a bad window.
+
+Neither prints an empty table; both exit non-zero.
 
 ### What sampling can and cannot tell you
 

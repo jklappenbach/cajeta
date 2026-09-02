@@ -9,6 +9,7 @@
 #include <llvm/TargetParser/Host.h>
 #include "cajeta/compile/IrTools.h"
 #include "cajeta/compile/Compiler.h"
+#include "cajeta/prof/TraceSummary.h"
 #include "cajeta/compile/CompilerMode.h"
 #include "cajeta/compile/LintService.h"
 #include "cajeta/prof/ProfileSelection.h"
@@ -313,6 +314,14 @@ int main(int argc, const char* argv[]) {
     // from it), so a manifest task named "run" can never shadow the verb.
     if (argc >= 2 && std::string(argv[1]) == "run") {
         return cajeta::jit::dispatchRun(argc, argv);
+    }
+
+    // `cajeta profile summary <trace>` — per-kernel totals from a .pftrace
+    // (cajeta-profiler 14.4). Above the build-tool task probe for the same
+    // reason `run` is: a manifest task named "profile" must not shadow the
+    // verb, and samples/profile is exactly such a project.
+    if (argc >= 2 && std::string(argv[1]) == "profile") {
+        return cajeta::prof::dispatchProfile(argc, argv);
     }
     {
         int btExit = 0;
