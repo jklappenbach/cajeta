@@ -99,47 +99,50 @@ nothing at all when the profiler is off.
 ### A per-kernel table without opening the IDE
 
 The common question about a GPU run — *which kernel cost what* — is a query, not
-a picture. Until `cajeta profile summary` lands, Perfetto's `trace_processor_shell`
-answers it against the same trace:
-
-```sql
--- per-kernel count / total / average, per device queue
-select t.name as track, s.name as kernel, count(*) as n,
-       sum(s.dur) as total_ns, cast(avg(s.dur) as int) as avg_ns
-from slice s join track t on s.track_id = t.id
-where t.name like 'queue %'
-group by t.name, s.name
-order by total_ns desc;
-```
+a picture. `cajeta profile summary` answers it from the trace:
 
 ```
-"queue 98837250949296","saxpy",24,399994,16666
-"queue 98837251727488","saxpy",24,361439,15059
-"queue 98837250949296","vecAdd",24,360437,15018
-"queue 98837250949296","scale",24,271832,11326
+$ cajeta profile summary cajeta.pftrace
+kernel    count        total          avg          max   share
+saxpy        48    761.43 us     15.86 us     66.17 us   37.7%
+vecAdd       48    712.02 us     14.83 us     32.14 us   35.2%
+scale        48    547.19 us     11.40 us     16.71 us   27.1%
+
+144 slice(s) over 2 track(s); summed 2.02 ms, wall 29.31 ms
 ```
 
-`where t.name like 'queue %'` is what restricts this to DEVICE work: host frames
-live on `cajeta.thread.*` tracks and would otherwise be summed in beside the
-kernels. Drop the `t.name` from the select and the `group by` to total a kernel
-across every queue.
+Rows are cost-ordered, so the answer to "where did the time go" is the first
+one. Summed device time can **exceed** the wall span when queues run
+concurrently — the run above has two streams — which is why both numbers are
+printed rather than a single utilisation figure that would be wrong on any
+multi-queue run.
 
-For a window, anchor on the first device slice rather than absolute timestamps,
-which are host-clock nanoseconds and differ every run:
+| option | |
+|---|---|
+| `--from=<dur>`, `--to=<dur>` | Window, **relative to the first slice**. Absolute timestamps are host-clock nanoseconds and differ every run, so a relative window is the only one reusable between two runs of the same program. |
+| `--host` | Total host frames instead of device kernels. |
+| `--csv` | Machine-readable output. |
 
-```sql
-with base as (select min(ts) as t0 from slice s join track t on s.track_id=t.id
-              where t.name like 'queue %')
-select s.name as kernel, count(*) as n, sum(s.dur) as total_ns,
-       cast(avg(s.dur) as int) as avg_ns, max(s.dur) as max_ns
-from slice s join track t on s.track_id = t.id, base
-where t.name like 'queue %'
-  and s.ts - base.t0 between 0 and 20000000     -- first 20 ms
-group by s.name
-order by total_ns desc;
+`<dur>` is nanoseconds unless suffixed: `500us`, `20ms`, `1s`.
+
+```
+$ cajeta profile summary cajeta.pftrace --to=5ms --csv
+name,count,total_ns,avg_ns,max_ns
+saxpy,24,399994,16666,66165
+vecAdd,24,360437,15018,32141
+scale,24,271832,11326,15669
 ```
 
-Run either with `trace_processor_shell -q <file>.sql <trace>.pftrace`.
+Device and host are reported separately on purpose. Host frames are wall-clock
+spans that *contain* the kernels, so summing them into the same table would both
+dominate it and double-count the time it is reporting.
+
+Two outcomes that are not the same thing, and are not reported as one:
+
+- **No device queue in the trace** — a run that never touched an accelerator.
+- **Tracks present, but the window excluded every slice** — a bad window.
+
+Neither prints an empty table; both exit non-zero.
 
 ### What sampling can and cannot tell you
 
