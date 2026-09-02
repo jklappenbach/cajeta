@@ -86,24 +86,20 @@ if [[ ! -f "$TLS_OBJ" ]]; then
     echo "       (built alongside the compiler; rebuild with ./build.sh)" >&2
     exit 1
 fi
-# Weak OptiX stubs, same as --emit=exe generates: the AccelerationStructure
-# noun references `cajeta_xpu_optix_*`; on a non-NVIDIA host `available()`
-# returns 0 and the runtime takes the software-BVH path.
-OPTIX_STUB="${BUILD_DIR}/__cajeta_xpu_optix_stub.c"
-cat > "$OPTIX_STUB" <<'EOF'
-#include <stdint.h>
-#define W __attribute__((weak))
-W int      cajeta_xpu_optix_available(void){return 0;}
-W void*    cajeta_xpu_optix_context(void){return 0;}
-W void*    cajeta_xpu_optix_cuda_context(void){return 0;}
-W int64_t  cajeta_xpu_optix_accel_build_aabbs(const float*a,uint32_t b){(void)a;(void)b;return 0;}
-W int64_t  cajeta_xpu_optix_accel_build_triangles(const float*a,uint32_t b,uint32_t c){(void)a;(void)b;(void)c;return 0;}
-W uint64_t cajeta_xpu_optix_traversable(int64_t a){(void)a;return 0;}
-W uint64_t cajeta_xpu_optix_accel_boxes(int64_t a){(void)a;return 0;}
-W void     cajeta_xpu_optix_accel_free(int64_t a){(void)a;}
-W int      cajeta_xpu_optix_launch(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}
-W int      cajeta_xpu_optix_launch_tri(const char*a,uint64_t b,const char*c,const char*d,const char*e,const char*f,const void*g,uint64_t h,uint32_t i){(void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return -1;}
-EOF
+# The compiler drops the weak AOT stub translation units beside the objects
+# (--emit=obj writes the same set --emit=exe links). They are compiled here
+# rather than hand-copied: this script DID carry its own copy of the OptiX
+# stub, and when the session-install stub was added to the compiler this copy
+# never got it — the link then failed on three undefined __cajeta_install_*
+# symbols. Globbing whatever the compiler wrote means the next stub arrives
+# with no edit here.
+mapfile -t AOT_STUBS < <(find "$BUILD_DIR" -maxdepth 1 -name '__cajeta_*_stub.c' | sort)
+if [[ ${#AOT_STUBS[@]} -eq 0 ]]; then
+    echo "warning: no __cajeta_*_stub.c beside the objects — an older compiler" >&2
+    echo "         wrote them only for --emit=exe; the link may fail on" >&2
+    echo "         undefined __cajeta_* symbols." >&2
+fi
+
 LINK_FLAGS=( -Wl,--gc-sections )
 if [[ "${DEBUG:-}" != "1" ]]; then
     LINK_FLAGS+=( -Wl,--strip-all )
@@ -112,7 +108,7 @@ fi
     -o "$OUT_BINARY" \
     "${OBJECTS[@]}" \
     "$TLS_OBJ" \
-    "$OPTIX_STUB" \
+    "${AOT_STUBS[@]}" \
     -lssl \
     -lcrypto \
     -ldl \

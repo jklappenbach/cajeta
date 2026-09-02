@@ -3159,6 +3159,12 @@ namespace cajeta {
         }
 
         emitPhase.reset();
+        // A hand-rolled link over --emit=obj output needs the same weak stubs
+        // the exe path links; writing them here is what lets such a link stop
+        // maintaining its own copies.
+        if (emitMode == EmitMode::Obj) {
+            writeAotStubs(archiveRootPath);
+        }
         if (emitMode == EmitMode::Exe) {
             ProgressPhase phase("link", "Linking");
             linkExecutable(archiveRootPath);
@@ -3567,57 +3573,18 @@ namespace cajeta {
     // For --emit=exe: link the per-module .o files into a single executable. Uses lld
     // when it was found at CMake-configure time (see CAJETA_HAS_LLD in CMakeLists.txt);
     // otherwise emits a clear diagnostic so the user can link with their toolchain.
-    void Compiler::linkExecutable(const string& archiveRootPath) {
-        string outPath = outputPath.empty()
-            ? (archiveRootPath + "a.out")
-            : outputPath;
-
-        // Link through the system C compiler/driver rather than calling a raw
-        // linker: the driver locates the platform's CRT, startup objects, libc,
-        // and library search paths, and selects the right object format
-        // (ELF / COFF-mingw / Mach-O) for the host — far more robust and
-        // portable than reconstructing a per-OS link line. (Linking inherently
-        // needs the platform CRT/libc, so a system toolchain is required
-        // regardless.) Honor $CC, then fall back to the usual driver names.
-        std::vector<std::string> drivers;
-        if (const char* envCc = std::getenv("CC")) {
-            if (*envCc) drivers.emplace_back(envCc);
-        }
-        drivers.emplace_back("cc");
-        drivers.emplace_back("clang");
-        drivers.emplace_back("gcc");
-
-        // Prefer LLD for the final link when it's available. GNU ld's section
-        // GC is conservative — on COFF it keeps unreferenced external COMDAT
-        // sections, and across platforms it dead-strips less than lld — so
-        // preferring lld measurably shrinks `--emit=exe` output (a HelloWorld
-        // drops ~30% on Windows). We pass `-fuse-ld=lld` to the C driver rather
-        // than calling lld directly so the driver still supplies the CRT/libc
-        // and lld picks the right flavor (lld-link/MinGW for PE, ld.lld for
-        // ELF, ld64.lld for Mach-O). Gated on lld actually being locatable so
-        // we degrade to the platform default linker instead of failing when
-        // lld is absent.
-        bool haveLld = (bool) llvm::sys::findProgramByName("ld.lld")
-                    || (bool) llvm::sys::findProgramByName("lld");
-#if defined(_WIN32)
-        if (!haveLld) haveLld = (bool) llvm::sys::findProgramByName("lld-link");
-#endif
-
-        // Materialize the embedded TLS native object beside the output so it can
-        // be added to the link. The produced exe references `__cajeta_tls_*` from
-        // the always-linked stdlib TlsConnection thunks, but those natives live in
-        // a standalone object kept out of the embedded JIT bitcode (see
-        // EmbeddedTls.h / src/CMakeLists.txt). The build machine has a C toolchain
-        // but not cajeta's runtime source, so the bytes ride along in the compiler
-        // binary. All platforms — on Linux/macOS the undefined `__cajeta_tls_*`
-        // symbols otherwise break ANY exe, not just TLS-using programs.
-        std::string tlsObjPath = archiveRootPath + "__cajeta_tls.o";
-        {
-            std::ofstream tlsOut(tlsObjPath, std::ios::binary);
-            tlsOut.write(reinterpret_cast<const char*>(cajeta_tls_o),
-                         (std::streamsize) cajeta_tls_o_len);
-        }
-
+    // The weak stub translation units every AOT link needs, written beside the
+    // objects so any consumer can compile them — `--emit=exe` links them itself,
+    // and a hand-rolled link over `--emit=obj` output picks them up from the
+    // same directory.
+    //
+    // Emitted for BOTH modes deliberately. They were written only on the exe
+    // path, so samples/tour/xpu/run-xpu.sh carried its own hand-copied OptiX
+    // stub — a second copy, which then drifted: the session stub was added to
+    // the compiler and the script never got it, and the script stopped linking
+    // with three undefined __cajeta_install_* symbols. One producer means a
+    // future stub reaches every consumer without anyone editing a shell script.
+    void Compiler::writeAotStubs(const string& archiveRootPath) {
         // OptiX AS stubs for the AOT link. The runtime (cajeta_runtime.c)
         // references `cajeta_xpu_optix_*`; the JIT resolves those to the real
         // impl (OptixAccel.cpp) via the process-symbol generator, but an
@@ -3675,6 +3642,65 @@ namespace cajeta {
                  "W void* __cajeta_install_ctx;\n"
                  "W char  __cajeta_install_out[2048];\n";
         }
+    }
+
+    void Compiler::linkExecutable(const string& archiveRootPath) {
+        string outPath = outputPath.empty()
+            ? (archiveRootPath + "a.out")
+            : outputPath;
+
+        // Link through the system C compiler/driver rather than calling a raw
+        // linker: the driver locates the platform's CRT, startup objects, libc,
+        // and library search paths, and selects the right object format
+        // (ELF / COFF-mingw / Mach-O) for the host — far more robust and
+        // portable than reconstructing a per-OS link line. (Linking inherently
+        // needs the platform CRT/libc, so a system toolchain is required
+        // regardless.) Honor $CC, then fall back to the usual driver names.
+        std::vector<std::string> drivers;
+        if (const char* envCc = std::getenv("CC")) {
+            if (*envCc) drivers.emplace_back(envCc);
+        }
+        drivers.emplace_back("cc");
+        drivers.emplace_back("clang");
+        drivers.emplace_back("gcc");
+
+        // Prefer LLD for the final link when it's available. GNU ld's section
+        // GC is conservative — on COFF it keeps unreferenced external COMDAT
+        // sections, and across platforms it dead-strips less than lld — so
+        // preferring lld measurably shrinks `--emit=exe` output (a HelloWorld
+        // drops ~30% on Windows). We pass `-fuse-ld=lld` to the C driver rather
+        // than calling lld directly so the driver still supplies the CRT/libc
+        // and lld picks the right flavor (lld-link/MinGW for PE, ld.lld for
+        // ELF, ld64.lld for Mach-O). Gated on lld actually being locatable so
+        // we degrade to the platform default linker instead of failing when
+        // lld is absent.
+        bool haveLld = (bool) llvm::sys::findProgramByName("ld.lld")
+                    || (bool) llvm::sys::findProgramByName("lld");
+#if defined(_WIN32)
+        if (!haveLld) haveLld = (bool) llvm::sys::findProgramByName("lld-link");
+#endif
+
+        // Materialize the embedded TLS native object beside the output so it can
+        // be added to the link. The produced exe references `__cajeta_tls_*` from
+        // the always-linked stdlib TlsConnection thunks, but those natives live in
+        // a standalone object kept out of the embedded JIT bitcode (see
+        // EmbeddedTls.h / src/CMakeLists.txt). The build machine has a C toolchain
+        // but not cajeta's runtime source, so the bytes ride along in the compiler
+        // binary. All platforms — on Linux/macOS the undefined `__cajeta_tls_*`
+        // symbols otherwise break ANY exe, not just TLS-using programs.
+        std::string tlsObjPath = archiveRootPath + "__cajeta_tls.o";
+        {
+            std::ofstream tlsOut(tlsObjPath, std::ios::binary);
+            tlsOut.write(reinterpret_cast<const char*>(cajeta_tls_o),
+                         (std::streamsize) cajeta_tls_o_len);
+        }
+
+        writeAotStubs(archiveRootPath);
+        // Paths the stub writer produced, named here for the link command.
+        const std::string optixStubPath =
+            archiveRootPath + "__cajeta_xpu_optix_stub.c";
+        const std::string sessionStubPath =
+            archiveRootPath + "__cajeta_session_stub.c";
 
         // Native-dependency link inputs (native-deps unit 7). DCE-aware: only
         // libs whose @Native symbol is still live after tree-shaking (scanned
