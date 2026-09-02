@@ -113,7 +113,7 @@ namespace cajeta::buildtool {
                        "cannot be checked");
         }
 
-        auto del = loadRepositoryDelegation(**bytes, *roots, now);
+        auto del = loadRepositoryDelegation(**bytes, *roots, repo.origin(), now);
         if (!del) return del.takeError();
         if (del->repository != repo.name()) {
             // The delegation has to speak for the repository we asked. Without

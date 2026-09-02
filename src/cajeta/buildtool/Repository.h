@@ -141,6 +141,15 @@ namespace cajeta::buildtool {
     public:
         virtual ~Repository() = default;
 
+        // The repository's STABLE identity, for signed documents that name
+        // the repository they speak for (publisher-trust §2.7.1, §2.8).
+        //
+        // NOT `name()`. That is a label from the user's own manifest — one
+        // machine says "central", another says "olla" — so a document naming
+        // it would be accepted on one and refused on the other. An origin is
+        // the same string for every client that talks to the same server.
+        virtual std::string origin() const = 0;
+
         // The spec name (e.g. "central", "local-dev"). Used in
         // error messages + ResolvedDependency.resolvedFromRepo.
         virtual std::string name() const = 0;

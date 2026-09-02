@@ -131,6 +131,11 @@ namespace cajeta::buildtool {
         llvm::Expected<std::optional<std::string>>
         revocations() const override;
 
+        // scheme://host[:port] — the configured base URL reduced to its
+        // origin, so a client configured with a trailing slash or a `/v2/`
+        // suffix still matches what the operator signed.
+        std::string origin() const override;
+
         // GET /v2/resolve?name=...&version=... — returns the typed
         // metadata for the artifact at <name>@<version>. v2-only.
         // Caller-checked: only invoke when capabilities().supportsV2()

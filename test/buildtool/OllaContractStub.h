@@ -35,6 +35,18 @@ namespace cajeta::buildtool::testing {
 
         std::string baseUrl() const { return srv_.baseUrl(); }
 
+        // What a client fetching from this stub will compare a delegation
+        // or revocation against — scheme://host:port, matching
+        // HttpRepository::origin(). Documents must name THIS, not a
+        // nickname, or they are refused as replays.
+        std::string origin() const {
+            const std::string u = srv_.baseUrl();
+            auto scheme = u.find("://");
+            if (scheme == std::string::npos) return u;
+            auto slash = u.find('/', scheme + 3);
+            return slash == std::string::npos ? u : u.substr(0, slash);
+        }
+
         // The public root a client ships with (§2, spec 3.1).
         RootKey root() const { return rootKeyOf(rootKey_, rootId_); }
         const TestKeyPair& organizationKey() const { return orgKey_; }
@@ -59,10 +71,11 @@ namespace cajeta::buildtool::testing {
 
         // §3.4 — the delegation naming which keys may sign release metadata
         // and the revocation statement.
-        void serveDelegation(const std::string& repository = "central") {
+        void serveDelegation(const std::string& repository = {}) {
+            const std::string repo = repository.empty() ? origin() : repository;
             std::ostringstream p;
             p << "{\"type\":\"repository-delegation\","
-              << "\"repository\":\"" << repository << "\","
+              << "\"repository\":\"" << repo << "\","
               << "\"not-after\":\"2030-01-01T00:00:00Z\","
               << "\"keys\":[{\"id\":\"release-1\",\"algorithm\":\"ed25519\","
               << "\"public-key\":\"" << jsonEscapePem(readWholeFile(releaseKey_.pub))
@@ -77,12 +90,13 @@ namespace cajeta::buildtool::testing {
         // `revokedEntries` is raw JSON array contents; empty is the healthy
         // steady state and asserts that nothing is revoked.
         void serveRevocation(const std::string& revokedEntries,
-                             const std::string& repository = "central",
+                             const std::string& repository = {},
                              const std::string& issuedAt = "2026-06-01T00:00:00Z",
                              const std::string& notAfter = "2026-06-01T01:00:00Z") {
+            const std::string repo = repository.empty() ? origin() : repository;
             std::ostringstream p;
             p << "{\"type\":\"key-revocation\","
-              << "\"repository\":\"" << repository << "\","
+              << "\"repository\":\"" << repo << "\","
               << "\"issued-at\":\"" << issuedAt << "\","
               << "\"not-after\":\"" << notAfter << "\","
               << "\"revoked\":[" << revokedEntries << "]}";

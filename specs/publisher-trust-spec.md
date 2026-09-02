@@ -114,6 +114,15 @@ is defended, not a licence to force the most valuable key online.
 window, and names the repository it speaks for. A delegation fetched from
 one repository does not authorise another.
 
+**2.7.1.1** "Names the repository" means its ORIGIN — `scheme://host[:port]`
+— and never the name the client is configured with. That name lives in the
+user's manifest: one machine writes `central`, another `olla-prod`, both
+talking to the same server. A document naming a label therefore verifies on
+one and is refused on the next, and since revocation fails closed (§2.8.4)
+the refusal stops installs. An origin is the same string for every client of
+the same repository, which is the only property that makes the binding
+usable.
+
 **2.7.2** A delegated key outside its own window authorises nothing, and a
 delegation whose keys have all lapsed is a REFUSAL — never a fall back to
 verifying against the root. The fallback in 2.7.3 exists for a repository

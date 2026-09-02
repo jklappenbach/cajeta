@@ -47,6 +47,10 @@ fs::path freshDir(const std::string& tag) {
 
 std::time_t at(const char* stamp) { return *parseUtcTimestamp(stamp); }
 
+// The repository ORIGIN these documents speak for. A URL, not a manifest
+// label — the label is the user's and differs between machines.
+constexpr const char* kOrigin = "https://olla.test";
+
 std::string delegationPayload(const std::string& repository,
                               const TestKeyPair& releaseKey,
                               const std::string& notAfter = "2030-01-01T00:00:00Z",
@@ -80,7 +84,7 @@ TEST(RepositoryDelegationTests, anOrgDocumentIsNotADelegation) {
     ASSERT_TRUE(!!loadOrgKeyDocument(orgDoc, roots, now))
         << "fixture check: this must be a VALID org document";
 
-    auto asDelegation = loadRepositoryDelegation(orgDoc, roots, now);
+    auto asDelegation = loadRepositoryDelegation(orgDoc, roots, "central", now);
     ASSERT_FALSE(!!asDelegation)
         << "an organization key document must never be usable as a "
            "delegation — that would let any org sign release metadata for all";
@@ -91,7 +95,7 @@ TEST(RepositoryDelegationTests, anOrgDocumentIsNotADelegation) {
     // carries no `organization` or `namespaces`, so it cannot authorise a
     // namespace even if something tried to read it that way.
     auto release = makeKeyPair(dir, "release");
-    std::string del = envelopeAround(dir, delegationPayload("central", release),
+    std::string del = envelopeAround(dir, delegationPayload(kOrigin, release),
                                      root, "r", "d");
     auto asOrgDoc = loadOrgKeyDocument(del, roots, now);
     EXPECT_FALSE(!!asOrgDoc) << "a delegation must not parse as an org document";
@@ -107,10 +111,10 @@ TEST(RepositoryDelegationTests, aRootSignedDelegationNamesItsReleaseKeys) {
     auto release = makeKeyPair(dir, "release");
 
     auto del = loadRepositoryDelegation(
-        envelopeAround(dir, delegationPayload("central", release), root, "r", "d"),
-        {rootKeyOf(root, "r")}, at("2026-06-01T00:00:00Z"));
+        envelopeAround(dir, delegationPayload(kOrigin, release), root, "r", "d"),
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!del) << errText(del.takeError());
-    EXPECT_EQ("central", del->repository);
+    EXPECT_EQ(kOrigin, del->repository);
     EXPECT_EQ("r", del->rootKeyId);
     ASSERT_EQ(1u, del->usableKeys(at("2026-06-01T00:00:00Z")).size());
     EXPECT_EQ("release-1", del->usableKeys(at("2026-06-01T00:00:00Z"))[0]->id);
@@ -127,9 +131,9 @@ TEST(RepositoryDelegationTests, aDelegationNotSignedByARootIsRefused) {
     auto release = makeKeyPair(dir, "release");
 
     auto del = loadRepositoryDelegation(
-        envelopeAround(dir, delegationPayload("central", release), impostor,
+        envelopeAround(dir, delegationPayload(kOrigin, release), impostor,
                        "r", "d"),
-        {rootKeyOf(root, "r")}, at("2026-06-01T00:00:00Z"));
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
     ASSERT_FALSE(!!del)
         << "only the ROOT delegates — an online key must not be able to "
            "extend its own authority";
@@ -147,10 +151,10 @@ TEST(RepositoryDelegationTests, anExpiredDelegationIsRefused) {
     auto release = makeKeyPair(dir, "release");
 
     auto del = loadRepositoryDelegation(
-        envelopeAround(dir, delegationPayload("central", release,
+        envelopeAround(dir, delegationPayload(kOrigin, release,
                                               "2026-07-01T00:00:00Z"),
                        root, "r", "d"),
-        {rootKeyOf(root, "r")}, at("2026-08-01T00:00:00Z"));
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-08-01T00:00:00Z"));
     ASSERT_FALSE(!!del);
     EXPECT_NE(std::string::npos, errText(del.takeError()).find("expired"));
 
@@ -167,12 +171,12 @@ TEST(RepositoryDelegationTests, aDelegatedKeyOutsideItsWindowIsUnusable) {
 
     auto del = loadRepositoryDelegation(
         envelopeAround(dir,
-                       delegationPayload("central", release,
+                       delegationPayload(kOrigin, release,
                                          "2030-01-01T00:00:00Z",
                                          "2020-01-01T00:00:00Z",
                                          "2025-01-01T00:00:00Z"),
                        root, "r", "d"),
-        {rootKeyOf(root, "r")}, at("2026-06-01T00:00:00Z"));
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!del) << "the delegation itself is still current";
     EXPECT_TRUE(del->usableKeys(at("2026-06-01T00:00:00Z")).empty());
     EXPECT_EQ(1u, del->usableKeys(at("2024-06-01T00:00:00Z")).size());
@@ -200,8 +204,8 @@ TEST(RepositoryDelegationTests, releaseMetadataVerifiesAgainstTheDelegatedKey) {
                                   release, "release-1", "rel"));
 
     auto del = loadRepositoryDelegation(
-        envelopeAround(dir, delegationPayload("local", release), root, "r", "d"),
-        {rootKeyOf(root, "r")}, at("2026-06-01T00:00:00Z"));
+        envelopeAround(dir, delegationPayload(kOrigin, release), root, "r", "d"),
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!del) << errText(del.takeError());
 
     FilesystemRepository repo("local", repoRoot.string());
@@ -248,12 +252,12 @@ TEST(RepositoryDelegationTests, alapsedDelegationDoesNotFallBackToTheRoot) {
 
     auto del = loadRepositoryDelegation(
         envelopeAround(dir,
-                       delegationPayload("local", release,
+                       delegationPayload(kOrigin, release,
                                          "2030-01-01T00:00:00Z",
                                          "2020-01-01T00:00:00Z",
                                          "2025-01-01T00:00:00Z"),
                        root, "r", "d"),
-        {rootKeyOf(root, "r")}, at("2026-06-01T00:00:00Z"));
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
     ASSERT_TRUE(!!del);
 
     FilesystemRepository repo("local", repoRoot.string());
@@ -265,6 +269,63 @@ TEST(RepositoryDelegationTests, alapsedDelegationDoesNotFallBackToTheRoot) {
            "root verify instead";
     EXPECT_NE(std::string::npos,
               errText(integrity.takeError()).find("validity window"));
+
+    rmTree(dir);
+}
+
+// 13.1.1 — the check the header, the schema and spec §2.7.1 all claimed and
+// none of them had. A delegation fetched from one repository must not
+// authorise another, or that repository's online release key signs for both.
+TEST(RepositoryDelegationTests, aDelegationForAnotherRepositoryIsRefused) {
+    auto dir = freshDir("replay");
+    auto root = makeKeyPair(dir, "root");
+    auto release = makeKeyPair(dir, "release");
+
+    auto del = loadRepositoryDelegation(
+        envelopeAround(dir, delegationPayload("https://elsewhere.test", release),
+                       root, "r", "d"),
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
+    ASSERT_FALSE(!!del)
+        << "validly root-signed and inside its window — only the repository "
+           "it names is wrong, and that is the whole attack";
+    EXPECT_NE(std::string::npos,
+              errText(del.takeError()).find("https://elsewhere.test"));
+
+    rmTree(dir);
+}
+
+// 13.1.2 — the regression this unit exists for. Two clients that call the
+// same server different things must both accept the same delegation. When
+// the binding was `name()`, whichever label the operator signed won and
+// every other client was refused — and revocation fails CLOSED, so that was
+// installs stopping.
+TEST(RepositoryDelegationTests, theBindingIsTheOriginNotTheManifestLabel) {
+    auto dir = freshDir("nickname");
+    auto root = makeKeyPair(dir, "root");
+    auto release = makeKeyPair(dir, "release");
+    auto repoRoot = dir / "repo";
+    fs::create_directories(repoRoot);
+
+    std::string signed_ = envelopeAround(
+        dir, delegationPayload(FilesystemRepository("ignored", repoRoot.string())
+                                   .origin(),
+                               release),
+        root, "r", "d");
+
+    // Same tree, two manifests, two different nicknames for it.
+    FilesystemRepository asCentral("central", repoRoot.string());
+    FilesystemRepository asOlla("olla-prod", repoRoot.string());
+    ASSERT_NE(asCentral.name(), asOlla.name()) << "fixture: labels must differ";
+    ASSERT_EQ(asCentral.origin(), asOlla.origin()) << "fixture: one server";
+
+    for (const Repository* r : {static_cast<const Repository*>(&asCentral),
+                                static_cast<const Repository*>(&asOlla)}) {
+        auto del = loadRepositoryDelegation(signed_, {rootKeyOf(root, "r")},
+                                            r->origin(),
+                                            at("2026-06-01T00:00:00Z"));
+        EXPECT_TRUE(!!del) << "refused for label '" << r->name()
+                           << "': " << errText(del.takeError());
+    }
 
     rmTree(dir);
 }

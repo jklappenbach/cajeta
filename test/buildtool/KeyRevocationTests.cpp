@@ -49,6 +49,9 @@ fs::path freshDir(const std::string& tag) {
 
 std::time_t at(const char* stamp) { return *parseUtcTimestamp(stamp); }
 
+// The repository ORIGIN, not a manifest label (spec §2.7.1, §2.8).
+constexpr const char* kOrigin = "https://olla.test";
+
 std::string delegationPayload(const std::string& repository,
                               const TestKeyPair& releaseKey) {
     std::ostringstream p;
@@ -87,9 +90,9 @@ struct Fixture {
           root(makeKeyPair(dir, "root")),
           release(makeKeyPair(dir, "release")) {
         auto del = loadRepositoryDelegation(
-            envelopeAround(dir, delegationPayload("central", release),
+            envelopeAround(dir, delegationPayload(kOrigin, release),
                            root, "r", "d"),
-            {rootKeyOf(root, "r")}, at("2026-06-01T00:00:00Z"));
+            {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"));
         delegation = std::move(*del);
     }
     ~Fixture() { rmTree(dir); }
@@ -108,14 +111,14 @@ TEST(KeyRevocationTests, onlyADelegatedKeyMaySignIt) {
     auto now = at("2026-06-01T00:00:00Z");
 
     auto ok = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", "")),
-        f.delegation, "central", now, 0);
+        f.signedByRelease(revocationPayload(kOrigin, "")),
+        f.delegation, kOrigin, now, 0);
     ASSERT_TRUE(!!ok) << errText(ok.takeError());
     EXPECT_EQ("release-1", ok->signedByKeyId);
 
     auto byRoot = loadKeyRevocation(
-        envelopeAround(f.dir, revocationPayload("central", ""), f.root, "r", "rr"),
-        f.delegation, "central", now, 0);
+        envelopeAround(f.dir, revocationPayload(kOrigin, ""), f.root, "r", "rr"),
+        f.delegation, kOrigin, now, 0);
     EXPECT_FALSE(!!byRoot)
         << "a root signature must not be accepted here — this document's "
            "short lifetime is only sustainable because an online key makes it";
@@ -156,8 +159,8 @@ TEST(KeyRevocationTests, aRevokedKeyIsUnusableDespiteAValidDocument) {
     entry << "{\"id\":\"" << keyId << "\",\"organization\":\"dev.cajeta\","
           << "\"reason\":\"laptop stolen\"}";
     auto rev = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", entry.str())),
-        f.delegation, "central", now, 0);
+        f.signedByRelease(revocationPayload(kOrigin, entry.str())),
+        f.delegation, kOrigin, now, 0);
     ASSERT_TRUE(!!rev) << errText(rev.takeError());
 
     auto after = verifyAgainstOrgDocument(*doc, "dev.cajeta.http",
@@ -174,8 +177,8 @@ TEST(KeyRevocationTests, aRevokedKeyIsUnusableDespiteAValidDocument) {
 TEST(KeyRevocationTests, anExpiredStatementIsRefused) {
     Fixture f("expired");
     auto rev = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", "")),
-        f.delegation, "central", at("2026-06-01T02:00:00Z"), 0);
+        f.signedByRelease(revocationPayload(kOrigin, "")),
+        f.delegation, kOrigin, at("2026-06-01T02:00:00Z"), 0);
     ASSERT_FALSE(!!rev);
     EXPECT_NE(std::string::npos, errText(rev.takeError()).find("expired"));
 }
@@ -185,8 +188,8 @@ TEST(KeyRevocationTests, anExpiredStatementIsRefused) {
 TEST(KeyRevocationTests, anEmptyListAssertsNothingIsRevoked) {
     Fixture f("empty");
     auto rev = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", "")),
-        f.delegation, "central", at("2026-06-01T00:00:00Z"), 0);
+        f.signedByRelease(revocationPayload(kOrigin, "")),
+        f.delegation, kOrigin, at("2026-06-01T00:00:00Z"), 0);
     ASSERT_TRUE(!!rev) << errText(rev.takeError());
     EXPECT_TRUE(rev->revoked.empty());
     EXPECT_EQ(at("2026-06-01T00:00:00Z"), rev->issuedAt);
@@ -198,10 +201,10 @@ TEST(KeyRevocationTests, anEmptyListAssertsNothingIsRevoked) {
 TEST(KeyRevocationTests, aStatementForAnotherRepositoryIsRefused) {
     Fixture f("replay");
     auto rev = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("elsewhere", "")),
-        f.delegation, "central", at("2026-06-01T00:00:00Z"), 0);
+        f.signedByRelease(revocationPayload("https://elsewhere.test", "")),
+        f.delegation, kOrigin, at("2026-06-01T00:00:00Z"), 0);
     ASSERT_FALSE(!!rev);
-    EXPECT_NE(std::string::npos, errText(rev.takeError()).find("elsewhere"));
+    EXPECT_NE(std::string::npos, errText(rev.takeError()).find("https://elsewhere.test"));
 }
 
 // 10.1.7 — a rollback to an older statement is refused once a newer one has
@@ -212,10 +215,10 @@ TEST(KeyRevocationTests, aRollbackToAnOlderStatementIsRefused) {
     auto now = at("2026-06-01T00:30:00Z");
 
     auto older = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", "",
+        f.signedByRelease(revocationPayload(kOrigin, "",
                                             "2026-06-01T00:00:00Z",
                                             "2026-06-01T01:00:00Z")),
-        f.delegation, "central", now, at("2026-06-01T00:20:00Z"));
+        f.delegation, kOrigin, now, at("2026-06-01T00:20:00Z"));
     ASSERT_FALSE(!!older)
         << "a statement older than one already seen must be refused, even "
            "though it is validly signed and inside its own window";
@@ -223,10 +226,10 @@ TEST(KeyRevocationTests, aRollbackToAnOlderStatementIsRefused) {
 
     // The same statement is fine when nothing newer has been seen.
     auto fresh = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", "",
+        f.signedByRelease(revocationPayload(kOrigin, "",
                                             "2026-06-01T00:00:00Z",
                                             "2026-06-01T01:00:00Z")),
-        f.delegation, "central", now, 0);
+        f.delegation, kOrigin, now, 0);
     EXPECT_TRUE(!!fresh) << errText(fresh.takeError());
 }
 
@@ -238,8 +241,8 @@ TEST(KeyRevocationTests, anUnscopedEntryRevokesTheIdEverywhere) {
     auto now = at("2026-06-01T00:00:00Z");
 
     auto rev = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central", R"({"id":"org-1"})")),
-        f.delegation, "central", now, 0);
+        f.signedByRelease(revocationPayload(kOrigin, R"({"id":"org-1"})")),
+        f.delegation, kOrigin, now, 0);
     ASSERT_TRUE(!!rev) << errText(rev.takeError());
 
     EXPECT_NE(nullptr, rev->find("org-1", "dev.cajeta"));
@@ -252,9 +255,9 @@ TEST(KeyRevocationTests, anUnscopedEntryRevokesTheIdEverywhere) {
 TEST(KeyRevocationTests, aScopedEntryRevokesOnlyThatOrganization) {
     Fixture f("scoped");
     auto rev = loadKeyRevocation(
-        f.signedByRelease(revocationPayload("central",
+        f.signedByRelease(revocationPayload(kOrigin,
             R"({"id":"org-1","organization":"dev.cajeta"})")),
-        f.delegation, "central", at("2026-06-01T00:00:00Z"), 0);
+        f.delegation, kOrigin, at("2026-06-01T00:00:00Z"), 0);
     ASSERT_TRUE(!!rev) << errText(rev.takeError());
 
     EXPECT_NE(nullptr, rev->find("org-1", "dev.cajeta"));
@@ -268,16 +271,16 @@ TEST(KeyRevocationTests, aDelegationIsNotARevocation) {
     auto now = at("2026-06-01T00:00:00Z");
 
     auto asRevocation = loadKeyRevocation(
-        envelopeAround(f.dir, delegationPayload("central", f.release),
+        envelopeAround(f.dir, delegationPayload(kOrigin, f.release),
                        f.release, "release-1", "d2"),
-        f.delegation, "central", now, 0);
+        f.delegation, kOrigin, now, 0);
     ASSERT_FALSE(!!asRevocation);
     EXPECT_NE(std::string::npos,
               errText(asRevocation.takeError()).find("key-revocation"));
 
     auto asDelegation = loadRepositoryDelegation(
-        envelopeAround(f.dir, revocationPayload("central", ""), f.root, "r", "x"),
-        {rootKeyOf(f.root, "r")}, now);
+        envelopeAround(f.dir, revocationPayload(kOrigin, ""), f.root, "r", "x"),
+        {rootKeyOf(f.root, "r")}, kOrigin, now);
     EXPECT_FALSE(!!asDelegation);
     if (!asDelegation) consumeError(asDelegation.takeError());
 }

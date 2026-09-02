@@ -52,7 +52,7 @@
           "const": "key-revocation"
         },
         "repository": {
-          "description": "The repository this speaks for, checked against the one it was fetched from. Without it, one repository's statement could be replayed at another — which revokes nothing it should not, but is still a denial of service someone else gets to trigger.",
+          "description": "The repository ORIGIN this speaks for, checked against the origin it was fetched from. Without it, one repository's statement could be replayed at another — which revokes nothing it should not, but is a denial of service someone else gets to trigger.\n\nAn ORIGIN, never the client's configured name: that is a user-chosen label, and because revocation fails CLOSED, binding to it would stop installs on every client that spells the repository differently.",
           "type": "string",
           "minLength": 1
         },

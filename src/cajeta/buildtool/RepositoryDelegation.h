@@ -33,9 +33,13 @@
 namespace cajeta::buildtool {
 
     struct RepositoryDelegation {
-        // The repository this speaks for. Checked against the repository it
-        // was fetched from, so one repository's delegation cannot be replayed
-        // by another.
+        // The repository this speaks for, as an ORIGIN — checked against the
+        // one it was fetched from, so a delegation cannot be replayed at
+        // another repository whose online key would then sign for both.
+        //
+        // An origin, never the manifest's `name`: that is a label the USER
+        // chooses, so a document naming it would verify on one machine and
+        // be refused on the next.
         std::string repository;
         // Keys permitted to sign release metadata. Reuses OrgSigningKey: the
         // validity-window rules are identical and there is no reason for a
@@ -57,9 +61,12 @@ namespace cajeta::buildtool {
     // delegation has expired. Expiry is an ERROR rather than a flag, for the
     // same reason it is on an organization document: nothing downstream
     // should be able to hold an expired one and forget to check.
+    // `origin` is the repository this was fetched from (Repository::origin()).
+    // A delegation claiming a different one is refused.
     llvm::Expected<RepositoryDelegation> loadRepositoryDelegation(
         const std::string& envelopeJson,
         const std::vector<RootKey>& roots,
+        const std::string& origin,
         std::time_t now);
 
 } // namespace cajeta::buildtool

@@ -42,6 +42,10 @@ namespace cajeta::buildtool {
         GitRepository& operator=(const GitRepository&) = delete;
 
         std::string name() const override { return name_; }
+        // The clone URL is this repository's stable identity. Git repos
+        // serve no signed documents today; when they do, this is what a
+        // delegation would name.
+        std::string origin() const override { return cloneUrl_; }
 
         llvm::Expected<std::vector<std::string>> listVersions(
             const std::string& packageName) const override;

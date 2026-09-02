@@ -233,7 +233,7 @@ TEST(OllaContractTests, anAdvertisedRepositoryFailsClosed) {
     auto raw = repo->repositoryKeys();
     ASSERT_TRUE(!!raw) << errText(raw.takeError());
     ASSERT_TRUE(raw->has_value());
-    auto del = loadRepositoryDelegation(**raw, *roots, now);
+    auto del = loadRepositoryDelegation(**raw, *roots, repo->origin(), now);
     ASSERT_TRUE(!!del) << errText(del.takeError());
 
     auto rev = revocationFor(*repo, &*del, now, 0);
@@ -262,7 +262,7 @@ TEST(OllaContractTests, anUnadvertisedRepositoryProceeds) {
 
     auto raw = repo->repositoryKeys();
     ASSERT_TRUE(!!raw);
-    auto del = loadRepositoryDelegation(**raw, *roots, now);
+    auto del = loadRepositoryDelegation(**raw, *roots, repo->origin(), now);
     ASSERT_TRUE(!!del) << errText(del.takeError());
 
     auto rev = revocationFor(*repo, &*del, now, 0);
@@ -291,9 +291,12 @@ TEST(OllaContractTests, aServedDelegationVerifiesReleaseMetadata) {
     auto raw = repo->repositoryKeys();
     ASSERT_TRUE(!!raw) << errText(raw.takeError());
     ASSERT_TRUE(raw->has_value()) << "the stub routes /v2/repository-keys";
-    auto del = loadRepositoryDelegation(**raw, *roots, now);
+    auto del = loadRepositoryDelegation(**raw, *roots, repo->origin(), now);
     ASSERT_TRUE(!!del) << errText(del.takeError());
-    EXPECT_EQ("central", del->repository);
+    EXPECT_EQ(repo->origin(), del->repository)
+        << "the delegation names the ORIGIN it was fetched from, not a "
+           "manifest label — a label differs between clients talking to the "
+           "same server";
 
     auto rev = revocationFor(*repo, &*del, now, 0);
     ASSERT_TRUE(!!rev) << errText(rev.takeError());
