@@ -24,6 +24,9 @@ namespace cajeta::buildtool {
             : inner_(std::move(inner)), timings_(timings) {}
 
         std::string name() const override { return inner_->name(); }
+        // A decorator borrows its subject's identity; inventing one here
+        // would make the same repository verify differently when timed.
+        std::string origin() const override { return inner_->origin(); }
 
         llvm::Expected<std::vector<std::string>> listVersions(
             const std::string& depName) const override;

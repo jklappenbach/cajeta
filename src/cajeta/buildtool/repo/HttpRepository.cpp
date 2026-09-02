@@ -800,6 +800,17 @@ namespace cajeta::buildtool {
         return std::optional<std::string>{body};
     }
 
+    std::string HttpRepository::origin() const {
+        // scheme://host[:port]. Reducing to the origin is what makes the
+        // binding usable: two clients configured with
+        // "https://olla.cajeta.dev" and "https://olla.cajeta.dev/v2/" are
+        // talking to the same server and must accept the same documents.
+        auto scheme = baseUrl_.find("://");
+        if (scheme == std::string::npos) return baseUrl_;
+        auto slash = baseUrl_.find('/', scheme + 3);
+        return slash == std::string::npos ? baseUrl_ : baseUrl_.substr(0, slash);
+    }
+
     llvm::Expected<std::optional<std::string>>
     HttpRepository::revocations() const {
         auto caps = capabilities();

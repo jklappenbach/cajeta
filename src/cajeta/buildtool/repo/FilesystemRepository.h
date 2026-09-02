@@ -76,6 +76,10 @@ namespace cajeta::buildtool {
         llvm::Expected<std::optional<std::string>>
         revocations() const override;
 
+        // The canonical absolute root. A local tree has no origin in the URL
+        // sense, and its path is the closest stable identity it has.
+        std::string origin() const override;
+
     private:
         std::string name_;
         std::string root_;

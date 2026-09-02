@@ -30,6 +30,7 @@ namespace cajeta::buildtool {
     llvm::Expected<RepositoryDelegation> loadRepositoryDelegation(
             const std::string& envelopeJson,
             const std::vector<RootKey>& roots,
+            const std::string& origin,
             std::time_t now) {
         // Verify before parsing, as everywhere else: nothing inside an
         // unverified document influences anything, including which errors
@@ -68,6 +69,13 @@ namespace cajeta::buildtool {
             return err("repository delegation: no repository");
         }
         del.repository = repo->str();
+        if (del.repository != origin) {
+            return err("repository delegation claims '" + del.repository
+                       + "' but was fetched from '" + origin
+                       + "'; one repository's delegation must not be "
+                         "replayable at another, or its online release key "
+                         "would sign for both");
+        }
 
         auto notAfter = obj->getString("not-after");
         if (!notAfter) return err("repository delegation: no not-after");

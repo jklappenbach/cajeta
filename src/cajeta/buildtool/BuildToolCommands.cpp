@@ -1,3 +1,8 @@
+#include <llvm/Support/Base64.h>
+#include "cajeta/buildtool/KeyRevocation.h"
+#include "cajeta/buildtool/RepositoryDelegation.h"
+#include "cajeta/buildtool/OrgKeyDocument.h"
+#include "cajeta/buildtool/SignedEnvelope.h"
 #include "cajeta/buildtool/BuildToolCommands.h"
 
 #include "cajeta/buildtool/Action.h"
@@ -2000,6 +2005,225 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // `cajeta trust verify-document` — answer "will a client accept
+        // this?" before it is served, using the client's own parsers.
+        //
+        // A signature check is not that question. These documents also carry
+        // a type discriminator, an origin they must match, expiry, and
+        // per-key validity windows, and any of them can reject a perfectly
+        // signed file. An operator who learns that from a user has already
+        // shipped it.
+        int trustVerifyDocumentCommand(int argc, const char* argv[]) {
+            namespace bt = cajeta::buildtool;
+            if (argc < 3) {
+                std::cerr
+                    << "Usage: cajeta trust verify-document <file> "
+                       "[--origin <url>] [--delegation <file>]\n"
+                    << "\n"
+                    << "  The document type is read from the signed payload,\n"
+                    << "  never from the filename.\n"
+                    << "    organization key document  needs nothing\n"
+                    << "    repository delegation      needs --origin\n"
+                    << "    revocation statement       needs --origin and\n"
+                    << "                               --delegation\n";
+                return 2;
+            }
+
+            std::string file = argv[2], origin, delegationFile;
+            for (int i = 3; i + 1 < argc; i += 2) {
+                std::string_view flag = argv[i];
+                if (flag == "--origin") origin = argv[i + 1];
+                else if (flag == "--delegation") delegationFile = argv[i + 1];
+                else {
+                    std::cerr << "cajeta trust verify-document: unknown option '"
+                              << flag << "'\n";
+                    return 2;
+                }
+            }
+
+            auto slurp = [](const std::string& path,
+                            std::string& out) -> bool {
+                std::ifstream in(path, std::ios::binary);
+                if (!in) return false;
+                std::ostringstream ss;
+                ss << in.rdbuf();
+                out = ss.str();
+                return true;
+            };
+
+            std::string envelope;
+            if (!slurp(file, envelope)) {
+                std::cerr << "cajeta trust verify-document: cannot read "
+                          << file << "\n";
+                return 1;
+            }
+
+            // The roots a real install would use, shipped anchor included —
+            // verifying against anything else would answer a different
+            // question from the one asked.
+            auto roots = bt::rootsFor(rootLayoutFromTrustStore(), "");
+            if (!roots) {
+                std::cerr << "cajeta trust verify-document: "
+                          << llvm::toString(roots.takeError()) << "\n";
+                return 1;
+            }
+            const std::time_t now = std::time(nullptr);
+
+            // Read the KIND from the payload WITHOUT verifying first, and
+            // route on it. Two reasons it has to be this way round:
+            //
+            //   * a revocation is signed by a DELEGATED key, so opening it
+            //     against the roots always fails — verify-then-route would
+            //     misidentify every revocation as an org document;
+            //   * when a document does not verify, the kind is exactly what
+            //     the operator needs in the error, and that is the moment
+            //     verify-then-route has nothing to report.
+            //
+            // Routing on an unverified field is safe here: each parser
+            // independently verifies the signature and re-checks the
+            // discriminator INSIDE it, so a lie in this copy can only send
+            // the file to a parser that rejects it. It can cause a refusal,
+            // never an acceptance.
+            std::string kind = "organization key document";
+            {
+                auto outer = llvm::json::parse(envelope);
+                if (!outer) {
+                    llvm::consumeError(outer.takeError());
+                    std::cerr << "cajeta trust verify-document: " << file
+                              << " is not valid JSON\n";
+                    return 1;
+                }
+                const auto* obj = outer->getAsObject();
+                auto b64 = obj ? obj->getString("payload") : std::nullopt;
+                if (!obj || !b64) {
+                    std::cerr << "cajeta trust verify-document: " << file
+                              << " is not a signed envelope (no payload)\n";
+                    return 1;
+                }
+                std::vector<char> decoded;
+                if (auto e = llvm::decodeBase64(*b64, decoded)) {
+                    llvm::consumeError(std::move(e));
+                } else if (auto body = llvm::json::parse(
+                               llvm::StringRef(decoded.data(), decoded.size()))) {
+                    if (auto* o = body->getAsObject()) {
+                        if (auto t = o->getString("type")) {
+                            if (*t == "repository-delegation") {
+                                kind = "repository delegation";
+                            } else if (*t == "key-revocation") {
+                                kind = "revocation statement";
+                            }
+                        }
+                    }
+                } else {
+                    llvm::consumeError(body.takeError());
+                }
+            }
+
+            auto fail = [&](llvm::Error e) {
+                std::cerr << "REFUSED (" << kind << "): "
+                          << llvm::toString(std::move(e)) << "\n";
+                return 1;
+            };
+
+            if (kind == "organization key document") {
+                auto doc = bt::loadOrgKeyDocument(envelope, *roots, now);
+                if (!doc) return fail(doc.takeError());
+                std::cout << "OK  organization key document\n"
+                          << "    organization  " << doc->organization << "\n"
+                          << "    signed by     " << doc->rootKeyId << "\n"
+                          << "    usable keys   "
+                          << doc->usableKeys(now).size() << " of "
+                          << doc->keys.size() << " right now\n";
+                for (const auto& ns : doc->namespaces) {
+                    std::cout << "    namespace     " << ns << "\n";
+                }
+                if (!doc->securityContact.uri.empty()) {
+                    std::cout << "    security      "
+                              << doc->securityContact.uri << "\n";
+                }
+                if (doc->usableKeys(now).empty()) {
+                    std::cerr << "WARNING: it parses and authorises NOTHING — "
+                                 "every key is outside its window, so nothing "
+                                 "this organization published will verify.\n";
+                    return 1;
+                }
+                return 0;
+            }
+
+            if (origin.empty()) {
+                std::cerr << "cajeta trust verify-document: a " << kind
+                          << " names the repository ORIGIN it speaks for, so "
+                             "--origin is required to check it. Pass the "
+                             "scheme://host[:port] a client would fetch it "
+                             "from.\n";
+                return 2;
+            }
+
+            if (kind == "repository delegation") {
+                auto del = bt::loadRepositoryDelegation(envelope, *roots,
+                                                        origin, now);
+                if (!del) return fail(del.takeError());
+                std::cout << "OK  repository delegation\n"
+                          << "    repository    " << del->repository << "\n"
+                          << "    signed by     " << del->rootKeyId << "\n"
+                          << "    usable keys   "
+                          << del->usableKeys(now).size() << " of "
+                          << del->keys.size() << " right now\n";
+                for (const auto* k : del->usableKeys(now)) {
+                    std::cout << "    release key   " << k->id << "\n";
+                }
+                if (del->usableKeys(now).empty()) {
+                    std::cerr << "WARNING: no delegated key is usable, so "
+                                 "nothing this repository serves can be "
+                                 "verified.\n";
+                    return 1;
+                }
+                return 0;
+            }
+
+            // A revocation verifies against the DELEGATION's keys, never a
+            // root — so it cannot be checked without one.
+            if (delegationFile.empty()) {
+                std::cerr << "cajeta trust verify-document: a revocation "
+                             "statement is signed by a DELEGATED key, so "
+                             "--delegation <file> is required — a root cannot "
+                             "verify it.\n";
+                return 2;
+            }
+            std::string delEnvelope;
+            if (!slurp(delegationFile, delEnvelope)) {
+                std::cerr << "cajeta trust verify-document: cannot read "
+                          << delegationFile << "\n";
+                return 1;
+            }
+            auto del = bt::loadRepositoryDelegation(delEnvelope, *roots,
+                                                    origin, now);
+            if (!del) {
+                std::cerr << "REFUSED (the delegation it must verify "
+                             "against): "
+                          << llvm::toString(del.takeError()) << "\n";
+                return 1;
+            }
+            auto rev = bt::loadKeyRevocation(envelope, *del, origin, now, 0);
+            if (!rev) return fail(rev.takeError());
+            std::cout << "OK  revocation statement\n"
+                      << "    repository    " << rev->repository << "\n"
+                      << "    signed by     " << rev->signedByKeyId << "\n"
+                      << "    revoked       " << rev->revoked.size()
+                      << (rev->revoked.empty()
+                              ? "  (asserts nothing is revoked)" : "")
+                      << "\n";
+            for (const auto& r : rev->revoked) {
+                std::cout << "    key           " << r.id
+                          << (r.organization.empty()
+                                  ? "  (every organization)"
+                                  : "  in " + r.organization)
+                          << (r.reason.empty() ? "" : " — " + r.reason)
+                          << "\n";
+            }
+            return 0;
+        }
+
         int trustCommand(int argc, const char* argv[]) {
             if (argc < 3 || std::string_view(argv[2]) == "--help" ||
                 std::string_view(argv[2]) == "-h") {
@@ -2020,7 +2244,18 @@ namespace cajeta::buildtool {
                     << "    One-shot: verify archive against the\n"
                     << "    matching trusted key (using the\n"
                     << "    <archive>.sig + <archive>.sig.keyid\n"
-                    << "    sidecar).\n";
+                    << "    sidecar).\n"
+                    << "  verify-document <file> [--origin <url>]\n"
+                    << "                         [--delegation <file>]\n"
+                    << "    Will a client accept this signed document?\n"
+                    << "    Runs the client's own parsers, so it catches\n"
+                    << "    what a signature check cannot: the type\n"
+                    << "    discriminator, the origin it must match,\n"
+                    << "    expiry, and per-key validity windows.\n"
+                    << "  roots | add-root <key-id> <pem> | remove-root <key-id>\n"
+                    << "  pin <repository> <key-id>\n"
+                    << "    Manage the trust ANCHORS that verify signed\n"
+                    << "    documents, as opposed to the archive keys above.\n";
                 return argc < 3 ? 1 : 0;
             }
             std::string_view sub = argv[2];
@@ -2039,6 +2274,9 @@ namespace cajeta::buildtool {
             if (sub == "remove") return trustRemoveCommand(argc - 1, argv + 1);
             if (sub == "show")   return trustShowCommand(argc - 1, argv + 1);
             if (sub == "verify") return trustVerifyCommand(argc - 1, argv + 1);
+            if (sub == "verify-document") {
+                return trustVerifyDocumentCommand(argc - 1, argv + 1);
+            }
             std::cerr << "cajeta trust: unknown subcommand '"
                       << sub << "'\n";
             return 2;

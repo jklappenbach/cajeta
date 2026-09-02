@@ -56,6 +56,9 @@ public:
         : name_(std::move(name)), document_(std::move(document)) {}
 
     std::string name() const override { return name_; }
+    // Deliberately NOT name_: a stub whose origin equals its label would let
+    // a nickname/origin mix-up pass unnoticed.
+    std::string origin() const override { return "https://stub.invalid/" + name_; }
     llvm::Expected<std::vector<std::string>> listVersions(
         const std::string&) const override {
         return std::vector<std::string>{};

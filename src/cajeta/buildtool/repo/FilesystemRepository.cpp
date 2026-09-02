@@ -210,6 +210,12 @@ namespace cajeta::buildtool {
         return readIfPresent(doc, name_, "repository delegation");
     }
 
+    std::string FilesystemRepository::origin() const {
+        std::error_code ec;
+        auto canonical = std::filesystem::weakly_canonical(root_, ec);
+        return ec ? root_ : canonical.string();
+    }
+
     llvm::Expected<std::optional<std::string>>
     FilesystemRepository::revocations() const {
         namespace fs = std::filesystem;

@@ -1,19 +1,48 @@
 // `.cja` (Cajeta ARchive) writer — v1 minimum-viable implementation
-// of the container format spelled out in docs/Compilation.md
-// § Archive format § Minimum-viable v1.
+// of the container format spelled out in
+// docs/specification/buildtool/Compilation.md § Archive format
+// § Minimum-viable v1, which is authoritative and current.
 //
 // Layout produced by writeTo():
 //   [ 32-byte header ]
-//     8  bytes  magic         "CAJETA01"
+//     8  bytes  magic          "CAJETA01"
 //     4  bytes  format_version uint32 LE (currently 1)
-//     4  bytes  flags          uint32 LE (v1 always 0 — no compression)
-//     8  bytes  index_offset   uint64 LE (v1 always 0 — no trailing index)
-//     8  bytes  index_length   uint64 LE (v1 always 0)
-//   [ manifest_length ]      uint64 LE
-//   [ manifest_bytes ]       raw UTF-8 JSON
-//   [ entry_1 ]              see CajetaArchiveEntry::serialize
+//     4  bytes  flags          uint32 LE (bit 0 manifest_compressed,
+//                              bit 1 entries_compressed)
+//     8  bytes  index_offset   uint64 LE (start of the trailing index)
+//     8  bytes  index_length   uint64 LE (its length in bytes)
+//   [ manifest_length ]      uint64 LE — the ON-DISK size
+//   [ manifest_bytes ]       UTF-8 JSON, compressed per the flags
+//   [ entry_1 ]              uint32 name_length, name bytes,
+//                            uint8 origin, uint8 kind, 2 reserved,
+//                            then uint64 payload_length + payload
 //   [ entry_2 ]
 //   ...
+//   [ trailing index ]       uint32 entry_count, then per entry
+//                            (uint32 name_length, name bytes,
+//                             uint64 entry_offset,
+//                             uint64 entry_on_disk_size)
+//
+// Compression is ON BY DEFAULT — Compression::Zstd at level 3, over
+// both the manifest and every entry; setCompression(None) opts out,
+// which is what the tests probing raw header bytes do. A compressed
+// section is framed `uint64 uncompressed_length || zstd_bytes`, and
+// the length preceding it is the on-disk size, so a reader takes the
+// allocation size from the inner prefix and the skip distance from
+// the outer one.
+//
+// The trailing index is written by EVERY archive; index_offset and
+// index_length are placeholders during the write and are patched into
+// the header once the index has been appended and its offset is
+// known. Readers treat `index_offset != 0` as "usable for random
+// access" and may otherwise scan entries sequentially; findEntry()
+// uses it for O(1) lookup by name.
+//
+// The index carries names, offsets and sizes ONLY. An entry's origin
+// and kind tags live in the entry body, so anything classifying
+// entries from the index alone — a registry enumerating an archive's
+// classes without downloading it, say — is reading the entry name and
+// nothing else.
 //
 // Used by Compiler::emitForModule when the user passes
 // --emit=cja (project-only, library form) or --emit=uber
@@ -22,10 +51,10 @@
 // array and nests each dep's entries under deps/<name>-<version>/;
 // the container shape is otherwise identical.
 //
-// v1 omits zstd compression, the trailing index, the resources block,
-// and the runtime-bitcode block. Adding them later only flips header
-// flag bits — the format-version field stays at 1 because additions
-// land via flags + manifest fields, not version bumps.
+// v1 omits the resources block and the runtime-bitcode block. Adding
+// them later only flips header flag bits — the format-version field
+// stays at 1 because additions land via flags + manifest fields, not
+// version bumps.
 
 #pragma once
 

@@ -56,16 +56,18 @@ namespace cajeta::buildtool {
     // produces it, and accepting a root signature would invite exactly the
     // long-lived statement §2.8.3 forbids.
     //
-    // `repositoryName` is the repository it was fetched from, checked
-    // against the one it claims so a statement cannot be replayed
-    // elsewhere. `seenIssuedAt` is the newest `issued-at` this client has
+    // `origin` is the repository it was fetched from (Repository::origin()),
+    // checked against the one it claims so a statement cannot be replayed
+    // elsewhere. An ORIGIN, never the manifest's `name`, which the user
+    // chooses and which therefore differs between machines talking to the
+    // same server. `seenIssuedAt` is the newest `issued-at` this client has
     // already accepted, or 0 — an older statement is refused, which stops a
     // rollback inside the validity window. Where that value is kept is the
     // caller's problem; expiry already bounds the exposure to one window.
     llvm::Expected<KeyRevocation> loadKeyRevocation(
         const std::string& envelopeJson,
         const RepositoryDelegation& delegation,
-        const std::string& repositoryName,
+        const std::string& origin,
         std::time_t now,
         std::time_t seenIssuedAt);
 

@@ -30,7 +30,7 @@ namespace cajeta::buildtool {
     llvm::Expected<KeyRevocation> loadKeyRevocation(
             const std::string& envelopeJson,
             const RepositoryDelegation& delegation,
-            const std::string& repositoryName,
+            const std::string& origin,
             std::time_t now,
             std::time_t seenIssuedAt) {
         // Only the delegated keys verify. Building the verifier set from the
@@ -75,10 +75,10 @@ namespace cajeta::buildtool {
             return err("revocation statement: no repository");
         }
         rev.repository = repo->str();
-        if (rev.repository != repositoryName) {
+        if (rev.repository != origin) {
             return err("revocation statement claims repository '"
                        + rev.repository + "' but was fetched from '"
-                       + repositoryName + "'; one repository's statement "
+                       + origin + "'; one repository's statement "
                        "must not be replayable at another");
         }
 
@@ -168,7 +168,11 @@ namespace cajeta::buildtool {
                        "has ever revoked.");
         }
 
-        auto rev = loadKeyRevocation(**raw, *delegation, repo.name(), now,
+        // origin(), never name(). A manifest label differs per machine, so
+        // checking against it refuses every client that spells the
+        // repository differently — and revocation fails CLOSED, which makes
+        // that installs stopping rather than a warning.
+        auto rev = loadKeyRevocation(**raw, *delegation, repo.origin(), now,
                                      seenIssuedAt);
         if (!rev) return rev.takeError();
         return std::optional<KeyRevocation>(std::move(*rev));

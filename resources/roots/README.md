@@ -1,6 +1,6 @@
 # Trust anchors
 
-`olla-root.pem` is the repository root public key embedded in the
+`olla-root.pub` is the repository root public key embedded in the
 toolchain (publisher-trust spec §3.1). A client verifies an organization
 key document against it with no operator action, the way an OS verifies
 against a shipped CA bundle.
@@ -22,7 +22,19 @@ incoming root ahead of the release with `cajeta trust add-root`.
 
 ## Current status
 
-**This is a DEVELOPMENT root.** It is a placeholder until
-olla.cajeta.dev has a production root, and no real artifact is signed by
-it. Replacing it is a file swap plus a release, which is exactly the
-rotation path above — the mechanism is the deliverable, not this key.
+**Production root**, `olla-root-1`, installed 2026-09-02. The private half
+is held offline on removable media and never touches a networked machine;
+this file is the public half only.
+
+Signing is a manual ceremony — see the operator's `olla-key` toolkit. The
+root signs rarely by design: the repository delegation (annually), an
+organization key document (per org, plus rotations), and a re-signed
+document repairing a revocation. Everything per-publish is signed by the
+delegated release key, which lives in olla as a Worker secret.
+
+## Check before you commit
+
+A private key here would build, ship, and verify nothing — the failure is
+silent. `-----BEGIN PUBLIC KEY-----` is the only acceptable first line:
+
+    head -1 resources/roots/olla-root.pub

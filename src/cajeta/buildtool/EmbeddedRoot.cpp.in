@@ -1,4 +1,4 @@
-// GENERATED at configure time from resources/roots/olla-root.pem.
+// GENERATED at configure time from resources/roots/olla-root.pub.
 // Edit that file, not this one.
 //
 // The trust anchor is compiled in rather than read from disk so a default
