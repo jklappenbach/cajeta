@@ -4352,6 +4352,36 @@ private:
             builder.CreateStore(v, slot.alloca);
             return llvm::ConstantInt::get(i32, 0);
         }
+        if (name == "fromWords") {
+            // xpu-coopmatrix-fromwords: this lane's operand fragment from
+            // four packed words. Native-only, and only where the int8
+            // operand fragment is the explicit <4 x i32> encoding.
+            if (args.size() != 4)
+                unsupported("CooperativeMatrix.fromWords expects "
+                            "(w0, w1, w2, w3)");
+            if (!target.coopMatrixFromWordsSupported())
+                unsupported("CooperativeMatrix.fromWords: NATIVE-ONLY on "
+                            "backends with an explicit per-lane fragment "
+                            "(AMD WMMA); the " + std::string(target.name()) +
+                            " cooperative matrix is opaque");
+            if (slot.use == 2)
+                unsupported("CooperativeMatrix.fromWords: an A or B "
+                            "operand tile, not an accumulator");
+            auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(slot.matrixType);
+            if (!vt || vt->getNumElements() != 4 ||
+                !vt->getElementType()->isIntegerTy(32))
+                unsupported("CooperativeMatrix.fromWords: only the 16x16 "
+                            "int8 operand fragment (<4 x i32> per lane)");
+            llvm::Value* frag = llvm::UndefValue::get(vt);
+            for (unsigned w = 0; w < 4; ++w) {
+                llvm::Value* wv = coerceTo(lowerExpr(args[w].expression), i32);
+                frag = builder.CreateInsertElement(
+                    frag, wv, llvm::ConstantInt::get(i32, w),
+                    recv + ".fw" + std::to_string(w));
+            }
+            builder.CreateStore(frag, slot.alloca);
+            return llvm::ConstantInt::get(i32, 0);
+        }
         if (name == "mma") {
             if (args.size() != 2)
                 unsupported("CooperativeMatrix.mma expects (a, b)");
@@ -4605,6 +4635,12 @@ private:
         // full R x C tile — so there is no honest lowering. Reject
         // with the named diagnostic; a silent demote would compute
         // one column's factor across all sixteen.
+        if (name == "fromWords") {
+            unsupported("CooperativeMatrix.fromWords: NATIVE-ONLY (the "
+                        "words are this lane's fragment row/column; the "
+                        "software tile has no lane mapping). Stage the "
+                        "widened bytes and `load` them on this tier");
+        }
         if (name == "scaledAccumIntoS" || name == "scaledAccumInto2S") {
             unsupported(std::string("CooperativeMatrix.") + name +
                         ": NATIVE-ONLY (the scalar colF/colG is this "

@@ -860,6 +860,14 @@ namespace xpu {
         // called on a backend that returned true here.
         virtual bool coopMatrixEpilogueSupported() const { return false; }
 
+        // CooperativeMatrix.fromWords (xpu-coopmatrix-fromwords): whether
+        // this backend's int8 operand fragment is an EXPLICIT per-lane
+        // encoding the generic lowering may build from four i32 words
+        // (AMD WMMA: <4 x i32>, k packed 4-per-word little-endian). False
+        // means the fragment is opaque (SPIR-V) and the verb is rejected
+        // on the native tier with a named diagnostic.
+        virtual bool coopMatrixFromWordsSupported() const { return false; }
+
         // facc[r][c] += (rowF[r] * colF[c]) * acc[r][c], per fragment
         // element of the CURRENT lane — the k-quant dequant seam, run in
         // the accumulator's registers. `accVal` is the int32/f32

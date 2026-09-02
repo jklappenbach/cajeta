@@ -274,6 +274,35 @@ public final class CooperativeMatrix<T, uint32 Rows, uint32 Cols, uint32 Use> {
     }
 
     /**
+     * Device-only intrinsic: set THIS LANE's operand fragment from four
+     * packed words — the register-direct feed for an int8 A or B tile
+     * (xpu-coopmatrix-fromwords). The per-lane contract is the native
+     * fragment layout: for A (`Use` 0) the lane holds row `lane & 15`,
+     * for B (`Use` 1) column `lane & 15`, and the sixteen K-values
+     * k = 0..15 arrive as little-endian bytes — `w0` carries k 0..3,
+     * `w1` k 4..7, `w2` k 8..11, `w3` k 12..15. The two 16-lane halves
+     * of a wave32 must present the same words for the same `lane & 15`,
+     * which they do by construction when the words derive from
+     * `lane & 15`.
+     *
+     * This is what lets a k-quant GEMM widen nibbles straight into the
+     * matrix-core operand: a `load` can only read a fragment from
+     * memory, so an in-kernel widen had to round-trip LDS with a
+     * barrier on each side — measured at ~3x the tile rate of a feed
+     * that reads pre-widened bytes. With `fromWords` the lane reads its
+     * own 16 packed bytes, extracts, and presents the fragment.
+     *
+     * NATIVE-ONLY, on backends whose fragment is an explicit per-lane
+     * encoding (AMD WMMA: the iu8 operand IS four i32s per lane). The
+     * software tile has no lane mapping and the SPIR-V cooperative
+     * matrix is opaque, so those tiers REJECT the kernel with a named
+     * diagnostic — never a silent demote. Only the 16x16 int8 operand
+     * shapes (`Use` 0 or 1) are accepted.
+     */
+    public void fromWords(int32 w0, int32 w1, int32 w2, int32 w3) {
+    }
+
+    /**
      * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
      * starting at element `offset`, with the given `layout` and `stride` — the
      * write-side counterpart of `load`'s sub-tile addressing.

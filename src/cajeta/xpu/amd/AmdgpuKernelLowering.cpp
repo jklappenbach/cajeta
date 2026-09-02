@@ -1112,6 +1112,9 @@ public:
     // ONE per lane, hoisted. Association `(rowF*colF)*C` is the
     // cross-tier contract (bit-exact against the software tile).
     bool coopMatrixEpilogueSupported() const override { return true; }
+    // The iu8 fragment is the documented <4 x i32> per lane (see the CM7
+    // layout note above), so fromWords is a plain vector build here.
+    bool coopMatrixFromWordsSupported() const override { return true; }
 
     llvm::Value* coopMatrixEpilogueAccum(
             llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* accVal,

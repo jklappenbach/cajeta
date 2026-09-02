@@ -1401,7 +1401,14 @@ files' actual bytes rather than their model cards.
   - **15.21.4** When a prefill chunk runs, the expert GEMMs take the
     same indirected one-launch-per-bank shape over grouped rows, and
     gather/GLU/scatter run on the device — the host never touches
-    activations between the embedding and the logits.
+    activations between the embedding and the logits. The expert GEMM
+    reads the slab's packed bytes directly and runs at the dense
+    pipeline's tile rate: an id-GEMM may not need a widened copy of the
+    bank (that would double residency), and it may not pay an LDS
+    round trip per sub-block to widen in-kernel (measured at a third
+    of the dense rate). `CooperativeMatrix.fromWords` — the lane
+    presents its own fragment words — is the compiler-side seam this
+    requires.
   - **15.21.5** Every stage of this work lands with the 12.† parity
     gates intact: identical greedy generation on the 30B against the
     pre-stage engine, and the toy-fixture logit bars unchanged.
