@@ -46,6 +46,7 @@ profile, or --debug-info=full to also get exact line numbers.
 | `CAJETA_PROFILER` | unset | Set to anything to profile the run. Unset = off. |
 | `CAJETA_PROFILER_HZ` | `1000` | Samples per second. |
 | `CAJETA_PROFILER_RING` | `4096` | Samples buffered between the sampler and the writer. |
+| `CAJETA_PROFILER_GPU_RING` | capture default (`8192`) | **Device** records buffered between the GPU capture layer and the writer. Separate ring, separate limit: a busy kernel loop overflows this long before the sampler's. |
 | `CAJETA_PROFILER_OUT` | `cajeta.pftrace` | Where to write the trace. |
 
 The trace is written when `main` returns, and also when a program ends through
@@ -74,6 +75,71 @@ fills rather than blocking, because blocking would perturb the very program it
 is measuring — but a profile that lost a third of its samples looks exactly as
 authoritative as a complete one. If `dropped_per_mille` is not near zero, raise
 `CAJETA_PROFILER_RING` or lower `CAJETA_PROFILER_HZ` and run again.
+
+A program that keeps a GPU busy needs a bigger ring than the default: a tight
+kernel loop measured **40% sample drops** at `4096`, and `CAJETA_PROFILER_RING=65536`
+brought it to nothing.
+
+### Device records drop separately
+
+The run record carries a second set for the device side — **`gpu_records_dropped`**,
+`gpu_records_kept`, and `gpu_dropped_per_mille`. They count what the GPU capture
+ring lost, which is a *different* ring from the sampler's and fills far faster:
+one kernel launch is one record, so a loop issuing tens of thousands of launches
+overruns the `8192` default while `samples_dropped` stays at zero. A run that
+kept 8,192 of 56,843 launches is not a quiet profile — it is a profile missing
+six launches in seven.
+
+The capture ring **overwrites**, so what survives is the *most recent* records
+and what is lost is the oldest — a truncated profile of the end of the run, not
+a thinned sample of all of it. Raise `CAJETA_PROFILER_GPU_RING` until
+`gpu_dropped_per_mille` reads zero; it costs one `CajetaGpuEvent` per slot and
+nothing at all when the profiler is off.
+
+### A per-kernel table without opening the IDE
+
+The common question about a GPU run — *which kernel cost what* — is a query, not
+a picture. Until `cajeta profile summary` lands, Perfetto's `trace_processor_shell`
+answers it against the same trace:
+
+```sql
+-- per-kernel count / total / average, per device queue
+select t.name as track, s.name as kernel, count(*) as n,
+       sum(s.dur) as total_ns, cast(avg(s.dur) as int) as avg_ns
+from slice s join track t on s.track_id = t.id
+where t.name like 'queue %'
+group by t.name, s.name
+order by total_ns desc;
+```
+
+```
+"queue 98837250949296","saxpy",24,399994,16666
+"queue 98837251727488","saxpy",24,361439,15059
+"queue 98837250949296","vecAdd",24,360437,15018
+"queue 98837250949296","scale",24,271832,11326
+```
+
+`where t.name like 'queue %'` is what restricts this to DEVICE work: host frames
+live on `cajeta.thread.*` tracks and would otherwise be summed in beside the
+kernels. Drop the `t.name` from the select and the `group by` to total a kernel
+across every queue.
+
+For a window, anchor on the first device slice rather than absolute timestamps,
+which are host-clock nanoseconds and differ every run:
+
+```sql
+with base as (select min(ts) as t0 from slice s join track t on s.track_id=t.id
+              where t.name like 'queue %')
+select s.name as kernel, count(*) as n, sum(s.dur) as total_ns,
+       cast(avg(s.dur) as int) as avg_ns, max(s.dur) as max_ns
+from slice s join track t on s.track_id = t.id, base
+where t.name like 'queue %'
+  and s.ts - base.t0 between 0 and 20000000     -- first 20 ms
+group by s.name
+order by total_ns desc;
+```
+
+Run either with `trace_processor_shell -q <file>.sql <trace>.pftrace`.
 
 ### What sampling can and cannot tell you
 
