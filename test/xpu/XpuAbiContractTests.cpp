@@ -13,6 +13,7 @@
 #include <string>
 
 #include "cajeta_xpu_abi.h"   // the single source of truth being tested
+#include "cajeta/xpu/vulkan/VulkanDriver.h"
 
 namespace {
 
@@ -64,3 +65,14 @@ TEST(XpuAbiContractTests, deviceIdOutOfRangeIsDefinedNoOp) {
 }
 
 }  // namespace
+
+// apple-vulkan 1.1.5 — the compiler-side driver and the runtime bitcode are
+// compiled by different compilers with different include paths, so they can
+// disagree about whether Vulkan is available. On macOS both silently stubbed for
+// every release to date. Pin them together.
+extern "C" int32_t __cajeta_xpu_vk_built(void);
+
+TEST(XpuAbiContractTests, vulkanAvailabilityAgreesAcrossCompilerAndRuntime) {
+    EXPECT_EQ(__cajeta_xpu_vk_built() != 0,
+              ::cajeta::xpu::vulkan::VulkanDriver::builtWithVulkan());
+}

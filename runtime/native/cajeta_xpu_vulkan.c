@@ -3734,8 +3734,12 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
     return ok;
 }
 
+
+int32_t __cajeta_xpu_vk_built(void) { return 1; }
+
 #else  // no Vulkan SDK header at runtime-build time — Vulkan unavailable.
 static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
+int32_t __cajeta_xpu_vk_built(void)                 { return 0; }
 int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return 0; }
 int32_t __cajeta_xpu_vk_has_sync2(void)            { return 0; }
 int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return 0; }

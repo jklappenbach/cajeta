@@ -113,7 +113,7 @@ else()
                 ${_cajeta_zmq_win_hint}
                 /opt/homebrew/opt/zeromq/include
                 /usr/local/opt/zeromq/include
-            PATHS /usr/include /usr/local/include)
+            PATHS /nonexistent/vkgate NO_DEFAULT_PATH)
     find_library(ZMQ_LIBRARY
             NAMES zmq libzmq libzmq.so.5 libzmq.dylib
             HINTS
@@ -155,6 +155,33 @@ option(CAJETA_REQUIRE_ZMQ "Fail configure when libzmq is absent" OFF)
 if(CAJETA_REQUIRE_ZMQ AND NOT CAJETA_ZMQ_TARGET)
     message(FATAL_ERROR "CAJETA_REQUIRE_ZMQ=ON but libzmq was not found — "
             "`cajeta kernel` would be missing from this build.")
+endif()
+
+# Vulkan headers. Header-only by design: the runtime dlopens libvulkan at run
+# time and links nothing, so only the include path matters. Detection is
+# `__has_include(<vulkan/vulkan.h>)` in BOTH cajeta_lib and the runtime bitcode
+# — and until this block existed neither was told where to look on macOS, so
+# every macOS binary shipped with the whole Vulkan path silently stubbed out.
+find_path(CAJETA_VULKAN_INCLUDE_DIR vulkan/vulkan.h
+        HINTS
+            $ENV{VULKAN_SDK}/include
+            /opt/homebrew/opt/vulkan-headers/include
+            /usr/local/opt/vulkan-headers/include
+            ${CAJETA_MSYS_MINGW_ROOT}/include
+        PATHS /usr/include /usr/local/include)
+if(CAJETA_VULKAN_INCLUDE_DIR)
+    message(STATUS "Found Vulkan headers -> ${CAJETA_VULKAN_INCLUDE_DIR}")
+else()
+    message(STATUS "Vulkan headers not found — the Vulkan XPU backend will be "
+            "compiled out. Install libvulkan-dev (Linux), "
+            "brew install vulkan-headers (macOS), or set VULKAN_SDK.")
+endif()
+# As with CAJETA_REQUIRE_ZMQ: a capability missing from a RELEASE must be a
+# configure error, not a warning nobody reads.
+option(CAJETA_REQUIRE_VULKAN "Fail configure when the Vulkan headers are absent" OFF)
+if(CAJETA_REQUIRE_VULKAN AND NOT CAJETA_VULKAN_INCLUDE_DIR)
+    message(FATAL_ERROR "CAJETA_REQUIRE_VULKAN=ON but the Vulkan headers were "
+            "not found — the Vulkan XPU backend would be missing from this build.")
 endif()
 
 # The major cajeta's codegen is written against. Pinned, and REQUESTED rather
@@ -636,6 +663,9 @@ if(APPLE)
         message(STATUS "CAJETA_RT macOS SDK: ${CAJETA_MACOS_SDK}")
     endif()
 endif()
+if(CAJETA_VULKAN_INCLUDE_DIR)
+    list(APPEND CAJETA_RT_FLAGS "-I${CAJETA_VULKAN_INCLUDE_DIR}")
+endif()
 
 # cajeta_runtime.c is a single TU that `#include`s the per-subsystem native
 # sources (cajeta_net_*.c, cajeta_hash_*.c, …). A bare `DEPENDS` on the top
@@ -1094,6 +1124,9 @@ target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${ANTLR4_INCLUDE_DIR}
         ${ANTLR_CajetaGrammarLexer_OUTPUT_DIR}
         ${ANTLR_CajetaGrammarParser_OUTPUT_DIR})
+if(CAJETA_VULKAN_INCLUDE_DIR)
+    target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_VULKAN_INCLUDE_DIR})
+endif()
 if(CAJETA_HAS_LLD)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_LLD=1)
     target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_LLD_INCLUDE_DIR})

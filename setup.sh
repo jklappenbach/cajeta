@@ -175,6 +175,7 @@ install_linux_apt() {
         vim-common
         libxxhash-dev
         libssl-dev
+        libvulkan-dev
         # src/CMakeLists.txt asks for these with find_package(... REQUIRED),
         # so a box without them cannot configure at all. They were absent from
         # this list until 2026-08-29 and nobody noticed, because every machine
@@ -239,6 +240,7 @@ install_macos_brew() {
     local formulas=(
         cmake ninja "${BREW_LLVM}" antlr4-cpp-runtime openjdk@21
         googletest glog zstd xxhash
+        vulkan-headers vulkan-loader
     )
     echo "[deps] running: brew install ${formulas[*]}"
     brew install "${formulas[@]}"
