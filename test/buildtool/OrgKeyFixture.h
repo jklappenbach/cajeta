@@ -116,6 +116,13 @@ namespace cajeta::buildtool::testing {
         std::string keyId = "k1";
         std::string keyNotBefore = "2020-01-01T00:00:00Z";
         std::string keyNotAfter = "2030-01-01T00:00:00Z";
+        // EMPTY means omit the field, which is the only way to build the
+        // document spec 2.9.2 refuses. A default that could not be removed
+        // would make that test unwritable.
+        std::string issuedAt = "2026-01-01T00:00:00Z";
+        // Empty means omit — the contact is optional (spec 2.10).
+        std::string securityContactUri;
+        std::string securityContactLabel;
     };
 
     inline std::string orgDocumentPayload(const OrgDocumentSpec& spec,
@@ -127,7 +134,19 @@ namespace cajeta::buildtool::testing {
             if (i) p << ",";
             p << "\"" << spec.namespaces[i] << "\"";
         }
-        p << "],\"not-after\":\"" << spec.notAfter << "\","
+        p << "]";
+        if (!spec.issuedAt.empty()) {
+            p << ",\"issued-at\":\"" << spec.issuedAt << "\"";
+        }
+        if (!spec.securityContactUri.empty()) {
+            p << ",\"security-contact\":{\"uri\":\""
+              << spec.securityContactUri << "\"";
+            if (!spec.securityContactLabel.empty()) {
+                p << ",\"label\":\"" << spec.securityContactLabel << "\"";
+            }
+            p << "}";
+        }
+        p << ",\"not-after\":\"" << spec.notAfter << "\","
           << "\"keys\":[{\"id\":\"" << spec.keyId << "\","
           << "\"algorithm\":\"ed25519\","
           << "\"public-key\":\"" << jsonEscapePem(readWholeFile(orgKey.pub))
@@ -156,6 +175,26 @@ namespace cajeta::buildtool::testing {
         p << "{\"name\":\"" << name << "\",\"version\":\"" << version
           << "\",\"sha256\":\"" << sha256 << "\",\"organization\":\""
           << organization << "\"}";
+        return p.str();
+    }
+
+    // The same, carrying an explicit `retracted` (spec 7.6.2). Separate from
+    // releasePayload so the tests that leave the field ABSENT keep using a
+    // payload that genuinely omits it — absent and false must stay
+    // distinguishable at the fixture level, or 9.1.4 tests nothing.
+    inline std::string retractedReleasePayload(const std::string& name,
+                                               const std::string& version,
+                                               const std::string& sha256,
+                                               const std::string& organization,
+                                               bool retracted,
+                                               const std::string& reason = "") {
+        std::ostringstream p;
+        p << "{\"name\":\"" << name << "\",\"version\":\"" << version
+          << "\",\"sha256\":\"" << sha256 << "\",\"organization\":\""
+          << organization << "\",\"retracted\":"
+          << (retracted ? "true" : "false");
+        if (!reason.empty()) p << ",\"retracted-reason\":\"" << reason << "\"";
+        p << "}";
         return p.str();
     }
 

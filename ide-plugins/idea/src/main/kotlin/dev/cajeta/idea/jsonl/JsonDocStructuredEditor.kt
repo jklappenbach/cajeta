@@ -76,7 +76,7 @@ class JsonDocStructuredEditor(
         panel.add(banner, BorderLayout.SOUTH)
         banner.isVisible = false
         cardPanel.add(JBScrollPane(errorLabel), ERROR)
-        cardPanel.add(JBScrollPane(JBTable(flatTableModel)), TABLE)
+        cardPanel.add(JBScrollPane(JsonlRowsTable(flatTableModel)), TABLE)
         panel.add(cardPanel, BorderLayout.CENTER)
         document?.addDocumentListener(documentListener)
         rebuild()

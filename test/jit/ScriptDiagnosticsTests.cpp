@@ -89,7 +89,7 @@ TEST(ScriptDiagnosticsTests, traceHidesSyntheticNames) {
         "try {\n"                                                 // 4
         "    boom();\n"                                           // 5
         "} catch (Exception e) {\n"                               // 6
-        "    StackFrame[] fs = e.getStackTrace();\n"              // 7
+        "    StackFrame[] fs #= e.getStackTrace();\n"              // 7
         "    if (fs.count() == 0) { code = 10; }\n"               // 8
         "    else { code = check(fs); }\n"                        // 9
         "}\n"                                                     // 10

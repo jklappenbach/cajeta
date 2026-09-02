@@ -353,6 +353,7 @@ namespace cajeta::buildtool {
             }
         }
         if (auto b = obj->getBoolean("bundle")) cap.bundle = *b;
+        if (auto b = obj->getBoolean("revocation")) cap.revocation = *b;
         if (auto b = obj->getBoolean("content-addressed")) {
             cap.contentAddressed = *b;
         }
@@ -792,6 +793,27 @@ namespace cajeta::buildtool {
         std::string body;
         auto code = getToString(state_->curl, url, auth_, body);
         if (!code) return code.takeError();
+        if (*code == 404) return std::optional<std::string>{};
+        if (*code < 200 || *code >= 300) {
+            return err("HTTP " + std::to_string(*code) + " from " + url);
+        }
+        return std::optional<std::string>{body};
+    }
+
+    llvm::Expected<std::optional<std::string>>
+    HttpRepository::revocations() const {
+        auto caps = capabilities();
+        if (!caps) return caps.takeError();
+        if (!caps->supportsV2()) return std::optional<std::string>{};
+
+        std::string url = joinUrl(baseUrl_, "v2/revocations");
+        std::string body;
+        auto code = getToString(state_->curl, url, auth_, body);
+        if (!code) return code.takeError();
+        // Absence reported faithfully. Whether it is fatal depends on the
+        // `revocation` capability, and that decision lives in
+        // revocationFor() rather than here — a driver that refused on its
+        // own would refuse for repositories that never claimed to serve it.
         if (*code == 404) return std::optional<std::string>{};
         if (*code < 200 || *code >= 300) {
             return err("HTTP " + std::to_string(*code) + " from " + url);

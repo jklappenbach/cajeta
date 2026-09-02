@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -186,6 +187,9 @@ void runBracketBody() {
     auto vkSpans = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_vk_spans"));
     auto vkUnavailable = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_vk_unavailable"));
     auto validBits = reinterpret_cast<uint32_t (*)(void)>(sym("__cajeta_prof_vk_valid_bits"));
+    auto vkPeriodNs = reinterpret_cast<double (*)(void)>(sym("__cajeta_prof_vk_period_ns"));
+    auto clockValid = reinterpret_cast<int32_t (*)(int32_t)>(
+        sym("__cajeta_prof_clock_valid"));
     auto checkDispatch = reinterpret_cast<int32_t (*)(const CajetaGpuEvent*)>(
         sym("__cajeta_prof_check_dispatch"));
     auto clockConfidence = reinterpret_cast<int32_t (*)(int32_t)>(
@@ -236,13 +240,46 @@ void runBracketBody() {
            "event-tier spans — a reuse or availability failure (§5.5.4/§5.5.5)";
     EXPECT_EQ(vkSpans(), 4);
 
+    // The flag alone names WHICH rule broke but not by how much or in which
+    // direction, and this suite's only reader is a CI leg an hour away. On
+    // PHOENIX (run 33328180931) all four spans came back OUTSIDE_HOST with
+    // nothing to say whether the device clock leads the host by microseconds
+    // or sits in a different epoch entirely — one bit for an hour. So the
+    // failure carries the arithmetic that produced it.
+    auto describe = [&](const CajetaGpuEvent* e) {
+        const int64_t upper = e->resolved_ns ? e->resolved_ns : e->host_return_ns;
+        std::ostringstream o;
+        o << "\n  tier=" << e->tier
+          << " launch_id=" << (long long) e->launch_id
+          << " valid_bits=" << (validBits ? validBits() : 0u)
+          << " period_ns=" << (vkPeriodNs ? vkPeriodNs() : 0.0)
+          << " clock_valid="
+          << (clockValid ? clockValid(CAJ_GPU_BACKEND_VULKAN) : -1)
+          << "\n  dev_start - host_launch = "
+          << (long long) (e->dev_start_ns - e->host_launch_ns) << " ns"
+          << (e->dev_start_ns < e->host_launch_ns ? "  (STARTS BEFORE ITS LAUNCH)" : "")
+          << "\n  dev_end   - upper       = "
+          << (long long) (e->dev_end_ns - upper) << " ns"
+          << (e->dev_end_ns > upper ? "  (ENDS AFTER ITS RESOLUTION)" : "")
+          << "\n  device span = " << (long long) (e->dev_end_ns - e->dev_start_ns)
+          << " ns, host span = "
+          << (long long) (e->host_return_ns - e->host_launch_ns) << " ns"
+          << "\n  raw: dev=[" << (long long) e->dev_start_ns << ","
+          << (long long) e->dev_end_ns << "] host=["
+          << (long long) e->host_launch_ns << "," << (long long) e->host_return_ns
+          << "] resolved=" << (long long) e->resolved_ns;
+        return o.str();
+    };
+
     for (const CajetaGpuEvent* e : spans) {
         EXPECT_GT(e->dev_end_ns, e->dev_start_ns)
-            << "a device bracket that does not advance is not a measurement";
-        EXPECT_GT(e->resolved_ns, 0);
+            << "a device bracket that does not advance is not a measurement"
+            << describe(e);
+        EXPECT_GT(e->resolved_ns, 0) << describe(e);
         EXPECT_EQ(checkDispatch(e), CAJETA_SPAN_OK)
-            << "a healthy bracket was flagged (flags=" << checkDispatch(e) << ")";
-        EXPECT_GT(e->launch_id, 0);
+            << "a healthy bracket was flagged (flags=" << checkDispatch(e) << ")"
+            << describe(e);
+        EXPECT_GT(e->launch_id, 0) << describe(e);
     }
     // Distinct, ordered spans: a stale slot value (§5.5.5) would duplicate or
     // disorder them.

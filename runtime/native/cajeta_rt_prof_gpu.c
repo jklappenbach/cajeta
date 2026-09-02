@@ -517,6 +517,53 @@ static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
     caj_gpu_rocm_collect, caj_gpu_rocm_calibrate
 };
 
+// ── NVIDIA / CUPTI (Unit 12, spec §5.4, §6.2) ─────────────────────────────
+//
+// Structurally the ROCm backend: the host window is filled either way, the
+// launch id is pushed as CUPTI's external correlation id so the kernel records
+// that arrive later can be tied back to it, and the launch parks rather than
+// publishing — `caj_cupti_consume_buffer` resolves it through
+// __cajeta_prof_gpu_resolve_dispatch when the records come in.
+//
+// This vtbl is what 12.2.d was missing. The push/pop pair existed and was
+// tested by calling it directly; `caj_gpu_vtbl_for` had no CUDA arm, so every
+// CAJ_GPU_BACKEND_CUDA launch went to the CPU lane and nothing ever pushed.
+static int32_t caj_gpu_cuda_init(void) { return __cajeta_prof_cupti_tracing(); }
+
+static int32_t caj_gpu_cuda_begin(CajetaGpuEvent* ev) {
+    ev->dev_start_ns = __cajeta_currentTimeNanos();
+    ev->tier = CAJETA_PROF_TIER_HOST;
+    __cajeta_prof_cupti_push(ev->launch_id);
+    return 1;
+}
+
+// Returns 0 for "I have taken this one" — the publish contract on
+// __cajeta_prof_gpu_launch, same as ROCm's.
+static int32_t caj_gpu_cuda_end(CajetaGpuEvent* ev) {
+    ev->dev_end_ns = __cajeta_currentTimeNanos();
+    __cajeta_prof_cupti_pop();
+    if (!__cajeta_prof_cupti_tracing()) return 1;  // no records will come
+    return caj_gpu_park(ev) ? 0 : 1;
+}
+
+static int32_t caj_gpu_cuda_collect(void) {
+    __cajeta_prof_cupti_flush();
+    // Whatever the flush did not claim has waited long enough; its host window
+    // is still true, so it goes out at host tier rather than being held for a
+    // record that may never arrive.
+    return caj_gpu_drain_pending();
+}
+
+// Records arrive already in the host domain, stamped by the timestamp callback
+// this backend registers before enabling any kind (§6.2, 12.2.b) — so there is
+// no after-the-fact fit to run here, exactly as for ROCm.
+static int32_t caj_gpu_cuda_calibrate(void) { return 1; }
+
+static const CajetaGpuBackendVtbl caj_gpu_cuda_vtbl = {
+    "cuda", caj_gpu_cuda_init, caj_gpu_cuda_begin, caj_gpu_cuda_end,
+    caj_gpu_cuda_collect, caj_gpu_cuda_calibrate
+};
+
 // ── Vulkan (Unit 13, spec §5.5) ───────────────────────────────────────────
 //
 // The mechanics live in cajeta_xpu_vulkan.c — the query pool is device state
@@ -655,13 +702,19 @@ int32_t __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
     return 1;
 }
 
-// Backends that have not landed yet (NVIDIA is Unit 12) degrade to host
-// submit-to-complete rather than to nothing (§5.1.4). The tier says so, so a
-// consumer can weight it (§5.6.6).
+// A backend whose SDK is not usable here degrades to host submit-to-complete
+// rather than to nothing (§5.1.4). The tier says so, so a consumer can weight
+// it (§5.6.6).
 static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
     if (backend == CAJ_GPU_BACKEND_HIP
             && __cajeta_prof_rocm_state() == CAJETA_ROCM_READY)
         return &caj_gpu_rocm_vtbl;
+    // tracing(), not state(): a CUPTI that bound but has no activity kind
+    // enabled — or that degraded because something else subscribed first
+    // (§5.4.3) — will produce no records, so parking a launch for one would
+    // hold it for a record that cannot come.
+    if (backend == CAJ_GPU_BACKEND_CUDA && __cajeta_prof_cupti_tracing())
+        return &caj_gpu_cuda_vtbl;
     if (backend == CAJ_GPU_BACKEND_VULKAN && __cajeta_prof_vk_timing_ok())
         return &caj_gpu_vk_vtbl;
     return &caj_gpu_cpu_vtbl;

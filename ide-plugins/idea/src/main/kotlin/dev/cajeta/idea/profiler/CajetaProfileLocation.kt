@@ -1,5 +1,7 @@
 package dev.cajeta.idea.profiler
 
+import com.intellij.openapi.fileChooser.FileChooser
+import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -77,6 +79,20 @@ object CajetaProfileLocation {
     fun profileDirectory(project: Project): File {
         val base = project.basePath?.let(::File) ?: File(".")
         return File(base, PROFILE_DIR)
+    }
+
+    /**
+     * The file chooser both routes use — the Tools action and the window's own
+     * Open button (spec §5.4/§5.6). One implementation, so the two cannot
+     * disagree about the filter or where they start looking.
+     */
+    fun choose(project: Project): File? {
+        val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
+            .withTitle("Open Cajeta Profile")
+            .withDescription("Select a .pftrace written by a profiled run")
+            .withFileFilter { it.extension == "pftrace" }
+        val chosen = FileChooser.chooseFile(descriptor, project, defaultDirectory(project))
+        return chosen?.let { File(it.path) }
     }
 
     /** Where the Open action starts looking. */

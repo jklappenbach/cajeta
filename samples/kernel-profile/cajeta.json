@@ -1,0 +1,62 @@
+{
+    // kernel-profile — a workload shaped to DEMONSTRATE THE PROFILER on GPU
+    // and kernel work, not to benchmark it (that is samples/profile).
+    //
+    // Build + run from this directory:
+    //   cajeta gpu         → build/kernel-profile-gpu  (device tracks)
+    //   cajeta cpu         → build/kernel-profile-cpu  (host lanes only)
+    //   ./run.sh [gpu|cpu] → build, then run with the profiler armed
+    //
+    // Two build tasks on purpose. `gpu` targets the accelerator and is what
+    // produces device queues and kernel slices; `cpu` is the portable control
+    // and produces a trace with host lanes only. The program prints which
+    // backend it actually got, so the two are never confused for one another.
+
+    "details": {
+        "name":                "kernel-profile",
+        "version":             "0.1.0",
+        "description":         "GPU/kernel work shaped for reading in the profiler",
+        "license":             "Apache-2.0",
+        "authors":             ["cajeta"],
+        "cajeta-lang-version": "1.0"
+    },
+
+    "settings": {
+        "capabilities": [],
+        "dependencies": {},
+        "build": {
+            "source-root":  "src/main/cajeta",
+            "target":       "host",
+            "entry-method": "kernelprofile.KernelProfile::run"
+        }
+    },
+
+    "tasks": {
+
+        "gpu": {
+            "description": "Build for the AMD accelerator (gfx1151) — the trace gains device queues and kernel slices",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "debug",
+                              "xpu-backend": "amdgpu", "xpu-arch": "gfx1151" },
+                  "output-path": "build/kernel-profile-gpu", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "cpu": {
+            "description": "Portable build — host lanes only, the control for reading the gpu trace",
+            "actions": [
+                { "action": "build",
+                  "flavor": { "base": "debug", "xpu-backend": "cpu" },
+                  "output-path": "build/kernel-profile-cpu", "id": "art" }
+            ],
+            "outputs": { "path": "${art.path}", "sha256": "${art.sha256}" }
+        },
+
+        "clean": {
+            "description": "Wipe build outputs",
+            "actions": [ { "action": "clean" } ]
+        }
+    }
+}

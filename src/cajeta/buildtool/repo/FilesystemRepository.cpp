@@ -210,4 +210,11 @@ namespace cajeta::buildtool {
         return readIfPresent(doc, name_, "repository delegation");
     }
 
+    llvm::Expected<std::optional<std::string>>
+    FilesystemRepository::revocations() const {
+        namespace fs = std::filesystem;
+        fs::path doc = fs::path(root_) / ".well-known" / "revocations.json";
+        return readIfPresent(doc, name_, "revocation statement");
+    }
+
 } // namespace cajeta::buildtool

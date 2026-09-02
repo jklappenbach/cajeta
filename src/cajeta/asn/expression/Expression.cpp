@@ -4568,20 +4568,56 @@ bool cajetaRhsCarriesRedundantSharp(
         // the terminal and the element work with nothing between them naming
         // the user's own callback.
         //
-        // The frame is named for the DECLARING class with method `<lambda>`;
-        // the statement marks the body emits keep the line current, so a frame
-        // renders as `pkg.Type.<lambda>(File.cajeta:NN)` and two lambdas in one
-        // method stay distinguishable by line. Paired below — see the walk over
-        // this function's `ret`s before the builder is restored.
+        // The frame is named for the DECLARING class with method `<lambda>`,
+        // and its line is stamped at the push (see below) so a frame renders as
+        // `pkg.Type.<lambda>(File.cajeta:NN)` and two lambdas in one method stay
+        // distinguishable by line. This previously relied on the statement marks
+        // the body emits, which an EXPRESSION body never emits — see the mark
+        // itself for the measurement. Both the frame and the probe are closed in
+        // the walk over this function's `ret`s, before the builder is restored.
         {
             CajetaClassPtr lambdaOwner = outerMethod ? outerMethod->getParent()
                                                      : nullptr;
+            // lambda-frame-line 2.7 — a lambda NESTED in another lambda has no
+            // outer METHOD to be named from: the enclosing body clears the
+            // module's current method just below (the L1 dummy context), so
+            // `outerMethod` is null by the time the inner lambda generates.
+            // Without this the inner frame rendered `.<lambda>(App.cajeta:0)`
+            // with an empty declaring class. The structure stack still holds
+            // the class being compiled, and is the same source Identifier
+            // resolution and Scope naming already fall back to.
+            if (!lambdaOwner && !module->getStructureStack().empty()) {
+                lambdaOwner = module->getStructureStack().back();
+            }
             std::string typeName = (lambdaOwner && lambdaOwner->getQName())
                 ? lambdaOwner->getQName()->toCanonical() : std::string();
             std::string fileName = lambdaOwner ? lambdaOwner->getDeclaringFile()
                                                : std::string();
             if (fileName.empty()) fileName = module->remappedSourcePath();
             dbg::emitLineEnter(module, typeName, "<lambda>", fileName);
+            // lambda-frame-line 2.1/2.2 — stamp the line HERE, at the push,
+            // rather than leaving it to the body. Block::generateCode is the
+            // only site that emits a statement mark, so an expression body
+            // emitted none at all and the frame kept the zero it was pushed
+            // with: `(x) -> f(x)` rendered `<lambda>(File.cajeta:0)` on every
+            // surface that reads the shadow stack, while the block form beside
+            // it rendered a real line. Marking at the push also closes the
+            // window in a BLOCK body between this push and its first statement.
+            // A block's own marks still run after this one and advance the
+            // frame per statement, which is what 2.3 asks for.
+            //
+            // No gating needed: emitLineMark is already a no-op unless full
+            // debug info (or safepoints) is on, so a default build still
+            // reports no line, and unless `line > 0`, so the fallback below is
+            // safe when neither node carries a position.
+            int lambdaLine = body ? body->getSourceLine() : 0;
+            if (lambdaLine <= 0) lambdaLine = getSourceLine();
+            // A lambda inside a generic is inside a re-parsed snippet too, so
+            // it needs the same 9.2 correction the statement marks get. Guarded
+            // on > 0 because fileLineFor clamps to 1, and 1 is a real line
+            // whereas 0 means "no line".
+            if (lambdaLine > 0) lambdaLine = dbg::fileLineFor(module, lambdaLine);
+            dbg::emitLineMark(module, lambdaLine);
             // U10 (spec §3.1): the lambda gets its own instrumentation probe
             // for the same reason it gets its own shadow frame — a callback is
             // the user's code, and a profile that folds it into the terminal

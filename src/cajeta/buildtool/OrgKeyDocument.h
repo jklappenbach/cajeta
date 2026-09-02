@@ -38,12 +38,22 @@ namespace cajeta::buildtool {
         }
     };
 
+    // Where to report a vulnerability in what this organization publishes
+    // (spec §2.10). Signed because forging it has a victim: a mirror showing
+    // an attacker's address receives the report before the maintainer does.
+    struct SecurityContact {
+        std::string uri;    // mailto: or https:, never a bare address
+        std::string label;  // display only
+    };
+
     struct OrgKeyDocument {
         std::string organization;
         std::vector<std::string> namespaces;
         std::vector<OrgSigningKey> keys;
+        std::time_t issuedAt = 0;   // when it was produced (spec §2.9)
         std::time_t notAfter = 0;   // the document's own expiry
         std::string rootKeyId;      // which root signed it (spec §6.3)
+        SecurityContact securityContact;   // empty uri when absent
 
         // Keys inside their validity window at `now`. Empty is a legitimate
         // answer for a document whose keys have all expired, and the caller
@@ -70,10 +80,22 @@ namespace cajeta::buildtool {
     // or the document has expired. An expired document is an ERROR and not a
     // parsed-but-unusable value: nothing downstream should be able to hold
     // one and forget to check (spec §2.5).
+    // `seenIssuedAt` is the newest `issued-at` already accepted for this
+    // organization, or 0 for "nothing seen yet". An older document is
+    // REFUSED: expiry alone does not stop a replay, because a previous
+    // document is still validly signed and still inside its own window, and
+    // serving it reinstates every key the organization has since removed
+    // (spec §2.9).
+    //
+    // Defaulted, unlike the revocation parameter on
+    // `verifyAgainstOrgDocument`, because 0 is the CORRECT value on a first
+    // fetch rather than a way to skip the check. What guards against the
+    // check never being reached is a test on OrgKeyCache, not the signature.
     llvm::Expected<OrgKeyDocument> loadOrgKeyDocument(
         const std::string& envelopeJson,
         const std::vector<RootKey>& roots,
-        std::time_t now);
+        std::time_t now,
+        std::time_t seenIssuedAt = 0);
 
     // RFC 3339, UTC, seconds precision, `Z` only — the schema's `timestamp`.
     // Offsets are rejected rather than converted.

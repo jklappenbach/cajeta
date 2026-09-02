@@ -113,6 +113,20 @@ build-tsan/
 # the rule existed. Untrack it (`git rm --cached`), don't add another pattern.
 .cajeta/
 
+# Profiler traces. Any profiled run writes `cajeta.pftrace` into its WORKING
+# DIRECTORY (CAJETA_PROFILER=1, or CAJETA_PROFILER_OUT for another path), so
+# they appear wherever a sample or a test was run from — samples/tour and
+# samples/kernel-profile both produce one. Generated, per-run, and binary:
+# never authored, and useless to diff.
+#
+# The exact name only — deliberately NOT `*.pftrace`. The plugin's test
+# fixtures are traces too (ide-plugins/idea/src/test/resources/profiler/
+# {tour,gpu,amdgpu}.pftrace) and are AUTHORED inputs. A broad glob leaves the
+# tracked ones alone but silently swallows the next fixture someone adds, which
+# is the kind of rule that is only discovered when a test fails on CI and
+# passes locally.
+cajeta.pftrace
+
 # Per-plan throwaway regression manifest (template: test/regression_manifest.example.txt)
 test/regression_manifest.txt
 

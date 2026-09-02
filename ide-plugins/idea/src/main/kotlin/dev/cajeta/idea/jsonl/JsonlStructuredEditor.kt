@@ -25,7 +25,7 @@ class JsonlStructuredEditor(private val file: VirtualFile) : UserDataHolderBase(
 
     private val tableModel = JsonlRowsTableModel()
     // No width ceiling (§3.1.8): content-sized columns, horizontal scrolling.
-    private val table = JBTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
+    private val table = JsonlRowsTable(tableModel).apply { autoResizeMode = JTable.AUTO_RESIZE_OFF }
     private val status = JLabel()
     private val prev = JButton("◀ Prev")
     private val next = JButton("Next ▶")
@@ -78,7 +78,7 @@ class JsonlStructuredEditor(private val file: VirtualFile) : UserDataHolderBase(
     private fun render() {
         val visible = columns.visible()
         tableModel.update(visible, rows)
-        JsonlTableSupport.applyWidths(table, visible, columns)
+        JsonlTableSupport.applyWidths(table, columns)
     }
 
     /** Read one window, opening (and closing) a fresh stream — the reader stops

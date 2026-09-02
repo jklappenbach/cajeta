@@ -83,13 +83,7 @@ class OpenCajetaProfileAction : AnAction(), DumbAware {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
-            .withTitle("Open Cajeta Profile")
-            .withDescription("Select a .pftrace written by a profiled run")
-            .withFileFilter { it.extension == "pftrace" }
-
-        val start = CajetaProfileLocation.defaultDirectory(project)
-        val chosen = FileChooser.chooseFile(descriptor, project, start) ?: return
-        CajetaProfilerToolWindow.open(project, File(chosen.path))
+        val chosen = CajetaProfileLocation.choose(project) ?: return
+        CajetaProfilerToolWindow.open(project, chosen)
     }
 }

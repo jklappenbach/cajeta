@@ -63,7 +63,7 @@ class JcefFlameGraphView : FlameGraphView {
 
         val frames = rects.withIndex().joinToString("\n") { (i, r) ->
             val q = model.qualityOf(r.node)
-            val colour = FlameColors.cssOf(q, r.node.unclosed)
+            val colour = FlameColors.cssOf(q, r.node.unclosed, r.depth)
             val flagged = if (FlameColors.hatched(q)) " flagged" else ""
             // Every reason the measurement is not to be trusted goes in the
             // tooltip. §8.6 asks that a degraded measurement not be presented as

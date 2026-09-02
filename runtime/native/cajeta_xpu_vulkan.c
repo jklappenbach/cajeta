@@ -275,6 +275,34 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     memset(&ici, 0, sizeof(ici));
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+#if defined(VK_KHR_portability_enumeration)
+    // Without this the loader hides portability ICDs (MoltenVK) entirely.
+    const char* instExts[1];
+    PFN_vkEnumerateInstanceExtensionProperties enumInstExt =
+        (PFN_vkEnumerateInstanceExtensionProperties)
+        g_xpu_vk.getInstanceProcAddr(VK_NULL_HANDLE,
+                                     "vkEnumerateInstanceExtensionProperties");
+    if (enumInstExt) {
+        uint32_t n = 0;
+        enumInstExt(NULL, &n, NULL);
+        if (n > 0 && n <= 512) {
+            VkExtensionProperties* e = (VkExtensionProperties*)
+                malloc(n * sizeof(VkExtensionProperties));
+            if (e) {
+                enumInstExt(NULL, &n, e);
+                for (uint32_t i = 0; i < n; ++i)
+                    if (strcmp(e[i].extensionName,
+                               VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0) {
+                        instExts[0] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+                        ici.enabledExtensionCount = 1;
+                        ici.ppEnabledExtensionNames = instExts;
+                        ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+                    }
+                free(e);
+            }
+        }
+    }
+#endif
     if (g_xpu_vk.vkCreateInstance(&ici, NULL, &g_xpu_vk.instance) != VK_SUCCESS)
         return 0;
 
@@ -532,12 +560,24 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     // calibrated timestamps is an extension with an ABI-identical KHR/EXT
     // pair. None of them is load-bearing for dispatch — a device without any
     // still runs kernels, and the profiler degrades per §10.4.
-    int wantHostQueryReset = 0, wantSync2 = 0, wantCalTs = 0;
+    int wantHostQueryReset = 0, wantSync2 = 0, wantCalTs = 0, wantVmm = 0;
+    uint32_t devApi = VK_API_VERSION_1_0;
+    {
+        PFN_vkGetPhysicalDeviceProperties gp =
+            (PFN_vkGetPhysicalDeviceProperties) g_xpu_vk.getInstanceProcAddr(
+                g_xpu_vk.instance, "vkGetPhysicalDeviceProperties");
+        VkPhysicalDeviceProperties pp;
+        if (gp) { gp(g_xpu_vk.phys, &pp); devApi = pp.apiVersion; }
+    }
 #if defined(VK_VERSION_1_2)
-    if (getFeatures2) {
+    if (getFeatures2 && devApi >= VK_API_VERSION_1_2) {
         VkPhysicalDeviceHostQueryResetFeatures qhr;
         memset(&qhr, 0, sizeof(qhr));
         qhr.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES;
+        VkPhysicalDeviceVulkanMemoryModelFeatures qvmm;
+        memset(&qvmm, 0, sizeof(qvmm));
+        qvmm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+        qhr.pNext = &qvmm;
         VkPhysicalDeviceFeatures2 qf2b;
         memset(&qf2b, 0, sizeof(qf2b));
         qf2b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -546,16 +586,17 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         VkPhysicalDeviceSynchronization2Features qs2;
         memset(&qs2, 0, sizeof(qs2));
         qs2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES;
-        qhr.pNext = &qs2;
+        qvmm.pNext = (devApi >= VK_API_VERSION_1_3) ? (void*)&qs2 : NULL;
 #endif
         getFeatures2(g_xpu_vk.phys, &qf2b);
         wantHostQueryReset = qhr.hostQueryReset ? 1 : 0;
+        wantVmm = qvmm.vulkanMemoryModel ? 1 : 0;
 #if defined(VK_VERSION_1_3)
-        wantSync2 = qs2.synchronization2 ? 1 : 0;
+        wantSync2 = (devApi >= VK_API_VERSION_1_3 && qs2.synchronization2) ? 1 : 0;
 #endif
     }
 #endif
-#if defined(VK_EXT_calibrated_timestamps)
+    int wantPortSubset = 0;
     if (enumDevExt) {
         uint32_t extCount = 0;
         enumDevExt(g_xpu_vk.phys, NULL, &extCount, NULL);
@@ -565,15 +606,20 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             if (exts) {
                 enumDevExt(g_xpu_vk.phys, NULL, &extCount, exts);
                 for (uint32_t e = 0; e < extCount; ++e) {
+#if defined(VK_EXT_calibrated_timestamps)
                     if (strcmp(exts[e].extensionName,
                                VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) == 0)
                         wantCalTs = 1;
+#endif
+                    // Spec requires enabling this whenever it is advertised.
+                    if (strcmp(exts[e].extensionName,
+                               "VK_KHR_portability_subset") == 0)
+                        wantPortSubset = 1;
                 }
                 free(exts);
             }
         }
     }
-#endif
 
     float prio = 1.0f;
     VkDeviceQueueCreateInfo qci;
@@ -648,8 +694,6 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         dci.pNext = &enAi64;
     }
     if (nDevExts > 0) {
-        dci.enabledExtensionCount = nDevExts;
-        dci.ppEnabledExtensionNames = devExts;
     }
 
     // Prepend shaderInt8 to whatever feature chain is set (the RT chain, or NULL).
@@ -735,13 +779,25 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         dci.pNext = &enS2;
     }
 #endif
+    if (wantPortSubset) devExts[nDevExts++] = "VK_KHR_portability_subset";
+#if defined(VK_VERSION_1_2)
+    VkPhysicalDeviceVulkanMemoryModelFeatures enVmm;
+    if (wantVmm) {
+        memset(&enVmm, 0, sizeof(enVmm));
+        enVmm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_MEMORY_MODEL_FEATURES;
+        enVmm.vulkanMemoryModel = VK_TRUE;
+        enVmm.pNext = (void*) dci.pNext;
+        dci.pNext = &enVmm;
+    }
+#endif
 #if defined(VK_EXT_calibrated_timestamps)
     if (wantCalTs) {
         devExts[nDevExts++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME;
-        dci.enabledExtensionCount = nDevExts;
-        dci.ppEnabledExtensionNames = devExts;
     }
 #endif
+
+    dci.enabledExtensionCount = nDevExts;
+    dci.ppEnabledExtensionNames = nDevExts ? devExts : NULL;
 
     if (g_xpu_vk.vkCreateDevice(g_xpu_vk.phys, &dci, NULL, &g_xpu_vk.device)
             != VK_SUCCESS)

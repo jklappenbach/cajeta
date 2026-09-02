@@ -295,6 +295,16 @@ int32_t     __cajeta_prof_cupti_has_timestamp_callback(void);
 // from the probe so it is testable on machines that are not WSL.
 int32_t     __cajeta_prof_cupti_version_is_wsl(const char* procVersion);
 int32_t     __cajeta_prof_cupti_on_wsl(void);
+/* 12.2.d — the external-correlation chokepoint, called from the CUDA vtbl's
+ * begin/end. `pushes`/`pops` count ATTEMPTS at entry, so a test can tell that
+ * the launch path is wired to them apart from their working when called
+ * directly. */
+int32_t     __cajeta_prof_cupti_tracing(void);
+int32_t     __cajeta_prof_cupti_push(int64_t launchId);
+int32_t     __cajeta_prof_cupti_pop(void);
+int64_t     __cajeta_prof_cupti_pushes(void);
+int64_t     __cajeta_prof_cupti_pops(void);
+int32_t     __cajeta_prof_cupti_flush(void);
 // How many launches are parked waiting for a device record, and the two ways a
 // parked launch can end up published at host tier instead: the table was full
 // when it launched (overflow), or its record never came back (unclaimed).

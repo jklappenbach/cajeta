@@ -52,7 +52,7 @@ planned, not implemented.)
 ## Diagnostics surface
 
 Every `Throwable` carries `getMessage()`, `getCause()` (an `Optional`),
-`getStackTrace()` (`StackFrame[]`, throw-site first, resolved from the
+`getStackTrace()` (`#StackFrame[]` — owned, bind with `#=`; throw-site first, resolved from the
 runtime's line-info shadow stack — no debug info needed),
 `printStackTrace()`, and `toJson()` (one NDJSON object: severity, code,
 message, category predicates, remediation, cause chain, frames). Pin a

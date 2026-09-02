@@ -14,6 +14,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
+#include <utility>
 #include <chrono>
 #include <cstring>
 #include <memory>
@@ -60,6 +62,21 @@ struct Cupti {
     int32_t (*push)(int64_t) = nullptr;
     int32_t (*pop)(void) = nullptr;
     int32_t (*tracing)(void) = nullptr;
+    int64_t (*pushes)(void) = nullptr;
+    int64_t (*pops)(void) = nullptr;
+    // 12.2.d — the seam side of the chokepoint.
+    int32_t (*launch)(const char*, int32_t, int32_t, int32_t, int32_t, int32_t,
+                      int32_t, int64_t, int64_t, int32_t, int32_t,
+                      void (*)(void*), void*) = nullptr;
+    const char* (*vtblName)(int32_t) = nullptr;
+    int32_t (*tierFor)(int32_t) = nullptr;
+    void    (*pendingReset)(void) = nullptr;
+    int32_t (*gpuFlush)(void) = nullptr;
+    int32_t (*enableKind)(int32_t) = nullptr;
+    int32_t (*kindsEnabled)(void) = nullptr;
+    int32_t (*sinkRegister)(int32_t (*)(const CajetaGpuEvent*, int32_t, void*),
+                            void*, int32_t) = nullptr;
+    int32_t (*sinkUnregister)(int32_t) = nullptr;
 };
 
 Cupti& cu() {
@@ -98,9 +115,95 @@ Cupti& cu() {
         x.push = reinterpret_cast<decltype(x.push)>(sym("__cajeta_prof_cupti_push"));
         x.pop = reinterpret_cast<decltype(x.pop)>(sym("__cajeta_prof_cupti_pop"));
         x.tracing = reinterpret_cast<decltype(x.tracing)>(sym("__cajeta_prof_cupti_tracing"));
+        x.pushes = reinterpret_cast<decltype(x.pushes)>(sym("__cajeta_prof_cupti_pushes"));
+        x.pops = reinterpret_cast<decltype(x.pops)>(sym("__cajeta_prof_cupti_pops"));
+        x.launch = reinterpret_cast<decltype(x.launch)>(sym("__cajeta_prof_gpu_launch"));
+        x.vtblName = reinterpret_cast<decltype(x.vtblName)>(sym("__cajeta_prof_gpu_backend_name"));
+        x.tierFor = reinterpret_cast<decltype(x.tierFor)>(sym("__cajeta_prof_gpu_backend_tier"));
+        x.pendingReset = reinterpret_cast<decltype(x.pendingReset)>(sym("__cajeta_prof_gpu_pending_reset"));
+        x.gpuFlush = reinterpret_cast<decltype(x.gpuFlush)>(sym("__cajeta_prof_gpu_flush"));
+        x.enableKind = reinterpret_cast<decltype(x.enableKind)>(sym("__cajeta_prof_cupti_enable_kind"));
+        x.kindsEnabled = reinterpret_cast<decltype(x.kindsEnabled)>(sym("__cajeta_prof_cupti_kinds_enabled"));
+        x.sinkRegister = reinterpret_cast<decltype(x.sinkRegister)>(sym("__cajeta_prof_gpu_sink_register"));
+        x.sinkUnregister = reinterpret_cast<decltype(x.sinkUnregister)>(sym("__cajeta_prof_gpu_sink_unregister"));
         return x;
     }();
     return c;
+}
+
+void noKernel(void*) {}
+
+int32_t dropSink(const CajetaGpuEvent*, int32_t, void*) { return 0; }
+
+// 12.3.b's judgment, factored out so the measurement and the test of the rule
+// are the SAME code. A second implementation of the rule in the test would
+// agree with itself while the published verdict did whatever it liked.
+struct LaneStats { double mean = 0; double spread = 0; };
+
+LaneStats laneStats(std::vector<double> v) {
+    LaneStats s;
+    if (v.empty()) return s;
+    std::sort(v.begin(), v.end());
+    double sum = 0;
+    for (double x : v) sum += x;
+    s.mean = sum / static_cast<double>(v.size());
+    s.spread = v.back() - v.front();
+    return s;
+}
+
+// A delta no larger than the two lanes' combined run-to-run spread has not
+// been measured — it has been bounded. The audit probe published 957.5 ns
+// against a 1320 ns spread and called it CUPTI's cost.
+bool overheadIsResolvable(const LaneStats& armed, const LaneStats& base,
+                          double* deltaOut, double* noiseOut) {
+    const double delta = armed.mean - base.mean;
+    const double noise = armed.spread + base.spread;
+    if (deltaOut) *deltaOut = delta;
+    if (noiseOut) *noiseOut = noise;
+    return std::abs(delta) > noise;
+}
+
+// An armed seam. `__cajeta_prof_gpu_launch` returns before it touches a vtbl
+// when no sink is live (7.1.e) — so a launch test without this measures
+// nothing, which is how the first draft of these tests passed with the
+// chokepoint deliberately wired into the WRONG lane.
+struct ArmedSink {
+    Cupti& c;
+    int32_t id;
+    explicit ArmedSink(Cupti& cu)
+        : c(cu), id(cu.sinkRegister(dropSink, nullptr, CAJETA_GPU_SINK_BATCHED)) {}
+    ~ArmedSink() { if (id >= 0) c.sinkUnregister(id); }
+    bool ok() const { return id >= 0; }
+};
+
+// Arm the real CUPTI if this machine has one. Mirrors ProfilerRocm::armTracing.
+bool armTracing(Cupti& c) {
+    c.reset();
+    c.init();
+    if (c.state() != CAJETA_CUPTI_READY) return false;
+    c.enableKind(10);   // CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL; the only kind
+                        // this backend may enable (12.1.b)
+    return c.tracing() != 0;
+}
+
+// Why a lane could not be armed, in the terms `tracing()` actually gates on.
+//
+// `reason()` alone is NOT that: a refused timestamp callback still leaves the
+// state READY (records arrive in CUPTI's own domain and §6.9 converts), so on
+// phoenix-wsl the skip printed a message about the timestamp callback while
+// the thing that actually failed was the activity-kind enable. A skip that
+// names the wrong cause is worse than one that names none — it is what a
+// reader will believe.
+std::string armFailure(Cupti& c) {
+    std::string s = "CUPTI not armed here:";
+    s += " state=" + std::to_string(c.state ? c.state() : -1);
+    s += " kinds_enabled=" + std::to_string(c.kindsEnabled ? c.kindsEnabled() : -1);
+    s += " degraded=" + std::to_string(c.degraded ? c.degraded() : -1);
+    s += " ts_status=" + std::to_string(c.tsStatus ? c.tsStatus() : -1);
+    s += " tracing=" + std::to_string(c.tracing ? c.tracing() : -1);
+    s += "\n  reason(): ";
+    s += (c.reason && c.reason()) ? c.reason() : "(none)";
+    return s;
 }
 
 } // namespace
@@ -402,4 +505,202 @@ TEST(ProfilerCupti, theTimestampCallbackIsRegisteredBeforeAnyKindIsEnabled) {
             << "and must name the path that now applies: " << why;
     }
     cu().reset();
+}
+
+// ── 12.2.d, the SEAM half ────────────────────────────────────────────────
+//
+// The chokepoint had no caller. `__cajeta_prof_cupti_push`/`pop` were written,
+// unit-tested directly, and wired to nothing: `caj_gpu_vtbl_for` had no CUDA
+// arm at all, so a CAJ_GPU_BACKEND_CUDA launch resolved to the CPU vtbl and
+// the correlation stack was never touched by a launch. The item was ticked on
+// the strength of tests that called the two functions themselves — which is
+// exactly the shape of check that cannot fail. These four ask the SEAM.
+
+// Runs everywhere, including this AMD box: with no CUPTI the CUDA id must
+// degrade to the host lane (§5.1.4) rather than to nothing.
+TEST(ProfilerCupti, aCudaLaunchWithoutCuptiFallsBackToTheHostLane) {
+    Cupti& c = cu();
+    ASSERT_TRUE(c.vtblName && c.tierFor && c.reset && c.init);
+    c.reset();
+    c.init();
+    if (c.tracing()) GTEST_SKIP() << "CUPTI is armed here; this is the absent path";
+
+    EXPECT_STREQ(c.vtblName(CAJ_GPU_BACKEND_CUDA), "cpu");
+    EXPECT_EQ(c.tierFor(CAJ_GPU_BACKEND_CUDA), CAJETA_PROF_TIER_HOST);
+}
+
+// The counterpart claim, stated so it can be wrong: on a machine with no CUDA
+// the seam must not be pushing correlation ids into a stack nothing reads.
+TEST(ProfilerCupti, theCorrelationStackIsUntouchedWhenTheBackendNeverBound) {
+    Cupti& c = cu();
+    ASSERT_TRUE(c.launch && c.pushes && c.pops && c.pendingReset);
+    c.reset();
+    c.init();
+    if (c.tracing()) GTEST_SKIP() << "CUPTI is armed here; this is the absent path";
+
+    ArmedSink armed(c);
+    ASSERT_TRUE(armed.ok());
+    const int64_t pushes0 = c.pushes(), pops0 = c.pops();
+    for (int i = 0; i < 32; ++i)
+        c.launch("k", 1, 1, 1, 64, 1, 1, 0, 0, 0, CAJ_GPU_BACKEND_CUDA,
+                 noKernel, nullptr);
+    c.pendingReset();
+    c.gpuFlush();
+
+    EXPECT_EQ(c.pushes() - pushes0, 0)
+        << "the host lane pushed a correlation id no CUPTI will ever read";
+    EXPECT_EQ(c.pops() - pops0, 0);
+}
+
+// The present path: skips off-hardware, runs for real on PHOENIX/phoenix-wsl.
+TEST(ProfilerCupti, aCudaLaunchSelectsTheCuptiBackendWhenItIsReady) {
+    Cupti& c = cu();
+    ASSERT_TRUE(c.vtblName && c.tierFor);
+    if (!armTracing(c)) GTEST_SKIP() << armFailure(c);
+
+    EXPECT_STREQ(c.vtblName(CAJ_GPU_BACKEND_CUDA), "cuda");
+}
+
+// The claim 12.2.d actually makes, asked of the seam rather than of the two
+// functions: N launches produce N pushes and N pops, paired.
+TEST(ProfilerCupti, everyCudaLaunchPushesAndPopsItsCorrelationId) {
+    Cupti& c = cu();
+    ASSERT_TRUE(c.launch && c.pushes && c.pops && c.pendingReset);
+    if (!armTracing(c)) GTEST_SKIP() << armFailure(c);
+
+    ArmedSink armed(c);
+    ASSERT_TRUE(armed.ok());
+    const int64_t pushes0 = c.pushes(), pops0 = c.pops();
+    const int kLaunches = 64;
+    for (int i = 0; i < kLaunches; ++i)
+        c.launch("k", 1, 1, 1, 64, 1, 1, 0, 0, 0, CAJ_GPU_BACKEND_CUDA,
+                 noKernel, nullptr);
+    c.pendingReset();
+    c.gpuFlush();
+
+    EXPECT_EQ(c.pushes() - pushes0, kLaunches);
+    EXPECT_EQ(c.pops() - pops0, kLaunches)
+        << "an unpaired push leaves the correlation stack deeper every launch";
+}
+
+// ── 12.3.b — per-launch overhead, measured against the code path that ships ──
+//
+// The audit probe's numbers (run 33324968136, RTX 4090) do not answer this: it
+// measured its OWN CUPTI usage, and the backend adds an external-correlation
+// push/pop per launch that the probe never makes. It also published
+// +957.5 ns/launch as CUPTI's cost when the run-to-run spread at 7 reps was
+// 1320 ns — a number smaller than its own noise, reported as a measurement.
+//
+// So this publishes the SPREAD alongside the mean and refuses to call a delta
+// a cost unless it clears both lanes' spreads. And the arms alternate: a fixed
+// order lets a decaying background load masquerade as a difference between
+// them.
+TEST(ProfilerCupti, perLaunchOverheadIsMeasuredAndPublished) {
+    Cupti& c = cu();
+    ASSERT_TRUE(c.launch && c.pendingReset && c.gpuFlush && c.sinkRegister);
+    if (!armTracing(c)) GTEST_SKIP() << armFailure(c);
+    ASSERT_STREQ(c.vtblName(CAJ_GPU_BACKEND_CUDA), "cuda")
+        << "measuring the CPU lane and calling it the backend's cost is how "
+           "the audit probe's numbers got here in the first place";
+
+    auto nowNs = reinterpret_cast<int64_t (*)(void)>(
+        cu().jit->lookupRawSymbol("__cajeta_currentTimeNanos"));
+    ASSERT_NE(nowNs, nullptr);
+
+    ArmedSink armed(c);
+    ASSERT_TRUE(armed.ok());
+
+    // Reps, not batch size, is where the samples come from. `caj_gpu_park`
+    // linear-scans a 256-slot table for a free entry, and only the CUDA lane
+    // parks — so a big batch makes late launches pay a scan proportional to
+    // how many earlier ones are still parked, and the published "overhead"
+    // becomes a fact about the batch size rather than about the backend. In
+    // production the table drains continuously as records arrive, so a shallow
+    // batch is the honest shape. Keep kPerRep well under 256.
+    const int kReps = 31;          // far more than the probe's 7, per 12.3.b
+    const int kPerRep = 32;
+
+    auto timeLane = [&](int32_t backend) {
+        const int64_t t0 = nowNs();
+        for (int i = 0; i < kPerRep; ++i)
+            c.launch("k", 1, 1, 1, 64, 1, 1, 0, 0, 0, backend, noKernel, nullptr);
+        const int64_t dt = nowNs() - t0;
+        c.pendingReset();          // outside the timed region
+        c.gpuFlush();
+        return static_cast<double>(dt) / kPerRep;
+    };
+
+    // Warm both lanes: the first launch through either pays for page faults
+    // and cold branch predictors that no later launch does.
+    timeLane(CAJ_GPU_BACKEND_CUDA);
+    timeLane(CAJ_GPU_BACKEND_CPU);
+
+    std::vector<double> cuda, host;
+    for (int r = 0; r < kReps; ++r) {
+        if (r % 2 == 0) {          // alternate, so a drifting load cannot
+            cuda.push_back(timeLane(CAJ_GPU_BACKEND_CUDA));   // favour one arm
+            host.push_back(timeLane(CAJ_GPU_BACKEND_CPU));
+        } else {
+            host.push_back(timeLane(CAJ_GPU_BACKEND_CPU));
+            cuda.push_back(timeLane(CAJ_GPU_BACKEND_CUDA));
+        }
+    }
+
+    const LaneStats cs = laneStats(cuda), hs = laneStats(host);
+    double delta = 0, noise = 0;
+    const bool resolvable = overheadIsResolvable(cs, hs, &delta, &noise);
+
+    std::printf(" RESULT u12_ns_per_launch_cuda=%.1f spread=%.1f\n", cs.mean, cs.spread);
+    std::printf(" RESULT u12_ns_per_launch_host_lane=%.1f spread=%.1f\n", hs.mean, hs.spread);
+    std::printf(" RESULT u12_cuda_extra_ns_per_launch=%.1f\n", delta);
+    std::printf(" RESULT u12_overhead_exceeds_noise=%s\n", resolvable ? "YES" : "NO");
+    if (!resolvable) {
+        std::printf(" NOTE the delta is smaller than the run-to-run spread "
+                    "(%.1f ns); it bounds the cost, it does not measure it\n", noise);
+    }
+
+    // The backend must still have been the one under measurement: a degrade
+    // mid-run (a second subscriber attaching, §5.4.3) would silently move the
+    // lane to the host path and the numbers would describe nothing.
+    EXPECT_NE(c.tracing(), 0) << "CUPTI stopped tracing during the measurement";
+    EXPECT_STREQ(c.vtblName(CAJ_GPU_BACKEND_CUDA), "cuda");
+
+    // A negative delta is not a faster profiler; it is noise wearing a sign.
+    if (resolvable) EXPECT_GT(delta, 0.0);
+}
+
+// The verdict rule itself, run everywhere — the measurement above only runs on
+// NVIDIA, so without this the rule that decides what gets published would
+// never execute on any machine anyone looks at.
+TEST(ProfilerCupti, anOverheadSmallerThanItsSpreadIsNotAMeasurement) {
+    double delta = 0, noise = 0;
+
+    // The audit probe's actual numbers: +957.5 ns against a 1320 ns spread.
+    EXPECT_FALSE(overheadIsResolvable({9035.0, 1320.0}, {8077.5, 0.0},
+                                      &delta, &noise));
+    EXPECT_NEAR(delta, 957.5, 0.01);
+
+    // Event bracketing at ~14 us against the same noise clears it easily.
+    EXPECT_TRUE(overheadIsResolvable({22039.5, 1320.0}, {8077.5, 0.0},
+                                     &delta, &noise));
+    EXPECT_NEAR(delta, 13962.0, 0.01);
+
+    // Both lanes' spreads count, not just the armed one: a quiet armed lane
+    // against a noisy baseline is just as unresolved.
+    EXPECT_FALSE(overheadIsResolvable({9035.0, 10.0}, {8077.5, 2000.0}, nullptr, nullptr));
+
+    // Exactly at the noise floor is NOT resolved — a delta must clear it.
+    EXPECT_FALSE(overheadIsResolvable({1100.0, 50.0}, {1000.0, 50.0}, nullptr, nullptr));
+    EXPECT_TRUE(overheadIsResolvable({1101.0, 50.0}, {1000.0, 50.0}, nullptr, nullptr));
+
+    // A lane that never ran has no statistics to report.
+    const LaneStats empty = laneStats({});
+    EXPECT_EQ(empty.mean, 0.0);
+    EXPECT_EQ(empty.spread, 0.0);
+
+    // The mean is over every rep and the spread is the full range, so one slow
+    // rep widens the spread rather than quietly moving the mean past it.
+    const LaneStats s = laneStats({100, 100, 100, 100, 500});
+    EXPECT_NEAR(s.mean, 180.0, 0.01);
+    EXPECT_NEAR(s.spread, 400.0, 0.01);
 }

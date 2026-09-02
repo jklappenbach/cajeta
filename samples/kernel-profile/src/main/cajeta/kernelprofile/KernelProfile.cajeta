@@ -1,0 +1,151 @@
+package kernelprofile;
+
+import cajeta.xpu.Device;
+import cajeta.xpu.KernelBuffer;
+import cajeta.xpu.KernelStream;
+import cajeta.xpu.KernelThread;
+
+// A workload shaped for the PROFILER, not for benchmarking.
+//
+// samples/profile answers "how fast is this against Rust and C++". This one
+// answers a different question: what does GPU work look like in the profiler's
+// timeline and flame graph, and what can you click on. Everything here exists
+// to put something specific on screen:
+//
+//   * three DISTINCT kernels, so the flame graph and the totals table have
+//     more than one row to compare;
+//   * two STREAMS, so the timeline shows concurrent device queues — the view
+//     exists to answer "what was everything else doing at that moment", which
+//     a single queue cannot demonstrate;
+//   * host work between launches, so host and device lanes interleave rather
+//     than the device looking permanently busy;
+//   * enough repetitions that a device slice is wider than a sampling tick.
+//
+// The active backend is PRINTED FIRST and deliberately loudly. A build that
+// silently fell back to the CPU produces a trace with no device tracks at all,
+// and a demo that cannot tell you which one you got is worse than no demo —
+// the amdgpu test suite compiled for the CPU for weeks without anyone noticing.
+public final class KernelProfile {
+
+    // y[i] = a*x[i] + y[i]
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void saxpy(KernelBuffer<float32> y, KernelBuffer<float32> x,
+                             float32 a, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = a * x[i] + y[i];
+        }
+    }
+
+    // c[i] = a[i] + b[i]
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void vecAdd(KernelBuffer<float32> c, KernelBuffer<float32> a,
+                              KernelBuffer<float32> b, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            c[i] = a[i] + b[i];
+        }
+    }
+
+    // y[i] = y[i] * k — deliberately the CHEAPEST of the three, so the profile
+    // has a clear "this one is not where the time went" row to read.
+    @Kernel
+    @Occupancy(maxThreads = 256)
+    public static void scale(KernelBuffer<float32> y, float32 k, uint32 n) {
+        uint32 i = KernelThread.globalIdX();
+        if (i < n) {
+            y[i] = y[i] * k;
+        }
+    }
+
+    // One stream's worth of work: upload, a burst of launches, sync, download.
+    // Split into its own method so it shows up as a NAMED frame rather than
+    // being folded into run().
+    public static float32 runStream(KernelStream s, uint32 n, int32 rounds) {
+        float32[] hx = heap float32[n];
+        float32[] hy = heap float32[n];
+        float32[] hz = heap float32[n];
+        for (uint32 i = 0; i < n; i = i + 1) {
+            hx[i] = 1.0f;
+            hy[i] = 2.0f;
+            hz[i] = 0.0f;
+        }
+        KernelBuffer<float32> x = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> y = heap KernelBuffer<float32>(n);
+        KernelBuffer<float32> z = heap KernelBuffer<float32>(n);
+        x.upload(hx);
+        y.upload(hy);
+        z.upload(hz);
+
+        uint32 grid = (n + 255) / 256;
+        int32 r = 0;
+        while (r < rounds) {
+            saxpy.launch(s, grid: [grid], block: [256])(y, x, 1.0001f, n);
+            vecAdd.launch(s, grid: [grid], block: [256])(z, y, x, n);
+            scale.launch(s, grid: [grid], block: [256])(y, 0.9999f, n);
+            r = r + 1;
+        }
+        s.sync();
+        z.download(hz);
+        return hz[0];
+    }
+
+    // Host-side work between launches, so the profile shows a host lane doing
+    // something rather than a flat wait. Kept under a modulus: int32 `+`/`*`
+    // TRAP on overflow, and a trapped run produces no trace at all.
+    public static int32 hostWork(int32 iters) {
+        int32 acc = 0;
+        int32 i = 0;
+        while (i < iters) {
+            acc = (acc + i) % 100000;
+            i = i + 1;
+        }
+        return acc;
+    }
+
+    public static void run() {
+        String backend = Device.activeBackend();
+        System.stdout.println("=== cajeta kernel profile sample ===");
+        System.stdout.println("active backend: " + backend);
+        if (backend == "cpu") {
+            System.stdout.println("");
+            System.stdout.println("  NOTE: running on the CPU backend, so this trace will have");
+            System.stdout.println("  NO device tracks and no kernel slices. Build the `gpu` task");
+            System.stdout.println("  (cajeta gpu) to target the accelerator.");
+        }
+        if (backend == "none") {
+            System.stdout.println("  NOTE: no accelerator backend is active.");
+        }
+        System.stdout.println("");
+
+        uint32 n = 1 << 20;          // 1M elements — big enough to measure
+        int32 rounds = 24;
+
+        // Two streams so the timeline has two device queues to lay side by
+        // side. They are independent: nothing here orders one against the
+        // other, which is the point being demonstrated.
+        KernelStream a #= KernelStream.create();
+        KernelStream b #= KernelStream.create();
+
+        System.stdout.println("stream A: " + rounds + " rounds x 3 kernels over "
+                              + (int32) n + " elements");
+        float32 ra = KernelProfile.runStream(a, n, rounds);
+
+        int32 h = KernelProfile.hostWork(400000);
+
+        System.stdout.println("stream B: " + rounds + " rounds x 3 kernels over "
+                              + (int32) n + " elements");
+        float32 rb = KernelProfile.runStream(b, n, rounds);
+
+        a.destroy();
+        b.destroy();
+
+        System.stdout.println("");
+        System.stdout.println("checksum A=" + (int32) ra + " B=" + (int32) rb
+                              + " host=" + h);
+        System.stdout.println("wrote cajeta.pftrace — open it with");
+        System.stdout.println("  Tools > Cajeta > Open Cajeta Profile...");
+    }
+}

@@ -26,8 +26,11 @@ namespace cajeta::buildtool {
     llvm::Expected<std::optional<OrgKeyDocument>> OrgKeyCache::documentFor(
             const Repository& repo, const std::string& org, std::time_t now) {
         const std::string key = cacheKey(repo.name(), org);
+        std::time_t seenIssuedAt = 0;
         {
             std::lock_guard<std::mutex> lk(mu_);
+            auto seen = seenIssuedAt_.find(key);
+            if (seen != seenIssuedAt_.end()) seenIssuedAt = seen->second;
             auto it = cache_.find(key);
             if (it != cache_.end()) {
                 if (now < it->second.notAfter) {
@@ -57,7 +60,11 @@ namespace cajeta::buildtool {
                        "checked");
         }
 
-        auto doc = loadOrgKeyDocument(**bytes, *roots, now);
+        // The freshness rule is applied HERE and not merely available in
+        // the parser. An expired entry is dropped above and refetched, and
+        // a refetch is precisely when a mirror gets to hand back an older
+        // document (spec 2.9).
+        auto doc = loadOrgKeyDocument(**bytes, *roots, now, seenIssuedAt);
         if (!doc) return doc.takeError();
         if (doc->organization != org) {
             // The document has to speak for the org we asked about.
@@ -71,6 +78,10 @@ namespace cajeta::buildtool {
         std::lock_guard<std::mutex> lk(mu_);
         ++fetches_;
         cache_[key] = *doc;
+        // Remember the high-water mark even after the document itself is
+        // evicted for expiry, or every expiry would reopen the replay.
+        auto& high = seenIssuedAt_[key];
+        if (doc->issuedAt > high) high = doc->issuedAt;
         return std::optional<OrgKeyDocument>{*doc};
     }
 

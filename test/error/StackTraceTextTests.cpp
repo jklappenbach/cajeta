@@ -15,6 +15,8 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -44,6 +46,23 @@ int frameLine(const std::string& text, const std::string& prefix) {
     while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q]))) ++q;
     if (q == p || q >= text.size() || text[q] != ')') return -1;
     return std::stoi(text.substr(p, q - p));
+}
+
+// Every line for `prefix`, in the order the frames were printed. frameLine above
+// answers "the first one", which cannot distinguish two lambdas in one method
+// from one lambda reported twice — the question 1.1.4 and 1.1.5 have to ask.
+std::vector<int> allFrameLines(const std::string& text, const std::string& prefix) {
+    std::vector<int> out;
+    size_t at = 0;
+    while ((at = text.find(prefix, at)) != std::string::npos) {
+        size_t p = at + prefix.size(), q = p;
+        while (q < text.size() && std::isdigit(static_cast<unsigned char>(text[q]))) ++q;
+        if (q > p && q < text.size() && text[q] == ')') {
+            out.push_back(std::stoi(text.substr(p, q - p)));
+        }
+        at = (q > at) ? q : at + 1;
+    }
+    return out;
 }
 
 std::string compilerBinary() {
@@ -95,6 +114,39 @@ fs::path writeProjectClass(const fs::path& root, const std::string& classBody) {
         << classBody
         << "}\n";
     src.close();
+    return root;
+}
+
+// Same as writeProjectClass but the caller supplies extra imports. The lambda
+// tests need a collection to drive a stream through, and the fixed preamble
+// above only imports Exception.
+fs::path writeProjectClassImporting(const fs::path& root,
+                                    const std::string& imports,
+                                    const std::string& classBody) {
+    auto dir = root / "test";
+    fs::create_directories(dir);
+    std::ofstream src(dir / "App.cajeta");
+    src << "package test;\n"
+           "import cajeta.error.Exception;\n"
+        << imports
+        << "public final class App {\n"
+        << classBody
+        << "}\n";
+    src.close();
+    return root;
+}
+
+// A project with several files. The generic-instantiation tests need the
+// template in its own compilation unit, the way real code has it.
+fs::path writeProjectFiles(const fs::path& root,
+                           const std::vector<std::pair<std::string, std::string>>& files) {
+    auto dir = root / "test";
+    fs::create_directories(dir);
+    for (const auto& f : files) {
+        std::ofstream src(dir / f.first);
+        src << f.second;
+        src.close();
+    }
     return root;
 }
 
@@ -222,4 +274,419 @@ TEST(StackTraceText, printStackTracePrintsCauseChain) {
     // Ordering: the cause link must follow the top throwable's message.
     EXPECT_LT(err.find("outer failure"), err.find("Caused by: root cause"))
         << "cause must print after the wrapping throwable; stderr:\n" << err;
+}
+
+// ---------------------------------------------------------------------------
+// lambda-frame-line — a lambda's shadow frame must carry a real source line.
+//
+// The frame is pushed by LambdaExpression::generateCode and was only ever given
+// a line by the statement marks its BODY emits. Block::generateCode is the only
+// mark site, so an expression body — `(x) -> f(x)`, the common form — left the
+// frame on the zero it was pushed with. Measured 2026-08-31, same program and
+// same -g build: block body `<lambda>(App.cajeta:10)`, expression body
+// `<lambda>(App.cajeta:0)`, every neighbouring frame real.
+//
+// Neither this suite nor ProfilerEndToEndTests contained a lambda, which is why
+// it went unseen: the frame-push shipped with a comment asserting the behaviour
+// and nothing measuring it.
+// ---------------------------------------------------------------------------
+
+namespace {
+    // The preamble writeProjectClassImporting emits is 4 lines, so a class body
+    // passed to it starts at line 5. Every expected line below is counted from
+    // there, and named rather than spelled twice.
+    const char* kListImport = "import cajeta.collection.ArrayList;\n";
+
+    const char* kBoom =
+        "    public static void boom(int32 x) {\n"
+        "        throw heap Exception(\"boom\");\n"
+        "    }\n";
+
+    const char* kLambdaFrame = "test.App.<lambda>(App.cajeta:";
+}
+
+// 1.1.1 (spec 2.1, 3.1) — the defect. RED before the fix at `:0`.
+TEST(StackTraceText, expressionBodiedLambdaFrameHasARealLine) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamexpr"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) -> App.boom(x));\n"                // 8
+        "    }\n"                                                           // 9
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // frameLine returns -1 when the frame is ABSENT and 0 when it is present
+    // with no line, so this one assertion separates the two (spec 4.1).
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 8)
+        << "the lambda frame must carry the line its body sits on; stderr:\n" << err;
+}
+
+// 1.1.2 (spec 2.2) — the control arm. Green before AND after: deleting the
+// statement marks entirely would fail this while 1.1.1 still passed, and
+// reverting the fix fails 1.1.1 while this still passes (spec 4.2).
+TEST(StackTraceText, blockBodiedLambdaFrameHasARealLine) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamblock"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) -> {\n"                            // 8
+        "            App.boom(x);\n"                                        // 9
+        "        });\n"                                                     // 10
+        "    }\n"                                                           // 11
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // The statement inside the block, which is what the frame advances to.
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 9)
+        << "a block body's frame must report its running statement; stderr:\n" << err;
+}
+
+// 1.1.3 (spec 2.6) — the line is the BODY's, not the parameter list's. Pins
+// which of the two the fix reads: they are the same line in every other test
+// here, so only a split body can tell them apart.
+TEST(StackTraceText, lambdaLineIsTheBodyNotTheParameterList) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamsplit"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) ->\n"                              // 8
+        "            App.boom(x));\n"                                       // 9
+        "    }\n"                                                           // 10
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 9)
+        << "expected the body's line (9), not the arrow's (8); stderr:\n" << err;
+}
+
+// 1.1.4 (spec 2.5) — two lambdas in one method stay distinguishable, which is
+// the whole point of giving a lambda its own frame. Both throws are caught so
+// both traces print.
+TEST(StackTraceText, twoLambdasInOneMethodReportDifferentLines) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamtwo"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        try {\n"                                                   // 8
+        "            xs.stream().forEach((x) -> App.boom(x));\n"            // 9
+        "        } catch (Exception e) {\n"                                 // 10
+        "            e.printStackTrace();\n"                                // 11
+        "        }\n"                                                       // 12
+        "        try {\n"                                                   // 13
+        "            xs.stream().forEach((x) -> App.boom(x));\n"            // 14
+        "        } catch (Exception e) {\n"                                 // 15
+        "            e.printStackTrace();\n"                                // 16
+        "        }\n"                                                       // 17
+        "    }\n"                                                           // 18
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_EQ(rc, 0) << "both throws are caught; the run must succeed. stderr:\n" << err;
+    auto lines = allFrameLines(err, kLambdaFrame);
+    ASSERT_GE(lines.size(), 2u)
+        << "expected a lambda frame from each of the two traces; stderr:\n" << err;
+    EXPECT_EQ(lines[0], 9) << "stderr:\n" << err;
+    EXPECT_EQ(lines[1], 14) << "stderr:\n" << err;
+}
+
+// 1.1.5 (spec 2.4) — nested lambdas each carry their own line. Split across
+// lines deliberately: written on one line the two frames would be
+// indistinguishable even when both are correct, and the test could not fail.
+TEST(StackTraceText, nestedLambdasEachCarryTheirOwnLine) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamnest"), kListImport,
+        "    public static void run() {\n"                                  // 5
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"           // 6
+        "        xs.add(1);\n"                                              // 7
+        "        xs.stream().forEach((x) ->\n"                              // 8
+        "            xs.stream().forEach((y) ->\n"                          // 9
+        "                App.boom(y)));\n"                                  // 10
+        "    }\n"                                                           // 11
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    auto lines = allFrameLines(err, kLambdaFrame);
+    ASSERT_GE(lines.size(), 2u)
+        << "expected an inner and an outer lambda frame; stderr:\n" << err;
+    // Innermost frame prints first: inner body on 10, outer body on 9.
+    EXPECT_EQ(lines[0], 10) << "inner lambda; stderr:\n" << err;
+    EXPECT_EQ(lines[1], 9) << "outer lambda; stderr:\n" << err;
+}
+
+// 1.1.6 (spec 2.7) — the opt-out still holds. Per-statement marks are a
+// full-debug-info feature (measured 3.5-9.4x), and stamping the frame at its
+// push must not slip a line into a build that declined to pay for one.
+TEST(StackTraceText, withoutLineInfoALambdaFrameReportsZero) {
+    auto proj = writeProjectClassImporting(freshTempDir("lamnog"), kListImport,
+        "    public static void run() {\n"
+        "        ArrayList<int32> xs = heap ArrayList<int32>();\n"
+        "        xs.add(1);\n"
+        "        xs.stream().forEach((x) -> App.boom(x));\n"
+        "    }\n"
+        + std::string(kBoom));
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/false);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // 0, not -1: the semantic frame is still there (it is free), it just
+    // carries no line.
+    EXPECT_EQ(frameLine(err, kLambdaFrame), 0)
+        << "a default build must report no line; stderr:\n" << err;
+}
+
+// ---------------------------------------------------------------------------
+// TemplateInstantiator 9.2 — a generic's frame must name a FILE line.
+//
+// A class- or method-template instantiation is re-parsed from a synthetic
+// snippet, so its token lines are snippet lines that merely look plausible.
+// The instantiator records the correction as a dbgLineDelta, and the
+// debugger's safepoint path applied it while the LINE-INFO mark did not — so
+// F7 into a generic landed correctly and its stack trace and profile slice
+// named a line in the doc comment above the method.
+//
+// Measured 2026-09-01: `Optional<int32>.get` reported Optional.cajeta:83 for a
+// throw on line 112, and the tour profile put `Optional<int32>.Optional` on
+// line 44, which is prose inside the class doc comment.
+//
+// The delta scales with the snippet's preamble, so the generic below carries a
+// long doc comment: with a one-line body the miss is one line and hides inside
+// the method, which is how this survived.
+// ---------------------------------------------------------------------------
+
+namespace {
+    // Box.cajeta. The throw is on line 25 — counted, and asserted below rather
+    // than searched for, so a stray edit to this literal fails loudly.
+    const char* kBoxSource =
+        "package test;\n"                                        // 1
+        "import cajeta.error.Exception;\n"                       // 2
+        "\n"                                                     // 3
+        "/**\n"                                                  // 4
+        " * A generic whose doc comment is long on purpose.\n"    // 5
+        " *\n"                                                   // 6
+        " * The snippet a template instantiation is re-parsed\n"  // 7
+        " * from carries a preamble, and the resulting line\n"    // 8
+        " * error is the size of that preamble. A one-line\n"     // 9
+        " * class produces a one-line miss that still lands\n"    // 10
+        " * inside the method; a realistic one lands in prose.\n" // 11
+        " */\n"                                                  // 12
+        "public final class Box<T> {\n"                          // 13
+        "    T v;\n"                                             // 14
+        "    public Box(T v) {\n"                                // 15
+        "        this.v #= v;\n"                                 // 16
+        "    }\n"                                                // 17
+        "    /**\n"                                              // 18
+        "     * Doc comment above the method, which is where a\n" // 19
+        "     * snippet line lands when it is not corrected.\n"   // 20
+        "     */\n"                                              // 21
+        "    public T boom() {\n"                                // 22
+        "        int32 a = 1;\n"                                 // 23
+        "        int32 b = 2;\n"                                 // 24
+        "        throw heap Exception(\"boom\");\n"              // 25
+        "    }\n"                                                // 26
+        "}\n";                                                   // 27
+    constexpr int kBoxThrowLine = 25;
+
+    // Plain.cajeta — the control. Same shape, no type parameter, so no snippet
+    // and no delta. The throw is on line 25 here too, which makes the two
+    // assertions directly comparable.
+    const char* kPlainSource =
+        "package test;\n"
+        "import cajeta.error.Exception;\n"
+        "\n"
+        "/**\n"
+        " * A non-generic whose doc comment is long on purpose,\n"
+        " * so it matches the generic above line for line.\n"
+        " *\n"
+        " * If a correction were applied where none is needed,\n"
+        " * this is the test that would catch it: the two files\n"
+        " * agree on every line number.\n"
+        " * (padding to match)\n"
+        " */\n"
+        "public final class Plain {\n"
+        "    int32 v;\n"
+        "    public Plain(int32 v) {\n"
+        "        this.v = v;\n"
+        "    }\n"
+        "    /**\n"
+        "     * Doc comment above the method, matching Box.\n"
+        "     * (padding to match)\n"
+        "     */\n"
+        "    public static int32 boom() {\n"
+        "        int32 a = 1;\n"
+        "        int32 b = 2;\n"
+        "        throw heap Exception(\"boom\");\n"
+        "    }\n"
+        "}\n";
+    constexpr int kPlainThrowLine = 25;
+}
+
+// A class-template instantiation reports the line the statement is ON.
+TEST(StackTraceText, genericInstantiationReportsAFileLineNotASnippetLine) {
+    auto proj = writeProjectFiles(freshTempDir("gen"), {
+        {"Box.cajeta", kBoxSource},
+        {"App.cajeta",
+         "package test;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        Box<int32> b = stack Box<int32>(1);\n"
+         "        int32 x = b.boom();\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    EXPECT_EQ(frameLine(err, "test.Box<int32>.boom(Box.cajeta:"), kBoxThrowLine)
+        << "a generic's frame must name the throw's FILE line, not the snippet's; "
+           "stderr:\n" << err;
+}
+
+// The control: no type parameter, no snippet, no correction. Green before AND
+// after — a fix that shifted every line would pass the test above by moving
+// this one, so the two are asserted as a pair.
+TEST(StackTraceText, aNonGenericMethodNeedsNoCorrection) {
+    auto proj = writeProjectFiles(freshTempDir("plain"), {
+        {"Plain.cajeta", kPlainSource},
+        {"App.cajeta",
+         "package test;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        int32 x = Plain.boom();\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    EXPECT_EQ(frameLine(err, "test.Plain.boom(Plain.cajeta:"), kPlainThrowLine)
+        << "a non-generic frame must be exact and unshifted; stderr:\n" << err;
+}
+
+// The reported case, on the stdlib: `Optional<int32>.get` threw on a line that
+// resolved into the class doc comment. Asserted against the file rather than a
+// hardcoded number, so it survives edits to Optional.cajeta.
+TEST(StackTraceText, aStdlibGenericFrameLandsOnItsThrowNotItsDocComment) {
+    auto proj = writeProjectFiles(freshTempDir("stdgen"), {
+        {"App.cajeta",
+         "package test;\n"
+         "import cajeta.lang.Optional;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        Optional<int32> none = stack Optional<int32>(false);\n"
+         "        int32 v = none.get();\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    int reported = frameLine(err, "cajeta.lang.Optional<int32>.get(Optional.cajeta:");
+    ASSERT_GT(reported, 0) << "no Optional.get frame; stderr:\n" << err;
+
+    // The stdlib source is embedded, so the line is checked against the
+    // repository copy — the same text the embedder consumed.
+    const char* root = std::getenv("CAJETA_SOURCE_ROOT");
+    std::string srcRoot = (root && *root) ? root :
+#ifdef CAJETA_SOURCE_ROOT_DEFAULT
+        CAJETA_SOURCE_ROOT_DEFAULT;
+#else
+        ".";
+#endif
+    std::ifstream in(srcRoot + "/runtime/src/cajeta/lang/Optional.cajeta");
+    if (!in) GTEST_SKIP() << "stdlib source unavailable for cross-check";
+    std::string line;
+    int n = 0, throwLine = -1;
+    while (std::getline(in, line)) {
+        ++n;
+        if (throwLine < 0 && line.find("NoOptionalValueException(\"Optional.get") != std::string::npos)
+            throwLine = n;
+    }
+    ASSERT_GT(throwLine, 0) << "could not find the throw in Optional.cajeta";
+    EXPECT_EQ(reported, throwLine)
+        << "Optional.get resolved to line " << reported << ", but its throw is on "
+        << throwLine << " — a snippet line landing in the doc comment; stderr:\n" << err;
+}
+
+// The two snippet corrections COMPOSE. A generic method on a generic class is
+// re-parsed twice — the class body from a class snippet, then the method from
+// a method snippet cut out of that — so its method delta maps method-snippet
+// to CLASS-snippet, not to the file.
+//
+// Taking one delta or the other passed every single-snippet case above and
+// still left this one short by exactly the class delta, landing on the `/**`
+// that opens the method's own doc comment. Measured 2026-09-01 at
+// Holder.cajeta:14 for a throw on 20, and seen in the wild as
+// `cajeta.nucleo.column.Column<?>.of` resolving to a blank line between two
+// methods.
+namespace {
+    // Holder.cajeta — generic CLASS with a generic STATIC method. The throw is
+    // on line 20.
+    const char* kHolderSource =
+        "package test;\n"                                          // 1
+        "import cajeta.error.Exception;\n"                         // 2
+        "\n"                                                       // 3
+        "/**\n"                                                    // 4
+        " * Generic class whose doc comment is long on purpose,\n"  // 5
+        " * so the class snippet's delta is not zero and the\n"     // 6
+        " * composition is actually exercised.\n"                   // 7
+        " * padding\n"                                             // 8
+        " */\n"                                                    // 9
+        "public final class Holder<T> {\n"                         // 10
+        "    T v;\n"                                               // 11
+        "    public Holder(T v) {\n"                               // 12
+        "        this.v #= v;\n"                                   // 13
+        "    }\n"                                                  // 14
+        "    /**\n"                                                // 15
+        "     * Doc comment above the generic static method.\n"     // 16
+        "     * padding\n"                                         // 17
+        "     */\n"                                                // 18
+        "    public static int32 boom<E>(E x) {\n"                 // 19
+        "        throw heap Exception(\"boom\");\n"                // 20
+        "    }\n"                                                  // 21
+        "}\n";                                                     // 22
+    constexpr int kHolderThrowLine = 20;
+}
+
+TEST(StackTraceText, aGenericMethodOnAGenericClassComposesBothCorrections) {
+    auto proj = writeProjectFiles(freshTempDir("genboth"), {
+        {"Holder.cajeta", kHolderSource},
+        {"App.cajeta",
+         "package test;\n"
+         "public final class App {\n"
+         "    public static void run() {\n"
+         "        int32 x = Holder.boom<int32>(1);\n"
+         "    }\n"
+         "}\n"},
+    });
+    std::string err;
+    int rc = runJitCapturingStderr(proj, err, /*withLines=*/true);
+    if (rc == -1) GTEST_SKIP() << "compiler binary unavailable";
+
+    EXPECT_NE(rc, 0) << "an uncaught throw must fail the run";
+    // The frame names the class with a wildcard argument — the static call
+    // binds the METHOD's parameter, not the class's.
+    EXPECT_EQ(frameLine(err, "test.Holder<?>.boom(Holder.cajeta:"), kHolderThrowLine)
+        << "a generic method on a generic class must compose both snippet "
+           "corrections; stderr:\n" << err;
 }

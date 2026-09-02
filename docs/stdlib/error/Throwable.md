@@ -19,7 +19,7 @@ try {
 } catch (Exception e) {
     Throwable t = e;
     String msg = t.getMessage();
-    StackFrame[] frames = t.getStackTrace();
+    StackFrame[] frames #= t.getStackTrace();   // producer: the title moves
     String json #= t.toJson();
 }
 ```
@@ -38,7 +38,7 @@ try {
 | `Optional<String> hint()` | A short human/agent-readable fix hint; empty when none |
 | `Optional<String> docUrl()` | A documentation URL for this error; empty when none |
 | `#String toJson()` ⚑ | Render as one NDJSON diagnostic object: `severity`/`code`/`message` plus `category`, `remediation`, `causeChain` (outer→inner), and `frames` |
-| `StackFrame[] getStackTrace()` ⚑ | The captured stack frames, throw-site first; empty when capture was off |
+| `#StackFrame[] getStackTrace()` ⚑ | The captured stack frames, throw-site first; empty when capture was off |
 | `void printStackTrace()` ⚑ | Print this throwable's stack trace to stderr |
 
 ⚑ = `@EntryPoint`

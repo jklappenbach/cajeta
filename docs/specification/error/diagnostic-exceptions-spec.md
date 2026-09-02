@@ -259,6 +259,18 @@ eagerly per-throw. Three surfaces, one model:
 - **9.1.1** Existing `Throwable{message}` / `Exception{cause}` and the shipped
   `getMessage()`/`getCause()`/`getStackTrace()`/`printStackTrace()` MVP remain source-
   compatible; the MVP `StackFrame{nativeAddress}` is **extended** to the §5.1.1 record.
+
+  **EXCEPTION, 2026-08-31 — `getStackTrace()` is no longer source-compatible.**
+  It is a producer: both paths build a fresh `heap StackFrame[]` and hand it
+  out, so a plain return gives the caller a title the signature never mentions.
+  It is now `#StackFrame[]`, and a caller must bind with `#=`. The promise
+  above was already hollow — codegen rejects the plain-return shape outright
+  (`CAJETA_ERROR_FRESH_RETURN_NEEDS_TRANSFER`), so the compatibility it
+  guaranteed was to a spelling that could not be compiled through every path,
+  and the warning had been printing on every compile that touched `Throwable`
+  long enough to be ignored. The break is guided: the compiler names the fix
+  at the offending line. Sixteen call sites in this repo's own tests were
+  migrated mechanically. Supersedes 9.2.1 for this one method.
 - **9.1.2** `ErrorModel.md` is updated to describe the diagnostic model, the schema, the
   `StackFrame` shape, the context chain, and per-platform availability.
 - **9.1.3** Existing `--diag-format=json` consumers keep working (additive fields only).
@@ -266,6 +278,8 @@ eagerly per-throw. Three surfaces, one model:
 ### 9.2 Use cases
 - **9.2.1** As a developer with code using `getMessage()`/`getStackTrace()`, when this lands,
   then my code still compiles and runs; new capabilities are additive.
+  **Amended 2026-08-31**: `getStackTrace()` is exempt — see 9.1.1. Binding it
+  with a plain `=` is now a compile error naming the fix.
 
 ---
 

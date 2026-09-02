@@ -33,21 +33,61 @@ class SwingFlameGraphView : FlameGraphView {
     private var select: ((FlameNode) -> Unit)? = null
     private var selectLaunch: ((FlameNode) -> Unit)? = null
 
-    private val canvas = object : JPanel() {
+    // Horizontal zoom only: a flame graph's vertical axis is stack DEPTH, a
+    // count, so there is no scale there to change. Scrollable rather than a
+    // bare JPanel for the same reason the timeline needed it — a bare JPanel
+    // neither reports a scrollable width nor stretches to a wider viewport.
+    private var zoom = HorizontalZoom.FIT
+
+    private val canvas = object : JPanel(), javax.swing.Scrollable {
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
             paintFlames(g as Graphics2D)
         }
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(
+            visible: java.awt.Rectangle, orientation: Int, direction: Int
+        ): Int = if (orientation == javax.swing.SwingConstants.VERTICAL) ROW_HEIGHT
+                 else com.intellij.util.ui.JBUI.scale(40)
+        override fun getScrollableBlockIncrement(
+            visible: java.awt.Rectangle, orientation: Int, direction: Int
+        ): Int = if (orientation == javax.swing.SwingConstants.VERTICAL) visible.height
+                 else visible.width
+        override fun getScrollableTracksViewportWidth(): Boolean {
+            val vp = parent as? javax.swing.JViewport ?: return false
+            return zoom <= HorizontalZoom.FIT && vp.width >= MIN_CONTENT_WIDTH
+        }
+        override fun getScrollableTracksViewportHeight(): Boolean = false
     }
 
     private val scroll = JBScrollPane(canvas)
+    private var zoomChanged: ((Double) -> Unit)? = null
 
     override val component: JComponent get() = scroll
 
     override fun onSelect(handler: (FlameNode) -> Unit) { select = handler }
     override fun onSelectLaunchSite(handler: (FlameNode) -> Unit) { selectLaunch = handler }
+    override fun onZoomChanged(handler: (Double) -> Unit) { zoomChanged = handler }
+    override fun setZoom(zoom: Double) = applyZoom(zoom, null)
 
     init {
+        scroll.viewport.scrollMode = javax.swing.JViewport.SIMPLE_SCROLL_MODE
+        scroll.viewport.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) = resizeCanvas()
+        })
+        // Plain wheel SCROLLS; only Ctrl zooms. Kept the same as the timeline's
+        // so the two tabs do not answer the same gesture differently.
+        canvas.addMouseWheelListener { e ->
+            if (e.isControlDown || e.isMetaDown) {
+                val factor = if (e.wheelRotation < 0) HorizontalZoom.STEP
+                             else 1.0 / HorizontalZoom.STEP
+                applyZoom(zoom * factor, e)
+                e.consume()
+            } else {
+                scroll.dispatchEvent(javax.swing.SwingUtilities.convertMouseEvent(
+                    canvas, e, scroll) as java.awt.event.MouseWheelEvent)
+            }
+        }
         canvas.background = UIUtil.getPanelBackground()
         canvas.isOpaque = true
         canvas.toolTipText = ""
@@ -70,15 +110,54 @@ class SwingFlameGraphView : FlameGraphView {
     override fun show(model: ProfileViewModel, track: ProfileTrackView) {
         this.model = model
         this.track = track
-        val (r, d) = FlameLayout.of(model, track)
+        relayout()
+    }
+
+    /**
+     * Lay out for the CURRENT zoom. The threshold below which a frame is not
+     * worth drawing depends on how wide the canvas is, so this has to re-run on
+     * every zoom change — laying out once at load left "N frame(s) too narrow
+     * to draw" saying the same number at 512x as at fit (reported 2026-09-01).
+     */
+    private fun relayout() {
+        val m = model ?: return
+        val t = track ?: return
+        val (r, d) = FlameLayout.of(m, t, FlameLayout.minWidthFor(zoom))
         rects = r
         dropped = d
+        resizeCanvas()
+    }
+
+    private fun resizeCanvas() {
+        val vpWidth = scroll.viewport.width.takeIf { it > 0 } ?: MIN_CONTENT_WIDTH
+        val depth = (rects.maxOfOrNull { it.depth } ?: 0) + 2
         canvas.preferredSize = Dimension(
-            canvas.width.coerceAtLeast(600),
-            ((r.maxOfOrNull { it.depth } ?: 0) + 2) * ROW_HEIGHT,
+            HorizontalZoom.contentWidth(vpWidth, 0, 0, MIN_CONTENT_WIDTH, zoom),
+            depth * ROW_HEIGHT,
         )
         canvas.revalidate()
         canvas.repaint()
+    }
+
+    /** Zoom the time axis, keeping the span under the pointer where it is. */
+    private fun applyZoom(requested: Double, at: java.awt.event.MouseWheelEvent?) {
+        val next = HorizontalZoom.clampZoom(requested)
+        if (next == zoom) return
+        val oldWidth = canvas.width.coerceAtLeast(1)
+        zoom = next
+        relayout()
+        // Only when the VIEW initiated it; echoing a slider-driven change back
+        // would make the two chase each other.
+        if (at != null) zoomChanged?.invoke(zoom)
+        val vp = scroll.viewport
+        val newWidth = canvas.preferredSize.width.coerceAtLeast(1)
+        val maxViewX = (newWidth - vp.width).coerceAtLeast(0)
+        val pointerContentX = at?.x ?: (vp.viewPosition.x + vp.width / 2)
+        val pointerScreenX = if (at != null) at.x - vp.viewPosition.x else vp.width / 2
+        vp.viewPosition = java.awt.Point(
+            HorizontalZoom.anchoredViewX(pointerContentX, pointerScreenX,
+                                         0, oldWidth, newWidth, maxViewX),
+            vp.viewPosition.y)
     }
 
     // --- hit testing -----------------------------------------------------------
@@ -87,7 +166,13 @@ class SwingFlameGraphView : FlameGraphView {
         val w = canvas.width.toDouble()
         val depth = py / ROW_HEIGHT
         return rects.firstOrNull { r ->
-            r.depth == depth && px >= r.x * w && px <= (r.x + r.width) * w
+            // Match what was PAINTED, including the one-pixel floor. A
+            // zero-duration frame is drawn as a tick; hit-testing it against
+            // its zero width would make it unclickable, which is the same as
+            // not drawing it.
+            val x0 = r.x * w
+            val drawn = (r.width * w).coerceAtLeast(1.0)
+            r.depth == depth && px >= x0 && px <= x0 + drawn
         }
     }
 
@@ -107,7 +192,7 @@ class SwingFlameGraphView : FlameGraphView {
             val width = (r.width * w).toInt().coerceAtLeast(1)
             val y = r.depth * ROW_HEIGHT
 
-            g.color = FlameColors.of(quality, r.node.unclosed)
+            g.color = FlameColors.of(quality, r.node.unclosed, r.depth)
             g.fillRect(x, y, width, ROW_HEIGHT - 1)
 
             // §11.3 — a flagged span is hatched as well as coloured, so the
@@ -160,5 +245,7 @@ class SwingFlameGraphView : FlameGraphView {
     private companion object {
         val ROW_HEIGHT = JBUI.scale(18)
         val MIN_LABEL_WIDTH = JBUI.scale(28)
+        // Below this a flame row is a smear; the view scrolls instead.
+        val MIN_CONTENT_WIDTH = JBUI.scale(600)
     }
 }

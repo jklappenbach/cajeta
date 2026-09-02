@@ -47,6 +47,12 @@ namespace cajeta::buildtool {
         // than from the root itself (spec 2.7). Recorded because the two are
         // different evidence, and a later policy may require one.
         bool viaDelegation = false;
+
+        // Withdrawn by its publisher (spec 7.6.2). `fromSignedMetadata`
+        // says how much this is worth: signed, a mirror cannot clear it;
+        // unsigned, whoever can write it can clear it, so it is advisory.
+        bool retracted = false;
+        std::string retractedReason;
     };
 
     // What `name@version` from `repo` must hash to, and who published it.

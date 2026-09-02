@@ -33,6 +33,10 @@ namespace cajeta::buildtool {
         std::vector<std::string> protocolVersions;
         bool bundle = false;
         bool contentAddressed = false;
+        // Serves §3.8's revocation statement. Turning this on is a one-way
+        // door in practice: from then on a missing or expired statement
+        // REFUSES rather than degrading (publisher-trust spec 2.8.4).
+        bool revocation = false;
         std::string transparencyLogUrl;
         struct Mirror {
             std::string url;
@@ -66,6 +70,10 @@ namespace cajeta::buildtool {
         std::vector<std::pair<std::string, std::string>> deps;
         std::vector<std::string> capabilities;
         std::string publishedAt;
+        // The UNSIGNED view of retraction, for a client that does not
+        // verify. A mirror clears it as freely as any other plain field,
+        // so the install path reads `ReleaseIntegrity::retracted`, which
+        // comes out of the signed payload (publisher-trust spec 7.6.2).
         bool retracted = false;
         std::string retractedReason;
         // The organization that owns this name (publisher-trust spec 6.2).
@@ -235,6 +243,26 @@ namespace cajeta::buildtool {
         // absence, an error for failure.
         virtual llvm::Expected<std::optional<std::string>>
         repositoryKeys() const {
+            return std::optional<std::string>{};
+        }
+
+        // What this repository advertises (protocol §3.1). The default
+        // claims nothing, which is the right answer for a driver with no
+        // capability document: it serves no revocation, so §2.8.4's
+        // fail-closed rule must not apply to it.
+        virtual llvm::Expected<RepoCapabilities> capabilities() const {
+            return RepoCapabilities{};
+        }
+
+        // The signed revocation statement (publisher-trust spec 2.8) — raw
+        // envelope JSON, naming key ids that are no longer trusted.
+        //
+        // Same shape as `repositoryKeys`, but the ABSENCE means something
+        // different: for every other document nullopt is a weaker path, and
+        // here it is a refusal once the repository advertises revocation.
+        // That decision does not belong to the driver — see revocationFor().
+        virtual llvm::Expected<std::optional<std::string>>
+        revocations() const {
             return std::optional<std::string>{};
         }
 

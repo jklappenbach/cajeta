@@ -85,7 +85,7 @@ namespace cajeta::buildtool {
         // with `probed=true` so the caller can distinguish
         // "v1-only" from "never tried" without re-probing each
         // call.
-        llvm::Expected<RepoCapabilities> capabilities() const;
+        llvm::Expected<RepoCapabilities> capabilities() const override;
 
         // Force a fresh probe. Tests use this to simulate the
         // server flipping its capability surface; production code
@@ -127,6 +127,9 @@ namespace cajeta::buildtool {
         // may sign release metadata.
         llvm::Expected<std::optional<std::string>>
         repositoryKeys() const override;
+
+        llvm::Expected<std::optional<std::string>>
+        revocations() const override;
 
         // GET /v2/resolve?name=...&version=... — returns the typed
         // metadata for the artifact at <name>@<version>. v2-only.

@@ -29,6 +29,17 @@ interface FlameGraphView {
 
     /** Called when the user asks for a kernel's launching call site (§8.4). */
     fun onSelectLaunchSite(handler: (FlameNode) -> Unit) {}
+
+    /**
+     * Set the horizontal (time-axis) zoom; 1.0 is fit-to-width. Defaulted to a
+     * no-op: the JCEF renderer draws its own layout and does not share this
+     * canvas's geometry, so it declines rather than pretending.
+     */
+    fun setZoom(zoom: Double) {}
+
+    /** Notified when the view changes zoom ITSELF (Ctrl+scroll), so a control
+     *  driving it can stay in step. */
+    fun onZoomChanged(handler: (Double) -> Unit) {}
 }
 
 /**
@@ -61,11 +72,44 @@ object FlameColors {
     /** A frame still running when the trace ended. */
     val UNCLOSED: JBColor = JBColor(Color(0x7A, 0x9E, 0xC4), Color(0x5B, 0x7C, 0xA5))
 
-    fun of(quality: MeasurementQuality?, unclosed: Boolean = false): JBColor = when {
+    /**
+     * One hue per stack layer, for TRUSTED work only.
+     *
+     * Colour on this graph was already spoken for — §8.6 needs degraded and
+     * low-confidence measurements visually distinct, and §11.3's flagged spans
+     * must not blend in. Letting depth own the hue everywhere would have erased
+     * that: FLAGGED is hatched as well and would survive, but DEGRADED,
+     * LOW_CONFIDENCE and UNCORRELATED have no encoding but colour.
+     *
+     * So the two live on separate axes. Depth picks the hue where the profiler
+     * trusts the measurement; anything it does not keeps its own colour, which
+     * makes it MORE conspicuous than before — it breaks the rainbow instead of
+     * being a slightly different brown.
+     *
+     * Hues are evenly spaced around the wheel and deliberately kept off the
+     * reds and greys the quality colours occupy.
+     */
+    const val RAINBOW_PERIOD = 12
+
+    private val RAINBOW: List<JBColor> = (0 until RAINBOW_PERIOD).map { i ->
+        val hue = i.toFloat() / RAINBOW_PERIOD
+        JBColor(
+            Color(Color.HSBtoRGB(hue, 0.62f, 0.86f)),   // light theme
+            Color(Color.HSBtoRGB(hue, 0.55f, 0.68f)),   // dark theme
+        )
+    }
+
+    /** The layer hue for [depth]; repeats rather than running out, so a deep
+     *  stack stays coloured instead of flattening to one shade. */
+    fun layer(depth: Int): JBColor =
+        RAINBOW[((depth % RAINBOW_PERIOD) + RAINBOW_PERIOD) % RAINBOW_PERIOD]
+
+    fun of(quality: MeasurementQuality?, unclosed: Boolean = false,
+           depth: Int = 0): JBColor = when {
         unclosed -> UNCLOSED
-        quality == null -> TRUSTED
+        quality == null -> layer(depth)
         else -> when (quality.renderClass) {
-            RenderClass.TRUSTED -> TRUSTED
+            RenderClass.TRUSTED -> layer(depth)
             RenderClass.LOW_CONFIDENCE -> LOW_CONFIDENCE
             RenderClass.DEGRADED -> DEGRADED
             RenderClass.UNCORRELATED -> UNCORRELATED
@@ -81,8 +125,9 @@ object FlameColors {
      */
     fun hatched(quality: MeasurementQuality?): Boolean = quality?.flagged == true
 
-    fun cssOf(quality: MeasurementQuality?, unclosed: Boolean = false): String {
-        val c = of(quality, unclosed)
+    fun cssOf(quality: MeasurementQuality?, unclosed: Boolean = false,
+              depth: Int = 0): String {
+        val c = of(quality, unclosed, depth)
         return "#%02x%02x%02x".format(c.red, c.green, c.blue)
     }
 }
@@ -134,10 +179,22 @@ object FlameLayout {
      * visible. The count of what was dropped is returned so the UI can say so
      * rather than quietly showing less than the trace holds.
      */
+    /** Narrowest frame worth drawing at fit, as a fraction of the axis. */
+    const val MIN_WIDTH = 0.0005
+
+    /**
+     * The threshold at [zoom]. Zooming exists to make narrow frames readable,
+     * so the bar has to come down as the canvas gets wider — a fixed fraction
+     * means the same frames stay hidden however far you zoom in, which is the
+     * one thing zoom was supposed to fix.
+     */
+    fun minWidthFor(zoom: Double): Double =
+        MIN_WIDTH / HorizontalZoom.clampZoom(zoom)
+
     fun of(
         model: ProfileViewModel,
         track: ProfileTrackView,
-        minWidth: Double = 0.0005,
+        minWidth: Double = MIN_WIDTH,
     ): Pair<List<FlameRect>, Int> {
         val out = ArrayList<FlameRect>()
         var dropped = 0
@@ -146,7 +203,15 @@ object FlameLayout {
             val x = model.fractionOf(node.startNs)
             val w = if (model.spanNs <= 0) 0.0
             else (node.inclusiveNs.toDouble() / model.spanNs.toDouble()).coerceIn(0.0, 1.0 - x)
-            if (w < minWidth) {
+            // A ZERO-duration frame is not narrow, it is an OBSERVATION: the
+            // frame was on the stack for exactly one sample tick. No zoom can
+            // widen zero, so a width test hides it at every zoom — which is
+            // how "2 frame(s) too narrow to draw" came to report the same
+            // count at 512x as at fit (2026-09-01), naming frames that could
+            // never be reached. It is drawn at the renderer's one-pixel floor
+            // instead, for the reason the timeline already gives: rounding a
+            // real event away draws an idle lane that was not idle.
+            if (w > 0.0 && w < minWidth) {
                 dropped += 1 + countDescendants(node)
                 return
             }

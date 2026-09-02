@@ -2,10 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://olla.cajeta.dev/schemas/release-metadata.json",
   "title": "Release metadata",
-  "description":
-    "What the repository says about one release: its hash and the organization that owns its name (publisher-trust spec §5.1, §6.2). Signed by the repository ROOT key, in the same envelope as the organization key document.\n\nSERVED AS `signed` INSIDE THE /v2/resolve BODY, beside the plain v2 fields. The signed half is authoritative and the plain half is never merged into it: one response then serves both a verifying and a non-verifying client, and a mirror that rewrites the plain half accomplishes nothing. A bare envelope is also accepted, which is the shape the filesystem driver reads from a `<name>-<version>.release.json` sidecar.\n\nTHE PAYLOAD IS CARRIED AS OPAQUE BYTES ON PURPOSE, exactly as in org-key-document.json: the signature covers the decoded `payload` as transmitted, so there is no canonical-JSON step for signer and verifier to disagree about.",
+  "description": "What the repository says about one release: its hash and the organization that owns its name (publisher-trust spec §5.1, §6.2). Signed by a key the repository root has DELEGATED for release signing (spec §2.7), or by the root itself where a repository serves no delegation. Same envelope as the organization key document.\n\nSERVED AS `signed` INSIDE THE /v2/resolve BODY, beside the plain v2 fields. The signed half is authoritative and the plain half is never merged into it: one response then serves both a verifying and a non-verifying client, and a mirror that rewrites the plain half accomplishes nothing. A bare envelope is also accepted, which is the shape the filesystem driver reads from a `<name>-<version>.release.json` sidecar.\n\nTHE PAYLOAD IS CARRIED AS OPAQUE BYTES ON PURPOSE, exactly as in org-key-document.json: the signature covers the decoded `payload` as transmitted, so there is no canonical-JSON step for signer and verifier to disagree about.\n\nRETRACTION RE-SIGNS THIS PAYLOAD. The `retracted` flag is inside it, so withdrawing a release produces a new signed statement about the same coordinate. The archive's bytes are immutable (spec §1.9); the signed statement about them is not.",
   "type": "object",
-  "required": ["format", "root-key-id", "payload", "signature"],
+  "required": [
+    "format",
+    "root-key-id",
+    "payload",
+    "signature"
+  ],
   "additionalProperties": false,
   "properties": {
     "format": {
@@ -29,12 +33,14 @@
       "contentEncoding": "base64"
     }
   },
-
   "$defs": {
     "release": {
       "title": "The signed release statement",
       "type": "object",
-      "required": ["sha256", "organization"],
+      "required": [
+        "sha256",
+        "organization"
+      ],
       "additionalProperties": false,
       "properties": {
         "name": {
@@ -54,6 +60,16 @@
         },
         "organization": {
           "description": "The organization that owns this name. This is what binds the archive to a publisher, and it is the reason verification costs no extra round trip: the resolve the client already performs answers 'who owns this'. It MUST come from the authority that gated the upload and MUST NOT be computed from the name (spec §4.4).",
+          "type": "string",
+          "minLength": 1
+        },
+        "retracted": {
+          "description": "Whether the publisher has withdrawn this release. ABSENT MEANS FALSE. It lives inside the signed payload deliberately: a resolve response also carries an unsigned `retracted` for non-verifying clients, and a mirror can clear that one freely. Retraction is the one lifecycle signal whose job is to reach a client about to install something bad, so it gets the same protection as the hash. Retracting therefore RE-SIGNS this payload with the delegated key (spec 2.7) — the archive's bytes are immutable, the signed statement about them is not. A verifying client reads this field and ignores the unsigned copy (spec 7.6.2).",
+          "type": "boolean",
+          "default": false
+        },
+        "retracted-reason": {
+          "description": "Optional human-readable reason, shown with the retraction warning. Signed alongside the flag so it cannot be rewritten into something misleading.",
           "type": "string",
           "minLength": 1
         }

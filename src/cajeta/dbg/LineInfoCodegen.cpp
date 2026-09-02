@@ -1,5 +1,8 @@
 #include "cajeta/dbg/LineInfoCodegen.h"
 
+#include "cajeta/method/Method.h"
+#include "cajeta/type/CajetaClass.h"
+
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 
@@ -121,6 +124,28 @@ namespace cajeta::dbg {
         llvm::Function* fn = module->getRuntimeFunction("__cajeta_line_mark");
         if (!fn) return;
         builder->CreateCall(fn, {builder->getInt32(line)});
+    }
+
+    int fileLineFor(const cajeta::CajetaModulePtr& module, int snippetLine) {
+        // The two deltas COMPOSE; they are not alternatives. A generic method
+        // on a generic class is re-parsed twice: the class body from a class
+        // snippet, then the method from a method snippet cut out of THAT. So
+        // the method's delta maps method-snippet -> class-snippet, and the
+        // class's maps class-snippet -> file. Taking one or the other left
+        // `Holder<?>.boom` (and `Column<?>.of`) short by exactly the class
+        // delta, landing on the `/**` that opens the method's doc comment.
+        //
+        // Summing is safe for the single-snippet cases because the other term
+        // is zero: an ordinary method of a class template has no delta of its
+        // own, and a generic method on a plain class has no class delta.
+        int delta = 0;
+        if (auto method = module->getCurrentMethod()) {
+            delta += method->getDbgLineDelta();
+            if (auto owner = method->getParent())
+                delta += owner->getDbgLineDelta();
+        }
+        int line = snippetLine + delta;
+        return line < 1 ? 1 : line;
     }
 
 } // namespace cajeta::dbg

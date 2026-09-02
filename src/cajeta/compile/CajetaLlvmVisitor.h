@@ -2806,13 +2806,21 @@ namespace cajeta {
             // already threw — no extra reject needed here. The
             // post-parse pass catches any placeholder left unfilled.
             if (!type) {
-                // Belt-and-suspenders: should be unreachable now that
-                // fromContext either succeeds or throws, but a null
-                // here would still segfault generatePrototype, so
-                // emit the same diagnostic shape as before.
+                // NOT unreachable, whatever an earlier comment here claimed:
+                // this is the live path for a field whose type resolves
+                // nowhere, including every reference into a dependency the
+                // classpath does not carry.
+                //
+                // LOCATED, and anchored on the TYPE token rather than the
+                // declaration: an unlocated Exception leaves hasLocation()
+                // false and every consumer anchors it at line 1, so the IDE
+                // reported `Unknown fieldtype LlmEngine` against
+                // `package dev.cajeta.cabra;` — naming one thing and pointing
+                // at another (Julian, 2026-08-31, opening cajeta-cabra).
                 string typeName = ctx->typeType()->getText();
                 string declared = ctx->variableDeclarators()->getText();
-                throw Exception(
+                throw cajeta::locatedException(
+                    ctx->typeType()->getStart(),
                     "unknown field type '" + typeName
                         + "' on declaration '" + declared
                         + "'; not a primitive, native, or user-defined type",

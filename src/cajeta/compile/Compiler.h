@@ -317,6 +317,7 @@ namespace cajeta {
 
         // Phase-2 linker step for --emit=exe; collects everything in objectFiles and
         // invokes lld (when CAJETA_HAS_LLD is defined at CMake-configure time).
+        void writeAotStubs(const string& archiveRootPath);
         void linkExecutable(const string& archiveRootPath);
 
         // Emit a C-callable `main` symbol that invokes the user's static entry

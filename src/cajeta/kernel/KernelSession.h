@@ -44,7 +44,10 @@
 // The install path verifies a fetched archive against the publishing
 // organization's key document, which the repository serves. Forward
 // declared so this header does not pull the build tool in.
-namespace cajeta::buildtool { class Repository; }
+namespace cajeta::buildtool {
+    class Repository;
+    struct RepositoryDelegation;
+}
 
 namespace cajeta::kernel {
 
@@ -328,6 +331,10 @@ namespace cajeta::kernel {
             const cajeta::buildtool::Repository& repo,
             const std::string& owningOrganization,
             const std::string& signature,
+            // The repository's verified delegation, or nullptr. Needed here
+            // because the revocation statement is signed by a delegated key
+            // (publisher-trust 2.8).
+            const cajeta::buildtool::RepositoryDelegation* delegation,
             const std::function<void(const std::string&)>& phase,
             std::string* errorOut);
 

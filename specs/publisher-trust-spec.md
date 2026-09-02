@@ -134,6 +134,110 @@ delegation carries a required, signed type discriminator; an organization
 document is identified by the `organization` and `namespaces` a delegation
 never carries.
 
+### 2.8 Revocation
+
+**2.8** A revoked key must stop being trusted at once, and §2.7 puts the
+root offline. The durable form of revocation — a re-signed key document
+that omits the key — therefore waits on an offline ceremony measured in
+hours or days. A REVOCATION STATEMENT, signed by the DELEGATED key, is the
+emergency brake that covers the interval.
+
+**2.8.1** It can only SUBTRACT trust. It names key ids and makes them
+unusable; it can add no key, widen no namespace, and issue no document.
+That asymmetry is the entire reason an online key may sign it — a
+compromised delegated key can cause a noisy, recoverable outage and cannot
+forge anything.
+
+**2.8.2** Verification differs from every other document here: a
+revocation statement verifies against the DELEGATION's keys, not against
+the roots. It follows that a repository serving no delegation (§2.7.3) has
+no fast revocation, and its only revocation is the re-signed document.
+Fast revocation is a thing delegation buys.
+
+**2.8.3** The statement is FRESHNESS-BOUNDED and an expired one is
+refused. A revocation an attacker can suppress is not a revocation:
+serving yesterday's statement is indistinguishable from "nothing is
+revoked" unless the statement says how stale it may be. Windows are short
+— minutes to hours — which the delegated key can sustain precisely
+because it is online.
+
+**2.8.4** Suppression therefore fails CLOSED. Where a repository
+advertises revocation, a missing or expired statement is a FAILURE, not an
+absence, and the client refuses rather than proceeding unrevoked. Failing
+open would make blocking a single fetch equivalent to un-revoking every
+key in the repository.
+
+**2.8.5** Revocation is permanent for a key id. There is no un-revoke — a
+compromised key does not become trustworthy again — and recovery is a NEW
+key in a re-signed document. This is the opposite of §7.6's retraction,
+which is reversible on purpose, and the two must not be modelled alike.
+
+**2.8.6** The statement is the brake; the re-signed document is the
+repair. An entry may be pruned once the revoked key falls outside the
+validity window of EVERY document that ever carried it — not merely once a
+document omitting it is being served. Those two rules are not the same and
+the difference is exploitable: while the old document is still unexpired, a
+mirror replays it, the key is listed again, and pruning the entry hands the
+key back. §2.9's `issued-at` closes the replay itself; until a client is
+known to enforce it, the window is what bounds the entry's life.
+
+**2.8.7** A revocation statement and a delegation must be unmistakable for
+one another, for the reason given in §2.7.4. The statement carries a
+required, signed `type` discriminator.
+
+### 2.9 Document freshness
+
+**2.9** An organization key document carries `issued-at`, and a client
+refuses one older than the newest it has already accepted for that
+organization.
+
+**2.9.1** Without it the document is REPLAYABLE. Expiry alone does not
+help: a previous document is still validly signed and still inside its own
+window, so a mirror serves last year's copy and every key the organization
+has since removed is trusted again. Removing a key is exactly how §2.8's
+repair works, which makes this the hole that undoes it.
+
+**2.9.2** `issued-at` is REQUIRED rather than optional. An optional one
+cannot be checked — a document without it would simply skip the comparison,
+which is the whole attack. It is required at no migration cost because no
+repository serves key documents yet, and that is true exactly once.
+
+**2.9.3** Enforcement is per client and needs somewhere to keep the newest
+value seen. Within one session that is the key cache. ACROSS invocations it
+is unsolved, and it is the same gap as the revocation statement's — both
+want one durable store, and neither should get a private one.
+
+### 2.10 The security contact
+
+**2.10** A document may carry a `security-contact`: where to report a
+vulnerability in anything the organization publishes.
+
+**2.10.1** It is inside the signed payload because forging it has a victim.
+An unsigned contact is a phishing vector with a signature-shaped hole in
+it — a mirror shows an attacker's address, and a researcher sends a working
+exploit to them before the maintainer ever hears about it.
+
+**2.10.2** Signing it costs nothing extra. The document already expires and
+is already re-signed on a cycle, so the contact rides along. Only an
+OFF-cycle change costs a ceremony, and that is correct rather than
+friction: self-service security-contact change is itself an attack, since a
+stolen publish token would otherwise redirect every incoming report.
+
+**2.10.3** A URI, not an email address. `mailto:` covers the common case
+and `https:` covers a disclosure page or a `security.txt`, so one field
+serves both.
+
+**2.10.4** It must be SURFACED, or it is a signed field nothing reads —
+which is worse than no field, because it looks authoritative and is never
+checked. The place it earns is a failed publisher verification: the user
+looking at that message is precisely the one who needs an address they can
+trust.
+
+**2.10.5** Only fields whose forgery has a victim belong in this document.
+Display name, homepage and support email do not: forging them is a spoof,
+not an interception, and putting them here would price a typo at an offline
+ceremony. They are not therefore unsigned — see §8.3.
+
 ## 3. The trust anchor
 
 **3.1** The repository's root public key ships with the cajeta toolchain,
@@ -258,6 +362,22 @@ there is no anonymous write.
 
 **7.2** The owner can create, read, update and delete organizations.
 
+**7.2.1** Deleting an organization removes the key document every archive
+it published verifies against, so installs that worked yesterday stop
+working — with no bytes removed and nothing in the repository looking
+wrong. It is WARN-AND-CONFIRM, showing which archives the deletion will
+make unverifiable, on the same footing as §7.5's remove. It is not a
+refusal: the repository is a delivery hub, not the system of record for
+who an organization is, and it must not become the thing that blocks
+deleting one.
+
+**7.2.2** Recovery is re-onboarding, not restore. The organization is
+created again, a new document is signed, and CI republishes — the release
+pipeline that produced the archives in the first place can produce them
+again, which is what makes §7.2.1 a warning rather than a refusal. It is
+not instant: the new document waits on §7.9.1's offline ceremony like any
+other. Deleting an organization is recoverable, not cheap.
+
 **7.3** The owner can create, read, update and delete an organization's
 public keys. **An organization cannot modify its own keys.**
 
@@ -292,6 +412,20 @@ were written to work together: without §7.3, "an organization manages its
 own archives" would be an escalation path, and with it there is nothing to
 escalate to.
 
+**7.6.2** The `retracted` flag is INSIDE the signed release metadata, and
+retraction re-signs it. A flag carried only in the unsigned half of a
+resolve response is one a mirror clears, and clearing it is invisible:
+the client reads a release the publisher withdrew and is told nothing.
+Retraction is the one lifecycle signal whose entire job is to reach a
+client that is about to install something bad, so it needs the same
+protection §5.1 gives the hash. Re-signing is what the delegated key
+(§2.7) is for; a retraction is rarer than a publish.
+
+**7.6.3** An archive's BYTES are immutable; the signed statement about
+them is not. §1.9 fixes the first — a change is a new version. §7.6.2
+makes the second mutable on purpose, and the two do not conflict as long
+as no one reads §1.9 as freezing the metadata too.
+
 **7.7** Every mutation is authenticated, attributed, and recorded. Who
 changed which key, and when, is the audit question that matters after a
 compromise, and it cannot be reconstructed later if it was not recorded
@@ -301,9 +435,25 @@ at the time.
 replacement. Compromise response is "stop trusting this key now", and
 requiring a new key first would delay the only urgent step.
 
+**7.8.1** Because §7.9 stages rather than signs, the durable revocation —
+a re-signed document omitting the key — waits on the offline ceremony, and
+§7.8's urgency would be unachievable on its own. The delegated revocation
+statement of §2.8 is what makes it real: the brake applies in seconds
+against the online key, and the re-signed document follows as the repair.
+
 **7.9** A key document published through this surface is signed by the
 root key (§2.3). The administrative API is how documents come to exist;
 it does not introduce a second, unsigned path to the same data.
+
+**7.9.1** The administrative API STAGES; it does not sign. Its write verbs
+record an intended next document, and the root signature is an explicit
+offline act performed outside the API — the administrative surface never
+holds the root key, because an admin credential that could produce a root
+signature would forge any organization's document, the collapse §2.7
+exists to bound. §7.2 and §7.3's verbs are therefore requests: an
+organization does not exist to a client until its first document is signed
+and served, and a staged change that reads back as applied is how an
+operator concludes a revocation took effect when it did not.
 
 **7.10** Publishing and key management are separate privileges on purpose:
 the frequent action does not carry the dangerous one. An organization
@@ -320,12 +470,33 @@ there. A server-side implementer reaching for the equivalent rule is
 making the mistake §4.4 describes, and it will look reasonable at the
 moment they make it.
 
+**7.12** An organization's namespaces enter its key document at issuance,
+on evidence of control over the corresponding name — a DNS record, a file
+in a repository, whatever the operator is willing to accept. The owner
+verifies that evidence once and records it (§7.7); the root signature then
+carries the claim.
+
+A namespace table consulted at publish time refuses the same uploads and
+is not equivalent. The client cannot read it, so §4.3 has no signed list
+to check against and the server's check stops being the client's check; and
+a compromised server rewrites the ownership map with no signature to
+forge. Evidence of control belongs at issuance, where a root signature can
+cover the result.
+
 ## 8. Upgrade path
 
 **8.1** The HTTP driver already has a transparency-log endpoint. If the
 threat model later extends to a compromised olla, artifact digests
 recorded in a log the repository does not solely control is the natural
 next step, and this design does not preclude it.
+
+**8.3** The cosmetic fields of §2.10.5 — display name, homepage, support
+email — can be signed without a root ceremony by a SECOND document signed
+with the DELEGATED key. The axis is not signed versus unsigned; with two
+keys it is which key signs. A mirror could then rewrite nothing about an
+organization, while a typo still costs only an online signature. Deferred:
+it is a further document type and endpoint for fields whose forgery is a
+spoof, and nothing in §2.9 or §2.10 forecloses it.
 
 **8.2** Snapshot and timestamp roles remain available as a later
 addition if rollback and freeze attacks enter scope.
@@ -368,3 +539,39 @@ tomorrow by the same route.
 with no current key document is unenforceable while an organization can
 mint its own key on demand, since the refusal is then one API call away
 from being satisfied by the party it is meant to constrain.
+
+**9.4.3 The gap is wider than key registration.** Measured 2026-08-31 in
+the same deployed code. `getTrustKey` (`cajeta-olla/src/lib/catalog.ts:49`)
+resolves a key by `key_id` alone against a repository-global `trust_keys`
+table. The row carries a `principal` column and the publish path never
+compares it to the authenticated principal, so any registered key verifies
+an upload under any organization's name — §7.12's cross-organization case,
+live. Three details compound it: `addTrustKey` rebinds an existing
+`key_id` to new bytes on conflict (`catalog.ts:62`), so a key id is a
+mutable pointer rather than a name for a public key; `POST /v2/keys` takes
+the principal from the request body (`keys.ts:39`); and `trust_keys` has
+no expiry column, which makes §6.7 unrepresentable rather than merely
+unenforced.
+
+**9.5 The namespace check derives ownership from the name, which is the
+§7.11 trap in production.** `domainForPackage`
+(`cajeta-olla/src/lib/namespace.ts:78`) takes the first two segments and
+reverses them, then looks that up in a `namespaces` table proven by DNS
+TXT or a GitHub file. Fixed arity 2 is wrong for any deeper reverse-DNS
+name, and it fails toward collision rather than refusal:
+
+| name | derived owner |
+|---|---|
+| `dev.cajeta.http` | `cajeta.dev` |
+| `uk.co.acme.thing` | `co.uk` |
+| `uk.co.evil.thing` | `co.uk` |
+
+Two unrelated publishers collapse onto one key, and that key is a public
+suffix nobody can hold. The check is also gated behind a
+`REQUIRE_NAMESPACE` environment flag, so it is off unless switched on.
+
+**9.5.1** §7.12 removes the derivation rather than correcting the arity.
+Once namespaces are a signed list in the key document, there is no string
+operation to get wrong and the client can perform the same check. The DNS
+and GitHub proofs are good evidence and should survive the move — as
+issuance-time input to the owner, not as a publish-time lookup.

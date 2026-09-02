@@ -34,6 +34,12 @@ namespace cajeta::buildtool {
         // decide a publisher binding.
         bool signedByRoot = false;
         std::string rootKeyId;      // which root signed it (spec 6.3)
+
+        // Withdrawn by its publisher (spec 7.6.2). Read from the SIGNED
+        // payload when there is one: the plain `retracted` beside it is
+        // advisory, and a mirror clears it freely.
+        bool retracted = false;
+        std::string retractedReason;
     };
 
     // Parse release metadata, verifying it when it is signed.

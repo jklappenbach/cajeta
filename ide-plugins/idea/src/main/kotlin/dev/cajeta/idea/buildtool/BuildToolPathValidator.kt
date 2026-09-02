@@ -18,24 +18,19 @@ object BuildToolPathValidator {
         data class Invalid(val reason: String) : Result
     }
 
-    fun validate(path: String): Result {
-        val trimmed = path.trim()
-        if (trimmed.isEmpty()) return Result.Invalid("Build-tool path is empty")
-
-        // Bare command name → resolved on PATH at spawn time (can't cheaply
-        // confirm here without scanning PATH; surfaced if the spawn fails).
-        if (!trimmed.contains(File.separatorChar) && trimmed == File(trimmed).name) {
-            return Result.Ok(note = "Resolved on PATH at run time")
+    // The executable check itself is shared with the compiler path
+    // ([dev.cajeta.idea.settings.ExecutablePathValidator]); only the label and
+    // the coco version floor below are the build tool's own. Two copies of the
+    // rule would drift, and the messages here are ones people have learned to
+    // read.
+    fun validate(path: String): Result =
+        when (val r = dev.cajeta.idea.settings.ExecutablePathValidator
+                .validate(path, "Build-tool path")) {
+            is dev.cajeta.idea.settings.ExecutablePathValidator.Result.Ok ->
+                Result.Ok(r.note)
+            is dev.cajeta.idea.settings.ExecutablePathValidator.Result.Invalid ->
+                Result.Invalid(r.reason)
         }
-
-        val f = File(trimmed)
-        return when {
-            !f.exists() -> Result.Invalid("No such file: $trimmed")
-            f.isDirectory -> Result.Invalid("Path is a directory, not an executable: $trimmed")
-            !f.canExecute() -> Result.Invalid("Not executable: $trimmed")
-            else -> Result.Ok()
-        }
-    }
 
     /** Convenience for callers that only need the message (null when valid). */
     fun problem(path: String): String? =
