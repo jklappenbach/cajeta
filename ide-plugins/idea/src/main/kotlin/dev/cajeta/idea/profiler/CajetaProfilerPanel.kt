@@ -35,6 +35,10 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
 
     private val trackPicker = ComboBox<ProfileTrackView>()
     private val status = JBLabel(" ")
+    // The loaded profile's identity, which is STANDING information. It shared
+    // the status label with transient navigation messages, so the first click
+    // erased "which profile am I looking at" and nothing put it back.
+    private val profileLabel = JBLabel(" ")
     private val tabs = JBTabbedPane()
 
     // §5.4 — a window holding nothing must say so and say what to do about it.
@@ -45,10 +49,32 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
     private var model: ProfileViewModel? = null
 
     init {
-        val bar = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4))
-        bar.add(JBLabel("Track:"))
-        bar.add(trackPicker)
-        bar.add(status)
+        // Two rows, each with one job:
+        //   1. what is loaded (left)          | which track (right)
+        //   2. zoom (left)                    | what the last click did
+        // The profile's identity and a transient message were previously the
+        // same label, so clicking anything erased which file was open.
+        val rowOne = JPanel(BorderLayout())
+        val profileCell = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4))
+        profileCell.add(profileLabel)
+        rowOne.add(profileCell, BorderLayout.CENTER)
+        val trackCell = JPanel(FlowLayout(FlowLayout.RIGHT, 8, 4))
+        trackCell.add(JBLabel("Track:"))
+        trackCell.add(trackPicker)
+        rowOne.add(trackCell, BorderLayout.EAST)
+
+        val flameZoom = ZoomSlider { z -> flame.setZoom(z) }
+        // Ctrl+scroll on the graph moves the slider, so the two never disagree.
+        flame.onZoomChanged { z -> flameZoom.reflect(z) }
+        val rowTwo = JPanel(BorderLayout())
+        rowTwo.add(flameZoom, BorderLayout.WEST)
+        val statusCell = JPanel(FlowLayout(FlowLayout.LEFT, 8, 4))
+        statusCell.add(status)
+        rowTwo.add(statusCell, BorderLayout.CENTER)
+
+        val bar = JPanel(java.awt.GridLayout(2, 1))
+        bar.add(rowOne)
+        bar.add(rowTwo)
 
         trackPicker.renderer = com.intellij.ui.SimpleListCellRenderer.create("") { t: ProfileTrackView? ->
             t?.let { "${it.name}  (${it.kind.name.lowercase()}, depth ${it.depth})" } ?: ""
@@ -163,12 +189,14 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
 
     /** Load a trace. Reading and decoding happen off the EDT. */
     fun load(file: File) {
-        status.text = "reading ${file.name}…"
+        profileLabel.text = "Profile: reading ${file.name}…"
         ApplicationManager.getApplication().executeOnPooledThread {
             val result = runCatching { ProfileViewModel.of(PerfettoTraceReader.read(file.readBytes())) }
             ApplicationManager.getApplication().invokeLater {
                 result.onSuccess { show(it, file) }
-                    .onFailure { status.text = "could not read ${file.name}: ${it.message}" }
+                    .onFailure {
+                        profileLabel.text = "Profile: could not read ${file.name}: ${it.message}"
+                    }
             }
         }
     }
@@ -188,7 +216,8 @@ class CajetaProfilerPanel(private val project: Project) : JPanel(BorderLayout())
             trackPicker.selectedItem = initial
             flame.show(model, initial)
         }
-        status.text = summary(model, file)
+        profileLabel.text = "Profile: " + summary(model, file)
+        status.text = " "
     }
 
     private fun summary(m: ProfileViewModel, file: File?): String = buildString {

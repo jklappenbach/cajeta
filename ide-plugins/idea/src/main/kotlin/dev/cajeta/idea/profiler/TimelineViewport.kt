@@ -30,8 +30,9 @@ object TimelineViewport {
      * same smear. Never stretching means a wide one paints into a fixed column
      * and wastes the rest.
      */
-    fun tracksViewportWidth(viewportWidth: Int, minContentWidth: Int): Boolean =
-        viewportWidth >= minContentWidth
+    fun tracksViewportWidth(viewportWidth: Int, minContentWidth: Int,
+                            zoom: Double = HorizontalZoom.FIT): Boolean =
+        zoom <= HorizontalZoom.FIT && viewportWidth >= minContentWidth
 
     /**
      * Fill a viewport taller than the content, scroll when it is shorter.

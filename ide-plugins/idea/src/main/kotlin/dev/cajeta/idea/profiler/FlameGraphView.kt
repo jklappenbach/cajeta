@@ -29,6 +29,17 @@ interface FlameGraphView {
 
     /** Called when the user asks for a kernel's launching call site (§8.4). */
     fun onSelectLaunchSite(handler: (FlameNode) -> Unit) {}
+
+    /**
+     * Set the horizontal (time-axis) zoom; 1.0 is fit-to-width. Defaulted to a
+     * no-op: the JCEF renderer draws its own layout and does not share this
+     * canvas's geometry, so it declines rather than pretending.
+     */
+    fun setZoom(zoom: Double) {}
+
+    /** Notified when the view changes zoom ITSELF (Ctrl+scroll), so a control
+     *  driving it can stay in step. */
+    fun onZoomChanged(handler: (Double) -> Unit) {}
 }
 
 /**
@@ -168,10 +179,22 @@ object FlameLayout {
      * visible. The count of what was dropped is returned so the UI can say so
      * rather than quietly showing less than the trace holds.
      */
+    /** Narrowest frame worth drawing at fit, as a fraction of the axis. */
+    const val MIN_WIDTH = 0.0005
+
+    /**
+     * The threshold at [zoom]. Zooming exists to make narrow frames readable,
+     * so the bar has to come down as the canvas gets wider — a fixed fraction
+     * means the same frames stay hidden however far you zoom in, which is the
+     * one thing zoom was supposed to fix.
+     */
+    fun minWidthFor(zoom: Double): Double =
+        MIN_WIDTH / HorizontalZoom.clampZoom(zoom)
+
     fun of(
         model: ProfileViewModel,
         track: ProfileTrackView,
-        minWidth: Double = 0.0005,
+        minWidth: Double = MIN_WIDTH,
     ): Pair<List<FlameRect>, Int> {
         val out = ArrayList<FlameRect>()
         var dropped = 0
@@ -180,7 +203,15 @@ object FlameLayout {
             val x = model.fractionOf(node.startNs)
             val w = if (model.spanNs <= 0) 0.0
             else (node.inclusiveNs.toDouble() / model.spanNs.toDouble()).coerceIn(0.0, 1.0 - x)
-            if (w < minWidth) {
+            // A ZERO-duration frame is not narrow, it is an OBSERVATION: the
+            // frame was on the stack for exactly one sample tick. No zoom can
+            // widen zero, so a width test hides it at every zoom — which is
+            // how "2 frame(s) too narrow to draw" came to report the same
+            // count at 512x as at fit (2026-09-01), naming frames that could
+            // never be reached. It is drawn at the renderer's one-pixel floor
+            // instead, for the reason the timeline already gives: rounding a
+            // real event away draws an idle lane that was not idle.
+            if (w > 0.0 && w < minWidth) {
                 dropped += 1 + countDescendants(node)
                 return
             }
