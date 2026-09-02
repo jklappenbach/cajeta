@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 #if defined(_WIN32)
 // POSIX dl* shim over the Win32 loader so the dlopen/dlsym/dlclose call sites
 // below stay identical across platforms. Mirrors the Cuda/Hip drivers' Win32
@@ -43,6 +44,33 @@ static inline int dlclose(void* handle) {
 #  include <dlfcn.h>
 #endif
 #include <string>
+
+#if defined(VK_KHR_portability_enumeration)
+// Without this the loader hides portability ICDs (MoltenVK) entirely.
+static void cajPortability(PFN_vkGetInstanceProcAddr gipa,
+                           VkInstanceCreateInfo& ici, const char*& slot) {
+    auto e = reinterpret_cast<PFN_vkEnumerateInstanceExtensionProperties>(
+        gipa(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties"));
+    if (!e) return;
+    uint32_t n = 0;
+    e(nullptr, &n, nullptr);
+    if (!n || n > 512) return;
+    std::vector<VkExtensionProperties> props(n);
+    e(nullptr, &n, props.data());
+    for (auto& x : props)
+        if (std::strcmp(x.extensionName,
+                        VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == 0) {
+            slot = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
+            ici.enabledExtensionCount = 1;
+            ici.ppEnabledExtensionNames = &slot;
+            ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+            return;
+        }
+}
+#else
+static void cajPortability(PFN_vkGetInstanceProcAddr, VkInstanceCreateInfo&,
+                           const char*&) {}
+#endif
 
 namespace cajeta {
 namespace xpu {
@@ -207,6 +235,8 @@ bool VulkanDriver::Impl::bringUp(Impl& d) {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+    const char* portExt = nullptr;
+    cajPortability(d.getInstanceProcAddr, ici, portExt);
     VkResult r = d.createInstance(&ici, nullptr, &d.instance);
     if (r != VK_SUCCESS) { logvk("vkCreateInstance", r); return false; }
 
@@ -468,6 +498,8 @@ bool VulkanDriver::rayQueryAvailable() {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+    const char* portExt = nullptr;
+    cajPortability(gipa, ici, portExt);
     VkInstance inst = VK_NULL_HANDLE;
     if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
         dlclose(lib);
@@ -571,6 +603,8 @@ bool VulkanDriver::coopMatrixAvailable() {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+    const char* portExt = nullptr;
+    cajPortability(gipa, ici, portExt);
     VkInstance inst = VK_NULL_HANDLE;
     if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
         dlclose(lib);
@@ -659,6 +693,8 @@ bool VulkanDriver::shaderAtomicFloatMinMaxAvailable() {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+    const char* portExt = nullptr;
+    cajPortability(gipa, ici, portExt);
     VkInstance inst = VK_NULL_HANDLE;
     if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
         dlclose(lib);
@@ -739,6 +775,8 @@ bool VulkanDriver::shaderAtomicInt64Available() {
     VkInstanceCreateInfo ici{};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
+    const char* portExt = nullptr;
+    cajPortability(gipa, ici, portExt);
     VkInstance inst = VK_NULL_HANDLE;
     if (createInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
         dlclose(lib);
