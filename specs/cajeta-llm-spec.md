@@ -1412,3 +1412,12 @@ files' actual bytes rather than their model cards.
   - **15.21.5** Every stage of this work lands with the 12.† parity
     gates intact: identical greedy generation on the 30B against the
     pre-stage engine, and the toy-fixture logit bars unchanged.
+  - **15.21.6** (2026-09-02, Julian's decision) The device K/V planes
+    are stored in **f16** — llama.cpp's default cache type — and the
+    kernels that read them widen on load. This is the one deliberate
+    numerics change of the arc: the 15.21.5 gate for it is a greedy
+    generation on the 30B that agrees with the f32-plane engine over
+    the parity prompt (the toy-fixture bars are compared against an
+    oracle whose K/V went through the same f16 rounding). The host
+    paged cache stays f32; seed and writeback convert, so the host
+    path after a writeback sees exactly the values the device used.
