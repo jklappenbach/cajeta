@@ -103,19 +103,16 @@ a picture. `cajeta profile summary` answers it from the trace:
 
 ```
 $ cajeta profile summary cajeta.pftrace
-kernel    count        total          avg          max   share
-saxpy        48    761.43 us     15.86 us     66.17 us   37.7%
-vecAdd       48    712.02 us     14.83 us     32.14 us   35.2%
-scale        48    547.19 us     11.40 us     16.71 us   27.1%
+kernel    count         self        total          avg          max   share
+saxpy        48    761.43 us    761.43 us     15.86 us     66.17 us   37.7%
+vecAdd       48    712.02 us    712.02 us     14.83 us     32.14 us   35.2%
+scale        48    547.19 us    547.19 us     11.40 us     16.71 us   27.1%
 
-144 slice(s) over 2 track(s); summed 2.02 ms, wall 29.31 ms
+144 slice(s) over 2 track(s); self 2.02 ms, wall 29.31 ms
 ```
 
-Rows are cost-ordered, so the answer to "where did the time go" is the first
-one. Summed device time can **exceed** the wall span when queues run
-concurrently — the run above has two streams — which is why both numbers are
-printed rather than a single utilisation figure that would be wrong on any
-multi-queue run.
+Rows are ordered by **self** time, so the answer to "where did the time go" is
+the first one.
 
 | option | |
 |---|---|
@@ -127,15 +124,42 @@ multi-queue run.
 
 ```
 $ cajeta profile summary cajeta.pftrace --to=5ms --csv
-name,count,total_ns,avg_ns,max_ns
-saxpy,24,399994,16666,66165
-vecAdd,24,360437,15018,32141
-scale,24,271832,11326,15669
+name,count,total_ns,self_ns,avg_ns,max_ns
+saxpy,24,399994,399994,16666,66165
+vecAdd,24,360437,360437,15018,32141
+scale,24,271832,271832,11326,15669
 ```
 
-Device and host are reported separately on purpose. Host frames are wall-clock
-spans that *contain* the kernels, so summing them into the same table would both
-dominate it and double-count the time it is reporting.
+#### self vs total
+
+**`self` is the frame's own work; `total` includes its children.** They differ
+only where frames nest, which on a device queue is never — a kernel slice
+contains nothing, so its `self` equals its `total`, and the two columns above
+agree on every row.
+
+Host frames are the opposite case, and it matters:
+
+```
+$ cajeta profile summary cajeta.pftrace --host
+frame                                    count         self        total    share
+cajeta.xpu.Device.activeBackend              1    175.91 ms    175.91 ms    63.8%
+kernelprofile.KernelProfile.runStream        2     41.05 ms     55.79 ms    14.9%
+kernelprofile.KernelProfile.run              1      3.16 ms    275.90 ms     1.1%
+
+11 slice(s) over 2 track(s); self 275.90 ms, wall 275.90 ms
+```
+
+`run` spans the whole program, so its **total** is the entire 275.90 ms — but
+almost all of that is its children, and its own work is 3.16 ms. Reading the
+inclusive column as cost would put `run` at the top of the table and blame the
+entry point for the program. Ordering and `share` therefore use `self`.
+
+The footer is the check on this: **self 275.90 ms against a wall of 275.90 ms**.
+Exclusive times partition the run — every nanosecond lands in exactly one frame
+— so they sum to the wall clock, while the inclusive column for the same run
+sums to 563 ms. Self time can still exceed the wall span when several threads
+or queues are genuinely busy at once; that is real concurrency, not
+double-counting, and is why no single "utilisation" percentage is offered.
 
 Two outcomes that are not the same thing, and are not reported as one:
 

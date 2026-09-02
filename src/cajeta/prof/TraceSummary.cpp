@@ -103,6 +103,9 @@ namespace cajeta::prof {
         struct Open {
             std::string name;
             int64_t     ts = 0;
+            /** Inclusive time held by this frame's direct children, so its own
+             *  exclusive time can be found when it closes. */
+            int64_t     childNs = 0;
         };
 
     } // namespace
@@ -163,7 +166,7 @@ namespace cajeta::prof {
         // not durations — the same reason trace_processor computes `dur` by
         // nesting rather than reading it.
         std::unordered_map<uint64_t, std::vector<Open>> stacks;
-        struct Rec { std::string name; int64_t ts; int64_t dur; };
+        struct Rec { std::string name; int64_t ts; int64_t dur; int64_t self; };
         std::vector<Rec> recs;
         int64_t tracks = 0;
         bool sawTrack = false;
@@ -213,7 +216,14 @@ namespace cajeta::prof {
                                                  // a trace that began mid-slice
                 Open o = st.back();
                 st.pop_back();
-                recs.push_back(Rec{o.name, o.ts, ts - o.ts});
+                const int64_t dur = ts - o.ts;
+                // Clamped: an unmatched child or a clock that stepped could
+                // otherwise make a frame's self time negative, which is not a
+                // duration and would corrupt the totals it feeds.
+                int64_t self = dur - o.childNs;
+                if (self < 0) self = 0;
+                recs.push_back(Rec{o.name, o.ts, dur, self});
+                if (!st.empty()) st.back().childNs += dur;
             }
         });
 
@@ -238,6 +248,7 @@ namespace cajeta::prof {
             k.name = r.name;
             k.count++;
             k.totalNs += r.dur;
+            k.selfNs += r.self;
             k.maxNs = std::max(k.maxNs, r.dur);
             out->sliceCount++;
             if (first) { lo = hi = r.ts; first = false; }
@@ -245,9 +256,16 @@ namespace cajeta::prof {
             hi = std::max(hi, r.ts + r.dur);
         }
         out->spanNs = first ? 0 : hi - lo;
-        for (auto& kv : byName) out->rows.push_back(kv.second);
+        for (auto& kv : byName) {
+            out->totalSelfNs += kv.second.selfNs;
+            out->rows.push_back(kv.second);
+        }
+        // Ordered by SELF time: "where did the time go" is answered by the work
+        // a frame did itself, not by how much of the run it happened to span.
+        // On a device view self == total, so the device ordering is unchanged.
         std::sort(out->rows.begin(), out->rows.end(),
                   [](const KernelStat& a, const KernelStat& b) {
+                      if (a.selfNs != b.selfNs) return a.selfNs > b.selfNs;
                       if (a.totalNs != b.totalNs) return a.totalNs > b.totalNs;
                       return a.name < b.name;   // stable, so output is diffable
                   });
@@ -371,34 +389,44 @@ namespace cajeta::prof {
         }
 
         if (csv) {
-            std::printf("name,count,total_ns,avg_ns,max_ns\n");
+            std::printf("name,count,total_ns,self_ns,avg_ns,max_ns\n");
             for (const auto& r : sum.rows) {
-                std::printf("%s,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "\n",
-                            r.name.c_str(), r.count, r.totalNs, r.avgNs(), r.maxNs);
+                std::printf("%s,%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 ",%" PRId64 "\n",
+                            r.name.c_str(), r.count, r.totalNs, r.selfNs,
+                            r.avgNs(), r.maxNs);
             }
             return 0;
         }
 
         size_t w = 6;
         for (const auto& r : sum.rows) w = std::max(w, r.name.size());
-        std::printf("%-*s %8s %12s %12s %12s %7s\n", (int) w, "kernel",
-                    "count", "total", "avg", "max", "share");
-        int64_t grand = 0;
-        for (const auto& r : sum.rows) grand += r.totalNs;
+        const char* head = opts.host ? "frame" : "kernel";
+        std::printf("%-*s %8s %12s %12s %12s %12s %7s\n", (int) w, head,
+                    "count", "self", "total", "avg", "max", "share");
+        // Share is of SELF time. Sharing out inclusive time would give a host
+        // table whose column sums to more than the run is long, and percentages
+        // of a number that does not exist.
         for (const auto& r : sum.rows) {
-            std::printf("%-*s %8" PRId64 " %12s %12s %12s %6.1f%%\n",
+            std::printf("%-*s %8" PRId64 " %12s %12s %12s %12s %6.1f%%\n",
                         (int) w, r.name.c_str(), r.count,
-                        fmtNs(r.totalNs).c_str(), fmtNs(r.avgNs()).c_str(),
-                        fmtNs(r.maxNs).c_str(),
-                        grand > 0 ? (100.0 * (double) r.totalNs / (double) grand) : 0.0);
+                        fmtNs(r.selfNs).c_str(), fmtNs(r.totalNs).c_str(),
+                        fmtNs(r.avgNs()).c_str(), fmtNs(r.maxNs).c_str(),
+                        sum.totalSelfNs > 0
+                            ? (100.0 * (double) r.selfNs / (double) sum.totalSelfNs)
+                            : 0.0);
         }
-        // Summed device time can EXCEED the wall span when queues run
-        // concurrently, so both are printed rather than a single "utilisation"
-        // that would be wrong on a multi-queue run.
+        // `self` sums honestly; `total` does not, because host frames nest.
+        // Both are printed, and the footer totals the one that is a duration.
+        // It can still EXCEED the wall span when tracks run concurrently, which
+        // is why a single "utilisation" figure is not offered.
         std::printf("\n%" PRId64 " slice(s) over %" PRId64 " track(s); "
-                    "summed %s, wall %s\n",
+                    "self %s, wall %s\n",
                     sum.sliceCount, sum.trackCount,
-                    fmtNs(grand).c_str(), fmtNs(sum.spanNs).c_str());
+                    fmtNs(sum.totalSelfNs).c_str(), fmtNs(sum.spanNs).c_str());
+        if (opts.host) {
+            std::printf("`total` counts a frame's children too, so that column "
+                        "sums to more than the run is long.\n");
+        }
         return 0;
     }
 

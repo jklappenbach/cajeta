@@ -73,9 +73,71 @@ TEST(ProfileSummary, totalsDeviceWorkPerKernel) {
         EXPECT_EQ(r.avgNs(), r.totalNs / r.count) << r.name;
         EXPECT_LE(r.maxNs, r.totalNs) << r.name << ": one slice cannot exceed the sum";
     }
-    // Sorted by cost, so the answer to "where did the time go" is the first row.
+    // Sorted by SELF cost, so the answer to "where did the time go" is the
+    // first row. On a device view self == total, so this is also total-ordered.
     for (size_t i = 1; i < s.rows.size(); i++) {
-        EXPECT_GE(s.rows[i - 1].totalNs, s.rows[i].totalNs) << "rows must be cost-ordered";
+        EXPECT_GE(s.rows[i - 1].selfNs, s.rows[i].selfNs) << "rows must be cost-ordered";
+    }
+}
+
+// Exclusive time. Host frames NEST — run contains runStream contains upload —
+// so an inclusive column sums parent and child together. Before this existed,
+// the host table for samples/kernel-profile summed to 563 ms of a 276 ms run
+// and reported `KernelProfile.run` as 49% of it; run's real self time is 1.1%.
+TEST(ProfileSummary, nestedHostFramesReportExclusiveTime) {
+    if (!exists(hostOnlyTrace())) GTEST_SKIP() << "fixture unavailable";
+    SummaryOptions hostOpts;
+    hostOpts.host = true;
+    Summary s;
+    std::string err;
+    ASSERT_TRUE(cajeta::prof::summarize(hostOnlyTrace(), hostOpts, &s, &err)) << err;
+    ASSERT_FALSE(s.rows.empty());
+
+    int64_t sumTotal = 0, nested = 0;
+    for (const auto& r : s.rows) {
+        // The invariant: a frame's own work cannot exceed its span.
+        EXPECT_LE(r.selfNs, r.totalNs) << r.name << ": self exceeds inclusive";
+        sumTotal += r.totalNs;
+        if (r.selfNs < r.totalNs) nested++;
+    }
+    EXPECT_GT(nested, 0)
+        << "no frame has children — this fixture cannot demonstrate nesting, "
+           "so the exclusive column is untested by it";
+    // The point of the column: the inclusive sum overstates the run and the
+    // exclusive sum does not.
+    EXPECT_LT(s.totalSelfNs, sumTotal)
+        << "with nesting present, self must total less than inclusive";
+}
+
+// Self time accounts for the run exactly: every nanosecond lands in one frame.
+// Measured on samples/kernel-profile at self 275.90 ms against wall 275.90 ms.
+TEST(ProfileSummary, selfTimeAccountsForTheRunWithoutDoubleCounting) {
+    if (!exists(hostOnlyTrace())) GTEST_SKIP() << "fixture unavailable";
+    SummaryOptions hostOpts;
+    hostOpts.host = true;
+    Summary s;
+    std::string err;
+    ASSERT_TRUE(cajeta::prof::summarize(hostOnlyTrace(), hostOpts, &s, &err)) << err;
+    ASSERT_GT(s.spanNs, 0);
+    // Never MORE than the wall span times the number of concurrent tracks —
+    // several threads genuinely can be busy at once, which is why this is not
+    // a plain <= spanNs.
+    EXPECT_LE(s.totalSelfNs, s.spanNs * (s.trackCount > 0 ? s.trackCount : 1))
+        << "self time cannot exceed what the tracks could have been busy for";
+}
+
+// And the other side: kernels on a device queue do NOT nest, so their self time
+// is their total. Without this, "self = total always" would pass every test
+// above and quietly restore the double-counting on the host view.
+TEST(ProfileSummary, deviceKernelsDoNotNestSoSelfEqualsTotal) {
+    if (!exists(amdgpuTrace())) GTEST_SKIP() << "fixture unavailable";
+    Summary s;
+    std::string err;
+    ASSERT_TRUE(cajeta::prof::summarize(amdgpuTrace(), SummaryOptions{}, &s, &err)) << err;
+    ASSERT_FALSE(s.rows.empty());
+    for (const auto& r : s.rows) {
+        EXPECT_EQ(r.selfNs, r.totalNs)
+            << r.name << ": a kernel slice has no children, so self is its total";
     }
 }
 
