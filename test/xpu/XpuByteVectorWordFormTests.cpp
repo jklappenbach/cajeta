@@ -62,6 +62,7 @@ namespace {
 //   3: ql.asUnsigned() >> 3
 //   4: ql >> 3            (bare arithmetic shift: stays per-byte, must sign-extend)
 //   5: (ql & 15) | (qh & 240)
+//   6: ((ql >> 4) & 15) - 8      (the q4_0 dequant: a byte SUB after the peephole)
 const char* kByteOpsSource =
     "package test;\n"
     "import cajeta.xpu.KernelBuffer;\n"
@@ -88,6 +89,8 @@ const char* kByteOpsSource =
     "            out.vstore(4L * span + o, r);\n"
     "            Vector<int8,16> m = (ql & 15) | (qh & 240);\n"
     "            out.vstore(5L * span + o, m);\n"
+    "            Vector<int8,16> e = ((ql >> 4) & 15) - 8;\n"
+    "            out.vstore(6L * span + o, e);\n"
     "        }\n"
     "    }\n"
     "}\n";
@@ -234,6 +237,11 @@ TEST(XpuByteVectorWordFormTests, lowersByteBitwiseOpsAsWords) {
     // Region 4's bare `ql >> 3` is the ONLY ashr; the three masked shifts of
     // region 0 ((ql >> 4) & 15, (qh >> 2) & 3) emit none.
     EXPECT_EQ(countOf(ir, "ashr <16 x i8>"), 1u) << ir;
+    // Region 6's `- 8` runs on the BYTES the peephole hands back, never on
+    // the words (a use-after-free of the erased ashr once returned the
+    // word type from toBytes, and the device subtracted 8 from each word).
+    EXPECT_NE(ir.find("sub <16 x i8>"), std::string::npos) << ir;
+    EXPECT_EQ(ir.find("sub <4 x i32>"), std::string::npos) << ir;
 }
 
 // 1.1.2 — a bare signed shift stays per-byte (spec 2.5): a kernel with ONLY
@@ -268,7 +276,7 @@ TEST(XpuByteVectorWordFormTests, byteOpsAreBitIdentical) {
     const int32_t B = 64, G = 64;
     const uint32_t N = (uint32_t) (B * G);
     const size_t span = (size_t) N * 16;
-    std::vector<int8_t> a(span), b(span), out(6 * span, 0);
+    std::vector<int8_t> a(span), b(span), out(7 * span, 0);
     std::mt19937 rng(60);
     for (auto& v : a) v = (int8_t) (rng() & 255);
     for (auto& v : b) v = (int8_t) (rng() & 255);
@@ -285,10 +293,12 @@ TEST(XpuByteVectorWordFormTests, byteOpsAreBitIdentical) {
         int8_t e3 = (int8_t) ((uint8_t) ql >> 3);
         int8_t e4 = (int8_t) (ql >> 3);
         int8_t e5 = (int8_t) ((ql & 15) | (qh & 240));
-        int8_t got[6] = {out[p], out[span + p], out[2 * span + p],
-                         out[3 * span + p], out[4 * span + p], out[5 * span + p]};
-        int8_t exp[6] = {e0, e1, e2, e3, e4, e5};
-        for (int r = 0; r < 6; ++r) {
+        int8_t e6 = (int8_t) (((ql >> 4) & 15) - 8);
+        int8_t got[7] = {out[p], out[span + p], out[2 * span + p],
+                         out[3 * span + p], out[4 * span + p], out[5 * span + p],
+                         out[6 * span + p]};
+        int8_t exp[7] = {e0, e1, e2, e3, e4, e5, e6};
+        for (int r = 0; r < 7; ++r) {
             if (got[r] != exp[r]) {
                 ++bad;
                 ADD_FAILURE() << "region " << r << " byte " << p

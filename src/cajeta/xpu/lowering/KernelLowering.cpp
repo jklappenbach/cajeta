@@ -5491,11 +5491,18 @@ private:
         if (byteWordFormOff()) return nullptr;
         llvm::FixedVectorType* wt = wordViewOf(l->getType());
         if (!wt || r->getType() != l->getType()) return nullptr;
+        // The byte type is captured HERE: the peephole below erases `l`,
+        // and `l->getType()` after that read freed memory — on the device
+        // it came back as the WORD type, so the value was returned
+        // un-bitcast and the next op (`- 8`, `| ...`) ran on words. The
+        // CPU-JIT oracle passed the same IR by the luck of the freed bytes;
+        // the llm suite's q40/q50/q3k kernels caught it.
+        llvm::Type* byteTy = l->getType();
         auto toWords = [&](llvm::Value* v) {
             return builder.CreateBitCast(v, wt, "bv.words");
         };
         auto toBytes = [&](llvm::Value* w) {
-            return builder.CreateBitCast(w, l->getType(), "bv.bytes");
+            return builder.CreateBitCast(w, byteTy, "bv.bytes");
         };
         auto shiftRightWords = [&](llvm::Value* w, int c) {
             if (c == 0) return w;

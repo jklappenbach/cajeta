@@ -194,6 +194,18 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
                                               : llvm::OptimizationLevel::O3;
         mpm = pb.buildPerModuleDefaultPipeline(ol);
     }
+    // CAJETA_XPU_DUMP_BC=<dir>: the module's IR before and after this
+    // pipeline, as text — the instrument for "the CPU oracle passes and
+    // the device does not" (kernel-byte-vector-lowering 2026-09-02).
+    if (const char* dumpDir = std::getenv("CAJETA_XPU_DUMP_BC")) {
+        std::error_code ec;
+        llvm::raw_fd_ostream pre(std::string(dumpDir) + "/" + m.getName().str() + ".pre.ll", ec);
+        if (!ec) m.print(pre, nullptr);
+        mpm.run(m, mam);
+        llvm::raw_fd_ostream post(std::string(dumpDir) + "/" + m.getName().str() + ".post.ll", ec);
+        if (!ec) m.print(post, nullptr);
+        return;
+    }
     mpm.run(m, mam);
 }
 
