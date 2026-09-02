@@ -1249,8 +1249,8 @@ bool cajetaRhsCarriesRedundantSharp(
                 // Wrap in a slot so consumers (which loadIfLValue an
                 // ArrayIndex result as a pointer) read the element correctly —
                 // mirrors the operator[] GET path below.
-                llvm::AllocaInst* slot = builder->CreateAlloca(
-                    elt->getType(), nullptr, "vec.idx.slot");
+                llvm::AllocaInst* slot = module->createEntryAlloca(
+                    elt->getType(), "vec.idx.slot");
                 builder->CreateStore(elt, slot);
                 return slot;
             }
@@ -1277,8 +1277,8 @@ bool cajetaRhsCarriesRedundantSharp(
                     module, matT->getElementType(), matT->getCols());
                 llvm::Value* rowVal = matops::row(
                     *builder, matVal, matT->getRows(), matT->getCols(), r);
-                llvm::AllocaInst* slot = builder->CreateAlloca(
-                    rowVal->getType(), nullptr, "mat.row.slot");
+                llvm::AllocaInst* slot = module->createEntryAlloca(
+                    rowVal->getType(), "mat.row.slot");
                 builder->CreateStore(rowVal, slot);
                 return slot;
             }

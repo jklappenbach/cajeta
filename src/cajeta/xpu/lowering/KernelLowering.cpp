@@ -1,5 +1,5 @@
 //
-// Shared @Kernel AST → device llvm::Function lowering — see header.
+// Shared @Kernel AST Ã¢ÂÂ device llvm::Function lowering Ã¢ÂÂ see header.
 //
 
 #include "KernelLowering.h"
@@ -69,10 +69,10 @@ llvm::Value* LoweringTarget::globalId(llvm::IRBuilderBase& b, llvm::Module& m,
     return b.CreateAdd(b.CreateMul(wid, wdim), tid, "gid");
 }
 
-// The explicit-override layer of the degrade seam (CajetaGPU.md §1.5, inc-4
+// The explicit-override layer of the degrade seam (CajetaGPU.md ÃÂ§1.5, inc-4
 // brick #4): apply CAJETA_GPU_<FEATURE>_IMPL to a per-backend base tier. The
-// override wins when set ("software" → Portable, "native" → Native); unset or
-// any other value keeps `base`. Read here and ONLY here — the compile-time-
+// override wins when set ("software" Ã¢ÂÂ Portable, "native" Ã¢ÂÂ Native); unset or
+// any other value keeps `base`. Read here and ONLY here Ã¢ÂÂ the compile-time-
 // feature instance of the CAJETA_GPU_<FEATURE>_IMPL convention (the runtime-noun
 // instance is caj_resolve_as_impl / CAJETA_GPU_AS_IMPL in cajeta_runtime.c).
 // Precedence + the case-sensitive string match mirror caj_resolve_as_impl.
@@ -97,7 +97,7 @@ namespace {
 
 [[noreturn]] void unsupported(const std::string& what) {
     throw cajeta::Exception(
-        "XPU kernel lowering: unsupported construct — " + what,
+        "XPU kernel lowering: unsupported construct Ã¢ÂÂ " + what,
         "XPU-N01");
 }
 
@@ -120,7 +120,7 @@ llvm::Type* deviceScalarType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
             // float16 (binary16) -> half; bfloat16 -> bfloat. Distinguished by
             // the type-ID byte (both are FLOAT|BIT_16).
             // 64-bit: the type-ID byte lives in bits 32-39, so the mask must be a
-            // 64-bit type. `unsigned long` is 32-bit on Windows (LLP64) — it would
+            // 64-bit type. `unsigned long` is 32-bit on Windows (LLP64) Ã¢ÂÂ it would
             // truncate this constant to 0 and misclassify bfloat16 as half.
             constexpr CajetaTypeFlags kIdMask = 0x000000FF00000000ULL;
             return (f & kIdMask) == BFLOAT16_ID
@@ -141,18 +141,18 @@ llvm::Type* deviceScalarType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
 // Map a Vector<T,N> CajetaType to a device LLVM `<N x T>`, built fresh in the
 // device context. Returns nullptr when `t` is not a CajetaVector (or its
 // element type isn't a device scalar). The element-type/lane data is read
-// structurally off the CajetaVector — the device walker carries no resolved
+// structurally off the CajetaVector Ã¢ÂÂ the device walker carries no resolved
 // types, but a Vector local's declared type is a CajetaVector regardless.
 llvm::Type* deviceVectorType(const CajetaTypePtr& t, llvm::LLVMContext& ctx) {
     auto vec = std::dynamic_pointer_cast<CajetaVector>(t);
     if (!vec) return nullptr;
     llvm::Type* elem = deviceScalarType(vec->getElementType(), ctx);
     if (!elem) return nullptr;
-    // L3: reject a zero-lane vector cleanly — FixedVectorType::get(elem, 0)
+    // L3: reject a zero-lane vector cleanly Ã¢ÂÂ FixedVectorType::get(elem, 0)
     // asserts/aborts in a debug LLVM and yields degenerate IR otherwise.
     if (vec->getLanes() == 0)
         throw cajeta::Exception(
-            "XPU kernel lowering: Vector<T, 0> has no lanes — N must be > 0",
+            "XPU kernel lowering: Vector<T, 0> has no lanes Ã¢ÂÂ N must be > 0",
             "XPU-N01");
     return llvm::FixedVectorType::get(elem, vec->getLanes());
 }
@@ -200,7 +200,7 @@ bool typeIsSigned(const CajetaTypePtr& t) {
 // A POD struct kernel param, lowered to a device LLVM struct of its primitive
 // fields in declaration order. The host class carries a vtable pointer at LLVM
 // slot 0; that word is STRIPPED here (and by the launch-site marshaller in
-// CallExpression.cpp) — a host pointer is meaningless on the device and a
+// CallExpression.cpp) Ã¢ÂÂ a host pointer is meaningless on the device and a
 // pointer inside a struct is invalid in the SPIR-V storage-buffer model. So the
 // device struct is { field0, field1, ... } and field i lives at index i.
 // Built as a literal StructType (uniqued by body), so the type collectParams
@@ -239,14 +239,14 @@ DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx
             ++idx;
             continue;
         }
-        // A Vector<T,N> / Matrix<T,R,C> field — a flat <N x T> / <R*C x T> by-value
-        // lane aggregate (cajeta-gfx §4.b-rest: a graphics output/varying struct is
+        // A Vector<T,N> / Matrix<T,R,C> field Ã¢ÂÂ a flat <N x T> / <R*C x T> by-value
+        // lane aggregate (cajeta-gfx ÃÂ§4.b-rest: a graphics output/varying struct is
         // {vec4 position, vec2 uv, ...}; also unblocks cajeta.math @ValueType device
-        // parity — Ray/Aabb hold Vector fields). Like a scalar field it has no named
+        // parity Ã¢ÂÂ Ray/Aabb hold Vector fields). Like a scalar field it has no named
         // subfields, so `sub` stays empty: component/`[i]` access on the field goes
         // through the vector/matrix path, not a struct-field walk. Builtin Vector/
         // Matrix carry PRIMITIVE_FLAG but not VALUE_TYPE_FLAG, so they do NOT take
-        // the nested-@ValueType branch below — they are handled here.
+        // the nested-@ValueType branch below Ã¢ÂÂ they are handled here.
         if (llvm::Type* vty = deviceVectorType(pt, ctx)) {
             info.fields[prop->getName()] = {idx, vty, false, {}};
             ftys.push_back(vty);
@@ -259,7 +259,7 @@ DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx
             ++idx;
             continue;
         }
-        // S5: a nested @ValueType field is itself a flat by-value POD — recurse
+        // S5: a nested @ValueType field is itself a flat by-value POD Ã¢ÂÂ recurse
         // into a nested device struct and remember its field map for two-level
         // reads. A value-type-containing struct stays POD all the way down.
         if (pt && (pt->getTypeFlags() & VALUE_TYPE_FLAG)) {
@@ -283,7 +283,7 @@ DeviceStructInfo deviceStructInfo(const CajetaTypePtr& t, llvm::LLVMContext& ctx
 // Number of coordinate components a texture kind's sample/fetch takes, by the
 // KernelParam::textureDim kind code (1=1D, 2=2D, 3=3D, 4=2D-array, 5=cube). The
 // linear kinds (1/2/3) have arity = the dim; a 2-D array is (u,v,layer) and a
-// cube is (x,y,z) direction — both 3. (Distinct from the SPIR-V image Dim.)
+// cube is (x,y,z) direction Ã¢ÂÂ both 3. (Distinct from the SPIR-V image Dim.)
 static inline int textureCoordArity(int dim) {
     return dim <= 3 ? dim : 3;
 }
@@ -299,7 +299,7 @@ public:
     // @Device helper-call context: `cls` resolves a bare helper name to its
     // sibling method; `deviceFns` is a cache of already-lowered @Device functions
     // shared across the kernel and all helpers (a nullptr entry = currently being
-    // lowered → a recursive call, which is rejected).
+    // lowered Ã¢ÂÂ a recursive call, which is rejected).
     void setDeviceContext(std::shared_ptr<CajetaClass> c, DeviceFnCache* cache) {
         cls = std::move(c);
         deviceFns = cache;
@@ -315,7 +315,7 @@ public:
     // True when lowering a @Device helper: its params are ordinary LLVM
     // function arguments (the caller passes already-materialized values), so
     // lowerBody reads fn->getArg(idx) directly instead of target.materializeParam
-    // — which on Vulkan would (wrongly) bind a fresh descriptor/SSBO per param.
+    // Ã¢ÂÂ which on Vulkan would (wrongly) bind a fresh descriptor/SSBO per param.
     void setParamsAsArgs(bool b) { paramsAsArgs = b; }
 
     // True iff the lowered body used a cross-lane subgroup op (shuffle/ballot/
@@ -325,7 +325,7 @@ public:
     void lowerBody(const MethodPtr& method) {
         if (!cls) cls = method->getParent();   // for @Device helper resolution
         builder.SetInsertPoint(llvm::BasicBlock::Create(ctx, "entry", fn));
-        // @FastMath: relax IEEE FP for every op the body emits — the backend may
+        // @FastMath: relax IEEE FP for every op the body emits Ã¢ÂÂ the backend may
         // contract to FMA, reassociate, use reciprocals, and pick approximate
         // transcendentals. Set on the IRBuilder so all subsequently-created FP
         // instructions (and the transcendental seam's intrinsic calls) carry it.
@@ -341,18 +341,18 @@ public:
         // NVPTX/AMDGPU read fn->getArg(idx); Vulkan binds a descriptor here.
         unsigned idx = 0;
         for (auto& p : kparams) {
-            // Bindless buffer array (Buffer<T>[]): NO single descriptor to bind —
+            // Bindless buffer array (Buffer<T>[]): NO single descriptor to bind Ã¢ÂÂ
             // `bufs[idx]` selects one per access (bufferArrayElement). Record the
             // binding (= param index) + element type; on CPU the materialized arg
-            // is the [count, h…] handle-array base pointer.
+            // is the [count, hÃ¢ÂÂ¦] handle-array base pointer.
             if (p.isBufferArray) {
                 bufferArrayBindings[p.name] = {idx, p.type, p.isSigned};
-                // Pointer backends (CPU/NVPTX/AMD) take the marshalled [count, h…]
-                // handle array as the param's value (materializeParam → fn->getArg
+                // Pointer backends (CPU/NVPTX/AMD) take the marshalled [count, hÃ¢ÂÂ¦]
+                // handle array as the param's value (materializeParam Ã¢ÂÂ fn->getArg
                 // for the kernel, or the plain helper arg); Vulkan binds
                 // per-access via handlefrombinding (no prologue value), so base
                 // stays null. NOTE: `paramsAsArgs` is the @Device-helper flag, NOT
-                // the kernel/Vulkan distinction — use descriptorBoundParams().
+                // the kernel/Vulkan distinction Ã¢ÂÂ use descriptorBoundParams().
                 bufferArrayBases[p.name] =
                     target.descriptorBoundParams()
                         ? nullptr
@@ -394,7 +394,7 @@ public:
                 bufferElemSigned[p.name] = p.isSigned;
             } else if (p.type->isStructTy()) {
                 // Read-only POD struct param (Item 7): keep the materialized
-                // aggregate as an SSA value and read fields via extractvalue —
+                // aggregate as an SSA value and read fields via extractvalue Ã¢ÂÂ
                 // NO alloca round-trip, so it stays valid under SPIR-V logical
                 // addressing (an aggregate store to a Function-storage pointer
                 // is rejected by spirv-val: "not a logical pointer").
@@ -425,7 +425,7 @@ public:
                 valueTypeNames[p->getName()] = p->getType();
         }
         // S8: value-type classes this body can construct (`new Vec2(...)`),
-        // keyed by simple name — the operand value types plus the declaring
+        // keyed by simple name Ã¢ÂÂ the operand value types plus the declaring
         // class itself (a value-type-returning @Device operator builds its own
         // type by value). Registered for the construction interception below.
         auto registerCtor = [&](const std::shared_ptr<CajetaClass>& c) {
@@ -461,7 +461,7 @@ private:
     std::map<std::string, llvm::Type*> bufferElems;   // buffer name -> element type
     // Bindless buffer-array params (Buffer<T>[]): the descriptor-array binding +
     // element type per name, plus (CPU) the materialized handle-array base. There
-    // is NO single base — `bufs[idx]` selects a descriptor via bufferArrayElement.
+    // is NO single base Ã¢ÂÂ `bufs[idx]` selects a descriptor via bufferArrayElement.
     struct BufferArrayInfo { unsigned binding; llvm::Type* elemTy; bool isSigned; };
     std::map<std::string, BufferArrayInfo> bufferArrayBindings;
     std::map<std::string, llvm::Value*> bufferArrayBases;  // CPU handle-array ptr
@@ -504,14 +504,14 @@ private:
         uint32_t rows = 0, cols = 0, use = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
-    // Set by scanCoopMatrixTiers when this kernel's tiles STRADDLE tiers —
+    // Set by scanCoopMatrixTiers when this kernel's tiles STRADDLE tiers Ã¢ÂÂ
     // some Native, some Portable. A tier is a property of the GEMM, not of
     // one tile, but coopMatrixTier() only sees one (dtype, use) at a time:
     // on AMD an f32 accumulator is Native (it is the accumulator of the
     // f16/bf16 WMMA) while f32 A/B operands are Portable, so an all-f32
     // matmul straddles and the mma guard used to drop the whole kernel.
     // Demoting a straddling kernel's tiles to Portable runs it correctly on
-    // the portable tile — which is what Ewise.matmulF32 documents as its
+    // the portable tile Ã¢ÂÂ which is what Ewise.matmulF32 documents as its
     // behaviour on a backend with no native f32 config.
     bool coopStraddleDemote = false;
     // (dtype,shape) keys already announced via a software-tier note, so the
@@ -527,7 +527,7 @@ private:
     bool usedSubgroupOp_ = false;
     // POD struct params (Item 7): the materialized aggregate SSA value per param
     // name, plus its field index/type/signedness map. A field read `name.field`
-    // is an extractvalue from structValues[name] at the recorded index — no
+    // is an extractvalue from structValues[name] at the recorded index Ã¢ÂÂ no
     // alloca (keeps it valid in SPIR-V logical addressing). Read-only in v1.
     std::map<std::string, llvm::Value*> structValues;       // name -> struct value
     std::map<std::string, DeviceStructInfo> structFields;   // name -> field map
@@ -538,13 +538,13 @@ private:
     std::map<std::string, CajetaTypePtr> valueTypeNames;
     // @ValueType classes constructible in this body (`new/stack Vec2(...)`),
     // keyed by simple type name (S8 aggregate-returning operators). A
-    // value-type-returning @Device operator builds its result by value — an
-    // `insertvalue` chain into the device struct — so the lowerer needs the
+    // value-type-returning @Device operator builds its result by value Ã¢ÂÂ an
+    // `insertvalue` chain into the device struct Ã¢ÂÂ so the lowerer needs the
     // class's layout by the source-written name. Populated from the operand
     // value types and the declaring class.
     std::map<std::string, std::shared_ptr<CajetaClass>> valueTypeCtors;
     // Matrix<T,R,C> locals (B1): name -> (rows, cols). A matrix lives in a
-    // `<R*C x T>` slot — identical LLVM type to a Vector<R*C> — so the device
+    // `<R*C x T>` slot Ã¢ÂÂ identical LLVM type to a Vector<R*C> Ã¢ÂÂ so the device
     // walker can't recover the shape from the slot type. This map is how m[r][c]
     // (flat lane r*C+c) and `*` = matmul recover (R,C); a name absent here is
     // NOT a matrix, so all the matrix interceptions are no-ops for vectors.
@@ -563,21 +563,21 @@ private:
     // of such a tile runs its element index through target.swizzleAddr(idx, S)
     // (the conflict-free XOR), applied identically on read and write so it stays
     // transparent. Keyed by base Value* so all addressing sites (direct index,
-    // CoopStage/AsyncCopy dst) share one lookup. See xpu-pipelined-gemm §3.
+    // CoopStage/AsyncCopy dst) share one lookup. See xpu-pipelined-gemm ÃÂ§3.
     std::map<llvm::Value*, uint32_t> swizzledBaseStride;
     // BlockPadded<T,Block,Pad> tiles: base Value* -> {block period, pad} (elements).
     // Addressing runs through target.blockPadAddr(idx, period, pad) (Tensile
     // LdsBlockSizePerPad), applied identically on read and write. See
-    // gpu-f16-torch-parity-spec.md §2.
+    // gpu-f16-torch-parity-spec.md ÃÂ§2.
     std::map<llvm::Value*, std::pair<uint32_t, uint32_t>> blockPadOfBase;
-    // At most one dynamic (runtime-sized) shared array per kernel — the
+    // At most one dynamic (runtime-sized) shared array per kernel Ã¢ÂÂ the
     // extern unsized addrspace(3) region is a single base; multiple would
     // alias (CUDA extern __shared__ / HIP HIP_DYNAMIC_SHARED both single).
     bool emittedDynamicShared = false;
 
     // Stage 11: bounded device-side dispatch. A function-typed device local
-    // (`(int32)->int32 op` / `(int32)->int32[] ops`) is NOT a pointer — SPIR-V
-    // has no function pointers — it's an i32 TAG selecting among a finite,
+    // (`(int32)->int32 op` / `(int32)->int32[] ops`) is NOT a pointer Ã¢ÂÂ SPIR-V
+    // has no function pointers Ã¢ÂÂ it's an i32 TAG selecting among a finite,
     // statically-known set of @Device-static candidates. A call lowers to an
     // if/else-if chain of DIRECT (alwaysinline) calls, portable to all four
     // backends with no backend-specific code. See plans/gpu/xpu Stage 11.
@@ -605,7 +605,7 @@ private:
         pendingLoopLabel_.clear();
     }
     // Resolve a break/continue target: a named label walks outward for a match;
-    // an empty label is the innermost loop. nullptr ⇒ no such target.
+    // an empty label is the innermost loop. nullptr Ã¢ÂÂ no such target.
     const LoopTarget* findLoopTarget(const std::string& label) {
         if (label.empty())
             return loopTargets.empty() ? nullptr : &loopTargets.back();
@@ -615,7 +615,7 @@ private:
     }
 
     // Decode a kernel string literal (raw text incl. surrounding quotes) for a
-    // C-string constant — strip the quotes and the common escapes a printf
+    // C-string constant Ã¢ÂÂ strip the quotes and the common escapes a printf
     // format needs. (`%d`/`%f` are not escapes; they pass straight through.)
     static std::string decodeKernelString(const std::string& raw) {
         std::string s = raw;
@@ -643,8 +643,8 @@ private:
 
     // Allocate a slot in the function entry block (so it dominates every use
     // regardless of which loop/branch block is current). The alloca address
-    // space is the backend's (0 on NVPTX, 5/private on AMDGPU) — a fork point
-    // (cajeta-amd.md §2). Mirrors the host's entry-positioned-IRBuilder idiom.
+    // space is the backend's (0 on NVPTX, 5/private on AMDGPU) Ã¢ÂÂ a fork point
+    // (cajeta-amd.md ÃÂ§2). Mirrors the host's entry-positioned-IRBuilder idiom.
     llvm::AllocaInst* entryAlloca(llvm::Type* ty, const std::string& name) {
         llvm::BasicBlock& entry = fn->getEntryBlock();
         llvm::IRBuilder<> eb(&entry, entry.begin());
@@ -665,7 +665,7 @@ private:
             return;
         }
         if (auto il = std::dynamic_pointer_cast<IdentifierLabel>(node)) {
-            // `label: <loop>` — stash the label so the labeled loop's pushLoop
+            // `label: <loop>` Ã¢ÂÂ stash the label so the labeled loop's pushLoop
             // attaches it (mirrors the host IdentifierLabel). A label on a
             // non-loop statement is harmless: it's cleared after the body runs.
             pendingLoopLabel_ = il->getIdentifier();
@@ -724,7 +724,7 @@ private:
         if (auto rs = std::dynamic_pointer_cast<ReturnStatement>(node)) {
             // @Kernel returns void; a @Device helper returns its value; a
             // graphics @Vertex/@Fragment shader (void main()) writes its result
-            // into an Output interface variable, then ret void (gfx §4.b).
+            // into an Output interface variable, then ret void (gfx ÃÂ§4.b).
             if (rs->getExpression() && target.shaderOutputReturn()) {
                 llvm::Value* v = lowerExpr(rs->getExpression());
                 target.storeShaderOutput(builder, mod, fn, v);
@@ -764,7 +764,7 @@ private:
                 continue;
             }
             // CooperativeMatrix local (CM4/CM6): a device-only matrix-core tile.
-            // buildCoopMatrixSlot picks the tier — NATIVE (the alloca holds the
+            // buildCoopMatrixSlot picks the tier Ã¢ÂÂ NATIVE (the alloca holds the
             // opaque OpTypeCooperativeMatrixKHR value, ops lower to the backend
             // coop-matrix seams) or SOFTWARE (a flat `[R*C x elem]` tile, ops are
             // a strided gather/scatter + a triple-loop matmul). A `stack
@@ -774,15 +774,15 @@ private:
                 continue;
             }
             // S8: a @ValueType local holds a flat aggregate SSA value (NO alloca
-            // — an aggregate store to a Function-storage pointer is invalid under
+            // Ã¢ÂÂ an aggregate store to a Function-storage pointer is invalid under
             // SPIR-V logical addressing, the same reason POD-struct params stay
             // SSA). It must have an initializer (`Vec2 c = a + b;`); field reads
             // go through structFieldRead. Read-only in v1 (value types don't
-            // mutate — the S3 mutating-operator ban guarantees it).
+            // mutate Ã¢ÂÂ the S3 mutating-operator ban guarantees it).
             if (declType && declType->isValueType()) {
                 DeviceStructInfo si = deviceStructInfo(declType, ctx);
                 if (si.type) {
-                    // The local's own type is constructible in this body — a
+                    // The local's own type is constructible in this body Ã¢ÂÂ a
                     // kernel that builds a value type directly (`Vec2 a = new
                     // Vec2(...)`) needs it registered before the initializer is
                     // lowered (params alone don't cover a locally-built type).
@@ -801,16 +801,16 @@ private:
                     continue;
                 }
             }
-            // Stage 11: a function-typed local — bounded device-side dispatch.
+            // Stage 11: a function-typed local Ã¢ÂÂ bounded device-side dispatch.
             //   variable:  (T)->R    op  = A::f;            (single candidate)
             //   table:     ((T)->R)[] ops = { A::f, B::g };  (indexed dispatch)
             // Represented as an i32 tag over a closed @Device-static candidate
             // set; calls lower to an if/else chain of direct calls (SPIR-V has
-            // no function pointers — this rides identically on all four
+            // no function pointers Ã¢ÂÂ this rides identically on all four
             // backends). Tried before the scalar/vector paths so a function
             // type isn't mistaken for one. The table form's declared type is a
             // CajetaArray over a CajetaFunctionType (the grouping parens in
-            // `((T)->R)[]` are what make array-OF-function expressible — see
+            // `((T)->R)[]` are what make array-OF-function expressible Ã¢ÂÂ see
             // CajetaType::fromContext); the variable form is a bare
             // CajetaFunctionType. Both feed lowerCallableDecl with the element/
             // own function type; the initializer shape (array literal vs single
@@ -846,7 +846,7 @@ private:
             }
             auto init = vd->getInitializer();
             if (!init || init->getChildren().empty()) {
-                // No initializer — reserve the slot; a later assignment fills it.
+                // No initializer Ã¢ÂÂ reserve the slot; a later assignment fills it.
                 if (!slotTy) unsupported("uninitialized local of non-scalar type");
                 values[nm] = entryAlloca(slotTy, nm);
                 slotTypes[nm] = slotTy;
@@ -855,7 +855,7 @@ private:
             }
             auto initExpr = std::dynamic_pointer_cast<Expression>(
                 init->getChildren()[0]);
-            // `Shared<T> tile = shared T[N];` — workgroup-shared memory. The
+            // `Shared<T> tile = shared T[N];` Ã¢ÂÂ workgroup-shared memory. The
             // `shared` placement keyword flags the array creation; lower it to a
             // per-block addrspace(3) global instead of a scalar slot.
             if (auto ne = std::dynamic_pointer_cast<NewExpression>(initExpr)) {
@@ -864,8 +864,8 @@ private:
                     continue;
                 }
             }
-            // `Shared<T> tile = shared [v0, v1, ...];` — a shared tile pre-filled
-            // with literal values (array-literals §4). `shared` is the device
+            // `Shared<T> tile = shared [v0, v1, ...];` Ã¢ÂÂ a shared tile pre-filled
+            // with literal values (array-literals ÃÂ§4). `shared` is the device
             // allocation verb; the tile is emitted like the creator form and the
             // values are stored in at runtime (the same allocate-then-populate
             // pattern heap/stack literals use, targeting addrspace(3)).
@@ -886,7 +886,7 @@ private:
         }
     }
 
-    // `Shared<T> name = shared T[size];` — workgroup-shared memory. Shared
+    // `Shared<T> name = shared T[size];` Ã¢ÂÂ workgroup-shared memory. Shared
     // memory is reserved per block (every thread sees the same region), NOT a
     // per-thread alloca, so it lowers to ONE module-level addrspace(3) global;
     // we then register its decayed element pointer in the buffer maps, after
@@ -912,7 +912,7 @@ private:
         if (!elemTy) unsupported("shared local '" + nm +
                                  "' needs a scalar element type (Shared<T>)");
 
-        // `Swizzled<T, S>` — a conflict-free LDS tile. The second type argument S
+        // `Swizzled<T, S>` Ã¢ÂÂ a conflict-free LDS tile. The second type argument S
         // is its row stride (a power of two): every access of this tile runs its
         // index through target.swizzleAddr(idx, S). Stride is captured here and
         // recorded against the base pointer below so all addressing sites agree.
@@ -933,7 +933,7 @@ private:
                             "two (got " + std::to_string(swizStride) + ")");
         }
 
-        // `BlockPadded<T, Block, Pad>` — Tensile LdsBlockSizePerPad: insert `Pad`
+        // `BlockPadded<T, Block, Pad>` Ã¢ÂÂ Tensile LdsBlockSizePerPad: insert `Pad`
         // elements after every `Block` logical elements (physical = a + (a/Block)*Pad).
         uint32_t blkPeriod = 0, blkPad = 0;
         if (declType && declType->toCanonical().compare(
@@ -942,7 +942,7 @@ private:
             auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
             if (!cls || cls->getTypeArguments().size() != 3)
                 unsupported("BlockPadded requires <T, Block, Pad> (element type, "
-                            "block size, pad — both in elements)");
+                            "block size, pad Ã¢ÂÂ both in elements)");
             auto bk = std::dynamic_pointer_cast<CajetaConstantType>(
                 cls->getTypeArguments()[1]);
             auto pd = std::dynamic_pointer_cast<CajetaConstantType>(
@@ -969,7 +969,7 @@ private:
         llvm::Value* sizeV = lowerExpr(sizeExpr);  // constant => static path
 
         // Static [N x T] (internal, undef) vs dynamic [0 x T] (external). The
-        // dynamic size value is unused on the device — the launch sizes it —
+        // dynamic size value is unused on the device Ã¢ÂÂ the launch sizes it Ã¢ÂÂ
         // and is left for DCE.
         llvm::GlobalValue::LinkageTypes linkage;
         llvm::Constant* init;
@@ -988,7 +988,7 @@ private:
             isDynamic = true;
             if (target.dynamicSharedNeedsConcreteSize()) {
                 // H12: the runtime computes the dynamic-shared length spec constant
-                // as sharedBytes/4 — a hardcoded 4-byte element. Until that carries
+                // as sharedBytes/4 Ã¢ÂÂ a hardcoded 4-byte element. Until that carries
                 // the real element size, reject a non-4-byte element rather than
                 // silently mis-size the array (e.g. Shared<half> -> OOB indices in
                 // [len/2, len); Shared<double> -> over-allocation + wrong count).
@@ -1049,11 +1049,11 @@ private:
         if (blkPeriod && blkPad) blockPadOfBase[base] = {blkPeriod, blkPad};
     }
 
-    // `Shared<T> tile = shared [v0, v1, ...];` — a per-block shared tile of the
-    // literal's length, populated with its values (array-literals §4). Unlike the
+    // `Shared<T> tile = shared [v0, v1, ...];` Ã¢ÂÂ a per-block shared tile of the
+    // literal's length, populated with its values (array-literals ÃÂ§4). Unlike the
     // sized creator (`shared T[N]`, uninitialized scratch), the literal carries
     // values, so after emitting the addrspace(3) global we store each in. The
-    // store loop runs on every thread — redundant but idempotent (same constants),
+    // store loop runs on every thread Ã¢ÂÂ redundant but idempotent (same constants),
     // and since each thread writes the whole tile it reads correct values without
     // a barrier. A later pass could guard with thread-0 + barrier.
     void lowerSharedArrayLiteral(
@@ -1099,7 +1099,7 @@ private:
         // Populate the tile with the literal's values. Every thread runs this,
         // so the values MUST be compile-time constants: a per-thread (non-
         // constant) element would have every thread write a different value to
-        // the same shared slots with no barrier — a data race. Reject it and
+        // the same shared slots with no barrier Ã¢ÂÂ a data race. Reject it and
         // point at the sized creator for runtime fills.
         for (uint64_t i = 0; i < n; ++i) {
             auto ex = std::dynamic_pointer_cast<Expression>(elems[i]);
@@ -1108,7 +1108,7 @@ private:
                 unsupported("shared array literal '" + nm + "' element " +
                     std::to_string(i) + " is not a compile-time constant; a "
                     "shared literal fills a per-block tile with constant values "
-                    "— use `shared T[N]` and assign at runtime for computed "
+                    "Ã¢ÂÂ use `shared T[N]` and assign at runtime for computed "
                     "values");
             }
             llvm::Value* idx =
@@ -1149,7 +1149,7 @@ private:
     // {block period, pad} (elements) if `e` names a BlockPadded<T,Block,Pad> tile
     // local, else {0,0}. Also returns the tile base in `*base` when found, so the
     // coop load/store can GEP from the bare base (additive pad needs the absolute
-    // index — see LdsBlockPad).
+    // index Ã¢ÂÂ see LdsBlockPad).
     std::pair<uint32_t, uint32_t> blockPadOfArg(const ExpressionPtr& e,
                                                 llvm::Value** base = nullptr) {
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
@@ -1196,8 +1196,8 @@ private:
         builder.SetInsertPoint(endBB);
     }
 
-    // for (init; cond; update) body — BB shape mirrors the host
-    // (Statement.cpp): head(cond) / body / update / exit; continue→update.
+    // for (init; cond; update) body Ã¢ÂÂ BB shape mirrors the host
+    // (Statement.cpp): head(cond) / body / update / exit; continueÃ¢ÂÂupdate.
     void lowerFor(const std::shared_ptr<ForStatement>& fs) {
         if (fs->getInit()) lowerStatement(fs->getInit());
         auto* head = llvm::BasicBlock::Create(ctx, "for.head", fn);
@@ -1208,7 +1208,7 @@ private:
         builder.SetInsertPoint(head);
         llvm::Value* cond = fs->getCondition()
             ? toI1(lowerExpr(fs->getCondition()))
-            : llvm::ConstantInt::getTrue(ctx);   // null cond ⇒ always-true
+            : llvm::ConstantInt::getTrue(ctx);   // null cond Ã¢ÂÂ always-true
         builder.CreateCondBr(cond, body, exit);
         builder.SetInsertPoint(body);
         pushLoop(upd, exit);
@@ -1225,13 +1225,13 @@ private:
 
     // Grid-stride for-each (Item 6):
     //   for (idxType idx, elemType elem : buf.range(count)) body
-    // ⇒ for (idx = globalId.x; idx < count; idx += gridSize.x) {
+    // Ã¢ÂÂ for (idx = globalId.x; idx < count; idx += gridSize.x) {
     //        elem = buf[idx]; body
     //    }
-    // The iterable MUST be `<bufferParam>.range(<count>)` — device buffers carry
+    // The iterable MUST be `<bufferParam>.range(<count>)` Ã¢ÂÂ device buffers carry
     // no length, so the count is explicit (as in every GPU language). The element
     // binding is a value copy of buf[idx] (range-for semantics); writes go via the
-    // index binding (`buf[idx] = …`). The iterator (index) binding is optional;
+    // index binding (`buf[idx] = Ã¢ÂÂ¦`). The iterator (index) binding is optional;
     // without it the body can read `elem` but has no index to write by.
     void lowerEnhancedFor(const std::shared_ptr<EnhancedForStatement>& efs) {
         auto mc = std::dynamic_pointer_cast<MethodCallExpression>(
@@ -1277,7 +1277,7 @@ private:
         llvm::Value* stride = coerceTo(target.gridSize(builder, mod, 0), idxTy);
 
         // Index slot, initialized to the global x-id. Bound to the iterator name
-        // when present (so the body can `buf[idx] = …`).
+        // when present (so the body can `buf[idx] = Ã¢ÂÂ¦`).
         const bool hasIdx = efs->getIteratorType() != nullptr;
         std::string idxName = hasIdx ? efs->getIteratorName()
                                      : (bufName + ".fe.idx");
@@ -1334,7 +1334,7 @@ private:
         builder.SetInsertPoint(exit);
     }
 
-    // while (cond) body — head(cond) / body / exit; continue→head.
+    // while (cond) body Ã¢ÂÂ head(cond) / body / exit; continueÃ¢ÂÂhead.
     void lowerWhile(const std::shared_ptr<WhileStatement>& ws) {
         auto* head = llvm::BasicBlock::Create(ctx, "while.head", fn);
         auto* body = llvm::BasicBlock::Create(ctx, "while.body", fn);
@@ -1350,7 +1350,7 @@ private:
         builder.SetInsertPoint(exit);
     }
 
-    // do body while (cond) — body / tail(cond) / exit; continue→tail.
+    // do body while (cond) Ã¢ÂÂ body / tail(cond) / exit; continueÃ¢ÂÂtail.
     void lowerDo(const std::shared_ptr<DoStatement>& ds) {
         auto* body = llvm::BasicBlock::Create(ctx, "do.body", fn);
         auto* tail = llvm::BasicBlock::Create(ctx, "do.tail", fn);
@@ -1370,7 +1370,7 @@ private:
         if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
             if (bin->isAssignment()) { lowerAssign(bin); return; }
         }
-        // Bare expression (builtin call, `i++` for side effects, …) — lower
+        // Bare expression (builtin call, `i++` for side effects, Ã¢ÂÂ¦) Ã¢ÂÂ lower
         // and discard the value.
         lowerExpr(expr);
     }
@@ -1380,10 +1380,10 @@ private:
     void lowerAssign(const std::shared_ptr<BinaryOpExpression>& bin) {
         ExpressionPtr lhs = exprChild(bin, 0);
         ExpressionPtr rhs = exprChild(bin, 1);
-        // A lane of a vector local (`v.x = …` / `v[i] = …`) isn't addressable —
+        // A lane of a vector local (`v.x = Ã¢ÂÂ¦` / `v[i] = Ã¢ÂÂ¦`) isn't addressable Ã¢ÂÂ
         // it's load-insertelement-store, not a GEP. Handled here before the
         // l-value-address path (which only knows scalars and buffers).
-        if (tryMatrixElementAssign(bin, lhs, rhs)) return;  // m[r][c] = … (B1)
+        if (tryMatrixElementAssign(bin, lhs, rhs)) return;  // m[r][c] = Ã¢ÂÂ¦ (B1)
         if (tryVectorElementAssign(bin, lhs, rhs)) return;
         auto [addr, elemTy] = lowerLValueAddr(lhs);
         llvm::Value* rv = lowerExpr(rhs);
@@ -1444,7 +1444,7 @@ private:
             if (it != values.end())
                 return builder.CreateLoad(slotTypes[nm], it->second, nm);  // load slot
             // Whole POD/@ValueType param read by name (S8): the materialized
-            // aggregate SSA value (no alloca — extractvalue-only, SPIR-V-safe).
+            // aggregate SSA value (no alloca Ã¢ÂÂ extractvalue-only, SPIR-V-safe).
             auto sv = structValues.find(nm);
             if (sv != structValues.end()) return sv->second;
             unsupported("unbound identifier '" + nm + "'");
@@ -1452,7 +1452,7 @@ private:
         if (auto il = std::dynamic_pointer_cast<IntegerLiteralExpression>(expr)) {
             // Mirror the host literal lowering (LiteralExpression.cpp): honor the
             // radix (hex/bin/oct), strip the prefix / trailing `L` / digit-group
-            // underscores, and parse via APInt — never std::stoll, which reads the
+            // underscores, and parse via APInt Ã¢ÂÂ never std::stoll, which reads the
             // wrong base, stops at `_`, and *throws* on overflow (crashing the
             // compiler). Materialize at the literal's resolved width when known
             // (so int64/L literals aren't truncated), else the i32 default; coerceTo
@@ -1473,7 +1473,7 @@ private:
             llvm::APInt full(64, text, radix);
             // Default i32 (the kernel norm); widen to i64 when the resolved type is
             // int64, the literal carries an `L` suffix, or the value simply needs
-            // more than 32 bits — otherwise it would be silently truncated (H15).
+            // more than 32 bits Ã¢ÂÂ otherwise it would be silently truncated (H15).
             unsigned width = 32;
             if (il->getResolvedType())
                 if (llvm::Type* rt = deviceScalarType(il->getResolvedType(), ctx))
@@ -1483,7 +1483,7 @@ private:
         }
         if (auto fl = std::dynamic_pointer_cast<FloatLiteralExpression>(expr)) {
             // Mirror the host: parse via APFloat (no std::stod overflow crash) and
-            // pick f32 vs f64 by suffix/resolved type instead of always f32 — a
+            // pick f32 vs f64 by suffix/resolved type instead of always f32 Ã¢ÂÂ a
             // `double` literal otherwise loses its low bits (parsed then re-widened
             // from an f32-rounded value). Default stays f32 (the device norm) so
             // bare kernel literals don't silently become f64. Fixes H16/L1.
@@ -1507,7 +1507,7 @@ private:
                             : llvm::Type::getDoubleTy(ctx));
             return llvm::ConstantFP::get(ctx, apf);
         }
-        // Boolean literal (`true` / `false`) → i1. Booleans are a
+        // Boolean literal (`true` / `false`) Ã¢ÂÂ i1. Booleans are a
         // TextLiteralExpression (LITERAL_TYPE_BOOL), distinct from the
         // Integer/Float literal nodes above; device code that returns a bool
         // (e.g. SoftwareRayQuery.slabHit) needs them.
@@ -1519,7 +1519,7 @@ private:
             if (tl->getLiteralType() == LITERAL_TYPE_STRING ||
                 tl->getLiteralType() == LITERAL_TYPE_TEXT_BLOCK) {
                 // A string literal in a kernel materializes as a private constant
-                // i8* (a C-string), the form Debug.printf's format expects — NOT
+                // i8* (a C-string), the form Debug.printf's format expects Ã¢ÂÂ NOT
                 // the host's cajeta.lang.String object. addrspace 0 (generic) so
                 // it serves CPU (host printf) and NVPTX (vprintf) alike.
                 return builder.CreateGlobalString(decodeKernelString(tl->getRawValue()),
@@ -1543,7 +1543,7 @@ private:
             return lowerBuiltinCall(mc);
         }
         if (auto ai = std::dynamic_pointer_cast<ArrayIndexExpression>(expr)) {
-            // Matrix local `m[r][c]` reads element flat lane r*C+c (B1) — tried
+            // Matrix local `m[r][c]` reads element flat lane r*C+c (B1) Ã¢ÂÂ tried
             // before the vector path since m[r] is a row, not a flat lane.
             if (llvm::Value* me = matrixIndexRead(ai)) return me;
             // Vector local `v[i]` reads a lane (extractelement), not memory.
@@ -1556,7 +1556,7 @@ private:
             if (llvm::Value* fv = structFieldRead(expr)) return fv;
             // Vector component read `v.x` / `v.r` (extractelement).
             if (llvm::Value* cv = vectorComponentRead(dot)) return cv;
-            // Enum constant `Enum.NAME` → its ordinal i32 (e.g. MemoryOrder.AcqRel,
+            // Enum constant `Enum.NAME` Ã¢ÂÂ its ordinal i32 (e.g. MemoryOrder.AcqRel,
             // TextureFormat.R32F). A compile-time constant, like the host path
             // (DotExpression.cpp); the LHS is the enum type name.
             if (auto lhs = std::dynamic_pointer_cast<IdentifierExpression>(
@@ -1567,7 +1567,7 @@ private:
                         llvm::Type::getInt32Ty(ctx), (uint64_t) *v,
                         /*isSigned=*/true);
             }
-            unsupported("field access — only POD-struct kernel params and enum "
+            unsupported("field access Ã¢ÂÂ only POD-struct kernel params and enum "
                         "constants support 'name.field'");
         }
         if (auto bin = std::dynamic_pointer_cast<BinaryOpExpression>(expr)) {
@@ -1592,7 +1592,7 @@ private:
                                exprSigned(exprChild(cast, 0)));
         }
         if (auto call = std::dynamic_pointer_cast<CallExpression>(expr)) {
-            // Stage 11: indexed device dispatch `ops[idx](args)` — the postfix
+            // Stage 11: indexed device dispatch `ops[idx](args)` Ã¢ÂÂ the postfix
             // call's callee is a subscript of a bounded callable table; the
             // index expression IS the dispatch tag.
             auto callee = call->getCallee();
@@ -1641,7 +1641,7 @@ private:
                            post->getOp() == POSTFIX_OP_INC, /*returnOld=*/true);
     }
 
-    // Shared ++/-- on an l-value: load, ±1, store. returnOld picks postfix
+    // Shared ++/-- on an l-value: load, ÃÂ±1, store. returnOld picks postfix
     // (old value) vs prefix (new value) semantics.
     llvm::Value* lowerIncDec(const ExpressionPtr& operand, bool inc,
                              bool returnOld) {
@@ -1681,7 +1681,7 @@ private:
     // (S8) -> SSA aggregate built by an `insertvalue` chain into the device
     // struct. Returns nullptr when the type name isn't a known value type (so the
     // caller falls through to Vector). v1 maps constructor arguments positionally
-    // to fields in declaration order — the shape every @ValueType POD's canonical
+    // to fields in declaration order Ã¢ÂÂ the shape every @ValueType POD's canonical
     // constructor has (`Vec2(x, y){ this.x=x; this.y=y; }`), mirroring how
     // lowerNewVector maps positional lanes; a reordering/computing constructor is
     // out of scope (the operators are interception placeholders).
@@ -1761,7 +1761,7 @@ private:
     // m[r][c] read on a matrix local: the LHS is ArrayIndex(ArrayIndex(m, r), c)
     // with m in matrixShapes. Loads the slot and extractelement at flat lane
     // r*C+c. Returns nullptr when `ai` isn't that nested matrix shape (so the
-    // vector/buffer path runs). Must be tried before vectorIndexRead — m[r] is
+    // vector/buffer path runs). Must be tried before vectorIndexRead Ã¢ÂÂ m[r] is
     // a row, not a flat lane.
     llvm::Value* matrixIndexRead(const std::shared_ptr<ArrayIndexExpression>& ai) {
         auto inner = std::dynamic_pointer_cast<ArrayIndexExpression>(
@@ -1859,9 +1859,9 @@ private:
     static bool isVectorMethodName(const std::string& n) {
         return n == "dot" || n == "dotAccum" || n == "length"
             || n == "normalize"
-            // The ladder (8.10). These CHAIN by nature —
+            // The ladder (8.10). These CHAIN by nature Ã¢ÂÂ
             // `lo.widenLo().toF32()` is the shape the packed mat-vecs are
-            // written in — so they must reach the synthetic-slot path 8.9
+            // written in Ã¢ÂÂ so they must reach the synthetic-slot path 8.9
             // added, or a chained rung silently returns zero the way a
             // chained `dot` did.
             || n == "widenLo" || n == "widenHi" || n == "narrow"
@@ -1917,12 +1917,46 @@ private:
         llvm::Value* vec = builder.CreateLoad(
             vt, values[baseId->getTextValue()], baseId->getTextValue());
         llvm::Value* idx = lowerExpr(exprChild(ai, 1));
+        if (llvm::Value* w = narrowLaneWordExtract(vec, idx)) return w;
         return vecops::extractLane(builder, vec, idx);
+    }
+
+    // A RUNTIME-lane read of a byte or half-word vector as a word extract
+    // plus a shift (kernel-byte-vector-lowering spec §3). A divergent-index
+    // `extractelement <16 x i8>` legalizes on amdgpu to a fifteen-deep
+    // compare/select chain per byte (cajeta-llm unit 60: 611 v_cmp + 600
+    // v_cndmask in one Q4_K kernel, for four scale bytes); the `<4 x i32>`
+    // extract is a three-deep chain and the byte pick is one shift. A
+    // constant lane is left alone — the backend picks it for free.
+    llvm::Value* narrowLaneWordExtract(llvm::Value* vec, llvm::Value* idx) {
+        if (byteWordFormOff()) return nullptr;
+        if (llvm::isa<llvm::Constant>(idx)) return nullptr;
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(vec->getType());
+        if (!vt) return nullptr;
+        llvm::Type* et = vt->getElementType();
+        unsigned bits = et->isIntegerTy() ? et->getIntegerBitWidth() : 0;
+        if (bits != 8 && bits != 16) return nullptr;
+        unsigned per = 32 / bits;                 // lanes per word
+        unsigned n = vt->getNumElements();
+        if (n % per != 0) return nullptr;
+        llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
+        auto* wt = llvm::FixedVectorType::get(i32, n / per);
+        llvm::Value* words = builder.CreateBitCast(vec, wt, "bv.words");
+        llvm::Value* i = coerceTo(idx, i32, /*isSigned=*/false);
+        unsigned laneShift = per == 4 ? 2 : 1;
+        llvm::Value* wi = builder.CreateLShr(i, llvm::ConstantInt::get(i32, laneShift),
+                                             "bv.word.idx");
+        llvm::Value* word = builder.CreateExtractElement(words, wi, "bv.word");
+        llvm::Value* sub = builder.CreateAnd(i, llvm::ConstantInt::get(i32, per - 1));
+        llvm::Value* sh = builder.CreateShl(sub, llvm::ConstantInt::get(i32, bits == 8 ? 3 : 4),
+                                            "bv.bit.shift");
+        llvm::Value* picked = builder.CreateLShr(word, sh);
+        return builder.CreateTrunc(picked, et, "vec.elt");
     }
 
     // `v.x = e` / `v[i] = e` (and the compound `op=` forms): load the slot,
     // insertelement the new lane value, store back. Returns false when `lhs`
-    // isn't a vector-local component/index — the caller then takes the normal
+    // isn't a vector-local component/index Ã¢ÂÂ the caller then takes the normal
     // (scalar / buffer) assignment path.
     bool tryVectorElementAssign(const std::shared_ptr<BinaryOpExpression>& bin,
                                 const ExpressionPtr& lhs,
@@ -2009,14 +2043,14 @@ private:
             return target.integerDot4x8(builder, mod, self, other, acc, sgn,
                                         sgn);
         }
-        // simd-fused-integer-madd 2.2.x — dotAccum on DEVICE routes through the
+        // simd-fused-integer-madd 2.2.x Ã¢ÂÂ dotAccum on DEVICE routes through the
         // SAME seam as DP4a `dot`, so one spelling serves host and device. On
         // a GPU each thread does scalar work, so the natural device form is
         // N invocations of the 4-lane dot rather than a wide vector op: the
         // seam already emits SPIR-V's OpSDot/OpUDot on Vulkan
         // (spv_dot4add_*_packed) and falls back to the portable widening
         // reduce elsewhere.
-        // asUnsigned()/asSigned() on device — the same pure reinterpretation
+        // asUnsigned()/asSigned() on device Ã¢ÂÂ the same pure reinterpretation
         // as on the host: no instruction, only a change of what the element is
         // called. Device signedness is tracked per NAMED local (the map is
         // keyed by name and filled from the declared type), so the signedness
@@ -2033,11 +2067,11 @@ private:
                 unsupported("Vector.asUnsigned/asSigned take no arguments");
             return self;
         }
-        // asWords()/asBytes() — pure vector reinterpretation between
+        // asWords()/asBytes() Ã¢ÂÂ pure vector reinterpretation between
         // <4N x i8> and <N x i32>, little-endian (byte k of word j is byte
         // 4j+k). What it exists for: SPIR-V logical addressing types an LDS
         // tile by its ELEMENT, and Mesa does not re-vectorize Workgroup
-        // byte accesses the way it merges global ones — a byte-tiled LDS
+        // byte accesses the way it merges global ones Ã¢ÂÂ a byte-tiled LDS
         // GEMM measured 384 scalar ds_read_u8 per inner loop. Declaring the
         // tile Shared<int32> and reinterpreting per 32-byte chunk keeps
         // every LDS access dword-shaped. Result signedness follows the
@@ -2065,7 +2099,7 @@ private:
                 llvm::FixedVectorType::get(llvm::Type::getInt8Ty(c),
                                            lanes * 4), "as.bytes");
         }
-        // dotSum(other, acc) — the whole byte vector dotted into ONE scalar
+        // dotSum(other, acc) Ã¢ÂÂ the whole byte vector dotted into ONE scalar
         // by CHAINING the 4x8 dot through its accumulator operand: 8 serial
         // v_dot4 for a 32-lane receiver, no 8-wide accumulator register and
         // no horizontal reduction. This is the register shape llama.cpp's
@@ -2282,7 +2316,7 @@ private:
                                       "floating-point element type");
             return vecops::normalize(builder, self);
         }
-        // B1 intrinsics A1 — element-wise min/max/clamp/lerp (float-only v1).
+        // B1 intrinsics A1 Ã¢ÂÂ element-wise min/max/clamp/lerp (float-only v1).
         // Scalar args (clamp bounds, lerp t) are coerced to the element type.
         llvm::Type* elemTy = vt->getElementType();
         if (name == "min" || name == "max") {
@@ -2310,7 +2344,7 @@ private:
             llvm::Value* t = vecops::coerceScalar(builder, lowerExpr(args[1].expression), elemTy);
             return vecops::lerp(builder, self, other, t);
         }
-        // B1 intrinsics A2 — cross (3-D) / reflect / refract / distance, float-only.
+        // B1 intrinsics A2 Ã¢ÂÂ cross (3-D) / reflect / refract / distance, float-only.
         if (name == "cross" || name == "reflect" || name == "refract"
                 || name == "distance") {
             if (!isFloat) unsupported("Vector." + name + " requires a "
@@ -2327,12 +2361,12 @@ private:
             llvm::Value* eta = vecops::coerceScalar(builder, lowerExpr(args[1].expression), elemTy);
             return vecops::refract(builder, self, other, eta);
         }
-        // ── The integer LADDER (plan 8.10) ──────────────────────────────
+        // Ã¢ÂÂÃ¢ÂÂ The integer LADDER (plan 8.10) Ã¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂÃ¢ÂÂ
         // widenLo/widenHi/narrow/toF32/toI32, the rungs the packed mat-vecs
         // are built on. The lowerings are target-neutral and already lived in
         // `vecops`; only the kernel-side dispatch to them was missing, so a
         // `q4kMatVecInto`-shaped body could not be lifted into a @Kernel at
-        // all — it compiled clean, failed to lower, and computed zeros.
+        // all Ã¢ÂÂ it compiled clean, failed to lower, and computed zeros.
         //
         // Signedness comes from the RECEIVER's declared element type, exactly
         // as on the host: the widen is a sext for a signed element and a zext
@@ -2358,7 +2392,7 @@ private:
             if (isFloat)
                 unsupported("Vector.narrow requires an integer element type");
             if (args.size() != 1)
-                unsupported("Vector.narrow expects (other) — the high half's "
+                unsupported("Vector.narrow expects (other) Ã¢ÂÂ the high half's "
                             "source");
             if (elemTy->getIntegerBitWidth() <= 8)
                 unsupported("Vector.narrow: element width must be > 8");
@@ -2373,7 +2407,7 @@ private:
                 unsupported("Vector.toF32 takes no arguments");
             // A narrower FLOAT receiver (float16 / bfloat16) widens by
             // fpext; an integer one converts by value. float32 is rejected
-            // — nothing to widen to.
+            // Ã¢ÂÂ nothing to widen to.
             if (isFloat) {
                 if (elemTy->getPrimitiveSizeInBits() >= 32)
                     unsupported("Vector.toF32 needs an integer or "
@@ -2403,7 +2437,7 @@ private:
 
     // `m.transpose()`, `m.identity()`, `m.row(r)`, `m.col(c)`, `m.hadamard(b)`
     // on a matrix local `recv` (B1). Mirrors the host MethodCallExpression
-    // interception via the shared `matops` helpers — the result's shape is
+    // interception via the shared `matops` helpers Ã¢ÂÂ the result's shape is
     // carried by the assignment target's declared type (matrixShapes for a
     // Matrix result, vectorSlotType for a row/col Vector), so this only has to
     // produce the right flat `<R*C x T>` / `<C x T>` / `<R x T>` value. Must be
@@ -2503,7 +2537,7 @@ private:
 
     // Decode `name.field` on a POD-struct kernel param to its field record, or
     // nullptr if `e` isn't that shape (a non-dot, a dot on a non-struct, or an
-    // unknown field — the last surfaces as `unsupported` only at access time).
+    // unknown field Ã¢ÂÂ the last surfaces as `unsupported` only at access time).
     const DeviceStructInfo::Field* structFieldOf(const ExpressionPtr& e) {
         auto dot = std::dynamic_pointer_cast<DotExpression>(e);
         if (!dot || dot->getChildren().empty()) return nullptr;
@@ -2518,14 +2552,14 @@ private:
     }
 
     // Read `name.field` on a POD-struct kernel param as an extractvalue from the
-    // param's SSA aggregate (OpCompositeExtract on SPIR-V) — no pointer, so it's
+    // param's SSA aggregate (OpCompositeExtract on SPIR-V) Ã¢ÂÂ no pointer, so it's
     // valid in logical addressing. Returns nullptr when `e` isn't a struct-field
     // access; throws on a dot into a known struct param with an unknown field.
     llvm::Value* structFieldRead(const ExpressionPtr& e) {
         auto dot = std::dynamic_pointer_cast<DotExpression>(e);
         if (!dot || dot->getChildren().empty()) return nullptr;
         auto baseExpr = std::dynamic_pointer_cast<Expression>(dot->getChildren()[0]);
-        // Single level: `param.field` — extractvalue at the field index. (For a
+        // Single level: `param.field` Ã¢ÂÂ extractvalue at the field index. (For a
         // value-type field this returns the whole nested aggregate value.)
         if (auto baseId =
                 std::dynamic_pointer_cast<IdentifierExpression>(baseExpr)) {
@@ -2541,7 +2575,7 @@ private:
                 vit->second, {fit->second.index},
                 baseId->getTextValue() + "." + dot->getIdentifier());
         }
-        // Two level (S5): `param.vfield.subfield` on a nested @ValueType field —
+        // Two level (S5): `param.vfield.subfield` on a nested @ValueType field Ã¢ÂÂ
         // a single multi-index extractvalue {vfield.index, subfield.index}.
         if (auto baseDot = std::dynamic_pointer_cast<DotExpression>(baseExpr)) {
             if (baseDot->getChildren().empty()) return nullptr;
@@ -2571,7 +2605,7 @@ private:
     // Address (and element type) of an l-value. Buffer/array indexing and scalar
     // locals are supported as assignment targets; POD-struct fields are read-only.
     std::pair<llvm::Value*, llvm::Type*> lowerLValueAddr(const ExpressionPtr& e) {
-        // POD-struct field `name.field` — read-only input in v1, never a target.
+        // POD-struct field `name.field` Ã¢ÂÂ read-only input in v1, never a target.
         if (structFieldOf(e))
             unsupported("POD-struct kernel params are read-only "
                         "(no 'name.field = ...')");
@@ -2657,8 +2691,8 @@ private:
 
     // Device builtins (Thread / Workgroup coordinates, Barrier). The mapping
     // from builtin name to which coordinate is read is SHARED; only the leaf
-    // intrinsic emission is per-backend (LoweringTarget) — that split is the
-    // measured seam (cajeta-amd.md §2).
+    // intrinsic emission is per-backend (LoweringTarget) Ã¢ÂÂ that split is the
+    // measured seam (cajeta-amd.md ÃÂ§2).
     llvm::Value* lowerBuiltinCall(const std::shared_ptr<MethodCallExpression>& mc) {
         std::string recv;
         if (!mc->getChildren().empty()) {
@@ -2675,7 +2709,7 @@ private:
         // Routes through the per-backend vectorLoad/vectorStore seam
         // (bufferElementPtr + packed <N x T> memory op). N comes from the call's
         // const type-arg on load, and is implicit in the value's vector type on
-        // store. (kernel-vector-loadstore-spec.md §3, §4.)
+        // store. (kernel-vector-loadstore-spec.md ÃÂ§3, ÃÂ§4.)
         if ((name == "vload" || name == "vstore")
                 && bufferBases.count(recv) && bufferElems.count(recv)) {
             llvm::Type* elemTy = bufferElems[recv];
@@ -2701,7 +2735,7 @@ private:
                 return target.vectorLoad(builder, mod, base, elemTy,
                                          (unsigned) cN->getValue(), idx);
             }
-            // vstore(index, value) — N is implicit in the value's <N x T> type.
+            // vstore(index, value) Ã¢ÂÂ N is implicit in the value's <N x T> type.
             if (params.size() != 2)
                 unsupported("vstore expects (index, value)");
             llvm::Value* idx = maybeSwizzle(base, toI64(params[0].expression));
@@ -2737,7 +2771,7 @@ private:
             }
         }
 
-        // Stage 11: a call through a function-typed device local — `op(args)`
+        // Stage 11: a call through a function-typed device local Ã¢ÂÂ `op(args)`
         // where `op` is a bounded callable (variable form). The receiver is
         // empty (a bare call); dispatch on the callable's tag.
         if (recv.empty()) {
@@ -2754,7 +2788,7 @@ private:
             if (name == "globalIdX") return target.globalId(builder, mod, 0);
             if (name == "globalIdY") return target.globalId(builder, mod, 1);
             if (name == "globalIdZ") return target.globalId(builder, mod, 2);
-            // Thread.clock() — a free-running hardware counter (uint64) for
+            // Thread.clock() Ã¢ÂÂ a free-running hardware counter (uint64) for
             // in-kernel timing (SPV_KHR_shader_clock on Vulkan; native clock on
             // AMD/NVIDIA/CPU). Ticks are for relative measurement, not seconds.
             if (name == "clock") return target.readClock(builder, mod);
@@ -2770,7 +2804,7 @@ private:
                 target.workgroupBarrier(builder, mod);
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
-            // Scoped memory fence (Stage 9) — a memory barrier with no thread
+            // Scoped memory fence (Stage 9) Ã¢ÂÂ a memory barrier with no thread
             // rendezvous (unlike workgroup() above). Orders/makes-visible memory
             // at the given scope, with an optional compile-time MemoryOrder.
             if (name == "workgroupMemory" || name == "deviceMemory") {
@@ -2797,9 +2831,9 @@ private:
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
         } else if (recv == "Debug") {
-            // Device printf (Stage 11): Debug.printf("fmt", a, b, …). The first
-            // arg is a string-literal format (→ i8*); the rest are explicit
-            // scalar values (Path A — no C varargs in the language). CPU calls
+            // Device printf (Stage 11): Debug.printf("fmt", a, b, Ã¢ÂÂ¦). The first
+            // arg is a string-literal format (Ã¢ÂÂ i8*); the rest are explicit
+            // scalar values (Path A Ã¢ÂÂ no C varargs in the language). CPU calls
             // host printf; NVPTX emits vprintf; AMD/Vulkan reject (deferred).
             if (name == "printf") {
                 const auto& args = mc->getParameters();
@@ -2818,12 +2852,12 @@ private:
             // args are compile-time i32 constants; returns i32. On Vulkan this
             // is a genuine OpSpecConstant (SpecId kFirstUserSpecId+slot)
             // defaulting to `default`, override-able at pipeline creation (the
-            // host override is the deferred launch contract — it reads the
+            // host override is the deferred launch contract Ã¢ÂÂ it reads the
             // default today). CPU/AMD/NVPTX bake the default (per-launch compile).
             if (name == "geti") {
                 const auto& args = mc->getParameters();
                 if (args.size() != 2)
-                    unsupported("Spec.geti expects (slot, default) — two "
+                    unsupported("Spec.geti expects (slot, default) Ã¢ÂÂ two "
                                 "compile-time i32 constants");
                 auto* slotC = llvm::dyn_cast<llvm::ConstantInt>(
                     lowerExpr(args[0].expression));
@@ -2845,7 +2879,7 @@ private:
             if (name == "getf") {
                 const auto& args = mc->getParameters();
                 if (args.size() != 2)
-                    unsupported("Spec.getf expects (slot, default) — a "
+                    unsupported("Spec.getf expects (slot, default) Ã¢ÂÂ a "
                                 "compile-time i32 slot and f32 default");
                 auto* slotC = llvm::dyn_cast<llvm::ConstantInt>(
                     lowerExpr(args[0].expression));
@@ -2882,7 +2916,7 @@ private:
             // The cross-lane ops (shuffle/ballot/reduce) read other lanes' data,
             // so their result depends on which lanes are converged. Flag the
             // kernel so finalization can request maximal reconvergence (Vulkan
-            // OpExecutionMode MaximallyReconvergesKHR) — the guarantee that
+            // OpExecutionMode MaximallyReconvergesKHR) Ã¢ÂÂ the guarantee that
             // source-converged lanes stay converged. The pure per-lane queries
             // (width/laneId/isFirstLane) above don't need it.
             if (name == "shuffleSync") {
@@ -2913,7 +2947,7 @@ private:
             }
             {
                 // The reduction family beyond sum (Wave.reduce{Max,Min,And,Or,
-                // Xor}) — unsigned, uint32; native on every backend.
+                // Xor}) Ã¢ÂÂ unsigned, uint32; native on every backend.
                 using WROp = LoweringTarget::WaveReduceOp;
                 const WROp* op = nullptr;
                 static const WROp kMax = WROp::Max, kMin = WROp::Min,
@@ -2950,7 +2984,7 @@ private:
                                        lowerExpr(args[0].expression));
             }
         } else if (recv == "Quad") {
-            // Quad (2x2) cross-lane ops — broadcast/swap/all/any. Cross-lane like
+            // Quad (2x2) cross-lane ops Ã¢ÂÂ broadcast/swap/all/any. Cross-lane like
             // the Wave ops, so flag the kernel for maximal reconvergence.
             const auto& args = mc->getParameters();
             if (name == "broadcast") {
@@ -2977,7 +3011,7 @@ private:
                                      : target.quadAny(builder, mod, pred);
             }
         } else if (recv == "Cajeta") {
-            // Cajeta.f32ToBits / bitsToF32 / f64ToBits / bitsToF64 — IEEE bit
+            // Cajeta.f32ToBits / bitsToF32 / f64ToBits / bitsToF64 Ã¢ÂÂ IEEE bit
             // reinterpretation, mirroring the host lowering (a plain bitcast on
             // every backend; SPIR-V selects OpBitcast). Needed in-kernel by the
             // SFU-table `__fdividef` replication (U12 split scoring): the table
@@ -2990,9 +3024,9 @@ private:
                 llvm::Value* v = lowerExpr(cargs[0].expression);
                 // COERCE the operand to the width the bitcast needs, exactly
                 // as the host lowering does. `bitsToF32(bits)` is routinely
-                // handed an int64 — GgufFile.halfBitsToF32 builds its result
+                // handed an int64 Ã¢ÂÂ GgufFile.halfBitsToF32 builds its result
                 // in one, because the f32 sign bit does not fit an int32
-                // literal — and a bitcast i64 -> float is not a legal cast,
+                // literal Ã¢ÂÂ and a bitcast i64 -> float is not a legal cast,
                 // so without this the whole call fails to lower and the
                 // kernel is skipped. The host comment in halfBitsToF32 says
                 // "the intrinsics coerce their operands now"; the device seam
@@ -3020,7 +3054,7 @@ private:
             // Per-invocation bit manipulation. No seam: these lower to
             // *generic* LLVM intrinsics that every backend (incl. the
             // Vulkan/Shader flavor) already selects to a single hardware
-            // bit op — so they are handled here, once, for all targets.
+            // bit op Ã¢ÂÂ so they are handled here, once, for all targets.
             const auto& args = mc->getParameters();
             auto* i32 = llvm::Type::getInt32Ty(ctx);
             auto u32arg = [&](int i) {
@@ -3042,11 +3076,11 @@ private:
                 llvm::Value* v = u32arg(0);
                 llvm::Value* amt = u32arg(1);
                 // Inline rotate: (v << s) | (v >> (32 - s)), s masked to
-                // [0,31]. Deliberately NOT llvm.fshl/fshr — the SPIR-V
+                // [0,31]. Deliberately NOT llvm.fshl/fshr Ã¢ÂÂ the SPIR-V
                 // backend lowers those via a *generated helper function*
                 // (spirv.llvm_fsh?_i32) with external linkage, which pulls in
                 // OpCapability Linkage and is rejected under Vulkan. The
-                // shift/or expansion stays inline → core ops, spirv-val-clean.
+                // shift/or expansion stays inline Ã¢ÂÂ core ops, spirv-val-clean.
                 auto* w = builder.getInt32(32);
                 auto* mask = builder.getInt32(31);
                 llvm::Value* s = builder.CreateAnd(amt, mask, "bits.rot.s");
@@ -3063,36 +3097,36 @@ private:
                 return builder.CreateOr(a, b, "bits.rot");
             }
         } else if (recv == "Math") {
-            // Math.<fn>(...) inside a kernel — fully handled (returns a value or
+            // Math.<fn>(...) inside a kernel Ã¢ÂÂ fully handled (returns a value or
             // a clean diagnostic). Mirrors the host Math lowering.
             return lowerMathCall(name, mc);
         } else if (recv == "CoopStage") {
-            // CoopStage.panel(...) — the cooperative global→LDS staging copy for
+            // CoopStage.panel(...) Ã¢ÂÂ the cooperative globalÃ¢ÂÂLDS staging copy for
             // tiled GEMM (the consume side is CooperativeMatrix.load(Shared<T>)).
             return lowerCoopStage(name, mc);
         } else if (recv == "AsyncCopy") {
-            // AsyncCopy.copy/commit/wait — async global→LDS transfers + group
-            // commit/wait for N-stage software prefetch (§2). Default lowering is
+            // AsyncCopy.copy/commit/wait Ã¢ÂÂ async globalÃ¢ÂÂLDS transfers + group
+            // commit/wait for N-stage software prefetch (ÃÂ§2). Default lowering is
             // a synchronous strided copy + no-op commit/wait; AMDGPU overrides.
             return lowerAsyncCopy(name, mc);
         } else if (recv == "Schedule") {
-            // Schedule.barrier/groupBarrier/priority/pipelineOpt — portable
-            // instruction-scheduling hints (§2). Default lowering is a no-op;
+            // Schedule.barrier/groupBarrier/priority/pipelineOpt Ã¢ÂÂ portable
+            // instruction-scheduling hints (ÃÂ§2). Default lowering is a no-op;
             // AMDGPU overrides with sched_barrier/sched_group_barrier/s_setprio/
             // iglp_opt. Operands are validated as ImmArg constants here.
             return lowerSchedule(name, mc);
         }
         // Buffer atomics on the element pointer (the same bufferElementPtr seam as
         // buf[i]); every form returns the OLD value.
-        //   Buffer<float32>: atomic{Add,Min,Max}(index, value) — the parallel-
+        //   Buffer<float32>: atomic{Add,Min,Max}(index, value) Ã¢ÂÂ the parallel-
         //     reduction / histogram lever (SPV_EXT_shader_atomic_float on Vulkan).
         //   Buffer<int32|uint32|int64|uint64>: atomic{Add,Sub,Min,Max,And,Or,Xor,
         //     Exchange}(index, value) and atomicCompareExchange(index, expected,
-        //     desired) — core OpAtomicI*/CompareExchange; the universal concurrency
+        //     desired) Ã¢ÂÂ core OpAtomicI*/CompareExchange; the universal concurrency
         //     primitive. 64-bit forms need Int64Atomics on Vulkan (the runtime
         //     enables shaderBufferInt64Atomics when the device has it); native on
         //     CUDA/HIP/CPU. int64 atomicAdd is the exact-parallel-reduction lever
-        //     (integer adds commute → order-independent bit-identical sums).
+        //     (integer adds commute Ã¢ÂÂ order-independent bit-identical sums).
         if (!recv.empty() && bufferBases.count(recv) &&
             (name == "atomicAdd" || name == "atomicSub" || name == "atomicMin" ||
              name == "atomicMax" || name == "atomicAnd" || name == "atomicOr" ||
@@ -3177,13 +3211,13 @@ private:
                         "or int64/uint64 buffer");
         }
         // Matrix<T,R,C> instance methods (B1): transpose/identity/row/col/
-        // hadamard. Checked BEFORE the vector branch — a matrix local's slot is
+        // hadamard. Checked BEFORE the vector branch Ã¢ÂÂ a matrix local's slot is
         // a `<R*C x T>` vector type, so vectorSlotType(recv) is non-null for it.
         if (!recv.empty() && matrixShapes.count(recv)) {
             return lowerMatrixMethod(recv, name, mc);
         }
         // Quaternion methods: normalize/conjugate/length/dot/nlerp. Checked
-        // BEFORE the vector branch — a quaternion local's slot is `<4 x T>`.
+        // BEFORE the vector branch Ã¢ÂÂ a quaternion local's slot is `<4 x T>`.
         if (!recv.empty() && quaternionLocals.count(recv)) {
             return lowerQuaternionMethod(recv, name, mc);
         }
@@ -3195,7 +3229,7 @@ private:
         // ...and the same methods on a CHAINED receiver, which has no name.
         // `recv` is only set when child[0] is an IdentifierExpression, so
         // `w.vload<4>(0).dot(a)` skipped every branch above and fell through
-        // to a silent zero — a wrong answer with no diagnostic. Materialize
+        // to a silent zero Ã¢ÂÂ a wrong answer with no diagnostic. Materialize
         // the receiver into a real slot under a synthetic name and reuse the
         // named path verbatim, so the two spellings cannot diverge.
         if (recv.empty() && isVectorMethodName(name)
@@ -3211,7 +3245,7 @@ private:
                 // entryAlloca, not a point-of-use alloca: mid-function
                 // allocas are invisible to mem2reg (it only promotes the
                 // entry block), so a chained-receiver spill inside a loop
-                // stayed a real memory round-trip — which on the SPIR-V
+                // stayed a real memory round-trip Ã¢ÂÂ which on the SPIR-V
                 // shader flavor becomes a WIDE spv_load/spv_store the
                 // legalizer cannot split (10.12.44), and on every backend
                 // re-allocas per iteration.
@@ -3250,7 +3284,7 @@ private:
                 const auto& args = mc->getParameters();
                 // Coord arity by texture kind: 1-D=1, 2-D=2, 3-D=3, 2-D array=3
                 // (u,v,layer), cube=3 (x,y,z direction). sample takes a Sampler
-                // first, so #args = arity + 1 (sampleLod adds the lod → arity + 2).
+                // first, so #args = arity + 1 (sampleLod adds the lod Ã¢ÂÂ arity + 2).
                 int arity = textureCoordArity(dim);
                 size_t expected = isLod ? (size_t)(arity + 2) : (size_t)(arity + 1);
                 if ((size_t) args.size() != expected)
@@ -3271,17 +3305,17 @@ private:
                         tt != textureTexelTypes.end() &&
                         tt->second && tt->second->isIntegerTy()) {
                     throw cajeta::Exception(
-                        "Texture<int>.sample is not supported — integer textures "
+                        "Texture<int>.sample is not supported Ã¢ÂÂ integer textures "
                         "cannot be filtered by the hardware sampler; use fetch(...) "
                         "for an exact integer-texel read", "XPU-N01");
                 }
                 llvm::Value* samp = resolveSamplerArg(args[0].expression);
                 llvm::Value* u = toFloat(lowerExpr(args[1].expression));
-                // 1-D: single coord, no v/w, no lod — dispatch before reading v.
+                // 1-D: single coord, no v/w, no lod Ã¢ÂÂ dispatch before reading v.
                 if (dim == 1)
                     return target.sampleTexture1D(builder, mod, th->second, samp, u);
                 llvm::Value* v = toFloat(lowerExpr(args[2].expression));
-                // 2-D array: (u, v, layer) — layer is an INTEGER array index (i32),
+                // 2-D array: (u, v, layer) Ã¢ÂÂ layer is an INTEGER array index (i32),
                 // not a normalized coord; the seam converts it where the HW wants
                 // a float layer coordinate.
                 if (dim == 4) {
@@ -3289,7 +3323,7 @@ private:
                     return target.sampleTexture2DArray(builder, mod, th->second,
                                                        samp, u, v, layer);
                 }
-                // Cube: (x, y, z) direction vector — three float coords, like 3-D
+                // Cube: (x, y, z) direction vector Ã¢ÂÂ three float coords, like 3-D
                 // but routed to the cube seam (the image is Dim=Cube, not 3-D).
                 if (dim == 5) {
                     llvm::Value* z = toFloat(lowerExpr(args[3].expression));
@@ -3325,11 +3359,11 @@ private:
                 // Cube textures have no integer texelFetch in v1 (a cube is read
                 // by a direction vector through sample); reject it cleanly.
                 if (dim == 5)
-                    unsupported("TextureCube has no fetch — sample(s, x, y, z) "
+                    unsupported("TextureCube has no fetch Ã¢ÂÂ sample(s, x, y, z) "
                                 "reads a cube by direction vector");
                 const auto& args = mc->getParameters();
                 // fetch coord arity by kind: 1-D=1, 2-D=2, 3-D=3, 2-D array=3
-                // (x,y,layer). fetchLod (2-D only) adds the lod → arity + 1.
+                // (x,y,layer). fetchLod (2-D only) adds the lod Ã¢ÂÂ arity + 1.
                 int arity = textureCoordArity(dim);
                 size_t expected = isLod ? (size_t)(arity + 1) : (size_t) arity;
                 if ((size_t) args.size() != expected)
@@ -3341,17 +3375,17 @@ private:
                                          ? "Texture2DArray.fetch expects (x, y, layer)"
                                          : "Texture2D.fetch expects (x, y)"))));
                 llvm::Value* x = toI32(lowerExpr(args[0].expression));
-                // Texel scalar T (float by default; i32 for integer textures) —
+                // Texel scalar T (float by default; i32 for integer textures) Ã¢ÂÂ
                 // the backend builds a <4 x T> result from it.
                 llvm::Type* texelTy = llvm::Type::getFloatTy(mod.getContext());
                 if (auto tt = textureTexelTypes.find(recv);
                         tt != textureTexelTypes.end() && tt->second)
                     texelTy = tt->second;
-                // 1-D: single coord, no y/z, no lod — dispatch before reading y.
+                // 1-D: single coord, no y/z, no lod Ã¢ÂÂ dispatch before reading y.
                 if (dim == 1)
                     return target.fetchTexture1D(builder, mod, th->second, x, texelTy);
                 llvm::Value* y = toI32(lowerExpr(args[1].expression));
-                // 2-D array: (x, y, layer) — layer is the integer array index.
+                // 2-D array: (x, y, layer) Ã¢ÂÂ layer is the integer array index.
                 if (dim == 4) {
                     llvm::Value* layer = toI32(lowerExpr(args[2].expression));
                     return target.fetchTexture2DArray(builder, mod, th->second, x, y,
@@ -3383,13 +3417,13 @@ private:
                 llvm::Value* y = toI32(lowerExpr(args[1].expression));
                 llvm::Value* val = toFloat(lowerExpr(args[2].expression));
                 target.storeImage(builder, mod, ih->second, x, y, val);
-                // void op — return a dummy i32 0 (the sibling void device ops,
+                // void op Ã¢ÂÂ return a dummy i32 0 (the sibling void device ops,
                 // e.g. CooperativeMatrix.store, use the same placeholder).
                 return llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 0);
             }
         }
         // Image2D.load(x, y) (writable images): read the texel at INTEGER coords
-        // (x, y) → f32. The read twin of store; same STORAGE_IMAGE handle. Lowered
+        // (x, y) Ã¢ÂÂ f32. The read twin of store; same STORAGE_IMAGE handle. Lowered
         // to the backend image-read seam (Vulkan OpImageRead).
         if (name == "load") {
             auto ih = imageHandles.find(recv);
@@ -3421,7 +3455,7 @@ private:
 
     // Resolve the sampler argument of a `tex.sample(sampler, ...)` to its
     // materialized descriptor. v1: the sampler must be a bare identifier naming
-    // a Sampler kernel param (the descriptor model — a sampler isn't an
+    // a Sampler kernel param (the descriptor model Ã¢ÂÂ a sampler isn't an
     // expressible value in a kernel body, only a bound resource).
     llvm::Value* resolveSamplerArg(const ExpressionPtr& e) {
         if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(e)) {
@@ -3466,7 +3500,7 @@ private:
     // Software-tier RayQuery op lowering (ray-query-to-core inc 1). The RayQuery
     // alloca holds a SwRayCursor; each op is a call into the portable
     // SoftwareRayQuery @Device walk with the cursor read/written back, plus field
-    // reads off the cursor — no native ray-query seam (XPU-N02 is not thrown).
+    // reads off the cursor Ã¢ÂÂ no native ray-query seam (XPU-N02 is not thrown).
     llvm::Value* lowerSoftwareRayQueryMethod(
             llvm::Value* rqPtr, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
@@ -3494,7 +3528,7 @@ private:
             rayQueryBvh[rqPtr] = resolveAccelArg(args[0].expression);
             // Seed a fresh cursor by value: ray fields from the call, traversal
             // state zeroed. Built here (insertvalue) rather than via a cajeta
-            // initialize — a no-Buffer @Device method would be host-compiled and
+            // initialize Ã¢ÂÂ a no-Buffer @Device method would be host-compiled and
             // choke on value-type construction (Method.cpp only host-stubs
             // Buffer-taking device methods). Consumer arg order:
             // (AS, rayFlags, cullMask, ox, oy, oz, tMin, dx, dy, dz, tMax).
@@ -3564,7 +3598,7 @@ private:
             return builder.CreateExtractValue(cur, {fieldIdx("candPrim")},
                                               "rq.prim");
         }
-        // Candidate geometry getters (inc 3): the Möller-Trumbore hit distance +
+        // Candidate geometry getters (inc 3): the MÃÂ¶ller-Trumbore hit distance +
         // barycentrics, read off the cursor fields step() populated.
         if (name == "candidateDistance" || name == "candidateBarycentricU" ||
             name == "candidateBarycentricV") {
@@ -3636,8 +3670,8 @@ private:
     }
 
     // RayQuery op dispatch (Part C). `rqPtr` is the RayQuery alloca; the call is
-    // lowered to the backend ray-query seam (Vulkan llvm.spv.ray.query.*), or —
-    // on a software-tier backend — to the portable SoftwareRayQuery walk.
+    // lowered to the backend ray-query seam (Vulkan llvm.spv.ray.query.*), or Ã¢ÂÂ
+    // on a software-tier backend Ã¢ÂÂ to the portable SoftwareRayQuery walk.
     llvm::Value* lowerRayQueryMethod(
             llvm::Value* rqPtr, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
@@ -3647,7 +3681,7 @@ private:
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (name == "initialize") {
             // (AccelerationStructure, rayFlags, cullMask, ox, oy, oz, tMin,
-            //  dx, dy, dz, tMax) — origin/direction are component-wise scalars
+            //  dx, dy, dz, tMax) Ã¢ÂÂ origin/direction are component-wise scalars
             // the lowerer assembles into <3 x float> vectors.
             if (args.size() != 11)
                 unsupported("RayQuery.initialize expects (AccelerationStructure, "
@@ -3688,7 +3722,7 @@ private:
                 i32, name == "committedPrimitiveIndex" ? 1 : 0);
             return target.rayQueryIntersectionPrimitiveIndex(builder, mod, rqPtr, sel);
         }
-        // Distance getters (inc 3b): candidate / committed selector → f32.
+        // Distance getters (inc 3b): candidate / committed selector Ã¢ÂÂ f32.
         if (name == "candidateDistance" || name == "committedDistance") {
             if (!args.empty())
                 unsupported("RayQuery." + name + " takes no arguments");
@@ -3708,7 +3742,7 @@ private:
                 target.rayQueryIntersectionBarycentrics(builder, mod, rqPtr, sel);
             return builder.CreateExtractElement(bary, wantV ? 1u : 0u, "rq.bary");
         }
-        // Front-face getters (inc 3b): candidate / committed selector → i1.
+        // Front-face getters (inc 3b): candidate / committed selector Ã¢ÂÂ i1.
         if (name == "candidateFrontFace" || name == "committedFrontFace") {
             if (!args.empty())
                 unsupported("RayQuery." + name + " takes no arguments");
@@ -3802,8 +3836,8 @@ private:
         coopStraddleDemote = anyNative && anyPortable;
         // The epilogue-verb gate (xpu-coopmatrix-epilogue): a kernel using
         // scaledAccumInto/rank1Accum on a backend whose native tier cannot
-        // lower them demotes ALL its tiles to the portable tile — loudly,
-        // once, naming the op — instead of skipping or (worse) reaching
+        // lower them demotes ALL its tiles to the portable tile Ã¢ÂÂ loudly,
+        // once, naming the op Ã¢ÂÂ instead of skipping or (worse) reaching
         // the base seam's throw at lowering time.
         if (anyEpilogueVerb && anyNative &&
             !target.coopMatrixEpilogueSupported()) {
@@ -3843,7 +3877,7 @@ private:
         s.cols = (uint32_t) cols->getValue();
         s.use  = (uint32_t) use->getValue();
         // The per-backend base tier, then the explicit CAJETA_GPU_COOPMATRIX_IMPL
-        // override layered on top (the degrade seam's override face) — so a forced
+        // override layered on top (the degrade seam's override face) Ã¢ÂÂ so a forced
         // "software" runs the portable tile even on a native-capable backend.
         auto baseTier = target.coopMatrixTier(elem, s.rows, s.cols, s.use);
         auto tier = resolveImplTier("COOPMATRIX", baseTier);
@@ -3861,7 +3895,7 @@ private:
             s.software = true;
             s.matrixType = llvm::ArrayType::get(elem, (uint64_t) s.rows * s.cols);
             s.alloca = entryAlloca(s.matrixType, nm);
-            // One appraisal per GEMM: note the A operand (Use 0) — every matrix
+            // One appraisal per GEMM: note the A operand (Use 0) Ã¢ÂÂ every matrix
             // multiply has exactly one, so the B/accumulator tiles don't re-note.
             // `forced` is true when the backend HAD a native config but the env
             // override took the portable path (so the note stays honest).
@@ -3888,8 +3922,8 @@ private:
         return "T";
     }
 
-    // Sticky, non-dissuading appraisal (CM6): a `note:` — a severity BELOW
-    // `warning:` — that tells the author a CooperativeMatrix took the portable
+    // Sticky, non-dissuading appraisal (CM6): a `note:` Ã¢ÂÂ a severity BELOW
+    // `warning:` Ã¢ÂÂ that tells the author a CooperativeMatrix took the portable
     // software path on this backend, without framing it as something to avoid.
     // The wording is a capability statement (it runs correctly here and lights
     // up hardware matrix cores automatically where the device exposes the dtype
@@ -3903,7 +3937,7 @@ private:
         if (!notedCoopTiers.insert(key).second) return;
         if (forced) {
             // The backend HAS a native config; CAJETA_GPU_COOPMATRIX_IMPL=software
-            // forced the portable degrade (the override face of the degrade seam —
+            // forced the portable degrade (the override face of the degrade seam Ã¢ÂÂ
             // validates the portable tier against the native one on real silicon).
             std::cerr << "note: [mma-tiering] CooperativeMatrix<" << dt << ","
                       << rows << "," << cols << "> runs on the portable software "
@@ -3923,7 +3957,7 @@ private:
                      "config (e.g. bf16 WMMA on AMD)." << std::endl;
     }
 
-    // for (i32 iv = 0; iv < count; ++iv) body(iv) — a counted loop over a
+    // for (i32 iv = 0; iv < count; ++iv) body(iv) Ã¢ÂÂ a counted loop over a
     // compile-time bound, used to gather/scatter/multiply a software coop tile
     // without unrolling Rows*Cols (or Rows*Cols*K) ops. body() is emitted with
     // the builder positioned in the loop body; on return the insert point is the
@@ -3978,7 +4012,7 @@ private:
     // Epilogue-verb Shared args may be SLICES (10.12.33): `arr[expr]`
     // resolves to the address of element `expr`, so per-wave/per-tile
     // scale vectors can live in ONE Shared array and the call site
-    // selects its 16-vector by offset — no wave-uniform branch per
+    // selects its 16-vector by offset Ã¢ÂÂ no wave-uniform branch per
     // base. A bare identifier still resolves to the array base; the
     // index expression is evaluated once, at the call.
     bool resolveBufferBaseOrSlice(const ExpressionPtr& e,
@@ -3998,8 +4032,8 @@ private:
         return false;
     }
 
-    // CoopStage.panel(dst, src, rowBase, colBase, rows, cols, ld) — the
-    // workgroup-cooperative global→LDS staging copy (Option B). Every thread of
+    // CoopStage.panel(dst, src, rowBase, colBase, rows, cols, ld) Ã¢ÂÂ the
+    // workgroup-cooperative globalÃ¢ÂÂLDS staging copy (Option B). Every thread of
     // the workgroup strides over the rows*cols panel and copies it from a
     // row-major source (leading dim `ld`) into the contiguous LDS tile `dst`
     // (packed row-major, stride = cols). Both `dst` (a Shared<T> local) and `src`
@@ -4125,12 +4159,12 @@ private:
 
     // AsyncCopy.copy(dst, dstOffset, src, srcOffset, count) / commit() / wait(n).
     // The async analog of CoopStage.panel for software-pipelined staging: `copy`
-    // issues a direct global→LDS transfer (workgroup-strided), `commit` closes a
+    // issues a direct globalÃ¢ÂÂLDS transfer (workgroup-strided), `commit` closes a
     // group, `wait(n)` blocks until <= n groups remain. Resolves dst (a Shared<T>
     // local) and src (a Buffer<T> param) through the same buffer maps as
     // CoopStage; the offsets/count are uint32 expressions. All three lower to the
     // LoweringTarget async seams (default = synchronous strided copy + no-ops).
-    // A synchronous workgroup-strided global→LDS copy whose dst index is run
+    // A synchronous workgroup-strided globalÃ¢ÂÂLDS copy whose dst index is run
     // through the tile's swizzle: for (e=tid; e<count; e+=nthr)
     // dst[swizzle(dstOffset+e)] = src[srcOffset+e]. Used for AsyncCopy.copy into a
     // Swizzled<T,S> tile (the native async path can't permute the address).
@@ -4199,7 +4233,7 @@ private:
         llvm::Value* count     = coerceTo(lowerExpr(args[4].expression), i32);
         // A Swizzled<T,S> dst can't ride the native LDS-direct async path (it
         // can't apply the XOR; on gfx1151 there's no native path regardless), so
-        // stage it with a synchronous strided copy whose dst index is swizzled —
+        // stage it with a synchronous strided copy whose dst index is swizzled Ã¢ÂÂ
         // consistent with every other access of the tile.
         if (swizzledBaseStride.count(dstBase)) {
             emitSwizzledSyncCopy(dstBase, dstElem, dstOffset,
@@ -4211,9 +4245,9 @@ private:
         return llvm::ConstantInt::get(i32, 0);
     }
 
-    // Schedule.barrier/groupBarrier/priority/pipelineOpt — instruction-scheduling
-    // hints (§2). Every operand is an ImmArg, so it must lower to a ConstantInt;
-    // a non-constant or out-of-range value is a clean call-site diagnostic (§2.2),
+    // Schedule.barrier/groupBarrier/priority/pipelineOpt Ã¢ÂÂ instruction-scheduling
+    // hints (ÃÂ§2). Every operand is an ImmArg, so it must lower to a ConstantInt;
+    // a non-constant or out-of-range value is a clean call-site diagnostic (ÃÂ§2.2),
     // not an LLVM verifier crash. The validated constants are passed to the target
     // sched seams (default no-op; AMDGPU emits the native intrinsic).
     llvm::Value* lowerSchedule(const std::string& name,
@@ -4260,7 +4294,7 @@ private:
     }
 
     // Resolve a CooperativeMatrix.load/store Buffer argument (a bare identifier
-    // naming a Buffer kernel param) to a device pointer at element `offset` —
+    // naming a Buffer kernel param) to a device pointer at element `offset` Ã¢ÂÂ
     // the base the cooperative-matrix load/store reads/writes Rows*Cols elements
     // from. `offset` selects a sub-tile of a larger row-major matrix (a tiled
     // GEMM walks it over the M/N/K tiles); 0 is the whole-buffer base.
@@ -4307,13 +4341,13 @@ private:
                 unsupported("CooperativeMatrix." + name +
                             " expects (Buffer, offset, layout, stride)");
             // A Swizzled<T,S> tile carries its stride S into the fragment-coord
-            // swizzle (WMMA sub-tile offsets are S²-aligned, so the pre-offset ptr
+            // swizzle (WMMA sub-tile offsets are SÃÂ²-aligned, so the pre-offset ptr
             // is fine). 0 = a plain Shared tile (no swizzle).
             uint32_t swz = swizzleStrideOfArg(args[0].expression);
             llvm::Value* offset = lowerExpr(args[1].expression);
             // BlockPadded<T,Block,Pad>: additive pad doesn't distribute over
             // base+offset, so GEP from the BARE base and carry the logical offset in
-            // LdsBlockPad — the fragment coord pads `offset + fragLocal`. (Other tiles
+            // LdsBlockPad Ã¢ÂÂ the fragment coord pads `offset + fragLocal`. (Other tiles
             // keep the pre-offset ptr.)
             llvm::Value* tileBase = nullptr;
             auto bp = blockPadOfArg(args[0].expression, &tileBase);
@@ -4389,14 +4423,14 @@ private:
             CoopMatrixSlot b = resolveCoopMatrixArg(args[1].expression);
             if (a.software || b.software)
                 unsupported("CooperativeMatrix.mma: a native accumulator cannot "
-                            "consume software-tier operands — give all three "
+                            "consume software-tier operands Ã¢ÂÂ give all three "
                             "tiles the same dtype tier");
             llvm::Value* aVal = builder.CreateLoad(a.matrixType, a.alloca, "cm.a");
             llvm::Value* bVal = builder.CreateLoad(b.matrixType, b.alloca, "cm.b");
             llvm::Value* cVal =
                 builder.CreateLoad(slot.matrixType, slot.alloca, "cm.c");
             // SPV_KHR_cooperative_matrix signedness mask: A=0x1 B=0x2 C=0x4
-            // Result=0x8. SPIR-V integer types are SIGNLESS — omitting these
+            // Result=0x8. SPIR-V integer types are SIGNLESS Ã¢ÂÂ omitting these
             // executes signed int8 as UNSIGNED (-1 reads as 255; measured on
             // RADV as VkTileProbe stage2 121/256 wrong, stage3 256/256). AMD's
             // WMMA intrinsics encode the same fact in the intrinsic name, so
@@ -4413,7 +4447,7 @@ private:
         }
         // The fused epilogue verbs on the NATIVE tier (xpu-coopmatrix-
         // epilogue Option B). Reaching here on a backend without support
-        // is a compiler bug — the tier scan demotes those kernels — so
+        // is a compiler bug Ã¢ÂÂ the tier scan demotes those kernels Ã¢ÂÂ so
         // the guard is belt-and-braces, not a code path.
         if (name == "scaledAccumInto" || name == "rank1Accum" ||
             name == "scaledAccumInto2" || name == "scaledAccumIntoS" ||
@@ -4422,7 +4456,7 @@ private:
             const bool dual = (name == "scaledAccumInto2" ||
                                name == "scaledAccumInto2S");
             // The S variants (10.12.31): colF/colG are per-lane SCALAR
-            // register values, not Shared vectors — the caller passes
+            // register values, not Shared vectors Ã¢ÂÂ the caller passes
             // this lane's own column factor.
             const bool scalarCol = (name == "scaledAccumIntoS" ||
                                     name == "scaledAccumInto2S");
@@ -4503,7 +4537,7 @@ private:
     // Software cooperative-matrix ops (CM6): the slot is a flat `[R*C x elem]`
     // tile. splat fills it, load/store gather/scatter it from a Buffer with the
     // requested row/col-major layout + stride, and mma runs an honest triple
-    // loop `result = c + a·b`. Floating-point GEMMs accumulate in f32 (the
+    // loop `result = c + aÃÂ·b`. Floating-point GEMMs accumulate in f32 (the
     // bf16/f16 storage-plus-f32-compute model) and narrow to the accumulator's
     // dtype on store; integer GEMMs accumulate in the accumulator's int type.
     // Correct on every backend; the matrix cores are used instead wherever the
@@ -4552,7 +4586,7 @@ private:
                                              llvm::ConstantInt::get(i32, 0)),
                         rm, cm);
                     // Swizzled<T,S> tile: permute the absolute element index (the
-                    // identity on CPU, where this software tier runs — so it stays
+                    // identity on CPU, where this software tier runs Ã¢ÂÂ so it stays
                     // consistent with the identity-swizzled staging).
                     llvm::Value* bidx = maybeSwizzle(
                         base, builder.CreateZExt(builder.CreateAdd(offset, sel), i64));
@@ -4581,7 +4615,7 @@ private:
             CoopMatrixSlot b = resolveCoopMatrixArg(args[1].expression);
             if (!a.software || !b.software)
                 unsupported("CooperativeMatrix.mma: a software accumulator cannot "
-                            "consume native-tier operands — give all three tiles "
+                            "consume native-tier operands Ã¢ÂÂ give all three tiles "
                             "the same dtype tier");
             // a is M x K, b is K x N, c/result (this slot) is M x N.
             const uint32_t M = a.rows, K = a.cols, N = b.cols;
@@ -4631,8 +4665,8 @@ private:
 
         // The SCALAR-column variants are NATIVE-ONLY (10.12.31): their
         // colF/colG is "this lane's column factor", and the software
-        // tile has no lane-column mapping — every workitem owns the
-        // full R x C tile — so there is no honest lowering. Reject
+        // tile has no lane-column mapping Ã¢ÂÂ every workitem owns the
+        // full R x C tile Ã¢ÂÂ so there is no honest lowering. Reject
         // with the named diagnostic; a silent demote would compute
         // one column's factor across all sixteen.
         if (name == "fromWords") {
@@ -4654,7 +4688,7 @@ private:
         // The fused epilogue verbs (xpu-coopmatrix-epilogue, Option B).
         // Element order and association are the CONTRACT every tier
         // shares: one fma chain per element, `(rowF[r] * colF[c]) *
-        // this[r][c]` then add — the native lowerings must emit the same
+        // this[r][c]` then add Ã¢ÂÂ the native lowerings must emit the same
         // grouping, since the consumer's acceptance is EXACT equality.
         if (name == "scaledAccumInto" || name == "rank1Accum" ||
             name == "scaledAccumInto2") {
@@ -4757,7 +4791,7 @@ private:
         return v;
     }
 
-    // Coerce a value to f32 — texture coords are floats, but an int expression
+    // Coerce a value to f32 Ã¢ÂÂ texture coords are floats, but an int expression
     // (e.g. a lane index used as a coordinate) is widened via signed conversion.
     llvm::Value* toFloat(llvm::Value* v) {
         llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
@@ -4767,15 +4801,15 @@ private:
         return builder.CreateSIToFP(v, f32);
     }
 
-    // Math.<fn>(...) inside a kernel — `cajeta-gpu` Stage B2, increment 1.
+    // Math.<fn>(...) inside a kernel Ã¢ÂÂ `cajeta-gpu` Stage B2, increment 1.
     // Only the subset that lowers *natively* on every backend
     // (NVPTX/AMDGPU/SPIR-V/CPU) with no device math-library link is admitted
     // here: sqrt/floor/ceil/trunc/round, abs, min/max, fma. The transcendentals
     // (sin/cos/tan/exp/log/pow) need per-backend device-lib linking (ocml on
-    // AMD, libdevice on NVPTX — the same shape as Item 8's ockl.bc) and get a
+    // AMD, libdevice on NVPTX Ã¢ÂÂ the same shape as Item 8's ockl.bc) and get a
     // clean diagnostic until that increment lands. Unlike the host path (which
     // forces f64 for Java-Math parity), this operates in the argument's FP type
-    // — f32 is GPU-native and f64 would need the Vulkan Float64 capability.
+    // Ã¢ÂÂ f32 is GPU-native and f64 would need the Vulkan Float64 capability.
     llvm::Value* lowerMathCall(const std::string& name,
                                const std::shared_ptr<MethodCallExpression>& mc) {
         const auto& args = mc->getParameters();
@@ -4848,7 +4882,7 @@ private:
             }
             // Integer min/max: unify to the wider operand width, then choose
             // signed vs unsigned min/max + the matching extension by the operands'
-            // signedness — smin/smax on unsigned values is wrong, e.g.
+            // signedness Ã¢ÂÂ smin/smax on unsigned values is wrong, e.g.
             // umin(0xFFFFFFFF, 1) must be 1, not 0xFFFFFFFF (L2).
             llvm::Type* it =
                 a->getType()->getIntegerBitWidth()
@@ -4881,10 +4915,10 @@ private:
                 &mod, llvm::Intrinsic::fma, {ft});
             return builder.CreateCall(fn, {a, b, c});
         }
-        // B2 increment 2 — transcendentals. Operate in the argument's FP type
+        // B2 increment 2 Ã¢ÂÂ transcendentals. Operate in the argument's FP type
         // (f32-native, not the host's forced f64). These lower per backend: CPU
-        // -> libm (sinf/…); Vulkan -> the SPIR-V backend maps the llvm.* trig/
-        // exp/log intrinsics to OpExtInst GLSL.std.450 (Sin/Cos/Exp/Log/…); AMD/
+        // -> libm (sinf/Ã¢ÂÂ¦); Vulkan -> the SPIR-V backend maps the llvm.* trig/
+        // exp/log intrinsics to OpExtInst GLSL.std.450 (Sin/Cos/Exp/Log/Ã¢ÂÂ¦); AMD/
         // NV realize through the device math library when present.
         static const std::set<std::string> unaryTransc = {
             "sin", "cos", "tan", "asin", "acos", "atan",
@@ -4918,7 +4952,7 @@ private:
     // by name + arity. Unqualified and `Self.helper(...)` resolve within the
     // kernel's own class; `OtherClass.helper(...)` resolves CROSS-CLASS via the
     // process-global canonicalMap (lowerDeviceFn already lowers a foreign owner's
-    // body in its own context — the SoftwareRayQuery path proves this). This lets
+    // body in its own context Ã¢ÂÂ the SoftwareRayQuery path proves this). This lets
     // kernels share a device-math library across classes (Stage 11).
     MethodPtr resolveDeviceMethod(
             const std::string& recv, const std::string& name,
@@ -4943,12 +4977,12 @@ private:
             simpleSelf = q.substr(q.find_last_of('.') + 1);
             if (recv.empty() || recv == simpleSelf) {
                 if (auto m = findIn(cls)) return m;
-                if (recv.empty()) return nullptr;  // unqualified ⇒ same-class only
+                if (recv.empty()) return nullptr;  // unqualified Ã¢ÂÂ same-class only
             }
         }
         if (recv.empty()) return nullptr;
         // Cross-class `OtherClass.helper(...)`. Match a class whose simple (or
-        // canonical) name is `recv` AND that has the @Device method — scanning by
+        // canonical) name is `recv` AND that has the @Device method Ã¢ÂÂ scanning by
         // simple name + method presence sidesteps the canonicalMap's bare-name
         // last-writer-wins. (Skip the kernel's own class, handled above.)
         for (auto& kv : CajetaType::getCanonicalMap()) {
@@ -4964,7 +4998,7 @@ private:
 
     // Lower a @Device method to a device function (scalar params + scalar/void
     // return), cached. alwaysinline so every backend folds the call away. A
-    // nullptr cache entry means it's mid-lowering → a recursive call (rejected).
+    // nullptr cache entry means it's mid-lowering Ã¢ÂÂ a recursive call (rejected).
     llvm::Function* lowerDeviceFn(const MethodPtr& m) {
         auto it = deviceFns->find(m.get());
         if (it != deviceFns->end()) {
@@ -4990,7 +5024,7 @@ private:
             if (!retTy) retTy = deviceVectorType(rt, ctx);     // Vector<T,N>-returning
             // S8: a value-type-returning @Device operator returns its flat device
             // struct by value (built by lowerNewValueType, returned as an SSA
-            // aggregate — no pointer, SPIR-V-logical-safe).
+            // aggregate Ã¢ÂÂ no pointer, SPIR-V-logical-safe).
             if (!retTy && rt->isValueType())
                 retTy = deviceStructInfo(rt, ctx).type;
         }
@@ -5034,9 +5068,9 @@ private:
     // method, matched by name + arity. The receiver class name comes from either
     // the eagerly-parsed receiverType (which, parsed with a null module, may be
     // an unresolved placeholder rather than the registered CajetaClass) or the
-    // receiverExpr identifier — so we extract the NAME and resolve the real class
+    // receiverExpr identifier Ã¢ÂÂ so we extract the NAME and resolve the real class
     // through the canonicalMap (the same scan resolveDeviceMethod uses). A
-    // non-class / unnameable receiver is a true bound-instance ref → rejected.
+    // non-class / unnameable receiver is a true bound-instance ref Ã¢ÂÂ rejected.
     MethodPtr resolveCallableCandidate(
             const std::shared_ptr<MethodReferenceExpression>& mr, unsigned arity) {
         if (mr->getIsCtor())
@@ -5075,7 +5109,7 @@ private:
         return nullptr;  // unreachable (unsupported throws)
     }
 
-    // Register a function-typed device local — both surface forms feed the same
+    // Register a function-typed device local Ã¢ÂÂ both surface forms feed the same
     // tag mechanism (see emitCallableDispatch). The form is decided by the
     // initializer shape:
     //   table:     ((T)->R)[] ops = { A::f, B::g, ... };  (tag = call-site index)
@@ -5090,7 +5124,7 @@ private:
             unsupported("function-typed local '" + nm + "' needs an initializer "
                         "(a @Device-static dispatch set)");
         if (auto arrInit = std::dynamic_pointer_cast<ArrayInitializer>(init)) {
-            // `{ A::f, B::g, ... }` — an ArrayInitializer of method references;
+            // `{ A::f, B::g, ... }` Ã¢ÂÂ an ArrayInitializer of method references;
             // each child is a VariableInitializer wrapping the ref expression.
             c.isTable = true;
             for (auto& child : arrInit->getChildren()) {
@@ -5109,7 +5143,7 @@ private:
             if (c.candidates.empty())
                 unsupported("device dispatch table '" + nm + "' is empty");
         } else {
-            // Variable form: a single `A::f` reference — one candidate, tag 0.
+            // Variable form: a single `A::f` reference Ã¢ÂÂ one candidate, tag 0.
             // (Runtime re-selection on device is the table form, indexed by a
             // value; there is no mutable function-typed local on device.)
             if (init->getChildren().empty())
@@ -5128,14 +5162,14 @@ private:
                             "`((T)->R)[] ops = { A::f, B::g }` and index it");
             }
         }
-        // Lower every candidate up front (cached alwaysinline device fns) — this
+        // Lower every candidate up front (cached alwaysinline device fns) Ã¢ÂÂ this
         // also validates each body now rather than at a (possibly nested) call.
         for (auto& m : c.candidates) lowerDeviceFn(m);
         callables[nm] = std::move(c);
     }
 
     // Lower a call through a bounded device callable: an if/else-if chain of
-    // DIRECT calls keyed by the i32 tag. No function-pointer / indirect call —
+    // DIRECT calls keyed by the i32 tag. No function-pointer / indirect call Ã¢ÂÂ
     // SPIR-V-legal and identical on every backend. An unmatched tag (index out
     // of range) is a defined no-op: the zero-initialized result slot is returned
     // (no trap, no UB).
@@ -5145,7 +5179,7 @@ private:
         llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
         if (tag->getType() != i32)
             tag = builder.CreateIntCast(tag, i32, /*isSigned=*/false);
-        // Lower the user args ONCE — shared across every dispatch arm.
+        // Lower the user args ONCE Ã¢ÂÂ shared across every dispatch arm.
         std::vector<llvm::Value*> rawArgs;
         rawArgs.reserve(args.size());
         for (auto& a : args) rawArgs.push_back(lowerExpr(a.expression));
@@ -5193,12 +5227,12 @@ private:
     // `a OP b` to the class's static @Device operator (or a comparison derived
     // from it) instead of the native scalar/vector path. Reuses the SAME S6
     // dispatch/derivation policy as the host (opdispatch::dispatchBinaryOperator)
-    // — only the resolve+invoke and negate callbacks are device-specific: resolve
+    // Ã¢ÂÂ only the resolve+invoke and negate callbacks are device-specific: resolve
     // the operator method, require @Device (pure), lower it via lowerDeviceFn
     // (alwaysinline aggregate-param/scalar-return helper), and emit the call.
     // Returns nullptr (fall through) when the LHS isn't a value type or no
     // matching @Device operator exists. v1 covers operators that RETURN a scalar
-    // (e.g. ==, < and their derivations) — a value-type-returning device operator
+    // (e.g. ==, < and their derivations) Ã¢ÂÂ a value-type-returning device operator
     // (aggregate construction + return inside a kernel) is the next S8 increment.
     // The @ValueType of an operand expression in the device lowerer: a bare
     // value-type-typed name (param/local, tracked in valueTypeNames) or the AST
@@ -5255,7 +5289,7 @@ private:
             opdispatch::dispatchBinaryOperator(op, tryInvoke, negate);
         if (disp.first) return disp.second;
         // The LHS IS a value type but no @Device operator (direct or derived)
-        // applied — falling through to the scalar path would emit an ICmp on the
+        // applied Ã¢ÂÂ falling through to the scalar path would emit an ICmp on the
         // aggregate and crash. Surface a clear diagnostic instead.
         unsupported("no @Device 'operator" +
                     std::string(opdispatch::binaryOpSymbol(op)) +
@@ -5326,7 +5360,7 @@ private:
 
     llvm::Value* lowerBinaryOp(const std::shared_ptr<BinaryOpExpression>& bin) {
         BinaryOp op = bin->getBinaryOp();
-        // && / || evaluate lazily — control flow, not eager operands.
+        // && / || evaluate lazily Ã¢ÂÂ control flow, not eager operands.
         if (op == BINARY_OP_LOGAND || op == BINARY_OP_LOGOR)
             return lowerLogical(bin);
         ExpressionPtr le = exprChild(bin, 0), re = exprChild(bin, 1);
@@ -5341,13 +5375,13 @@ private:
         if (llvm::Value* qm = lowerQuaternionMul(le, re, op))
             return qm;
         // S8: a @ValueType operand dispatches to the (pure) @Device operator on
-        // its class — emitted as an alwaysinline call the backend inliner folds
+        // its class Ã¢ÂÂ emitted as an alwaysinline call the backend inliner folds
         // to flat SSA. Falls through to the native scalar/vector path otherwise.
         if (llvm::Value* vt = lowerValueTypeBinaryOp(bin, le, re, op))
             return vt;
         llvm::Value* l = lowerExpr(le);
         llvm::Value* r = lowerExpr(re);
-        // The LHS drives the operation's signedness — matches the language's
+        // The LHS drives the operation's signedness Ã¢ÂÂ matches the language's
         // "lhs type is the result type" rule (BinaryOpExpression::resolveTypes)
         // and keeps an unsigned `i >> 2` a logical shift despite the literal.
         bool sign = exprSigned(le);
@@ -5377,10 +5411,10 @@ private:
     }
 
     // Core binary op on two lowered values, after width/fp unification.
-    // bfloat16 is a STORAGE format — native bfloat arithmetic is a vendor
+    // bfloat16 is a STORAGE format Ã¢ÂÂ native bfloat arithmetic is a vendor
     // extension (SPV_INTEL_bfloat16_arithmetic), absent on most GPUs. So compute
     // bfloat in f32 (widen / op / narrow), the standard "bf16 storage, f32
-    // compute" model — portable across CPU/Vulkan/AMD. float16 needs no such
+    // compute" model Ã¢ÂÂ portable across CPU/Vulkan/AMD. float16 needs no such
     // treatment (native f16 arithmetic is portable). Comparisons (i1 result) are
     // not narrowed.
     llvm::Value* applyBinOp(BinaryOp op, llvm::Value* l, llvm::Value* r,
@@ -5403,11 +5437,127 @@ private:
         return applyBinOpInner(op, l, r, sign, fpHint);
     }
 
+    // The byte value of a splat constant vector, or -1 when `v` is not one.
+    static int splatByte(llvm::Value* v) {
+        auto* c = llvm::dyn_cast<llvm::Constant>(v);
+        if (!c) return -1;
+        llvm::Constant* s = c->getSplatValue(/*AllowPoison=*/true);
+        auto* ci = llvm::dyn_cast_or_null<llvm::ConstantInt>(s);
+        if (!ci) return -1;
+        return (int) (ci->getZExtValue() & 0xFF);
+    }
+
+    // `<N x i8>` viewed as `<N/4 x i32>` (N a multiple of 4), or nullptr.
+    llvm::FixedVectorType* wordViewOf(llvm::Type* t) {
+        auto* vt = llvm::dyn_cast<llvm::FixedVectorType>(t);
+        if (!vt || !vt->getElementType()->isIntegerTy(8)) return nullptr;
+        unsigned n = vt->getNumElements();
+        if (n % 4 != 0) return nullptr;
+        return llvm::FixedVectorType::get(llvm::Type::getInt32Ty(ctx), n / 4);
+    }
+
+    llvm::Value* wordMask(llvm::FixedVectorType* wt, unsigned byteMask) {
+        uint32_t rep = byteMask * 0x01010101u;
+        return llvm::ConstantVector::getSplat(
+            wt->getElementCount(),
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), rep));
+    }
+
+    // Byte-vector bitwise ops in WORD form (kernel-byte-vector-lowering
+    // spec Â§2). LLVM's amdgpu backend legalizes a `<16 x i8>` and/or/shift
+    // one byte at a time â sixteen v_and_b16 for one `and` â and cajeta-llm
+    // unit 60 measured its Q4_K mat-vec ALU-bound on exactly that. The same
+    // bytes come out of a `<4 x i32>` op: bitwise ops are element-agnostic,
+    // and a constant byte shift is a word shift plus a replicated mask.
+    // Returns nullptr when the shape is not one of these (the caller emits
+    // the byte op as before). An ARITHMETIC right shift stays per-byte â
+    // a word-form sign extension costs more than the per-byte form â
+    // except in the `(v >> c) & k` shape, where every sign-extended bit is
+    // discarded by k and the logical word form is exact.
+    // `CAJETA_XPU_NO_BYTE_WORDFORM=1` turns both rewrites off — the A/B
+    // arm for measuring them on a real kernel (KernelIsa counts, decode
+    // ms/tok) with ONE compiler binary, and the escape hatch if a backend
+    // ever mislowers the word view.
+    bool byteWordFormOff() {
+        static const bool off = [] {
+            const char* e = std::getenv("CAJETA_XPU_NO_BYTE_WORDFORM");
+            return e && *e && *e != '0';
+        }();
+        return off;
+    }
+
+    llvm::Value* byteVectorWordForm(BinaryOp op, llvm::Value* l, llvm::Value* r,
+                                    bool sign) {
+        if (byteWordFormOff()) return nullptr;
+        llvm::FixedVectorType* wt = wordViewOf(l->getType());
+        if (!wt || r->getType() != l->getType()) return nullptr;
+        auto toWords = [&](llvm::Value* v) {
+            return builder.CreateBitCast(v, wt, "bv.words");
+        };
+        auto toBytes = [&](llvm::Value* w) {
+            return builder.CreateBitCast(w, l->getType(), "bv.bytes");
+        };
+        auto shiftRightWords = [&](llvm::Value* w, int c) {
+            if (c == 0) return w;
+            return builder.CreateAnd(
+                builder.CreateLShr(w, llvm::ConstantVector::getSplat(
+                    wt->getElementCount(),
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), c))),
+                wordMask(wt, 0xFFu >> c), "bv.lshr");
+        };
+        switch (op) {
+            case BINARY_OP_BITAND: {
+                // Peephole: `(v >> c) & k` on a signed vector, k below bit
+                // 8-c â the masked arithmetic shift. Emit the logical word
+                // form from the shift's operand and drop the dead ashr.
+                int k = splatByte(r);
+                auto* sh = llvm::dyn_cast<llvm::BinaryOperator>(l);
+                if (sh && sh->getOpcode() == llvm::Instruction::AShr && k >= 0) {
+                    int c = splatByte(sh->getOperand(1));
+                    if (c >= 1 && c <= 7 && k < (1 << (8 - c))) {
+                        llvm::Value* src = sh->getOperand(0);
+                        if (sh->use_empty()) sh->eraseFromParent();
+                        llvm::Value* w = shiftRightWords(toWords(src), c);
+                        return toBytes(builder.CreateAnd(w, wordMask(wt, (unsigned) k),
+                                                         "bv.and"));
+                    }
+                }
+                return toBytes(builder.CreateAnd(toWords(l), toWords(r), "bv.and"));
+            }
+            case BINARY_OP_BITOR:
+                return toBytes(builder.CreateOr(toWords(l), toWords(r), "bv.or"));
+            case BINARY_OP_BITXOR:
+                return toBytes(builder.CreateXor(toWords(l), toWords(r), "bv.xor"));
+            case BINARY_OP_SHIFTLEFT: {
+                int c = splatByte(r);
+                if (c < 0 || c > 7) return nullptr;
+                if (c == 0) return l;
+                llvm::Value* w = builder.CreateShl(toWords(l), llvm::ConstantVector::getSplat(
+                    wt->getElementCount(),
+                    llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), c)));
+                return toBytes(builder.CreateAnd(w, wordMask(wt, (0xFFu << c) & 0xFFu),
+                                                 "bv.shl"));
+            }
+            case BINARY_OP_SHIFTRIGHT:
+                if (sign) return nullptr;       // ashr: per-byte (see above)
+                [[fallthrough]];
+            case BINARY_OP_USHIFTRIGHT: {
+                int c = splatByte(r);
+                if (c < 0 || c > 7) return nullptr;
+                if (c == 0) return l;
+                return toBytes(shiftRightWords(toWords(l), c));
+            }
+            default:
+                return nullptr;
+        }
+    }
+
     llvm::Value* applyBinOpInner(BinaryOp op, llvm::Value* l, llvm::Value* r,
                                  bool sign, bool /*fpHint*/) {
         // isFPOrFPVectorTy so element-wise `<N x float>` arithmetic routes to
-        // CreateFAdd/… (a bare isFloatingPointTy is false for a vector type).
+        // CreateFAdd/Ã¢ÂÂ¦ (a bare isFloatingPointTy is false for a vector type).
         bool fp = l->getType()->isFPOrFPVectorTy();
+        if (llvm::Value* w = byteVectorWordForm(op, l, r, sign)) return w;
         switch (op) {
             case BINARY_OP_ADD: return fp ? builder.CreateFAdd(l, r) : builder.CreateAdd(l, r);
             case BINARY_OP_SUB: return fp ? builder.CreateFSub(l, r) : builder.CreateSub(l, r);
@@ -5432,7 +5582,7 @@ private:
         }
     }
 
-    // Bring two scalars to a common type: fp dominates int (int→fp); among
+    // Bring two scalars to a common type: fp dominates int (intÃ¢ÂÂfp); among
     // ints, extend the narrower to the wider (sext if signed, else zext).
     void unifyOperands(llvm::Value*& l, llvm::Value*& r, bool sign) {
         llvm::Type* lt = l->getType();
@@ -5455,7 +5605,7 @@ private:
             }
             return;
         }
-        // Same-shape here (scalar↔scalar or same-length vector↔vector); test
+        // Same-shape here (scalarÃ¢ÂÂscalar or same-length vectorÃ¢ÂÂvector); test
         // FP-ness and integer width on the SCALAR/element type so same-length
         // vectors with differing element types are unified element-wise rather
         // than tripping getIntegerBitWidth() on a vector type.
@@ -5526,7 +5676,7 @@ private:
             }
         }
         // Composite forms: kernel bodies aren't host-type-resolved, so a nested
-        // expression has no signedness map key. Recurse — a computed value is
+        // expression has no signedness map key. Recurse Ã¢ÂÂ a computed value is
         // signed if either operand is (else `(a-b) < 0` lowers to ICmpULT, an
         // always-false unsigned compare, and `(a+b)/2` / `sum >> k` pick UDiv /
         // LShr). Unary forms carry their operand's signedness (`-x` is signed).
@@ -5610,7 +5760,7 @@ llvm::Value* LoweringTarget::bufferElementPtr(llvm::IRBuilderBase& b,
                                               llvm::Value* base,
                                               llvm::Type* elemTy,
                                               llvm::Value* index) {
-    // addrspace-preserving GEP — the base pointer carries its address space
+    // addrspace-preserving GEP Ã¢ÂÂ the base pointer carries its address space
     // (1 for global buffers, 3 for shared globals); correct on NVPTX/AMDGPU.
     return b.CreateGEP(elemTy, base, {index}, "idx");
 }
@@ -5650,7 +5800,7 @@ llvm::Value* LoweringTarget::bufferArrayElement(llvm::IRBuilderBase& b,
                                                 llvm::Type* /*elemTy*/,
                                                 llvm::Value* descIndex) {
     // Pointer backends (CPU / NVPTX / AMDGPU): `arrayBase` points to the
-    // [i64 count, i64 h0 …] handle array the launch marshalled. bufs[idx] is the
+    // [i64 count, i64 h0 Ã¢ÂÂ¦] handle array the launch marshalled. bufs[idx] is the
     // (1 + idx)-th handle reinterpreted as a device pointer; the inner [i] then
     // GEPs it via the default bufferElementPtr. (Vulkan overrides to bind a
     // descriptor-array element instead.)
@@ -5874,7 +6024,7 @@ llvm::AtomicOrdering LoweringTarget::casFailureOrdering(
 }
 
 // Default scoped memory fence: a system-scope `fence` at `order` (Default/Relaxed
-// → AcquireRelease, since a relaxed fence is a no-op). On CPU (the oracle)
+// Ã¢ÂÂ AcquireRelease, since a relaxed fence is a no-op). On CPU (the oracle)
 // work-items in a workgroup run sequentially under loop fission, so an acq_rel
 // fence is the correct, conservative ordering. GPU backends override.
 void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
@@ -5887,7 +6037,7 @@ void LoweringTarget::memoryFence(llvm::IRBuilderBase& b, llvm::Module& /*m*/,
 }
 
 // Default async global->shared copy: a SYNCHRONOUS thread-strided copy (the same
-// structure as CoopStage.panel's contiguous case) — for (e = tid; e < count;
+// structure as CoopStage.panel's contiguous case) Ã¢ÂÂ for (e = tid; e < count;
 // e += nthreads) dst[dstOffset+e] = src[srcOffset+e]. Bit-identical to the native
 // path, just no compute/transfer overlap; CPU runs it under loop fission, so each
 // work-item copies its own stripe. AMDGPU overrides with global_load_lds.
@@ -5936,7 +6086,7 @@ void LoweringTarget::asyncWait(llvm::IRBuilderBase&, llvm::Module&,
                                llvm::Value*) {}
 
 // Default scheduling hints: no-ops. A scheduling hint is an optimization
-// directive — omitting it never changes the kernel's result — so every backend
+// directive Ã¢ÂÂ omitting it never changes the kernel's result Ã¢ÂÂ so every backend
 // without a native scheduling intrinsic (NVPTX/SPIR-V/CPU) simply drops it.
 // AMDGPU overrides each with the matching amdgcn intrinsic.
 void LoweringTarget::schedBarrier(llvm::IRBuilderBase&, llvm::Module&,
@@ -5971,7 +6121,7 @@ void LoweringTarget::devicePrintf(llvm::IRBuilderBase&, llvm::Module&,
         "hostcall / Vulkan DebugPrintf deferred)", "XPU-N01");
 }
 
-// Default specialization-constant read — used by the device-baking backends
+// Default specialization-constant read Ã¢ÂÂ used by the device-baking backends
 // (NVPTX + AMDGPU; CPU and Vulkan override this). Stage 11/12 host override:
 // read the value from a pair of constant-memory globals the runtime sets per
 // launch (`__cajeta_xpu_spec_count` + `__cajeta_xpu_spec_values[]`, addrspace 4),
@@ -5980,10 +6130,10 @@ void LoweringTarget::devicePrintf(llvm::IRBuilderBase&, llvm::Module&,
 //
 // SAFE BY DEFAULT: the globals are zero-initialized, so if the runtime never
 // sets them (no host override, or a backend whose runtime copy isn't wired yet)
-// `count` is 0 and every read returns the baked default — byte-identical to the
+// `count` is 0 and every read returns the baked default Ã¢ÂÂ byte-identical to the
 // pre-override behavior, never garbage. The loads are volatile so the optimizer
 // can't fold the zero initializer back in. The runtime overwrites the globals
-// via cuModuleGetGlobal/hipModuleGetGlobal + a host→device copy keyed on the
+// via cuModuleGetGlobal/hipModuleGetGlobal + a hostÃ¢ÂÂdevice copy keyed on the
 // fixed symbol names. (Vulkan binds a genuine OpSpecConstant; this is the
 // device-baking analog. On-device honoring is gated on the per-launch copy.)
 namespace {
@@ -6019,7 +6169,7 @@ specConstantGlobals(llvm::Module& m) {
 // raw i32 word (the caller bitcasts to float for getf).
 llvm::Value* emitSpecConstantWordRead(llvm::IRBuilderBase& b, llvm::Module& m,
                                       unsigned slot, llvm::Value* defaultWord) {
-    if (slot >= kSpecMaxUserSlots) return defaultWord;   // out of range → default
+    if (slot >= kSpecMaxUserSlots) return defaultWord;   // out of range Ã¢ÂÂ default
     llvm::LLVMContext& ctx = m.getContext();
     auto* i32 = llvm::Type::getInt32Ty(ctx);
     auto [countG, valsG] = specConstantGlobals(m);
@@ -6044,7 +6194,7 @@ llvm::Value* LoweringTarget::specConstantI32(llvm::IRBuilderBase& b,
     return emitSpecConstantWordRead(b, m, slot, def);
 }
 
-// f32 companion — same constant-memory read, on the raw word: default packed as
+// f32 companion Ã¢ÂÂ same constant-memory read, on the raw word: default packed as
 // its bit pattern, the selected word bitcast back to float.
 llvm::Value* LoweringTarget::specConstantF32(llvm::IRBuilderBase& b,
                                              llvm::Module& m, unsigned slot,
@@ -6058,7 +6208,7 @@ llvm::Value* LoweringTarget::specConstantF32(llvm::IRBuilderBase& b,
     return b.CreateBitCast(word, f32, "spec.f32");
 }
 
-// Default float atomic: a system-scope atomicrmw at `order` (Default → relaxed/
+// Default float atomic: a system-scope atomicrmw at `order` (Default Ã¢ÂÂ relaxed/
 // Monotonic). Selects the native global FP atomic on AMDGPU/NVPTX and a
 // lock/cmpxchg on CPU. Vulkan overrides (Device scope + AcquireRelease default).
 llvm::Value* LoweringTarget::atomicFloatRMW(
@@ -6104,7 +6254,7 @@ llvm::Value* LoweringTarget::atomicIntRMW(
                                               llvm::AtomicOrdering::Monotonic));
 }
 
-// Default compare-exchange: a cmpxchg at `order` (Default → relaxed); returns the
+// Default compare-exchange: a cmpxchg at `order` (Default Ã¢ÂÂ relaxed); returns the
 // OLD value (element 0 of the {value, success} aggregate). Vulkan overrides scope.
 llvm::Value* LoweringTarget::atomicCompareExchange(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* ptr,
@@ -6126,7 +6276,7 @@ llvm::Value* LoweringTarget::readClock(llvm::IRBuilderBase& b,
     return b.CreateCall(f, {}, "clock");
 }
 
-// Ray query (SPV_KHR_ray_query) is Vulkan-only — only SpirvTarget overrides
+// Ray query (SPV_KHR_ray_query) is Vulkan-only Ã¢ÂÂ only SpirvTarget overrides
 // these. The defaults reject a RayQuery in a kernel lowered for a backend that
 // has no ray-query support.
 static cajeta::Exception rayQueryUnsupported(const char* backend) {
@@ -6252,7 +6402,7 @@ llvm::Value* LoweringTarget::coopMatrixEpilogueAccum(
 
 llvm::Type* LoweringTarget::bufferParamType(llvm::Module& m,
                                             llvm::Type* /*elemTy*/) {
-    // NVPTX/AMDGPU: a buffer base is a global (addrspace 1) pointer — the same
+    // NVPTX/AMDGPU: a buffer base is a global (addrspace 1) pointer Ã¢ÂÂ the same
     // type createKernel gives a kernel buffer param, so a helper arg matches it.
     return llvm::PointerType::get(m.getContext(), kGlobalAS);
 }
@@ -6266,7 +6416,7 @@ llvm::Type* LoweringTarget::textureParamType(llvm::Module& m) {
 // Admit the kernel parameters: Buffer<T>/arrays carry an element type,
 // primitives a scalar type. This classification is backend-neutral; HOW the
 // params become a signature is the backend's call (target.createKernel /
-// materializeParam) — the Vulkan fork.
+// materializeParam) Ã¢ÂÂ the Vulkan fork.
 static std::vector<LoweringTarget::KernelParam> collectParams(
         const MethodPtr& method, llvm::LLVMContext& ctx) {
     std::vector<LoweringTarget::KernelParam> params;
@@ -6278,7 +6428,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             isTexture2DArrayType(t) || isTextureCubeType(t)) {
             // Texture2D<T> / Texture3D<T> (Item 8): a sampled-image handle. `type`
             // is the texel scalar T, read off the type argument exactly like
-            // Buffer<T> — float for the float/UNORM/half formats (the default
+            // Buffer<T> Ã¢ÂÂ float for the float/UNORM/half formats (the default
             // T = float32), i32 for the raw-integer formats (T = int32/uint32;
             // `isSigned` distinguishes them). The backend carries the handle itself
             // (a ptr on CPU, a descriptor on Vulkan). isTexture routes createKernel/
@@ -6304,7 +6454,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
                           : (isTextureCubeType(t) ? 5 : 2)));
             params.push_back(kp);
         } else if (isImageType(t)) {
-            // Image2D (writable images): the write twin of Texture2D — a 2-D
+            // Image2D (writable images): the write twin of Texture2D Ã¢ÂÂ a 2-D
             // STORAGE_IMAGE handle. `type` is the texel scalar (f32); the backend
             // carries the handle (a descriptor on Vulkan). isImage routes
             // createKernel/materializeParam and the `.store()` lowering.
@@ -6315,7 +6465,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
         } else if (isSamplerType(t)) {
             // Sampler (Item 8): filter/address descriptor. Carried by value as
             // the {i32 filterMode, i32 addressMode} struct (the same shape the
-            // host marshaller packs) — NOT the by-value POD path, so it keeps a
+            // host marshaller packs) Ã¢ÂÂ NOT the by-value POD path, so it keeps a
             // distinct kind for the Vulkan descriptor fork. deviceStructInfo on
             // Sampler yields exactly {i32,i32}.
             DeviceStructInfo si = deviceStructInfo(t, ctx);
@@ -6339,7 +6489,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
                               /*isAccelStruct=*/true});
         } else if (auto arr = std::dynamic_pointer_cast<CajetaArray>(t);
                    arr && isBufferType(arr->getElementType())) {
-            // Buffer<T>[] — a bindless descriptor ARRAY of buffers (`bufs[idx][i]`).
+            // Buffer<T>[] Ã¢ÂÂ a bindless descriptor ARRAY of buffers (`bufs[idx][i]`).
             // The per-buffer element type T is read off the Buffer<T> element
             // exactly as the lone Buffer<T> case below; isBufferArray adds the
             // outer descriptor-array binding (one binding, descriptorCount = N).
@@ -6391,7 +6541,7 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             params.push_back({p->getName(), /*isBuffer=*/false, vt,
                               /*isSigned=*/false});
         } else if (DeviceStructInfo si = deviceStructInfo(t, ctx); si.type) {
-            // POD struct by value (Item 7) — an aggregate kernel param. It rides
+            // POD struct by value (Item 7) Ã¢ÂÂ an aggregate kernel param. It rides
             // the non-buffer path: createKernel emits it by value, lowerBody
             // gives it an entry-alloca slot, and field reads GEP into that slot.
             params.push_back({p->getName(), /*isBuffer=*/false, si.type,
@@ -6400,9 +6550,9 @@ static std::vector<LoweringTarget::KernelParam> collectParams(
             unsupported("kernel parameter type '" +
                         (t ? t->toCanonical() : std::string("?")) + "'");
         }
-        // @PushConstant (cajeta-gfx §4.b-rest): mark a by-value param so a graphics
+        // @PushConstant (cajeta-gfx ÃÂ§4.b-rest): mark a by-value param so a graphics
         // stage routes it through its single PushConstant block instead of a
-        // per-vertex interface variable. Only by-value params qualify — a resource
+        // per-vertex interface variable. Only by-value params qualify Ã¢ÂÂ a resource
         // (Buffer/Texture/Image/Sampler/AccelStruct) has no push-constant meaning,
         // so the flag is left off there (the annotation is silently inert on them in
         // v1). Backend-neutral here; only SpirvGraphicsTarget consumes the flag.
@@ -6436,7 +6586,7 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
             // The AccelStruct binding encodes the native impl (accelImpl() ==
             // VulkanNative): the noun is bound as an acceleration-structure
             // descriptor. The software-BVH impl binds the AS as a plain buffer
-            // base instead — but that only occurs on CPU (which never reaches this
+            // base instead Ã¢ÂÂ but that only occurs on CPU (which never reaches this
             // Vulkan kparams/launch path), so impl == backend makes this correct
             // today. Selecting the kind per-impl is the heuristic brick's change
             // (when one backend can build either); the launch asserts the match.
@@ -6447,7 +6597,7 @@ std::vector<KernelParamInfo> collectKernelParamInfo(const MethodPtr& method,
             kind = KernelParamInfo::Buffer;
         } else if (p.type) {
             // POD struct: the marshalled by-value footprint under the HOST
-            // module's real DataLayout — must match how the launch site packs the
+            // module's real DataLayout Ã¢ÂÂ must match how the launch site packs the
             // argv (an empty DataLayout under-sizes e.g. {i32,i64} to 12 vs 16, so
             // the runtime memcpy'd too few bytes and the device read past the
             // SSBO). Scalars: their byte width.
@@ -6479,7 +6629,7 @@ llvm::Value* LoweringTarget::waveRotate(llvm::IRBuilderBase& b, llvm::Module& m,
 
 // Base default for the exclusive prefix scan: a width-agnostic Hillis-Steele
 // scan over the existing wave seams, so NVPTX (and AMDGPU, once it overrides
-// waveShuffleDivergent → ds_bpermute) get the scan without a native op. Vulkan
+// waveShuffleDivergent Ã¢ÂÂ ds_bpermute) get the scan without a native op. Vulkan
 // overrides to OpGroupNonUniform ExclusiveScan; CPU to a VFABI variant.
 // Out-of-line because LoweringTarget.h only forward-declares IRBuilderBase.
 llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -6491,7 +6641,7 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
     auto combine = [&](llvm::Value* x, llvm::Value* y) {
         return op == WaveScanOp::Sum ? b.CreateAdd(x, y) : b.CreateMul(x, y);
     };
-    // Inclusive Hillis-Steele: acc[i] op= acc[i-d] for d = 1,2,4,… < width.
+    // Inclusive Hillis-Steele: acc[i] op= acc[i-d] for d = 1,2,4,Ã¢ÂÂ¦ < width.
     // The loop trip count is log2(width); width folds to a constant on the
     // backends that take this path (NVPTX warp size, CPU rewritten width).
     llvm::Function* fn = b.GetInsertBlock()->getParent();
@@ -6505,7 +6655,7 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
     accPhi->addIncoming(value, preheader);
     dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
     // pred = lane >= d; read acc from lane-d (clamped to a valid lane when
-    // pred is false — the result is discarded by the select).
+    // pred is false Ã¢ÂÂ the result is discarded by the select).
     llvm::Value* pred = b.CreateICmpUGE(lane, dPhi);
     llvm::Value* srcRaw = b.CreateSub(lane, dPhi);
     llvm::Value* src = b.CreateSelect(pred, srcRaw, lane);
@@ -6531,7 +6681,7 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
 
 // Float wave reduce default (10.12.38): a width-agnostic XOR butterfly on the
 // divergent shuffle. Every lane combines with its partner at distance d for
-// d = 1, 2, 4, … < width; after log2(width) rounds every lane holds the full
+// d = 1, 2, 4, Ã¢ÂÂ¦ < width; after log2(width) rounds every lane holds the full
 // reduction. The shuffle moves the f32 through i32 bit punning (the divergent
 // shuffle's carrier type). NVPTX takes this path (no float redux.sync before
 // sm_100); AMDGPU/Vulkan/CPU override to native forms.
@@ -6571,14 +6721,14 @@ llvm::Value* LoweringTarget::waveReduceF32(llvm::IRBuilderBase& b,
     return res;
 }
 
-// Quad (2x2) op defaults — width-agnostic forms built on the wave seams (see
+// Quad (2x2) op defaults Ã¢ÂÂ width-agnostic forms built on the wave seams (see
 // LoweringTarget.h). Out-of-line because the header only forward-declares
 // IRBuilderBase. NVPTX/AMDGPU/CPU take these; Vulkan overrides to native ops.
 // A quad is the four lanes [laneId & ~3 .. +3].
 llvm::Value* LoweringTarget::quadBroadcast(llvm::IRBuilderBase& b,
                                            llvm::Module& m, llvm::Value* value,
                                            llvm::Value* index) {
-    // Read from lane (laneId & ~3) + index — the `index`-th lane of this quad.
+    // Read from lane (laneId & ~3) + index Ã¢ÂÂ the `index`-th lane of this quad.
     llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
     llvm::Value* lane = waveLaneId(b, m);
     llvm::Value* quadBase =
@@ -6637,8 +6787,8 @@ llvm::Function* lowerKernel(const MethodPtr& method, llvm::Module& deviceModule,
     std::string kname = entryName.empty() ? method->getName() : entryName;
     llvm::Function* fn = target.createKernel(deviceModule, kname, params);
 
-    // @Occupancy override (kernel-occupancy-autotune §3): apply portable resource
-    // logistics before the §2 auto budgeting, so an explicit override wins.
+    // @Occupancy override (kernel-occupancy-autotune ÃÂ§3): apply portable resource
+    // logistics before the ÃÂ§2 auto budgeting, so an explicit override wins.
     if (auto attr = XpuKernelAttr::from(*method); attr && attr->hasOccupancy())
         target.applyOccupancy(fn, *attr);
 
