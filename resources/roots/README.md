@@ -1,6 +1,6 @@
 # Trust anchors
 
-`olla-root.pem` is the repository root public key embedded in the
+`olla-root.pub` is the repository root public key embedded in the
 toolchain (publisher-trust spec §3.1). A client verifies an organization
 key document against it with no operator action, the way an OS verifies
 against a shipped CA bundle.
@@ -37,4 +37,4 @@ delegated release key, which lives in olla as a Worker secret.
 A private key here would build, ship, and verify nothing — the failure is
 silent. `-----BEGIN PUBLIC KEY-----` is the only acceptable first line:
 
-    head -1 resources/roots/olla-root.pem
+    head -1 resources/roots/olla-root.pub

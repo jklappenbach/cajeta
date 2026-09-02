@@ -707,7 +707,7 @@ list(APPEND GENERATED_SOURCES ${CAJETA_RT_SRC})
 # configure_file re-runs cmake when the PEM changes, so the embedded copy
 # cannot drift from resources/roots/.
 set(CAJETA_ROOT_KEY_ID "olla-root-1")
-file(READ ${PROJECT_SOURCE_DIR}/resources/roots/olla-root.pem
+file(READ ${PROJECT_SOURCE_DIR}/resources/roots/olla-root.pub
      CAJETA_ROOT_KEY_PEM)
 set(CAJETA_EMBEDDED_ROOT ${CMAKE_CURRENT_BINARY_DIR}/EmbeddedRoot.cpp)
 configure_file(
