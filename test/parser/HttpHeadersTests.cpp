@@ -36,6 +36,22 @@ int32_t runI32(const std::string& body) {
     return fn();
 }
 
+int32_t runI32With(const std::string& members, const std::string& body) {
+    std::string src =
+        "package test;\n"
+        "import cajeta.io.net.Headers;\n"
+        "import cajeta.lang.String;\n"
+        "public final class D {\n"
+        + members +
+        "    public static int32 run() {\n"
+        "        " + body + "\n"
+        "    }\n"
+        "}\n";
+    auto jit = CajetaJit::compile(src, "test.D");
+    auto fn = jit->lookup<int32_t (*)()>("run");
+    return fn();
+}
+
 } // namespace
 
 // Case-insensitive get: a header added with mixed case is retrievable
@@ -245,5 +261,81 @@ TEST(HttpHeadersTests, setThenReadSurvivesAllocationChurn) {
         "if (!tag.equals(\"\\\"0123456789abcdef\\\"\")) return -2;\n"
         "if (!h.get(\"content-type\").equals(\"application/json\")) return -3;\n"
         "if (!h.get(\"vary\").equals(\"Accept-Encoding\")) return -4;\n"
+        "return 1;"), 1);
+}
+
+// A `#`-returning call that answers NULL, bound with `#=`, and then a scope
+// exit. `Headers.get` is declared `#String` and returns a genuine null for an
+// absent header, so this is an ordinary shape, not a corner: every `Optional`,
+// every lookup, every `find` that can miss reaches it.
+//
+// absentHeaderReturnsNull above compares the result inline and never binds it,
+// so this shape was uncovered. It PASSES, and that is the point of keeping it:
+// `__cajeta_drop_push` arms an entry with `active = 1` whatever `obj` is, and
+// the drop chain dump for a crash elsewhere showed `obj=(nil) ... active=1`,
+// which looked like a null-drop defect. Isolated in a standalone binary, a
+// null bound with `#=` leaves its scope cleanly — the nil entry is inert. The
+// crash that suggested otherwise was the PROBE's: a `"…" + inm` on a null
+// String, in instrumentation added to find it. Instrument first, then trust.
+TEST(HttpHeadersTests, absentHeaderBoundOwnedSurvivesScopeExit) {
+    EXPECT_EQ(runI32(
+        "Headers h = heap Headers();\n"
+        "h.add(\"Host\", \"example.test\");\n"
+        "String miss #= h.get(\"x-missing\");\n"
+        "if (miss != null) return -1;\n"
+        // A nested scope so the binding's drop entry is popped while the
+        // program is still running and can report, rather than at exit.
+        "int32 i = 0;\n"
+        "while (i < 4) {\n"
+        "    String inner #= h.get(\"x-also-missing\");\n"
+        "    if (inner != null) return -2;\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "if (!h.get(\"host\").equals(\"example.test\")) return -3;\n"
+        "return 1;"), 1);
+}
+
+// A stored header value must OUTLIVE the local it was set from.
+//
+// `add` stores `this.values[n] #= value.trim()`, and `#=` is mode-carrying:
+// when `trim()` has nothing to trim it hands back the receiver, so the store
+// records a BORROW of the CALLER's String and the slot never takes title. The
+// moment that caller's scope exits, every header set from a local is dangling.
+// Same shape for the key, through `toLowerCase()`.
+//
+// The helper is what makes this visible: setting and reading inside one scope
+// passes either way, because freed memory still holds the right bytes. It has
+// to be set in a scope that ENDS, and read after something reuses the memory.
+//
+// Measured through cajeta-http: `ETag.apply` hashes a body into a local `tag`,
+// calls `setHeader("ETag", tag)`, returns the response — and the caller's very
+// next read of that header died with `uncaught exception (value=0x3)`.
+//
+// IT PASSES HERE, AND THE EXE DOES NOT. A `--emit=exe` binary running the
+// identical shape throws on the read after the stamping scope returns, every
+// time; this JIT harness survives it. So the harness cannot see this class of
+// defect, and a green run here is not evidence the shape is sound — reach for
+// a compiled binary when chasing a lifetime bug. The test stays as a guard and
+// as the record of that gap, not as the proof.
+TEST(HttpHeadersTests, storedValueOutlivesTheLocalItWasSetFrom) {
+    EXPECT_EQ(runI32With(
+        "    static #Headers stampThenLeave() {\n"
+        "        Headers h #= heap Headers();\n"
+        "        String v #= \"application/\" + \"json\" + \"; charset=utf-8\";\n"
+        "        String k #= \"Content-\" + \"Type\";\n"
+        "        h.set(k, v);\n"
+        "        return #h;\n"
+        "    }\n",
+        "Headers h #= D.stampThenLeave();\n"
+        "int32 i = 0;\n"
+        "while (i < 64) {\n"
+        "    Headers t = heap Headers();\n"
+        "    t.add(\"Filler-Name-Long-Enough\", \"filler-value-long-enough-here\");\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "String got #= h.get(\"content-type\");\n"
+        "if (got == null) return -1;\n"
+        "if (!got.equals(\"application/json; charset=utf-8\")) return -2;\n"
+        "if (!h.nameAt(0).equals(\"content-type\")) return -3;\n"
         "return 1;"), 1);
 }
