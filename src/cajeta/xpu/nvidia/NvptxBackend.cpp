@@ -10,7 +10,10 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
+#include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -45,6 +48,105 @@ void ensureTargetsInitialized() {
     });
 }
 
+// Locate NVIDIA's libdevice bitcode. Honors CUDA_PATH, then the canonical
+// /usr/local/cuda symlink, then any versioned sibling — newest last-wins so a
+// box with several toolkits installed picks the highest. Empty if none has it.
+//
+// This is the NVPTX twin of findRocmBitcodeDir(): AMD has resolved __ocml_*
+// out of ocml.bc since B2, and NVPTX emitted __nv_* calls with a comment
+// promising the same ("linked at cubin time") that nothing ever performed.
+std::string findLibdevice() {
+    auto has = [](const std::string& p) { return llvm::sys::fs::exists(p); };
+    auto probe = [&](const std::string& root) -> std::string {
+        std::string p = root + "/nvvm/libdevice/libdevice.10.bc";
+        return has(p) ? p : std::string{};
+    };
+    if (const char* cp = std::getenv("CUDA_PATH")) {
+        if (std::string p = probe(cp); !p.empty()) return p;
+    }
+    if (std::string p = probe("/usr/local/cuda"); !p.empty()) return p;
+    // Versioned installs, e.g. /usr/local/cuda-13.3. Compare NUMERICALLY, not
+    // lexicographically: "cuda-9.0" sorts above "cuda-13.3" as text, which
+    // would select the oldest toolkit on a box that has both.
+    std::error_code ec;
+    std::string best;
+    long bestMajor = -1, bestMinor = -1;
+    for (llvm::sys::fs::directory_iterator it("/usr/local", ec), end;
+         it != end && !ec; it.increment(ec)) {
+        llvm::StringRef d = llvm::StringRef(it->path());
+        size_t at = d.rfind("/cuda-");
+        if (at == llvm::StringRef::npos) continue;
+        llvm::StringRef ver = d.substr(at + 6);          // "13.3"
+        long major = 0, minor = 0;
+        auto [majStr, rest] = ver.split('.');
+        if (majStr.getAsInteger(10, major)) continue;    // non-numeric -> skip
+        if (!rest.empty()) rest.getAsInteger(10, minor); // absent minor -> 0
+        if (probe(d.str()).empty()) continue;
+        if (major > bestMajor || (major == bestMajor && minor > bestMinor)) {
+            bestMajor = major; bestMinor = minor; best = d.str();
+        }
+    }
+    return best.empty() ? std::string{} : probe(best);
+}
+
+// True if `m` references any *declaration* whose name starts with `prefix`.
+bool referencesDeviceLib(llvm::Module& m, const char* prefix) {
+    for (llvm::Function& fn : m)
+        if (fn.isDeclaration() && fn.getName().starts_with(prefix))
+            return true;
+    return false;
+}
+
+// Link libdevice into `m`, but ONLY when a __nv_* declaration is outstanding:
+// the overwhelming majority of kernels call no transcendental and must not pay
+// for parsing a ~500 KB bitcode module. LinkOnlyNeeded pulls just the needed
+// function and its transitive deps, not the whole library.
+void linkCudaDeviceLibsIfNeeded(llvm::Module& m) {
+    if (!referencesDeviceLib(m, "__nv_")) return;
+
+    std::string path = findLibdevice();
+    if (path.empty()) {
+        llvm::errs() << "cajeta.xpu.nvidia: libdevice.10.bc not found (set "
+                        "CUDA_PATH); device transcendentals (Math.exp/cos/...) "
+                        "cannot be assembled — ptxas will report an unresolved "
+                        "__nv_* extern and the kernel is skipped\n";
+        return;
+    }
+    llvm::SMDiagnostic err;
+    std::unique_ptr<llvm::Module> lib =
+        llvm::parseIRFile(path, err, m.getContext());
+    if (!lib) {
+        llvm::errs() << "cajeta.xpu.nvidia: cannot parse " << path << ": "
+                     << err.getMessage() << "\n";
+        return;
+    }
+    // libdevice ships with its own (older) datalayout/triple; align both to the
+    // destination so the linker does not reject a benign mismatch. Same
+    // treatment linkRocmBitcode gives the ROCm device libs.
+    lib->setDataLayout(m.getDataLayout());
+    lib->setTargetTriple(m.getTargetTriple());
+    if (llvm::Linker::linkModules(m, std::move(lib),
+                                  llvm::Linker::Flags::LinkOnlyNeeded)) {
+        llvm::errs() << "cajeta.xpu.nvidia: failed to link " << path << "\n";
+        return;
+    }
+
+    // libdevice bodies are guarded by __nvvm_reflect("__CUDA_FTZ") and friends.
+    // NVPTX's codegen pipeline runs NVVMReflect, but it reads these module
+    // flags to decide what to fold to; without them the reflect calls can
+    // survive as unresolved externs — trading one ptxas failure for another.
+    // 0 = IEEE denormals preserved, matching the non-fast-math default the
+    // rest of the lowering assumes (@FastMath is applied per-instruction).
+    if (!m.getModuleFlag("nvvm-reflect-ftz"))
+        m.addModuleFlag(llvm::Module::Override, "nvvm-reflect-ftz", (uint32_t) 0);
+    if (!m.getModuleFlag("nvvm-reflect-prec-sqrt"))
+        m.addModuleFlag(llvm::Module::Override, "nvvm-reflect-prec-sqrt", (uint32_t) 1);
+    if (!m.getModuleFlag("nvvm-reflect-prec-div"))
+        m.addModuleFlag(llvm::Module::Override, "nvvm-reflect-prec-div", (uint32_t) 1);
+    if (!m.getModuleFlag("nvvm-reflect-approx-func"))
+        m.addModuleFlag(llvm::Module::Override, "nvvm-reflect-approx-func", (uint32_t) 0);
+}
+
 // Promote the kernel's entry-block allocas (loop counters, accumulators,
 // reassigned locals — see NvptxKernelLowering's mutable-slot model) into SSA
 // registers before PTX emission. addPassesToEmitFile runs ONLY the codegen
@@ -52,6 +154,9 @@ void ensureTargetsInitialized() {
 // load/store traffic. mem2reg alone is correct and cheap; running it is
 // purely a quality improvement (alloca PTX is valid for ptxas either way).
 void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
+    // Resolve libdevice transcendentals FIRST, so the merged bodies go through
+    // mem2reg and codegen with the kernel (the AmdgpuBackend ordering).
+    linkCudaDeviceLibsIfNeeded(m);
     llvm::PassBuilder pb(&tm);
     llvm::LoopAnalysisManager lam;
     llvm::FunctionAnalysisManager fam;

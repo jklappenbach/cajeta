@@ -414,6 +414,104 @@ TEST(XpuNvptxEmitTests, assemblesSaxpyPtxToCubin) {
     EXPECT_EQ(cubin[3], 'F');
 }
 
+// B2 increment 2 — a kernel calling a TRANSCENDENTAL must assemble, not merely
+// emit. NVPTX has no IEEE transcendental instruction, so `Math.exp` lowers
+// through the transcendental seam to libdevice's `__nv_expf` (and `Math.cos`
+// to `__nv_cosf`). Emitting PTX with that call always "worked"; what did not
+// is ptxas, which cannot resolve the symbol unless libdevice.10.bc is linked
+// into the device module first:
+//
+//     ptxas fatal : Unresolved extern function '__nv_expf'
+//
+// MEASURED consequence before this was fixed — cajeta-llm built for nvptx
+// dropped 22 kernels this way (19 __nv_expf, 3 __nv_cosf), taking softmax,
+// the GLU activation and RoPE with them. The engine then ran, printed "no
+// registered kernel ... to launch", and returned exit 0 with WRONG TOKENS.
+// The AMD twin of this link has existed since B2 (ocml.bc in AmdgpuBackend).
+//
+// Assembly is the assertion, not PTX text: PTX containing an unresolvable
+// extern is exactly what the broken state produced.
+TEST(XpuNvptxEmitTests, assemblesTranscendentalKernelToCubin) {
+    if (findPtxas().empty()) {
+        GTEST_SKIP() << "ptxas not found; skipping cubin assembly";
+    }
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.lang.Math;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void softmaxish(KernelBuffer<float32> y,\n"
+        "                                  KernelBuffer<float32> x, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) { y[i] = (float32) Math.exp(x[i]); }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto fn = findMethod(module->getStructures()["test.M"], "softmaxish");
+    ASSERT_NE(fn, nullptr);
+
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_transcendental_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(fn, deviceModule), nullptr);
+
+    // emitPtx runs optimizeDeviceModule, which is where the libdevice link
+    // belongs (the same place AmdgpuBackend links ocml).
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    EXPECT_EQ(ptx.find(".extern .func"), std::string::npos)
+        << "no unresolved extern should survive into PTX:\n" << ptx;
+
+    std::vector<uint8_t> cubin = assembleCubin(ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty())
+        << "ptxas could not assemble a Math.exp kernel — libdevice unlinked";
+    ASSERT_GE(cubin.size(), 4u);
+    EXPECT_EQ(cubin[0], 0x7Fu);
+    EXPECT_EQ(cubin[1], 'E');
+}
+
+// The cos twin: RoPE is the caller that made this matter, and it is a
+// DIFFERENT libdevice symbol, so a fix that resolved only __nv_expf would
+// still leave rotary embeddings unlowered.
+TEST(XpuNvptxEmitTests, assemblesCosKernelToCubin) {
+    if (findPtxas().empty()) {
+        GTEST_SKIP() << "ptxas not found; skipping cubin assembly";
+    }
+    auto src =
+        "package test;\n"
+        "import cajeta.xpu.KernelBuffer;\n"
+        "import cajeta.xpu.KernelThread;\n"
+        "import cajeta.lang.Math;\n"
+        "public class M {\n"
+        "    @Kernel\n"
+        "    public static void ropeish(KernelBuffer<float32> y,\n"
+        "                               KernelBuffer<float32> x, uint32 n) {\n"
+        "        uint32 i = KernelThread.globalIdX();\n"
+        "        if (i < n) { y[i] = (float32) Math.cos(x[i]); }\n"
+        "    }\n"
+        "}\n";
+    Compiler compiler;
+    auto module = compileForInspection(compiler, src, "test.M");
+    auto fn = findMethod(module->getStructures()["test.M"], "ropeish");
+    ASSERT_NE(fn, nullptr);
+    auto tm = createNvptxTargetMachine("sm_89");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_cos_device", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(fn, deviceModule), nullptr);
+    std::string ptx = emitPtx(deviceModule, *tm);
+    ASSERT_FALSE(ptx.empty());
+    std::vector<uint8_t> cubin = assembleCubin(ptx, "sm_89");
+    ASSERT_FALSE(cubin.empty())
+        << "ptxas could not assemble a Math.cos kernel — libdevice unlinked";
+}
+
 // Stage 9: scoped memory fences lower to NVPTX membar (a memory fence with NO
 // bar.sync — no thread rendezvous). Barrier.deviceMemory → membar.gl (global
 // scope); Barrier.workgroupMemory → membar.cta (CTA scope). Emit-only (◐): no
