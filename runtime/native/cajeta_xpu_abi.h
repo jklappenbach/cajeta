@@ -30,7 +30,7 @@ extern "C" {
  * argument; the parameter-kind enum is append-only (never renumbered). An
  * external caller checks __cajeta_xpu_abi_version() against this macro before
  * dispatching. */
-#define CAJETA_XPU_ABI_VERSION 2
+#define CAJETA_XPU_ABI_VERSION 3
 
 /* Per-kernel-parameter kind, in declaration order. The launch site packs one
  * argv slot per parameter; this kind tells the runtime how to read that slot
@@ -103,6 +103,22 @@ typedef struct CajetaXpuRawDevice {
     uint32_t threadsPerMP;          /* MaxThreadsPerMultiProcessor   (occupancy)*/
     uint32_t ldsBytesPerMP;         /* MaxSharedMemoryPerMultiprocessor         */
     int32_t  valid;                 /* 1 iff a real device arch was read        */
+    /* ABI v3 — Tier-B geometry (specs/device-geometry-parameterization-spec.md
+     * §2.2). APPENDED, never interleaved: an older consumer compiled against v2
+     * reads the prefix unchanged. Every field is 0 when this runtime did not
+     * report it; 0 means UNKNOWN and no consumer may substitute the other
+     * vendor's value for it. */
+    uint32_t ldsBytesPerBlock;      /* per-BLOCK shared cap   (CUDA attr 8)     */
+    uint32_t ldsBytesPerBlockOptin; /* raised cap, opt-in     (CUDA attr 97)    */
+    uint32_t maxBlocksPerMP;        /* resident block cap     (CUDA attr 106)   */
+    uint32_t l2CacheBytes;          /* L2 size                (CUDA attr 38)    */
+    uint32_t memoryClockKHz;        /* memory clock, kHz      (CUDA attr 36)    */
+    uint32_t memoryBusWidthBits;    /* bus width, bits        (CUDA attr 37)    */
+    uint32_t clockRateKHz;          /* core clock, kHz        (CUDA attr 13)    */
+    uint32_t maxGridDimX;           /* grid clamp             (CUDA attr 5)     */
+    uint32_t maxBlockDimX;          /* block clamp            (CUDA attr 2)     */
+    uint64_t totalGlobalMemBytes;   /* cuDeviceTotalMem                         */
+    int32_t  integrated;            /* 1 = APU                (CUDA attr 18)    */
 } CajetaXpuRawDevice;
 
 /* Query the active device into *out (zeroed first). Returns 1 on success; 0 if

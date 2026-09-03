@@ -93,9 +93,31 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
             m.maxWavesPerMP = props.threadsPerMP / m.waveSize;
         if (props.ldsBytesPerMP)      m.ldsBytesPerMP = props.ldsBytesPerMP;
         liveOccupancy = props.regsPerMP && props.threadsPerMP;
-        if (props.multiprocessorCount)
+        if (props.multiprocessorCount) {
+            m.mpCount = props.multiprocessorCount;
             m.cuCount = props.multiprocessorCount *
                         (archKnown ? m.cuPerMultiprocessor : 1u);
+        }
+        // Tier-B geometry passes through verbatim. Nothing is substituted when
+        // a runtime does not report a fact: 0 means "unknown", and every
+        // consumer is written to say so rather than to fall back to the other
+        // vendor's number.
+        m.ldsBytesPerBlock      = props.ldsBytesPerBlock;
+        m.ldsBytesPerBlockOptin = props.ldsBytesPerBlockOptin;
+        m.maxBlocksPerMP        = props.maxBlocksPerMP;
+        m.l2CacheBytes          = props.l2CacheBytes;
+        m.memoryClockKHz        = props.memoryClockKHz;
+        m.memoryBusWidthBits    = props.memoryBusWidthBits;
+        m.clockRateKHz          = props.clockRateKHz;
+        m.maxGridDimX           = props.maxGridDimX;
+        m.maxBlockDimX          = props.maxBlockDimX;
+        m.totalGlobalMemBytes   = props.totalGlobalMemBytes;
+        m.integrated            = props.integrated;
+        // An SM has 4 scheduler partitions; the default (8) is the RDNA WGP.
+        // Keyed on the arch spelling the CUDA path emits, so it needs no
+        // per-SKU table row — deliberately, since every NVIDIA part from
+        // Volta on has 4 and a table would invite one row per SKU.
+        if (m.archName.rfind("sm_", 0) == 0) m.simdsPerMP = 4;
     }
 
     m.queried = props.valid;
@@ -103,6 +125,43 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
     // either from a known arch row OR live attributes (the portable path).
     m.estimated = !(props.valid && (archKnown || liveOccupancy));
     return m;
+}
+
+// Spec §3 L2. AMD's per-block ceiling IS its per-MP budget, and HIP's per-block
+// ordinal is unverified from this box (spec Q1), so an unreported ceiling falls
+// back to the per-MP figure — which is the number AMD has always effectively
+// used. NVIDIA reports both and they differ by roughly half; reading
+// ldsBytesPerMP as "what one block may use" is right on AMD only by accident.
+unsigned ldsCeilingPerBlock(const DeviceModel& m) {
+    return m.ldsBytesPerBlock ? m.ldsBytesPerBlock : m.ldsBytesPerMP;
+}
+
+// Spec §3 L1 — the dispatch law. The device half is every SIMD on the part;
+// the kernel half is how many waves one block puts on one SIMD. Reproduces
+// gfx1151's frozen TARGET_BLOCKS = 80 at wavesPerBlock = 2 (20 WGP x 8 SIMD /
+// 2), and yields 256 on an sm_89 (128 SM x 4 / 2).
+//
+// This is a SATURATION target, not an occupancy maximum: Linear.cajeta:167
+// records that waves past this point evicted each other from L1/L2, so the
+// cache footprint — not residency — is what bounds it.
+//
+// 0 when the model was never queried or the kernel half is unknown. A guess
+// here would be indistinguishable from a measurement, which is precisely the
+// failure mode the gfx1151 defaults had.
+unsigned dispatchBlocks(const DeviceModel& m, unsigned wavesPerBlock) {
+    if (!m.queried || wavesPerBlock == 0) return 0;
+    if (m.mpCount == 0 || m.simdsPerMP == 0) return 0;
+    return (m.mpCount * m.simdsPerMP) / wavesPerBlock;
+}
+
+// Spec §3 L4. The reported memory clock is the DDR half-rate, so the factor of
+// two is the data rate, not a fudge: 2 x 10.501 GHz x 384/8 = 1008.096 GB/s,
+// which is NVIDIA's published 4090 figure exactly. Existing beside the measured
+// probe is the point — one number alone cannot tell a slow probe from a slow
+// part. 0.0 when either attribute is absent.
+double theoreticalGBps(unsigned busWidthBits, unsigned memClockKHz) {
+    if (busWidthBits == 0 || memClockKHz == 0) return 0.0;
+    return 2.0 * (double) memClockKHz * 1.0e3 * ((double) busWidthBits / 8.0) / 1.0e9;
 }
 
 DeviceModel queryLiveDeviceModel() {
@@ -118,6 +177,17 @@ DeviceModel queryLiveDeviceModel() {
             props.regsPerMP           = raw.regsPerMP;
             props.threadsPerMP        = raw.threadsPerMP;
             props.ldsBytesPerMP       = raw.ldsBytesPerMP;
+            props.ldsBytesPerBlock      = raw.ldsBytesPerBlock;
+            props.ldsBytesPerBlockOptin = raw.ldsBytesPerBlockOptin;
+            props.maxBlocksPerMP        = raw.maxBlocksPerMP;
+            props.l2CacheBytes          = raw.l2CacheBytes;
+            props.memoryClockKHz        = raw.memoryClockKHz;
+            props.memoryBusWidthBits    = raw.memoryBusWidthBits;
+            props.clockRateKHz          = raw.clockRateKHz;
+            props.maxGridDimX           = raw.maxGridDimX;
+            props.maxBlockDimX          = raw.maxBlockDimX;
+            props.totalGlobalMemBytes   = raw.totalGlobalMemBytes;
+            props.integrated            = raw.integrated != 0;
             props.valid               = true;
         }
         return buildDeviceModel(props);
@@ -169,6 +239,10 @@ DeviceProfile queryLiveDeviceProfile() {
     static const DeviceProfile cached = [] {
         DeviceProfile p;
         p.model = queryLiveDeviceModel();
+        // Derived from attributes alone, so it exists even when the probe is
+        // skipped — and cross-checks the probe when both are present.
+        p.theoreticalBwGBps = theoreticalGBps(p.model.memoryBusWidthBits,
+                                              p.model.memoryClockKHz);
         if (shouldProbeRoofline(p.model)) {
             BandwidthProbeParams bp = bandwidthProbeParams();
             double gbps = cajeta_xpu_measure_bandwidth_gbps(bp.bytes, (int) bp.passes);
@@ -192,10 +266,19 @@ unsigned occupancy(const DeviceModel& m, unsigned block,
         : m.regsPerMP / (kernelVgpr * m.waveSize);
     unsigned blocksByReg = wavesByReg / wavesPerBlock;
     unsigned blocksByWave = m.maxWavesPerMP / wavesPerBlock;
+    // The per-BLOCK ceiling is a hard rejection, not a divisor: a tile larger
+    // than one block may hold does not "fit fewer blocks", it fails to
+    // assemble. Ada's 55296-byte coop tile fits the SM's 102400-byte budget
+    // and still draws `ptxas error: uses too much shared data (0xd800, 0xc000
+    // max)`. Modelling only the per-MP figure cannot tell those apart.
+    if (ldsBytes != 0 && ldsBytes > ldsCeilingPerBlock(m)) return 0;
     unsigned blocksByLds = ldsBytes == 0
         ? blocksByWave
         : m.ldsBytesPerMP / std::max(ldsBytes, 1u);
     unsigned blocks = std::min({blocksByReg, blocksByWave, blocksByLds});
+    // A reported resident-block cap (24 on Ada) is a fourth limiter. 0 means
+    // the runtime did not report one, so no clamp — AMD is unaffected.
+    if (m.maxBlocksPerMP) blocks = std::min(blocks, m.maxBlocksPerMP);
     if (blocks == 0) return 0;   // does not fit -> pruned
     return std::min(m.maxWavesPerMP, blocks * wavesPerBlock);
 }
@@ -261,9 +344,21 @@ std::string formatDeviceProfileJson(const DeviceProfile& p) {
       << ",\"regs_per_mp\":" << p.model.regsPerMP
       << ",\"max_waves_per_mp\":" << p.model.maxWavesPerMP
       << ",\"lds_bytes_per_mp\":" << p.model.ldsBytesPerMP
+      << ",\"lds_bytes_per_block\":" << p.model.ldsBytesPerBlock
+      << ",\"lds_bytes_per_block_optin\":" << p.model.ldsBytesPerBlockOptin
+      << ",\"max_blocks_per_mp\":" << p.model.maxBlocksPerMP
+      << ",\"simds_per_mp\":" << p.model.simdsPerMP
+      << ",\"l2_cache_bytes\":" << p.model.l2CacheBytes
+      << ",\"total_vram_bytes\":" << p.model.totalGlobalMemBytes
+      << ",\"integrated\":" << (p.model.integrated ? "true" : "false")
       << ",\"estimated\":" << (p.model.estimated ? "true" : "false")
       << ",\"roofline_measured\":" << (p.rooflineMeasured ? "true" : "false");
     if (p.rooflineMeasured) o << ",\"bandwidth_gbps\":" << p.bandwidthGBps;
+    // The attribute-derived ceiling, so a probe that silently under-reports is
+    // distinguishable from a part that is simply slow.
+    const double theo = theoreticalGBps(p.model.memoryBusWidthBits,
+                                        p.model.memoryClockKHz);
+    if (theo > 0.0) o << ",\"theoretical_bandwidth_gbps\":" << theo;
     o << "}";
     return o.str();
 }

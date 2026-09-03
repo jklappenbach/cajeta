@@ -831,6 +831,48 @@ static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
     v = 0;   // MAX_SHARED_MEMORY_PER_MULTIPROCESSOR
     if (g_xpu_cuda.cuDeviceGetAttribute(&v, 81, dev) == 0 && v >= 1024 && v <= (1 << 20))
         out->ldsBytesPerMP = (uint32_t) v;
+
+    // Tier-B geometry. Same discipline as above: every ordinal validated
+    // against this box's live driver before it was written here (rc=0 on all
+    // of them), and every read range-clamped so a wrong ordinal on some other
+    // driver leaves the field 0 rather than poisoning the model.
+    v = 0;   // MAX_SHARED_MEMORY_PER_BLOCK — the ceiling ptxas checks a static
+             // tile against, and roughly HALF the per-MP budget on NVIDIA.
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 8, dev) == 0 && v >= 1024 && v <= (1 << 20))
+        out->ldsBytesPerBlock = (uint32_t) v;
+    v = 0;   // MAX_SHARED_MEMORY_PER_BLOCK_OPTIN — reachable only by raising the
+             // launch's dynamic-shared attribute; static tiles never get it.
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 97, dev) == 0 && v >= 1024 && v <= (1 << 20))
+        out->ldsBytesPerBlockOptin = (uint32_t) v;
+    v = 0;   // MAX_BLOCKS_PER_MULTIPROCESSOR
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 106, dev) == 0 && v >= 1 && v <= 1024)
+        out->maxBlocksPerMP = (uint32_t) v;
+    v = 0;   // L2_CACHE_SIZE — the limiter a saturation target is really bound by
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 38, dev) == 0 && v >= 1024)
+        out->l2CacheBytes = (uint32_t) v;
+    v = 0;   // MEMORY_CLOCK_RATE (kHz)
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 36, dev) == 0 && v >= 1000)
+        out->memoryClockKHz = (uint32_t) v;
+    v = 0;   // GLOBAL_MEMORY_BUS_WIDTH (bits)
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 37, dev) == 0 && v >= 8 && v <= 8192)
+        out->memoryBusWidthBits = (uint32_t) v;
+    v = 0;   // CLOCK_RATE (kHz)
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 13, dev) == 0 && v >= 1000)
+        out->clockRateKHz = (uint32_t) v;
+    v = 0;   // MAX_GRID_DIM_X
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 5, dev) == 0 && v >= 1)
+        out->maxGridDimX = (uint32_t) v;
+    v = 0;   // MAX_BLOCK_DIM_X
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 2, dev) == 0 && v >= 1 && v <= 4096)
+        out->maxBlockDimX = (uint32_t) v;
+    v = 0;   // INTEGRATED — an APU, where a host<->device copy is not a transfer
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 18, dev) == 0)
+        out->integrated = v ? 1 : 0;
+    if (g_xpu_cuda.cuDeviceTotalMem) {
+        size_t tot = 0;
+        if (g_xpu_cuda.cuDeviceTotalMem(&tot, dev) == 0 && tot > 0)
+            out->totalGlobalMemBytes = (uint64_t) tot;
+    }
     return 1;
 }
 

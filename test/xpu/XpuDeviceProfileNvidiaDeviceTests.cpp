@@ -98,3 +98,64 @@ TEST(XpuDeviceProfileNvidiaDeviceTests, profileCarriesRoofline) {
     EXPECT_TRUE(p.rooflineMeasured);
     EXPECT_GT(p.bandwidthGBps, 10.0) << "measured " << p.bandwidthGBps << " GB/s";
 }
+
+// ---- device-geometry-parameterization, on the live part ---------------- //
+
+// Plan 1.1.5 — every Tier-B fact the standalone probe read must arrive through
+// the ABI unchanged. Asserted as RELATIONS, not as this SKU's literals, so the
+// test stays true on another NVIDIA part while still catching a field that
+// silently stops being filled.
+TEST(XpuDeviceProfileNvidiaDeviceTests, tierBGeometryIsQueriedLive) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    const cajeta::xpu::DeviceModel m = cajeta::xpu::queryLiveDeviceModel();
+    ASSERT_TRUE(m.queried);
+    EXPECT_GT(m.ldsBytesPerBlock, 0u);
+    EXPECT_LE(m.ldsBytesPerBlock, m.ldsBytesPerMP)
+        << "a block cannot be given more shared memory than its SM has";
+    EXPECT_GE(m.ldsBytesPerBlockOptin, m.ldsBytesPerBlock)
+        << "the opt-in ceiling is the raised one";
+    EXPECT_GT(m.maxBlocksPerMP, 0u);
+    EXPECT_GT(m.l2CacheBytes, 0u);
+    EXPECT_GT(m.totalGlobalMemBytes, 0ull);
+    EXPECT_GT(m.memoryBusWidthBits, 0u);
+    EXPECT_GT(m.memoryClockKHz, 0u);
+    EXPECT_EQ(m.simdsPerMP, 4u) << "an SM has 4 scheduler partitions";
+    EXPECT_EQ(m.mpCount, m.cuCount) << "an SM is the multiprocessor; no folding";
+}
+
+// The exhibit-2 gap, asserted on the real part rather than on a fixture: the
+// per-block ceiling is STRICTLY below the per-MP budget here, which is what
+// makes a tile sized against the per-MP figure assemble on AMD and fail on
+// NVIDIA. If this ever stops holding, the distinction the model now draws has
+// become unobservable and these tests would pass vacuously.
+TEST(XpuDeviceProfileNvidiaDeviceTests, perBlockCeilingIsBelowThePerMpBudget) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    const cajeta::xpu::DeviceModel m = cajeta::xpu::queryLiveDeviceModel();
+    ASSERT_TRUE(m.queried);
+    EXPECT_LT(m.ldsBytesPerBlock, m.ldsBytesPerMP);
+    EXPECT_EQ(cajeta::xpu::ldsCeilingPerBlock(m), m.ldsBytesPerBlock);
+}
+
+// L1 on the live device: a real block count, and one that is a whole multiple
+// of the part's SIMD population.
+TEST(XpuDeviceProfileNvidiaDeviceTests, dispatchLawAnswersOnTheLivePart) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    const cajeta::xpu::DeviceModel m = cajeta::xpu::queryLiveDeviceModel();
+    ASSERT_TRUE(m.queried);
+    const unsigned blocks = cajeta::xpu::dispatchBlocks(m, 2);
+    EXPECT_GT(blocks, 0u);
+    EXPECT_EQ(blocks * 2u, m.mpCount * m.simdsPerMP);
+}
+
+// L4: the two ceilings must agree to within the efficiency a real part
+// achieves. A measured value ABOVE theoretical would mean the probe is
+// measuring cache, not memory — which is exactly the failure a single number
+// cannot reveal.
+TEST(XpuDeviceProfileNvidiaDeviceTests, measuredBandwidthSitsUnderTheoretical) {
+    CAJETA_SKIP_IF_NO_CUDA();
+    const cajeta::xpu::DeviceProfile p = cajeta::xpu::queryLiveDeviceProfile();
+    ASSERT_GT(p.theoreticalBwGBps, 0.0);
+    if (!p.rooflineMeasured) GTEST_SKIP() << "roofline probe did not run";
+    EXPECT_GT(p.bandwidthGBps, 0.30 * p.theoreticalBwGBps);
+    EXPECT_LT(p.bandwidthGBps, 1.05 * p.theoreticalBwGBps);
+}

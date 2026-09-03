@@ -31,6 +31,9 @@ using cajeta::xpu::pickLaunch;
 using cajeta::xpu::LaunchPick;
 using cajeta::xpu::shouldSweep;
 using cajeta::xpu::sweepBlocks;
+using cajeta::xpu::dispatchBlocks;
+using cajeta::xpu::ldsCeilingPerBlock;
+using cajeta::xpu::theoreticalGBps;
 
 namespace {
 
@@ -60,6 +63,19 @@ RawDeviceProps sm89Props() {
     p.regsPerMP = 65536;            // MAX_REGISTERS_PER_MULTIPROCESSOR
     p.threadsPerMP = 1536;          // MAX_THREADS_PER_MULTIPROCESSOR -> 48 warps
     p.ldsBytesPerMP = 102400;       // MAX_SHARED_MEMORY_PER_MULTIPROCESSOR
+    // Tier-B, every value read from THIS box's 4090 by the standalone
+    // dlopen probe (spec §2.2); rc=0 on every ordinal.
+    p.ldsBytesPerBlock      = 49152;      // attr 8   — the ptxas 0xc000 ceiling
+    p.ldsBytesPerBlockOptin = 101376;     // attr 97
+    p.maxBlocksPerMP        = 24;         // attr 106
+    p.l2CacheBytes          = 75497472;   // attr 38  — 72 MiB
+    p.memoryClockKHz        = 10501000;   // attr 36
+    p.memoryBusWidthBits    = 384;        // attr 37
+    p.clockRateKHz          = 2535000;    // attr 13
+    p.maxGridDimX           = 2147483647; // attr 5
+    p.maxBlockDimX          = 1024;       // attr 2
+    p.totalGlobalMemBytes   = 25756565504ull;
+    p.integrated            = false;      // attr 18 — discrete
     p.valid = true;
     return p;
 }
@@ -364,4 +380,129 @@ TEST(XpuDeviceProfileTests, nvidiaModelIsNotTheGfx1151Default) {
     EXPECT_NE(m.ldsBytesPerMP,  d.ldsBytesPerMP);   // 102400 vs 65536
     EXPECT_NE(m.archName,       d.archName);        // sm_89 vs "unknown"
     EXPECT_NE(m.cuCount,        d.cuCount);         // 128 vs 0
+}
+
+// ---- device-geometry-parameterization ---------------------------------- //
+// Every constant below was MEASURED before it was specified: the NVIDIA
+// figures come from a dlopen probe against libcuda.so.1 on this box's 4090
+// (spec §2.2), the AMD ones from the gfx1151 arch row already verified
+// on-device. A law is only allowed to ship if it reproduces the frozen AMD
+// constant, so each pair is asserted together, in one test, on purpose.
+
+// 1.1.1 — the Tier-B facts survive the query -> model overlay intact.
+TEST(XpuDeviceProfileTests, nvidiaTierBFactsReachTheModel) {
+    DeviceModel m = buildDeviceModel(sm89Props());
+    EXPECT_EQ(m.ldsBytesPerBlock,      49152u);
+    EXPECT_EQ(m.ldsBytesPerBlockOptin, 101376u);
+    EXPECT_EQ(m.maxBlocksPerMP,        24u);
+    EXPECT_EQ(m.l2CacheBytes,          75497472u);
+    EXPECT_EQ(m.memoryClockKHz,        10501000u);
+    EXPECT_EQ(m.memoryBusWidthBits,    384u);
+    EXPECT_EQ(m.totalGlobalMemBytes,   25756565504ull);
+    EXPECT_EQ(m.mpCount,               128u);
+    EXPECT_FALSE(m.integrated);
+}
+
+// 1.1.2 — AMD reports none of them (spec Q1: HIP's per-block ordinal is
+// unverified from here). The model must fall back to the per-MP budget and
+// must NOT inherit an NVIDIA number — that inheritance is the exact defect
+// this whole exercise exists to prevent.
+TEST(XpuDeviceProfileTests, amdWithoutTierBFallsBackAndInheritsNothing) {
+    DeviceModel m = buildDeviceModel(gfx1151Props());
+    EXPECT_EQ(m.ldsBytesPerBlock, 0u) << "not reported, so not invented";
+    EXPECT_EQ(ldsCeilingPerBlock(m), 65536u) << "falls back to the per-MP budget";
+    EXPECT_EQ(m.l2CacheBytes, 0u);
+    EXPECT_EQ(m.totalGlobalMemBytes, 0ull);
+}
+
+// 1.1.3 — an invalid query leaves every Tier-B field at its default.
+TEST(XpuDeviceProfileTests, invalidQueryLeavesTierBAtDefaults) {
+    RawDeviceProps p;                    // valid == false
+    DeviceModel m = buildDeviceModel(p);
+    EXPECT_TRUE(m.estimated);
+    EXPECT_EQ(m.ldsBytesPerBlock, 0u);
+    EXPECT_EQ(m.maxBlocksPerMP,   0u);
+    EXPECT_EQ(m.l2CacheBytes,     0u);
+    EXPECT_EQ(dispatchBlocks(m, 2), 0u) << "an unqueried model must not guess";
+}
+
+// 2.1.1 — THE AMD-PRESERVATION GATE. Linear.cajeta:167 derives its frozen
+// TARGET_BLOCKS = 80 as "5120 rows / 64 rows per workgroup = 80 workgroups x
+// 2 wave32 waves = 160 waves = exactly one per SIMD on this part's 40 CUs".
+// The law must reproduce that number from queried facts alone.
+TEST(XpuDeviceProfileTests, dispatchLawReproducesTheFrozenAmdConstant) {
+    DeviceModel m = buildDeviceModel(gfx1151Props());
+    EXPECT_EQ(m.simdsPerMP, 8u) << "RDNA WGP = 2 CUs x 4 SIMD32";
+    EXPECT_EQ(dispatchBlocks(m, /*wavesPerBlock=*/2), 80u)
+        << "20 WGP x 8 SIMD / 2 waves per block = 80 — the frozen constant";
+}
+
+// 2.1.2 — the same law on Ada. 80 of a possible 256 is the 3.2x
+// under-dispatch the spec records as exhibit #1.
+TEST(XpuDeviceProfileTests, dispatchLawGives256OnAda) {
+    DeviceModel m = buildDeviceModel(sm89Props());
+    EXPECT_EQ(m.simdsPerMP, 4u) << "an SM has 4 scheduler partitions";
+    EXPECT_EQ(dispatchBlocks(m, /*wavesPerBlock=*/2), 256u);
+}
+
+// 2.1.3 — the degenerate inputs answer 0, never a plausible-looking guess.
+TEST(XpuDeviceProfileTests, dispatchLawRefusesToGuess) {
+    DeviceModel m = buildDeviceModel(sm89Props());
+    EXPECT_EQ(dispatchBlocks(m, 0), 0u);
+    EXPECT_EQ(dispatchBlocks(defaultDeviceModel(), 2), 0u);
+}
+
+// 3.1.2 — EXHIBIT #2, as a test. The two coop kernels ask for 55296 B of LDS.
+// That fits Ada's 102400 B per SM and does NOT fit its 49152 B per block,
+// which is precisely what ptxas said (0xd800 vs 0xc000). A model that only
+// knows the per-MP figure cannot tell these apart.
+TEST(XpuDeviceProfileTests, adaPerBlockCeilingRejectsTheCoopTile) {
+    DeviceModel m = buildDeviceModel(sm89Props());
+    const unsigned tile = 55296;                    // 0xd800, as requested
+    EXPECT_LT(tile, m.ldsBytesPerMP)     << "it fits the SM's budget";
+    EXPECT_GT(tile, ldsCeilingPerBlock(m)) << "and still not one block's";
+    EXPECT_EQ(ldsCeilingPerBlock(m), 49152u);
+    EXPECT_TRUE(candidateBlocks(m, /*vgpr=*/32, tile).empty())
+        << "no block size can carry a tile above the per-block ceiling";
+}
+
+// 3.1.3 — and the same request on AMD is still accepted, so this change
+// cannot shrink AMD's candidate set. gfx1151's per-block ceiling IS its
+// per-MP budget, which is why reading ldsBytesPerMP was right there by luck.
+TEST(XpuDeviceProfileTests, amdCandidateSetIsUnchangedByTheCeiling) {
+    DeviceModel m = buildDeviceModel(gfx1151Props());
+    EXPECT_FALSE(candidateBlocks(m, /*vgpr=*/32, 55296).empty())
+        << "55296 <= gfx1151's 65536 per block; AMD must be unaffected";
+}
+
+// 4.1.1 — the attribute-derived roofline. 2 x 10.501 GHz x 384/8 = 1008 GB/s,
+// which is NVIDIA's published 4090 figure exactly; the measured probe reads
+// 882.55, i.e. 87.6% of it. Two ceilings that cross-check — without the
+// theoretical one, a probe that silently under-reports is indistinguishable
+// from a slow part.
+TEST(XpuDeviceProfileTests, theoreticalBandwidthMatchesThePublishedFigure) {
+    EXPECT_NEAR(theoreticalGBps(384, 10501000), 1008.096, 0.01);
+    EXPECT_NEAR(882.554 / theoreticalGBps(384, 10501000), 0.876, 0.005);
+}
+
+// 4.1.2 — missing attributes yield 0.0, not a NaN and not a divide by zero.
+TEST(XpuDeviceProfileTests, theoreticalBandwidthIsZeroWithoutAttributes) {
+    EXPECT_DOUBLE_EQ(theoreticalGBps(0, 10501000), 0.0);
+    EXPECT_DOUBLE_EQ(theoreticalGBps(384, 0), 0.0);
+}
+
+// 1.1.4 — the JSON payload carries the new facts, once each.
+TEST(XpuDeviceProfileTests, profileJsonCarriesTheGeometry) {
+    DeviceProfile p;
+    p.model = buildDeviceModel(sm89Props());
+    const std::string j = formatDeviceProfileJson(p);
+    for (const char* key : {"\"lds_bytes_per_block\"", "\"lds_bytes_per_block_optin\"",
+                            "\"max_blocks_per_mp\"", "\"l2_cache_bytes\"",
+                            "\"simds_per_mp\"", "\"integrated\""}) {
+        const size_t first = j.find(key);
+        EXPECT_NE(first, std::string::npos) << key << " missing from " << j;
+        if (first != std::string::npos)
+            EXPECT_EQ(j.find(key, first + 1), std::string::npos) << key << " duplicated";
+    }
+    EXPECT_EQ(j.find('\n'), std::string::npos) << "the payload is one line";
 }

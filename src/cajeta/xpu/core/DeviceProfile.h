@@ -37,6 +37,22 @@ namespace xpu {
         unsigned regsPerMP           = 0;   // MaxRegistersPerMultiprocessor
         unsigned threadsPerMP        = 0;   // MaxThreadsPerMultiProcessor
         unsigned ldsBytesPerMP       = 0;   // MaxSharedMemoryPerMultiprocessor
+        // Tier-B geometry (device-geometry-parameterization §2.2). Every one is
+        // a live driver attribute, validated ordinal-by-ordinal on an RTX 4090
+        // before being specified. 0 means "this runtime did not report it" —
+        // never a substituted default, because a wrong number here is worse
+        // than an absent one (that is the whole lesson of the gfx1151 defaults).
+        unsigned ldsBytesPerBlock    = 0;   // per-BLOCK shared cap (CUDA attr 8)
+        unsigned ldsBytesPerBlockOptin = 0; // raised cap, opt-in only (attr 97)
+        unsigned maxBlocksPerMP      = 0;   // resident block cap  (attr 106)
+        unsigned l2CacheBytes        = 0;   // L2 size             (attr 38)
+        unsigned memoryClockKHz      = 0;   // memory clock, kHz   (attr 36)
+        unsigned memoryBusWidthBits  = 0;   // bus width, bits     (attr 37)
+        unsigned clockRateKHz        = 0;   // core clock, kHz     (attr 13)
+        unsigned maxGridDimX         = 0;   // grid clamp          (attr 5)
+        unsigned maxBlockDimX        = 0;   // block clamp         (attr 2)
+        uint64_t totalGlobalMemBytes = 0;   // cuDeviceTotalMem
+        bool     integrated          = false; // APU (attr 18): a copy is not a transfer
         bool     valid               = false; // false -> query failed / disabled
     };
 
@@ -55,9 +71,47 @@ namespace xpu {
         unsigned ldsBankWidth       = 4;      // arch-only
         unsigned cuPerMultiprocessor = 2;     // RDNA WGP = 2 CUs; for CU reporting
         unsigned cuCount            = 0;      // PHYSICAL CUs = mpCount * cuPerMp
+        unsigned mpCount            = 0;      // driver multiprocessors, UNSCALED
+        // Scheduler partitions per multiprocessor — an ARCH constant, not a
+        // driver attribute (spec §2.3 Q2: deriving it from threadsPerMP/waveSize
+        // would give 1.5 on Ada, which is a residency cap, not a count).
+        // RDNA WGP = 2 CUs x 4 SIMD32 = 8; an NVIDIA SM has 4 partitions.
+        unsigned simdsPerMP         = 8;
+        // Per-BLOCK shared ceiling. On AMD this equals the per-MP budget; on
+        // NVIDIA it is roughly half of it, and a static tile is checked against
+        // THIS, not against ldsBytesPerMP. 0 = not reported -> fall back to the
+        // per-MP figure, which is what AMD has always effectively used.
+        unsigned ldsBytesPerBlock      = 0;
+        unsigned ldsBytesPerBlockOptin = 0;
+        unsigned maxBlocksPerMP     = 0;      // 0 = not reported (no clamp)
+        unsigned l2CacheBytes       = 0;
+        unsigned memoryClockKHz     = 0;
+        unsigned memoryBusWidthBits = 0;
+        unsigned clockRateKHz       = 0;
+        unsigned maxGridDimX        = 0;
+        unsigned maxBlockDimX       = 0;
+        uint64_t totalGlobalMemBytes = 0;
+        bool     integrated         = false;
         bool     queried            = false;  // a real device responded to the query
         bool     estimated          = true;   // true until modelable (live or known arch)
     };
+
+    // The per-block shared ceiling to size a tile against: the reported
+    // per-block cap when the runtime gave one, else the per-MP budget (spec Q1
+    // — HIP's per-block ordinal is unverified on the NVIDIA box, and AMD's two
+    // figures are equal in any case).
+    unsigned ldsCeilingPerBlock(const DeviceModel& m);
+
+    // L1, the dispatch law (spec §3). `wavesPerBlock` is the KERNEL half; the
+    // device half is every SIMD on the part. Reproduces gfx1151's frozen
+    // TARGET_BLOCKS = 80 at wavesPerBlock = 2, and gives 256 on sm_89.
+    // 0 when the model was never queried or wavesPerBlock is 0 — never a guess.
+    unsigned dispatchBlocks(const DeviceModel& m, unsigned wavesPerBlock);
+
+    // L4 (spec §3): the roofline ceiling the ATTRIBUTES imply, independent of
+    // the measured probe, so the two cross-check. Double-data-rate is folded in
+    // (the reported memory clock is the data rate's half). 0.0 on 0 inputs.
+    double theoreticalGBps(unsigned busWidthBits, unsigned memClockKHz);
 
     // Fill `out`'s arch-derived constants for a known arch string; return true on
     // a hit (out left at its defaults + false on a miss). Keyed on the leading
@@ -84,6 +138,7 @@ namespace xpu {
     struct DeviceProfile {
         DeviceModel model;
         double bandwidthGBps    = 0.0;    // measured; 0 = unmeasured
+        double theoreticalBwGBps = 0.0;   // from the attributes; 0 = underivable
         double peakGFLOPs       = 0.0;    // 0 = unknown (FLOP probe deferred)
         bool   rooflineMeasured = false;
     };
