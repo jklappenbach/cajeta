@@ -80,9 +80,14 @@ a borrow."*
   characters. Decoding needs `JsonReader.currentDecodedString`. Six
   cajeta-llama tests looked like engine bugs and were one harness bug.
 - `JsonObject.keyAt(j)` returns a **borrow** of interior key storage.
-  `heap String(#kb, kl)` on it corrupts.
-- `JsonValue.setString(String)` stores the buffer as a borrow. Use
-  `setStringOwned(#bytes, len)`.
+  `heap String(#kb, kl)` on it corrupts. Same for
+  `ProcessResult.stdout()/stderr()`. The compiler now catches this class
+  (`CAJETA_ERROR_MOVE_OF_BORROW`) — copy the bytes and transfer the copy.
+- `JsonValue.setString(String)` COPIES as of the
+  stdlib-ownership-convention migration (§2.5) — measured 2026-09-03 against
+  `JsonValue.cajeta:232`. It used to store a borrow, which is what bit
+  cajeta-llama. `setStringBorrowed` is now the sharp variant; reach for
+  `setStringOwned(#bytes, len)` only to transfer a buffer you already own.
 - `Optional.get()` returns a borrow; `Optional.take()` is the owned
   counterpart. `#opt.get()` is a transfer that silently does nothing.
 - int64 `*` **traps on signed overflow** (`imul`+`jo`→`ud2`), so
