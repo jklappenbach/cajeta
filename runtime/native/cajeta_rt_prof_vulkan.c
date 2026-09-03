@@ -75,6 +75,52 @@ int32_t __cajeta_xpu_vk_pick_queue_family(const uint32_t* queueFlags,
     return firstCompute;
 }
 
+// ── apple-vulkan Unit 2 — which Vulkan-on-Metal ICD (spec §3.2–§3.6) ───────
+// VkDriverId values, spelled raw for the same no-SDK reason as the queue bits:
+// VK_DRIVER_ID_MESA_KOSMICKRISP only exists in recent headers.
+#define CAJ_VK_DRIVER_MOLTENVK    14u
+#define CAJ_VK_DRIVER_KOSMICKRISP 28u
+
+static int32_t caj_vk_driver_rank(uint32_t id) {
+    return id == CAJ_VK_DRIVER_KOSMICKRISP ? 2
+         : id == CAJ_VK_DRIVER_MOLTENVK    ? 1 : 0;
+}
+
+// Return the index of the device to run on, or -1 when there is none. On a Mac
+// carrying both ICDs the loader hands them back in unspecified order, so order
+// must not decide: KosmicKrisp is Vulkan-1.3 conformant, MoltenVK is not.
+// Everywhere else no ID outranks another and index 0 still wins, as before.
+// `force` ("kosmickrisp" | "moltenvk") beats the policy and REFUSES when that
+// driver is absent, rather than quietly running on the other one.
+int32_t __cajeta_xpu_vk_pick_device(const uint32_t* driverIds, int32_t n,
+                                    const char* force) {
+    if (!driverIds || n <= 0) return -1;
+    uint32_t want = 0;
+    if (force && *force) {
+        if (strcmp(force, "kosmickrisp") == 0) want = CAJ_VK_DRIVER_KOSMICKRISP;
+        else if (strcmp(force, "moltenvk") == 0) want = CAJ_VK_DRIVER_MOLTENVK;
+    }
+    if (want) {
+        for (int32_t i = 0; i < n; ++i)
+            if (driverIds[i] == want) return i;
+        return -1;
+    }
+    int32_t best = 0;
+    for (int32_t i = 1; i < n; ++i)
+        if (caj_vk_driver_rank(driverIds[i]) > caj_vk_driver_rank(driverIds[best]))
+            best = i;
+    return best;
+}
+
+// §3.5 — "no Vulkan" has two causes wanting different fixes: no ICD installed
+// at all, versus an ICD that loaded and enumerated nothing (a KosmicKrisp on a
+// pre-macOS-26 host). Returns the VkResult, spelled raw for the same reason.
+int32_t __cajeta_xpu_vk_classify_init(int32_t loaderFound, int32_t deviceCount) {
+    if (!loaderFound) return -9;        // VK_ERROR_INCOMPATIBLE_DRIVER
+    if (deviceCount <= 0) return -3;    // VK_ERROR_INITIALIZATION_FAILED
+    return 0;                           // VK_SUCCESS
+}
+
 // Wrap-correct tick delta at the family's valid-bit width (§5.5.6). Bits
 // above the valid width are masked rather than trusted — drivers may leave
 // stale garbage there. At 64 bits the mask is all-ones WITHOUT computing

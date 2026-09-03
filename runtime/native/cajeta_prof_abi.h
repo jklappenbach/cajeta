@@ -242,6 +242,11 @@ int32_t     __cajeta_prof_gpu_resolve_dispatch_flags(int64_t launchId,
 int32_t  __cajeta_xpu_vk_pick_queue_family(const uint32_t* queueFlags,
                                            const uint32_t* timestampValidBits,
                                            int32_t n, int32_t* timingOk);
+// apple-vulkan Unit 2 (spec §3.2-§3.6): ICD preference and the two-way split
+// of "no Vulkan". Pure, so the Apple-only case is testable off Apple.
+int32_t  __cajeta_xpu_vk_pick_device(const uint32_t* driverIds, int32_t n,
+                                     const char* force);
+int32_t  __cajeta_xpu_vk_classify_init(int32_t loaderFound, int32_t deviceCount);
 uint64_t __cajeta_prof_vk_delta_ticks(uint64_t startTicks, uint64_t endTicks,
                                       uint32_t validBits);
 int32_t  __cajeta_prof_vk_note_span_ticks(uint64_t startTicks,

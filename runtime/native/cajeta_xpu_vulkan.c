@@ -150,6 +150,11 @@ struct cajeta_vk {
     int64_t  lastCalibrateNs;    // §6.6 refresh bookkeeping
     int      calPaired;          // 1 = DEVICE+CLOCK_MONOTONIC in one driver
                                  // read; 0 = DEVICE only, our own bracket
+    // ── apple-vulkan Unit 2: which ICD won, and why none did (spec §3.5, §3.7) ──
+    uint32_t driverId;
+    int32_t  initStatus;
+    char     driverName[VK_MAX_DRIVER_NAME_SIZE];
+    char     driverInfo[VK_MAX_DRIVER_INFO_SIZE];
 };
 static struct cajeta_vk g_xpu_vk;
 
@@ -229,6 +234,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     if (g_xpu_vk.loaded == 1) return 1;
     if (g_xpu_vk.loaded == -1) return 0;
     g_xpu_vk.loaded = -1;
+    g_xpu_vk.initStatus = VK_ERROR_INITIALIZATION_FAILED;
 
     // One-time init of the recursive submit/table mutex (this runs exactly once —
     // the tri-state above gates it — and before any buffer/texture/launch use,
@@ -257,7 +263,10 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     const int nlibs = (int) (sizeof(libnames) / sizeof(libnames[0]));
     for (int i = 0; i < nlibs && !g_xpu_vk.lib; ++i)
         g_xpu_vk.lib = cajeta_xpu_libopen(libnames[i]);
-    if (!g_xpu_vk.lib) return 0;
+    if (!g_xpu_vk.lib) {
+        g_xpu_vk.initStatus = __cajeta_xpu_vk_classify_init(0, 0);
+        return 0;
+    }
     g_xpu_vk.getInstanceProcAddr =
         (PFN_vkGetInstanceProcAddr) cajeta_xpu_libsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
     if (!g_xpu_vk.getInstanceProcAddr) return 0;
@@ -334,10 +343,38 @@ static int cajeta_xpu_vulkan_init_locked(void) {
 
     uint32_t count = 0;
     g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &count, NULL);
-    if (count == 0) return 0;
+    if (count == 0) {
+        g_xpu_vk.initStatus = __cajeta_xpu_vk_classify_init(1, 0);
+        return 0;
+    }
     if (count > 16) count = 16;
     VkPhysicalDevice devs[16];
     g_xpu_vk.vkEnumeratePhysicalDevices(g_xpu_vk.instance, &count, devs);
+
+    // apple-vulkan 2.2.1/2.2.2 (spec §3.2): on a Mac carrying both KosmicKrisp
+    // and MoltenVK the loader does no sorting, so pick by driverID and move the
+    // winner to the front. Off Apple no ID outranks another and this is a no-op.
+    uint32_t driverIds[16];
+    memset(driverIds, 0, sizeof(driverIds));
+    if (getProps2)
+        for (uint32_t di = 0; di < count; ++di) {
+            VkPhysicalDeviceDriverProperties dp;
+            memset(&dp, 0, sizeof(dp));
+            dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+            VkPhysicalDeviceProperties2 p2;
+            memset(&p2, 0, sizeof(p2));
+            p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            p2.pNext = &dp;
+            getProps2(devs[di], &p2);
+            driverIds[di] = (uint32_t) dp.driverID;
+        }
+    int32_t pref = __cajeta_xpu_vk_pick_device(driverIds, (int32_t) count,
+                                               getenv("CAJETA_XPU_VK_DRIVER"));
+    if (pref < 0) return 0;             // override named a driver that is absent
+    if (pref > 0) {
+        VkPhysicalDevice pd = devs[0];  devs[0] = devs[pref];  devs[pref] = pd;
+        uint32_t id = driverIds[0]; driverIds[0] = driverIds[pref]; driverIds[pref] = id;
+    }
 
     int found = 0;
     for (uint32_t di = 0; di < count && !found; ++di) {
@@ -369,7 +406,23 @@ static int cajeta_xpu_vulkan_init_locked(void) {
             found = 1;
         }
     }
-    if (!found) return 0;
+    if (!found) {
+        g_xpu_vk.initStatus = __cajeta_xpu_vk_classify_init(1, 0);
+        return 0;
+    }
+    if (getProps2) {                    // §3.7: name the driver we landed on
+        VkPhysicalDeviceDriverProperties dp;
+        memset(&dp, 0, sizeof(dp));
+        dp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
+        VkPhysicalDeviceProperties2 p2;
+        memset(&p2, 0, sizeof(p2));
+        p2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+        p2.pNext = &dp;
+        getProps2(g_xpu_vk.phys, &p2);
+        g_xpu_vk.driverId = (uint32_t) dp.driverID;
+        memcpy(g_xpu_vk.driverName, dp.driverName, sizeof(g_xpu_vk.driverName));
+        memcpy(g_xpu_vk.driverInfo, dp.driverInfo, sizeof(g_xpu_vk.driverInfo));
+    }
     g_xpu_vk.vkGetPhysicalDeviceMemoryProperties(g_xpu_vk.phys,
                                                  &g_xpu_vk.memProps);
 
@@ -3757,9 +3810,24 @@ static int cajeta_xpu_vk_launch(const void* spirv, uint64_t len,
 
 int32_t __cajeta_xpu_vk_built(void) { return 1; }
 
+// apple-vulkan 2.2.4/2.2.5 (spec §3.5, §3.7). Status is VK_SUCCESS only once a
+// device is up; before any device touch it reads as VK_ERROR_INITIALIZATION_FAILED.
+uint32_t    __cajeta_xpu_vk_driver_id(void)   { return g_xpu_vk.driverId; }
+const char* __cajeta_xpu_vk_driver_name(void) { return g_xpu_vk.driverName; }
+const char* __cajeta_xpu_vk_driver_info(void) { return g_xpu_vk.driverInfo; }
+int32_t __cajeta_xpu_vk_init_status(void) {
+    return g_xpu_vk.loaded == 1 ? VK_SUCCESS
+         : g_xpu_vk.loaded == 0 ? VK_ERROR_INITIALIZATION_FAILED
+                                : g_xpu_vk.initStatus;
+}
+
 #else  // no Vulkan SDK header at runtime-build time — Vulkan unavailable.
 static int cajeta_xpu_vulkan_init_locked(void) { return 0; }
 int32_t __cajeta_xpu_vk_built(void)                 { return 0; }
+uint32_t    __cajeta_xpu_vk_driver_id(void)   { return 0; }
+const char* __cajeta_xpu_vk_driver_name(void) { return ""; }
+const char* __cajeta_xpu_vk_driver_info(void) { return ""; }
+int32_t __cajeta_xpu_vk_init_status(void)     { return -9; }  // INCOMPATIBLE_DRIVER
 int32_t __cajeta_xpu_vk_has_host_query_reset(void) { return 0; }
 int32_t __cajeta_xpu_vk_has_sync2(void)            { return 0; }
 int32_t __cajeta_xpu_vk_has_calibrated_ts(void)    { return 0; }
