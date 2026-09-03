@@ -753,6 +753,154 @@ register. The reframed set, in short:
 
 ---
 
+## 12. Session 2026-09-02b — measured on Phoenix (RTX 4090, driver 610.62)
+
+Julian set a seven-step arc: (1) the llm stack green from stdlib to cabra,
+(2) find what is ABSOLUTELY missing on NVIDIA and fix it, (3) benchmark
+NVIDIA, (4) build + benchmark llama.cpp here and compare, (5) profile to find
+what to optimize, (6) de-hardcode the AMD/Strix-Halo sites so settings derive
+from device properties while preserving AMD's numbers, (7) mine llama.cpp's
+own NVIDIA/AMD customizations to drive that logic. The north star he stated:
+**one cajeta-llm codebase, maximally optimized on whatever device it runs on.**
+That rules out per-vendor forks — the fix for a hardcoded site is
+parameterization against the profile, not `#if AMD`.
+
+### 12.1 §3's gap has a single root cause, and it is four lines
+
+`cajeta_xpu_query_raw_device` (`runtime/native/cajeta_xpu_driver.c:797`) opens
+with `cajeta_xpu_hip_init_locked()` and returns 0 when HIP is absent — so on
+an NVIDIA box it never reaches an attribute read. `props.valid` stays false
+and `buildDeviceModel` returns `defaultDeviceModel()`.
+`cajeta_xpu_measure_bandwidth_gbps` (`:843`) has the identical gate. Those are
+the ONLY two HIP-gated entry points in the file — MEASURED by grepping every
+`_init_locked` call site — so the whole of `DeviceProfile` on NVIDIA is those
+four lines.
+
+The output is worse than "unknown", because it is not empty — it is
+**gfx1151-shaped defaults wearing an NVIDIA badge**:
+
+```
+$ build/src/cajeta gpu-profile          # RTX 4090, compute cap 8.9
+{"arch":"unknown","cu":0,"wave_size":32,"regs_per_mp":196608,
+ "max_waves_per_mp":64,"lds_bytes_per_mp":65536,
+ "estimated":true,"roofline_measured":false}
+```
+
+`wave_size: 32` is right only by coincidence (warp == wave32). Every other
+number is an RDNA3.5 constant. `estimated: true` is the sole honest signal,
+and §7.2 already records that nothing consumes it.
+
+### 12.2 The live NVIDIA attribute set, validated ordinal by ordinal
+
+Validated BEFORE writing any runtime code, with a standalone `dlopen`
+probe against `libcuda.so.1` (no CUDA toolkit needed) — the "validate the
+instrument first" habit from CLAUDE.md §5. Every ordinal returned rc=0:
+
+| fact | ordinal | 4090 | default it replaces |
+|---|---|---|---|
+| `MAX_THREADS_PER_BLOCK` | 1 | 1024 | 1024 (agrees) |
+| `WARP_SIZE` | 10 | 32 | 32 (agrees) |
+| `MULTIPROCESSOR_COUNT` | 16 | **128** | 0 |
+| `MAX_THREADS_PER_MULTIPROCESSOR` | 39 | **1536** → 48 warps | 2048 → 64 |
+| `MAX_SHARED_MEMORY_PER_MULTIPROCESSOR` | 81 | **102400** | 65536 |
+| `MAX_REGISTERS_PER_MULTIPROCESSOR` | 82 | **65536** | 196608 |
+| `COMPUTE_CAPABILITY_MAJOR/MINOR` | 75/76 | 8 / 9 → `sm_89` | `"unknown"` |
+| `GLOBAL_MEMORY_BUS_WIDTH` | 37 | 384 bits | — |
+| `MEMORY_CLOCK_RATE` | 36 | 10501000 kHz | — |
+
+The last two give `2 x 10.501e9 x 384/8 = 1008 GB/s`, which matches NVIDIA's
+published 4090 figure exactly — so a **theoretical** roofline denominator is
+derivable from attributes alone, independent of the measured probe, and the
+two cross-check each other.
+
+### 12.3 The host-side model needs no NVIDIA work at all
+
+`buildDeviceModel` already handles NVIDIA correctly once the raw props are
+filled, and this was reasoned from the code then pinned with tests:
+
+- `archToken` only strips a `:suffix`, so `sm_89` misses the gfx rows →
+  `archKnown == false`.
+- `cuCount = mpCount * (archKnown ? cuPerMultiprocessor : 1)` → **128, not
+  256**. The RDNA "WGP = 2 CUs" doubling cannot leak onto NVIDIA precisely
+  BECAUSE `sm_89` is not a table row. `cuPerMultiprocessor` defaults to 2, so
+  this is load-bearing and is now pinned by a test.
+- `liveOccupancy = regsPerMP && threadsPerMP` → `estimated == false` via the
+  portable path the spec already built for unknown archs.
+- `maxWavesPerMP = threadsPerMP / waveSize = 1536/32 = 48`.
+
+So NVIDIA needs **no arch-table row**. The portable live-attribute path that
+`xpu-device-profile` built for unknown AMD parts is exactly the NVIDIA path.
+
+### 12.4 Facts llama.cpp keeps that our profile lacks
+
+`ggml_cuda_device_info::cuda_device_info` (`ggml/src/ggml-cuda/common.cuh`)
+caches FEWER facts than our `DeviceModel` — notably no register file and no
+threads/MP, because ggml does not do closed-form occupancy; it uses empirical
+tables keyed on a capability scalar. But four of its facts are decision-
+critical and we have none of them:
+
+| ggml fact | why it matters here |
+|---|---|
+| `smpbo` — shared/block **with opt-in** | our probe: `MAX_SHARED_MEMORY_PER_BLOCK` is **49152** while per-SM is 102400. Ada needs an explicit opt-in to exceed 48 KB/block. A tile sized from `ldsBytesPerMP` alone will not launch. |
+| `integrated` | **Strix Halo is integrated, the 4090 is discrete.** ggml special-cases "integrated GPUs (APUs, e.g. RDNA3.5)" by name at `ggml-cuda.cu:4333`. |
+| `total_vram` | 24 GB hard ceiling vs Strix Halo's shared system pool. |
+| `supports_cooperative_launch` | gates cooperative kernels. |
+
+Design note worth stealing: ggml uses **one ordered capability scalar across
+both vendors** (`cc`, with AMD offset by `0x1000000`), so kernels branch on a
+single comparable value rather than on vendor identity. That is the shape a
+single-codebase engine wants.
+
+### 12.5 `TARGET_BLOCKS` — the arc froze a formula it had already derived
+
+`cajeta-llm/.../model/Linear.cajeta:167` is the cleanest exhibit for step 6.
+Its own comment does the derivation and names it a device property:
+
+> 5120 rows / 64 rows per workgroup = 80 workgroups x 2 wave32 waves = 160
+> waves = **exactly one per SIMD on this part's 40 CUs**. ... So this is a
+> **DEVICE property (CU count)** crossed with a KERNEL property (per-wave
+> footprint) ... which is why it is a settable constant **with its derivation
+> recorded** rather than a ratio of the weight size.
+
+`static final int32 TARGET_BLOCKS = 80` = 160 SIMDs / 2 waves per block. The
+author had the general law and froze its RESULT only because there was no
+profile to evaluate it against. On a 4090 (128 SMs x 4 warp schedulers = 512
+partitions) the same law gives **~256 — a 3.2x under-dispatch on Ada**. That
+is a quantified, falsifiable prediction for step 3.
+
+The missing fact is `simdsPerMP` (RDNA WGP = 8, NVIDIA SM = 4). It is an arch
+constant, not a driver attribute: an arch-table column on AMD, and derivable
+from compute-capability major on NVIDIA. Note it is deliberately NOT an
+occupancy target — the comment records that going above one wave per SIMD
+made the waves evict each other from L1/L2, so the law is cache-footprint
+limited, not residency limited. `occupancy()` is the wrong lever here.
+
+A counter-example in the same file shows the pattern already exists:
+`effectiveChunkRows()` resolves against `Device.activeBackend()` at RUN time,
+explicitly because "one binary can bundle several backends and pick at run
+time, so the geometry has to be picked there too." The seam is there; it
+just discriminates cpu-vs-not rather than reading the device.
+
+### 12.6 Step 1 — the stack does not currently build to cabra
+
+Dependency order, from the manifests: `unit -> codec -> logging -> jinja ->
+http -> ml -> llm -> cabra`; `ml` is parallel to `llm`, not upstream of it.
+On the cpu backend: **unit** builds, **codec** 288/0, **logging** 20/0,
+**jinja** 68/0. Then `cajeta-http` FAILS, and cabra depends on it.
+
+Two independent faults, both in cajeta-http:
+
+1. **A stale pin.** It pins `dev.cajeta.codec: 0.7.1`; the codec repo is at
+   `0.8.1` (cajeta-llm pins 0.8.1 correctly).
+2. **No sibling-checkout fallback.** Its `run-tests.sh` resolves codec ONLY
+   from `$OLLA_HOME` (`:101`), where cajeta-llm and cajeta-ml try the sibling
+   checkout first. `~/.olla` on this box holds only `acme.lib`, so the store
+   route cannot succeed and the right pin alone would not fix it.
+
+Also recorded: the root `CLAUDE.md` documents `./run_tests.sh`, which does
+not exist in this repo. The runners are `cajeta_tests.sh`, `light_tests.sh`,
+`regression_tests.sh`.
+
 ## 11. Provenance
 
 Repositories pulled 2026-09-02 into `/home/julian/code/cpp/`: `cajeta`

@@ -47,6 +47,23 @@ RawDeviceProps gfx1151Props() {
     return p;
 }
 
+// An NVIDIA-shaped device (Ada / sm_89, measured on an RTX 4090). There is no
+// arch-table row and there does not need to be: the CUDA driver reports every
+// occupancy input live, which is the portable path buildDeviceModel already
+// has. The numbers are the ones cuDeviceGetAttribute returns on this box.
+RawDeviceProps sm89Props() {
+    RawDeviceProps p;
+    std::strncpy(p.archName, "sm_89", sizeof(p.archName) - 1);
+    p.waveSize = 32;                // warp
+    p.maxThreadsPerBlock = 1024;
+    p.multiprocessorCount = 128;    // SMs, reported directly (no WGP folding)
+    p.regsPerMP = 65536;            // MAX_REGISTERS_PER_MULTIPROCESSOR
+    p.threadsPerMP = 1536;          // MAX_THREADS_PER_MULTIPROCESSOR -> 48 warps
+    p.ldsBytesPerMP = 102400;       // MAX_SHARED_MEMORY_PER_MULTIPROCESSOR
+    p.valid = true;
+    return p;
+}
+
 // Queryable but UNMODELABLE: a real device responded, but the driver gave no
 // occupancy attributes (regs/threads/lds per MP) AND the arch is unknown — the
 // only case that warrants the bounded sweep.
@@ -310,4 +327,41 @@ TEST(XpuDeviceProfileTests, sweepPicksFastestCandidate) {
     };
     EXPECT_EQ(sweepBlocks({64, 128, 256, 512}, timer), 256u);
     EXPECT_EQ(sweepBlocks({}, timer), 0u);                    // nothing to sweep
+}
+
+// 1.12 — an NVIDIA device is modelable with NO arch-table row: the live
+// occupancy attributes alone take it off the estimated path. This is the whole
+// NVIDIA story for the machine model — nothing arch-specific is required.
+TEST(XpuDeviceProfileTests, nvidiaLiveAttributesAreModelable) {
+    DeviceModel m = buildDeviceModel(sm89Props());
+    EXPECT_FALSE(m.estimated) << "live occupancy attrs should make it measured";
+    EXPECT_TRUE(m.queried);
+    EXPECT_EQ(m.archName, "sm_89");
+    EXPECT_EQ(m.waveSize, 32u);
+    EXPECT_EQ(m.regsPerMP, 65536u);
+    EXPECT_EQ(m.maxWavesPerMP, 48u);      // 1536 threads / 32 per warp
+    EXPECT_EQ(m.ldsBytesPerMP, 102400u);
+}
+
+// 1.13 — the RDNA "WGP = 2 CUs" doubling must NOT leak onto NVIDIA. An SM is
+// the multiprocessor, so the reported count passes through unscaled. The guard
+// matters because cuPerMultiprocessor DEFAULTS to 2: only the arch-table hit
+// is allowed to apply it, and sm_89 is deliberately not a row.
+TEST(XpuDeviceProfileTests, nvidiaMultiprocessorCountIsNotDoubled) {
+    DeviceModel m = buildDeviceModel(sm89Props());
+    EXPECT_EQ(m.cuCount, 128u) << "an SM is the multiprocessor; 128, not 256";
+}
+
+// 1.14 — the regression this whole exercise exists to prevent: an NVIDIA
+// device must not be described by the gfx1151-shaped defaults. Pin each field
+// the default model would have supplied, so a query that silently stops
+// working fails here rather than shipping a plausible-looking wrong profile.
+TEST(XpuDeviceProfileTests, nvidiaModelIsNotTheGfx1151Default) {
+    DeviceModel d = defaultDeviceModel();
+    DeviceModel m = buildDeviceModel(sm89Props());
+    EXPECT_NE(m.regsPerMP,      d.regsPerMP);       // 65536 vs 196608
+    EXPECT_NE(m.maxWavesPerMP,  d.maxWavesPerMP);   // 48 vs 64
+    EXPECT_NE(m.ldsBytesPerMP,  d.ldsBytesPerMP);   // 102400 vs 65536
+    EXPECT_NE(m.archName,       d.archName);        // sm_89 vs "unknown"
+    EXPECT_NE(m.cuCount,        d.cuCount);         // 128 vs 0
 }

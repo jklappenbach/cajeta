@@ -79,6 +79,10 @@ struct cajeta_cuda_api {
     int (*cuMemAlloc)(cajeta_cudeviceptr*, size_t);
     int (*cuMemcpyHtoD)(cajeta_cudeviceptr, const void*, size_t);
     int (*cuMemcpyDtoH)(void*, cajeta_cudeviceptr, size_t);
+    // Device-to-device copy — the roofline probe's traffic generator, the CUDA
+    // twin of hipMemcpyDtoD. Optional (bound non-fatally): absent just leaves
+    // the bandwidth probe unmeasured, exactly as a missing HIP entry does.
+    int (*cuMemcpyDtoD)(cajeta_cudeviceptr, cajeta_cudeviceptr, size_t);
     int (*cuMemFree)(cajeta_cudeviceptr);
     // Pinned / unified (managed) memory (Buffer MemoryKind); optional — a missing
     // entry just falls that kind back to plain cuMemAlloc/cuMemFree. Managed
@@ -175,6 +179,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
     CAJ_BIND(cuMemcpyHtoD, "cuMemcpyHtoD_v2");
     CAJ_BIND(cuMemcpyDtoH, "cuMemcpyDtoH_v2");
     CAJ_BIND(cuMemFree, "cuMemFree_v2");
+    *(void**) (&g_xpu_cuda.cuMemcpyDtoD) =                    // optional (non-fatal)
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuMemcpyDtoD_v2");
     // Pinned / unified memory — optional (bound non-fatally; null → kind falls
     // back to plain device alloc/free).
     *(void**) (&g_xpu_cuda.cuMemAllocManaged) =
@@ -789,6 +795,45 @@ static int cajeta_xpu_hip_gfx_arch(char* out, size_t outLen) {
     return 0;
 }
 
+// Fill *out from the CUDA driver, the twin of the HIP block below. Ordinals are
+// CUdevice_attribute values, every one VALIDATED against a live libcuda.so.1 on
+// an RTX 4090 before this was written (rc=0 on all of them) rather than recalled
+// from cuda.h; the ranges clamp the same way the HIP path does, so a wrong
+// ordinal on some other driver leaves the field 0 instead of poisoning the model.
+//
+// The arch is spelled `sm_<major><minor>` — the SAME string the nvptx backend
+// takes for --xpu-arch, and deliberately NOT a name the arch table knows: an SM
+// *is* the multiprocessor, so buildDeviceModel's unknown-arch path (CU factor 1,
+// occupancy from the live attributes) is already the correct NVIDIA model.
+static int cajeta_xpu_cuda_fill_raw_device(CajetaXpuRawDevice* out) {
+    if (!g_xpu_cuda.cuDeviceGetAttribute) return 0;
+    int v = 0, dev = g_xpu_cuda.device;
+    int major = 0, minor = 0;
+    if (g_xpu_cuda.cuDeviceGetAttribute(&major, 75, dev) != 0 || major <= 0) return 0;
+    if (g_xpu_cuda.cuDeviceGetAttribute(&minor, 76, dev) != 0 || minor <  0) return 0;
+    snprintf(out->archName, sizeof(out->archName), "sm_%d", major * 10 + minor);
+
+    v = 0;   // CU_DEVICE_ATTRIBUTE_WARP_SIZE
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 10, dev) == 0 && (v == 32 || v == 64))
+        out->waveSize = (uint32_t) v;
+    v = 0;   // MAX_THREADS_PER_BLOCK
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 1, dev) == 0 && v >= 1 && v <= 4096)
+        out->maxThreadsPerBlock = (uint32_t) v;
+    v = 0;   // MULTIPROCESSOR_COUNT (SMs; no WGP folding on NVIDIA)
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 16, dev) == 0 && v >= 1 && v <= 4096)
+        out->multiprocessorCount = (uint32_t) v;
+    v = 0;   // MAX_REGISTERS_PER_MULTIPROCESSOR — the live register file
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 82, dev) == 0 && v >= 1024 && v <= (1 << 22))
+        out->regsPerMP = (uint32_t) v;
+    v = 0;   // MAX_THREADS_PER_MULTIPROCESSOR — the live warp cap
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 39, dev) == 0 && v >= 64 && v <= 8192)
+        out->threadsPerMP = (uint32_t) v;
+    v = 0;   // MAX_SHARED_MEMORY_PER_MULTIPROCESSOR
+    if (g_xpu_cuda.cuDeviceGetAttribute(&v, 81, dev) == 0 && v >= 1024 && v <= (1 << 20))
+        out->ldsBytesPerMP = (uint32_t) v;
+    return 1;
+}
+
 // Query the active device into *out for the host-side DeviceModel builder. The
 // arch token is the robust signal; the numeric attributes use ABI-stable
 // hipDeviceGetAttribute ordinals (ROCm 6/7) and are clamped to plausible ranges
@@ -803,7 +848,21 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     int up = cajeta_xpu_hip_init_locked();
     pthread_mutex_unlock(&g_xpu_cuda_lock);
-    if (!up) return 0;
+
+    // No HIP: try CUDA before giving up. Without this the function returned 0 on
+    // every NVIDIA box, buildDeviceModel fell back to defaultDeviceModel(), and
+    // `cajeta gpu-profile` reported gfx1151-SHAPED constants under arch
+    // "unknown" — wrong numbers rather than absent ones. HIP stays first and
+    // untouched so the AMD path is byte-for-byte what it was.
+    if (!up) {
+        pthread_mutex_lock(&g_xpu_cuda_lock);
+        int cu = cajeta_xpu_cuda_init_locked();
+        int ok = cu ? cajeta_xpu_cuda_fill_raw_device(out) : 0;
+        pthread_mutex_unlock(&g_xpu_cuda_lock);
+        if (!ok) return 0;
+        out->valid = 1;
+        return 1;
+    }
 
     if (!cajeta_xpu_hip_gfx_arch(out->archName, sizeof(out->archName))) return 0;
 
@@ -831,6 +890,41 @@ int32_t cajeta_xpu_query_raw_device(CajetaXpuRawDevice* out) {
     return 1;
 }
 
+// The CUDA half of the roofline probe: same shape as the HIP one below (2*bytes
+// of traffic per pass, best-of-N, host-timed around a full context sync), so the
+// two numbers are directly comparable across vendors. 0.0 when CUDA is absent or
+// any entry point is missing.
+static double cajeta_xpu_cuda_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
+    pthread_mutex_lock(&g_xpu_cuda_lock);
+    int up = cajeta_xpu_cuda_init_locked();
+    pthread_mutex_unlock(&g_xpu_cuda_lock);
+    if (!up || !g_xpu_cuda.cuMemAlloc || !g_xpu_cuda.cuMemFree ||
+        !g_xpu_cuda.cuMemcpyDtoD || !g_xpu_cuda.cuCtxSynchronize) return 0.0;
+
+    cajeta_cudeviceptr src = 0, dst = 0;
+    if (g_xpu_cuda.cuMemAlloc(&src, bytes) != 0) return 0.0;
+    if (g_xpu_cuda.cuMemAlloc(&dst, bytes) != 0) { g_xpu_cuda.cuMemFree(src); return 0.0; }
+
+    g_xpu_cuda.cuMemcpyDtoD(dst, src, bytes);   // warmup
+    g_xpu_cuda.cuCtxSynchronize();
+
+    double best = 1e30;
+    for (int32_t i = 0; i < passes; ++i) {
+        struct timespec t0, t1;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        if (g_xpu_cuda.cuMemcpyDtoD(dst, src, bytes) != 0) { best = 1e30; break; }
+        g_xpu_cuda.cuCtxSynchronize();
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        double sec = (double)(t1.tv_sec - t0.tv_sec) +
+                     (double)(t1.tv_nsec - t0.tv_nsec) * 1e-9;
+        if (sec > 0.0 && sec < best) best = sec;
+    }
+    g_xpu_cuda.cuMemFree(src);
+    g_xpu_cuda.cuMemFree(dst);
+    if (best >= 1e30) return 0.0;
+    return (2.0 * (double) bytes) / best / 1e9;
+}
+
 // Measure device memory bandwidth (GB/s) from a device-to-device copy of `bytes`
 // (2*bytes traffic: read + write), best of `passes`, host-timed around
 // hipDeviceSynchronize. Returns 0.0 on failure / no GPU / profiling disabled.
@@ -842,7 +936,8 @@ double cajeta_xpu_measure_bandwidth_gbps(uint64_t bytes, int32_t passes) {
     pthread_mutex_lock(&g_xpu_cuda_lock);
     int up = cajeta_xpu_hip_init_locked();
     pthread_mutex_unlock(&g_xpu_cuda_lock);
-    if (!up || !g_xpu_hip.hipMalloc || !g_xpu_hip.hipFree ||
+    if (!up) return cajeta_xpu_cuda_measure_bandwidth_gbps(bytes, passes);
+    if (!g_xpu_hip.hipMalloc || !g_xpu_hip.hipFree ||
         !g_xpu_hip.hipMemcpyDtoD || !g_xpu_hip.hipDeviceSynchronize) return 0.0;
 
     void* src = NULL; void* dst = NULL;
