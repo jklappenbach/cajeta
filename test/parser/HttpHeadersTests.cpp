@@ -182,3 +182,68 @@ TEST(HttpHeadersTests, growthPreservesEntries) {
         "if (!h.valueAt(19).equals(\"v\")) return -3;\n"
         "return 1;"), 1);
 }
+
+// remove() compacts with a FORWARDING move, and the survivors have to keep
+// their bytes across an allocation.
+//
+// This is grow()'s bug in a second method. `grow` records it in its own
+// comment — "a plain `=` left the old arrays owning their Strings, and the
+// `#=` displacement below freed them through the element-drop walk
+// (use-after-free …; json-grow-element-uaf)" — and `remove`'s compaction had
+// the identical shape and the plain `=`.
+//
+// The CHURN is the whole test. removeCompactsPreservingOrder above reads the
+// survivors immediately and passes either way: freed memory still holds the
+// right bytes until something reuses it. Allocating between the compaction
+// and the read is what makes a dangling slot observable, and without it a
+// use-after-free reads as a clean run. Found through cajeta-http, where the
+// ETag middleware's setHeader (= remove + add) handed the tour a header whose
+// value pointer had become garbage (`uncaught exception (value=0x3)`).
+TEST(HttpHeadersTests, removedSlotsSurviveAllocationChurn) {
+    EXPECT_EQ(runI32(
+        "Headers h = heap Headers();\n"
+        "h.add(\"A\", \"first\");\n"
+        "h.add(\"B\", \"second\");\n"
+        "h.add(\"C\", \"third\");\n"
+        "h.add(\"D\", \"fourth\");\n"
+        // Removes slot 0 and slides B, C, D down one — every survivor is
+        // displaced, so every one of them is a candidate to dangle.
+        "h.remove(\"a\");\n"
+        // Churn: reuse whatever the compaction may have freed.
+        "int32 i = 0;\n"
+        "while (i < 64) {\n"
+        "    Headers t = heap Headers();\n"
+        "    t.add(\"Filler-Name-Long-Enough\", \"filler-value-long-enough\");\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "if (h.count() != 3) return -1;\n"
+        "if (!h.valueAt(0).equals(\"second\")) return -2;\n"
+        "if (!h.valueAt(1).equals(\"third\")) return -3;\n"
+        "if (!h.valueAt(2).equals(\"fourth\")) return -4;\n"
+        "if (!h.nameAt(0).equals(\"b\")) return -5;\n"
+        "return 1;"), 1);
+}
+
+// The shape cajeta-http actually hit: set() on a map that already carries
+// other headers is remove()+add(), so it compacts — and the value read back
+// after further allocation must still be the one that was set.
+TEST(HttpHeadersTests, setThenReadSurvivesAllocationChurn) {
+    EXPECT_EQ(runI32(
+        "Headers h = heap Headers();\n"
+        "h.add(\"Content-Type\", \"application/json\");\n"
+        "h.add(\"ETag\", \"\\\"stale\\\"\");\n"
+        "h.add(\"Vary\", \"Accept-Encoding\");\n"
+        "h.set(\"ETag\", \"\\\"0123456789abcdef\\\"\");\n"
+        "int32 i = 0;\n"
+        "while (i < 64) {\n"
+        "    Headers t = heap Headers();\n"
+        "    t.add(\"Filler-Name-Long-Enough\", \"filler-value-long-enough\");\n"
+        "    i = i + 1;\n"
+        "}\n"
+        "String tag #= h.get(\"etag\");\n"
+        "if (tag == null) return -1;\n"
+        "if (!tag.equals(\"\\\"0123456789abcdef\\\"\")) return -2;\n"
+        "if (!h.get(\"content-type\").equals(\"application/json\")) return -3;\n"
+        "if (!h.get(\"vary\").equals(\"Accept-Encoding\")) return -4;\n"
+        "return 1;"), 1);
+}
