@@ -113,11 +113,11 @@ DeviceModel buildDeviceModel(const RawDeviceProps& props) {
         m.maxBlockDimX          = props.maxBlockDimX;
         m.totalGlobalMemBytes   = props.totalGlobalMemBytes;
         m.integrated            = props.integrated;
-        // An SM has 4 scheduler partitions; the default (8) is the RDNA WGP.
-        // Keyed on the arch spelling the CUDA path emits, so it needs no
-        // per-SKU table row — deliberately, since every NVIDIA part from
-        // Volta on has 4 and a table would invite one row per SKU.
-        if (m.archName.rfind("sm_", 0) == 0) m.simdsPerMP = 4;
+        // The shared derivation in cajeta_xpu_abi.h, so the runtime serving
+        // cajeta.xpu.Device and this model cannot drift apart. 0 = the arch is
+        // neither spelling; keep the table/default value in that case.
+        if (unsigned s = cajeta_xpu_simds_per_mp(m.archName.c_str()))
+            m.simdsPerMP = s;
     }
 
     m.queried = props.valid;

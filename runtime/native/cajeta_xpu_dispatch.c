@@ -371,6 +371,53 @@ int32_t __cajeta_xpu_active_backend_id(void) {
 //            cached at init (heap sizes, not budgets: allocation can
 //            still fail earlier under pressure).
 //   cpu    — total physical RAM (the device IS the host).
+// cajeta.xpu.Device's geometry surface — the queried machine shape a kernel
+// needs in order to size itself instead of carrying a constant measured on
+// somebody else's part (specs/device-geometry-parameterization-spec.md).
+//
+// Backed by the SAME query the host-side DeviceProfile uses, so a number a
+// cajeta program reads and a number `cajeta gpu-profile` prints cannot
+// disagree. Cached once: the query dlopens a driver and reads a dozen
+// attributes, and a kernel-sizing call site may run per launch.
+//
+// 0 means UNKNOWN for every key — no device, profiling disabled, or a runtime
+// that did not report that fact. A caller must branch on 0 rather than treat
+// it as a budget; that substitution is the exact defect this work undoes.
+static CajetaXpuRawDevice g_xpu_geo;
+static int g_xpu_geo_state = 0;   /* 0 untried, 1 valid, -1 unavailable */
+
+int64_t __cajeta_xpu_device_geometry(int32_t key) {
+    if (g_xpu_geo_state == 0) {
+        g_xpu_geo_state = cajeta_xpu_query_raw_device(&g_xpu_geo) && g_xpu_geo.valid
+                        ? 1 : -1;
+    }
+    if (g_xpu_geo_state != 1) return 0;
+    switch ((CajetaXpuGeometryKey) key) {
+        case CAJETA_XPU_GEO_MP_COUNT:              return g_xpu_geo.multiprocessorCount;
+        case CAJETA_XPU_GEO_SIMDS_PER_MP:          return cajeta_xpu_simds_per_mp(g_xpu_geo.archName);
+        case CAJETA_XPU_GEO_WAVE_SIZE:             return g_xpu_geo.waveSize;
+        case CAJETA_XPU_GEO_MAX_THREADS_PER_BLOCK: return g_xpu_geo.maxThreadsPerBlock;
+        /* The per-block ceiling falls back to the per-MP budget when the
+         * runtime does not report one: on AMD the two are equal, and that
+         * fallback is the number AMD has always effectively used. */
+        case CAJETA_XPU_GEO_LDS_BYTES_PER_BLOCK:
+            return g_xpu_geo.ldsBytesPerBlock ? g_xpu_geo.ldsBytesPerBlock
+                                              : g_xpu_geo.ldsBytesPerMP;
+        case CAJETA_XPU_GEO_LDS_BYTES_PER_BLOCK_OPTIN:
+            return g_xpu_geo.ldsBytesPerBlockOptin;
+        case CAJETA_XPU_GEO_LDS_BYTES_PER_MP:      return g_xpu_geo.ldsBytesPerMP;
+        case CAJETA_XPU_GEO_MAX_BLOCKS_PER_MP:     return g_xpu_geo.maxBlocksPerMP;
+        case CAJETA_XPU_GEO_L2_CACHE_BYTES:        return g_xpu_geo.l2CacheBytes;
+        case CAJETA_XPU_GEO_TOTAL_VRAM_BYTES:      return (int64_t) g_xpu_geo.totalGlobalMemBytes;
+        case CAJETA_XPU_GEO_INTEGRATED:            return g_xpu_geo.integrated ? 1 : 0;
+        case CAJETA_XPU_GEO_REGS_PER_MP:           return g_xpu_geo.regsPerMP;
+        case CAJETA_XPU_GEO_THREADS_PER_MP:        return g_xpu_geo.threadsPerMP;
+        case CAJETA_XPU_GEO_MAX_GRID_DIM_X:        return g_xpu_geo.maxGridDimX;
+        case CAJETA_XPU_GEO_MAX_BLOCK_DIM_X:       return g_xpu_geo.maxBlockDimX;
+    }
+    return 0;
+}
+
 int64_t __cajeta_xpu_device_memory_bytes(void) {
     int be = cajeta_xpu_active_backend();
     switch (be) {

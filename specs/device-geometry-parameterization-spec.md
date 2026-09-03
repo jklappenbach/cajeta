@@ -85,6 +85,28 @@ Not exposed by any driver call; one table row per family, the way
 | `ldsBankCount` / `ldsBankWidth` | 32 x 4 B | 32 x 4 B | Swizzle / conflict diagnostics |
 | `coopMatrixShapes` | WMMA 16x16x16 | 16x16x16, 16x8x16, … | Tile structure of every quantized GEMM |
 
+### 2.4 Inventory of frozen sites (measured, 2026-09-03)
+
+What is actually hardcoded, counted rather than estimated, so the size of the
+remaining work is visible instead of implied. In `cajeta-llm/src/main`:
+
+| Shape | Count | Status |
+|---|---|---|
+| `Linear.TARGET_BLOCKS` | 1 | **derived** (unit 6) |
+| coop-matrix LDS tile above the per-block ceiling | 2 kernels | ceiling now modelled; re-tiling open |
+| `block: [256` at a launch site | 71 | frozen |
+| `block: [32` | 63 | frozen |
+| `block: [128` | 26 | frozen |
+| `block: [64` | 23 | frozen |
+| `QuantKernel.ROWS_PER_BLOCK = 64` | 1 | frozen (it is the block width the law divides by) |
+
+The 183 literal block sizes are NOT all wrong — a block width is a genuine
+kernel property, and several were measured. What makes them a debt is that
+none of them is checked against the device they run on: `Device.waveSize()`
+and `Device.maxThreadsPerBlock()` now exist to say whether a literal is a
+whole number of waves and whether it fits. Retiring them is per-kernel work
+with a measurement each, not a sweep, and it is deliberately not in this plan.
+
 ## 3. The laws
 
 Each law is stated so that substituting `gfx1151` reproduces the frozen

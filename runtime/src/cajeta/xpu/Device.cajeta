@@ -215,4 +215,253 @@ public final class Device {
 
     @Native("__cajeta_xpu_launch_failures")
     private static int64 nativeLaunchFailures();
+
+    // ---- device geometry -------------------------------------------- //
+    //
+    // The queried machine shape, so a kernel can SIZE ITSELF instead of
+    // carrying a constant measured on somebody else's part. Every accessor
+    // returns 0 when the fact is unknown -- no device, profiling disabled,
+    // or a runtime that does not report it. 0 is UNKNOWN and never a
+    // budget: a caller branches on it, and MUST NOT substitute the value
+    // another vendor would have given. Silently inheriting one part's
+    // constants is precisely the defect this surface exists to undo (an
+    // RTX 4090 spent months reporting gfx1151's register file).
+    //
+    // These are keys into one native accessor rather than a symbol each;
+    // the key enum in cajeta_xpu_abi.h is append-only.
+
+    static final int32 GEO_MP_COUNT              = 0;
+    static final int32 GEO_SIMDS_PER_MP          = 1;
+    static final int32 GEO_WAVE_SIZE             = 2;
+    static final int32 GEO_MAX_THREADS_PER_BLOCK = 3;
+    static final int32 GEO_LDS_PER_BLOCK         = 4;
+    static final int32 GEO_LDS_PER_BLOCK_OPTIN   = 5;
+    static final int32 GEO_LDS_PER_MP            = 6;
+    static final int32 GEO_MAX_BLOCKS_PER_MP     = 7;
+    static final int32 GEO_L2_CACHE_BYTES        = 8;
+    static final int32 GEO_TOTAL_VRAM_BYTES      = 9;
+    static final int32 GEO_INTEGRATED            = 10;
+    static final int32 GEO_REGS_PER_MP           = 11;
+    static final int32 GEO_THREADS_PER_MP        = 12;
+    static final int32 GEO_MAX_GRID_DIM_X        = 13;
+    static final int32 GEO_MAX_BLOCK_DIM_X       = 14;
+
+    /**
+     * Multiprocessors the driver reports: SMs on NVIDIA, WGPs on RDNA
+     * (which is half the physical CU count -- the driver's unit, not the
+     * marketing one). 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 multiprocessorCount() {
+        return (int32) Device.nativeGeometry(Device.GEO_MP_COUNT);
+    }
+
+    /**
+     * Scheduler partitions per multiprocessor. An ARCH constant, not a
+     * driver attribute: an RDNA WGP is 2 CUs x 4 SIMD32 = 8, an NVIDIA SM
+     * has 4. Deriving it from the thread cap would give 1.5 on Ada, which
+     * is a residency limit and not a count of schedulers. 0 = unknown arch.
+     *
+     * @EntryPoint
+     */
+    public static int32 simdsPerMultiprocessor() {
+        return (int32) Device.nativeGeometry(Device.GEO_SIMDS_PER_MP);
+    }
+
+    /**
+     * Every SIMD on the part -- multiprocessors times partitions. This is
+     * the DEVICE half of a dispatch decision; see {@link #dispatchBlocks}.
+     * 0 when either factor is unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 simdCount() {
+        return Device.multiprocessorCount() * Device.simdsPerMultiprocessor();
+    }
+
+    /**
+     * How many workgroups to dispatch so that every SIMD gets exactly one
+     * block's worth of waves, given a kernel that puts `wavesPerBlock`
+     * waves on a SIMD.
+     *
+     *   blocks = (multiprocessors x SIMDs per multiprocessor) / wavesPerBlock
+     *
+     * This is a SATURATION target and deliberately NOT an occupancy
+     * maximum. Measured on gfx1151: past this point the extra waves shared
+     * L1/L2 and each one's stride evicted the others, so throughput fell
+     * on both sides of it. What bounds the number is the cache footprint,
+     * which is why {@link #l2CacheBytes} sits beside it.
+     *
+     * Returns 0 when the device is unknown or `wavesPerBlock` is 0 -- a
+     * caller keeps its own measured constant in that case rather than
+     * dispatching a guess.
+     *
+     * @EntryPoint
+     */
+    public static int32 dispatchBlocks(int32 wavesPerBlock) {
+        if (wavesPerBlock <= 0) {
+            return 0;
+        }
+        int32 simds = Device.simdCount();
+        if (simds <= 0) {
+            return 0;
+        }
+        return simds / wavesPerBlock;
+    }
+
+    /**
+     * Shared memory ONE BLOCK may use, in bytes -- the ceiling a static
+     * tile is actually checked against.
+     *
+     * Not the same as {@link #sharedBytesPerMultiprocessor}, and the
+     * difference is load-bearing: an RTX 4090's SM holds 102400 bytes but
+     * caps a block at 49152 unless the launch opts in, while on RDNA the
+     * two figures are equal. A 55296-byte tile sized against the per-MP
+     * number therefore assembles on gfx1151 and fails on Ada with
+     * `ptxas error: uses too much shared data`. Size tiles against THIS.
+     *
+     * Falls back to the per-multiprocessor budget when a runtime reports
+     * no per-block figure (which is what AMD has always effectively used).
+     * 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int64 sharedBytesPerBlock() {
+        return Device.nativeGeometry(Device.GEO_LDS_PER_BLOCK);
+    }
+
+    /**
+     * The RAISED per-block shared ceiling, reachable only by opting in at
+     * launch (101376 bytes on an RTX 4090 against a 49152 default). A
+     * static tile never gets it -- the allocation has to be dynamic. 0
+     * when the runtime reports no separate opt-in ceiling, which is the
+     * AMD case and means "no opt-in exists", not "none available".
+     *
+     * @EntryPoint
+     */
+    public static int64 sharedBytesPerBlockOptIn() {
+        return Device.nativeGeometry(Device.GEO_LDS_PER_BLOCK_OPTIN);
+    }
+
+    /**
+     * Shared memory per multiprocessor -- the budget resident blocks share,
+     * and an occupancy input. NOT the ceiling for one block: see
+     * {@link #sharedBytesPerBlock}. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int64 sharedBytesPerMultiprocessor() {
+        return Device.nativeGeometry(Device.GEO_LDS_PER_MP);
+    }
+
+    /**
+     * Resident blocks one multiprocessor will hold (24 on Ada), a limiter
+     * independent of registers and shared memory. 0 = not reported.
+     *
+     * @EntryPoint
+     */
+    public static int32 maxBlocksPerMultiprocessor() {
+        return (int32) Device.nativeGeometry(Device.GEO_MAX_BLOCKS_PER_MP);
+    }
+
+    /**
+     * L2 cache size in bytes. The limiter a saturation target is really
+     * bound by, and it varies by an order of magnitude across parts an
+     * identical kernel runs on. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int64 l2CacheBytes() {
+        return Device.nativeGeometry(Device.GEO_L2_CACHE_BYTES);
+    }
+
+    /**
+     * Total device memory in bytes, as the driver reports it. 0 = unknown.
+     * A capacity, not a budget.
+     *
+     * @EntryPoint
+     */
+    public static int64 vramBytes() {
+        return Device.nativeGeometry(Device.GEO_TOTAL_VRAM_BYTES);
+    }
+
+    /**
+     * Is the device INTEGRATED -- an APU sharing the host's memory?
+     *
+     * Decides whether a host-to-device copy is a real transfer or a
+     * pointer hand-off, which changes where a residency decision lands
+     * rather than merely how fast it is. False on an unknown device: a
+     * discrete part is the assumption that costs a copy, not correctness.
+     *
+     * @EntryPoint
+     */
+    public static boolean integrated() {
+        return Device.nativeGeometry(Device.GEO_INTEGRATED) != 0;
+    }
+
+    /**
+     * 32-bit registers per multiprocessor -- the occupancy denominator.
+     * 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int64 registersPerMultiprocessor() {
+        return Device.nativeGeometry(Device.GEO_REGS_PER_MP);
+    }
+
+    /**
+     * Threads resident per multiprocessor. Divided by {@link #waveSize}
+     * this is the wave-residency cap. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 threadsPerMultiprocessor() {
+        return (int32) Device.nativeGeometry(Device.GEO_THREADS_PER_MP);
+    }
+
+    /**
+     * Threads per wave/warp: 32 on RDNA wave32 and on every NVIDIA part,
+     * 64 on GCN and on RDNA in wave64. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 waveSize() {
+        return (int32) Device.nativeGeometry(Device.GEO_WAVE_SIZE);
+    }
+
+    /**
+     * The largest block the device will launch. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 maxThreadsPerBlock() {
+        return (int32) Device.nativeGeometry(Device.GEO_MAX_THREADS_PER_BLOCK);
+    }
+
+    /**
+     * Largest grid extent in X -- the clamp a stepped dispatch checks
+     * before splitting a launch. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int64 maxGridDimX() {
+        return Device.nativeGeometry(Device.GEO_MAX_GRID_DIM_X);
+    }
+
+    /**
+     * Largest block extent in X. 0 = unknown.
+     *
+     * @EntryPoint
+     */
+    public static int32 maxBlockDimX() {
+        return (int32) Device.nativeGeometry(Device.GEO_MAX_BLOCK_DIM_X);
+    }
+
+    // One native symbol, keyed. The key enum in cajeta_xpu_abi.h is
+    // append-only; an unknown key answers 0 rather than trapping, so an
+    // older runtime paired with a newer stdlib degrades to "unknown"
+    // instead of failing to link.
+    @Native("__cajeta_xpu_device_geometry")
+    private static int64 nativeGeometry(int32 key);
 }
