@@ -1,0 +1,190 @@
+# apple-vulkan Unit 4 (spec §6). Catches Apple Vulkan regressions without an
+# Apple GPU.
+#
+# GitHub's macOS runners have a PARAVIRTUAL GPU: Apple5, no Metal 3, no
+# simdgroup matrix. So nothing here proves a kernel runs on real silicon —
+# 2.3.1/2.3.2 and 3.3.1 stay [hw] and belong on the rented Mac (spec §7.3).
+# What this DOES prove, and what has silently broken before:
+#   - the Vulkan path compiles on macOS at all (every macOS binary to date
+#     shipped it stubbed out — that is what Unit 1 fixed)
+#   - a driver is discovered through the loader, and the RIGHT one is selected
+#   - the two zero-device failure modes stay distinguishable
+#
+# Build recipe is profiler-tests.yml's, which is release.yml's. Keep in sync.
+name: apple-vulkan
+
+on:
+  workflow_dispatch:
+    inputs:
+      icds:
+        description: 'Which ICD configurations to exercise'
+        required: true
+        type: choice
+        options: [all, moltenvk, lavapipe, none]
+        default: all
+      gpu_family_probe:
+        description: 'Also run the macos-26 GPU-family probe (4.3.2)'
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'runtime/native/cajeta_xpu_vulkan.c'
+      - 'runtime/native/cajeta_rt_prof_vulkan.c'
+      - 'src/cajeta/xpu/vulkan/**'
+      - 'src/CMakeLists.txt'
+      - '.github/workflows/apple-vulkan.yml'
+
+concurrency:
+  group: apple-vulkan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  setup:
+    name: resolve ICD matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.f.outputs.matrix }}
+    steps:
+      - id: f
+        run: |
+          set -euo pipefail
+          # driver_id: VkDriverId the leg must select. 14 = MOLTENVK,
+          # 28 = MESA_KOSMICKRISP, 13 = MESA_LLVMPIPE (what lavapipe reports;
+          # 3 is RADV, which is not a thing on macOS).
+          # status: __cajeta_xpu_vk_init_status() — 0 SUCCESS,
+          # -3 INITIALIZATION_FAILED (ICD loaded, no device),
+          # -9 INCOMPATIBLE_DRIVER (no ICD at all).
+          MVK='{"key":"moltenvk","brew":"molten-vk vulkan-loader","driver_id":"14","status":"0"}'
+          LVP='{"key":"lavapipe","brew":"mesa vulkan-loader","driver_id":"13","status":"0"}'
+          NON='{"key":"none","brew":"vulkan-loader","driver_id":"","status":"-9"}'
+          case '${{ inputs.icds || 'all' }}' in
+            moltenvk) INC="[$MVK]" ;;
+            lavapipe) INC="[$LVP]" ;;
+            none)     INC="[$NON]" ;;
+            *)        INC="[$MVK,$LVP,$NON]" ;;
+          esac
+          echo "matrix={\"include\":$INC}" >> "$GITHUB_OUTPUT"
+
+  vulkan:
+    name: macOS ${{ matrix.key }}
+    needs: setup
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euo pipefail
+          brew update
+          # vulkan-headers is load-bearing and the least obvious: BOTH
+          # cajeta_lib and the runtime bitcode key the Vulkan path off
+          # <vulkan/vulkan.h>. Without it the whole backend compiles to a stub
+          # whose available() is false forever — which is exactly how every
+          # macOS binary shipped with Vulkan missing and nobody noticed.
+          brew install cmake ninja antlr4-cpp-runtime openjdk@21 googletest \
+                       glog zstd zeromq xxhash coreutils vulkan-headers \
+                       ${{ matrix.brew }}
+
+      - name: Fetch prebuilt LLVM toolchain (cajeta-spirv fork)
+        env:
+          # Keep in lockstep with release.yml's LLVM_RELEASE_TAG.
+          LLVM_RELEASE_TAG: cajeta-llvm-23-r10
+        run: |
+          set -euo pipefail
+          ASSET="${LLVM_RELEASE_TAG}-macos-arm64.tar.zst"
+          URL="https://github.com/jklappenbach/cajeta-llvm/releases/download/${LLVM_RELEASE_TAG}/${ASSET}"
+          DEST="$HOME/cajeta-llvm"
+          mkdir -p "$DEST"
+          curl -fsSL "$URL" -o llvm.tar.zst
+          tar --zstd -xf llvm.tar.zst -C "$DEST" --strip-components=1
+          echo "LLVM_DIR=$DEST/lib/cmake/llvm" >> "$GITHUB_ENV"
+          echo "$DEST/bin" >> "$GITHUB_PATH"
+          rm -f llvm.tar.zst
+
+      # 6.1 / 2.2-2.3: REQUIRE_VULKAN turns "silently stubbed" into a configure
+      # error. This is the single most valuable assertion in the workflow.
+      - name: Configure
+        run: |
+          set -euo pipefail
+          FORK_ROOT="${LLVM_DIR%/lib/cmake/llvm}"
+          ./setup.sh -DCAJETA_REQUIRE_VULKAN=ON \
+                     "-DCAJETA_CLANG=${FORK_ROOT}/bin/clang" \
+                     "-DCAJETA_LLVM_LINK=${FORK_ROOT}/bin/llvm-link"
+
+      - name: Build
+        run: cmake --build build --config Release -- -j 4
+
+      - name: Smoke test
+        run: ./build/src/cajeta --version
+
+      # 6.2 / 3.5: prove the LOADER path resolves — manifests, rpaths, signing.
+      # The "none" leg hides every ICD and must report INCOMPATIBLE_DRIVER; a
+      # leg with a driver installed must not. Confusing the two is how a
+      # packaging break gets misread as "no GPU on the runner".
+      - name: ICD inventory
+        continue-on-error: true
+        run: |
+          echo "== manifests =="
+          ls -1 "$(brew --prefix)"/share/vulkan/icd.d/ 2>/dev/null || echo "(none)"
+          echo "== vulkaninfo =="
+          vulkaninfo --summary 2>/dev/null | grep -iE 'deviceName|driverName|driverID' \
+            || echo "(no vulkaninfo)"
+
+      - name: Select ICD
+        run: |
+          set -euo pipefail
+          if [ '${{ matrix.key }}' = 'none' ]; then
+            # An empty manifest directory, not an unset variable: unset means
+            # "search the default paths", which would find whatever brew left.
+            mkdir -p "$RUNNER_TEMP/no-icd"
+            echo "VK_DRIVER_FILES=$RUNNER_TEMP/no-icd" >> "$GITHUB_ENV"
+            echo "VK_ICD_FILENAMES=$RUNNER_TEMP/no-icd" >> "$GITHUB_ENV"
+          fi
+
+      # 4.1.1 / 4.1.4: assert the exact status and driver this leg must produce.
+      - name: Vulkan driver selection
+        env:
+          CAJETA_XPU_BACKEND: vulkan
+          CAJETA_EXPECT_VK_INIT_STATUS: ${{ matrix.status }}
+          CAJETA_EXPECT_VK_DRIVER_ID: ${{ matrix.driver_id }}
+        run: |
+          set -euo pipefail
+          ./build/test/cajeta_test \
+            --gtest_filter='XpuVulkanDriverSelect.*' 2>&1 | tee icd-${{ matrix.key }}.log
+
+      # 6.3/6.4: a real compute leg, but only where a device exists. lavapipe is
+      # the GPU-independent one; MoltenVK runs against the paravirtual device
+      # and skips anything needing Metal 3+.
+      - name: Vulkan compute
+        if: matrix.key != 'none'
+        env:
+          CAJETA_XPU_BACKEND: vulkan
+        run: |
+          set -euo pipefail
+          ./build/test/cajeta_test --gtest_filter='*Vulkan*' 2>&1 | tee compute-${{ matrix.key }}.log
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: apple-vulkan-${{ matrix.key }}
+          path: '*.log'
+
+  # 4.3.2 — one measurement, recorded. The Apple5 / no-simdgroup-matrix evidence
+  # in the findings is from Tart VMs, not GitHub's fleet. A macos-26 runner that
+  # reported Apple7+ would change the CI plan, so measure rather than assume.
+  gpu-family:
+    name: macos-26 GPU family probe
+    if: inputs.gpu_family_probe
+    runs-on: macos-26
+    continue-on-error: true
+    steps:
+      - run: |
+          set -euo pipefail
+          sw_vers
+          system_profiler SPDisplaysDataType | head -30
+          brew install cirruslabs/cli/mtl-gpu-family-check || true
+          mtl-gpu-family-check || echo "(probe unavailable)"

@@ -118,6 +118,7 @@ struct cajeta_vk {
     // buffer-device-address; `rayQuery` stays 0 otherwise (and the AS natives
     // no-op) so the compute buffer/texture path is unaffected on non-RT GPUs.
     int rayQuery;                // 1 if AS/ray-query is usable on this device
+    int atomicInt64;             // 1 if shaderBufferInt64Atomics is enabled
     PFN_vkGetBufferDeviceAddress vkGetBufferDeviceAddress;
     PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR;
     PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR;
@@ -247,6 +248,16 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         pthread_mutexattr_destroy(&attr);
     }
 
+#if defined(CAJETA_RT_VULKAN_STATIC)
+    // iOS/tvOS (apple-vulkan spec 4.3): MoltenVK is linked statically, there is
+    // no loader and no ICD manifest to search. Bind the one entry point that
+    // bootstraps everything else; the whole path below is unchanged, because it
+    // already goes through getInstanceProcAddr for every other symbol. `lib` is
+    // set non-NULL purely so the teardown and "is a driver present" checks that
+    // read it keep working — nothing ever dlcloses it.
+    g_xpu_vk.lib = (void*) &vkGetInstanceProcAddr;
+    g_xpu_vk.getInstanceProcAddr = &vkGetInstanceProcAddr;
+#else
 #if defined(__APPLE__)
     // MV1: macOS has no native Vulkan ICD — load MoltenVK (Vulkan->Metal). The
     // LunarG SDK installs libvulkan.1.dylib; a bare MoltenVK install ships
@@ -269,7 +280,11 @@ static int cajeta_xpu_vulkan_init_locked(void) {
     }
     g_xpu_vk.getInstanceProcAddr =
         (PFN_vkGetInstanceProcAddr) cajeta_xpu_libsym(g_xpu_vk.lib, "vkGetInstanceProcAddr");
-    if (!g_xpu_vk.getInstanceProcAddr) return 0;
+    if (!g_xpu_vk.getInstanceProcAddr) {
+        g_xpu_vk.initStatus = __cajeta_xpu_vk_classify_init(0, 0);
+        return 0;
+    }
+#endif  // CAJETA_RT_VULKAN_STATIC
 
     g_xpu_vk.vkCreateInstance = (PFN_vkCreateInstance)
         g_xpu_vk.getInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance");
@@ -745,6 +760,7 @@ static int cajeta_xpu_vulkan_init_locked(void) {
         enAi64.shaderBufferInt64Atomics = VK_TRUE;
         enAi64.pNext = (void*) dci.pNext;
         dci.pNext = &enAi64;
+        g_xpu_vk.atomicInt64 = 1;
     }
     if (nDevExts > 0) {
     }

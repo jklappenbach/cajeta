@@ -78,3 +78,84 @@ TEST(XpuVulkanDriverSelect, separatesNoIcdFromNoDevice) {
     EXPECT_EQ(__cajeta_xpu_vk_classify_init(1, 0), INIT_FAILED);
     EXPECT_EQ(__cajeta_xpu_vk_classify_init(1, 1), 0);
 }
+
+// ── The live half: what this machine actually selected ──────────────────────
+//
+// apple-vulkan 4.1.4 / spec 3.7. Assertions are env-gated so the suite stays
+// green anywhere, and CI turns them into a real gate by naming what it expects.
+// This is also how the [hw] pair 2.3.1/2.3.2 gets checked once a Mac exists:
+// CAJETA_XPU_BACKEND=vulkan CAJETA_EXPECT_VK_DRIVER_ID=28 cajeta_test --gtest_filter=...
+#include <cstdlib>
+#include <cstring>
+
+extern "C" {
+void        __cajeta_xpu_register_backend(int32_t id);
+int32_t     __cajeta_xpu_device_supports(int32_t cap);
+int32_t     __cajeta_xpu_vk_built(void);
+int32_t     __cajeta_xpu_vk_init_status(void);
+uint32_t    __cajeta_xpu_vk_driver_id(void);
+const char* __cajeta_xpu_vk_driver_name(void);
+const char* __cajeta_xpu_vk_driver_info(void);
+}
+
+namespace {
+constexpr int32_t CAJ_XPU_VULKAN = 2;   // cajeta_xpu_dispatch.c's backend id
+
+// Backends are registered by a ctor the COMPILER emits per bundled backend, and
+// this binary was linked without one — so the dispatch layer sees an empty
+// bundle and never initializes anything. Register Vulkan by hand, then touch a
+// capability, which resolves and initializes the active backend.
+//
+// ORDER MATTERS: the dispatch layer caches the active backend on the FIRST
+// capability touch anywhere in the process. If another suite got there first it
+// cached "none", and registering afterwards is too late. So the two live probes
+// below only report a device when this filter runs on its own — which is how CI
+// runs them, and what the assertion message tells you to do.
+void forceBackendInit() {
+    __cajeta_xpu_register_backend(CAJ_XPU_VULKAN);
+    (void) __cajeta_xpu_device_supports(0);
+}
+// A set-but-empty env var means "no expectation" — CI writes one per leg.
+const char* expectation(const char* name) {
+    const char* v = std::getenv(name);
+    return (v && *v) ? v : nullptr;
+}
+} // namespace
+
+TEST(XpuVulkanDriverSelect, reportsTheSelectedDriver) {
+    if (!__cajeta_xpu_vk_built()) GTEST_SKIP() << "built without Vulkan headers";
+    forceBackendInit();
+    const int32_t status = __cajeta_xpu_vk_init_status();
+    std::fprintf(stderr, "vk: status=%d driverId=%u name='%s' info='%s'\n",
+                 status, __cajeta_xpu_vk_driver_id(),
+                 __cajeta_xpu_vk_driver_name(), __cajeta_xpu_vk_driver_info());
+
+    // Whatever happened, it is one of the three outcomes §3.5 names.
+    EXPECT_TRUE(status == 0 || status == INCOMPATIBLE || status == INIT_FAILED)
+        << "unexpected init status " << status;
+    if (status == 0)
+        EXPECT_STRNE(__cajeta_xpu_vk_driver_name(), "")
+            << "a live device must name its driver (§3.7)";
+
+    if (const char* want = expectation("CAJETA_EXPECT_VK_INIT_STATUS"))
+        EXPECT_EQ(status, std::atoi(want));
+    if (const char* want = expectation("CAJETA_EXPECT_VK_DRIVER_ID")) {
+        ASSERT_EQ(status, 0)
+            << "expected driver " << want << " but Vulkan did not come up. If "
+               "other suites ran first they cached the active backend as none; "
+               "run with --gtest_filter='XpuVulkanDriverSelect.*' alone.";
+        EXPECT_EQ(__cajeta_xpu_vk_driver_id(), (uint32_t) std::atoi(want));
+    }
+}
+
+// spec 4.6 — the degrade path's runtime input. Neither Apple driver advertises
+// VK_KHR_shader_atomic_int64, so both must answer 0 here; a discrete Vulkan GPU
+// answers 1. Off Vulkan the answer is unconditionally 1 (CPU/CUDA/HIP).
+TEST(XpuVulkanDriverSelect, reportsAtomicInt64Support) {
+    forceBackendInit();
+    const int32_t v = __cajeta_xpu_device_supports(3);
+    std::fprintf(stderr, "vk: AtomicInt64=%d\n", v);
+    EXPECT_TRUE(v == 0 || v == 1);
+    if (const char* want = expectation("CAJETA_EXPECT_ATOMIC_INT64"))
+        EXPECT_EQ(v, std::atoi(want));
+}
