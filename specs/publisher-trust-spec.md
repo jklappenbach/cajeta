@@ -111,8 +111,8 @@ repository as outside the threat model, but that is a statement about what
 is defended, not a licence to force the most valuable key online.
 
 **2.7.1** The delegation is itself root-signed, carries its own validity
-window, and names the repository it speaks for. A delegation fetched from
-one repository does not authorise another.
+window and `issued-at` (§2.9), and names the repository it speaks for. A
+delegation fetched from one repository does not authorise another.
 
 **2.7.1.1** "Names the repository" means its ORIGIN — `scheme://host[:port]`
 — and never the name the client is configured with. That name lives in the
@@ -215,6 +215,25 @@ repository serves key documents yet, and that is true exactly once.
 value seen. Within one session that is the key cache. ACROSS invocations it
 is unsolved, and it is the same gap as the revocation statement's — both
 want one durable store, and neither should get a private one.
+
+**2.9.4** This applies to EVERY signed document, not only the organization
+one: the delegation and the revocation statement carry `issued-at` and are
+refused when older than the newest already accepted. The rule is written
+here, inside §2, because that is where the organization document is
+specified — but nothing in §2.9.1's argument is about organizations. A
+superseded delegation is still validly signed and still inside its own
+window, so serving last quarter's copy reinstates the release key that was
+rotated out, and rotating a key out of the delegation is how a compromised
+release key is retired.
+
+**2.9.5** The delegation acquired `issued-at` late. It was specified on
+2026-08-30 and §2.9 was written afterwards, scoped by where it sat rather
+than by a decision, so for two days the delegation was replayable while the
+organization document was not. Nothing justified the asymmetry: both
+documents share the same key definition with per-key windows, so per-key
+expiry is exactly as insufficient for one as for the other. Recorded because
+the omission was invisible in review — three documents, and only the two
+written after the rule existed followed it.
 
 ### 2.10 The security contact
 

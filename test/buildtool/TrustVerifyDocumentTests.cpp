@@ -84,7 +84,9 @@ struct World {
 
     std::string delegation(const std::string& origin) {
         std::ostringstream p;
-        p << "{\"type\":\"repository-delegation\",\"repository\":\"" << origin
+        p << "{\"type\":\"repository-delegation\","
+          << "\"issued-at\":\"2026-01-01T00:00:00Z\","
+          << "\"repository\":\"" << origin
           << "\",\"not-after\":\"2030-01-01T00:00:00Z\",\"keys\":[{"
           << "\"id\":\"release-1\",\"algorithm\":\"ed25519\",\"public-key\":\""
           << jsonEscapePem(readWholeFile(release.pub))

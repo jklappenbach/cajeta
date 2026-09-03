@@ -16,6 +16,7 @@
 #include "OrgKeyFixture.h"
 #include "TempTeardown.h"
 
+#include "cajeta/buildtool/OrgKeyCache.h"
 #include "cajeta/buildtool/ReleaseIntegrity.h"
 #include "cajeta/buildtool/RepositoryDelegation.h"
 #include "cajeta/buildtool/repo/FilesystemRepository.h"
@@ -55,11 +56,13 @@ std::string delegationPayload(const std::string& repository,
                               const TestKeyPair& releaseKey,
                               const std::string& notAfter = "2030-01-01T00:00:00Z",
                               const std::string& keyNotBefore = "2020-01-01T00:00:00Z",
-                              const std::string& keyNotAfter = "2030-01-01T00:00:00Z") {
+                              const std::string& keyNotAfter = "2030-01-01T00:00:00Z",
+                              const std::string& issuedAt = "2026-01-01T00:00:00Z") {
     std::ostringstream p;
     p << "{\"type\":\"repository-delegation\","
-      << "\"repository\":\"" << repository << "\","
-      << "\"not-after\":\"" << notAfter << "\","
+      << "\"repository\":\"" << repository << "\",";
+    if (!issuedAt.empty()) p << "\"issued-at\":\"" << issuedAt << "\",";
+    p << "\"not-after\":\"" << notAfter << "\","
       << "\"keys\":[{\"id\":\"release-1\",\"algorithm\":\"ed25519\","
       << "\"public-key\":\"" << jsonEscapePem(readWholeFile(releaseKey.pub))
       << "\",\"not-before\":\"" << keyNotBefore << "\","
@@ -327,5 +330,111 @@ TEST(RepositoryDelegationTests, theBindingIsTheOriginNotTheManifestLabel) {
                            << "': " << errText(del.takeError());
     }
 
+    rmTree(dir);
+}
+
+// ── §2.9 freshness, applied to the delegation ────────────────────────────
+//
+// The delegation predates §2.9: it landed on 2026-08-30 and `issued-at`
+// arrived later, written inside §2 (the organization key document) and never
+// carried across. There is no asymmetry that would justify the gap — both
+// documents share the same key definition with per-key windows, and §2.9.1's
+// argument transfers word for word. A previous delegation is still validly
+// signed and still inside its own window, so a mirror serves last quarter's
+// copy and the release key that was rotated out is trusted again.
+
+TEST(RepositoryDelegationTests, aDelegationWithoutIssuedAtIsRefused) {
+    auto dir = freshDir("no-issued-at");
+    auto root = makeKeyPair(dir, "root");
+    auto release = makeKeyPair(dir, "release");
+
+    auto del = loadRepositoryDelegation(
+        envelopeAround(dir,
+                       delegationPayload(kOrigin, release,
+                                         "2030-01-01T00:00:00Z",
+                                         "2020-01-01T00:00:00Z",
+                                         "2030-01-01T00:00:00Z",
+                                         /*issuedAt=*/""),
+                       root, "r", "d"),
+        {rootKeyOf(root, "r")}, kOrigin, at("2026-06-01T00:00:00Z"), 0);
+    ASSERT_FALSE(!!del)
+        << "an optional issued-at cannot be checked: a delegation omitting it "
+           "would skip the comparison, which is the whole attack";
+    EXPECT_NE(std::string::npos, errText(del.takeError()).find("issued-at"));
+    rmTree(dir);
+}
+
+TEST(RepositoryDelegationTests, anOlderDelegationIsRefused) {
+    auto dir = freshDir("rollback");
+    auto root = makeKeyPair(dir, "root");
+    auto release = makeKeyPair(dir, "release");
+    auto roots = std::vector<RootKey>{rootKeyOf(root, "r")};
+    auto now = at("2026-06-01T00:00:00Z");
+    auto seen = at("2026-05-01T00:00:00Z");
+
+    auto older = loadRepositoryDelegation(
+        envelopeAround(dir,
+                       delegationPayload(kOrigin, release,
+                                         "2030-01-01T00:00:00Z",
+                                         "2020-01-01T00:00:00Z",
+                                         "2030-01-01T00:00:00Z",
+                                         "2026-01-01T00:00:00Z"),
+                       root, "r", "old"),
+        roots, kOrigin, now, seen);
+    ASSERT_FALSE(!!older) << "a delegation older than one already accepted "
+                             "reinstates the release key that was rotated out";
+    EXPECT_NE(std::string::npos, errText(older.takeError()).find("older"));
+
+    // And the half that proves the check is not simply refusing everything.
+    auto newer = loadRepositoryDelegation(
+        envelopeAround(dir,
+                       delegationPayload(kOrigin, release,
+                                         "2030-01-01T00:00:00Z",
+                                         "2020-01-01T00:00:00Z",
+                                         "2030-01-01T00:00:00Z",
+                                         "2026-05-15T00:00:00Z"),
+                       root, "r", "new"),
+        roots, kOrigin, now, seen);
+    EXPECT_TRUE(!!newer) << errText(newer.takeError());
+    rmTree(dir);
+}
+
+// ── The delegation reaches the cache at all ──────────────────────────────
+//
+// OrgKeyCache::delegationFor compared the delegation's signed `repository`
+// against repo.name() — the label from the user's own manifest — AFTER
+// loadRepositoryDelegation had already checked it against repo.origin(). The
+// two are equal only when a repository is configured under its own origin, so
+// every real deployment failed, and Packages.install turns that error into a
+// hard failure. Commit 1bc40610 fixed exactly this in the revocation path and
+// left this copy behind; the contract tests call loadRepositoryDelegation
+// directly, so nothing exercised it.
+TEST(RepositoryDelegationTests, theCacheAcceptsADelegationNamingTheOrigin) {
+    auto dir = freshDir("cache-origin");
+    auto root = makeKeyPair(dir, "root");
+    auto release = makeKeyPair(dir, "release");
+    auto repoRoot = dir / "repo";
+    fs::create_directories(repoRoot / ".well-known");
+
+    // A repository configured under a NICKNAME, which is the ordinary case:
+    // the manifest says "central", the origin is where it actually lives.
+    FilesystemRepository repo("central", repoRoot.string());
+    ASSERT_NE(repo.name(), repo.origin())
+        << "fixture check: this test is only meaningful when the manifest "
+           "label and the origin differ, which is the normal deployment";
+
+    writeWholeFile(repoRoot / ".well-known" / "repository-keys.json",
+                   envelopeAround(dir, delegationPayload(repo.origin(), release),
+                                  root, "r", "d"));
+
+    RootTrustLayout layout;
+    layout.searchDirs = {(dir / "trust").string()};
+    layout.shippedOverride = rootKeyOf(root, "r");
+    OrgKeyCache cache(layout);
+
+    auto del = cache.delegationFor(repo, at("2026-06-01T00:00:00Z"));
+    ASSERT_TRUE(!!del) << errText(del.takeError());
+    ASSERT_TRUE(del->has_value());
+    EXPECT_EQ(repo.origin(), (*del)->repository);
     rmTree(dir);
 }
