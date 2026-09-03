@@ -61,16 +61,17 @@ busy.
 navigates to the line it was sampled on. A kernel frame can also reach the *launch
 site* — the line that dispatched it, which is a different place from the kernel body.
 
-## Known sharp edge
+## Switching backends
 
-`run.sh` purges the object cache before every build. The build tool's incremental
-cache is **not keyed on `xpu-backend`** (measured 2026-09-01): building `gpu` then
-`cpu` yields a "cpu" binary still containing HIP kernels that reports
-`active backend: hip`, and the reverse order makes the gpu task report `cpu`. Both
-produce a different sha from the same task built clean, so the artifact genuinely
-differs while the embedded kernels do not.
+Build `cpu` then `gpu` (or the reverse) and each task rebuilds what it must: the
+incremental cache is keyed on `--xpu-backend` and `--xpu-arch`, so a task never
+inherits the other's device objects. Unchanged sources are still reused within a
+backend, so a second build of the same task stays incremental.
 
-A "purge only when the task changed" marker was tried first and is not enough: it
-records the task *requested*, so a poisoned build writes a clean-looking marker and the
-next run trusts it. A rebuild is cheap next to a demo that lies. The fix belongs in the
-build tool's cache key.
+This was not always true. Until 2026-09-02 the cache ignored both flags
+(`xpu-cache-discriminator`): building `gpu` then `cpu` yielded a "cpu" binary
+that still contained HIP kernels and reported `active backend: hip`, and the
+reverse made the gpu task report `cpu` — with a different sha from the same task
+built clean, so the artifact genuinely differed while the embedded kernels did
+not. `run.sh` carried an unconditional `rm -rf .cajeta/cache` to work around it;
+that purge is gone, and the sample no longer pays for a build-tool bug.

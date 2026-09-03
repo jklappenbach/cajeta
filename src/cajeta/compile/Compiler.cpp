@@ -2245,6 +2245,50 @@ namespace cajeta {
         // caches .o files under this same key).
         pairs.emplace_back("cpu", cpu);
         pairs.emplace_back("features", features);
+        // xpu-cache-discriminator §2.1-§2.4. `--xpu-backend` and `--xpu-arch`
+        // decide which device kernels are compiled and embedded for every
+        // @Kernel method, and neither reached this key: five materially
+        // different builds (cpu / amdgpu+gfx1151 / nvptx / sm_89 / no xpu
+        // flags) all hashed the same, so building for one accelerator and then
+        // another SKIPPED the kernel-bearing source and shipped the first
+        // build's device objects under the second build's name.
+        //
+        // The list is order-normalised: `--xpu-backend` takes a set, and
+        // `amdgpu,cpu` bundles the same device code as `cpu,amdgpu`. Order
+        // reaches the artifact only as the emission order of the registration
+        // ctors, and the runtime selects by its own priority rather than by
+        // manifest order (§1.6), so a reordered list is the same build.
+        {
+            std::vector<std::string> names;
+            names.reserve(xpuBackends.size());
+            for (XpuBackend b : xpuBackends) {
+                switch (b) {
+                    case XpuBackend::Nvptx:  names.emplace_back("nvptx");  break;
+                    case XpuBackend::Amdgpu: names.emplace_back("amdgpu"); break;
+                    case XpuBackend::Vulkan: names.emplace_back("vulkan"); break;
+                    case XpuBackend::Cpu:    names.emplace_back("cpu");    break;
+                    case XpuBackend::None:   break;
+                }
+            }
+            std::sort(names.begin(), names.end());
+            names.erase(std::unique(names.begin(), names.end()), names.end());
+            std::string joined;
+            for (const auto& n : names) {
+                if (!joined.empty()) joined += ',';
+                joined += n;
+            }
+            // §2.3 — absent is NOT "cpu". A host-only build embeds no device
+            // code at all; a cpu build embeds CPU kernels. Spelling the empty
+            // case as the cpu string would keep exactly the alias this fixes.
+            pairs.emplace_back("xpu-backend", joined.empty() ? "<none>" : joined);
+            // §2.2 — the arch, but keyed the way codegen actually reads it:
+            // `emitXpuKernels` honors --xpu-arch only when ONE backend is
+            // selected (`singleBackend ? xpuArch : defaultArch(cb)`), so with a
+            // bundle the flag changes nothing and keying it would force
+            // rebuilds no output difference justifies.
+            pairs.emplace_back("xpu-arch",
+                names.size() == 1 ? xpuArch : "<per-backend-defaults>");
+        }
         // A changed classpath archive changes user-module IR (signatures,
         // inlined dep declarations) without touching any source digest —
         // fold each archive's CONTENT into the key so a dep bump re-keys

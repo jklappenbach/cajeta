@@ -28,21 +28,6 @@ fi
 
 cd "$SCRIPT_DIR"
 
-# ALWAYS purge the object cache before building.
-#
-# MEASURED 2026-09-01: the build tool's incremental cache is not keyed on
-# `xpu-backend`. Build `gpu` then `cpu` and the "cpu" binary still contains HIP
-# kernels and reports `active backend: hip`; do it the other way and the gpu
-# task reports `cpu`. Both produce a different sha from the same task built
-# clean, so the artifact genuinely differs while the embedded kernels do not.
-#
-# A last-task marker was tried first and is NOT enough: it records the task
-# REQUESTED, so a poisoned build writes a clean-looking marker and the next run
-# trusts it. This sample exists to be unambiguous about which backend ran, and
-# a rebuild is cheap next to a demo that lies. The real fix belongs in the build
-# tool's cache key.
-rm -rf .cajeta/cache
-
 "$CAJETA" "$TASK"
 
 # CAJETA_PROFILER=1 arms the sampler; the trace lands in the working directory
