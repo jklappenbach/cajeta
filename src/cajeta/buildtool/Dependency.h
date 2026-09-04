@@ -14,7 +14,9 @@
 
 #include <llvm/Support/Error.h>
 
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -105,6 +107,22 @@ namespace cajeta::buildtool {
         std::string resolvedFromRepo; // repository name that supplied it
         std::string artifactPath;     // absolute path to the cached .cja
         std::string sha256;            // "sha256:<hex>"
+    };
+
+    // The resolved graph: the flat package list PLUS the edges the MVS
+    // solver gathered while solving (dependency-tree spec §2). `packages`
+    // is exactly what resolveProjectDependencies returns, same order.
+    // `roots` are the direct dependencies as the solver consumed them
+    // (stdlib deps stripped, melt lookups applied, path/git forms with
+    // an empty constraint dropped). `children[name]` lists the deps the
+    // package's own manifest declared, constraint text verbatim — one
+    // entry per resolved package that HAD a manifest sidecar; a package
+    // in `opaque` had none, so its children are unknown, not empty.
+    struct ResolvedGraph {
+        std::vector<ResolvedDependency> packages;
+        std::vector<DependencySpec> roots;
+        std::map<std::string, std::vector<DependencySpec>> children;
+        std::set<std::string> opaque;
     };
 
     // Parse `settings.repositories` array. Returns the spec list
