@@ -243,6 +243,47 @@ public:
         return b.CreateCall(f, {x, y, acc, b.getFalse()}, "dp4a");
     }
 
+    // 16-entry int8 table lookup by 4-bit index via v_perm_b32
+    // (llvm.amdgcn.perm), the byte-permute LUT. Structure mirrors llama.cpp's
+    // get_int_from_table_16 (HIP path): the 16-byte table is four dwords
+    // t0..t3; for each 4-index dword, perm the low (indices 0-7) and high
+    // (8-15) table halves with the 3-bit index, then a third perm selects
+    // low/high per byte from bit 3. v_perm_b32 is baseline GCN/RDNA, so no
+    // arch gate. Non-4-multiple lane counts fall back to the portable gather.
+    llvm::Value* byteLut16(llvm::IRBuilderBase& b, llvm::Module& m,
+                           llvm::Value* indices, llvm::Value* table) override {
+        auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(indices->getType());
+        if (ivt == nullptr || (ivt->getNumElements() % 4) != 0)
+            return LoweringTarget::byteLut16(b, m, indices, table);
+        llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
+        unsigned groups = ivt->getNumElements() / 4;
+        auto* t4 = llvm::FixedVectorType::get(i32, 4);
+        llvm::Value* tw = b.CreateBitCast(table, t4, "lut.tw");
+        llvm::Value* t0 = b.CreateExtractElement(tw, (uint64_t) 0, "lut.t0");
+        llvm::Value* t1 = b.CreateExtractElement(tw, (uint64_t) 1, "lut.t1");
+        llvm::Value* t2 = b.CreateExtractElement(tw, (uint64_t) 2, "lut.t2");
+        llvm::Value* t3 = b.CreateExtractElement(tw, (uint64_t) 3, "lut.t3");
+        auto* iw = llvm::FixedVectorType::get(i32, groups);
+        llvm::Value* idxW = b.CreateBitCast(indices, iw, "lut.iw");
+        llvm::Function* perm = llvm::Intrinsic::getOrInsertDeclaration(
+            &m, llvm::Intrinsic::amdgcn_perm);
+        llvm::Value* m7 = llvm::ConstantInt::get(i32, 0x07070707u);
+        llvm::Value* m8 = llvm::ConstantInt::get(i32, 0x08080808u);
+        llvm::Value* base = llvm::ConstantInt::get(i32, 0x03020100u);
+        llvm::Value* out = llvm::UndefValue::get(iw);
+        for (unsigned g = 0; g < groups; ++g) {
+            llvm::Value* idx = b.CreateExtractElement(idxW, g, "lut.g");
+            llvm::Value* sel = b.CreateAnd(idx, m7, "lut.sel");
+            llvm::Value* lo = b.CreateCall(perm, {t1, t0, sel}, "lut.lo");
+            llvm::Value* hi = b.CreateCall(perm, {t3, t2, sel}, "lut.hi");
+            llvm::Value* mb = b.CreateOr(base,
+                b.CreateLShr(b.CreateAnd(idx, m8), b.getInt32(1)), "lut.mb");
+            llvm::Value* res = b.CreateCall(perm, {hi, lo, mb}, "lut.res");
+            out = b.CreateInsertElement(out, res, g, "lut.out");
+        }
+        return b.CreateBitCast(out, ivt, "lut.bytes");
+    }
+
     void asyncCopy(llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* dstBase,
                    llvm::Type* dstElem, llvm::Value* dstOffset, llvm::Value* srcBase,
                    llvm::Type* srcElem, llvm::Value* srcOffset,

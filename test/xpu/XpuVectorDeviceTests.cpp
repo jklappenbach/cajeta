@@ -1018,3 +1018,154 @@ TEST(XpuVectorDeviceTests, integerDotRunsOnCpu) {
 }
 
 
+
+// --- lut4: 16-entry int8 table lookup by 4-bit index (v_perm_b32) ----------
+// `Vector<int8,16>.lut4(table)` -> <16 x i8>, out[i] = table[idx[i] & 15].
+// The nonlinear-dequant primitive: MXFP4's signed kvalues are the table, the
+// nibbles the index, so one lut4 decodes a block. On AMD it lowers to
+// v_perm_b32 (llvm.amdgcn.perm); elsewhere to a portable spill-and-gather.
+//
+// idx = {0..15}, table = MXFP4 kvalues {0,1,2,3,4,6,8,12,0,-1,..,-12}, so
+// dec == kvalues. out = dec[5]*100 + dec[9]*10 + dec[15]
+//                     = 6*100 + (-1)*10 + (-12) = 578 for every work item.
+const char* kLut4Source =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.KernelThread;\n"
+    "public class LUT {\n"
+    "    @Kernel\n"
+    "    public static void lut(KernelBuffer<int32> out, uint32 n) {\n"
+    "        uint32 i = KernelThread.globalIdX();\n"
+    "        if (i < n) {\n"
+    "            Vector<int8,16> kv = heap Vector<int8,16>(0,1,2,3,4,6,8,12,"
+    "0,-1,-2,-3,-4,-6,-8,-12);\n"
+    "            Vector<int8,16> idx = heap Vector<int8,16>(0,1,2,3,4,5,6,7,"
+    "8,9,10,11,12,13,14,15);\n"
+    "            Vector<int8,16> dec = idx.lut4(kv);\n"
+    "            out[i] = (int32) dec[5] * 100 + (int32) dec[9] * 10\n"
+    "                + (int32) dec[15];\n"
+    "        }\n"
+    "    }\n"
+    "}\n";
+
+const int32_t kLut4Expected = 578;
+
+using ILutFn = void (*)(int32_t*, uint32_t,
+                        int32_t, int32_t, int32_t,
+                        int32_t, int32_t, int32_t,
+                        int32_t, int32_t, int32_t,
+                        int32_t, int32_t, int32_t);
+
+// lut4 must reach v_perm_b32 on AMD — the byte-permute LUT is the whole point
+// (it replaces a ~100us per-element arithmetic remap in the MXFP4 mat-vec).
+// v_perm_b32 is baseline GCN/RDNA, so unlike sdot4 there is no arch gate.
+TEST(XpuVectorDeviceTests, lut4EmitsAmdPerm) {
+    using namespace cajeta::xpu::amd;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kLut4Source);
+    auto k = findMethod(module->getStructures()["test.LUT"], "lut");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_lut4_amd_emit", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("amdgcn.perm"), std::string::npos)
+        << "lut4 must lower to the byte-permute LUT on AMD";
+}
+
+TEST(XpuVectorDeviceTests, lut4RunsOnAmdDevice) {
+    using namespace cajeta::xpu::amd;
+    if (!HipDriver::available()) GTEST_SKIP() << "no HIP device";
+
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kLut4Source);
+    auto k = findMethod(module->getStructures()["test.LUT"], "lut");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_lut4_amddevice", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+    std::vector<uint8_t> hsaco = assembleHsaco(deviceModule, *tm, "gfx1151");
+    ASSERT_FALSE(hsaco.empty()) << "hsaco assembly failed (ld.lld present?)";
+
+    const uint32_t n = 1u << 12;
+    std::vector<int32_t> out(n, -1);
+
+    HipDriver hip;
+    ASSERT_TRUE(hip.init());
+    HipModule mod = hip.loadModule(hsaco.data(), hsaco.size());
+    ASSERT_NE(mod, nullptr);
+    HipFunction fn = hip.getFunction(mod, "lut");
+    ASSERT_NE(fn, nullptr);
+
+    const std::size_t bytes = std::size_t(n) * sizeof(int32_t);
+    HipDevicePtr dOut = hip.alloc(bytes);
+    ASSERT_NE(dOut, nullptr);
+    ASSERT_TRUE(hip.memcpyHtoD(dOut, out.data(), bytes));
+
+    void* params[] = { &dOut, (void*) &n };
+    const unsigned block = 256;
+    const unsigned grid = (n + block - 1) / block;
+    ASSERT_TRUE(hip.launch(fn, grid, block, params));
+    ASSERT_TRUE(hip.synchronize());
+
+    std::vector<int32_t> result(n);
+    ASSERT_TRUE(hip.memcpyDtoH(result.data(), dOut, bytes));
+    hip.free(dOut);
+
+    size_t mismatches = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (result[i] != kLut4Expected) {
+            if (mismatches < 5)
+                ADD_FAILURE() << "i=" << i << " got " << result[i]
+                              << " expected " << kLut4Expected;
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(mismatches, 0u);
+}
+
+TEST(XpuVectorDeviceTests, lut4RunsOnCpu) {
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kLut4Source);
+    auto k = findMethod(module->getStructures()["test.LUT"], "lut");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = cajeta::xpu::cpu::createCpuTargetMachine();
+    ASSERT_NE(tm, nullptr) << "host target not registered";
+    auto ctx = std::make_unique<llvm::LLVMContext>();
+    auto host = std::make_unique<llvm::Module>("xpu_lut4_exec", *ctx);
+    cajeta::xpu::cpu::configureHostModule(*host, *tm);
+    ASSERT_NE(cajeta::xpu::cpu::lowerKernel(k, *host), nullptr);
+
+    auto jitOrErr = cajeta::xpu::test::makeCpuKernelJit();
+    ASSERT_TRUE(static_cast<bool>(jitOrErr))
+        << llvm::toString(jitOrErr.takeError());
+    auto jit = std::move(*jitOrErr);
+    auto err = jit->addIRModule(
+        llvm::orc::ThreadSafeModule(std::move(host), std::move(ctx)));
+    ASSERT_FALSE(static_cast<bool>(err)) << llvm::toString(std::move(err));
+    auto symOrErr = jit->lookup("lut");
+    ASSERT_TRUE(static_cast<bool>(symOrErr))
+        << llvm::toString(symOrErr.takeError());
+    auto lut = symOrErr->toPtr<ILutFn>();
+
+    const int32_t B = 64, G = 4;
+    const uint32_t N = (uint32_t) (B * G);
+    std::vector<int32_t> out(N, -1);
+    for (int32_t ctaid = 0; ctaid < G; ++ctaid)
+        for (int32_t tid = 0; tid < B; ++tid)
+            lut(out.data(), N, tid, 0, 0, ctaid, 0, 0, B, 1, 1, G, 1, 1);
+
+    for (uint32_t i = 0; i < N; ++i)
+        EXPECT_EQ(out[i], kLut4Expected) << "element " << i;
+}

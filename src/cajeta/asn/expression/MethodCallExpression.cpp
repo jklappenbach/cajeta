@@ -6396,6 +6396,41 @@ namespace cajeta {
                     resolvedType = CajetaType::of("int32");
                     return builder->CreateAdd(sum, acc, "dotsum");
                 }
+                // lut4(table) — a 16-entry int8 table lookup by 4-bit index:
+                // out[i] = table[self[i] & 15]. The receiver holds the 4-bit
+                // indices (nibbles), `table` is the 16-entry LUT; the result
+                // keeps the receiver's shape and signedness. Host form: spill
+                // the table and gather. The device form emits a byte-permute
+                // (v_perm_b32 on AMD) — the cheap decode for nonlinear 4-bit
+                // dequant tables (MXFP4's kvalues), replacing a per-element
+                // arithmetic remap.
+                if (methodCallName == "lut4") {
+                    if (parameters.size() != 1) {
+                        throw Exception("Vector.lut4 expects (table)",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    auto elemT = vecT->getElementType();
+                    if (isFloat
+                        || elemT->getLlvmType()->getIntegerBitWidth() != 8) {
+                        throw Exception("Vector.lut4 needs an 8-bit index "
+                                        "vector", "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    llvm::Value* table = loadIfLValue(module,
+                        parameters[0].expression->generateCode(module),
+                        parameters[0].expression);
+                    auto* tvt = llvm::dyn_cast<llvm::FixedVectorType>(
+                        table->getType());
+                    if (tvt == nullptr
+                        || !tvt->getElementType()->isIntegerTy(8)
+                        || tvt->getNumElements() != 16) {
+                        throw Exception("Vector.lut4's table must be a 16-lane "
+                                        "8-bit vector",
+                                        "CAJETA_ERROR_VECTOR_METHOD");
+                    }
+                    resolvedType = CajetaVector::getOrCreate(module,
+                        vecT->getElementType(), vecT->getLanes());
+                    return vecops::lut4Portable(*builder, self, table);
+                }
                 // asWords() / asBytes() — reinterpret <4N x i8> as
                 // <N x int32> and back, little-endian (byte k of word j is
                 // byte 4j+k). One bitcast, no lane traffic. Exists so LDS
