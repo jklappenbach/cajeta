@@ -432,3 +432,37 @@ TEST(Phase12, workspaceRejectsUnknownSubfield) {
             << "error must cite the offending key, got: " << msg;
     }
 }
+
+// dependency-tree spec §8.1 — a cycle among WORKSPACE MEMBERS is refused,
+// Java's reactor rule (Maven refuses a cyclic reactor; Gradle a circular
+// project dependency). A cycle through PUBLISHED artifacts is only warned
+// about (BuildAction, spec §8.2). This pins the refusal so the two
+// policies cannot drift into each other.
+TEST(Phase12, cyclicMemberDependencyIsRefused) {
+    Fixture f = makeFixture("memberCycle");
+    // api → core already; close it with core → api.
+    writeFile(f.coreManifest,
+        "{\n"
+        "    \"details\": {\n"
+        "        \"name\": \"org.example.core\",\n"
+        "        \"version\": \"0.1.0\"\n"
+        "    },\n"
+        "    \"tasks\": {\n"
+        "        \"build\": { \"actions\": [\n"
+        "            { \"action\": \"echo\", \"text\": \"member-core-build\" }\n"
+        "        ] }\n"
+        "    },\n"
+        "    \"settings\": {\n"
+        "        \"dependencies\": {\n"
+        "            \"org.example.api\": \"0.1.*\"\n"
+        "        }\n"
+        "    }\n"
+        "}\n");
+    auto ws = loadWorkspace(f.wsManifest.string());
+    ASSERT_TRUE(static_cast<bool>(ws)) << "loadWorkspace";
+    auto order = topologicallySortMembers(*ws);
+    ASSERT_FALSE(static_cast<bool>(order));
+    std::string msg = llvm::toString(order.takeError());
+    EXPECT_NE(msg.find("cyclic workspace-member dependency"), std::string::npos)
+        << msg;
+}

@@ -424,3 +424,90 @@ TEST(BuildToolCommandTests, tasksJsonListsDepsBuiltin) {
     EXPECT_NE(w.output().find("Print dependency tree / capabilities"),
               std::string::npos) << w.output();
 }
+
+// ---------------------------------------------------------------------------
+// dependency-tree plan, unit 4 — `build` warns on a cycle through published
+// artifacts and proceeds (spec §8). Real archives are needed because build
+// loads the classpath: `init library`, rename, `install` puts a real .cja
+// and sidecar in <root>/home/.olla. The cycle is then written by rewriting
+// the sidecars so each library declares the other — the shape an accidental
+// cross-version cycle takes in a registry.
+
+namespace {
+
+    // `init library`, rename it, `install` into the world's store (which
+    // builds it). Returns false with the log in w.output() on any failure.
+    bool installLibrary(ToolWorld& w, const std::string& name) {
+        fs::path dir = w.root / ("lib-" + name);
+        fs::create_directories(dir);
+        if (w.run("init library " + dir.string()) != 0) return false;
+        std::string m = w.manifestOf(dir);
+        const std::string from = "\"com.example.library\"";
+        size_t at = m.find(from);
+        if (at == std::string::npos) return false;
+        m.replace(at, from.size(), "\"" + name + "\"");
+        std::ofstream(dir / "cajeta.json") << m;
+        // Two archetype copies ship the same Greeter class, and two archives
+        // with one symbol cannot link into one consumer. Give each library
+        // its own package (`name` is a plain identifier) and one class.
+        fs::path srcRoot = dir / "src" / "main" / "cajeta";
+        fs::remove_all(srcRoot / "com");
+        fs::create_directories(srcRoot / name);
+        std::ofstream(srcRoot / name / "Marker.cajeta")
+            << "package " << name << ";\n\npublic class Marker {\n"
+            << "    public String id() { return \"" << name << "\"; }\n}\n";
+        return w.runIn(dir, "install") == 0;
+    }
+
+    void rewriteSidecar(const ToolWorld& w, const std::string& name,
+                        const std::string& version, const std::string& depsJson) {
+        std::ofstream(w.root / "home" / ".olla" / name / version / "cajeta.json")
+            << "{\"details\":{\"name\":\"" << name << "\",\"version\":\""
+            << version << "\"},\"settings\":{\"dependencies\":{" << depsJson
+            << "}}}";
+    }
+
+    std::string trimmed(std::string s) {
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        return s;
+    }
+
+} // namespace
+
+// 4.1.1 + 4.1.4 — liba → libb → liba: build exits 0, warns once with the
+// chain, produces the artifact; `deps` reports the same chain (§8.2, §8.3,
+// §8.5).
+TEST(BuildToolCommandTests, buildWarnsOnPublishedCycleAndProceeds) {
+    ToolWorld w;
+    ASSERT_TRUE(installLibrary(w, "liba")) << w.output();
+    ASSERT_TRUE(installLibrary(w, "libb")) << w.output();
+    rewriteSidecar(w, "liba", "0.1.0", "\"libb\": \"0.1.0\"");
+    rewriteSidecar(w, "libb", "0.1.0", "\"liba\": \"0.1.0\"");
+
+    fs::path dir = w.initProject("c");
+    declareDependency(w, dir, "liba", "0.1.0");
+
+    EXPECT_EQ(w.runIn(dir, "build"), 0) << w.output();
+    std::string buildOut = w.output();
+    const std::string chain = "dependency cycle detected: liba -> libb -> liba";
+    EXPECT_NE(buildOut.find("warning: " + chain), std::string::npos) << buildOut;
+    EXPECT_EQ(buildOut.find(chain), buildOut.rfind(chain)) << "once: " << buildOut;
+
+    EXPECT_EQ(w.runIn(dir, "artifact-path"), 0) << w.output();
+    std::string artifact = trimmed(w.output());
+    EXPECT_TRUE(fs::exists(artifact)) << artifact;
+
+    EXPECT_EQ(w.runIn(dir, "deps"), 1) << w.output();
+    EXPECT_NE(w.output().find(chain), std::string::npos) << w.output();
+}
+
+// 4.1.2 — the control (§8.4): one library, no edges, no warning line.
+TEST(BuildToolCommandTests, buildOnAcyclicGraphPrintsNoCycleWarning) {
+    ToolWorld w;
+    ASSERT_TRUE(installLibrary(w, "liba")) << w.output();
+    fs::path dir = w.initProject("c");
+    declareDependency(w, dir, "liba", "0.1.0");
+
+    EXPECT_EQ(w.runIn(dir, "build"), 0) << w.output();
+    EXPECT_EQ(w.output().find("dependency cycle"), std::string::npos) << w.output();
+}
