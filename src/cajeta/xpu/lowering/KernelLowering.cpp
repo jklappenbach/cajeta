@@ -1867,7 +1867,8 @@ private:
             || n == "widenLo" || n == "widenHi" || n == "narrow"
             || n == "toF32" || n == "toI32" || n == "toF16"
             || n == "asUnsigned" || n == "asSigned"
-            || n == "asWords" || n == "asBytes" || n == "dotSum";
+            || n == "asWords" || n == "asBytes" || n == "dotSum"
+            || n == "lut4";
     }
     unsigned syntheticRecvSeq = 0;
 
@@ -2190,6 +2191,23 @@ private:
             }
             (void) i32d;
             return run;
+        }
+        if (name == "lut4") {
+            if (isFloat)
+                unsupported("Vector.lut4 is integer-only");
+            if (args.size() != 1)
+                unsupported("Vector.lut4 expects (table)");
+            auto* ivt = llvm::dyn_cast<llvm::FixedVectorType>(self->getType());
+            if (ivt == nullptr
+                    || ivt->getElementType()->getIntegerBitWidth() != 8)
+                unsupported("Vector.lut4 needs an 8-bit index vector");
+            llvm::Value* table = lowerExpr(args[0].expression);
+            auto* tvt = llvm::dyn_cast<llvm::FixedVectorType>(table->getType());
+            if (tvt == nullptr || !tvt->getElementType()->isIntegerTy(8)
+                    || tvt->getNumElements() != 16)
+                unsupported("Vector.lut4's table must be a 16-lane 8-bit "
+                            "vector");
+            return target.byteLut16(builder, mod, self, table);
         }
         if (name == "dotAccum") {
             if (isFloat)
@@ -6002,6 +6020,14 @@ llvm::Value* LoweringTarget::integerDot4x8(
     llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* a, llvm::Value* c,
     llvm::Value* acc, bool aSigned, bool cSigned) {
     return vecops::idotWiden(b, a, c, acc, aSigned, cSigned);
+}
+
+// Default 4-bit table lookup: the portable spill-and-gather (correct on
+// CPU/AMD/NVIDIA/Vulkan). AMDGPU overrides this to emit v_perm_b32.
+llvm::Value* LoweringTarget::byteLut16(
+    llvm::IRBuilderBase& b, llvm::Module& /*m*/, llvm::Value* indices,
+    llvm::Value* table) {
+    return vecops::lut4Portable(b, indices, table);
 }
 
 // Map a user MemoryOrder to an LLVM AtomicOrdering; Default falls back to the

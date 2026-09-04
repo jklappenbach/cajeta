@@ -198,6 +198,40 @@ namespace vecops {
         return acc;
     }
 
+    // lut4Portable(indices, table) -> <N x i8>. A 16-entry int8 table lookup
+    // by 4-bit index: out[i] = table[indices[i] & 15]. `indices` is <N x i8>,
+    // `table` is <16 x i8>. This is the portable form of the byte-permute LUT
+    // (v_perm_b32 / prmt) that nonlinear 4-bit dequant tables (e.g. MXFP4's
+    // kvalues) decode through; device backends override the lowering seam
+    // (LoweringTarget::byteLut16) to emit the hardware permute instead.
+    //
+    // The table is spilled to ONE entry-block alloca and gathered per lane —
+    // correct everywhere. The alloca is placed in the entry block on purpose:
+    // a per-call alloca inside a loop leaks stack the way a runtime v[lane]
+    // extract does.
+    inline llvm::Value* lut4Portable(llvm::IRBuilderBase& b,
+                                     llvm::Value* indices, llvm::Value* table) {
+        auto* ivt = llvm::cast<llvm::FixedVectorType>(indices->getType());
+        unsigned n = ivt->getNumElements();
+        llvm::Type* i8 = llvm::Type::getInt8Ty(b.getContext());
+        auto* tblTy = llvm::FixedVectorType::get(i8, 16);
+        llvm::Function* fn = b.GetInsertBlock()->getParent();
+        llvm::IRBuilder<> entry(&fn->getEntryBlock(),
+                                fn->getEntryBlock().getFirstInsertionPt());
+        llvm::Value* slot = entry.CreateAlloca(tblTy, nullptr, "lut.tbl");
+        b.CreateStore(table, slot);
+        llvm::Value* out = llvm::UndefValue::get(ivt);
+        for (unsigned i = 0; i < n; ++i) {
+            llvm::Value* idx = b.CreateExtractElement(indices, i, "lut.i");
+            idx = b.CreateAnd(idx, llvm::ConstantInt::get(i8, 15), "lut.m");
+            llvm::Value* gep = b.CreateGEP(tblTy, slot,
+                {b.getInt32(0), b.CreateZExt(idx, b.getInt32Ty())}, "lut.p");
+            llvm::Value* v = b.CreateLoad(i8, gep, "lut.v");
+            out = b.CreateInsertElement(out, v, i, "lut.o");
+        }
+        return out;
+    }
+
     // idotWiden(a, c, acc, aSigned, cSigned) -> i32. Integer dot product with
     // int32 accumulation: each lane is widened to i32 (sext if signed, zext if
     // unsigned), multiplied, and summed into `acc`. The portable form of DP4a,

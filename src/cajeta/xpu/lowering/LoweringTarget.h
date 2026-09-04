@@ -615,6 +615,17 @@ namespace xpu {
             llvm::Value* /*w*/, llvm::Value* /*a*/, llvm::Value* /*acc*/,
             bool /*wUnsigned*/) { return nullptr; }
 
+        // `Vector<int8,N>.lut4(table)` -> <N x i8>: a 16-entry int8 table
+        // lookup by 4-bit index, out[i] = table[indices[i] & 15]. `indices`
+        // is <N x i8>, `table` is <16 x i8>. DEFAULT: spill the table and
+        // gather per lane (vecops::lut4Portable), correct on every backend.
+        // AMDGPU OVERRIDES to emit v_perm_b32 (llvm.amdgcn.perm) as a
+        // byte-permute LUT — the cheap decode for nonlinear 4-bit dequant
+        // tables (MXFP4's kvalues), replacing a per-element arithmetic remap.
+        virtual llvm::Value* byteLut16(
+            llvm::IRBuilderBase& b, llvm::Module& m, llvm::Value* indices,
+            llvm::Value* table);
+
         // --- float atomics (SPV_EXT_shader_atomic_float_add / _min_max) ------
         // `Buffer<float32>.atomic{Add,Min,Max}(i, v)`: an atomic read-modify-
         // write on the element pointer, returning the OLD value. DEFAULT: a
