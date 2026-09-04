@@ -104,6 +104,28 @@ public final class Wave {
     @Native("__cajeta_xpu_wave_reduce_max_f32")
     public static float32 reduceMaxF32(float32 value);
 
+    /**
+     * SEGMENTED float sum: each aligned group of `segment` consecutive lanes
+     * sums independently; every lane in a group receives that group's total.
+     * `segment` must be a power of two dividing the wave width.
+     *
+     * The correct primitive for a block-scoped reduction when the hardware
+     * wave may be WIDER than the logical block. A per-32-block amax written as
+     * a whole-wave {@link #reduceMaxF32} is right on a 32-wide wave and WRONG
+     * on a 64-wide one — it merges two blocks and hands both the same result.
+     * Passing the block size as `segment` makes it width-agnostic: on a wave
+     * whose width equals the segment it is exactly reduceMaxF32; on a wider
+     * wave it keeps each block separate; on a narrower wave (segment > width)
+     * it reduces the whole wave, leaving any cross-wave combination to the
+     * kernel. See {@link #reduceSumF32} for the per-backend lowering shape.
+     */
+    @Native("__cajeta_xpu_wave_reduce_sum_f32_seg")
+    public static float32 reduceSumF32Segmented(float32 value, uint32 segment);
+
+    /** Segmented float maximum. See {@link #reduceSumF32Segmented}. */
+    @Native("__cajeta_xpu_wave_reduce_max_f32_seg")
+    public static float32 reduceMaxF32Segmented(float32 value, uint32 segment);
+
     /** Wave-wide minimum (UNSIGNED). See {@link #reduceMax}. */
     @Native("__cajeta_xpu_wave_reduce_min_u32")
     public static uint32 reduceMin(uint32 value);

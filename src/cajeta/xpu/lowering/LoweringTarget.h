@@ -1003,6 +1003,25 @@ namespace xpu {
                                            llvm::Module& m, WaveReduceFOp op,
                                            llvm::Value* value);
 
+        // SEGMENTED float reduce: the same XOR butterfly bounded at `seg`
+        // lanes instead of the full wave. Each aligned group of `seg`
+        // consecutive lanes reduces independently and every lane in a group
+        // receives that group's result. `seg` must divide the wave width and
+        // be a power of two; seg == width degenerates to waveReduceF32.
+        //
+        // This is what makes a block-scoped reduction (an amax over a 32-lane
+        // quant block) CORRECT when the hardware wave is wider than the block
+        // (wave64 over a 32-block): a plain whole-wave reduce would merge two
+        // blocks and hand both the same wrong result. Built on
+        // waveShuffleDivergent, so every backend gets it with no native op;
+        // Vulkan MAY override to OpGroupNonUniform*ClusteredReduce for speed
+        // without changing the result. Works identically under JIT and AOT.
+        virtual llvm::Value* waveReduceF32Segmented(llvm::IRBuilderBase& b,
+                                                    llvm::Module& m,
+                                                    WaveReduceFOp op,
+                                                    llvm::Value* value,
+                                                    llvm::Value* seg);
+
         // EXCLUSIVE prefix scan across the lanes: lane i receives the sum (or
         // product) of lanes 0..i-1; lane 0 gets the identity (0 / 1). uint32.
         // NOT pure-virtual: the default (out-of-line in KernelLowering.cpp) is a

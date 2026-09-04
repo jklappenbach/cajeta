@@ -563,6 +563,21 @@ public:
         llvm::Type* f32 = llvm::Type::getFloatTy(m.getContext());
         return pureCall(b, m, sym, f32, {value}, "wave.reducef");
     }
+
+    // Segmented reduce on the CPU wave model. The base default is a
+    // waveShuffleDivergent butterfly, which the CPU wave path does NOT
+    // vectorize (same reason waveScan is a pureCall above) — so route through
+    // the vectorizing whole-wave reduce instead. This is CORRECT here and not
+    // a shortcut: the CPU wave width is the host SIMD width (<= 16 i32 lanes),
+    // and every kernel that segments does so on a quant block of 32 or 256
+    // lanes, so `segment` always meets or exceeds the wave and the segmented
+    // reduce is a whole-wave reduce. The base primitive's own clamp is
+    // min(segment, width); on CPU that is always width.
+    llvm::Value* waveReduceF32Segmented(llvm::IRBuilderBase& b, llvm::Module& m,
+                                        WaveReduceFOp op, llvm::Value* value,
+                                        llvm::Value* /*segment*/) override {
+        return waveReduceF32(b, m, op, value);
+    }
     llvm::Value* waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
                           WaveScanOp op, llvm::Value* value) override {
         // A pure runtime stub whose VFABI vector variant does the in-lane

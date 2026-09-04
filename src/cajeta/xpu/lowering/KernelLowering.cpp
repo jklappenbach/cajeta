@@ -2992,6 +2992,18 @@ private:
                 return target.waveReduceF32(builder, mod, fop,
                                             lowerExpr(args[0].expression));
             }
+            if (name == "reduceSumF32Segmented"
+                    || name == "reduceMaxF32Segmented") {
+                if (args.size() != 2) unsupported("Wave.reduceF32Segmented arity");
+                usedSubgroupOp_ = true;
+                auto fop = name == "reduceSumF32Segmented"
+                    ? LoweringTarget::WaveReduceFOp::Sum
+                    : LoweringTarget::WaveReduceFOp::Max;
+                return target.waveReduceF32Segmented(
+                    builder, mod, fop,
+                    lowerExpr(args[0].expression),
+                    lowerExpr(args[1].expression));
+            }
             if (name == "prefixSum" || name == "prefixProduct") {
                 if (args.size() != 1) unsupported("Wave.prefix arity");
                 usedSubgroupOp_ = true;
@@ -6718,14 +6730,23 @@ llvm::Value* LoweringTarget::waveScan(llvm::IRBuilderBase& b, llvm::Module& m,
 // reduction. The shuffle moves the f32 through i32 bit punning (the divergent
 // shuffle's carrier type). NVPTX takes this path (no float redux.sync before
 // sm_100); AMDGPU/Vulkan/CPU override to native forms.
-llvm::Value* LoweringTarget::waveReduceF32(llvm::IRBuilderBase& b,
-                                           llvm::Module& m, WaveReduceFOp op,
-                                           llvm::Value* value) {
+// The shared butterfly. `bound` is the exclusive step ceiling: the loop runs
+// d = 1, 2, 4, ... while d < bound, XOR-shuffling by d each step. bound ==
+// waveWidth gives a whole-wave reduce; bound == seg (seg | width) gives an
+// independent reduce within each aligned seg-lane group, because lane ^ d
+// never leaves the group while d < seg.
+static llvm::Value* waveReduceF32Butterfly(LoweringTarget& t,
+                                           llvm::IRBuilderBase& b,
+                                           llvm::Module& m,
+                                           LoweringTarget::WaveReduceFOp op,
+                                           llvm::Value* value,
+                                           llvm::Value* bound) {
+    using WaveReduceFOp = LoweringTarget::WaveReduceFOp;
     llvm::LLVMContext& ctx = m.getContext();
     llvm::Type* i32 = llvm::Type::getInt32Ty(ctx);
     llvm::Type* f32 = llvm::Type::getFloatTy(ctx);
-    llvm::Value* lane = waveLaneId(b, m);
-    llvm::Value* width = waveWidth(b, m);
+    llvm::Value* lane = t.waveLaneId(b, m);
+    llvm::Value* width = bound;
     llvm::Function* fn = b.GetInsertBlock()->getParent();
     llvm::BasicBlock* preheader = b.GetInsertBlock();
     llvm::BasicBlock* loop = llvm::BasicBlock::Create(ctx, "fred.loop", fn);
@@ -6737,7 +6758,7 @@ llvm::Value* LoweringTarget::waveReduceF32(llvm::IRBuilderBase& b,
     accPhi->addIncoming(value, preheader);
     dPhi->addIncoming(llvm::ConstantInt::get(i32, 1), preheader);
     llvm::Value* src = b.CreateXor(lane, dPhi, "fred.src");
-    llvm::Value* otherBits = waveShuffleDivergent(
+    llvm::Value* otherBits = t.waveShuffleDivergent(
         b, m, b.CreateBitCast(accPhi, i32), src);
     llvm::Value* other = b.CreateBitCast(otherBits, f32);
     llvm::Value* acc = op == WaveReduceFOp::Sum
@@ -6752,6 +6773,27 @@ llvm::Value* LoweringTarget::waveReduceF32(llvm::IRBuilderBase& b,
     llvm::PHINode* res = b.CreatePHI(f32, 1, "fred.result");
     res->addIncoming(acc, loop);
     return res;
+}
+
+llvm::Value* LoweringTarget::waveReduceF32(llvm::IRBuilderBase& b,
+                                           llvm::Module& m, WaveReduceFOp op,
+                                           llvm::Value* value) {
+    return waveReduceF32Butterfly(*this, b, m, op, value, waveWidth(b, m));
+}
+
+llvm::Value* LoweringTarget::waveReduceF32Segmented(llvm::IRBuilderBase& b,
+                                                    llvm::Module& m,
+                                                    WaveReduceFOp op,
+                                                    llvm::Value* value,
+                                                    llvm::Value* seg) {
+    // A seg wider than the wave (block spans multiple waves) is NOT this
+    // primitive's job — that regime combines across waves through LDS, in the
+    // kernel. Clamp so a wave narrower than the block still reduces its whole
+    // wave rather than reading out-of-wave lanes: min(seg, width).
+    llvm::Value* width = waveWidth(b, m);
+    llvm::Value* useSeg = b.CreateSelect(
+        b.CreateICmpULT(seg, width), seg, width, "seg.clamp");
+    return waveReduceF32Butterfly(*this, b, m, op, value, useSeg);
 }
 
 // Quad (2x2) op defaults Ã¢ÂÂ width-agnostic forms built on the wave seams (see

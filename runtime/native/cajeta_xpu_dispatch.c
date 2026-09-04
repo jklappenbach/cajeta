@@ -123,6 +123,12 @@ uint32_t __cajeta_xpu_wave_reduce_xor_u32(uint32_t value) { return value; }
 // every consumer of the result is still under the original guard).
 float __cajeta_xpu_wave_reduce_sum_f32(float value) { return value; }
 float __cajeta_xpu_wave_reduce_max_f32(float value) { return value; }
+// Segmented reduce host fallback: a width-1 host lane is its own whole
+// segment, so the reduction is the identity. The real cross-lane work happens
+// in the device lowering (a bounded shuffle butterfly) or, on the CPU wave
+// model, the whole-wave VFABI variant of the plain reduce.
+float __cajeta_xpu_wave_reduce_sum_f32_seg(float value, uint32_t segment) { (void) segment; return value; }
+float __cajeta_xpu_wave_reduce_max_f32_seg(float value, uint32_t segment) { (void) segment; return value; }
 uint32_t __cajeta_xpu_wave_reduce_sum_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_max_u32_m(uint32_t value, _Bool active) { return active ? value : 0u; }
 uint32_t __cajeta_xpu_wave_reduce_min_u32_m(uint32_t value, _Bool active) { return active ? value : 0xFFFFFFFFu; }
