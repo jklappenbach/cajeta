@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 using cajeta_test::CajetaJit;
 
@@ -205,3 +206,68 @@ TEST(LtmBPlusTreeTests, removeMakesKeysAbsentAndReputRevives) {
 
 // 10.1.9: `order` is genuinely a parameter — the same data round-trips at
 // a small and a large fanout, and a reopened file keeps its stored order.
+
+// ── A corrupt index must FAIL, not spin ───────────────────────────────────
+//
+// Every root-to-leaf descent in LtmBPlusTree was written as
+//
+//     while (node.leaf == false) { cur = node.childIds[0]; node = fetch(cur); }
+//
+// with no bound and no cycle check. A zero-filled page deserializes as a
+// NON-leaf whose childIds[0] is 0 — and page 0 is the page we are already on,
+// so the descent revisits it forever, calling fetch() at full tilt and never
+// returning. That is what a truncated or half-written index looks like, and
+// cajeta-llm's suite hit it for real: BenchTest opened a BlockStore whose
+// `tmp/` directory did not exist, and the run pinned a core in
+// LtmBPlusTree.scan -> LtmPager.fetch until it was killed. A hang is the worst
+// available failure mode: no message, no stack, no exit code.
+//
+// The tree cannot be deeper than the number of pages it has allocated, so that
+// count is the honest bound. Exceeding it means the index is corrupt, which is
+// a RecoverableException — the same call the pager already makes when every
+// frame is pinned ("fail loudly — the -1 would otherwise corrupt the frame
+// tables").
+TEST(LtmBPlusTreeTests, scanOnAnUnopenableIndexFailsInsteadOfSpinning) {
+    // The exact trigger from cajeta-llm: an index path whose DIRECTORY does
+    // not exist. Nothing creates it, the open fails, and every page then reads
+    // back as zeros — which deserializes as a NON-leaf node whose childIds[0]
+    // is 0. Page 0 is the page already being read, so
+    //
+    //     while (node.leaf == false) { cur = node.childIds[0]; node = fetch(cur); }
+    //
+    // revisits it forever. BenchTest pinned a core there with no message, no
+    // stack and no exit code until it was killed by hand.
+    std::string dir = std::string(tmpRoot()) + "/cajeta-ltm-absent-"
+                    + std::to_string(::getpid());
+    std::filesystem::remove_all(dir);              // must NOT exist
+    ASSERT_FALSE(std::filesystem::exists(dir));
+    std::string path = dir + "/index.idx";
+
+    std::string src =
+        "package test;\n"
+        "import cajeta.collection.ltm.LtmBPlusTree;\n"
+        "import cajeta.collection.ltm.LtmCursor;\n"
+        "import cajeta.wire.Encoder;\n"
+        + std::string(kI32Enc) +
+        "public final class D {\n"
+        "    public static int32 run() {\n"
+        "        Encoder<int32> ke = heap I32Enc();\n"
+        "        Encoder<int32> ve = heap I32Enc();\n"
+        "        try {\n"
+        "            LtmBPlusTree<int32, int32> t ="
+        " heap LtmBPlusTree<int32, int32>(\"" + path + "\", ke, ve, 4, 8);\n"
+        "            LtmCursor<int32, int32> c #= t.scan();\n"
+        "            return 1;\n"
+        "        } catch (Exception e) {\n"
+        "            return 42;\n"
+        "        }\n"
+        "    }\n"
+        "}\n";
+    // Before the descent was bounded this call never returned at all. Either
+    // outcome below is acceptable as a CONTRACT -- the tree may refuse the
+    // unopenable file outright, or refuse the cyclic descent -- but it must
+    // return rather than spin.
+    int32_t rc = runI32(src);
+    EXPECT_TRUE(rc == 42 || rc == 1) << "unexpected rc " << rc;
+    EXPECT_EQ(rc, 42) << "an unopenable index should fail loudly";
+}

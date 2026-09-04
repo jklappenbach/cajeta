@@ -1,5 +1,6 @@
 package cajeta.collection.ltm;
 
+import cajeta.error.RecoverableException;
 import cajeta.io.file.File;
 import cajeta.io.file.OpenMode;
 import cajeta.lang.String;
@@ -242,7 +243,10 @@ public final class LtmBPlusTree<K, V> {
         }
         int64 cur = rootId;
         LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        int64 hops = 0;
         while (node.leaf == false) {
+            hops = hops + 1;
+            this.guardDescent(hops);
             int32 i = 0;
             while (i < node.numKeys && (key < node.keys[i]) == false) {
                 i = i + 1;
@@ -276,7 +280,10 @@ public final class LtmBPlusTree<K, V> {
         }
         int64 cur = rootId;
         LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        int64 hops = 0;
         while (node.leaf == false) {
+            hops = hops + 1;
+            this.guardDescent(hops);
             int32 i = 0;
             while (i < node.numKeys && (key < node.keys[i]) == false) {
                 i = i + 1;
@@ -307,7 +314,10 @@ public final class LtmBPlusTree<K, V> {
         }
         int64 cur = rootId;
         LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        int64 hops = 0;
         while (node.leaf == false) {
+            hops = hops + 1;
+            this.guardDescent(hops);
             int32 i = 0;
             while (i < node.numKeys && (key < node.keys[i]) == false) {
                 i = i + 1;
@@ -342,7 +352,10 @@ public final class LtmBPlusTree<K, V> {
         }
         int64 cur = rootId;
         LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        int64 hops = 0;
         while (node.leaf == false) {
+            hops = hops + 1;
+            this.guardDescent(hops);
             cur = node.childIds[0];
             node = this.pager.fetch(cur);
         }
@@ -370,6 +383,27 @@ public final class LtmBPlusTree<K, V> {
      * resident pool pages in and out mid-walk — and is valid only while
      * this tree is open and unmodified.
      */
+    /**
+     * A root-to-leaf descent visits a strictly deeper page each hop, so it
+     * cannot legitimately take more hops than the index has pages. Exceeding
+     * that means a child pointer leads backwards — a corrupt or half-written
+     * index — and the descent would otherwise revisit the same page forever.
+     *
+     * The failure mode this replaces is the worst one available: a zero-filled
+     * page deserializes as a NON-leaf whose childIds[0] is 0, page 0 is the
+     * page already being read, and the loop pins a core with no message, no
+     * stack and no exit code. cajeta-llm's suite hit exactly that on a
+     * BlockStore whose directory did not exist.
+     */
+    private void guardDescent(int64 hops) {
+        int64 pages = this.pager.getPageCount();
+        if (hops > pages) {
+            throw heap RecoverableException("ltm b+tree: root-to-leaf descent "
+                + "exceeded the index's " + pages + " pages; a child pointer "
+                + "cycles — the index is corrupt or truncated");
+        }
+    }
+
     public #LtmCursor<K, V> scan() {
         int64 rootId = this.pager.getRoot();
         if (rootId == -1) {
@@ -377,7 +411,10 @@ public final class LtmBPlusTree<K, V> {
         }
         int64 cur = rootId;
         LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        int64 hops = 0;
         while (node.leaf == false) {
+            hops = hops + 1;
+            this.guardDescent(hops);
             cur = node.childIds[0];
             node = this.pager.fetch(cur);
         }
@@ -397,7 +434,10 @@ public final class LtmBPlusTree<K, V> {
         }
         int64 cur = rootId;
         LtmBPlusTreeNode<K, V> node = this.pager.fetch(cur);
+        int64 hops = 0;
         while (node.leaf == false) {
+            hops = hops + 1;
+            this.guardDescent(hops);
             int32 i = 0;
             while (i < node.numKeys && (key < node.keys[i]) == false) {
                 i = i + 1;

@@ -173,6 +173,16 @@ public class LtmPager<K, V> {
         return this.entryCount;
     }
 
+    /**
+     * Pages this index has ever allocated. A root-to-leaf descent visits a
+     * strictly deeper page each hop, so it cannot legitimately take more than
+     * this many — which makes the count the honest bound for detecting a
+     * child pointer that cycles.
+     */
+    public int64 getPageCount() {
+        return this.nextPageId;
+    }
+
     /** Bump the live entry count by one (call after inserting a new key). */
     public void incEntryCount() {
         this.entryCount = this.entryCount + 1;
