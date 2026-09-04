@@ -9,6 +9,7 @@
 #include "llvm/IR/PassManager.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/Utils/Mem2Reg.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
@@ -168,10 +169,35 @@ void optimizeDeviceModule(llvm::Module& m, llvm::TargetMachine& tm) {
     pb.registerLoopAnalyses(lam);
     pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-    llvm::FunctionPassManager fpm;
-    fpm.addPass(llvm::PromotePass());  // mem2reg
+    // Full IR pipeline before codegen. addPassesToEmitFile runs NO IR passes,
+    // so without this every @Kernel ships UNOPTIMIZED — redundant address math
+    // spills regalloc, and (the correctness half) the AlwaysInline @Device
+    // helpers stay out-of-line. Default O3, matching AmdgpuBackend; override
+    // with CAJETA_XPU_DEVICE_OPT=0|1|2|3.
     llvm::ModulePassManager mpm;
-    mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    int lvl = 3;
+    if (const char* e = std::getenv("CAJETA_XPU_DEVICE_OPT")) lvl = std::atoi(e);
+    if (lvl <= 0) {
+        // Correctness floor — UNLIKE AmdgpuBackend's lvl-0 (mem2reg only), the
+        // inliner is NOT optional on nvptx. lowerDeviceFn stamps every @Device
+        // helper `alwaysinline` and passes the kernel's buffer BASE by value,
+        // relying on inlining to splice that base into the kernel's real buffer
+        // access (KernelLowering lowerDeviceFn, "the base flows straight through
+        // inlining"). Left out-of-line, the call reads a bogus base and
+        // cuLaunchKernel returns CUDA_ERROR_ILLEGAL_ADDRESS (700). So even the
+        // minimal fallback runs AlwaysInliner before mem2reg.
+        mpm.addPass(llvm::AlwaysInlinerPass());
+        llvm::FunctionPassManager fpm;
+        fpm.addPass(llvm::PromotePass());  // mem2reg
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(fpm)));
+    } else {
+        // buildPerModuleDefaultPipeline(O1/O2/O3) runs the inliner (which honors
+        // alwaysinline) plus mem2reg and the rest, so the 700 fix holds here too.
+        llvm::OptimizationLevel ol = lvl == 1 ? llvm::OptimizationLevel::O1
+                                   : lvl == 2 ? llvm::OptimizationLevel::O2
+                                              : llvm::OptimizationLevel::O3;
+        mpm = pb.buildPerModuleDefaultPipeline(ol);
+    }
     mpm.run(m, mam);
 }
 
