@@ -78,22 +78,34 @@ device code should FAIL by default (or under a `--strict-device` flag the test
 harness sets), converting the silent cliff into a build error. The current note
 is necessary but not sufficient.
 
-## Workaround until fixed
+## Workaround until fixed — MEASURED, and only partial (2026-09-04)
 
 `CAJETA_GPU_COOPMATRIX_IMPL=software cajeta … --xpu-backend=nvptx` forces the
-portable tile for every cooperative matrix, so every kernel lowers and runs
-correctly (unaccelerated) on NVIDIA. This should be measured first — if it
-turns the 37 red tests green, it both confirms the diagnosis and unblocks a
-CORRECT (if slow) NVIDIA path to benchmark against llama.cpp while the native
-path is completed.
+portable tile for every cooperative matrix. Measured on the 4090, it moved the
+suite from **319 passed / 37 failed to 330 passed / 26 failed** — it recovers
+the 11 kernels that were skipped PURELY for the coop-matrix native-only reason,
+but **26 still fail**, and the remaining failures wear a DIFFERENT signature:
+"expected condition to be true" (a logic/numeric divergence), not "every value
+is zero / kernel that never ran". Sampled classes: `WmmaIdTileTest`
+(q4k/q6k Epi/Mw id-tile agreement), `SafetensorsTest`, `ResidentMoeDecodeTest`,
+`RaggedTest`.
+
+So there is NO one-env-var correct NVIDIA path: the coop-matrix skip is the
+DOMINANT cause (11 of the family) but not the only one. The remaining 26 are
+either (a) constructs the software tier still cannot lower, or (b) genuine
+software-tier / portable-path correctness bugs on NVPTX that AMD never exercised
+because AMD took the native tier. Enumerating and splitting the 26 is Unit 0's
+first task — the tail-only capture of the measuring run showed 7 of them; a
+full-output rerun is needed to list all 26 with their messages.
 
 ## Acceptance
 
 - A full `cajeta-llm` `--xpu-backend=nvptx` run on the 4090 with no override:
   0 device tests fail with "kernel that never ran", 0 `no registered kernel`
   at runtime.
-- With `CAJETA_GPU_COOPMATRIX_IMPL=software`: the same, proving the
-  portable-tier demotion path is correct on NVIDIA (the interim gate).
+- With `CAJETA_GPU_COOPMATRIX_IMPL=software`: 0 device tests fail. MEASURED
+  2026-09-04 to be INSUFFICIENT alone (37 -> 26), so this acceptance requires
+  fixing the residual 26 as well, not just the coop-matrix skip.
 - A kernel using a col-major `CooperativeMatrix.load` lowers on NVPTX and runs
   on device, matching the host reference (a new `XpuCooperativeMatrixDeviceTests`
   case — currently only `nvptxCoopMatrixLowersToWmma` exists, row-major, emit
