@@ -290,6 +290,7 @@ jobs:
             libgoogle-glog-dev \
             libzstd-dev \
             libzmq3-dev \
+            libvulkan-dev \
             vim-common \
             libxxhash-dev \
             libssl-dev \
@@ -451,7 +452,9 @@ jobs:
             zstd \
             zeromq \
             xxhash \
-            coreutils
+            coreutils \
+            vulkan-headers \
+            vulkan-loader
           # Apple's system clang doesn't know about the brew llvm headers/libs
           # unless we point CMake at the brew prefix explicitly.
           echo "CMAKE_PREFIX_PATH=$(brew --prefix llvm)" >> "$GITHUB_ENV"

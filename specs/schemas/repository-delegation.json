@@ -40,6 +40,7 @@
       "required": [
         "type",
         "repository",
+        "issued-at",
         "not-after",
         "keys"
       ],
@@ -54,6 +55,10 @@
           "description": "The repository ORIGIN this speaks for — scheme://host[:port] — checked against the origin it was fetched from. Without the check, one repository's delegation could be replayed at another and its online key would sign for both.\n\nAn ORIGIN, never the client's configured name for the repository. That name comes from the user's own manifest, so a document naming it verifies on one machine and is refused on the next.",
           "type": "string",
           "minLength": 1
+        },
+        "issued-at": {
+          "description": "When this delegation was produced. REQUIRED, and for the reason given in publisher-trust §2.9, which governs every signed document here and not only the organization one: without it the delegation is REPLAYABLE. Expiry alone does not help — a superseded delegation is still validly signed and still inside its own window, so a mirror serves last quarter's copy and the release key that was rotated out is trusted again. Rotating a key out of this list is how a compromised release key is retired, which makes this the hole that undoes that repair.\n\nOptional would be useless: a delegation omitting it would simply skip the comparison, which is the whole attack. A client refuses one older than the newest it has already accepted for the repository.",
+          "$ref": "https://olla.cajeta.dev/schemas/org-key-document.json#/$defs/timestamp"
         },
         "not-after": {
           "description": "Delegation expiry. Refused once passed, however obtained, including from cache — a stale delegation is how a revoked signing key keeps working.",

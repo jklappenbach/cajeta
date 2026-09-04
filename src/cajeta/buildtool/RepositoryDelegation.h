@@ -46,6 +46,13 @@ namespace cajeta::buildtool {
         // second implementation of "is this key usable now".
         std::vector<OrgSigningKey> keys;
         std::time_t notAfter = 0;
+        // When this delegation was produced (spec §2.9, which governs every
+        // signed document and not only the organization one). REQUIRED, for
+        // the same reason it is there: expiry alone does not stop a replay,
+        // because a superseded delegation is still validly signed and still
+        // inside its own window. Serving last quarter's copy reinstates the
+        // release key that was rotated out.
+        std::time_t issuedAt = 0;
         std::string rootKeyId;      // which root signed it (spec §6.3)
 
         // Keys inside their window at `now`. Empty is a legitimate answer for
@@ -63,10 +70,14 @@ namespace cajeta::buildtool {
     // should be able to hold an expired one and forget to check.
     // `origin` is the repository this was fetched from (Repository::origin()).
     // A delegation claiming a different one is refused.
+    // `seenIssuedAt` is the newest issued-at already accepted for this
+    // repository, and 0 means none — which is correct on a first fetch, so it
+    // is defaulted. A caller holding a durable high-water mark passes it.
     llvm::Expected<RepositoryDelegation> loadRepositoryDelegation(
         const std::string& envelopeJson,
         const std::vector<RootKey>& roots,
         const std::string& origin,
-        std::time_t now);
+        std::time_t now,
+        std::time_t seenIssuedAt = 0);
 
 } // namespace cajeta::buildtool

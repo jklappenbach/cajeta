@@ -56,6 +56,7 @@ std::string delegationPayload(const std::string& repository,
                               const TestKeyPair& releaseKey) {
     std::ostringstream p;
     p << "{\"type\":\"repository-delegation\","
+      << "\"issued-at\":\"2026-01-01T00:00:00Z\","
       << "\"repository\":\"" << repository << "\","
       << "\"not-after\":\"2030-01-01T00:00:00Z\","
       << "\"keys\":[{\"id\":\"release-1\",\"algorithm\":\"ed25519\","

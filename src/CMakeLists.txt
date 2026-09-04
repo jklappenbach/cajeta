@@ -184,6 +184,52 @@ if(CAJETA_REQUIRE_VULKAN AND NOT CAJETA_VULKAN_INCLUDE_DIR)
             "not found — the Vulkan XPU backend would be missing from this build.")
 endif()
 
+# ── iOS / tvOS: MoltenVK, linked STATICALLY (apple-vulkan spec 4.2-4.5) ──────
+# Those platforms have no Vulkan loader and Apple rejects naked dylibs
+# (ITMS-90171), so the ICD *is* the implementation: the runtime binds
+# vkGetInstanceProcAddr directly rather than dlopening a loader. A static
+# library also carries no signature of its own, so Team ID validation never
+# comes up. Dormant on every other platform.
+set(CAJETA_MOLTENVK_VERSION "1.4.2" CACHE STRING
+        "MoltenVK release whose static xcframework is vendored for iOS/tvOS")
+set(CAJETA_MOLTENVK_ROOT "${CMAKE_SOURCE_DIR}/External/MoltenVK" CACHE PATH
+        "Unpacked MoltenVK release; scripts/fetch-moltenvk.sh populates it")
+if(DEFINED MVK_USE_METAL_PRIVATE_API OR DEFINED ENV{MVK_USE_METAL_PRIVATE_API})
+    # MoltenVK's own README: enabling this disqualifies App Store distribution.
+    message(FATAL_ERROR "MVK_USE_METAL_PRIVATE_API is set. cajeta never builds "
+            "or links a MoltenVK that uses Metal private API — it disqualifies "
+            "App Store distribution (apple-vulkan spec 4.5).")
+endif()
+if(IOS OR CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+    if(CMAKE_SYSTEM_NAME STREQUAL "tvOS")
+        set(_mvk_platform "tvos")
+    else()
+        set(_mvk_platform "ios")
+    endif()
+    # Apple names xcframework slices <platform>-<archs>[-simulator]. The sysroot
+    # is what actually distinguishes a device build from a simulator one.
+    if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+        set(_mvk_slice "${_mvk_platform}-arm64_x86_64-simulator")
+    else()
+        set(_mvk_slice "${_mvk_platform}-arm64")
+    endif()
+    find_library(CAJETA_MOLTENVK_LIBRARY MoltenVK
+            PATHS "${CAJETA_MOLTENVK_ROOT}/static/MoltenVK.xcframework/${_mvk_slice}"
+            NO_DEFAULT_PATH)
+    if(NOT CAJETA_MOLTENVK_LIBRARY)
+        message(FATAL_ERROR
+                "MoltenVK ${CAJETA_MOLTENVK_VERSION} slice '${_mvk_slice}' not found "
+                "under ${CAJETA_MOLTENVK_ROOT}. Run scripts/fetch-moltenvk.sh.")
+    endif()
+    message(STATUS "MoltenVK ${CAJETA_MOLTENVK_VERSION} (${_mvk_slice}) -> "
+            "${CAJETA_MOLTENVK_LIBRARY}")
+    # MoltenVK's own dependencies. Static linking pulls none of these in for us.
+    foreach(_fw Metal Foundation QuartzCore CoreGraphics IOSurface UIKit)
+        find_library(_mvk_fw_${_fw} ${_fw} REQUIRED)
+        list(APPEND CAJETA_MOLTENVK_FRAMEWORKS ${_mvk_fw_${_fw}})
+    endforeach()
+endif()
+
 # The major cajeta's codegen is written against. Pinned, and REQUESTED rather
 # than merely checked afterwards: a bare `find_package(LLVM CONFIG)` accepts
 # whatever config CMake's default search hits first, and a machine with ROCm
@@ -666,6 +712,10 @@ endif()
 if(CAJETA_VULKAN_INCLUDE_DIR)
     list(APPEND CAJETA_RT_FLAGS "-I${CAJETA_VULKAN_INCLUDE_DIR}")
 endif()
+if(CAJETA_MOLTENVK_LIBRARY)
+    # No loader on iOS/tvOS — the runtime binds vkGetInstanceProcAddr directly.
+    list(APPEND CAJETA_RT_FLAGS "-DCAJETA_RT_VULKAN_STATIC=1")
+endif()
 
 # cajeta_runtime.c is a single TU that `#include`s the per-subsystem native
 # sources (cajeta_net_*.c, cajeta_hash_*.c, …). A bare `DEPENDS` on the top
@@ -1126,6 +1176,11 @@ target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC
         ${ANTLR_CajetaGrammarParser_OUTPUT_DIR})
 if(CAJETA_VULKAN_INCLUDE_DIR)
     target_include_directories(${CMAKE_PROJECT_NAME}_lib PUBLIC ${CAJETA_VULKAN_INCLUDE_DIR})
+endif()
+if(CAJETA_MOLTENVK_LIBRARY)
+    target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_RT_VULKAN_STATIC=1)
+    target_link_libraries(${CMAKE_PROJECT_NAME}_lib PUBLIC
+            ${CAJETA_MOLTENVK_LIBRARY} ${CAJETA_MOLTENVK_FRAMEWORKS})
 endif()
 if(CAJETA_HAS_LLD)
     target_compile_definitions(${CMAKE_PROJECT_NAME}_lib PUBLIC CAJETA_HAS_LLD=1)

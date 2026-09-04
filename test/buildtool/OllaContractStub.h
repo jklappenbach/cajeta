@@ -75,6 +75,7 @@ namespace cajeta::buildtool::testing {
             const std::string repo = repository.empty() ? origin() : repository;
             std::ostringstream p;
             p << "{\"type\":\"repository-delegation\","
+              << "\"issued-at\":\"2026-01-01T00:00:00Z\","
               << "\"repository\":\"" << repo << "\","
               << "\"not-after\":\"2030-01-01T00:00:00Z\","
               << "\"keys\":[{\"id\":\"release-1\",\"algorithm\":\"ed25519\","
