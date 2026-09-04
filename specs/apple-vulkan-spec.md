@@ -1,7 +1,9 @@
 # Apple Vulkan support — spec
 
 > Status: **active** — approved 2026-09-01. Evidence: `apple-vulkan-findings.md`; §N references
-> point there. Plan: `agents/apple-vulkan-plan.md`.
+> point there. Plan: `agents/apple-vulkan-plan.md`. Everything written without Apple
+> hardware is written; `apple-vulkan-validation.md` is the ordered list of what
+> confirming it costs.
 >
 > Supersedes `apple-targets-spec.md` §3.4's claim *"No Vulkan on iOS/tvOS"* — that is
 > wrong. MoltenVK ships iOS 15+ and tvOS 15+ slices. `apple-targets-spec.md` keeps its
@@ -84,6 +86,12 @@ Both drivers are ICDs behind the Khronos loader. KosmicKrisp exports only the th
   its `driverInfo` version string.
 
 ## 4. Platform coverage
+
+> **Depends on `apple-targets-spec.md` Tier 1, which is not implemented.** That
+> spec is a draft: no `--emit=staticlib`, no SDK/sysroot handling, and the fiber
+> engine still needs `ucontext`, absent from the iOS/tvOS arm64 SDKs. The
+> MoltenVK vendoring, slice selection and static-link path below are written and
+> inert until an `arm64-apple-ios` build exists to use them.
 
 - **4.1** When targeting `aarch64-apple-darwin`, both drivers are candidates and §3 picks.
 - **4.2** When targeting `arm64-apple-ios` or `arm64-apple-tvos`, MoltenVK is the only

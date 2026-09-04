@@ -31,7 +31,8 @@ namespace cajeta::buildtool {
             const std::string& envelopeJson,
             const std::vector<RootKey>& roots,
             const std::string& origin,
-            std::time_t now) {
+            std::time_t now,
+            std::time_t seenIssuedAt) {
         // Verify before parsing, as everywhere else: nothing inside an
         // unverified document influences anything, including which errors
         // are reported about it.
@@ -77,6 +78,20 @@ namespace cajeta::buildtool {
                          "would sign for both");
         }
 
+        // REQUIRED (spec §2.9.2). An optional issued-at cannot be checked —
+        // a delegation omitting it would simply skip the comparison below,
+        // which is the replay the field exists to stop.
+        auto issued = obj->getString("issued-at");
+        if (!issued) {
+            return err("repository delegation for '" + del.repository
+                       + "' has no issued-at. Without it a previous, still "
+                         "unexpired delegation can be replayed, reinstating "
+                         "the release key that was rotated out.");
+        }
+        auto issuedAt = parseUtcTimestamp(issued->str());
+        if (!issuedAt) return issuedAt.takeError();
+        del.issuedAt = *issuedAt;
+
         auto notAfter = obj->getString("not-after");
         if (!notAfter) return err("repository delegation: no not-after");
         auto expiry = parseUtcTimestamp(notAfter->str());
@@ -98,6 +113,17 @@ namespace cajeta::buildtool {
                        + "; it is validly signed but out of date, and a stale "
                          "delegation is how a revoked signing key keeps "
                          "working");
+        }
+        // Freshness after expiry, so an old delegation reports as expired
+        // rather than as rolled back — the two send an operator to different
+        // places.
+        if (seenIssuedAt != 0 && del.issuedAt < seenIssuedAt) {
+            return err("repository delegation for '" + del.repository
+                       + "' is older than one already accepted (issued "
+                       + issued->str() + "). It is validly signed and inside "
+                         "its own window, which is exactly what makes a "
+                         "replayed delegation useful: it reinstates the "
+                         "release key that was rotated out.");
         }
         return del;
     }

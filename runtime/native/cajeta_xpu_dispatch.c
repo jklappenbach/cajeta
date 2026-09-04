@@ -527,6 +527,27 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
                 default:
                     return 0;
             }
+        case 3:  // AtomicInt64 — Buffer<int64|uint64>.atomic* runs natively.
+            // The Vulkan init already probes VK_KHR_shader_atomic_int64 and
+            // enables shaderBufferInt64Atomics when the device has it; this
+            // just surfaces that verdict. Neither Apple driver advertises the
+            // extension, so both answer 0 and callers take the degrade path
+            // (apple-vulkan spec 4.6). CUDA and HIP have had 64-bit global
+            // atomics since forever; CPU serializes and always can.
+            switch (be) {
+                case CAJ_XPU_CPU:
+                case CAJ_XPU_CUDA:
+                case CAJ_XPU_HIP:
+                    return 1;
+                case CAJ_XPU_VULKAN:
+#if defined(CAJETA_RT_HAS_VULKAN)
+                    return g_xpu_vk.atomicInt64 ? 1 : 0;
+#else
+                    return 0;
+#endif
+                default:
+                    return 0;
+            }
         default: return 0;
     }
 }

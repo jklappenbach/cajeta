@@ -155,7 +155,9 @@ loop calling `saxpy(...)` once per index (see `test/xpu/XpuLaunchAndSaxpyTests`)
 ## Setup / preconditions
 
 - Backend chosen at first device touch (`CAJETA_XPU_BACKEND` to force one);
-  `CAJETA_GPU_AS_IMPL` forces the ray-query impl.
+  `CAJETA_GPU_AS_IMPL` forces the ray-query impl. On macOS, where both
+  KosmicKrisp and MoltenVK may be installed, Vulkan prefers KosmicKrisp;
+  `CAJETA_XPU_VK_DRIVER=kosmickrisp|moltenvk` forces one.
 - Builds only against the cajeta-llvm fork (some Vulkan SPIR-V paths need fork
   intrinsics); ray query and storage images require the Vulkan backend.
 

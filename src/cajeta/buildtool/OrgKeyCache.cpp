@@ -113,18 +113,30 @@ namespace cajeta::buildtool {
                        "cannot be checked");
         }
 
-        auto del = loadRepositoryDelegation(**bytes, *roots, repo.origin(), now);
-        if (!del) return del.takeError();
-        if (del->repository != repo.name()) {
-            // The delegation has to speak for the repository we asked. Without
-            // this, one repository's delegation could be replayed by another
-            // and its online key would sign for both.
-            return err("repository '" + repo.name() + "' served a delegation "
-                       "for '" + del->repository + "'");
+        // The origin binding is enforced inside loadRepositoryDelegation,
+        // against repo.origin(). There was a second comparison here against
+        // repo.name() — the label from the user's own manifest — which is the
+        // bug 1bc40610 fixed in the revocation path and missed in this copy.
+        // The two strings are equal only when a repository is configured
+        // under its own origin, so every real deployment was refused.
+        std::time_t seenIssuedAt = 0;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            auto seen = seenIssuedAt_.find(key);
+            if (seen != seenIssuedAt_.end()) seenIssuedAt = seen->second;
         }
+
+        auto del = loadRepositoryDelegation(**bytes, *roots, repo.origin(), now,
+                                            seenIssuedAt);
+        if (!del) return del.takeError();
 
         std::lock_guard<std::mutex> lk(mu_);
         ++fetches_;
+        // The high-water mark outlives the cached delegation deliberately: an
+        // entry expires on every rotation, and if the mark went with it each
+        // expiry would reopen the replay window.
+        auto& high = seenIssuedAt_[key];
+        if (del->issuedAt > high) high = del->issuedAt;
         delegations_[key] = *del;
         return std::optional<RepositoryDelegation>{*del};
     }
