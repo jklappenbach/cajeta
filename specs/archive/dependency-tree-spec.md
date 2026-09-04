@@ -1,6 +1,6 @@
 # Dependency tree — spec
 
-> Status: **active** — approved 2026-09-04. Plan: `agents/dependency-tree-plan.md`.
+> Status: **closed** — 2026-09-04, all five units done. Plan: `agents/archive/dependency-tree-plan.md`.
 > JSON output schema: `specs/schemas/deps-output.schema.json`.
 
 ## 1. Definition
