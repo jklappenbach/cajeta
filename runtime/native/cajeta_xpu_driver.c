@@ -247,6 +247,17 @@ static int cajeta_xpu_cuda_init_locked(void) {
             (void*) g_xpu_cuda.cuEventQuery, (void*) g_xpu_cuda.cuStreamWaitEvent,
             (void*) g_xpu_cuda.cuEventDestroy);
     }
+    // cajeta-profiler §5.4 — CUPTI's counterpart of the rocprofiler configure
+    // the HIP loader does below. Binding libcupti happens lazily on first use;
+    // ARMING it (buffer callbacks + activity kinds) has to happen before the
+    // context that will produce the records exists, or the first launches
+    // produce none. Gated on the profiler being armed, because enabling
+    // activity kinds installs process-wide interception an unprofiled run
+    // should not pay for. Both calls report their own failures and degrade to
+    // the host window, so neither can fail CUDA initialization.
+    if (__cajeta_prof_gpu_is_armed()) {
+        if (__cajeta_prof_cupti_init()) __cajeta_prof_cupti_configure();
+    }
     if (g_xpu_cuda.cuInit(0) != 0) return 0;
     int count = 0;
     if (g_xpu_cuda.cuDeviceGetCount(&count) != 0 || count <= 0) return 0;

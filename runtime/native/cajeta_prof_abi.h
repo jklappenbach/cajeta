@@ -299,6 +299,12 @@ int32_t     __cajeta_prof_cupti_on_wsl(void);
  * begin/end. `pushes`/`pops` count ATTEMPTS at entry, so a test can tell that
  * the launch path is wired to them apart from their working when called
  * directly. */
+// Arming, which binding is NOT: registers the activity buffer callbacks and
+// enables the kinds whose records the seam resolves launches with. Until this
+// runs, kinds_enabled is 0, so tracing() is false and every CUDA launch
+// publishes at host tier. The ROCm counterpart is __cajeta_prof_rocm_configure.
+int32_t     __cajeta_prof_cupti_configure(void);
+int32_t     __cajeta_prof_cupti_configured(void);
 int32_t     __cajeta_prof_cupti_tracing(void);
 int32_t     __cajeta_prof_cupti_push(int64_t launchId);
 int32_t     __cajeta_prof_cupti_pop(void);

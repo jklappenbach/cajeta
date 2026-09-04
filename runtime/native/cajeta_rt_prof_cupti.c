@@ -96,6 +96,7 @@ typedef struct {
     int32_t    ts_status;         // the registration attempt's raw CUptiResult;
                                   // -1 = never attempted (symbol absent)
     int32_t    kinds_enabled;     // how many activity kinds we have enabled
+    int32_t    configured;        // buffer callbacks registered + kinds enabled
     int32_t    ts_first;          // ts_registered happened at kinds_enabled == 0
     int64_t    records;           // kernel records decoded and usable
     int64_t    rejected;          // kernel records refused as unusable
@@ -301,6 +302,7 @@ static const char* caj_cupti_liberr(void) {
 
 #define CAJ_CUPTI_KIND_KERNEL             3   /* CUPTI_ACTIVITY_KIND_KERNEL */
 #define CAJ_CUPTI_KIND_CONCURRENT_KERNEL 10   /* ..._CONCURRENT_KERNEL */
+#define CAJ_CUPTI_KIND_EXTERNAL_CORRELATION 39
 
 #define CAJ_CUPTI_KREC_OFF_KIND   0
 #define CAJ_CUPTI_KREC_OFF_START 16
@@ -323,7 +325,15 @@ int32_t __cajeta_prof_cupti_kernel_prefix_bytes(void) {
 // consistent and describe a program the user never ran. CONCURRENT_KERNEL is
 // the only kernel kind this backend may enable.
 int32_t __cajeta_prof_cupti_kind_is_allowed(int32_t kind) {
-    return kind == CAJ_CUPTI_KIND_CONCURRENT_KERNEL ? 1 : 0;
+    // EXTERNAL_CORRELATION is not a kernel kind and does not serialize
+    // anything: it emits one small record per push/pop, and pass 1 of the
+    // buffer walk reads exactly those to learn which launch a kernel belongs
+    // to. Refusing it would leave every kernel record unmapped, and an
+    // unmapped kernel is DROPPED rather than guessed at (correctly) — so the
+    // backend would deliver records, decode them, and publish no device span
+    // at all, which is the hardest kind of nothing to debug.
+    return kind == CAJ_CUPTI_KIND_CONCURRENT_KERNEL
+        || kind == CAJ_CUPTI_KIND_EXTERNAL_CORRELATION;
 }
 
 static uint64_t caj_cupti_rd64(const unsigned char* p) {
@@ -448,7 +458,6 @@ int64_t __cajeta_prof_cupti_pops(void)     { return caj_cupti.pops; }
 //     kind=0  externalKind=4  externalId=8  correlationId=16  sizeof=24
 // Read by offset for the same reason kernel records are.
 
-#define CAJ_CUPTI_KIND_EXTERNAL_CORRELATION 39
 #define CAJ_CUPTI_XREC_OFF_KIND    0
 #define CAJ_CUPTI_XREC_OFF_EXT_ID  8
 #define CAJ_CUPTI_XREC_OFF_CORR   16
@@ -645,6 +654,105 @@ int32_t __cajeta_prof_cupti_enable_kind(int32_t kind) {
 
 int32_t __cajeta_prof_cupti_kinds_enabled(void) { return caj_cupti.kinds_enabled; }
 
+// ── the arming step (the ROCm backend's __cajeta_prof_rocm_configure twin) ─
+//
+// Binding libcupti is NOT arming. Until the activity buffer callbacks are
+// registered, `caj_cupti_consume_buffer` is unreachable and no record can ever
+// be delivered; until a kind is enabled, none is ever produced. Both were
+// missing, so `__cajeta_prof_cupti_tracing()` — which requires
+// kinds_enabled > 0 — was false in every shipping build and every CUDA launch
+// published at host tier no matter how completely CUPTI bound.
+//
+// The buffer size is a latency/throughput trade, not a correctness one: bigger
+// means fewer completion callbacks and a longer wait before a record becomes
+// visible to a flush. 1 MiB holds several thousand records.
+#define CAJ_CUPTI_BUF_BYTES (1024 * 1024)
+
+// CUPTI declares these with CUPTIAPI, which is __stdcall on Windows and empty
+// elsewhere. On x86-64 Windows there is only one calling convention, so a
+// plain function is ABI-identical — the timestamp callback above is already
+// registered the same way and works on the PHOENIX lane.
+static void caj_cupti_buffer_requested(uint8_t** buffer, size_t* size,
+                                       size_t* maxNumRecords) {
+    uint8_t* p = (uint8_t*) malloc(CAJ_CUPTI_BUF_BYTES);
+    // malloc's alignment already satisfies the 8 bytes CUPTI requires of an
+    // activity buffer on every 64-bit target the runtime builds for.
+    *buffer = p;
+    *size = p ? (size_t) CAJ_CUPTI_BUF_BYTES : 0;
+    *maxNumRecords = 0;   /* as many as fit */
+}
+
+static void caj_cupti_buffer_completed(void* context, uint32_t streamId,
+                                       uint8_t* buffer, size_t size,
+                                       size_t validSize) {
+    (void) context; (void) streamId; (void) size;
+    caj_cupti_consume_buffer(buffer, validSize);
+    free(buffer);
+}
+
+int32_t __cajeta_prof_cupti_configure(void) {
+    int32_t okKernel, okExternal;
+    pthread_mutex_lock(&caj_cupti_mutex);
+    if (caj_cupti.state != CAJETA_CUPTI_READY || caj_cupti.degraded) {
+        // Nothing here can improve a backend that never bound, and calling
+        // through the api table would be calling through nulls.
+        pthread_mutex_unlock(&caj_cupti_mutex);
+        return 0;
+    }
+    if (caj_cupti.configured) {
+        pthread_mutex_unlock(&caj_cupti_mutex);
+        return caj_cupti.kinds_enabled > 0;
+    }
+    if (!caj_cupti.api.activity_register_callbacks) {
+        caj_cupti_say(CAJETA_CUPTI_READY, NULL,
+                      "CUPTI bound but cuptiActivityRegisterCallbacks did not "
+                      "resolve; no activity record can be delivered and GPU "
+                      "timing degrades to host submit-to-complete");
+        pthread_mutex_unlock(&caj_cupti_mutex);
+        return 0;
+    }
+    // Callbacks BEFORE kinds: a record produced with nowhere to go is a record
+    // lost, and the window between the two calls is real.
+    if (caj_cupti.api.activity_register_callbacks(
+            (void*) caj_cupti_buffer_requested,
+            (void*) caj_cupti_buffer_completed) != CAJ_CUPTI_SUCCESS) {
+        caj_cupti_say(CAJETA_CUPTI_READY, NULL,
+                      "cuptiActivityRegisterCallbacks failed; no activity "
+                      "record can be delivered and GPU timing degrades to host "
+                      "submit-to-complete");
+        pthread_mutex_unlock(&caj_cupti_mutex);
+        return 0;
+    }
+    caj_cupti.configured = 1;
+
+    // EXTERNAL_CORRELATION first: it is what a kernel record is resolved
+    // THROUGH, so enabling the kernel kind first would open a window in which
+    // kernels arrive that can never be attributed.
+    okExternal = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_EXTERNAL_CORRELATION);
+    okKernel   = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_CONCURRENT_KERNEL);
+    if (!okKernel || !okExternal) {
+        char why[CAJ_CUPTI_REASON_MAX];
+        snprintf(why, sizeof(why),
+                 "CUPTI bound but cuptiActivityEnable refused a kind it needs "
+                 "(concurrent-kernel=%d external-correlation=%d); %s, so GPU "
+                 "timing degrades to host submit-to-complete",
+                 (int) okKernel, (int) okExternal,
+                 !okKernel ? "no kernel record will be produced"
+                           : "kernel records cannot be tied to their launches");
+        caj_cupti_say(CAJETA_CUPTI_READY, NULL, why);
+        pthread_mutex_unlock(&caj_cupti_mutex);
+        return 0;
+    }
+    caj_cupti_say(CAJETA_CUPTI_READY, NULL,
+                  "CUPTI bound and configured (concurrent-kernel + "
+                  "external-correlation activity enabled; device spans arrive "
+                  "in the host clock domain)");
+    pthread_mutex_unlock(&caj_cupti_mutex);
+    return 1;
+}
+
+int32_t __cajeta_prof_cupti_configured(void) { return caj_cupti.configured; }
+
 // Drain CUPTI's completed activity buffers. Each buffer that comes back runs
 // through caj_cupti_consume_buffer, which resolves parked launches; whatever
 // is still unclaimed after this has waited long enough and drains at host
@@ -665,6 +773,10 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.ts_registered = 0;
     caj_cupti.ts_status = -1;
     caj_cupti.kinds_enabled = 0;
+    // Unlike rocprofiler's process-wide force_configure, CUPTI's registration
+    // belongs to the library handle reset just closed — so a later init may,
+    // and must, configure again.
+    caj_cupti.configured = 0;
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
     caj_cupti.rejected = 0;
