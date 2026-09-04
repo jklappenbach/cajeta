@@ -74,6 +74,7 @@ void printUsage(const char* progname) {
               << "  install            Publish this project's library into the local repository.\n"
               << "  publish            Publish to a remote repository.\n"
               << "  info | show        Inspect the project / a dependency.\n"
+              << "  deps               Print the dependency tree (--format=text|json|csv).\n"
               << "  doc <root>         Generate API documentation (doc --help).\n"
               << "  search-skill | list-skills | get-skills   Skill discovery in dependencies.\n"
               << "  coverage | verify | verify-reproducible | trust   Quality and provenance.\n"
