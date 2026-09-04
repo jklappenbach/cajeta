@@ -108,6 +108,9 @@ struct cajeta_cuda_api {
     int (*cuEventQuery)(void*);
     int (*cuStreamWaitEvent)(void*, void*, unsigned);
     int (*cuEventDestroy)(void*);
+    // The profiler's EVENT-tier fallback. Answers FLOAT MILLISECONDS between
+    // two completed events; ships with the driver, unlike CUPTI.
+    int (*cuEventElapsedTime)(float*, void*, void*);
     int (*cuLaunchKernel)(void*, unsigned, unsigned, unsigned,
                           unsigned, unsigned, unsigned, unsigned,
                           void*, void**, void**);
@@ -146,6 +149,284 @@ static void* cajeta_xpu_libopen(const char* name) {
 #else
     return dlopen(name, RTLD_NOW | RTLD_LOCAL);
 #endif
+}
+
+// ── the profiler's CUDA event bracket (the EVENT-tier fallback) ──────────
+//
+// CUPTI ships with the CUDA Toolkit; cuEventRecord and cuEventElapsedTime ship
+// with the DRIVER. So on the overwhelmingly common machine — a GPU, a driver,
+// no Toolkit — a pair of events recorded around the launch is the only
+// mechanism that can time a kernel on the device at all. That is one rung
+// below a vendor dispatch record (TIER_EVENT, not TIER_DEVICE) and far above
+// what it replaces, which was the host's submit-to-complete window.
+//
+// The hard constraint is §5.1.3: reading an event's elapsed time requires that
+// event to have COMPLETED, and waiting for that inside the launch path would
+// serialize every launch against its own kernel — producing a beautifully
+// precise trace of a program nobody ran. So nothing here ever waits. Pairs are
+// recorded and parked; a later drain polls with cuEventQuery and resolves only
+// what has already finished.
+//
+// Placement on the host timeline comes from a REFERENCE event, recorded and
+// synchronized once beside a host timestamp. Each span is then
+// ref_host_ns + elapsed(ref, start). Without it a bracket carries a perfectly
+// correct DURATION placed at whatever the device's own epoch happens to be —
+// which reads as a plausible trace right up until a CPU track is laid beside it.
+#define CAJ_CUDA_BRACKET_MAX 256
+
+// cuEventElapsedTime answers FLOAT MILLISECONDS, so its resolution decays as
+// the gap from the reference grows: by 10 s the ulp is about a microsecond,
+// which is the placement error this is willing to carry. Durations never pay
+// it — they come from elapsed(start, end), a small number measured directly.
+#define CAJ_CUDA_ANCHOR_MAX_MS 10000.0f
+
+/* CUDA_ERROR_NOT_READY — how cuEventQuery says "still running". Spelled as its
+ * value because this file never includes a CUDA header. */
+#define CAJ_CUDA_ERROR_NOT_READY 600
+
+typedef struct {
+    int32_t in_use;
+    int64_t launch_id;
+    void*   ev_start;
+    void*   ev_end;
+} CajCudaBracket;
+
+static CajCudaBracket  g_cuda_brackets[CAJ_CUDA_BRACKET_MAX];
+static pthread_mutex_t g_cuda_bracket_lock = PTHREAD_MUTEX_INITIALIZER;
+static void*           g_cuda_ref_event;       /* the anchor, device side */
+static int64_t         g_cuda_ref_host_ns;     /* ... and host side */
+static int32_t         g_cuda_bracket_armed;
+static int64_t         g_cuda_bracket_dropped; /* pool full: host window stands */
+
+static int caj_cuda_events_bound(void) {
+    return g_xpu_cuda.cuEventCreate && g_xpu_cuda.cuEventRecord
+        && g_xpu_cuda.cuEventQuery && g_xpu_cuda.cuEventElapsedTime
+        && g_xpu_cuda.cuEventSynchronize && g_xpu_cuda.cuEventDestroy;
+}
+
+/* Establish (or replace) the host-clock anchor. Synchronizes exactly one event
+ * on the NULL stream — which is why this is never reachable from the launch
+ * path. Caller holds g_cuda_bracket_lock. */
+// How many attempts to take, and how narrow a host bracket is good enough to
+// stop early at. 20 us is far wider than a warm event needs and far narrower
+// than the 257 us of lazy-init bias the first implementation shipped with.
+#define CAJ_CUDA_ANCHOR_TRIES        4
+#define CAJ_CUDA_ANCHOR_GOOD_ENOUGH  20000   /* ns */
+
+// The last anchor's bracket width — the placement uncertainty every span
+// inherits, kept so the operator can see it rather than infer it.
+static int64_t g_cuda_anchor_spread_ns;
+
+static int caj_cuda_anchor_locked(void) {
+    void* ev = NULL;
+    void* warm = NULL;
+    int64_t bestHost = 0, bestSpread = 0;
+    int attempt;
+
+    if (g_xpu_cuda.cuEventCreate(&ev, 0) != 0 || !ev) return 0;
+
+    // Warm the path FIRST. The very first event on a freshly retained context
+    // pays lazy initialization that runs into hundreds of microseconds, and a
+    // reference whose completion is bracketed that loosely is a reference with
+    // hundreds of microseconds of BIAS — not noise, because the delay sits
+    // before the event is processed, so the true completion hugs the end of
+    // the bracket while the midpoint estimate sits in the middle of it.
+    // Measured at -257 us on the first implementation, which placed every span
+    // a quarter-millisecond before the launch that issued it.
+    if (g_xpu_cuda.cuEventCreate(&warm, 0) == 0 && warm) {
+        g_xpu_cuda.cuEventRecord(warm, NULL);
+        g_xpu_cuda.cuEventSynchronize(warm);
+        g_xpu_cuda.cuEventDestroy(warm);
+    }
+
+    // The anchor's whole job is to tie ONE device instant to a host instant,
+    // so the width of the host interval that instant is known to lie in IS the
+    // uncertainty. Poll rather than synchronize — a synchronize makes the
+    // interval as wide as its own return latency and biases it late — and take
+    // the NARROWEST of several attempts, since a wide bracket means something
+    // interfered and its midpoint is the estimate least worth keeping.
+    for (attempt = 0; attempt < CAJ_CUDA_ANCHOR_TRIES; ++attempt) {
+        int64_t before, after, spread;
+        int spins = 0;
+        before = __cajeta_currentTimeNanos();
+        if (g_xpu_cuda.cuEventRecord(ev, NULL) != 0) break;
+        while (g_xpu_cuda.cuEventQuery(ev) == CAJ_CUDA_ERROR_NOT_READY) {
+            if (++spins > 1000000) {   /* bounded: a spin that never ends is
+                                        * worse than a coarse anchor */
+                if (g_xpu_cuda.cuEventSynchronize(ev) != 0) break;
+                break;
+            }
+        }
+        after  = __cajeta_currentTimeNanos();
+        spread = after - before;
+        if (spread < 0) continue;
+        if (bestSpread == 0 || spread < bestSpread) {
+            bestSpread = spread;
+            // The completion lies in [before, after]; the midpoint is the
+            // estimate with the smallest worst-case error, and the narrower
+            // the bracket the better that estimate is.
+            bestHost = before + spread / 2;
+        }
+        if (bestSpread <= CAJ_CUDA_ANCHOR_GOOD_ENOUGH) break;
+    }
+    if (bestSpread == 0 && bestHost == 0) {
+        g_xpu_cuda.cuEventDestroy(ev);
+        return 0;
+    }
+
+    if (g_cuda_ref_event) g_xpu_cuda.cuEventDestroy(g_cuda_ref_event);
+    g_cuda_ref_event         = ev;
+    g_cuda_ref_host_ns       = bestHost;
+    g_cuda_anchor_spread_ns  = bestSpread;
+    return 1;
+}
+
+/* Called from the CUDA loader with the context current. Gated on the profiler
+ * being armed for the same reason rocprofiler's configure is: creating and
+ * synchronizing a reference event is real work an unprofiled run must not pay
+ * for. Every outcome reports a sentence — a silently unarmed fallback is
+ * indistinguishable from one that armed and found nothing. */
+static void caj_cuda_bracket_arm(void) {
+    char why[224];
+    if (!__cajeta_prof_gpu_is_armed()) {
+        __cajeta_prof_cuda_events_note(0,
+            "profiler not armed; the CUDA event bracket costs nothing here");
+        return;
+    }
+    if (!caj_cuda_events_bound()) {
+        snprintf(why, sizeof(why),
+                 "the driver exported no cuEventElapsedTime (%p) or its event "
+                 "entry points are incomplete; GPU timing stays at host "
+                 "submit-to-complete",
+                 (void*) g_xpu_cuda.cuEventElapsedTime);
+        __cajeta_prof_cuda_events_note(0, why);
+        return;
+    }
+    pthread_mutex_lock(&g_cuda_bracket_lock);
+    g_cuda_bracket_armed = caj_cuda_anchor_locked();
+    pthread_mutex_unlock(&g_cuda_bracket_lock);
+    if (!g_cuda_bracket_armed) {
+        __cajeta_prof_cuda_events_note(0,
+            "the reference event could not be recorded, so device spans could "
+            "not be anchored to the host clock; GPU timing stays at host "
+            "submit-to-complete");
+        return;
+    }
+    snprintf(why, sizeof(why),
+             "CUDA driver events armed (EVENT tier: device-measured durations "
+             "anchored to the host clock within %lld ns; no CUDA Toolkit "
+             "required)", (long long) g_cuda_anchor_spread_ns);
+    __cajeta_prof_cuda_events_note(1, why);
+}
+
+/* Open a bracket for `launchId` on `stream`. Returns a pool slot, or -1 when
+ * there is no room or nothing could be recorded — in which case the launch
+ * keeps its honest host window and only precision is lost. */
+static int caj_cuda_bracket_begin(int64_t launchId, void* stream) {
+    int i, slot = -1;
+    CajCudaBracket* b;
+    if (!g_cuda_bracket_armed || launchId == 0) return -1;
+
+    pthread_mutex_lock(&g_cuda_bracket_lock);
+    for (i = 0; i < CAJ_CUDA_BRACKET_MAX; ++i) {
+        if (!g_cuda_brackets[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        g_cuda_bracket_dropped++;
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+        return -1;
+    }
+    b = &g_cuda_brackets[slot];
+    /* Events are created once and re-recorded for the life of the process;
+     * re-recording an event is exactly what the driver API is for. */
+    if (!b->ev_start && g_xpu_cuda.cuEventCreate(&b->ev_start, 0) != 0) b->ev_start = NULL;
+    if (!b->ev_end   && g_xpu_cuda.cuEventCreate(&b->ev_end, 0)   != 0) b->ev_end   = NULL;
+    if (!b->ev_start || !b->ev_end) {
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+        return -1;
+    }
+    b->in_use    = 1;
+    b->launch_id = launchId;
+    pthread_mutex_unlock(&g_cuda_bracket_lock);
+
+    if (g_xpu_cuda.cuEventRecord(b->ev_start, stream) != 0) {
+        pthread_mutex_lock(&g_cuda_bracket_lock);
+        b->in_use = 0;
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+        return -1;
+    }
+    return slot;
+}
+
+static void caj_cuda_bracket_end(int slot, void* stream) {
+    if (slot < 0) return;
+    if (g_xpu_cuda.cuEventRecord(g_cuda_brackets[slot].ev_end, stream) != 0) {
+        pthread_mutex_lock(&g_cuda_bracket_lock);
+        g_cuda_brackets[slot].in_use = 0;
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+    }
+}
+
+/* Resolve every bracket whose closing event has already completed. POLLS —
+ * never waits — so it is safe from the launch path, and calling it after a
+ * stream synchronize is what makes the common case resolve promptly. */
+static void caj_cuda_bracket_drain(void) {
+    int i, live = 0;
+    float furthest = 0.0f;
+    if (!g_cuda_bracket_armed) return;
+
+    for (i = 0; i < CAJ_CUDA_BRACKET_MAX; ++i) {
+        void *evs, *eve;
+        int64_t id, refHost, sNs, eNs;
+        float toStart = 0.0f, dur = 0.0f;
+        int q, ok;
+
+        pthread_mutex_lock(&g_cuda_bracket_lock);
+        if (!g_cuda_brackets[i].in_use) {
+            pthread_mutex_unlock(&g_cuda_bracket_lock);
+            continue;
+        }
+        evs = g_cuda_brackets[i].ev_start;
+        eve = g_cuda_brackets[i].ev_end;
+        id  = g_cuda_brackets[i].launch_id;
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+
+        q = g_xpu_cuda.cuEventQuery(eve);
+        if (q == CAJ_CUDA_ERROR_NOT_READY) { live++; continue; }
+        if (q != 0) {
+            /* Anything else — a destroyed stream, a context teardown — is not
+             * going to become ready later. Free the slot rather than poll it
+             * forever; the launch's host window still goes out at host tier. */
+            pthread_mutex_lock(&g_cuda_bracket_lock);
+            g_cuda_brackets[i].in_use = 0;
+            pthread_mutex_unlock(&g_cuda_bracket_lock);
+            continue;
+        }
+
+        pthread_mutex_lock(&g_cuda_bracket_lock);
+        ok = g_cuda_ref_event
+          && g_xpu_cuda.cuEventElapsedTime(&toStart, g_cuda_ref_event, evs) == 0
+          && g_xpu_cuda.cuEventElapsedTime(&dur, evs, eve) == 0;
+        refHost = g_cuda_ref_host_ns;
+        g_cuda_brackets[i].in_use = 0;
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+        if (!ok) continue;   /* the pair said nothing; the host window stands */
+        if (toStart > furthest) furthest = toStart;
+
+        sNs = refHost + (int64_t) ((double) toStart * 1000000.0);
+        eNs = sNs     + (int64_t) ((double) dur     * 1000000.0);
+        __cajeta_prof_cuda_bracket_resolved(id, sNs, eNs);
+    }
+
+    /* Re-anchor only with the pool EMPTY. A bracket recorded before the old
+     * reference but resolved after a new one would be measured from an event
+     * that had not happened yet, and elapsed() against it is meaningless. */
+    if (live == 0 && furthest > CAJ_CUDA_ANCHOR_MAX_MS) {
+        pthread_mutex_lock(&g_cuda_bracket_lock);
+        for (i = 0; i < CAJ_CUDA_BRACKET_MAX && !g_cuda_brackets[i].in_use; ++i) { }
+        if (i == CAJ_CUDA_BRACKET_MAX) caj_cuda_anchor_locked();
+        pthread_mutex_unlock(&g_cuda_bracket_lock);
+    }
 }
 
 // Resolve the driver and create a context. Returns 1 on success. Caller holds
@@ -214,6 +495,8 @@ static int cajeta_xpu_cuda_init_locked(void) {
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuStreamWaitEvent");
     *(void**) (&g_xpu_cuda.cuEventDestroy) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventDestroy_v2");
+    *(void**) (&g_xpu_cuda.cuEventElapsedTime) =
+        cajeta_xpu_libsym(g_xpu_cuda.lib, "cuEventElapsedTime");
     // Texture / surface objects — optional (non-fatal).
     *(void**) (&g_xpu_cuda.cuArrayCreate) =
         cajeta_xpu_libsym(g_xpu_cuda.lib, "cuArrayCreate_v2");
@@ -273,6 +556,11 @@ static int cajeta_xpu_cuda_init_locked(void) {
     // at the launch site, H9, still re-asserts it on worker/fiber threads).
     if (g_xpu_cuda.cuDevicePrimaryCtxRetain(&g_xpu_cuda.ctx, g_xpu_cuda.device) != 0) return 0;
     if (g_xpu_cuda.cuCtxSetCurrent) g_xpu_cuda.cuCtxSetCurrent(g_xpu_cuda.ctx);
+    // The profiler's EVENT-tier fallback, armed HERE because the reference
+    // event it anchors spans with needs a current context — and because this
+    // is the CUDA counterpart of the rocprofiler configure the HIP loader
+    // does, which likewise has exactly one moment it can happen in.
+    caj_cuda_bracket_arm();
     g_xpu_cuda.loaded = 1;
     return 1;
 }

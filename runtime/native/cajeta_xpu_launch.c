@@ -541,11 +541,25 @@ static void cajeta_xpu_launch_cuda(const char* kernelName,
     // 3-D grid/block; default stream; kernelParams = the CUDA argv the launch
     // site marshalled (pointers to each arg value). sharedBytes sizes the
     // kernel's dynamic (extern) shared memory; 0 for static-only kernels.
+    // The profiler's EVENT-tier bracket. Drain first — resolving the launches
+    // that have since finished costs a cuEventQuery each and keeps the pool
+    // from filling — then open the bracket immediately before the launch and
+    // close it immediately after, both on the launch's OWN stream so the pair
+    // measures the kernel rather than the host's marshalling.
+    //
+    // Neither call waits (§5.1.3): a bracket that synchronized here would
+    // serialize every launch against its own kernel, and two genuinely
+    // concurrent streams would be recorded back to back with nothing in the
+    // trace to say the measurement is what separated them.
+    caj_cuda_bracket_drain();
+    const int profSlot = caj_cuda_bracket_begin(
+        __cajeta_prof_cuda_current_launch(), (void*) (intptr_t) streamHandle);
     int launchRc = g_xpu_cuda.cuLaunchKernel(
         fn, (unsigned) gridX, (unsigned) gridY, (unsigned) gridZ,
         (unsigned) blockX, (unsigned) blockY, (unsigned) blockZ,
         (unsigned) sharedBytes, /*stream=*/(void*) (intptr_t) streamHandle,
         useArgv, /*extra=*/NULL);
+    caj_cuda_bracket_end(profSlot, (void*) (intptr_t) streamHandle);
     // Free per-launch resources. Sync first (the launch is async; texobj/surfobj
     // and the bindless array are read during execution) — mirrors the HIP path's
     // hipDeviceSynchronize-before-free.

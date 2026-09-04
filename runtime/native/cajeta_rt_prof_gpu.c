@@ -528,12 +528,99 @@ static const CajetaGpuBackendVtbl caj_gpu_rocm_vtbl = {
 // This vtbl is what 12.2.d was missing. The push/pop pair existed and was
 // tested by calling it directly; `caj_gpu_vtbl_for` had no CUDA arm, so every
 // CAJ_GPU_BACKEND_CUDA launch went to the CPU lane and nothing ever pushed.
-static int32_t caj_gpu_cuda_init(void) { return __cajeta_prof_cupti_tracing(); }
+// ── the event-tier fallback's state (see cajeta_prof_abi.h) ──────────────
+//
+// A machine with a driver and no CUDA Toolkit has no CUPTI and therefore no
+// activity records, but it does have cuEventRecord and cuEventElapsedTime. The
+// dispatcher brackets each launch with a pair of those and hands the finished
+// span back here; this half owns the launch id it is keyed by and the arming
+// state, because the dispatcher's translation unit is compiled after this one
+// and nothing here may call into it.
+static int32_t caj_gpu_cuda_events_armed;
+static char    caj_gpu_cuda_events_why[256];
+static int64_t caj_gpu_cuda_event_spans;
+
+void __cajeta_prof_cuda_events_note(int32_t ok, const char* why) {
+    caj_gpu_cuda_events_armed = ok ? 1 : 0;
+    if (why) snprintf(caj_gpu_cuda_events_why, sizeof(caj_gpu_cuda_events_why),
+                      "%s", why);
+}
+int32_t     __cajeta_prof_cuda_events_ok(void)     { return caj_gpu_cuda_events_armed; }
+const char* __cajeta_prof_cuda_events_reason(void) { return caj_gpu_cuda_events_why; }
+int64_t     __cajeta_prof_cuda_event_spans(void)   { return caj_gpu_cuda_event_spans; }
+
+// The host instant a still-parked launch was issued at, or 0 if it is not
+// parked. Read-only peek: resolution itself still goes through
+// resolve_dispatch_flags, which removes the entry under the same lock.
+static int64_t caj_gpu_pending_host_launch(int64_t launchId) {
+    int64_t v = 0;
+    int i;
+    pthread_mutex_lock(&g_gpu_pending_lock);
+    for (i = 0; i < CAJ_GPU_PENDING_MAX; ++i) {
+        if (!g_gpu_pending[i].in_use || g_gpu_pending[i].launch_id != launchId)
+            continue;
+        v = g_gpu_pending[i].ev.host_launch_ns;
+        break;
+    }
+    pthread_mutex_unlock(&g_gpu_pending_lock);
+    return v;
+}
+
+// The launch the dispatcher should bracket, published for the duration of the
+// launch only. Thread-local for the same reason Vulkan's is: two threads may
+// be launching at once and a bracket belongs to exactly one of them.
+static __thread int64_t caj_gpu_cuda_current_launch;
+int64_t __cajeta_prof_cuda_current_launch(void) { return caj_gpu_cuda_current_launch; }
+
+// A finished bracket, claimed at EVENT tier — device event bracketing, which
+// is what a timestamp pair around a dispatch is, and one rung below the
+// DEVICE tier a vendor dispatch record earns.
+void __cajeta_prof_cuda_bracket_resolved(int64_t launchId, int64_t devStartNs,
+                                         int64_t devEndNs) {
+    // An event bracket measures a DURATION on the device and places it using a
+    // reference event whose completion was observed on the host — so unlike
+    // the duration, the placement carries the anchor's uncertainty. A kernel
+    // provably cannot begin before the launch that issued it, nor still be
+    // running after the query that reported it complete; when the placement
+    // says otherwise by less than the clock dispersion cap, the span is
+    // TRANSLATED — duration untouched — just far enough to sit inside that
+    // causal bracket. This is the same treatment the Vulkan bracket gets, and
+    // for the same reason: without it every span of a healthy run wears
+    // OUTSIDE_HOST, which teaches readers to ignore the one flag that exists
+    // to catch a genuinely sheared clock domain. An excursion the cap cannot
+    // explain IS such a shear, and stays where it is to be flagged.
+    const int64_t lo    = caj_gpu_pending_host_launch(launchId);
+    const int64_t hi    = __cajeta_currentTimeNanos();
+    const int64_t slack = __cajeta_prof_clock_dispersion_cap();
+    if (lo > 0 && devEndNs - devStartNs <= hi - lo) {
+        int64_t shift = 0;
+        if (devStartNs < lo)     shift = lo - devStartNs;
+        else if (devEndNs > hi)  shift = hi - devEndNs;
+        if (shift != 0 && shift <= slack && shift >= -slack
+                && devStartNs + shift >= lo && devEndNs + shift <= hi) {
+            devStartNs += shift;
+            devEndNs   += shift;
+        }
+    }
+    if (__cajeta_prof_gpu_resolve_dispatch_tier(launchId, devStartNs, devEndNs,
+                                                CAJETA_PROF_TIER_EVENT))
+        caj_gpu_cuda_event_spans++;
+}
+
+// Either mechanism is a reason to take this backend: CUPTI when it is tracing,
+// the driver's own events otherwise. Neither is a reason to take it when the
+// profiler is not armed at all — the launch path checks that first.
+static int32_t caj_gpu_cuda_init(void) {
+    return __cajeta_prof_cupti_tracing() || caj_gpu_cuda_events_armed;
+}
 
 static int32_t caj_gpu_cuda_begin(CajetaGpuEvent* ev) {
     ev->dev_start_ns = __cajeta_currentTimeNanos();
     ev->tier = CAJETA_PROF_TIER_HOST;
     __cajeta_prof_cupti_push(ev->launch_id);
+    // Published before the dispatch runs, so the bracket the dispatcher lays
+    // down carries the id this record will be resolved by.
+    caj_gpu_cuda_current_launch = caj_gpu_cuda_events_armed ? ev->launch_id : 0;
     return 1;
 }
 
@@ -542,7 +629,13 @@ static int32_t caj_gpu_cuda_begin(CajetaGpuEvent* ev) {
 static int32_t caj_gpu_cuda_end(CajetaGpuEvent* ev) {
     ev->dev_end_ns = __cajeta_currentTimeNanos();
     __cajeta_prof_cupti_pop();
-    if (!__cajeta_prof_cupti_tracing()) return 1;  // no records will come
+    caj_gpu_cuda_current_launch = 0;
+    // Park whenever SOMETHING will come back for it: a CUPTI activity record,
+    // or the event bracket the dispatcher just laid down. Parking for neither
+    // would hold a launch for a resolution that cannot arrive, and the drain
+    // would eventually publish it at host tier anyway — later and for nothing.
+    if (!__cajeta_prof_cupti_tracing() && !caj_gpu_cuda_events_armed)
+        return 1;   // no record and no bracket will come
     return caj_gpu_park(ev) ? 0 : 1;
 }
 
@@ -713,7 +806,11 @@ static const CajetaGpuBackendVtbl* caj_gpu_vtbl_for(int32_t backend) {
     // enabled — or that degraded because something else subscribed first
     // (§5.4.3) — will produce no records, so parking a launch for one would
     // hold it for a record that cannot come.
-    if (backend == CAJ_GPU_BACKEND_CUDA && __cajeta_prof_cupti_tracing())
+    // ... or when only the driver's events are available: that is the EVENT-tier
+    // fallback, and it is the common case, since CUPTI ships with the CUDA
+    // Toolkit while cuEventRecord ships with the driver.
+    if (backend == CAJ_GPU_BACKEND_CUDA
+            && (__cajeta_prof_cupti_tracing() || caj_gpu_cuda_events_armed))
         return &caj_gpu_cuda_vtbl;
     if (backend == CAJ_GPU_BACKEND_VULKAN && __cajeta_prof_vk_timing_ok())
         return &caj_gpu_vk_vtbl;

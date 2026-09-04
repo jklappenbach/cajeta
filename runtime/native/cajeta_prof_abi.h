@@ -266,6 +266,30 @@ void     __cajeta_prof_vk_bracket_resolved(int64_t launchId, int64_t devStartNs,
 int32_t  __cajeta_prof_vk_note_wait(int64_t queue, int64_t startNs,
                                     int64_t endNs);
 
+// ── CUDA event-tier fallback: device timing with no CUDA Toolkit ─────────
+//
+// CUPTI ships with the Toolkit; cuEventRecord / cuEventElapsedTime ship with
+// the DRIVER, which every machine that can run a kernel already has. So the
+// tier a driver-only machine can reach is EVENT — device event bracketing,
+// exactly what Vulkan falls back to when no vendor layer is present — rather
+// than HOST, which is all it used to get.
+//
+// Same split as Vulkan's above: the DISPATCHER owns the events (only it has
+// the driver's entry points) and hands finished brackets back here; the seam
+// owns the launch id and the arming state. The dependency runs one way only —
+// the xpu translation units are textually included AFTER the profiler's, so
+// the profiler can never call into them.
+int64_t  __cajeta_prof_cuda_current_launch(void);
+void     __cajeta_prof_cuda_bracket_resolved(int64_t launchId, int64_t devStartNs,
+                                             int64_t devEndNs);
+// Armed by the CUDA loader once the event entry points are bound and the
+// reference event that anchors spans to the host clock has been established.
+// `why` is kept verbatim for the operator: every state owes a sentence.
+void     __cajeta_prof_cuda_events_note(int32_t ok, const char* why);
+int32_t  __cajeta_prof_cuda_events_ok(void);
+const char* __cajeta_prof_cuda_events_reason(void);
+int64_t  __cajeta_prof_cuda_event_spans(void);
+
 // ── Unit 12: CUPTI binding state (spec §5.4) ──────────────────────────────
 //
 // The same shape as the ROCm backend's, for the same §5.2.2-class reason: a

@@ -536,7 +536,11 @@ int32_t __cajeta_xpu_device_supports(int32_t cap) {
 // synchronous (nothing to drain); none is a no-op.
 static void cajeta_xpu_sync_active(void) {
     switch (cajeta_xpu_active_backend()) {
-        case CAJ_XPU_CUDA: g_xpu_cuda.cuCtxSynchronize();   break;
+        // After a synchronize every event on the device has completed, so this
+        // is where the profiler's brackets resolve promptly instead of waiting
+        // for the next launch to poll them.
+        case CAJ_XPU_CUDA: g_xpu_cuda.cuCtxSynchronize();
+                           caj_cuda_bracket_drain();        break;
         case CAJ_XPU_HIP:  g_xpu_hip.hipDeviceSynchronize(); break;
         case CAJ_XPU_VULKAN: cajeta_xpu_vk_flush();          break;
         default: break;
@@ -1272,7 +1276,9 @@ void __cajeta_xpu_stream_sync(void* self, int64_t handle) {
         switch (cajeta_xpu_active_backend()) {
             case CAJ_XPU_CUDA:
                 if (g_xpu_cuda.cuStreamSynchronize) {
-                    g_xpu_cuda.cuStreamSynchronize(st); return;
+                    g_xpu_cuda.cuStreamSynchronize(st);
+                    caj_cuda_bracket_drain();
+                    return;
                 }
                 break;
             case CAJ_XPU_HIP:
