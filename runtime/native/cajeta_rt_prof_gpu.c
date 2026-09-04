@@ -619,8 +619,22 @@ static int32_t caj_gpu_cuda_begin(CajetaGpuEvent* ev) {
     ev->tier = CAJETA_PROF_TIER_HOST;
     __cajeta_prof_cupti_push(ev->launch_id);
     // Published before the dispatch runs, so the bracket the dispatcher lays
-    // down carries the id this record will be resolved by.
-    caj_gpu_cuda_current_launch = caj_gpu_cuda_events_armed ? ev->launch_id : 0;
+    // down carries the id this record will be resolved by — but ONLY when no
+    // vendor record is coming.
+    //
+    // The tier ladder is a precedence order, not a menu. When CUPTI is tracing,
+    // a DEVICE-tier dispatch record is on its way and is strictly better than
+    // an event bracket; letting both run means they RACE for the same parked
+    // launch, and the bracket wins, because it resolves at stream-sync time
+    // while the vendor record waits for a buffer flush. The launch then
+    // publishes at EVENT tier and the CUPTI record arrives to find nothing
+    // left to resolve — a silent downgrade that looks exactly like a
+    // correlation failure. Measured 2026-09-04, the first run in which both
+    // mechanisms worked at once: ext_correlation=9, unmapped=0, and still no
+    // device span.
+    caj_gpu_cuda_current_launch =
+        (caj_gpu_cuda_events_armed && !__cajeta_prof_cupti_tracing())
+            ? ev->launch_id : 0;
     return 1;
 }
 

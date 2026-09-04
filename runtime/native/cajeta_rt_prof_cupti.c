@@ -100,6 +100,13 @@ typedef struct {
     int32_t    ts_first;          // ts_registered happened at kinds_enabled == 0
     int64_t    records;           // kernel records decoded and usable
     int64_t    rejected;          // kernel records refused as unusable
+    // The two halves of "a record arrived and still produced no span". A
+    // kernel is only resolvable THROUGH an external-correlation record, so
+    // counting both separates "the mapping records never came" from "they
+    // came and did not match" — which are different bugs with different
+    // fixes, and indistinguishable from `records` alone.
+    int64_t    ext_records;       // external-correlation records noted
+    int64_t    unmapped;          // kernel records with no mapping to a launch
     // Chokepoint ATTEMPTS, counted at entry before any early return. They
     // count how often the SEAM called, not how often CUPTI accepted — which
     // is the only way a test can tell "the launch path is wired to this" from
@@ -303,6 +310,7 @@ static const char* caj_cupti_liberr(void) {
 #define CAJ_CUPTI_KIND_KERNEL             3   /* CUPTI_ACTIVITY_KIND_KERNEL */
 #define CAJ_CUPTI_KIND_CONCURRENT_KERNEL 10   /* ..._CONCURRENT_KERNEL */
 #define CAJ_CUPTI_KIND_EXTERNAL_CORRELATION 39
+#define CAJ_CUPTI_KIND_DRIVER             4   /* ..._KIND_DRIVER */
 
 #define CAJ_CUPTI_KREC_OFF_KIND   0
 #define CAJ_CUPTI_KREC_OFF_START 16
@@ -332,8 +340,21 @@ int32_t __cajeta_prof_cupti_kind_is_allowed(int32_t kind) {
     // unmapped kernel is DROPPED rather than guessed at (correctly) — so the
     // backend would deliver records, decode them, and publish no device span
     // at all, which is the hardest kind of nothing to debug.
+    // DRIVER is admitted for one measured reason: CUPTI emits
+    // EXTERNAL_CORRELATION records as part of the DRIVER/RUNTIME API activity
+    // stream, not independently. With kind 39 enabled ALONE, CUPTI accepts the
+    // enable, reports success, and produces no correlation record at all —
+    // measured 2026-09-04, identically on Windows and WSL: kinds_enabled=2,
+    // configure_rc=1, ext_correlation_records=0, and the one kernel record
+    // dropped as unmapped. cajeta launches through the driver API
+    // (cuLaunchKernel), so DRIVER is the stream its correlations ride.
+    //
+    // It costs a record per driver API call, which is real but bounded. It
+    // does NOT serialize anything — that distinction is the whole reason
+    // KERNEL stays refused while this is allowed.
     return kind == CAJ_CUPTI_KIND_CONCURRENT_KERNEL
-        || kind == CAJ_CUPTI_KIND_EXTERNAL_CORRELATION;
+        || kind == CAJ_CUPTI_KIND_EXTERNAL_CORRELATION
+        || kind == CAJ_CUPTI_KIND_DRIVER;
 }
 
 static uint64_t caj_cupti_rd64(const unsigned char* p) {
@@ -437,6 +458,8 @@ int32_t __cajeta_prof_cupti_ts_status(void)     { return caj_cupti.ts_status; }
 int32_t __cajeta_prof_cupti_ts_registered(void) { return caj_cupti.ts_registered; }
 
 int64_t __cajeta_prof_cupti_records(void)  { return caj_cupti.records; }
+int64_t __cajeta_prof_cupti_ext_records(void) { return caj_cupti.ext_records; }
+int64_t __cajeta_prof_cupti_unmapped(void)    { return caj_cupti.unmapped; }
 int64_t __cajeta_prof_cupti_rejected(void) { return caj_cupti.rejected; }
 int64_t __cajeta_prof_cupti_pushes(void)   { return caj_cupti.pushes; }
 int64_t __cajeta_prof_cupti_pops(void)     { return caj_cupti.pops; }
@@ -584,8 +607,10 @@ static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
     while (caj_cupti.api.activity_get_next_record(buffer, validSize, &rec) == 0) {
         int32_t corr = 0; int64_t ext = 0;
         if (__cajeta_prof_cupti_decode_external(rec, CAJ_CUPTI_XREC_BYTES,
-                                                &corr, &ext) == 1)
+                                                &corr, &ext) == 1) {
             __cajeta_prof_cupti_corr_note(corr, ext);
+            caj_cupti.ext_records++;
+        }
     }
 
     /* pass 2 - the kernels, resolved through the map built above */
@@ -598,7 +623,7 @@ static void caj_cupti_consume_buffer(uint8_t* buffer, size_t validSize) {
             continue;
         /* An unmapped kernel is one we did not launch - a library's own, say.
          * Attributing it to any launch would invent a measurement. */
-        if (!__cajeta_prof_cupti_corr_lookup(corr, &ext)) continue;
+        if (!__cajeta_prof_cupti_corr_lookup(corr, &ext)) { caj_cupti.unmapped++; continue; }
         __cajeta_prof_gpu_resolve_dispatch(ext, start, end);
     }
 }
@@ -691,7 +716,7 @@ static void caj_cupti_buffer_completed(void* context, uint32_t streamId,
 }
 
 int32_t __cajeta_prof_cupti_configure(void) {
-    int32_t okKernel, okExternal;
+    int32_t okKernel, okExternal, okDriver;
     pthread_mutex_lock(&caj_cupti_mutex);
     if (caj_cupti.state != CAJETA_CUPTI_READY || caj_cupti.degraded) {
         // Nothing here can improve a backend that never bound, and calling
@@ -728,15 +753,19 @@ int32_t __cajeta_prof_cupti_configure(void) {
     // EXTERNAL_CORRELATION first: it is what a kernel record is resolved
     // THROUGH, so enabling the kernel kind first would open a window in which
     // kernels arrive that can never be attributed.
+    // DRIVER first: it is the stream the correlation records ride, so enabling
+    // it after them would open a window in which correlations are requested and
+    // cannot be emitted.
+    okDriver   = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_DRIVER);
     okExternal = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_EXTERNAL_CORRELATION);
     okKernel   = __cajeta_prof_cupti_enable_kind(CAJ_CUPTI_KIND_CONCURRENT_KERNEL);
-    if (!okKernel || !okExternal) {
+    if (!okKernel || !okExternal || !okDriver) {
         char why[CAJ_CUPTI_REASON_MAX];
         snprintf(why, sizeof(why),
                  "CUPTI bound but cuptiActivityEnable refused a kind it needs "
-                 "(concurrent-kernel=%d external-correlation=%d); %s, so GPU "
-                 "timing degrades to host submit-to-complete",
-                 (int) okKernel, (int) okExternal,
+                 "(concurrent-kernel=%d external-correlation=%d driver=%d); %s, "
+                 "so GPU timing degrades to host submit-to-complete",
+                 (int) okKernel, (int) okExternal, (int) okDriver,
                  !okKernel ? "no kernel record will be produced"
                            : "kernel records cannot be tied to their launches");
         caj_cupti_say(CAJETA_CUPTI_READY, NULL, why);
@@ -745,8 +774,8 @@ int32_t __cajeta_prof_cupti_configure(void) {
     }
     caj_cupti_say(CAJETA_CUPTI_READY, NULL,
                   "CUPTI bound and configured (concurrent-kernel + "
-                  "external-correlation activity enabled; device spans arrive "
-                  "in the host clock domain)");
+                  "external-correlation + driver activity enabled; device "
+                  "spans arrive in the host clock domain)");
     pthread_mutex_unlock(&caj_cupti_mutex);
     return 1;
 }
@@ -779,6 +808,8 @@ void __cajeta_prof_cupti_reset(void) {
     caj_cupti.configured = 0;
     caj_cupti.ts_first = 0;
     caj_cupti.records = 0;
+    caj_cupti.ext_records = 0;
+    caj_cupti.unmapped = 0;
     caj_cupti.rejected = 0;
     caj_cupti.pushes = 0;
     caj_cupti.pops = 0;

@@ -165,6 +165,8 @@ struct CuptiSyms {
     int32_t     (*state)(void)           = nullptr;
     int64_t     (*records)(void)         = nullptr;
     int64_t     (*rejected)(void)        = nullptr;
+    int64_t     (*extRecords)(void)      = nullptr;
+    int64_t     (*unmapped)(void)        = nullptr;
     int32_t     (*kindsEnabled)(void)    = nullptr;
     int32_t     (*flush)(void)           = nullptr;
     int64_t     (*pushes)(void)          = nullptr;
@@ -186,6 +188,8 @@ CuptiSyms bind(CajetaJit* jit) {
     s.state        = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_cupti_state"));
     s.records      = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_cupti_records"));
     s.rejected     = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_cupti_rejected"));
+    s.extRecords   = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_cupti_ext_records"));
+    s.unmapped     = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_cupti_unmapped"));
     s.kindsEnabled = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_cupti_kinds_enabled"));
     s.flush        = reinterpret_cast<int32_t (*)(void)>(sym("__cajeta_prof_cupti_flush"));
     s.pushes       = reinterpret_cast<int64_t (*)(void)>(sym("__cajeta_prof_cupti_pushes"));
@@ -250,7 +254,7 @@ TEST(ProfilerCudaDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
            "every CUDA launch drains at host tier";
 
     s.init();
-    s.configure();
+    const int32_t configured = s.configure();
 
     // Arming is what this suite is about, so a machine that CAN arm and did
     // not is a failure, not a skip. Only the absence of the hardware or the
@@ -260,9 +264,22 @@ TEST(ProfilerCudaDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
         GTEST_SKIP() << "CUPTI did not bind here ("
                      << (s.reason ? s.reason() : "no reason") << ")";
     }
-    ASSERT_GT(s.kindsEnabled(), 0)
-        << "configure() left no activity kind enabled, so no record can ever "
-           "arrive (" << (s.reason ? s.reason() : "no reason") << ")";
+    std::printf(" RESULT u12_kinds_enabled=%d\n", (int) s.kindsEnabled());
+    std::printf(" RESULT u12_configure_rc=%d\n", (int) configured);
+    std::printf(" RESULT u12_reason=%s\n", s.reason ? s.reason() : "none");
+    // Checking the RETURN, not just the side effect. configure() reports 0
+    // when an enable was refused while still leaving kinds_enabled > 0 and
+    // tracing() true — so a test that asserted only those would pass against a
+    // half-armed backend, which is precisely the state that yields kernel
+    // records with nothing to attribute them to.
+    ASSERT_EQ(configured, 1)
+        << "configure() did not fully arm the backend ("
+        << (s.reason ? s.reason() : "no reason") << ")";
+    ASSERT_GE(s.kindsEnabled(), 3)
+        << "CONCURRENT_KERNEL, EXTERNAL_CORRELATION and DRIVER must all be "
+           "enabled: a kernel is resolvable only THROUGH a correlation record, "
+           "and correlation records ride the driver API stream ("
+        << (s.reason ? s.reason() : "no reason") << ")";
     ASSERT_EQ(s.tracing(), 1)
         << "CUPTI is bound with kinds enabled but not tracing ("
         << (s.reason ? s.reason() : "no reason") << ")";
@@ -307,10 +324,22 @@ TEST(ProfilerCudaDispatchDevice, dispatchRecordsCarryDeviceSpansAndTheLaunchId) 
 
     const CajetaGpuEvent* device = nullptr;
     for (const auto& e : g_caught) if (e.tier == CAJETA_PROF_TIER_DEVICE) { device = &e; break; }
+    // The discriminator, printed BEFORE the assertion that may end the test:
+    // a kernel is resolvable only THROUGH an external-correlation record, so
+    // ext=0 means the mapping records never arrived (a different bug, and a
+    // different fix, from ext>0 with unmapped>0, which means they arrived and
+    // did not match).
+    std::printf(" RESULT u12_ext_correlation_records=%lld\n",
+                (long long) (s.extRecords ? s.extRecords() : -1));
+    std::printf(" RESULT u12_kernels_unmapped=%lld\n",
+                (long long) (s.unmapped ? s.unmapped() : -1));
+
     ASSERT_NE(device, nullptr)
         << "every record came back at host tier — the activity record never "
            "reached the launch waiting for it; CUPTI records=" << s.records()
-        << " rejected=" << (s.rejected ? s.rejected() : -1);
+        << " rejected=" << (s.rejected ? s.rejected() : -1)
+        << " ext_correlation=" << (s.extRecords ? s.extRecords() : -1)
+        << " unmapped=" << (s.unmapped ? s.unmapped() : -1);
 
     // Published so the measurement is visible rather than merely asserted: a
     // test that only says "greater than zero" hides the case where the number

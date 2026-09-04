@@ -332,6 +332,8 @@ int32_t     __cajeta_prof_cupti_on_wsl(void);
 // enables the kinds whose records the seam resolves launches with. Until this
 // runs, kinds_enabled is 0, so tracing() is false and every CUDA launch
 // publishes at host tier. The ROCm counterpart is __cajeta_prof_rocm_configure.
+int64_t     __cajeta_prof_cupti_ext_records(void);
+int64_t     __cajeta_prof_cupti_unmapped(void);
 int32_t     __cajeta_prof_cupti_configure(void);
 int32_t     __cajeta_prof_cupti_configured(void);
 int32_t     __cajeta_prof_cupti_tracing(void);
