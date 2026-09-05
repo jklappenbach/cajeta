@@ -84,6 +84,22 @@ public final class Group {
     public static float32 reduceSegmented(int32 segment, GroupOp op, float32 value);
 
     /**
+     * Cooperative tile multiply-accumulate (xpu-cooperative-tile §4): the
+     * abstract MAC the compiler shapes per target. The author names `mac`, never
+     * dotSum / WMMA / a scalar loop (§4.1).
+     *
+     * The int8 tier (§4.2): `a`, `b` are int8 tiles (`Vector<int8, 16>` — the
+     * 16-wide dp4a tile the MXFP4 witness uses) and `acc` is the int32
+     * accumulator. Lowers to the target's SIMD integer dot (dp4a — `v_dot4` /
+     * `sdot4` on AMD, four chunks for the 16-wide tile), the coopQ8 path;
+     * returns the new accumulator. The lowering reads the width from the value,
+     * so wider tiles are a one-line overload away; the f16/bf16 WMMA tile tier
+     * and the scalar fallback are the Tile-fragment path (§4.1, §4.3).
+     */
+    @Native("__cajeta_xpu_group_mac_i8")
+    public static int32 mac(int32 acc, Vector<int8, 16> a, Vector<int8, 16> b);
+
+    /**
      * The group-stride iterable for a for-each:
      * `for (int32 i : Group.stripe(n))` visits `i = laneId(), laneId()+width(),
      * … < n`. The group's lanes stride the `n` work items, coalesced by

@@ -104,6 +104,16 @@ uint32_t __cajeta_xpu_group_lane_id(void) { return 0; }
 // Group.rowId() — the group's block index (workgroup id x). GPU/CPU kernels
 // fold to workgroupId and never call this; host stub for JIT materialization.
 uint32_t __cajeta_xpu_group_row_id(void) { return 0; }
+// Group.mac(acc, a, b) int8 tier — the kernel lowerer intercepts it to the
+// dp4a chunk loop and never calls this; the symbol exists only so the stdlib
+// JIT-materializes. The signature MUST match the @Native declaration's arity
+// and LLVM types (i32, <16 x i8>, <16 x i8>) — a 0-arg stub trips the JIT
+// verifier ("incorrect number of arguments"). Never invoked.
+typedef int8_t cajeta_v16i8 __attribute__((vector_size(16)));
+int32_t __cajeta_xpu_group_mac_i8(int32_t acc, cajeta_v16i8 a, cajeta_v16i8 b) {
+    (void) a; (void) b;
+    return acc;
+}
 // Group.reduce(op, value) — a width-1 group reduce is the identity. NOT the
 // wave reduce: on the CPU backend the SIMD lanes carry independent rows, so
 // summing them would merge rows. (op ignored; the identity is op-independent.)

@@ -2072,6 +2072,70 @@ private:
     }
 
     // `a.dot(b)`, `v.length()`, `v.normalize()` on a vector local `recv`.
+    // Shared int8 dp4a dot-sum core (xpu-cooperative-tile §4.2): returns
+    // acc + sum_k self[k]*other[k] as int32, over 4-byte chunks via
+    // integerDot4x8 (v_dot4 / sdot4 dp4a). `self`/`other` are <N x i8> with
+    // N % 4 == 0; the packed-dword peek feeds an asBytes()-of-loaded-dwords
+    // view straight through as those dwords. Used by BOTH Vector.dotSum and
+    // Group.mac so the two spellings cannot diverge. Shape/signedness
+    // validation is the caller's.
+    llvm::Value* lowerInt8DotSumChunks(llvm::Value* self, llvm::Value* other,
+                                       llvm::Value* acc, bool sgn) {
+        auto* wvt = llvm::cast<llvm::FixedVectorType>(self->getType());
+        unsigned n = wvt->getNumElements() / 4;
+        auto* v4i8 = llvm::FixedVectorType::get(
+            llvm::Type::getInt8Ty(builder.getContext()), 4);
+        auto packedWordsN = [&](llvm::Value* v) -> llvm::Value* {
+            for (int hop = 0; hop < 6; ++hop) {
+                auto* ld = llvm::dyn_cast<llvm::LoadInst>(v);
+                if (!ld) break;
+                auto* al = llvm::dyn_cast<llvm::AllocaInst>(
+                    ld->getPointerOperand());
+                if (!al) break;
+                llvm::StoreInst* only = nullptr;
+                bool multi = false;
+                for (llvm::User* u : al->users()) {
+                    if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+                        if (only) multi = true;
+                        only = st;
+                    }
+                }
+                if (!only || multi || only->getParent() != ld->getParent()
+                        || !only->comesBefore(ld))
+                    break;
+                v = only->getValueOperand();
+            }
+            auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v);
+            if (!bc) return nullptr;
+            auto* svt = llvm::dyn_cast<llvm::FixedVectorType>(bc->getSrcTy());
+            if (svt && svt->getElementType()->isIntegerTy(32)
+                    && svt->getNumElements() == n)
+                return bc->getOperand(0);
+            return nullptr;
+        };
+        llvm::Value* selfW = packedWordsN(self);
+        llvm::Value* otherW = packedWordsN(other);
+        llvm::Value* run = acc;
+        for (unsigned lane = 0; lane < n; ++lane) {
+            llvm::SmallVector<int, 4> m4 = {(int) (lane * 4),
+                (int) (lane * 4 + 1), (int) (lane * 4 + 2),
+                (int) (lane * 4 + 3)};
+            llvm::Value* ws = selfW
+                ? builder.CreateBitCast(
+                      builder.CreateExtractElement(selfW, lane), v4i8,
+                      "dotsum.w4")
+                : builder.CreateShuffleVector(self, self, m4, "dotsum.w4");
+            llvm::Value* as = otherW
+                ? builder.CreateBitCast(
+                      builder.CreateExtractElement(otherW, lane), v4i8,
+                      "dotsum.a4")
+                : builder.CreateShuffleVector(other, other, m4, "dotsum.a4");
+            run = target.integerDot4x8(builder, mod, ws, as, run, sgn,
+                                       /*cSigned=*/true);
+        }
+        return run;
+    }
+
     llvm::Value* lowerVectorMethod(
             const std::string& recv, const std::string& name,
             const std::shared_ptr<MethodCallExpression>& mc) {
@@ -2196,66 +2260,7 @@ private:
             if (!acc->getType()->isIntegerTy(32))
                 unsupported("Vector.dotSum's accumulator must be int32");
             bool sgn = signedness.count(recv) ? signedness[recv] : true;
-            unsigned n = wvt->getNumElements() / 4;
-            llvm::Type* i32d = llvm::Type::getInt32Ty(builder.getContext());
-            auto* v4i8 = llvm::FixedVectorType::get(
-                llvm::Type::getInt8Ty(builder.getContext()), 4);
-            // Same packed-dword peek as dotAccum below: a receiver that is
-            // an asBytes() view of loaded dwords feeds the dot as those
-            // dwords, not as re-packed byte slices.
-            auto packedWordsN = [&](llvm::Value* v) -> llvm::Value* {
-                for (int hop = 0; hop < 6; ++hop) {
-                    auto* ld = llvm::dyn_cast<llvm::LoadInst>(v);
-                    if (!ld) break;
-                    auto* al = llvm::dyn_cast<llvm::AllocaInst>(
-                        ld->getPointerOperand());
-                    if (!al) break;
-                    llvm::StoreInst* only = nullptr;
-                    bool multi = false;
-                    for (llvm::User* u : al->users()) {
-                        if (auto* st = llvm::dyn_cast<llvm::StoreInst>(u)) {
-                            if (only) multi = true;
-                            only = st;
-                        }
-                    }
-                    if (!only || multi || only->getParent() != ld->getParent()
-                            || !only->comesBefore(ld))
-                        break;
-                    v = only->getValueOperand();
-                }
-                auto* bc = llvm::dyn_cast<llvm::BitCastInst>(v);
-                if (!bc) return nullptr;
-                auto* svt = llvm::dyn_cast<llvm::FixedVectorType>(
-                    bc->getSrcTy());
-                if (svt && svt->getElementType()->isIntegerTy(32)
-                        && svt->getNumElements() == n)
-                    return bc->getOperand(0);
-                return nullptr;
-            };
-            llvm::Value* selfW = packedWordsN(self);
-            llvm::Value* otherW = packedWordsN(other);
-            llvm::Value* run = acc;
-            for (unsigned lane = 0; lane < n; ++lane) {
-                llvm::SmallVector<int, 4> m4 = {(int) (lane * 4),
-                    (int) (lane * 4 + 1), (int) (lane * 4 + 2),
-                    (int) (lane * 4 + 3)};
-                llvm::Value* ws = selfW
-                    ? builder.CreateBitCast(
-                          builder.CreateExtractElement(selfW, lane), v4i8,
-                          "dotsum.w4")
-                    : builder.CreateShuffleVector(self, self, m4,
-                                                  "dotsum.w4");
-                llvm::Value* as = otherW
-                    ? builder.CreateBitCast(
-                          builder.CreateExtractElement(otherW, lane), v4i8,
-                          "dotsum.a4")
-                    : builder.CreateShuffleVector(other, other, m4,
-                                                  "dotsum.a4");
-                run = target.integerDot4x8(builder, mod, ws, as, run, sgn,
-                                           /*cSigned=*/true);
-            }
-            (void) i32d;
-            return run;
+            return lowerInt8DotSumChunks(self, other, acc, sgn);
         }
         if (name == "lut4") {
             if (isFloat)
@@ -3134,6 +3139,42 @@ private:
                 auto fop = groupFop(args[1].expression);
                 return target.groupReduceF32Segmented(
                     builder, mod, fop, lowerExpr(args[2].expression), seg);
+            }
+            if (name == "mac") {
+                // Cooperative tile multiply-accumulate (xpu-cooperative-tile
+                // §4). The int8 dp4a tier (§4.2): mac(acc, a, b) with
+                // a,b : Vector<int8,N> (N % 4 == 0), acc : int32, lowers to
+                // v_dot4 / sdot4 (dp4a) — the author names no dotSum (§4.1).
+                // The f16/bf16 WMMA tile tier and the scalar fallback are the
+                // Tile-fragment path (CooperativeMatrix), the WMMA half of the
+                // unit. Returns the new int32 accumulator.
+                if (args.size() != 3)
+                    unsupported("Group.mac(acc, a, b) arity");
+                llvm::Value* accV = lowerExpr(args[0].expression);
+                llvm::Value* aV = lowerExpr(args[1].expression);
+                llvm::Value* bV = lowerExpr(args[2].expression);
+                auto* avt = llvm::dyn_cast<llvm::FixedVectorType>(aV->getType());
+                auto* bvt = llvm::dyn_cast<llvm::FixedVectorType>(bV->getType());
+                if (avt && bvt
+                        && avt->getElementType()->isIntegerTy(8)
+                        && bvt->getElementType()->isIntegerTy(8)
+                        && avt->getNumElements() == bvt->getNumElements()
+                        && (avt->getNumElements() % 4) == 0
+                        && accV->getType()->isIntegerTy(32)) {
+                    // The receiver tile's declared signedness (default signed,
+                    // matching Vector.dotSum). The activation tile is always
+                    // fed signed by integerDot4x8's cSigned contract.
+                    bool sgn = true;
+                    if (auto id =
+                            std::dynamic_pointer_cast<IdentifierExpression>(
+                                args[1].expression))
+                        if (signedness.count(id->getTextValue()))
+                            sgn = signedness[id->getTextValue()];
+                    return lowerInt8DotSumChunks(aV, bV, accV, sgn);
+                }
+                unsupported("Group.mac: the int8 dp4a tier needs (int32 acc, "
+                            "Vector<int8,N> a, Vector<int8,N> b), N % 4 == 0; "
+                            "the f16/bf16 WMMA tile tier is not yet wired");
             }
             if (name == "stripe")
                 unsupported("Group.stripe(n) is only a for-each iterable: "
