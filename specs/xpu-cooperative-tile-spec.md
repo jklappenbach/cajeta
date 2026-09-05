@@ -173,19 +173,26 @@ now because they are cheap to reserve and expensive to retrofit.
   on this surface emits ISA equivalent to the hand-written hardcoded-32 kernel
   (architecture portability is ~free — confirm, don't assert).
 
-## 9. Open design forks (for the developer)
+## 9. Design forks — SETTLED (Unit 0, 2026-09-04, measured on `q4kQ8MmqKernel`)
 
-- **9.1** `mac`/`Group`/`Tile` as NEW compiler builtins (like
-  `CooperativeMatrix`, `Vector.dotSum`) vs a stdlib abstraction composed over
-  the existing builtins. Builtins give the compiler full shape control; stdlib
-  is cheaper to land. Recommendation: stdlib composition first for the spike,
-  promote to builtins where the compiler must own the shape.
-- **9.2** Wave width as a runtime `waveWidth()` value (one binary, no
-  recompile, but can't size compile-time extents/unroll) vs `@Wave(width=N)`
-  compile-time constant (static extents, per-width instantiation). The tiled
-  kernels' LDS extents likely force compile-time; settle on `q4kQ8MmqKernel`.
-- **9.3** How `mac`'s tier selection relates to the existing
-  `CooperativeMatrix` `ImplTier` — generalize the same seam, or a new one.
+- **9.1 — SETTLED: stdlib composition first.** Every primitive the surface needs
+  already exists (`Vector.dot`/`dotSum`/`lut4`, `Wave.reduceSumF32` /
+  `reduceSumF32Segmented`, `waveWidth()` / `@Wave`, `CooperativeMatrix`), so the
+  spike needs no new builtins. Promote a construct to a builtin only where the
+  compiler must own the shape.
+- **9.2 — SETTLED: split by kernel class, not one answer.** `q4kQ8MmqKernel` is
+  NOT wave-width-coupled — its LDS is sized by the 64×64 TILE, it does per-thread
+  `dotSum` with no `Wave.reduce`, and its `32`s are tile geometry (correct on
+  wave64). So:
+  - **wave-collective (`Group`) kernels** — `Wave.reduce` over a block, no
+    LDS (the coopQ8 family) — use **runtime `waveWidth()` + segmented reduce**.
+    No compile-time constant, no per-width monomorphization.
+  - **tiled (`Tile`) kernels** — LDS sized by the tile — use **compile-time
+    `@Tile` constants**; wave width there is an occupancy/schedule knob, not a
+    correctness constant.
+- **9.3 — SETTLED: reuse the `scanCoopMatrixTiers` / `ImplTier` seam** for
+  `mac`. `Tile` is `CooperativeMatrix` generalized; the existing group-demote
+  and `[mma-tiering]` machinery is the right home for `mac`'s tier selection.
 
 ## 10. Acceptance
 
