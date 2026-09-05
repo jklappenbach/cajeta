@@ -88,6 +88,49 @@ A trailing expression statement is the unit *result* — the notebook
 renders it (`Out[N]`), the script host ignores it. An uncaught throw
 prints the message and a `<script>`-frame trace and exits non-zero.
 
+## Arguments
+
+A script has no parameter list, so argv arrives through `System.args`,
+beside the existing `System.env` and `System.property` namespaces:
+
+```cajeta
+// greet.cajeta
+int64 n = System.args.count();
+if (n == 0) { System.stdout.println("usage: greet <name>"); return 2; }
+System.stdout.println("hello, " + System.args.get(0));
+```
+
+```
+$ cajeta run greet.cajeta world
+hello, world
+```
+
+`count()` returns `int64`; `get(i)` returns a `String`, or **null** past the
+end — the same shape `System.env.get` uses for an unset variable, so one
+idiom covers both. It is read-only: argv reports how the process was
+invoked, and a program that could rewrite it would be lying to anything
+that read it afterwards (`CAJETA_ERROR_ARGS_READ_ONLY`).
+
+It is **ambient** on purpose. A helper several frames below the top-level
+statements reads argv without it being threaded down, exactly as it reads
+the environment — which is the case a `String[] args` parameter serves
+badly and the reason the accessor was chosen over injecting a name.
+
+**One store, two spellings.** A class entry declared
+`static int32 main(String[] args)` still receives its `String[]`, and that
+array is built from the same store `System.args` reads. The two cannot
+report different arguments. This matters because the hosts do not agree
+naturally: a compiled binary must slice `argv[0]` (the program name) while
+the JIT never had it, and when each host marshalled its own vector, one
+spelling could disagree with the other about `args[0]`. The slicing
+decision now happens once, at install.
+
+Every host installs — `cajeta run`, `cajeta jit-run`, a compiled binary's
+`main` shim, and the Jupyter kernel, which installs an EMPTY vector because
+a notebook cell has no argv. Stating that explicitly is deliberate: a store
+left uninitialized would report zero arguments, which is indistinguishable
+from a program invoked with none.
+
 ## Projects and dependencies
 
 A script run inside a project — any ancestor directory holding

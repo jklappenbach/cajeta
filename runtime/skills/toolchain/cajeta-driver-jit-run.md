@@ -31,14 +31,23 @@ $ echo $?
 - `<source-root>` — directory whose `.cajeta` files form the compilation unit.
   Every file's path-derived package must match its `package` declaration (normal
   compiler convention). There is no single-file mode; you point at the root.
-- `<package.Class.method>` — entry in dotted form. Must be a **static,
-  parameter-less** method. Internally mangled to `package.Class::method`.
+- `<package.Class.method>` — entry in dotted form. Must be **static**, and
+  takes either no parameters or a single `String[]`. Internally mangled to
+  `package.Class::method`.
   - returns `int32` → that value is the process exit code; prints
     `[jit-run] entry <m> returned <n>` to **stderr**.
   - returns `void` → exit code 0; prints `[jit-run] entry <m> completed (void)`.
-- `[program-args...]` — **accepted but NOT forwarded.** The entry is parameter-less
-  for now; trailing args are parsed and held but never reach the program. Do not
-  expect `argv`-style access yet.
+- `[program-args...]` — forwarded. An entry declared
+  `static int32 main(String[] args)` receives them as its `String[]`, and
+  ANY code reads them ambiently through `System.args` (`count()` /
+  `get(i)`), including from an entry that takes no parameters. Both are
+  built from one installed store, so they cannot disagree.
+
+  This bullet previously said args were accepted but never forwarded. That
+  was true once and stopped being true without the doc moving; it is called
+  out rather than quietly corrected because a stale capability note is read
+  as a constraint, and this one cost a utility script its command-line
+  interface.
 - Program stdout/stderr go straight to this process's stdout/stderr (not captured).
 
 ## Flags
@@ -62,7 +71,6 @@ $ echo $?
 
 - Does not write any artifact (no `.o`/`.exe`/`.cja`) — execution is purely
   in-memory. For build outputs use the compiler's `--emit=` path, not `jit-run`.
-- Does not pass program args to the entry (see above).
 - Does not take compiler mode/optimization flags here; it builds the project with
   the JIT host's own settings. `-g` is the only behavioral flag.
 - Does not start a debugger UI. For breakpoints/stepping use `cajeta dap`

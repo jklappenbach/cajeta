@@ -169,10 +169,30 @@ std::string findEntryMangled(llvm::Module* mod, const std::string& dottedEntry,
 // a compiled binary (spec 7.2.4: one marshalling rule, or the debugger and the
 // binary disagree about what a program's args are). Resolved out of the JIT so
 // the allocation and the String vtable come from the program's own module.
-extern "C" void* __cajeta_args_make(int64_t argc, char** argv,
-                                    void* string_vtable, int64_t str_size,
-                                    int64_t off_lentag, int64_t off_aux,
-                                    int64_t off_base, int64_t off_cplen);
+// Install the program's arguments into the ambient store behind
+// `System.args`, and do it IN THE JIT'D PROGRAM.
+//
+// The runtime is linked into the program's own module, so its statics are a
+// separate copy from the ones in this binary. Calling the host's
+// `__cajeta_args_install` through a plain extern wrote a store nothing ever
+// read: the program's `System.args.count()` returned 0 while it was running
+// with arguments. Measured, not reasoned about — and a silent wrong answer,
+// since "no arguments" is a legitimate result.
+//
+// Unconditional, for every entry shape. A script unit and a parameter-less
+// entry have no `String[]` to receive arguments through, and those are
+// exactly the shapes this exists for.
+static void installAmbientArgs(llvm::orc::LLJIT* jit,
+                               const std::vector<std::string>& programArgs) {
+    if (!jit) return;
+    auto sym = jit->lookup("__cajeta_args_install");
+    if (!sym) { cajeta::jit::consumeError(sym.takeError()); return; }
+    auto fn = reinterpret_cast<void (*)(int64_t, char**)>(sym->getValue());
+    std::vector<char*> argv;
+    argv.reserve(programArgs.size());
+    for (auto& a : programArgs) argv.push_back(const_cast<char*>(a.c_str()));
+    fn((int64_t) argv.size(), argv.empty() ? nullptr : argv.data());
+}
 
 // The String ABI facts makeEntryArgs needs, split from their derivation so a
 // whole-program cache HIT (no type world) can carry them in the slot's meta
@@ -219,12 +239,18 @@ EntryArgsABI deriveEntryArgsABI(llvm::orc::LLJIT* jit) {
     return abi;
 }
 
-// Build the cajeta `String[]` to hand a `main(String[] args)` entry.
+// Build the cajeta `String[]` to hand a `main(String[] args)` entry, FROM THE
+// AMBIENT STORE — install first (see installAmbientArgs), then call this.
+//
+// It takes no arg vector on purpose. When it took one, this host and the exe
+// shim each decided independently what a program's arguments were, and the
+// exe had to remember to slice argv[0] while the JIT never had it; one
+// spelling reporting a different args[0] than the other is the bug that
+// arrangement invites. Now there is one store and this reads it.
+//
 // Returns nullptr if the String class or its layout is unavailable, in which
 // case the caller must NOT invoke a parameterized entry.
-void* makeEntryArgs(llvm::orc::LLJIT* jit,
-                    const std::vector<std::string>& programArgs,
-                    const EntryArgsABI& abi) {
+void* makeEntryArgs(llvm::orc::LLJIT* jit, const EntryArgsABI& abi) {
     if (!jit || !abi.valid) return nullptr;
 
     // The vtable lives in the JIT'd module, so take its RUNTIME address.
@@ -240,14 +266,13 @@ void* makeEntryArgs(llvm::orc::LLJIT* jit,
         cajeta::jit::consumeError(sym.takeError());
     }
 
-    std::vector<char*> argv;
-    argv.reserve(programArgs.size());
-    for (auto& a : programArgs) argv.push_back(const_cast<char*>(a.c_str()));
-
-    return __cajeta_args_make((int64_t) argv.size(),
-                              argv.empty() ? nullptr : argv.data(),
-                              vtable, abi.strSize, abi.offLenTag, abi.offAux,
-                              abi.offBase, abi.offCpLen);
+    // The program's own copy, for the same reason installAmbientArgs uses it.
+    auto sym = jit->lookup("__cajeta_args_make");
+    if (!sym) { cajeta::jit::consumeError(sym.takeError()); return nullptr; }
+    auto fn = reinterpret_cast<void* (*)(void*, int64_t, int64_t, int64_t,
+                                         int64_t, int64_t)>(sym->getValue());
+    return fn(vtable, abi.strSize, abi.offLenTag, abi.offAux,
+              abi.offBase, abi.offCpLen);
 }
 
 // Count call sites to @__cajeta_dbg_safepoint inside one function (CP2: one
@@ -1631,11 +1656,16 @@ int runJit(const JitRunOptions& opts, JitRunResult* result) {
     // measures only the entry's execution, not the global ctors above.
     callVoidSymbol(jit, "__cajeta_dbg_reset_safepoint_count");
 
+    // `System.args` reads this. Installed for EVERY entry shape, not just a
+    // parameterized one — a script unit has no parameter to receive argv
+    // through, and that is the shape this exists for.
+    installAmbientArgs(jit, opts.programArgs);
+
     // A parameterized entry is invoked through a correctly-typed pointer, never
     // the no-arg one (spec 7.2.5 — the UB the old narrowing guarded against).
     void* entryArgs = nullptr;
     if (built.entryTakesArgs) {
-        entryArgs = makeEntryArgs(jit, opts.programArgs, built.entryArgsABI);
+        entryArgs = makeEntryArgs(jit, built.entryArgsABI);
         if (!entryArgs) {
             {
                 std::ostringstream m; m << "cajeta jit: entry `" << opts.entryMethod
@@ -1919,12 +1949,16 @@ std::unique_ptr<JitDebugSession> startDebugSession(
         }
     }
 
+    // Same install as the run path — the debuggee must see the same argv the
+    // program would outside the debugger, or `System.args` reads differently
+    // under a breakpoint than it does in production.
+    installAmbientArgs(jit, opts.programArgs);
+
     // Materialize args BEFORE the program thread starts, so a failure here is a
     // clean launch failure rather than a crash inside the debuggee.
     void* entryArgs = nullptr;
     if (takesArgs) {
-        entryArgs = makeEntryArgs(jit, opts.programArgs,
-                                  impl->built.entryArgsABI);
+        entryArgs = makeEntryArgs(jit, impl->built.entryArgsABI);
         if (!entryArgs) {
             if (error) *error = "entry takes String[] but args could not be built";
             {

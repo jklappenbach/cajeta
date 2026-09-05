@@ -3956,12 +3956,11 @@ namespace cajeta {
             entryFn->getName(),
             lmod);
 
-        // `int main(int argc, char** argv)` — argv lets us honor Java-style
-        // `-Dkey=value` startup args by installing each as a system property
-        // before user code runs. Residual argv (without the -D entries) is
-        // currently dropped because the user entry doesn't take parameters
-        // yet; once `static int32 main(String[] args)` lands we'll forward
-        // the residual through.
+        // `int main(int argc, char** argv)` — argv is used twice here: it
+        // populates the ambient argument store behind `System.args` (and,
+        // through it, a `main(String[] args)` entry's array), and it is
+        // walked for Java-style `-Dkey=value` tokens, each installed as a
+        // system property before user code runs.
         llvm::Type* ptrTy = llvm::PointerType::get(ctx, 0);
         llvm::FunctionType* mainTy = llvm::FunctionType::get(
             i32Ty, {i32Ty, ptrTy}, false);
@@ -3970,9 +3969,38 @@ namespace cajeta {
         llvm::BasicBlock* bb = llvm::BasicBlock::Create(ctx, "entry", mainFn);
         llvm::IRBuilder<> b(bb);
 
+        // Install the ambient argv store FIRST, so `System.args` answers for
+        // every entry shape — including a parameter-less one, which has no
+        // `String[]` to receive arguments through and is exactly the shape a
+        // script unit compiles to.
+        //
+        // argv[0] is the program name, not a user argument. Slicing it off
+        // HERE is what keeps the exe and the JIT agreeing: both stores then
+        // hold user arguments only, and `__cajeta_args_make` builds the
+        // `String[]` from the store rather than from a second vector.
+        {
+            llvm::Type* i64Ty = llvm::Type::getInt64Ty(ctx);
+            llvm::FunctionType* argsInstallTy = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(ctx), {i64Ty, ptrTy}, false);
+            llvm::FunctionCallee argsInstallFn =
+                lmod->getOrInsertFunction("__cajeta_args_install", argsInstallTy);
+            llvm::Value* argcAll = b.CreateSExt(mainFn->getArg(0), i64Ty);
+            llvm::Value* argcLess = b.CreateSub(
+                argcAll, llvm::ConstantInt::get(i64Ty, 1));
+            llvm::Value* argcNeg = b.CreateICmpSLT(
+                argcLess, llvm::ConstantInt::get(i64Ty, 0));
+            llvm::Value* argcUser = b.CreateSelect(argcNeg,
+                llvm::ConstantInt::get(i64Ty, 0), argcLess);
+            llvm::Value* argvUser = b.CreateGEP(
+                ptrTy, mainFn->getArg(1),
+                llvm::ConstantInt::get(i64Ty, 1));
+            b.CreateCall(argsInstallFn, {argcUser, argvUser});
+        }
+
         // Walk argv looking for `-Dkey=value` (or `-Dkey`) tokens and feed
-        // each to __cajeta_property_install. Other args are skipped for
-        // now (no String[]-typed entry yet).
+        // each to __cajeta_property_install. A `-D` token is ALSO a user
+        // argument as far as `System.args` is concerned — the store above is
+        // the raw vector; this pass only additionally publishes properties.
         {
             llvm::Value* argcVal = mainFn->getArg(0);
             llvm::Value* argvVal = mainFn->getArg(1);
@@ -4106,27 +4134,13 @@ namespace cajeta {
             }
 
             llvm::FunctionType* argsMakeTy = llvm::FunctionType::get(
-                ptrTy,
-                {i64Ty, ptrTy, ptrTy, i64Ty, i64Ty, i64Ty, i64Ty, i64Ty},
-                false);
+                ptrTy, {ptrTy, i64Ty, i64Ty, i64Ty, i64Ty, i64Ty}, false);
             llvm::FunctionCallee argsMakeFn =
                 lmod->getOrInsertFunction("__cajeta_args_make", argsMakeTy);
-            // Java-style args: argv[0] is the program name, not a user
-            // argument — the JIT host already passes program args only, so
-            // the exe shim must slice it off or the two disagree on args[0].
-            llvm::Value* argcI64 = b.CreateSExt(mainFn->getArg(0), i64Ty);
-            llvm::Value* argcLess = b.CreateSub(
-                argcI64, llvm::ConstantInt::get(i64Ty, 1));
-            llvm::Value* argcNeg = b.CreateICmpSLT(
-                argcLess, llvm::ConstantInt::get(i64Ty, 0));
-            llvm::Value* argcUser = b.CreateSelect(argcNeg,
-                llvm::ConstantInt::get(i64Ty, 0), argcLess);
-            llvm::Value* argvUser = b.CreateGEP(
-                ptrTy, mainFn->getArg(1),
-                llvm::ConstantInt::get(i64Ty, 1));
+            // Reads the ambient store installed above — no vector passed, so
+            // this cannot report different arguments than `System.args`.
             llvm::Value* argsArray = b.CreateCall(argsMakeFn,
-                {argcUser, argvUser, vtableRef, strSize,
-                 offBytes, offByteLen, offMode, offCpLen});
+                {vtableRef, strSize, offBytes, offByteLen, offMode, offCpLen});
             callArgs.push_back(argsArray);
         }
 
