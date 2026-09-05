@@ -60,6 +60,17 @@ expensive extraction later: a general abstraction hosted inside the LLM engine
 would accrete LLM assumptions. Validation therefore requires **two clients from
 day one** (§8): an LLM kernel and a non-LLM kernel.
 
+### 1.6 Relationship to `nvptx-coopmatrix-native-ops-incomplete`
+The 5 residual nvptx failures in that spec are WMMA quant kernels that name the
+native-only lane-column ops (`fromWords`, `scaledAccumIntoS`,
+`scaledAccumInto2S`) directly, which nvptx cannot lower. Once `mac` exists
+(§4.1), those kernels express `mac` instead, and the native-op availability
+becomes an INTERNAL lowering choice (WMMA where native, dp4a/scalar otherwise) —
+so the failures close as a *consequence of adopting this surface*, not as a
+per-op nvptx port. That spec's tactical fix (the `--strict-device` net plus a
+native nvptx path, verified on the 4090) remains the near-term bridge; this
+surface is the durable subsumption. The two are complementary, not competing.
+
 ## 2. The algorithm / schedule split
 
 - **2.1** When a kernel is expressed on this surface, the algorithm body
@@ -116,6 +127,28 @@ a scalar loop.
 - **4.5** When an algorithm needs an activation in a target-specific form (f32
   vs Q8-quantized), the schedule chooses it; the algorithm requests an abstract
   activation tile and the numeric tier is a documented property of the shape.
+
+## 4A. The numeric-tier contract
+
+A shape's numeric fidelity is part of its contract — declared and tested, never
+an accident. The one algorithm may take shapes at different tiers, and a shape's
+tier must be explicit so a schedule change cannot silently move the numbers.
+
+- **4A.1** When a shape is bit-exact (an f32 / fp32-activation shape), it is
+  tested bit-exact against the reference — a tolerance is NOT accepted.
+- **4A.2** When a shape uses a lossy form (Q8-quantized activations, a
+  reduced-precision accumulate), its tolerance vs the f32 reference is a DECLARED
+  property tested against that bound — e.g. the MXFP4 Q8 shape: ≤0.5% relative,
+  0 rows beyond 2% (measured, this session).
+- **4A.3** When a schedule changes the activation/accumulate form (f32 → Q8), it
+  changes the shape's declared tier, and that change is explicit in the schedule,
+  not a side effect of picking a faster `mac`.
+- **4A.4** When two shapes of the same algorithm are compared, they are compared
+  at the WEAKER shape's declared tier — a lossy shape is never asserted
+  bit-exact against an exact one (the trap that would make the Q8 shape look
+  "wrong" against the f32 scalar).
+- **4A.5** When a shape's realized error exceeds its declared tier, that is a
+  test FAILURE, not a re-tuning of the bound — the bound is the contract.
 
 ## 5. The target descriptor (device model)
 
@@ -194,7 +227,33 @@ now because they are cheap to reserve and expensive to retrofit.
   `mac`. `Tile` is `CooperativeMatrix` generalized; the existing group-demote
   and `[mma-tiering]` machinery is the right home for `mac`'s tier selection.
 
-## 10. Acceptance
+## 10. Development phasing (forced by the verification boundary)
+
+A shape is not "done" until the target's suite runs on it (the
+`cpu-oracle-passed-a-uaf` rule: a lowering change is unverified until the device
+suite confirms it). So each phase lands where its hardware is — this is a
+constraint, not a preference.
+
+- **11.1 Phase A — AMD + CPU** (authored and verified on gfx1151 + CPU, this
+  box). The surface (`TargetDescriptor`, `Group`, `Tile`/`mac`), both witnesses
+  (MXFP4 matvec reproducing coopQ8's ~43 µs on AMD + correct width-1 on CPU; a
+  non-LLM kernel correct on AMD + CPU), the reserved seams, and the
+  architecture-portability confirmation (wave32 ISA == hand-32). Full acceptance
+  (§11) is achievable here. This is the plan's Units 1–7.
+- **11.2 Phase B — NVIDIA (nvptx)** (emit-checkable here; numerics verified on
+  the 4090, owned by that session). `mac`'s WMMA/dp4a selection on nvptx —
+  native where a config exists, dp4a/scalar where the native-only lane ops are
+  absent (§1.6). Intersects `nvptx-coopmatrix-native-ops-incomplete`: adopting
+  the surface is what closes those 5 failures durably. A follow-on plan, gated
+  on Phase A landing.
+- **11.3 Phase C — later clients/backends.** Vulkan/SPIR-V (games-adjacent;
+  `dot4add` exists) and `cajeta.ml` training as a second heavy client. Not this
+  arc; named so the surface is not shaped in a way that precludes them.
+- **11.4** The multi-kernel utilization scheduler (§1.4, §7) is a SEPARATE arc
+  with its own spec, after the surface exists on at least Phase A + B — it
+  consumes the seams this arc reserves.
+
+## 11. Acceptance
 
 - The MXFP4 matvec expressed once on the surface reproduces coopQ8 numerics and
   ~43 µs on gfx1151 (§8.1), and a non-LLM kernel is correct on AMD + CPU (§8.2).
