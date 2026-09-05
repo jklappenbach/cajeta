@@ -98,6 +98,28 @@ uint32_t __cajeta_xpu_wave_width(void) { return 1; }
 // wave/subgroup size and never calls this; this is the host @Native / CPU
 // scalar-fallback value, and the CPU kernel path emits the constant 1 directly.
 uint32_t __cajeta_xpu_group_width(void) { return 1; }
+// Group.laneId() — the single lane of a width-1 CPU group is lane 0. GPU folds
+// to waveLaneId and never calls this.
+uint32_t __cajeta_xpu_group_lane_id(void) { return 0; }
+// Group.rowId() — the group's block index (workgroup id x). GPU/CPU kernels
+// fold to workgroupId and never call this; host stub for JIT materialization.
+uint32_t __cajeta_xpu_group_row_id(void) { return 0; }
+// Group.reduce(op, value) — a width-1 group reduce is the identity. NOT the
+// wave reduce: on the CPU backend the SIMD lanes carry independent rows, so
+// summing them would merge rows. (op ignored; the identity is op-independent.)
+float __cajeta_xpu_group_reduce_f32(int32_t op, float value) {
+    (void) op;
+    return value;
+}
+// Group.reduceSegmented(segment, op, value) — identity on a width-1 group.
+float __cajeta_xpu_group_reduce_f32_seg(int32_t segment, int32_t op, float value) {
+    (void) segment; (void) op;
+    return value;
+}
+// Group.stripe(n) — only ever a for-each iterable, lowered directly by the
+// kernel lowerer; this host symbol exists solely for stdlib JIT materialization
+// and is never called.
+int32_t __cajeta_xpu_group_stripe(int32_t n) { return n; }
 // Lane within the wave: 0 on the width-1 emulation (only lane 0 exists). In a
 // vectorized CPU kernel the lowering computes `tid.x % width` inline instead of
 // calling this stub; this is the host @Native / scalar-fallback value.

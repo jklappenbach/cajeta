@@ -1,0 +1,127 @@
+package cajeta.xpu;
+
+import cajeta.xpu.GroupOp;
+import cajeta.xpu.Device;
+
+/**
+ * Group — the abstract cooperative unit of the cajeta.xpu cooperative-tile
+ * surface (xpu-cooperative-tile §3). A Group is `width` cooperating lanes;
+ * `width` folds to a per-target compile-time constant (the wave/subgroup size
+ * on a GPU, 1 on the CPU backend). An algorithm expressed on Group takes the
+ * optimal shape per architecture with NO change to its source:
+ *
+ *   float32 acc = 0.0f;
+ *   for (int32 j : Group.stripe(cols)) { acc += a[j] * x[j]; }
+ *   float32 dot = Group.reduce(GroupOp.Add, acc);   // every lane gets the sum
+ *
+ * On AMD wave32 that is one wave per row: lanes stripe the columns and a DPP /
+ * shuffle wave reduce combines them. On the CPU backend it is one work-item per
+ * row: a full serial stripe (width 1, lane 0) and an identity reduce, with the
+ * work-item loop vectorised ACROSS rows beneath the abstraction (§3.5). Same
+ * source, both correct.
+ *
+ * DEVICE-side (inside a @Kernel): {@link #width} / {@link #laneId} /
+ * {@link #reduce} / {@link #reduceSegmented} / {@link #stripe}. The compiler
+ * folds these per target; the `@Native` symbols are lowering keys and CPU
+ * scalar fallbacks (a GPU kernel never calls them — it folds to wave ops).
+ *
+ * HOST-side (at the launch site): {@link #laneBlock} / {@link #rowGrid} derive
+ * the launch geometry from the descriptor, so no wave-width or grid literal is
+ * written at a call site (§3.1, §5.3).
+ */
+public final class Group {
+
+    private Group() { }
+
+    // ---- device-side: the cooperative primitives --------------------- //
+
+    /**
+     * The group's lane count for the target being compiled — folds to a
+     * constant (the wave/subgroup size on a GPU, 1 on the CPU backend). The
+     * same value as {@link TargetDescriptor#waveWidth}.
+     */
+    @Native("__cajeta_xpu_group_width")
+    public static int32 width();
+
+    /**
+     * This lane's index within its group, in `[0, width())`. 0 on the CPU
+     * backend (the group is one work-item). Pair with {@link #width} for
+     * width-agnostic cooperation.
+     */
+    @Native("__cajeta_xpu_group_lane_id")
+    public static int32 laneId();
+
+    /**
+     * The index of the ROW (output) this group is mapped to under a one-group-
+     * per-row launch (§3.1) — the group's block index. Launch with
+     * `grid: [Group.rowGrid(rows)], block: [Group.laneBlock()]` and each group
+     * reads its row with `Group.rowId()`: block b handles row b on a GPU (one
+     * wave per block) and on the CPU backend (one work-item per block). The
+     * author never computes a row from thread/grid arithmetic.
+     */
+    @Native("__cajeta_xpu_group_row_id")
+    public static int32 rowId();
+
+    /**
+     * Reduce `value` across the group's lanes with `op` — a compile-time
+     * {@link GroupOp} constant; every lane receives the same result. On the CPU
+     * backend (width 1) this is the identity: the single group lane already
+     * holds the whole result, and the SIMD lanes carry independent rows, so
+     * they are never summed together.
+     */
+    @Native("__cajeta_xpu_group_reduce_f32")
+    public static float32 reduce(GroupOp op, float32 value);
+
+    /**
+     * Segmented reduce: each aligned span of `segment` consecutive lanes
+     * reduces independently, and every lane in a span receives that span's
+     * result (§3.4). This is the block-scoped reduce that stays correct when
+     * the group is WIDER than the logical block — a per-32-block amax on a
+     * 64-wide wave must not merge two blocks. `segment` must be a power of two;
+     * `segment == width()` degenerates to {@link #reduce} (no cost).
+     */
+    @Native("__cajeta_xpu_group_reduce_f32_seg")
+    public static float32 reduceSegmented(int32 segment, GroupOp op, float32 value);
+
+    /**
+     * The group-stride iterable for a for-each:
+     * `for (int32 i : Group.stripe(n))` visits `i = laneId(), laneId()+width(),
+     * … < n`. The group's lanes stride the `n` work items, coalesced by
+     * construction (§3.2); on the CPU backend (laneId 0, width 1) it is a full
+     * serial loop. Valid ONLY as a for-each iterable — the compiler lowers the
+     * loop directly and never materialises a value.
+     */
+    @Native("__cajeta_xpu_group_stripe")
+    public static int32 stripe(int32 n);
+
+    // ---- host-side: launch geometry from the descriptor -------------- //
+
+    /**
+     * The block size (threads) for a one-group-per-row launch: the group width
+     * for the ACTIVE backend — the wave size on a GPU, 1 on the CPU backend.
+     * Read this at the launch site instead of a hardcoded 32 (§3.1, §5.3):
+     *
+     *   k.launch(s, grid: [Group.rowGrid(rows)], block: [Group.laneBlock()])(…)
+     *
+     * A DEVICE TOUCH (it queries {@link Device}); ask after any {@link
+     * Device#force}. Falls back to 1 when the width is unknown — still correct.
+     */
+    public static int32 laneBlock() {
+        if (Device.activeBackend().equals("cpu")) {
+            return 1;
+        }
+        int32 w = Device.waveSize();
+        if (w <= 0) {
+            return 1;
+        }
+        return w;
+    }
+
+    /**
+     * The grid size (blocks) that maps `rows` outputs onto groups, one row per
+     * group (§3.1). One block per row, each block a single group.
+     */
+    public static int32 rowGrid(int32 rows) {
+        return rows;
+    }
+}

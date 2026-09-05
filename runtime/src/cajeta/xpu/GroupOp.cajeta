@@ -1,0 +1,14 @@
+package cajeta.xpu;
+
+/**
+ * The associative reduction operator for {@link Group#reduce} /
+ * {@link Group#reduceSegmented} (xpu-cooperative-tile §3.3). A COMPILE-TIME-
+ * CONSTANT argument: the kernel lowerer maps the ordinal to the target's
+ * wave-reduce op, so it must be a literal `GroupOp.X`, not a runtime variable
+ * (exactly like {@link MemoryOrder}). The ordinal is the contract — do not
+ * reorder.
+ */
+public enum GroupOp {
+    Add,   // 0 — sum across the group's lanes (fadd)
+    Max    // 1 — maximum across the group's lanes (maxnum)
+}

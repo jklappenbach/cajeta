@@ -1236,6 +1236,71 @@ private:
     void lowerEnhancedFor(const std::shared_ptr<EnhancedForStatement>& efs) {
         auto mc = std::dynamic_pointer_cast<MethodCallExpression>(
             efs->getIterableExpr());
+
+        // Cooperative-group stripe (xpu-cooperative-tile §3.2):
+        //   for (idxType i : Group.stripe(n))
+        // ->  for (i = groupLaneId(); i < n; i += groupWidth()) body
+        // The group's lanes stride the n work items — lane L takes L, L+width,
+        // …, coalesced by construction. The single binding is the INDEX (there
+        // is no buffer element to copy). On the CPU backend groupLaneId()==0 and
+        // groupWidth()==1, so this degrades to a full serial loop, correct.
+        if (mc && mc->getMethodCallName() == "stripe" &&
+                !mc->getChildren().empty()) {
+            std::string recvName;
+            if (auto id = std::dynamic_pointer_cast<IdentifierExpression>(
+                    mc->getChildren()[0]))
+                recvName = id->getTextValue();
+            if (recvName == "Group") {
+                if (mc->getParameters().size() != 1)
+                    throw cajeta::Exception(
+                        "XPU kernel lowering: Group.stripe(n) takes exactly one "
+                        "argument", "XPU-N02");
+                llvm::Type* si32 = llvm::Type::getInt32Ty(ctx);
+                llvm::Type* idxTy = efs->getElementType()
+                    ? deviceScalarType(efs->getElementType(), ctx) : si32;
+                if (!idxTy || !idxTy->isIntegerTy()) idxTy = si32;
+                bool idxSigned =
+                    efs->getElementType() && typeIsSigned(efs->getElementType());
+                const std::string& idxName = efs->getElementName();
+                llvm::Value* count = coerceTo(
+                    lowerExpr(mc->getParameters()[0].expression), idxTy);
+                llvm::Value* start =
+                    coerceTo(target.groupLaneId(builder, mod), idxTy);
+                llvm::Value* step =
+                    coerceTo(target.groupWidth(builder, mod), idxTy);
+                llvm::Value* idxSlot = entryAlloca(idxTy, idxName);
+                builder.CreateStore(start, idxSlot);
+                values[idxName] = idxSlot;
+                slotTypes[idxName] = idxTy;
+                signedness[idxName] = idxSigned;
+
+                auto* head = llvm::BasicBlock::Create(ctx, "stripe.head", fn);
+                auto* body = llvm::BasicBlock::Create(ctx, "stripe.body", fn);
+                auto* upd  = llvm::BasicBlock::Create(ctx, "stripe.update", fn);
+                auto* exit = llvm::BasicBlock::Create(ctx, "stripe.exit", fn);
+                builder.CreateBr(head);
+                builder.SetInsertPoint(head);
+                llvm::Value* i = builder.CreateLoad(idxTy, idxSlot, idxName);
+                // Indices are non-negative; unsigned compare (as buffer.range).
+                builder.CreateCondBr(
+                    builder.CreateICmpULT(i, count, "stripe.cmp"), body, exit);
+                builder.SetInsertPoint(body);
+                pushLoop(upd, exit);
+                lowerStatement(efs->getBody());
+                loopTargets.pop_back();
+                if (!builder.GetInsertBlock()->hasTerminator())
+                    builder.CreateBr(upd);
+                builder.SetInsertPoint(upd);
+                llvm::Value* next = builder.CreateAdd(
+                    builder.CreateLoad(idxTy, idxSlot, idxName), step,
+                    "stripe.next");
+                builder.CreateStore(next, idxSlot);
+                builder.CreateBr(head);
+                builder.SetInsertPoint(exit);
+                return;
+            }
+        }
+
         std::string bufName;
         if (mc && mc->getMethodCallName() == "range" &&
             !mc->getChildren().empty()) {
@@ -3024,6 +3089,56 @@ private:
             unsupported("TargetDescriptor." + name + " is not a device op "
                         "(only waveWidth() folds on the hot path; the machine "
                         "estimates are host-side)");
+        } else if (recv == "Group") {
+            // The cooperative group (xpu-cooperative-tile §3). width()/laneId()
+            // are per-lane queries that fold per target (wave on a GPU, 1/0 on
+            // CPU). reduce()/reduceSegmented() are cross-lane, so flag the
+            // kernel for maximal reconvergence like the Wave reduces. stripe()
+            // is a for-each iterable handled in lowerEnhancedFor — as a value
+            // expression it is an error.
+            const auto& args = mc->getParameters();
+            if (name == "width") return target.groupWidth(builder, mod);
+            if (name == "laneId") return target.groupLaneId(builder, mod);
+            // The group's row under a one-group-per-block launch = its block
+            // index (workgroup id x). Correct on a GPU (one wave per block) and
+            // on the CPU backend (one work-item per block).
+            if (name == "rowId") return target.workgroupId(builder, mod, 0);
+            // Map a GroupOp enum-constant ordinal to the float reduce op. The op
+            // MUST be a compile-time constant (GroupOp.Add / GroupOp.Max) — it
+            // selects the intrinsic, exactly like MemoryOrder.
+            auto groupFop = [&](const ExpressionPtr& e)
+                    -> LoweringTarget::WaveReduceFOp {
+                auto* c = llvm::dyn_cast<llvm::ConstantInt>(lowerExpr(e));
+                if (!c) unsupported("Group.reduce op must be a compile-time "
+                                    "GroupOp constant (GroupOp.Add / .Max)");
+                uint64_t ord = c->getZExtValue();
+                if (ord == 0) return LoweringTarget::WaveReduceFOp::Sum; // Add
+                if (ord == 1) return LoweringTarget::WaveReduceFOp::Max;
+                unsupported("Group.reduce: unknown GroupOp ordinal "
+                            + std::to_string(ord) + " (Add=0, Max=1)");
+                return LoweringTarget::WaveReduceFOp::Sum; // unreachable
+            };
+            if (name == "reduce") {
+                if (args.size() != 2)
+                    unsupported("Group.reduce(op, value) arity");
+                usedSubgroupOp_ = true;
+                auto fop = groupFop(args[0].expression);
+                return target.groupReduceF32(builder, mod, fop,
+                                             lowerExpr(args[1].expression));
+            }
+            if (name == "reduceSegmented") {
+                if (args.size() != 3)
+                    unsupported("Group.reduceSegmented(seg, op, value) arity");
+                usedSubgroupOp_ = true;
+                llvm::Value* seg = lowerExpr(args[0].expression);
+                auto fop = groupFop(args[1].expression);
+                return target.groupReduceF32Segmented(
+                    builder, mod, fop, lowerExpr(args[2].expression), seg);
+            }
+            if (name == "stripe")
+                unsupported("Group.stripe(n) is only a for-each iterable: "
+                            "`for (int32 i : Group.stripe(n)) { ... }`");
+            unsupported("Group." + name + " is not a device op");
         } else if (recv == "Quad") {
             // Quad (2x2) cross-lane ops Ã¢ÂÂ broadcast/swap/all/any. Cross-lane like
             // the Wave ops, so flag the kernel for maximal reconvergence.

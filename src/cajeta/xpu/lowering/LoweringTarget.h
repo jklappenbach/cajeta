@@ -954,6 +954,20 @@ namespace xpu {
             return waveWidth(b, m);
         }
 
+        // The lane's index WITHIN its cooperative group, in [0, groupWidth())
+        // (xpu-cooperative-tile §3). On a GPU it equals waveLaneId(). The CPU
+        // backend OVERRIDES it to the constant 0: the group is one work-item,
+        // so its single lane is lane 0. With groupWidth()==1 this makes
+        // Group.stripe() degrade to a full serial loop (i = 0; i < n; i += 1),
+        // which is the correct CPU shape (the work-item loop vectorizes ACROSS
+        // groups/rows beneath this abstraction).
+        virtual llvm::Value* groupLaneId(llvm::IRBuilderBase& b,
+                                         llvm::Module& m) {
+            return waveLaneId(b, m);
+        }
+        // NOTE: groupReduceF32 / groupReduceF32Segmented are declared below,
+        // after WaveReduceFOp and waveReduceF32Segmented are in scope.
+
         // Read i32 `value` from lane `srcLane` (i32), broadcast across the wave
         // (shuffle-by-index / readlane). Returns i32.
         virtual llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
@@ -1034,6 +1048,33 @@ namespace xpu {
                                                     WaveReduceFOp op,
                                                     llvm::Value* value,
                                                     llvm::Value* seg);
+
+        // Cooperative-group float reduce (Group.reduce): sum / max of an f32
+        // across the group's lanes (xpu-cooperative-tile §3.3). On a GPU the
+        // group IS the wave, so the default delegates to waveReduceF32. The CPU
+        // backend OVERRIDES it to IDENTITY (returns `value`): the group is one
+        // lane, and — decisively — the CPU wave is realised as SIMD lanes that
+        // each carry a DIFFERENT group/row, so summing them would merge rows
+        // that must stay independent. A width-1 group reduce is the input.
+        virtual llvm::Value* groupReduceF32(llvm::IRBuilderBase& b,
+                                            llvm::Module& m, WaveReduceFOp op,
+                                            llvm::Value* value) {
+            return waveReduceF32(b, m, op, value);
+        }
+
+        // Segmented cooperative-group float reduce (Group.reduceSegmented): each
+        // aligned span of `seg` lanes reduces independently (§3.4) — the
+        // block-scoped reduce that stays correct when the group is wider than
+        // the logical block. GPU default delegates to waveReduceF32Segmented;
+        // CPU OVERRIDES to identity for the same reason as groupReduceF32 (a
+        // width-1 group, one lane per row).
+        virtual llvm::Value* groupReduceF32Segmented(llvm::IRBuilderBase& b,
+                                                     llvm::Module& m,
+                                                     WaveReduceFOp op,
+                                                     llvm::Value* value,
+                                                     llvm::Value* seg) {
+            return waveReduceF32Segmented(b, m, op, value, seg);
+        }
 
         // EXCLUSIVE prefix scan across the lanes: lane i receives the sum (or
         // product) of lanes 0..i-1; lane 0 gets the identity (0 / 1). uint32.

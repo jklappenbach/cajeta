@@ -526,6 +526,28 @@ public:
         (void) b;
         return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()), 1);
     }
+    // The single lane of a width-1 group is lane 0.
+    llvm::Value* groupLaneId(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        (void) b;
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()), 0);
+    }
+    // A width-1 group reduce is IDENTITY. This is NOT the CPU wave reduce
+    // (which sums SIMD lanes): on the CPU backend the SIMD lanes each run a
+    // DIFFERENT group/row, so a cross-lane sum would merge independent rows.
+    // The work-item loop vectorizes across rows beneath this abstraction; the
+    // per-row reduce is a no-op because the single group lane already holds the
+    // whole result (xpu-cooperative-tile §3.5).
+    llvm::Value* groupReduceF32(llvm::IRBuilderBase& b, llvm::Module& m,
+                                WaveReduceFOp op, llvm::Value* value) override {
+        (void) b; (void) m; (void) op;
+        return value;
+    }
+    llvm::Value* groupReduceF32Segmented(llvm::IRBuilderBase& b, llvm::Module& m,
+                                         WaveReduceFOp op, llvm::Value* value,
+                                         llvm::Value* seg) override {
+        (void) b; (void) m; (void) op; (void) seg;
+        return value;
+    }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* value, llvm::Value* srcLane) override {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
