@@ -120,7 +120,54 @@ const char* kMacSource =
     "    }\n"
     "}\n";
 
+// group.mac over f16 cooperative-matrix (WMMA) operands — the WMMA tier of the
+// tile MAC (§4.1). The author names `mac`, never `mma`; the compiler routes it
+// to the tensor-core path. mc.mma is never written.
+const char* kWmmaMacSource =
+    "package test;\n"
+    "import cajeta.xpu.KernelBuffer;\n"
+    "import cajeta.xpu.CooperativeMatrix;\n"
+    "import cajeta.xpu.Group;\n"
+    "public class Wmac {\n"
+    "    @Kernel\n"
+    "    public static void k(KernelBuffer<float16> a, KernelBuffer<float16> b,\n"
+    "                         KernelBuffer<float32> c) {\n"
+    "        CooperativeMatrix<float16,16,16,0> ma;\n"
+    "        ma.load(a, 0, 0, 16);\n"
+    "        CooperativeMatrix<float16,16,16,1> mb;\n"
+    "        mb.load(b, 0, 0, 16);\n"
+    "        CooperativeMatrix<float32,16,16,2> mc;\n"
+    "        mc.splat(0.0f);\n"
+    "        Group.mac(mc, ma, mb);\n"
+    "        mc.store(c, 0, 0, 16);\n"
+    "    }\n"
+    "}\n";
+
 } // namespace
+
+// 3.1.2 (ISA/emit): group.mac over f16 tiles reaches the gfx1151 WMMA
+// intrinsic (amdgcn.wmma.f32.16x16x16.f16) — the author named mac, the compiler
+// chose the tensor core. Emit-only, device-free, like the dp4a emit test.
+TEST(XpuTileMacDevice, f16MacEmitsAmdWmma) {
+    using namespace cajeta::xpu::amd;
+    Compiler compiler;
+    auto module = compileForInspection(compiler, kWmmaMacSource);
+    auto k = findMethod(module->getStructures()["test.Wmac"], "k");
+    ASSERT_NE(k, nullptr);
+
+    auto tm = createAmdgpuTargetMachine("gfx1151");
+    ASSERT_NE(tm, nullptr);
+    llvm::LLVMContext deviceCtx;
+    llvm::Module deviceModule("xpu_wmma_mac_amd_emit", deviceCtx);
+    configureDeviceModule(deviceModule, *tm);
+    ASSERT_NE(lowerKernel(k, deviceModule), nullptr);
+
+    std::string ir;
+    { llvm::raw_string_ostream os(ir); deviceModule.print(os, nullptr); }
+    EXPECT_NE(ir.find("wmma.f32.16x16x16.f16"), std::string::npos)
+        << "Group.mac over f16 tiles must reach the gfx1151 WMMA unit (the "
+           "author named mac, not mma)";
+}
 
 // 3.1.1 (AMD device): the int8 mac dp4a matches the scalar reference.
 TEST(XpuTileMacDevice, int8MacEqualsScalarOnAmd) {

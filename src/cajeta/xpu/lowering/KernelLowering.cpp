@@ -3150,6 +3150,25 @@ private:
                 // unit. Returns the new int32 accumulator.
                 if (args.size() != 3)
                     unsupported("Group.mac(acc, a, b) arity");
+                // WMMA tile tier (§4.1): when the accumulator is a cooperative
+                // fragment (a Tile / CooperativeMatrix slot), mac IS the tile
+                // multiply-accumulate — route to the coop-matrix lowering, which
+                // selects the native WMMA path or the software tile and honours
+                // the group straddle-demotion (§4.4). The lane-relative fragment
+                // ops (fromWords / scaledAccumInto) stay INTERNAL to that
+                // lowering; the author named `mac`, never `mma`. Synthesize
+                // `acc.mma(a, b)` and reuse the existing dispatch verbatim.
+                if (auto accId = std::dynamic_pointer_cast<IdentifierExpression>(
+                        args[0].expression)) {
+                    if (coopMatrixSlots.count(accId->getTextValue())) {
+                        auto sub = std::make_shared<MethodCallExpression>(
+                            "mma",
+                            std::vector<cajeta::MethodCallParameter>{
+                                args[1], args[2]});
+                        return lowerCoopMatrixMethod(accId->getTextValue(),
+                                                     "mma", sub);
+                    }
+                }
                 llvm::Value* accV = lowerExpr(args[0].expression);
                 llvm::Value* aV = lowerExpr(args[1].expression);
                 llvm::Value* bV = lowerExpr(args[2].expression);
