@@ -26,11 +26,28 @@ TEST(XpuAbiContractTests, abiVersionIsStampedAndQueryable) {
 }
 
 // Stage 11/12 host spec-constant override — the ABI version was bumped to 2 when
-// __cajeta_xpu_launch_v3 (carrying specCount/specValues) landed. Pins the value
-// so a downstream port can require >= 2 to use the spec-override surface.
+// __cajeta_xpu_launch_v3 (carrying specCount/specValues) landed. The spec-override
+// surface is a DURABLE capability from v2 on, so a downstream port requires
+// ABI >= 2 to use it — asserted as >= (not ==) so a later, backward-compatible
+// bump does not falsely fail. The current-version tripwire lives in the test
+// below.
 TEST(XpuAbiContractTests, abiVersionBumpedForSpecOverride) {
-    EXPECT_EQ(CAJETA_XPU_ABI_VERSION, 2);
-    EXPECT_EQ(__cajeta_xpu_abi_version(), 2);
+    EXPECT_GE(CAJETA_XPU_ABI_VERSION, 2);
+    EXPECT_GE(__cajeta_xpu_abi_version(), 2);
+}
+
+// ABI v3 — the Tier-B device geometry appended to CajetaXpuRawDevice
+// (ldsBytesPerBlock, memory clock/bus, grid/block clamps, … — see
+// specs/device-geometry-parameterization-spec.md §2.2). This is the
+// CURRENT-VERSION tripwire: a hard `==` so the NEXT ABI bump forces a conscious
+// update here (append a test, document the new version's surface). A downstream
+// port requiring the Tier-B geometry checks ABI >= 3. The referenced field ties
+// this version pin to the actual struct surface it stands for.
+TEST(XpuAbiContractTests, abiVersionBumpedForTierBGeometry) {
+    EXPECT_EQ(CAJETA_XPU_ABI_VERSION, 3);
+    EXPECT_EQ(__cajeta_xpu_abi_version(), 3);
+    CajetaXpuRawDevice d = {};
+    (void) d.ldsBytesPerBlock;   // the v3 append must exist in the ABI struct
 }
 
 // Inc 1 — the parameter-kind values are the frozen contract: they must hold
