@@ -399,6 +399,74 @@ void __cajeta_property_install(const char* keyEqValue) {
     free(key);
 }
 
+// ---------------------------------------------------------------------------
+// The process argument vector (`System.args`).
+//
+// ONE STORE, TWO SPELLINGS. A `main(String[] args)` entry receives a cajeta
+// `String[]` built by __cajeta_args_make; `System.args` reads this store.
+// Both are fed from the same install call, so the two cannot disagree about
+// what the program was invoked with — two independent copies of that fact is
+// exactly the bug this arrangement exists to make unrepresentable.
+//
+// Every host installs: `cajeta run`, `cajeta jit-run`, the C-main shim of a
+// compiled binary, and the Jupyter kernel (which installs an EMPTY vector —
+// a notebook cell has no argv, and saying so explicitly is better than
+// leaving the store uninitialized and indistinguishable from it).
+//
+// The strings are COPIED. A host may hand us a vector whose backing dies
+// before the program does (a std::vector<std::string> in a stack frame), and
+// a dangling argv reads as plausible garbage rather than failing.
+static char**  __cajeta_argv_store = NULL;
+static int64_t __cajeta_argc_store = 0;
+static pthread_mutex_t __cajeta_args_mu = PTHREAD_MUTEX_INITIALIZER;
+
+void __cajeta_args_install(int64_t argc, char** argv) {
+    if (argc < 0) argc = 0;
+    pthread_mutex_lock(&__cajeta_args_mu);
+    // Re-installing replaces: the kernel installs empty per session, and a
+    // test host may install twice. Free the previous copy rather than leak.
+    if (__cajeta_argv_store) {
+        for (int64_t i = 0; i < __cajeta_argc_store; i++) free(__cajeta_argv_store[i]);
+        free(__cajeta_argv_store);
+        __cajeta_argv_store = NULL;
+    }
+    __cajeta_argc_store = 0;
+    if (argc > 0) {
+        __cajeta_argv_store = (char**) malloc((size_t) argc * sizeof(char*));
+        if (!__cajeta_argv_store) {
+            pthread_mutex_unlock(&__cajeta_args_mu);
+            return;
+        }
+        for (int64_t i = 0; i < argc; i++) {
+            const char* s = (argv && argv[i]) ? argv[i] : "";
+            __cajeta_argv_store[i] = strdup(s);
+        }
+        __cajeta_argc_store = argc;
+    }
+    pthread_mutex_unlock(&__cajeta_args_mu);
+}
+
+int64_t __cajeta_args_count(void) {
+    pthread_mutex_lock(&__cajeta_args_mu);
+    int64_t n = __cajeta_argc_store;
+    pthread_mutex_unlock(&__cajeta_args_mu);
+    return n;
+}
+
+// Out of range yields NULL, which the cajeta side wraps as a null String —
+// the same shape `System.env.get` uses for an unset variable, so one idiom
+// covers both. Clamping to "" instead would make a typo'd index look like an
+// empty argument.
+const char* __cajeta_args_get(int64_t index) {
+    pthread_mutex_lock(&__cajeta_args_mu);
+    const char* out = NULL;
+    if (index >= 0 && index < __cajeta_argc_store && __cajeta_argv_store) {
+        out = __cajeta_argv_store[index];
+    }
+    pthread_mutex_unlock(&__cajeta_args_mu);
+    return out;
+}
+
 // Publish the host's release target triple as the `cajeta.host.triple`
 // system property at startup, so programs (notably cvm, the version
 // manager) can pick the matching release asset WITHOUT a build-time -D or

@@ -2101,6 +2101,15 @@ CellResult KernelSession::execute(const std::string& source,
         }
     }
 
+    // A notebook cell has no argv, and `System.args` must SAY so rather than
+    // read a store nobody wrote. Installing an empty vector makes "no
+    // arguments" a stated fact; leaving the store cold makes it
+    // indistinguishable from a host that forgot to install, which is the
+    // failure mode this whole arrangement exists to remove.
+    if (auto argsSym = lookupShort("__cajeta_args_install")) {
+        reinterpret_cast<void (*)(int64_t, char**)>(argsSym)(0, nullptr);
+    }
+
     // Run the cell's entry — its top-level statements.
     //
     // The symbol is MANGLED (`cajeta.script.In_3_::__cajeta_script_entry()`),

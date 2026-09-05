@@ -1638,16 +1638,31 @@ void* __cajeta_new_array_header_uninit(uint64_t header_size, uint64_t elem_size,
 
 void* __cajeta_alloc(uint64_t size);  // defined below; used by __cajeta_args_make
 
-// Materialize a cajeta `String[]` from C `argv` for a `main(String[] args)`
-// entry point. The String struct's total size and field byte offsets, plus the
-// String vtable, are passed in from the emit shim (computed via LLVM's
+// The ambient argv store (cajeta_rt_lang.c). `__cajeta_args_make` READS it
+// rather than taking its own vector — see below.
+int64_t     __cajeta_args_count(void);
+const char* __cajeta_args_get(int64_t index);
+
+// Materialize a cajeta `String[]` for a `main(String[] args)` entry point,
+// FROM THE AMBIENT STORE — the same one `System.args` reads.
+//
+// It used to take (argc, argv) from the caller, which meant every host chose
+// for itself what a program's arguments were, and the two spellings could
+// disagree. That was not hypothetical: the exe shim has to slice argv[0] off
+// (it is the program name) while the JIT host never had it, and getting that
+// wrong shifted every index by one in exactly one of the two. Reading the
+// store makes the disagreement unrepresentable: the slicing decision happens
+// once, at install, and both spellings see its result.
+//
+// The String struct's total size and field byte offsets, plus the String
+// vtable, are still passed in from the emit shim (computed via LLVM's
 // DataLayout on the real class type) so nothing about the String ABI is
 // hardcoded here. Returns a standard CajetaArray `{ i64 count, [count x ptr] }`
-// of owned (mode=0) String instances, each holding a heap copy of an argv slot.
-void* __cajeta_args_make(int64_t argc, char** argv,
-                         void* string_vtable, int64_t str_size,
+// of owned (mode=0) String instances, each holding a heap copy of a slot.
+void* __cajeta_args_make(void* string_vtable, int64_t str_size,
                          int64_t off_lentag, int64_t off_aux,
                          int64_t off_base, int64_t off_cplen) {
+    int64_t argc = __cajeta_args_count();
     if (argc < 0) argc = 0;
     // cajeta `String[]` has array LLVM type `{ i64, [0 x %String] }`, so the
     // element STRIDE is the full String struct size — but each slot holds a
@@ -1659,7 +1674,8 @@ void* __cajeta_args_make(int64_t argc, char** argv,
     void* arr = __cajeta_new_array_header(8, (uint64_t) str_size, (uint64_t) argc);
     char* base = (char*) arr + 8;
     for (int64_t i = 0; i < argc; i++) {
-        const char* s = (argv && argv[i]) ? argv[i] : "";
+        const char* s = __cajeta_args_get(i);
+        if (!s) s = "";
         int64_t len = (int64_t) strlen(s);
         void* str = __cajeta_alloc((uint64_t) str_size);
         *(void**)   ((char*) str)             = string_vtable;

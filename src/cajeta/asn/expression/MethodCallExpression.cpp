@@ -339,7 +339,7 @@ namespace cajeta {
         // Other recognized System.<ns> namespaces — env / property — also
         // bypass the unknown-stream diagnostic (their own intrinsic detector
         // dispatches them).
-        if (name == "env" || name == "property") return "";
+        if (name == "env" || name == "property" || name == "args") return "";
         const auto& dotChildren = const_cast<DotExpression*>(dot.get())->getChildren();
         if (dotChildren.empty()) return "";
         auto sys = dynamic_pointer_cast<IdentifierExpression>(dotChildren[0]);
@@ -348,14 +348,15 @@ namespace cajeta {
         return name;
     }
 
-    // Detect `System.env` or `System.property` receiver shape for the
-    // env-var / system-property intrinsics. Returns the namespace name
-    // ("env" / "property") or empty string when the shape doesn't match.
+    // Detect `System.env`, `System.property` or `System.args` receiver shape
+    // for the env-var / system-property / argv intrinsics. Returns the
+    // namespace name ("env" / "property" / "args") or empty string when the
+    // shape doesn't match.
     static std::string detectSystemNamespaceReceiver(const AbstractSyntaxNodePtr& receiver) {
         auto dot = dynamic_pointer_cast<DotExpression>(receiver);
         if (!dot) return "";
         const std::string& name = dot->getIdentifier();
-        if (name != "env" && name != "property") return "";
+        if (name != "env" && name != "property" && name != "args") return "";
         const auto& dotChildren = const_cast<DotExpression*>(dot.get())->getChildren();
         if (dotChildren.empty()) return "";
         auto sys = dynamic_pointer_cast<IdentifierExpression>(dotChildren[0]);
@@ -3352,6 +3353,15 @@ namespace cajeta {
             // properties (property — populated by the binary's -Dkey=value
             // CLI args at startup). Both expose `get(String)` returning a
             // class String and `set(String, String)` returning void.
+            //
+            // `args` joins them: `System.args.count()` -> int64 and
+            // `System.args.get(i)` -> String (null past the end). It is
+            // AMBIENT on purpose — a helper several frames below the entry
+            // reads argv without it being threaded through, the same way it
+            // reads the environment. It shares one runtime store with the
+            // `String[]` handed to a `main(String[] args)` entry, so the two
+            // spellings cannot disagree about what the process was invoked
+            // with.
             {
                 std::string sysNs = detectSystemNamespaceReceiver(children[0]);
                 if (!sysNs.empty()) {
@@ -3360,11 +3370,57 @@ namespace cajeta {
                     llvm::Type* i64Ty = llvm::Type::getInt64Ty(llvmCtx);
                     llvm::Type* ptrTy = llvm::PointerType::get(llvmCtx, 0);
 
+                    // `System.args.count()` -> int64. The argv installed by
+                    // whichever host is running (script, jit-run, compiled
+                    // binary, kernel). Zero is a real answer — a program
+                    // invoked with no arguments — which is why every host
+                    // installs explicitly rather than leaving the store cold.
+                    if (sysNs == "args" && methodCallName == "count"
+                        && parameters.empty()) {
+                        llvm::Function* countFn =
+                            module->getRuntimeFunction("__cajeta_args_count");
+                        if (!countFn) return nullptr;
+                        // Stamp the type. resolveTypes is lint-only for this
+                        // node, so an intrinsic that leaves resolvedType null
+                        // is a value nothing downstream can classify.
+                        setResolvedType(CajetaType::of("int64"));
+                        return builder->CreateCall(countFn, {}, "system.args.count");
+                    }
+                    // Read-only: argv is what the process was invoked with, and
+                    // a program that could rewrite it would be lying to
+                    // anything that read it later.
+                    if (sysNs == "args" && methodCallName == "set") {
+                        throw Exception(
+                            "`System.args` is read-only — it reports how the "
+                            "process was invoked. Use `System.property.set` for "
+                            "a value you want later code to observe.",
+                            "CAJETA_ERROR_ARGS_READ_ONLY");
+                    }
+
                     if (methodCallName == "get" && parameters.size() == 1) {
                         std::string fnName = "__cajeta_" + sysNs + "_get";
                         llvm::Function* getFn = module->getRuntimeFunction(fnName);
                         if (!getFn) return nullptr;
-                        llvm::Value* nameArg = loadStringArg(module, parameters[0].expression);
+                        llvm::Value* nameArg;
+                        if (sysNs == "args") {
+                            // An INDEX, not a name. Widen to the i64 the
+                            // runtime takes so `args.get(0)` (an int32
+                            // literal) and an int64 both lower correctly.
+                            auto idxAst = std::dynamic_pointer_cast<Expression>(
+                                parameters[0].expression);
+                            nameArg = parameters[0].expression->generateCode(module);
+                            // A local reaches codegen as its alloca; load through
+                            // to the r-value before widening, or the POINTER is
+                            // passed where an i64 index belongs.
+                            nameArg = loadIfLValue(module, nameArg, idxAst);
+                            if (nameArg && nameArg->getType()->isIntegerTy()
+                                && nameArg->getType() != i64Ty) {
+                                nameArg = builder->CreateSExtOrTrunc(nameArg, i64Ty,
+                                                                     "system.args.idx");
+                            }
+                        } else {
+                            nameArg = loadStringArg(module, parameters[0].expression);
+                        }
                         llvm::Value* cstrResult = builder->CreateCall(getFn, {nameArg},
                             std::string("system.") + sysNs + ".get.cstr");
 
@@ -3414,6 +3470,17 @@ namespace cajeta {
                             "system." + sysNs + ".get");
                         phi->addIncoming(nullStr, nullBB);
                         phi->addIncoming(sPtr, wrapEndBB);
+
+                        // The result IS a String, and saying so is not
+                        // cosmetic. resolveTypes is lint-only for this node,
+                        // so without this the expression carries no resolved
+                        // type and any context that asks — string
+                        // concatenation, most visibly — formats the raw
+                        // pointer. `"x" + System.env.get("HOME")` printed
+                        // garbage for as long as the intrinsic has existed;
+                        // assigning to a local first hid it, because the
+                        // declaration supplies the type instead.
+                        setResolvedType(CajetaType::of("String"));
                         return phi;
                     }
                     if (methodCallName == "set" && parameters.size() == 2) {
