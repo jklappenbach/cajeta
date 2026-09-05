@@ -1,0 +1,103 @@
+package cajeta.xpu;
+
+import cajeta.xpu.KernelBuffer;
+
+/**
+ * Tile — the author-facing cooperative matrix fragment of the cajeta.xpu
+ * cooperative-tile surface (xpu-cooperative-tile §4). A `Tile<T, Rows, Cols>` is
+ * a `Rows`x`Cols` tile of a matrix multiply held *cooperatively* by the group
+ * (wavefront), exactly like {@link CooperativeMatrix} — with one difference that
+ * is the whole point of this type: **the SPIR-V "Use" (MatrixA / MatrixB /
+ * Accumulator) is not spelled.** The author declares three type parameters —
+ * element type and the two tile dimensions — and never the A/B/accumulator role:
+ *
+ *     Tile<float16,16,16> a;   a.load(bufA, 0u, 0u, 16u);   // an operand tile
+ *     Tile<float16,16,16> b;   b.load(bufB, 0u, 0u, 16u);
+ *     Tile<float32,16,16> c;   c.splat(0.0f);               // the accumulator
+ *     Group.mac(c, a, b);                                   // c = a*b + c
+ *     c.store(bufC, 0u, 0u, 16u);
+ *
+ * The role is INFERRED from each tile's position in {@link Group#mac} — the
+ * accumulator is `mac`'s first argument, MatrixA its second, MatrixB its third —
+ * so the algorithm never names a `Use`, an `mma`, `fromWords`, `dotSum`, or WMMA
+ * (§4.1). `Group.mac` selects the target's path per dtype/shape: the native
+ * tensor core (RDNA3 WMMA / NVVM wmma) where a config exists, the SIMD integer
+ * dot for int8 (dp4a), or the portable software tile otherwise — and a straddle
+ * demotes as a GROUP, one tier for the whole GEMM (§4.4). The tier is reported
+ * once via `note: [mma-tiering]`, never silent (§4.3).
+ *
+ * A K-loop accumulates a wider product in place, exactly as {@link
+ * CooperativeMatrix} documents — `offset`/`stride` select a sub-tile of a wider
+ * matrix, and the accumulator is zeroed once then walked over K:
+ *
+ *     Tile<float32,16,16> acc;   acc.splat(0.0f);
+ *     Tile<float16,16,16> ta;    Tile<float16,16,16> tb;
+ *     for (int32 kt = 0; kt < 2; kt = kt + 1) {
+ *         ta.load(a, kt * 16, 0, 32);      // A sub-tile, stride = wide-matrix row
+ *         tb.load(b, kt * 256, 0, 16);     // B sub-tile
+ *         Group.mac(acc, ta, tb);          // acc += ta · tb
+ *     }
+ *     acc.store(c, 0, 0, 16);
+ *
+ * Like {@link CooperativeMatrix} and {@link RayQuery}, a Tile is NOT a host
+ * value: it is a device-only, kernel-local object whose storage lives
+ * distributed across the group's per-invocation registers. You never take its
+ * address; use it only inside an `@Kernel`. `Tile<T, Rows, Cols>` is
+ * `CooperativeMatrix<T, Rows, Cols, Use>` with `Use` reconstructed by the
+ * compiler — same tiers, same device-verification, same numeric contract (§4A);
+ * reach for the explicit {@link CooperativeMatrix} only when a kernel needs to
+ * name the fragment role directly (the residual native-op paths).
+ */
+public final class Tile<T, uint32 Rows, uint32 Cols> {
+    // Placeholder field. Tile is a device-only opaque (the device lowerer
+    // ignores this host class and allocates the cooperative-matrix slot with the
+    // Use it infers from Group.mac); the host front-end still lays the class out,
+    // and a zero-field class has no LLVM type. One reserved word gives it a valid
+    // (never-used) layout. Mirrors CooperativeMatrix.reserved.
+    int32 reserved;
+
+    public Tile() {
+        this.reserved = 0;
+    }
+
+    /**
+     * Device-only intrinsic: load this tile from `src` (a global KernelBuffer<T>),
+     * starting at element `offset` and reading a `Rows`x`Cols` tile with the
+     * given `layout` (0 = row-major, 1 = column-major) and row/column `stride`
+     * (in elements) — see {@link CooperativeMatrix#load} for the sub-tile
+     * addressing a tiled GEMM walks over.
+     */
+    public void load(KernelBuffer<T> src, uint32 offset, uint32 layout, uint32 stride) {
+    }
+
+    /**
+     * Device-only intrinsic: load this tile from a workgroup-shared (`Shared<T>`,
+     * i.e. LDS) tile instead of a global buffer — the consume side of the
+     * LDS-staged GEMM. Same fragment layout and tier rules as the global load;
+     * only the source storage class differs.
+     */
+    public void load(Shared<T> src, uint32 offset, uint32 layout, uint32 stride) {
+    }
+
+    /**
+     * Device-only intrinsic: broadcast `value` across every element of this tile
+     * — the zero/initial accumulator.
+     */
+    public void splat(T value) {
+    }
+
+    /**
+     * Device-only intrinsic: store this tile to `dst` (a global KernelBuffer<T>),
+     * starting at element `offset`, with the given `layout` and `stride` — the
+     * write-side counterpart of `load`'s sub-tile addressing.
+     */
+    public void store(KernelBuffer<T> dst, uint32 offset, uint32 layout, uint32 stride) {
+    }
+
+    /**
+     * Device-only intrinsic: store this tile to a workgroup-shared (`Shared<T>`,
+     * i.e. LDS) tile — the write-side counterpart of the `Shared<T>` load.
+     */
+    public void store(Shared<T> dst, uint32 offset, uint32 layout, uint32 stride) {
+    }
+}

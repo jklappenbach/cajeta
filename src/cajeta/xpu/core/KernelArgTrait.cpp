@@ -102,6 +102,17 @@ bool isCooperativeMatrixCanonical(const std::string& canonical) {
     static const std::string kPrefix = "cajeta.xpu.CooperativeMatrix";
     return canonical.compare(0, kPrefix.size(), kPrefix) == 0;
 }
+// Tile<T, Rows, Cols> — the author-facing cooperative fragment (§4). Same
+// device-only kernel-local as CooperativeMatrix, but three type params: the
+// SPIR-V "Use" is inferred from the tile's role in Group.mac, never spelled.
+bool isTileCanonical(const std::string& canonical) {
+    static const std::string kPrefix = "cajeta.xpu.Tile";
+    if (canonical.compare(0, kPrefix.size(), kPrefix) != 0) return false;
+    // Match the class exactly (or its <...> instantiation), not a longer name
+    // that merely starts with "Tile" (e.g. a hypothetical cajeta.xpu.TileStage).
+    return canonical.size() == kPrefix.size()
+        || canonical[kPrefix.size()] == '<';
+}
 
 // A class implements the KernelArg marker interface if its
 // implemented-interfaces list contains cajeta.xpu.KernelArg.
@@ -250,6 +261,10 @@ bool isRayQueryType(const CajetaTypePtr& type) {
 
 bool isCooperativeMatrixType(const CajetaTypePtr& type) {
     return type && isCooperativeMatrixCanonical(type->toCanonical());
+}
+
+bool isTileType(const CajetaTypePtr& type) {
+    return type && isTileCanonical(type->toCanonical());
 }
 
 void validateKernelParams(const MethodPtr& method) {

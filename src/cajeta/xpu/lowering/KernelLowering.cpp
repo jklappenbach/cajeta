@@ -435,6 +435,7 @@ public:
         for (auto& [n, t] : valueTypeNames)
             registerCtor(std::dynamic_pointer_cast<CajetaClass>(t));
         registerCtor(method->getParent());
+        inferTileUses(method->getBlock());
         scanCoopMatrixTiers(method->getBlock());
         lowerStatement(method->getBlock());
         // Kernels return void; close any open block.
@@ -504,6 +505,12 @@ private:
         uint32_t rows = 0, cols = 0, use = 0;
     };
     std::map<std::string, CoopMatrixSlot> coopMatrixSlots;
+    // Tile<T,Rows,Cols> (spec §4): the author-facing fragment hides the SPIR-V
+    // "Use" (A=0 / B=1 / accumulator=2). It is inferred from each tile's role in
+    // Group.mac(acc, a, b) — acc→2, a→0, b→1 — by inferTileUses(), which runs
+    // before scanCoopMatrixTiers and slot construction. CooperativeMatrix keeps
+    // its explicit 4th param; only a Tile local (3 type args) consults this map.
+    std::map<std::string, uint32_t> tileInferredUse;
     // Set by scanCoopMatrixTiers when this kernel's tiles STRADDLE tiers Ã¢ÂÂ
     // some Native, some Portable. A tier is a property of the GEMM, not of
     // one tile, but coopMatrixTier() only sees one (dtype, use) at a time:
@@ -769,7 +776,7 @@ private:
             // coop-matrix seams) or SOFTWARE (a flat `[R*C x elem]` tile, ops are
             // a strided gather/scatter + a triple-loop matmul). A `stack
             // CooperativeMatrix<...>()` initializer is just the construction.
-            if (isCooperativeMatrixType(declType)) {
+            if (isCooperativeMatrixType(declType) || isTileType(declType)) {
                 coopMatrixSlots[nm] = buildCoopMatrixSlot(declType, nm);
                 continue;
             }
@@ -4005,6 +4012,80 @@ private:
     // target for each one's base tier, and records whether they straddle.
     // Must run before any slot is built: a slot's LLVM type (opaque native
     // fragment vs `[R*C x elem]` array) is fixed at declaration.
+    // Tile<T,R,C> Use-inference (§4.1): the author declares three type params
+    // and never the A/B/accumulator role. Reconstruct each Tile local's Use from
+    // its position in the tile multiply-accumulate — the accumulator is the
+    // first operand of `Group.mac(acc, a, b)` (or the receiver of `acc.mma(a,
+    // b)`), MatrixA the next, MatrixB the last. Only Tile locals are recorded;
+    // CooperativeMatrix locals carry an explicit Use and are left alone. Runs
+    // before scanCoopMatrixTiers and slot construction so both see the Use.
+    void inferTileUses(const AbstractSyntaxNodePtr& root) {
+        // Pass 1: the set of Tile-typed local names (Use is spelled only for
+        // CooperativeMatrix, so only these consult the inferred map).
+        std::set<std::string> tileNames;
+        std::function<void(const AbstractSyntaxNodePtr&)> collect =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node) return;
+                if (auto lvd =
+                        std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
+                    if (isTileType(lvd->getType())) {
+                        for (auto& vd : lvd->getVariableDeclarators())
+                            if (vd) tileNames.insert(vd->getIdentifier());
+                    }
+                }
+                node->forEachSubNode(collect);
+            };
+        collect(root);
+        if (tileNames.empty()) return;
+
+        // Pass 2: assign Use by operand position in every mac/mma call. A tile
+        // that appears in more than one role (illegal — one fragment is one
+        // role for the whole GEMM) keeps its FIRST assignment; the tier/lowering
+        // machinery then reports any resulting mismatch.
+        auto assign = [&](const ExpressionPtr& e, uint32_t use) {
+            auto id = std::dynamic_pointer_cast<IdentifierExpression>(e);
+            if (!id) return;
+            const std::string& nm = id->getTextValue();
+            if (!tileNames.count(nm)) return;
+            tileInferredUse.emplace(nm, use);   // first wins
+        };
+        std::function<void(const AbstractSyntaxNodePtr&)> walk =
+            [&](const AbstractSyntaxNodePtr& node) {
+                if (!node) return;
+                if (auto mc =
+                        std::dynamic_pointer_cast<MethodCallExpression>(node)) {
+                    const std::string& mn = mc->getMethodCallName();
+                    const auto& ps = mc->getParameters();
+                    if (mn == "mac" && ps.size() == 3) {
+                        // Group.mac(acc, a, b)
+                        assign(ps[0].expression, 2);
+                        assign(ps[1].expression, 0);
+                        assign(ps[2].expression, 1);
+                    } else if (mn == "mma" && ps.size() == 2) {
+                        // acc.mma(a, b) — the accumulator is the receiver. The
+                        // receiver identifier is not in the parameter list; find
+                        // it from the call's receiver expression if present.
+                        if (auto recvId = macReceiverId(mc)) assign(recvId, 2);
+                        assign(ps[0].expression, 0);
+                        assign(ps[1].expression, 1);
+                    }
+                }
+                node->forEachSubNode(walk);
+            };
+        walk(root);
+    }
+
+    // The accumulator identifier for a bare `acc.mma(a, b)` written directly on a
+    // Tile. Group.mac is the normal spelling (the accumulator is an explicit
+    // argument there); this covers the direct-mma form for completeness. The
+    // receiver is children[0] (args live in getParameters, not children).
+    ExpressionPtr macReceiverId(
+            const std::shared_ptr<MethodCallExpression>& mc) {
+        if (mc->getChildren().empty()) return nullptr;
+        return std::dynamic_pointer_cast<IdentifierExpression>(
+            mc->getChildren()[0]);
+    }
+
     void scanCoopMatrixTiers(const AbstractSyntaxNodePtr& root) {
         bool anyNative = false;
         bool anyPortable = false;
@@ -4024,23 +4105,38 @@ private:
                 if (auto lvd =
                         std::dynamic_pointer_cast<LocalVariableDeclaration>(node)) {
                     CajetaTypePtr dt = lvd->getType();
-                    if (isCooperativeMatrixType(dt)) {
+                    bool tile = isTileType(dt);
+                    if (isCooperativeMatrixType(dt) || tile) {
                         if (auto cm = std::dynamic_pointer_cast<CajetaClass>(dt)) {
                             const auto& ta = cm->getTypeArguments();
-                            if (ta.size() == 4) {
+                            // CooperativeMatrix<T,R,C,Use> (4) carries Use in the
+                            // type; Tile<T,R,C> (3) has it inferred per declarator.
+                            if (ta.size() == (tile ? 3u : 4u)) {
                                 llvm::Type* el = deviceScalarType(ta[0], ctx);
                                 auto r = std::dynamic_pointer_cast<CajetaConstantType>(ta[1]);
                                 auto c = std::dynamic_pointer_cast<CajetaConstantType>(ta[2]);
-                                auto u = std::dynamic_pointer_cast<CajetaConstantType>(ta[3]);
-                                if (el && r && c && u) {
-                                    auto t = target.coopMatrixTier(
-                                        el, (uint32_t) r->getValue(),
-                                        (uint32_t) c->getValue(),
-                                        (uint32_t) u->getValue());
-                                    if (t == LoweringTarget::ImplTier::Native)
-                                        anyNative = true;
-                                    else
-                                        anyPortable = true;
+                                auto u = tile ? nullptr
+                                    : std::dynamic_pointer_cast<CajetaConstantType>(ta[3]);
+                                for (auto& vd : lvd->getVariableDeclarators()) {
+                                    if (!vd) continue;
+                                    uint32_t useVal;
+                                    if (tile) {
+                                        auto it = tileInferredUse.find(vd->getIdentifier());
+                                        if (it == tileInferredUse.end()) continue;
+                                        useVal = it->second;
+                                    } else {
+                                        if (!u) continue;
+                                        useVal = (uint32_t) u->getValue();
+                                    }
+                                    if (el && r && c) {
+                                        auto t = target.coopMatrixTier(
+                                            el, (uint32_t) r->getValue(),
+                                            (uint32_t) c->getValue(), useVal);
+                                        if (t == LoweringTarget::ImplTier::Native)
+                                            anyNative = true;
+                                        else
+                                            anyPortable = true;
+                                    }
                                 }
                             }
                         }
@@ -4074,24 +4170,45 @@ private:
 
     CoopMatrixSlot buildCoopMatrixSlot(const CajetaTypePtr& declType,
                                        const std::string& nm) {
+        // Tile<T,Rows,Cols> hides the Use (§4): three type args, and the
+        // A/B/accumulator role comes from inferTileUses. CooperativeMatrix keeps
+        // its explicit 4th Use param. Everything downstream is identical.
+        bool tile = isTileType(declType);
         auto cls = std::dynamic_pointer_cast<CajetaClass>(declType);
-        if (!cls || cls->getTypeArguments().size() != 4)
-            unsupported("CooperativeMatrix requires <T, Rows, Cols, Use>");
+        size_t wantArgs = tile ? 3 : 4;
+        if (!cls || cls->getTypeArguments().size() != wantArgs)
+            unsupported(tile ? "Tile requires <T, Rows, Cols>"
+                             : "CooperativeMatrix requires <T, Rows, Cols, Use>");
         const auto& targs = cls->getTypeArguments();
         llvm::Type* elem = deviceScalarType(targs[0], ctx);
         if (!elem)
-            unsupported("CooperativeMatrix element type must be a numeric primitive");
+            unsupported((tile ? "Tile" : "CooperativeMatrix")
+                        + std::string(" element type must be a numeric primitive"));
         auto rows = std::dynamic_pointer_cast<CajetaConstantType>(targs[1]);
         auto cols = std::dynamic_pointer_cast<CajetaConstantType>(targs[2]);
-        auto use  = std::dynamic_pointer_cast<CajetaConstantType>(targs[3]);
-        if (!rows || !cols || !use)
-            unsupported("CooperativeMatrix Rows/Cols/Use must be integer constants");
+        if (!rows || !cols)
+            unsupported((tile ? "Tile" : "CooperativeMatrix")
+                        + std::string(" Rows/Cols must be integer constants"));
+        uint32_t useVal;
+        if (tile) {
+            auto it = tileInferredUse.find(nm);
+            if (it == tileInferredUse.end())
+                unsupported("Tile '" + nm + "' has no inferred role — every "
+                            "Tile must appear in a Group.mac(acc, a, b) so its "
+                            "MatrixA / MatrixB / accumulator role is known (§4.1)");
+            useVal = it->second;
+        } else {
+            auto use = std::dynamic_pointer_cast<CajetaConstantType>(targs[3]);
+            if (!use)
+                unsupported("CooperativeMatrix Use must be an integer constant");
+            useVal = (uint32_t) use->getValue();
+        }
         CoopMatrixSlot s;
         s.elemType = elem;
         s.elemSigned = typeIsSigned(targs[0]);
         s.rows = (uint32_t) rows->getValue();
         s.cols = (uint32_t) cols->getValue();
-        s.use  = (uint32_t) use->getValue();
+        s.use  = useVal;
         // The per-backend base tier, then the explicit CAJETA_GPU_COOPMATRIX_IMPL
         // override layered on top (the degrade seam's override face) Ã¢ÂÂ so a forced
         // "software" runs the portable tile even on a native-capable backend.

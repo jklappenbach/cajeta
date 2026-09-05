@@ -100,6 +100,10 @@ namespace xpu {
     // CooperativeMatrix<T,Rows,Cols,Use> — also a device-only kernel-body local
     // (a subgroup matrix-core tile), never a kernel arg.
     bool isCooperativeMatrixType(const CajetaTypePtr& type);
+    // Tile<T,Rows,Cols> — the author-facing cooperative fragment (§4): the same
+    // device-only kernel-local, with the "Use" inferred from Group.mac instead
+    // of spelled. Never a kernel arg.
+    bool isTileType(const CajetaTypePtr& type);
 
     // Validate every parameter of `method`. Throws cajeta::Exception
     // (errorId "XPU-K01") with a clear diagnostic on the first non-
