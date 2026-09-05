@@ -515,6 +515,17 @@ public:
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());
         return pureCall(b, m, "__cajeta_xpu_wave_width", i32, {}, "wave.width");
     }
+    // The cooperative-GROUP width on CPU is a literal 1, NOT the SIMD wave
+    // width (xpu-cooperative-tile §3.5): the cooperative unit is one work-item,
+    // and the per-block work-item loop's LoopVectorize widening exploits SIMD
+    // beneath this abstraction. A literal 1 (not a __cajeta_xpu_wave_width
+    // call) so CpuRegistration's wave-width rewrite never widens it and the
+    // kernel is not flagged a wave kernel — a group-width-1 kernel is plain
+    // data-parallel.
+    llvm::Value* groupWidth(llvm::IRBuilderBase& b, llvm::Module& m) override {
+        (void) b;
+        return llvm::ConstantInt::get(llvm::Type::getInt32Ty(m.getContext()), 1);
+    }
     llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
                              llvm::Value* value, llvm::Value* srcLane) override {
         llvm::Type* i32 = llvm::Type::getInt32Ty(m.getContext());

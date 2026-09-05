@@ -3013,6 +3013,17 @@ private:
                 return target.waveScan(builder, mod, sop,
                                        lowerExpr(args[0].expression));
             }
+        } else if (recv == "TargetDescriptor") {
+            // The cooperative-tile device model (xpu-cooperative-tile §5). Its
+            // one device-hot-path fact is waveWidth() — the COOPERATIVE-GROUP
+            // width, folded to a per-target constant here (the wave/subgroup
+            // size on a GPU via groupWidth()'s default, 1 on CPU via the CPU
+            // override). A pure per-lane query like Wave.width(), so no
+            // reconvergence flag. The descriptor's other facts are host-side.
+            if (name == "waveWidth") return target.groupWidth(builder, mod);
+            unsupported("TargetDescriptor." + name + " is not a device op "
+                        "(only waveWidth() folds on the hot path; the machine "
+                        "estimates are host-side)");
         } else if (recv == "Quad") {
             // Quad (2x2) cross-lane ops Ã¢ÂÂ broadcast/swap/all/any. Cross-lane like
             // the Wave ops, so flag the kernel for maximal reconvergence.

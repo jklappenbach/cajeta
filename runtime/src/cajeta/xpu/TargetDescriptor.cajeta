@@ -1,0 +1,83 @@
+package cajeta.xpu;
+
+import cajeta.xpu.Device;
+
+/**
+ * TargetDescriptor — the single source of hardware facts for the cooperative
+ * cajeta.xpu surface (xpu-cooperative-tile spec §5). Code that needs a machine
+ * fact reads it HERE, never as an inline literal. The wave-width literal that
+ * was silently wrong on wave64, and the CU / register constants an RTX 4090
+ * spent months inheriting from a gfx1151 baseline, are exactly the class of
+ * defect this exists to undo (§5.1). This spec is where geometry-is-literals
+ * starts being paid down, once, for every consumer.
+ *
+ * Two kinds of fact live here.
+ *
+ * The device-hot-path fact is {@link #waveWidth}: the COOPERATIVE-GROUP width.
+ * It folds to a per-target compile-time constant in a `@Kernel` (the compiler
+ * intercepts the call at lowering), so it is free on the hot path. It is the
+ * value §3's `Group` resolves its `width` from — read it, never a hardcoded 32.
+ *
+ * The host-side machine facts (CU count, per-block LDS, waves per SIMD) are
+ * STUBS today (§5.2): a documented value behind a stable interface, so callers
+ * compile now and gain accuracy later with NO call-site change. Where the
+ * device already reports the fact these delegate to {@link Device}'s live
+ * geometry (0 = unknown, never a substituted foreign constant — the same rule
+ * Device itself keeps); where it does not, they return a documented stub with a
+ * TODO to wire the arch table.
+ */
+public final class TargetDescriptor {
+
+    private TargetDescriptor() { }
+
+    /**
+     * The cooperative-group width for the target being compiled — the number of
+     * lanes that cooperate in one {@code Group} (§3). A per-target compile-time
+     * constant on the device hot path: 32 on gfx1151 wave32 (the wave/subgroup
+     * size), and 1 on the CPU backend, where the cooperative unit is one
+     * work-item and SIMD is exploited beneath this abstraction (§3.5).
+     *
+     * DEVICE-side only: usable inside a {@code @Kernel}, where the compiler
+     * folds it per target. It is deliberately NOT {@code Wave.width()}: on CPU
+     * that returns the host SIMD width (8/16), which is the wrong number for the
+     * Group model. The `@Native` symbol is the lowering key; the call never
+     * reaches a runtime symbol (the compiler emits the folded constant).
+     */
+    @Native("__cajeta_xpu_group_width")
+    public static int32 waveWidth();
+
+    // ---- host-side machine facts (spec §5.2) -------------------------- //
+    // Stable interface now; accuracy later with no call-site change. Never
+    // substitute another part's constant — 0 stays 0 (unknown).
+
+    /**
+     * Compute units the part exposes for scheduling. Delegates to the driver's
+     * multiprocessor unit ({@link Device#multiprocessorCount} — WGPs on RDNA,
+     * SMs on NVIDIA); 0 when unknown. STUB caveat (§5.2): the PHYSICAL CU count
+     * is that unit times an arch factor (×2 on an RDNA WGP), which the arch
+     * table knows and this does not yet apply. TODO: scale by arch CU/MP.
+     */
+    public static int32 cuCount() {
+        return Device.multiprocessorCount();
+    }
+
+    /**
+     * Shared-memory (LDS) a single block may use, in bytes — the ceiling a
+     * static tile is sized against. Delegates to {@link Device#sharedBytesPerBlock};
+     * 0 when unknown. Read this, not a hardcoded LDS budget.
+     */
+    public static int64 ldsBytesPerBlock() {
+        return Device.sharedBytesPerBlock();
+    }
+
+    /**
+     * Resident waves per SIMD — an occupancy input. STUB (§5.2): not a direct
+     * device attribute ({@code threadsPerMP / waveSize} is a residency limit,
+     * not scheduler slots), and the arch value is not yet surfaced to the
+     * stdlib. Returns 0 (unknown) behind a stable interface. TODO: wire from
+     * the compiler DeviceProfile (maxWavesPerMP / simdsPerMP).
+     */
+    public static int32 maxWavesPerSimd() {
+        return 0;
+    }
+}

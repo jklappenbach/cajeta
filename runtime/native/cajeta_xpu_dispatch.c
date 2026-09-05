@@ -92,6 +92,12 @@ void __cajeta_xpu_barrier_device_memory_ord(int32_t order) { (void) order; /* ho
 // default that doesn't make any kernel's wave-uniformity assumption
 // false on this backend.
 uint32_t __cajeta_xpu_wave_width(void) { return 1; }
+// TargetDescriptor.waveWidth() — the COOPERATIVE-GROUP width (xpu-cooperative-
+// tile §3, §5). 1 on CPU: the cooperative unit is one work-item, SIMD lives
+// below the abstraction (§3.5). On a GPU the kernel lowering folds it to the
+// wave/subgroup size and never calls this; this is the host @Native / CPU
+// scalar-fallback value, and the CPU kernel path emits the constant 1 directly.
+uint32_t __cajeta_xpu_group_width(void) { return 1; }
 // Lane within the wave: 0 on the width-1 emulation (only lane 0 exists). In a
 // vectorized CPU kernel the lowering computes `tid.x % width` inline instead of
 // calling this stub; this is the host @Native / scalar-fallback value.

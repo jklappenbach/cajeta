@@ -941,6 +941,19 @@ namespace xpu {
         virtual llvm::Value* waveWidth(llvm::IRBuilderBase& b,
                                        llvm::Module& m) = 0;
 
+        // The COOPERATIVE-GROUP width: i32, the number of lanes that cooperate
+        // in one Group on the cajeta.xpu cooperative surface (xpu-cooperative-
+        // tile §3, §5). On every GPU it equals the wave/subgroup width, so the
+        // default delegates to waveWidth(). The CPU backend OVERRIDES it to the
+        // constant 1: the cooperative unit there is one work-item and SIMD is
+        // exploited below this abstraction (§3.5), which is the one place the
+        // group width must diverge from Wave.width() (host SIMD width on CPU).
+        // This is what TargetDescriptor.waveWidth() lowers to.
+        virtual llvm::Value* groupWidth(llvm::IRBuilderBase& b,
+                                        llvm::Module& m) {
+            return waveWidth(b, m);
+        }
+
         // Read i32 `value` from lane `srcLane` (i32), broadcast across the wave
         // (shuffle-by-index / readlane). Returns i32.
         virtual llvm::Value* waveShuffle(llvm::IRBuilderBase& b, llvm::Module& m,
