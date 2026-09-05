@@ -1,0 +1,67 @@
+package cajeta.xpu;
+
+import cajeta.xpu.Device;
+
+/**
+ * Scheduler — the reserved submit seam for the future multi-kernel scheduler
+ * (xpu-cooperative-tile §7.2). A kernel invocation is routed through {@link
+ * #submit} by describing it as a {@link KernelSubmission} (geometry + policy +
+ * read/write sets); submit RECORDS the submission (the raw material of the
+ * dependency DAG, §7.3) and returns the kernel's {@link KernelResourceDescriptor}
+ * (§7.1). The author then launches immediately, taking the launch geometry from
+ * the submission that went through submit:
+ *
+ *     KernelSubmission sub = heap KernelSubmission(gridBlocks, blockThreads);
+ *     sub.reads(a.handle());  sub.reads(b.handle());  sub.writes(c.handle());
+ *     KernelResourceDescriptor desc #= Scheduler.submit(sub);
+ *     k.launch(s, grid: [sub.gridX], block: [sub.blockX])(a, b, c);   // immediate
+ *
+ * There is NO scheduler behind the seam: nothing reorders, fuses, graph-captures,
+ * or reads the descriptor / r/w sets yet (§1.4, §7.1). The seam is the plug-in
+ * point — a later scheduler makes submit gate/queue on the submission and packs
+ * occupancy from the descriptor, with no change to any call site. Removing this
+ * seam is the only thing a future scheduler could not avoid, so it is the right
+ * point, not machinery.
+ *
+ * NOTE (why submit does not itself run the launch): the ideal seam wraps the
+ * `k.launch(...)` in a thunk that submit invokes (so it can defer the launch
+ * outright). That form is blocked today — a kernel-launch expression inside a
+ * lambda body crashes host codegen (captured buffers are not reached; a separate
+ * compiler improvement is needed). Until that lands, submit records + returns and
+ * the launch is the adjacent immediate statement, its geometry read from `sub`.
+ */
+public final class Scheduler {
+
+    private Scheduler() { }
+
+    /**
+     * Record `sub` for the future scheduler and emit its resource descriptor
+     * (§7.1). `sub`'s read/write sets, policy, and character are carried and
+     * consumed by nothing yet; the caller launches immediately after, reading the
+     * geometry from `sub`. The descriptor's geometry and wave count are real, LDS
+     * is the submission's declared reservation, character is the submission's, and
+     * VGPR is the honest stub until the backend surfaces register counts (§5.2).
+     */
+    public static #KernelResourceDescriptor submit(KernelSubmission sub) {
+        // §7.1: record what the schedule already knows. waveCount from the
+        // geometry and the active backend's wave width (1 on the CPU backend).
+        int32 waveW = 1;
+        if (!Device.activeBackend().equals("cpu")) {
+            int32 w = Device.waveSize();
+            if (w > 0) {
+                waveW = w;
+            }
+        }
+        // int64 to dodge the int32 multiply-overflow trap on large launches.
+        int64 threads = (int64) sub.gridX * (int64) sub.blockX;
+        int64 waves = (threads + (int64) waveW - 1) / (int64) waveW;
+
+        return heap KernelResourceDescriptor(
+            0,                    // vgprCount — TODO: backend regalloc (§7.1)
+            sub.ldsBytes,
+            (int32) waves,
+            sub.gridX, sub.gridY, sub.gridZ,
+            sub.blockX, sub.blockY, sub.blockZ,
+            sub.character);
+    }
+}

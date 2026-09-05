@@ -106,6 +106,18 @@ public final class KernelBuffer<T> {
     }
 
     /**
+     * The backend storage handle (CUdeviceptr / hipDeviceptr_t / host pointer) as
+     * an opaque int64 — a stable per-buffer IDENTITY, not an address to
+     * dereference. Its only use today is naming a buffer in a {@link
+     * KernelSubmission} read/write set, so the future multi-kernel scheduler can
+     * derive the inter-kernel dependency DAG for free (xpu-cooperative-tile §7.3).
+     * Two live buffers have distinct handles; a moved-from/freed handle is 0.
+     */
+    public int64 handle() {
+        return this.deviceHandle;
+    }
+
+    /**
      * Compiler intrinsic: lowered at each call site to the target
      * DataLayout byte size of the enclosing KernelBuffer<T>'s element type T.
      * The body here is a resolution placeholder — it is never emitted as

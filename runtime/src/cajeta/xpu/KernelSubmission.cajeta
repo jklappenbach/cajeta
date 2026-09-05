@@ -1,0 +1,70 @@
+package cajeta.xpu;
+
+import cajeta.collection.ArrayList;
+
+/**
+ * KernelSubmission — one kernel invocation described for the submit seam
+ * (xpu-cooperative-tile §7.2): the launch geometry, the {@link SchedulePolicy},
+ * the {@link ArithmeticCharacter}, and the READ and WRITE buffer sets (by {@link
+ * KernelBuffer#handle} identity). It carries everything a future multi-kernel
+ * scheduler needs to reorder / fuse / overlap and to derive the inter-kernel
+ * dependency DAG (§7.3) — while {@link Scheduler#submit} today just launches it
+ * immediately.
+ *
+ * A RESERVED seam: nothing reads the r/w sets or the policy yet. Build one at a
+ * launch site, add the buffers the kernel reads and writes, and hand it to
+ * {@link Scheduler#submit}:
+ *
+ *     KernelSubmission sub = heap KernelSubmission(gridBlocks, blockThreads);
+ *     sub.reads(a.handle());
+ *     sub.reads(b.handle());
+ *     sub.writes(c.handle());
+ *     sub.policy = SchedulePolicy.Throughput;
+ *     sub.character = ArithmeticCharacter.MemoryBound;
+ *     KernelResourceDescriptor desc #= Scheduler.submit(sub);
+ *     k.launch(s, grid: [sub.gridX], block: [sub.blockX])(a, b, c);   // immediate
+ */
+public final class KernelSubmission {
+    // Launch geometry (all three dims; y/z default to 1 for the 1-D common case).
+    public int32 gridX;
+    public int32 gridY;
+    public int32 gridZ;
+    public int32 blockX;
+    public int32 blockY;
+    public int32 blockZ;
+    // Shared-memory (LDS) bytes per block the kernel reserves (0 if none).
+    public int32 ldsBytes;
+    // The scheduling objective (§6.3) and arithmetic character (§7.4). Defaulted;
+    // the author may overwrite either before submit.
+    public SchedulePolicy policy;
+    public ArithmeticCharacter character;
+    // The buffers this kernel READS and WRITES, by handle identity — the raw
+    // material of the dependency DAG (§7.3). Owned lists, grown via reads/writes.
+    public ArrayList<int64> readSet;
+    public ArrayList<int64> writeSet;
+
+    /** A 1-D submission: `gridBlocks` blocks of `blockThreads` threads. */
+    public KernelSubmission(int32 gridBlocks, int32 blockThreads) {
+        this.gridX = gridBlocks;
+        this.gridY = 1;
+        this.gridZ = 1;
+        this.blockX = blockThreads;
+        this.blockY = 1;
+        this.blockZ = 1;
+        this.ldsBytes = 0;
+        this.policy = SchedulePolicy.Throughput;          // §6.3 default
+        this.character = ArithmeticCharacter.MemoryBound;
+        this.readSet #= heap ArrayList<int64>();
+        this.writeSet #= heap ArrayList<int64>();
+    }
+
+    /** Record a buffer this kernel reads (pass {@link KernelBuffer#handle}). */
+    public void reads(int64 handle) {
+        this.readSet.add(handle);
+    }
+
+    /** Record a buffer this kernel writes (pass {@link KernelBuffer#handle}). */
+    public void writes(int64 handle) {
+        this.writeSet.add(handle);
+    }
+}

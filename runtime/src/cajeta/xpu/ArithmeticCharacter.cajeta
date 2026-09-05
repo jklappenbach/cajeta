@@ -1,0 +1,17 @@
+package cajeta.xpu;
+
+/**
+ * ArithmeticCharacter — whether a kernel is limited by compute or by memory
+ * bandwidth (xpu-cooperative-tile §7.4). Carried on a {@link
+ * KernelResourceDescriptor} so ONE future cost model serves both regimes: an
+ * underfilled decode/game kernel (memory-bound, latency-sensitive) and a
+ * saturated training GEMM (compute-bound, throughput-sensitive) are scheduled by
+ * the same machinery reading this axis. A RESERVED seam — nothing consumes it in
+ * this Phase; the author (or a later analysis) declares it and it is recorded.
+ *
+ * The ordinal is the stable tag — append only, do not reorder.
+ */
+public enum ArithmeticCharacter {
+    ComputeBound,   // 0 — limited by ALU/matrix-core throughput (dense GEMM)
+    MemoryBound     // 1 — limited by memory bandwidth (matvec / decode / reduce)
+}

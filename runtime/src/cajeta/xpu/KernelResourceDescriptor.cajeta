@@ -1,0 +1,52 @@
+package cajeta.xpu;
+
+/**
+ * KernelResourceDescriptor — the machine-readable resource footprint of a
+ * scheduled kernel (xpu-cooperative-tile §7.1, §7.4): the numbers the future
+ * multi-kernel scheduler needs to pack occupancy and build a cost model. A
+ * RESERVED seam — {@link Scheduler#submit} emits one from what the per-kernel
+ * schedule already knows, and NOTHING consumes it yet.
+ *
+ * Fields the schedule can supply today are real; {@link #vgprCount} is the one
+ * honest stub — the per-invocation vector-register count is only known after the
+ * backend's register allocator runs (post-ISA), which this Phase does not surface
+ * to the host (the `geometry-is-literals` / device-introspection gap, §1.4). It
+ * is 0 with this TODO until the backend records it; a caller compiles against the
+ * real field now and gains the value later with no call-site change (§5.2).
+ *
+ * This is a plain host record: construct it (Scheduler does) and read the fields.
+ */
+public final class KernelResourceDescriptor {
+    // TODO(xpu-cooperative-tile §7.1): real per-invocation VGPR count, once the
+    // backend surfaces register-allocator stats to the host. 0 = not yet known.
+    public int32 vgprCount;
+    // Per-block shared-memory (LDS) bytes the kernel reserves.
+    public int32 ldsBytes;
+    // Waves (subgroups) the launch dispatches: ceil(gridX*blockX / waveWidth).
+    public int32 waveCount;
+    // The launch grid (blocks) and block (threads) shape, all three dimensions.
+    public int32 gridX;
+    public int32 gridY;
+    public int32 gridZ;
+    public int32 blockX;
+    public int32 blockY;
+    public int32 blockZ;
+    // Compute-bound vs memory-bound (§7.4) — the axis a single cost model reads.
+    public ArithmeticCharacter character;
+
+    public KernelResourceDescriptor(int32 vgprCount, int32 ldsBytes,
+            int32 waveCount, int32 gridX, int32 gridY, int32 gridZ,
+            int32 blockX, int32 blockY, int32 blockZ,
+            ArithmeticCharacter character) {
+        this.vgprCount = vgprCount;
+        this.ldsBytes = ldsBytes;
+        this.waveCount = waveCount;
+        this.gridX = gridX;
+        this.gridY = gridY;
+        this.gridZ = gridZ;
+        this.blockX = blockX;
+        this.blockY = blockY;
+        this.blockZ = blockZ;
+        this.character = character;
+    }
+}

@@ -1,0 +1,18 @@
+package cajeta.xpu;
+
+/**
+ * SchedulePolicy — the optimization objective a {@link KernelSubmission} is
+ * scheduled for (xpu-cooperative-tile §6.3). A RESERVED seam: this Phase accepts
+ * the parameter and defaults it to {@link #Throughput}; it implements no
+ * alternate policy. The future multi-kernel scheduler reads it to trade queue
+ * depth against tail latency — games need a frame budget, training needs
+ * throughput — so one submission surface serves all three without a call-site
+ * change when the scheduler lands.
+ *
+ * The ordinal is the stable tag — append only, do not reorder.
+ */
+public enum SchedulePolicy {
+    Throughput,   // 0 — maximize work per unit time (the default; training GEMMs)
+    Latency,      // 1 — minimize time-to-result for a single submission
+    FrameBudget   // 2 — fit within a per-frame deadline (interactive / games)
+}
