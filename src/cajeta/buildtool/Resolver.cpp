@@ -625,7 +625,7 @@ namespace cajeta::buildtool {
 
     } // namespace
 
-    llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
+    llvm::Expected<ResolvedGraph> resolveMvsGraph(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
         ArtifactCache& cache,
@@ -853,8 +853,14 @@ namespace cajeta::buildtool {
             }
         }
 
-        std::vector<ResolvedDependency> out;
-        out.reserve(insertionOrder.size());
+        ResolvedGraph out;
+        out.packages.reserve(insertionOrder.size());
+        // Roots: the direct deps exactly as seeded above (6c forms with an
+        // empty constraint were never added to the solve).
+        for (const auto& d : deps) {
+            if (d.versionConstraint.empty()) continue;
+            out.roots.push_back(d);
+        }
         for (const auto& name : insertionOrder) {
             const auto& s = state[name];
             ResolvedDependency r;
@@ -863,13 +869,38 @@ namespace cajeta::buildtool {
             r.resolvedFromRepo = s.resolvedFromRepo;
             r.artifactPath = s.artifactPath;
             r.sha256 = s.sha256;
-            out.push_back(std::move(r));
+            out.packages.push_back(std::move(r));
+            // Edges. No sidecar means the children are UNKNOWN — record
+            // that as opaque rather than as an empty list (spec §2.3).
+            if (s.manifestJson.empty()) {
+                out.opaque.insert(name);
+                continue;
+            }
+            auto& kids = out.children[name];
+            for (const auto& cd : s.childDeps) {
+                if (cd.versionConstraint.empty()) continue;  // solver skipped it
+                kids.push_back(cd);
+            }
         }
         return out;
     }
 
-    llvm::Expected<std::vector<ResolvedDependency>>
-    resolveProjectDependencies(
+    llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
+        const std::vector<DependencySpec>& deps,
+        const std::vector<RepositoryPtr>& repos,
+        ArtifactCache& cache,
+        const std::vector<OverrideSpec>& overrides,
+        ResolverTimings* timings,
+        const std::string& gitOverrideStageDir,
+        const std::string& ollaWriteThroughRoot) {
+        auto g = resolveMvsGraph(deps, repos, cache, overrides, timings,
+                                 gitOverrideStageDir, ollaWriteThroughRoot);
+        if (!g) return g.takeError();
+        return std::move(g->packages);
+    }
+
+    llvm::Expected<ResolvedGraph>
+    resolveProjectGraph(
         const Manifest& m,
         const std::string& projectRoot,
         std::optional<std::string> homeOverride,
@@ -958,7 +989,7 @@ namespace cajeta::buildtool {
 
         if (deps->empty()) {
             closeTotal();
-            return std::vector<ResolvedDependency>{};  // no deps → no work
+            return ResolvedGraph{};  // no deps → no work
         }
 
         auto overrides = parseOverrides(m);
@@ -979,14 +1010,26 @@ namespace cajeta::buildtool {
         std::vector<RepositoryPtr> repoList =
             wrapWithTimings(*repos, timings);
 
-        auto result = resolveMvs(
+        auto result = resolveMvsGraph(
             *deps, repoList, cache, *overrides, timings, downloadStage,
             /*ollaWriteThroughRoot=*/ollaRoot);
         if (result && timings) {
-            timings->depsResolved = static_cast<int>(result->size());
+            timings->depsResolved = static_cast<int>(result->packages.size());
         }
         closeTotal();
         return result;
+    }
+
+    llvm::Expected<std::vector<ResolvedDependency>>
+    resolveProjectDependencies(
+        const Manifest& m,
+        const std::string& projectRoot,
+        std::optional<std::string> homeOverride,
+        ResolverTimings* timings) {
+        auto g = resolveProjectGraph(m, projectRoot, std::move(homeOverride),
+                                     timings);
+        if (!g) return g.takeError();
+        return std::move(g->packages);
     }
 
 } // namespace cajeta::buildtool

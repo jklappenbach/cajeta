@@ -84,6 +84,7 @@ manifest's tasks (that's how `cajeta run` works when a `run` task exists —
 | `cajeta add / remove / upgrade / pin` | Manage dependencies |
 | `cajeta install / publish` | Publish locally / remotely |
 | `cajeta info / show` | Inspect the project / a dependency |
+| `cajeta deps` | Print the dependency tree (text, JSON, CSV) |
 | `cajeta archive <cmd>` | Create, inspect, sign `.cja` archives |
 | `cajeta doc <root>` | Generate API documentation |
 | `cajeta search-skill / list-skills / get-skills` | Skill discovery in dependencies |

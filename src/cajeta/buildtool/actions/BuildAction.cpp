@@ -22,6 +22,7 @@
 #include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/Flavor.h"
 #include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/DependencyTree.h"
 #include "cajeta/buildtool/IrCache.h"
 #include "cajeta/error/Diagnostics.h"
 #include "cajeta/buildtool/Lockfile.h"   // sha256Hex
@@ -304,12 +305,24 @@ namespace cajeta::buildtool {
             if (ctx.manifest()) {
                 std::string projectRoot =
                     projectRootFromManifest(*ctx.manifest());
-                auto resolved = resolveProjectDependencies(
+                auto graph = resolveProjectGraph(
                     *ctx.manifest(), projectRoot);
-                if (!resolved) return resolved.takeError();
-                if (!resolved->empty()) {
+                if (!graph) return graph.takeError();
+                // Java's convention (dependency-tree spec §8): a cycle
+                // through published artifacts is tolerated — the classpath
+                // is flat, and the project owner cannot fix someone else's
+                // manifest — but it is named, once per cycle, with the same
+                // chain `cajeta deps` prints. Workspace-member cycles are
+                // refused elsewhere (Workspace.cpp, topologicallySortMembers).
+                for (const auto& cyc : findDependencyCycles(
+                         ctx.manifest()->details.name, *graph)) {
+                    llvm::errs() << "warning: dependency cycle detected: "
+                                 << formatCycle(cyc) << "\n";
+                }
+                const auto& resolved = graph->packages;
+                if (!resolved.empty()) {
                     std::string joined;
-                    for (const auto& r : *resolved) {
+                    for (const auto& r : resolved) {
                         if (!joined.empty()) joined += ",";
                         joined += r.artifactPath;
                     }

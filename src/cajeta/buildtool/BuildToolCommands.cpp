@@ -7,6 +7,7 @@
 
 #include "cajeta/buildtool/Action.h"
 #include "cajeta/buildtool/ArtifactCache.h"
+#include "cajeta/buildtool/DependencyTree.h"
 #include "cajeta/buildtool/DiagnosticFormat.h"
 #include "cajeta/buildtool/InitTemplates.h"
 #include "cajeta/buildtool/JsonC.h"
@@ -1066,6 +1067,7 @@ namespace cajeta::buildtool {
                 {"add", "Add a dependency to the manifest"},
                 {"remove", "Remove a dependency from the manifest"},
                 {"info", "Print dependency tree / capabilities"},
+                {"deps", "Print the dependency tree"},
                 {"tasks", "List tasks defined in the manifest"},
                 {"upgrade", "Upgrade dependencies to newer versions"},
                 {"install", "Resolve and install dependencies"},
@@ -3308,6 +3310,7 @@ namespace cajeta::buildtool {
             std::string_view cmd = argv[1];
             // Built-in subcommands handled elsewhere.
             if (cmd == "info" || cmd == "tasks" || cmd == "task" ||
+                cmd == "deps" ||
                 cmd == "init" || cmd == "archive" ||
                 cmd == "add"  || cmd == "remove" ||
                 cmd == "upgrade" || cmd == "coverage" ||
@@ -3697,6 +3700,121 @@ namespace cajeta::buildtool {
             return 0;
         }
 
+        // `cajeta deps` — the dependency tree (dependency-tree spec §5, §6).
+        // Resolves with the same resolver `build` uses, walks the graph
+        // (DependencyTree.h), prints one format to stdout and reports
+        // cycles on stderr. Exit 0; 1 on a cycle or a resolution failure;
+        // 2 on a usage error.
+        void depsUsage(std::ostream& os) {
+            os << "Usage: cajeta deps [--format=text|json|csv] [--json] [--depth=N]\n"
+                  "                   [--no-dedupe] [--ascii] [--manifest=<path>]\n"
+                  "Print the project's direct and transitive dependencies as a tree.\n"
+                  "  --format=<f>     text (default), json, or csv\n"
+                  "  --json           same as --format=json\n"
+                  "  --depth=N        levels below the project to print (0 = the root\n"
+                  "                   alone; 1 = direct dependencies only; default unlimited)\n"
+                  "  --no-dedupe      expand a repeated subtree under every parent\n"
+                  "  --ascii          |-- and `-- guides instead of box-drawing\n"
+                  "  --manifest=<p>   manifest to read (default ./cajeta.json)\n"
+                  "Text markers: (*) printed under an earlier parent; (cycle) closes a\n"
+                  "cycle, not followed; (no manifest) children unknown; (...) cut by --depth.\n"
+                  "Exit: 0 acyclic; 1 a cycle was found or resolution failed; 2 usage.\n";
+        }
+
+        int depsCommand(int argc, const char* argv[]) {
+            std::string manifestPath = "./cajeta.json";
+            std::string format = "text";
+            DepTreeOptions options;
+            bool ascii = false;
+
+            for (int i = 2; i < argc; ++i) {
+                std::string_view arg = argv[i];
+                std::string value;
+                if (match(arg, "manifest", value)) {
+                    manifestPath = std::move(value);
+                } else if (match(arg, "format", value)) {
+                    if (value != "text" && value != "json" && value != "csv") {
+                        std::cerr << "cajeta deps: unknown format '" << value
+                                  << "' (text, json, csv)\n";
+                        depsUsage(std::cerr);
+                        return 2;
+                    }
+                    format = value;
+                } else if (arg == "--json") {
+                    format = "json";
+                } else if (match(arg, "depth", value)) {
+                    if (value.empty() ||
+                        value.find_first_not_of("0123456789") != std::string::npos) {
+                        std::cerr << "cajeta deps: --depth needs a non-negative "
+                                     "integer, got '" << value << "'\n";
+                        depsUsage(std::cerr);
+                        return 2;
+                    }
+                    options.depth = std::stoi(value);
+                } else if (arg == "--no-dedupe") {
+                    options.dedupe = false;
+                } else if (arg == "--ascii") {
+                    ascii = true;
+                } else if (arg == "--help" || arg == "-h") {
+                    depsUsage(std::cout);
+                    return 0;
+                } else {
+                    std::cerr << "cajeta deps: unknown argument '" << arg << "'\n";
+                    depsUsage(std::cerr);
+                    return 2;
+                }
+            }
+
+            auto manifest = loadManifestFile(manifestPath);
+            if (!manifest) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << manifest.takeError();
+                std::cerr << "cajeta deps: " << msg << "\n";
+                return 1;
+            }
+            const auto& m = *manifest;
+
+            std::string projectRoot =
+                std::filesystem::path(manifestPath).parent_path().string();
+            if (projectRoot.empty()) projectRoot = ".";
+
+            // The same resolution `build` performs (overrides, melts, declared
+            // repositories, ~/.olla first), so the tree cannot disagree with
+            // the classpath. Nothing reaches stdout on failure (§5.4.2).
+            auto graph = resolveProjectGraph(m, projectRoot);
+            if (!graph) {
+                std::string msg;
+                llvm::raw_string_ostream os(msg);
+                os << graph.takeError();
+                std::cerr << "cajeta deps: " << msg << "\n";
+                return 1;
+            }
+
+            DepTree tree = buildDependencyTree(m.details.name, m.details.version,
+                                               *graph, options);
+
+            std::error_code ec;
+            std::filesystem::path abs = std::filesystem::absolute(manifestPath, ec);
+            std::string absStr = ec ? manifestPath : abs.lexically_normal().string();
+
+            if (format == "json") {
+                std::cout << renderDepsJson(tree, absStr) << "\n";
+            } else if (format == "csv") {
+                std::cout << renderDepsCsv(tree);
+            } else {
+                std::cout << renderDepsText(tree, ascii);
+            }
+            std::cout.flush();
+
+            // Reported after the tree so the tree that contains the cycle can
+            // be read (§4.5). One line per cycle, the melt detector's shape.
+            for (const auto& cyc : tree.cycles) {
+                std::cerr << "dependency cycle detected: " << formatCycle(cyc) << "\n";
+            }
+            return tree.cycles.empty() ? 0 : 1;
+        }
+
     } // namespace
 
     bool dispatchBuildTool(int argc, const char* argv[], int* exitCodeOut) {
@@ -3705,6 +3823,10 @@ namespace cajeta::buildtool {
 
         if (cmd == "info") {
             *exitCodeOut = infoCommand(argc, argv);
+            return true;
+        }
+        if (cmd == "deps") {
+            *exitCodeOut = depsCommand(argc, argv);
             return true;
         }
         if (cmd == "tasks") {

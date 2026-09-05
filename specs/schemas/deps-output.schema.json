@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.dev/schemas/deps-output.schema.json",
+  "title": "cajeta deps --format=json",
+  "description": "Output of `cajeta deps --format=json`. The root is the project; `dependencies` on the root is the direct-dependency list. Every node has the same shape. See specs/dependency-tree-spec.md section 5.2.",
+  "type": "object",
+  "required": ["name", "version", "manifest", "dependencies", "cycles"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string" },
+    "version": { "type": "string" },
+    "manifest": {
+      "type": "string",
+      "description": "Absolute path of the manifest that was resolved."
+    },
+    "dependencies": {
+      "type": "array",
+      "description": "The direct dependencies, sorted by name.",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "cycles": {
+      "type": "array",
+      "description": "Each cycle as the path that closes it; the first and last names are equal. Empty when the graph is acyclic.",
+      "items": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 2
+      }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["name", "version", "requested", "repository", "checksum", "dependencies"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": {
+          "type": "string",
+          "description": "Resolved version. One per name: MVS picks a single version for every package."
+        },
+        "requested": {
+          "type": "string",
+          "description": "The constraint this node's parent declared, verbatim."
+        },
+        "repository": {
+          "type": "string",
+          "description": "Name of the repository that supplied the artifact."
+        },
+        "checksum": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-fA-F]{64}$"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["repeated", "cycle", "opaque", "truncated"],
+          "description": "Present only when `dependencies` is not the complete child list. repeated: the subtree was printed under an earlier parent. cycle: this edge closes a cycle and was not followed. opaque: the package has no manifest sidecar, so its children are unknown. truncated: cut by --depth."
+        },
+        "dependencies": {
+          "type": "array",
+          "description": "Children, sorted by name.",
+          "items": { "$ref": "#/$defs/node" }
+        }
+      }
+    }
+  }
+}

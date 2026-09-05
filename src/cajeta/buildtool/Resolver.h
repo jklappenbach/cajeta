@@ -104,6 +104,18 @@ namespace cajeta::buildtool {
     // i.e. assumed to have no further dependencies. This is the
     // backwards-compatible path for archives that pre-date the
     // sidecar convention.
+    // Graph-returning form of resolveMvs: the same solve, returning the
+    // flat list together with the edges (see ResolvedGraph). resolveMvs
+    // is a wrapper over it that returns `.packages`.
+    llvm::Expected<ResolvedGraph> resolveMvsGraph(
+        const std::vector<DependencySpec>& deps,
+        const std::vector<RepositoryPtr>& repos,
+        ArtifactCache& cache,
+        const std::vector<OverrideSpec>& overrides = {},
+        ResolverTimings* timings = nullptr,
+        const std::string& gitOverrideStageDir = "",
+        const std::string& ollaWriteThroughRoot = "");
+
     llvm::Expected<std::vector<ResolvedDependency>> resolveMvs(
         const std::vector<DependencySpec>& deps,
         const std::vector<RepositoryPtr>& repos,
@@ -156,6 +168,17 @@ namespace cajeta::buildtool {
     // away from $HOME; production callers leave it unset.
     llvm::Expected<std::vector<ResolvedDependency>>
     resolveProjectDependencies(
+        const Manifest& m,
+        const std::string& projectRoot,
+        std::optional<std::string> homeOverride = std::nullopt,
+        ResolverTimings* timings = nullptr);
+
+    // The same resolution, returning the graph (dependency-tree spec §2):
+    // `.packages` is byte-for-byte the resolveProjectDependencies result,
+    // which is now a wrapper over this. Empty graph when no dependencies
+    // are declared.
+    llvm::Expected<ResolvedGraph>
+    resolveProjectGraph(
         const Manifest& m,
         const std::string& projectRoot,
         std::optional<std::string> homeOverride = std::nullopt,

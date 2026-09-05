@@ -218,7 +218,10 @@ cajeta add <dep>             Add a dependency (manifest + lockfile mutation)
 cajeta remove <dep>          Remove a dependency
 cajeta upgrade [dep]         Re-resolve versions per manifest constraints
 cajeta install               Install an artifact from a repository into the local download cache
-cajeta info                  Print computed dependency tree, capability set, properties, profile
+cajeta deps                  Print the dependency tree: direct and transitive
+                                dependencies, each under its parent; text, JSON or CSV
+cajeta info                  Print manifest details, properties, lockfile drift,
+                                resolver timings and melts
 cajeta publish               Publish an artifact to a repository
 cajeta coverage <cmd>        Manage coverage-exclusion config (ignore/list/remove)
 cajeta trust <cmd>           Manage the launcher's signature-verification trust store
@@ -245,6 +248,67 @@ transitive deps into `./vendor` for offline builds) is **planned** —
 not yet a recognized built-in. Anything not in this list and not
 prefixed with `-` (`build`, `test`, `run`, …) is dispatched as a
 *task* from the manifest's `tasks` block.
+
+### Inspecting the dependency tree — `cajeta deps`
+
+`cajeta deps` prints the dependencies the project builds against: the
+direct dependencies, and under each one the dependencies it brings in,
+to any depth. It runs the same resolver `build` runs (overrides, melts,
+declared repositories, the `~/.olla` store first), so the tree never
+disagrees with the classpath.
+
+```
+cajeta deps [--format=text|json|csv] [--json] [--depth=N] [--no-dedupe]
+            [--ascii] [--manifest=<path>]
+```
+
+Text is an indented tree; a node's parent is the node above it.
+
+```
+myapp 1.0.0
+├── dev.cajeta.codec 0.8.1
+│   └── dev.cajeta.logging 0.7.0
+├── dev.cajeta.jinja 0.1.0 (no manifest)
+└── dev.cajeta.logging 0.7.0 (*)
+```
+
+A marker after the version says why a node's children are not shown:
+
+| marker | JSON `status` | meaning |
+|---|---|---|
+| `(*)` | `repeated` | the subtree was printed under an earlier parent; `--no-dedupe` prints it again |
+| `(cycle)` | `cycle` | this edge closes a cycle and was not followed |
+| `(no manifest)` | `opaque` | the archive has no manifest sidecar, so its children are unknown |
+| `(...)` | `truncated` | cut by `--depth` |
+
+JSON (`--format=json`, or `--json`) is one document whose root is the
+project. `dependencies` on the root is the direct-dependency list, and
+every node has the same shape: `name`, `version` (resolved), `requested`
+(the constraint the parent declared), `repository` (`olla` when the local
+store supplied it), `checksum`, `status` (only when one of the four
+applies), and `dependencies`. The root also carries `manifest` (absolute
+path) and `cycles`, each cycle as the path that closes it. The schema is
+`specs/schemas/deps-output.schema.json`.
+
+CSV (`--format=csv`) is one row per edge, so a package reached from two
+parents appears once per parent, with `parent` as a column:
+
+```
+parent,name,version,requested,repository,checksum,depth,status
+myapp,dev.cajeta.codec,0.8.1,0.8.1,olla,sha256:…,1,
+dev.cajeta.codec,dev.cajeta.logging,0.7.0,>=0.6.0,olla,sha256:…,2,
+myapp,dev.cajeta.logging,0.7.0,0.7.0,olla,sha256:…,1,repeated
+```
+
+Children are listed in name order at every level, so two runs on the
+same inputs are byte-identical. Cycles are reported on stderr after the
+tree, one line each (`dependency cycle detected: a -> b -> a`), and the
+exit code is 1 when any was found, so CI can gate on it. Exit codes: 0
+acyclic; 1 a cycle was found or resolution failed; 2 usage error.
+
+Not listed: built-in stdlib packages (`cajeta.*`), which are part of the
+toolchain rather than resolved, and `dev-dependencies`, which the tool
+does not resolve today.
 
 These aren't tasks because they're tool-state operations, not
 project behavior the user customizes. A project that genuinely
@@ -1196,6 +1260,18 @@ Resolution:    1.2.3 (lowest 1.2.* satisfying 1.2.3+)
 Constraint solver runs in O(N log N) for typical graphs; the
 worst case (large conflict surface) is exposed via `cajeta info
 --resolve-time` for debugging.
+
+**Cycles.** The registry does not forbid a package that depends, at any
+distance, on a package that depends on it, and the solver tolerates the
+loop (constraints only tighten, so the fixed point terminates). The tool
+follows Java's conventions. A cycle among **workspace members** is
+refused, as Maven refuses a cyclic reactor: `cyclic workspace-member
+dependency among: …`. A cycle that arrives through **published
+artifacts** is tolerated, as Maven and Gradle tolerate it — the resolved
+classpath is flat, and the project owner cannot fix someone else's
+manifest — but `build` names it once per cycle on stderr
+(`warning: dependency cycle detected: a -> b -> a`) and proceeds, and
+`cajeta deps` reports the same chain and exits 1.
 
 ---
 
