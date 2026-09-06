@@ -55,14 +55,17 @@ Two facts about the set, both measured on 2026-09-06:
 
 ## Discipline
 
-- **Instrument.** Host clock (`Clock.nanoTime`) around launch and sync. On
-  this box the profiler's AMD device tier needs `rocprofiler-sdk`, which is
-  not installed, so the runtime's device slice is the launch call's own
-  window: right for the seam KPI (the profiled seam pass records it), wrong
-  for kernel duration. Two host-clocked modes cover both: *isolated* (one
-  launch, one sync) for latency and *pipelined* (fifty queued, one sync) for
-  the cost a full queue sees. Installing `rocprofiler-sdk` upgrades the
-  seam cross-check to device spans without changing any row here.
+- **Instrument.** Host clock (`Clock.nanoTime`) around launch and sync, in
+  two modes: *isolated* (one launch, one sync) for latency and *pipelined*
+  (fifty queued, one sync) for the cost a full queue sees. The profiler's
+  AMD device tier (rocprofiler-sdk, loaded from `$ROCM_PATH/lib` — this
+  box's user-local ROCm tree carries it) is active and records device
+  spans; `run.sh` profiles the seam pass with it as a cross-check, and the
+  report's §3.5 uses it on the cajeta-llm run. Set
+  `CAJETA_PROFILER_GPU_RING` large (4 M) for a run with tens of thousands
+  of launches: the record sink drops on overflow, so a small ring keeps
+  per-kernel averages but loses totals. The harness rows stay host-clocked
+  so they mean the same thing on every backend.
 - **Warm-up.** Every kernel runs once per shape before timing.
 - **Blocks.** Five blocks per KPI; each block's median is one sample of the
   noise band (min/max over blocks); p95 is over every individual sample.

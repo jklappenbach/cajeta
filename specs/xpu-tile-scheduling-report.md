@@ -17,7 +17,7 @@ instrument.
 |---|---|
 | Devices | gfx1151 (Strix Halo APU, this box); CPU backend (this box); RTX 4090 (PHOENIX, rows filled by that session) |
 | Identity recorded per row | device, driver version, compiler commit, power mode, backend |
-| Instrument | Host clock (`Clock.nanoTime`) around launch and sync, in two modes: **isolated** (one launch, one sync — kernel plus launch plus sync latency) and **pipelined** (fifty queued launches, one sync, divided by fifty — the per-kernel cost a full queue sees). The profiler's AMD device tier needs `rocprofiler-sdk`, which is not installed on this box (apt candidate 1.1.0), so the runtime's device slice is the launch call's own window (`cajeta_rt_prof_gpu.c`: `host_launch_ns` to `host_return_ns`); that window is recorded for the seam KPI only (`cajeta profile summary --csv` on the seam pass). Installing the SDK upgrades the seam cross-check to device spans without changing a harness row. CUPTI on NVIDIA when that session runs. |
+| Instrument | Host clock (`Clock.nanoTime`) around launch and sync, in two modes: **isolated** (one launch, one sync — kernel plus launch plus sync latency) and **pipelined** (fifty queued launches, one sync, divided by fifty — the per-kernel cost a full queue sees), so a row means the same thing on every backend. The profiler's AMD device tier (rocprofiler-sdk, bound from `$ROCM_PATH/lib` — this box's user-local ROCm 7.11.0 tree carries it; proven by a loader trace, since the runtime prints nothing when it binds) records device spans and is the cross-check: `run.sh` profiles the seam pass with it (§3.4) and the cajeta-llm run was profiled with it (§3.5). `CAJETA_PROFILER_GPU_RING=4194304` for runs with tens of thousands of launches; the sink drops on overflow and a small ring keeps averages but loses totals. CUPTI on NVIDIA when that session runs. |
 | Warm-up | first-touch pages committed and every kernel run once per shape before timing (the first-touch finding: ~890 ms one-time on fresh buffers) |
 | Runs | 5 blocks per KPI; a block's median is one sample of the noise band (min/max over blocks); p95 is nearest-rank over every individual sample (20 per block for kernels, 100 for the seam probe, every frame for the frame stand-in); cajeta-llm: 5 processes, one run each |
 | Idle gate | no other `cajeta_test`, `xpubench`, `gpuparity`, `SchedThroughput`, or llama.cpp binary alive, matched by process NAME (`pgrep -a`) excluding the harness itself; exit 3 and no rows otherwise; load average printed beside it. Tested both ways in `XpuBenchHarnessTests` |
@@ -277,16 +277,51 @@ Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | cpu | linux 7.0.0-30-generic |
 | pair | 8388608x12@16.667ms | cpu | besteffort_pct_of_solo | 97.9 % | [97.9, 97.9] |  | 1 | vs solo pipelined saxpy(16M) 184.87 GB/s |
 | pair | 8388608x12@16.667ms | cpu | goodput | 48.9 % | [48.9, 48.9] |  | 1 | mean of protected on-time % and best-effort % of solo |
 
-### 3.4 Profiler launch window on the seam pass
+### 3.4 Device tier on the seam pass
 
-`cajeta profile summary --csv` over the profiled seam pass (`spin`, all
-three durations mixed, 2,133 launches): average launch window 100.4 µs on
-HIP and 88.9 µs on the CPU backend. Without rocprofiler-sdk this window is
-`host_launch_ns..host_return_ns` around the dispatch, and under the profiler
-the HIP dispatch evidently waits: the same launch statement costs 0.9–15 µs
-unprofiled (`seam.launch_call`). The device tier, once the SDK is installed,
-replaces this figure with device spans; until then it is recorded and not
-used for verdicts.
+`cajeta profile summary --csv` over the profiled seam pass (`spin`, all three
+durations mixed, 2,133 launches): average device span 100.4 µs on HIP. The
+unprofiled rows put the three kernel times at 7.35, 53.6 and 207.3 µs (mean
+89.4 µs), so the device tier reads the same kernels about 11 µs longer on
+average, which is the dispatch-to-completion part the host clock cannot
+see inside a pipelined batch. The CPU backend's figure (88.9 µs) is the inline
+launch itself. A per-duration split needs one profiled pass per target,
+which a later unit can add; the mixed figure is recorded, not used for
+verdicts.
+
+### 3.5 Device tier on the cajeta-llm run
+
+One profiled `SchedThroughput` process (prompt 2,048, generate 64, ring
+4 M records): 43,874 device spans, 17 kernels, 11,627 ms of device time
+against 11,802 ms of prefill + decode wall (prefill 10,145 ms, decode
+1,657 ms under the profiler, +3% on prefill over the unprofiled rows).
+
+| Kernel | Launches | Total (ms) | Avg (µs) | Phase |
+|---|---|---|---|---|
+| q4kWmmaKernel | 3,264 | 7,904.2 | 2,421.6 | prefill, matrix cores |
+| q6kWmmaEpiKernel | 544 | 1,470.9 | 2,703.9 | prefill, matrix cores |
+| attnFlashPrefillGqa4Kernel | 544 | 498.8 | 916.9 | prefill attention |
+| q4kQ8WaveMatVecKernel | 7,168 | 871.8 | 121.6 | decode |
+| q6kQ8WaveMatVecKernel | 1,105 | 388.8 | 351.9 | decode |
+| qkvWaveMatVecKernel | 2,048 | 137.5 | 67.2 | decode |
+| attnFlashDecodeGqa4Kernel | 2,048 | 89.2 | 43.6 | decode attention |
+| attnFlashDecodeReduceKernel | 2,048 | 37.3 | 18.2 | decode attention |
+| q8kPackKernel | 10,432 | 68.3 | 6.5 | both |
+| gluF32 / addF32 / rmsnorm* / ropeF32 / qkPrep / kvAppendRange | 14,656 | 155.7 | 3–18 | both |
+
+Derived (these fill the two llm KPIs the harness marks pending):
+
+| KPI | Value | Derivation |
+|---|---|---|
+| device busy during the run | 98.5% | 11,627 / 11,802 ms; the remaining 1.5% is launch gaps and host work |
+| prefill matrix-core fraction | ~94% | WMMA kernels 9,375 ms of ~9,990 ms prefill device time (total minus the decode-only kernels and the decode share of the shared ones) |
+| decode attention kernel duration | 43.6 µs + 18.2 µs reduce | per layer per token, 2,048 launches each (64 tokens x 32 layers) |
+| prefill attention kernel duration | 916.9 µs | per layer per 128-token chunk (17 chunks x 32 layers) |
+| decode per-token device time | 25.5 ms | decode kernels' totals / 64 tokens; the unprofiled rows measured 24.8 ms wall per token |
+
+The first profiled attempt used the default ring and kept 8,000 of these
+spans with no prefill kernel among them — averages survived, totals did
+not. Any per-kernel accounting over a long run sets the ring explicitly.
 
 ## 4. Trials
 
@@ -307,11 +342,11 @@ decided it and what would reopen it.
 |---|---|---|---|
 | CPU backend: `dot`, `reduceSum`, `matmulTiled`, `cg`, `degenerate` pending | baseline | The CPU barrier fission declines a workgroup barrier inside a loop ("unstructured barrier control flow", `CpuBarrierFission.cpp`) — the LDS tree reduce, the two-array final reduce and the LDS-tiled GEMM all carry one. The kernel gets no CPU code; the launch prints `no registered CPU kernel` and returns. Two silences fixed in Unit 0: the build now prints `[xpu-kernel-skipped] … barrier fission: …` and the runtime now counts the failed launch (`XpuCpuBarrierFissionNoteTests`, 3 tests). | The fission accepts a barrier inside a uniform loop (a compiler unit, not part of this family); then rerun the CPU leg and fill the rows |
 | `bandwidth_fraction` pending on every kernel | baseline | needs the device's measured achievable bandwidth | scheduling Unit 2 fills §2 |
-| `matrix_core_fraction`, `attention_kernel_duration` pending | baseline | need per-kernel device spans; the AMD device tier loads `librocprofiler-sdk.so.1`, absent on this box (apt candidate 1.1.0) | the SDK is installed (developer's call); the harness rows do not change, the profiled seam pass and these two KPIs do |
+| `matrix_core_fraction`, `attention_kernel_duration` not produced by the harness | baseline | the harness rows are host-clocked; §3.5 measured both from device spans in one profiled run (94%; 43.6 µs decode, 917 µs prefill) | a later unit folds a profiled llm pass into the harness so the rows carry them |
 | `per_token_p99` pending | baseline | `SchedThroughput` prints a per-run mean, not per-token latencies | cajeta-llm's bench emits per-token timings (profiles plan Unit 1 needs it) |
-| Profiler launch window (§3.4) recorded, not used | baseline | under the profiler the HIP dispatch waits ~100 µs per launch, 7–100x the unprofiled launch call | the device tier replaces the host window |
+| Seam device-tier figure (§3.4) is a three-duration mix | baseline | one profiled pass covers 5, 50 and 200 µs together; the summary cannot split them by name | one profiled pass per target duration |
 | Frame p50 band 3.5–6.6 ms solo | baseline | run-to-run jitter of the unscheduled frame; p99 and the miss count are the frame KPIs that verdicts read | a scheduler unit that claims to reduce jitter measures p50 with N runs, not one |
-| CG `queue-empty time` not measured | baseline | needs per-kernel device spans to subtract device-busy time from wall; the host clock cannot see the queue | the device tier (rocprofiler-sdk) or Unit 3's measured line |
+| CG `queue-empty time` not measured | baseline | needs the device-tier spans of the CG loop subtracted from wall; the harness rows are host-clocked | a profiled CG pass (the device tier is available, §3.5 shows the method) |
 
 ## 6. Closing summary (after the last unit)
 

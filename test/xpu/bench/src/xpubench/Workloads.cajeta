@@ -18,10 +18,9 @@ import cajeta.xpu.KernelStream;
 /**
  * The baseline workloads (xpu-tile-scheduling plan 0.2.1), each emitting
  * rows through {@link Rows}. Every measurement here is HOST-CLOCKED around
- * launch and sync: on this box the profiler's AMD device tier needs
- * rocprofiler-sdk, which is absent, so the runtime's device slice is the
- * launch call's own window — the right instrument for the seam KPI and the
- * wrong one for kernel duration. Two host-clocked modes cover both:
+ * launch and sync, so a row means the same thing on every backend (the
+ * profiler's device tier is a cross-check run.sh takes separately; on this
+ * box rocprofiler-sdk binds from $ROCM_PATH/lib). Two modes:
  *
  *   isolated   launch, sync, one sample — kernel + launch + sync overhead,
  *              the honest per-kernel latency;

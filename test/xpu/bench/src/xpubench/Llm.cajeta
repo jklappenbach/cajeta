@@ -118,7 +118,7 @@ public final class Llm {
                  Stats.round(Stats.median(preTps, got), 1), Stats.round(Stats.min(preTps, got), 1),
                  Stats.round(Stats.max(preTps, got), 1), 0.0, got, "from the same runs");
         rows.pending("llm.prefill", shape, "matrix_core_fraction",
-                     "needs the device tier (rocprofiler-sdk) to attribute prefill time to WMMA kernels");
+                     "not gathered by the harness; the profiled run in report §3.5 measures it from device spans");
         rows.row("llm.decode", shape, "tokens_per_second", "tok/s",
                  Stats.round(Stats.median(decTps, got), 2), Stats.round(Stats.min(decTps, got), 2),
                  Stats.round(Stats.max(decTps, got), 2), 0.0, got,
@@ -129,6 +129,6 @@ public final class Llm {
         rows.pending("llm.decode", shape, "per_token_p99",
                      "SchedThroughput prints a per-run mean, not per-token latencies");
         rows.pending("llm.decode", shape, "attention_kernel_duration",
-                     "needs the device tier (rocprofiler-sdk) for per-kernel device spans");
+                     "not gathered by the harness; the profiled run in report §3.5 measures it from device spans");
     }
 }
