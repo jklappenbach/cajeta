@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Toward Performance-Portable PETSc for GPU-based Exascale Systems (Parallel Computing 2021)
+description: PETSc's GPU port: measured kernel-launch and CPU-side overheads that dominate strong-scaled sparse solves, the asynchronous/stream-based redesign, and why small dependent kernels leave the GPU idle.
+url: https://arxiv.org/abs/2011.00715

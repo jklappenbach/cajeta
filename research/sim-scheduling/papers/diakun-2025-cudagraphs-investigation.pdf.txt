@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Investigation of CUDA Graphs Performance for Selected Parallel Applications (ICCS 2025)
+description: Head-to-head measurement of stream-based versus CUDA-graph execution on NAS Parallel Benchmarks, isolating where graph replay helps, where it is neutral, and what the instantiation/update costs are.
+url: https://www.iccs-meeting.org/archive/iccs2025/papers/159060121.pdf

@@ -5,7 +5,8 @@
 ### 1.1 Purpose
 
 Define the **graphics workload** the XPU kernel orchestrator
-([`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md), the `GFX` class) must
+([`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md), the `frameBudget` policy and
+the game profile of [`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) §2) must
 serve for real-time rendering of massive scenes: a **streaming, distance-reactive,
 continuous level-of-detail (LOD) geometry pipeline** that maximizes rasterization
 throughput while **never** interrupting, stuttering, or popping.
@@ -271,5 +272,6 @@ view-dependent refinement of progressive meshes (continuous LOD + geomorphing),
 progressive buffers (out-of-core streaming LOD + geomorph on stream-in),
 cluster-hierarchy continuous-LOD systems, and the visibility buffer
 (raster-maximizing deferred material). Sibling specs:
-[`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md) (the orchestrator this
-workload targets), `xpu-device-profile`, `kernel-occupancy-autotune`.
+[`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md) (the scheduler this
+workload targets; it supersedes `xpu-kernel-scheduling`), `xpu-device-profile`,
+`kernel-occupancy-autotune`.

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: C Language Extensions for Hybrid CPU/GPU Programming with StarPU (INRIA RR-8278, 2013)
+description: Describes StarPU's task model concretely: codelets with per-implementation kernels, data handles with access modes, the automatic dependency graph built from those handles, and pluggable schedulers (HEFT/dmda) over heterogeneous workers.
+url: https://arxiv.org/abs/1304.0878

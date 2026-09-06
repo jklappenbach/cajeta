@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Destiny's Multithreaded Rendering Architecture (GDC 2015)
+description: Bungie's job-graph renderer: a frame is a DAG of jobs with declared dependencies, scheduled across worker threads with explicit stage/phase barriers and a hard frame budget - the CPU-side half of the render-graph problem.
+url: https://advances.realtimerendering.com/destiny/gdc_2015/Tatarchuk_GDC_2015__Destiny_Renderer_web.pdf

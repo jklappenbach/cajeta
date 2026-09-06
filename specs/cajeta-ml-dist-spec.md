@@ -53,7 +53,9 @@ distributed evaluation; the correctness contract.
   changing their result (§6.4 records them rather than approximating them).
 - **1.5.6** **Distributed neural inference and serving** — KV-cache residency,
   continuous batching, prefill/decode disaggregation, speculative decoding.
-  Owned by `llm-kernel-scheduling-spec` and `xpu-kernel-scheduling-spec`.
+  Owned by `xpu-tile-workload-profiles-spec` §3 and `xpu-tile-scheduling-spec`
+  (which superseded `llm-kernel-scheduling` and `xpu-kernel-scheduling` on
+  2026-09-06).
 
 ### 1.6 Package name
 

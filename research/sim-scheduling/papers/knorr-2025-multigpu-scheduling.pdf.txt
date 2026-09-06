@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Concurrent Scheduling of High-Level Parallel Programs on Multi-GPU Systems (2025)
+description: Celerity's runtime turns a data-access-declared task graph into per-device command graphs with automatic dependency and transfer generation, and shows the runtime's own graph-building must be pipelined ahead of device execution to avoid becoming the bottleneck.
+url: https://arxiv.org/abs/2503.10516

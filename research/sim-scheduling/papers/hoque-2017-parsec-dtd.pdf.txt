@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Dynamic Task Discovery in PaRSEC: A Data-Flow Task-Based Runtime (ScalA 2017)
+description: PaRSEC's insert-task interface: sequential task insertion with data-access modes, from which the runtime discovers the DAG incrementally, with a window to bound the resident graph - the practical alternative to a fully materialized graph.
+url: https://icl.utk.edu/files/publications/2017/icl-utk-1027-2017.pdf

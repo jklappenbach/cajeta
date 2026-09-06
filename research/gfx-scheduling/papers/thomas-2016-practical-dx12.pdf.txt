@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Practical DirectX 12: Programming Model and Hardware Capabilities (GDC 2016, AMD + NVIDIA)
+description: Joint vendor guidance on DX12 multi-queue submission: how many command queues to create, what barriers/transitions actually cost, fence granularity, and when async compute wins versus when it regresses.
+url: https://gpuopen.com/wp-content/uploads/2016/03/Practical_DX12_Programming_Model_and_Hardware_Capabilities.pdf

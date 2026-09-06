@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: The Devil is in the Details: idTech 666 (SIGGRAPH 2016 Advances in Real-Time Rendering in Games)
+description: DOOM 2016's renderer, including the async-compute schedule that co-runs shadow/SSAO/particle compute against the graphics queue and the measured per-pass frame-time savings on console GCN hardware.
+url: https://advances.realtimerendering.com/s2016/Siggraph2016_idTech6.pdf

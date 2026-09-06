@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Whippletree: Task-based Scheduling of Dynamic Workloads on the GPU (SIGGRAPH Asia 2014)
+description: A persistent-megakernel task scheduler that runs a producer/consumer task graph entirely on the GPU at block/warp/thread granularity, showing what an in-device scheduler can beat the driver's kernel-launch path at.
+url: https://dl.acm.org/doi/10.1145/2661229.2661250

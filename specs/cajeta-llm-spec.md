@@ -78,8 +78,9 @@ language. The engine is rewritten against `cajeta.math.Tensor` and
 - No cross-process or cross-machine scheduling. In-process continuous
   batching, the paged cache and preemption are **in** v1 — this bullet
   originally excluded them and 14.3 reversed it (§13.13, §13.15).
-  `specs/llm-kernel-scheduling-spec.md` still owns the multi-tenant
-  orchestrator surface that sits above this engine.
+  `specs/xpu-tile-workload-profiles-spec.md` §3 (which superseded
+  `llm-kernel-scheduling` on 2026-09-06) owns the multi-tenant
+  scheduling surface that sits above this engine.
 - No concurrent multi-process access to the block store. One engine process
   owns it at a time; `LtmPager` has no locking (§13.17).
 - No tensor/pipeline parallelism, no collectives, no multi-device.
@@ -878,7 +879,8 @@ the recommendation they were filed with; both are marked.
 
 - **13.15 Continuous batching with preemption.** Sequences are admitted,
   scheduled at iteration granularity, and evicted under memory pressure — the
-  full `ML_INFER` shape of `llm-kernel-scheduling-spec`, and the largest
+  full inference shape of `xpu-tile-workload-profiles-spec` §3 (formerly
+  `llm-kernel-scheduling-spec`), and the largest
   single piece of scheduling work in the plan. Static batching was rejected
   for head-of-line blocking. Admission-without-eviction was considered and
   rejected because 13.16 makes eviction cheap enough that the simplification

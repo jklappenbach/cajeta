@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Exploiting Dependency and Parallelism: Real-Time Scheduling and Analysis for GPU Tasks (2026)
+description: Real-time schedulability analysis for DAGs of GPU kernels that models both inter-kernel dependency and intra-GPU parallelism, giving a response-time bound framework for deadline-driven kernel scheduling.
+url: https://arxiv.org/abs/2602.20826

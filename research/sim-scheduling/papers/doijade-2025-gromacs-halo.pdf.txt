@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Redesigning GROMACS Halo Exchange: Improving Strong Scaling with GPU-initiated NVSHMEM (2025)
+description: Replaces the CPU-launched pack/exchange/unpack kernel chain with GPU-initiated communication, quantifying how much of a strong-scaled MD step is launch and synchronization overhead rather than compute.
+url: https://arxiv.org/abs/2509.21527

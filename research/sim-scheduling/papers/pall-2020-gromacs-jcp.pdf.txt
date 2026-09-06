@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Heterogeneous Parallelization and Acceleration of Molecular Dynamics Simulations in GROMACS (J. Chem. Phys. 2020)
+description: The MD time-step as an explicitly scheduled heterogeneous DAG: which kernels are offloaded, how streams and events are used to overlap local/non-local force kernels with halo communication and CPU work, and how the critical path is chosen.
+url: https://doi.org/10.1063/5.0018516

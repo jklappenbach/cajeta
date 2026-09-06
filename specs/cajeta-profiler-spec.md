@@ -216,7 +216,7 @@ APIs are structurally incompatible and cannot be unified below that level.
 
 That record has **more than one consumer**. The trace writer (§7) is the first and
 this spec's own client. The second is the XPU scheduler's feedback loop
-([`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md) §3, §8), which classifies
+([`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md) §3, §11), which classifies
 each kernel by bottleneck and then corrects that classification from achieved
 versus predicted latency — a signal nothing else in the runtime produces per
 launch. §5.6 states what serving both costs: publication to a sink rather than a
@@ -574,8 +574,8 @@ developer's direction.
 - **14.9 The record seam is dual-consumer (decided 2026-08-20).** The dispatch
   record publishes to sinks; the Perfetto writer is one of them (§5.6). The second
   known consumer is the XPU scheduler's feedback loop
-  ([`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md) §3, §8), which needs
-  per-launch achieved latency live and in-process. That spec assumed these signals
+  ([`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md) §3, §11), which needs
+  per-launch achieved latency live and in-process. Its predecessor assumed these signals
   would come from `xpu-device-profile`'s counter tier, which is opt-in, in-memory
   and built to calibrate a launch-config picker — it does not produce a per-launch
   stream. This seam does. A sink interface costs one indirection now; discovering

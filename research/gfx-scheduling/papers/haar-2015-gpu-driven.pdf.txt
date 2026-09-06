@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPU-Driven Rendering Pipelines (SIGGRAPH 2015 Advances in Real-Time Rendering in Games)
+description: Assassin's Creed Unity / Trials pipeline where culling and draw-command generation move onto the GPU via indirect dispatch, removing CPU round-trips from the frame - the precedent for GPU-side work generation a scheduler must accommodate.
+url: https://advances.realtimerendering.com/s2015/aaltonenhaar_siggraph2015_combined_final_footer_220dpi.pdf

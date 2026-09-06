@@ -1,8 +1,10 @@
+> **SUPERSEDED 2026-09-06** by [`xpu-tile-scheduling`](../xpu-tile-scheduling-spec.md), with [`xpu-tile-manifest`](../xpu-tile-manifest-spec.md) and [`xpu-tile-workload-profiles`](../xpu-tile-workload-profiles-spec.md). Archived unimplemented: its plan (0 of 117 items) is in `agents/archive/xpu-kernel-scheduling-plan.md`. Kept as the record of the 2026-08 design and its references; `xpu-tile-scheduling` §1.2 lists what changed and why (MIG/MPS dropped, preemption demoted to admission, class derived not declared, chain-level scheduling unit, capture and resident pools added). The kernel gap catalog in §10 is stale; kernel families are listed without status in the profiles spec §5.2.
+
 # Spec: XPU live kernel scheduling & occupancy-maximizing deployment (`xpu-kernel-scheduling`)
 
 > Status: **approved 2026-08-20**. The actionable *how* lives in
-> [`agents/xpu-kernel-scheduling-plan.md`](../agents/xpu-kernel-scheduling-plan.md).
-> §8's online feedback half is gated on [`cajeta-profiler`](cajeta-profiler-spec.md)
+> [`agents/xpu-kernel-scheduling-plan.md`](../../agents/archive/xpu-kernel-scheduling-plan.md).
+> §8's online feedback half is gated on [`cajeta-profiler`](../cajeta-profiler-spec.md)
 > Unit 7 (§12.6); §3's offline classification is not gated on anything unbuilt.
 
 ## 1. Definition
@@ -17,11 +19,11 @@ compute and memory-bandwidth) while honoring each request's quality-of-service
 class. It is the **inter-kernel / cross-request** layer, complementary to the
 existing **intra-kernel** work:
 
-- [`xpu-device-profile`](archive/xpu-device-profile-spec.md) — per-launch analytic
+- [`xpu-device-profile`](xpu-device-profile-spec.md) — per-launch analytic
   launch-config picker + measured roofline.
-- [`kernel-occupancy-autotune`](archive/kernel-occupancy-autotune-spec.md) — per-kernel
+- [`kernel-occupancy-autotune`](kernel-occupancy-autotune-spec.md) — per-kernel
   register/occupancy budgeting + `@Occupancy`.
-- [`xpu-kernel-scheduling-hints`](xpu-kernel-scheduling-hints-spec.md) —
+- [`xpu-kernel-scheduling-hints`](../xpu-kernel-scheduling-hints-spec.md) —
   *instruction*-schedule hints inside one `@Kernel`.
 
 Those tune a **single kernel in isolation**. This spec schedules a **stream of
@@ -286,7 +288,7 @@ interference model.
 ### 8.2 Mechanism
 
 - **Signals**: per-kernel achieved vs predicted latency, taken from
-  [`cajeta-profiler`](cajeta-profiler-spec.md)'s dispatch-record seam (§5.6) — the
+  [`cajeta-profiler`](../cajeta-profiler-spec.md)'s dispatch-record seam (§5.6) — the
   scheduler registers a **live record sink** and receives device start/end per
   launch, in-process, already in the host clock domain and marked with the tier
   that produced it. An earlier draft of this section sourced these from "the
@@ -444,7 +446,7 @@ Closed with the developer 2026-08-21.
 
 ## 13. References
 
-Full PDFs + markers in [`research/xpu-scheduling/papers/`](../research/xpu-scheduling/papers/):
+Full PDFs + markers in [`research/xpu-scheduling/papers/`](../../research/xpu-scheduling/papers/):
 Salus, REEF, Orion, Paella, TGS, AntMan, Gandiva, PipeSwitch, Clockwork,
 Clipper, Nexus, AlpaServe, iGniter, MISO, choi (spatio-temporal serving), MASK,
 Volkov (occupancy), Williams (roofline), and the real-time accelerator
@@ -452,4 +454,4 @@ scheduling survey. Vendor references: CUDA MPS & MIG user guides, CUDA
 streams/priorities & CUDA Graphs, HIP stream API + CU masking, Vulkan
 async-compute queues. Sibling specs: `xpu-device-profile`,
 `kernel-occupancy-autotune`, `xpu-kernel-scheduling-hints`,
-[`cajeta-profiler`](cajeta-profiler-spec.md) (§5.6 record seam, §8 feedback source).
+[`cajeta-profiler`](../cajeta-profiler-spec.md) (§5.6 record seam, §8 feedback source).

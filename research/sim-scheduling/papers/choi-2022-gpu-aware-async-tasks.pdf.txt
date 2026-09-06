@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Improving Scalability with GPU-Aware Asynchronous Tasks (2022)
+description: Overdecomposed asynchronous tasks in Charm++ with GPU-aware completion, automatically overlapping communication with compute in a Jacobi/stencil proxy without hand-written double buffering.
+url: https://arxiv.org/abs/2202.11819

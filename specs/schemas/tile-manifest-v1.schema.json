@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cajeta.dev/schemas/tile-manifest-v1.schema.json",
+  "title": "Tile kernel manifest v1",
+  "description": "Per-(kernel, target) record the compiler emits beside a device artifact (spec xpu-tile-manifest). Fields the target cannot report are ABSENT, never zero.",
+  "type": "object",
+  "required": ["schemaVersion", "identity", "footprint", "access", "restartable", "captureSafe"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "identity": {
+      "type": "object",
+      "required": ["kernel", "target", "codeHash", "compilerVersion", "xpuAbiVersion"],
+      "properties": {
+        "kernel": { "type": "string", "description": "Qualified name, e.g. dev.cajeta.llm.io.QuantKernel.mxfp4MatVecKernelCoopQ8Surface" },
+        "target": { "type": "string", "description": "Backend and arch, e.g. amdgpu/gfx1151, nvptx/sm_89, spirv/vulkan1.3, cpu/x86-64-v3" },
+        "codeHash": { "type": "string", "pattern": "^sha256:[0-9a-fA-F]{64}$" },
+        "compilerVersion": { "type": "string" },
+        "xpuAbiVersion": { "type": "integer", "minimum": 3 },
+        "instrumented": { "type": "boolean", "default": false }
+      }
+    },
+    "footprint": {
+      "type": "object",
+      "description": "From the assembled artifact (spec §3). Absent when the target does not report it.",
+      "properties": {
+        "waveWidth": { "type": "integer", "minimum": 1 },
+        "vgpr": { "type": "integer", "minimum": 0 },
+        "sgpr": { "type": "integer", "minimum": 0 },
+        "spillBytes": { "type": "integer", "minimum": 0 },
+        "ldsStaticBytes": { "type": "integer", "minimum": 0 },
+        "ldsDynamicParam": { "type": "string", "description": "Name of the launch parameter that sizes dynamic shared memory" },
+        "threadsPerGroup": { "type": "integer", "minimum": 1, "description": "Present only when pinned by @Tile or @Occupancy" },
+        "feasibleBlocks": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "description": "Best-first, from the occupancy picker, when the block is a launch argument" },
+        "residentGroupsPerCu": { "type": "integer", "minimum": 0, "description": "Capacity accounting unit only — never a performance target" },
+        "occupancyLimiter": { "enum": ["registers", "lds", "waveSlots", "unknown"] }
+      }
+    },
+    "work": {
+      "type": "object",
+      "description": "Per-group cost expressions over the kernel's parameters and tile constants (spec §4).",
+      "properties": {
+        "workAxisParam": { "type": "string", "description": "The parameter that is the roofline coordinate (token count, row count, item count)" },
+        "matrixMacs": { "$ref": "#/$defs/costExpr" },
+        "vectorMacs": { "$ref": "#/$defs/costExpr" },
+        "intOps": { "$ref": "#/$defs/costExpr" },
+        "bytesRead": { "$ref": "#/$defs/costExpr" },
+        "bytesWritten": { "$ref": "#/$defs/costExpr" },
+        "perItemCost": { "$ref": "#/$defs/costExpr", "description": "For ragged launches: cost of one item, e.g. alpha*l_q + beta*l_kv" }
+      }
+    },
+    "tile": {
+      "type": "object",
+      "description": "Spec §5.",
+      "properties": {
+        "shape": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 1, "maxItems": 3 },
+        "granularity": { "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 1, "maxItems": 3, "description": "Per-axis multiple a launch dimension must round to" },
+        "outputsPerLane": { "type": "integer", "minimum": 1 },
+        "rowsPerGroup": { "type": "integer", "minimum": 1 },
+        "pinned": { "type": "boolean", "description": "true when @Tile pinned the shape for this target; false when defaulted" },
+        "splitAxis": { "type": "string", "description": "Name of the reduction axis the kernel exposes for split-K / KV-chunk parallelism, if any" }
+      }
+    },
+    "access": {
+      "type": "array",
+      "description": "One entry per buffer-like parameter (spec §6).",
+      "items": {
+        "type": "object",
+        "required": ["param", "mode", "origin"],
+        "properties": {
+          "param": { "type": "string" },
+          "kind": { "enum": ["kernelBuffer", "shared", "image", "residentPool", "indirect"] },
+          "mode": { "enum": ["read", "write", "readwrite", "accumulate", "indirect"] },
+          "origin": { "enum": ["derived", "declared"] },
+          "storedBits": { "type": "integer", "minimum": 1, "maximum": 64, "description": "Stored element width when narrower than the compute width (4 for MXFP4 weights, 8 for Q8 activations)" },
+          "streaming": { "type": "boolean", "description": "Lowered non-temporal (spec §6.3)" },
+          "coalesced": { "type": "boolean" }
+        }
+      }
+    },
+    "ragged": {
+      "type": "object",
+      "properties": {
+        "itemListParam": { "type": "string" },
+        "indirectBoundParam": { "type": "string" }
+      }
+    },
+    "restartable": { "type": "boolean", "description": "Derived: read and write sets disjoint, no accumulate or readwrite buffer (spec §6.5)" },
+    "drainsDevice": { "type": "boolean", "description": "A global reduction the host or a scalar decision consumes; scheduled as a barrier node (spec §6.7)" },
+    "yieldCapable": { "type": "boolean", "description": "Group-boundary yield check inserted (spec §8.1)" },
+    "yieldEveryGroups": { "type": "integer", "minimum": 1, "description": "Spacing of yield checks in groups, chosen for 10–50 µs of work between checks (spec §8.2a)" },
+    "captureSafe": { "type": "boolean", "description": "May enter a replayed graph (spec §8.3)" },
+    "usesSubgroupOps": { "type": "boolean" },
+    "barriers": { "type": "integer", "minimum": 0 },
+    "instrumentation": {
+      "type": "object",
+      "properties": {
+        "groupsPerRecord": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "description": "Spec §10.",
+      "properties": {
+        "family": { "type": "string" },
+        "rank": { "type": "integer", "minimum": 0, "description": "0 = highest quality" },
+        "numericTier": { "type": "string", "description": "Declared tolerance vs the family's exact member, e.g. 'rel<=0.5%, 0 rows >2%'" }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "description": "Author intent echoed (spec §11). Hints, never ground truth.",
+      "properties": {
+        "policy": { "enum": ["throughput", "latency", "frameBudget"] },
+        "characterHint": { "enum": ["computeBound", "memoryBound"] },
+        "power": { "enum": ["normal", "high"] },
+        "protection": { "enum": ["protected", "bestEffort", "unspecified"] },
+        "declaredCost": {
+          "type": "object",
+          "properties": {
+            "flops": { "$ref": "#/$defs/costExpr" },
+            "bytes": { "$ref": "#/$defs/costExpr" }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "costExpr": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["expr", "measured", "declared"] },
+        "expr": { "type": "string", "description": "Arithmetic over parameter names and tile constants, e.g. '2*T*d*k' or 'blocksPerRow*17'" },
+        "params": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

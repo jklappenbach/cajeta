@@ -77,11 +77,11 @@
 ## spec-only (10) — specs/ + INDEX row `draft`
 | file | evidence |
 |---|---|
-| llm-kernel-scheduling-spec.md | research corpus + spec only |
-| robotics-kernel-scheduling-spec.md | research corpus + spec only |
+| llm-kernel-scheduling-spec.md | research corpus + spec only — **archived 2026-09-06**, superseded by `xpu-tile-workload-profiles-spec.md` §3 |
+| robotics-kernel-scheduling-spec.md | research corpus + spec only — **archived 2026-09-06**, folded into `xpu-tile-workload-profiles-spec.md` §6 |
 | xpu-scan-primitive-spec.md | research corpus + spec only |
 | xpu-pipelined-gemm-primitives-spec.md | spec only (AsyncCopy/CoopStage may partially satisfy — recheck at planning) |
-| xpu-kernel-scheduling-spec.md | gap catalog only |
+| xpu-kernel-scheduling-spec.md | gap catalog only — **archived 2026-09-06**, superseded by `xpu-tile-scheduling-spec.md` (its plan, 0/117, is in `agents/archive/`) |
 | xpu-gfx-streaming-geometry-spec.md | research corpus + spec only |
 | xpu-build-ergonomics-spec.md | DRAFT rough-edge catalogue |
 | simd-numeric-kernels-spec.md | DRAFT |

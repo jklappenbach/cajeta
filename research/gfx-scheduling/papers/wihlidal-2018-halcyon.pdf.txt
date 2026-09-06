@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Halcyon Architecture: Rapid Innovation Using Modern Graphics (SEED / EA, Digital Dragons 2018)
+description: A production render-graph engine described end to end: frame graph passes with declared read/write resources, automatic barrier and transient-memory derivation, explicit multi-queue (graphics/compute/copy) submission and render-pass merging, and the job-system layer beneath it.
+url: https://media.contentapi.ea.com/content/dam/ea/seed/presentations/wihlidal-halcyonarchitecture-notes.pdf

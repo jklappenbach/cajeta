@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Legion: Expressing Locality and Independence with Logical Regions (SC 2012)
+description: Introduces logical regions with field-level privileges (read/write/reduce) and coherence, from which the runtime derives the task dependency graph automatically - the canonical read/write-set-to-DAG derivation for scientific codes.
+url: https://legion.stanford.edu/pdfs/sc2012.pdf

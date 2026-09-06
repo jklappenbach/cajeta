@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-09-06** by [`xpu-tile-workload-profiles`](../xpu-tile-workload-profiles-spec.md) §3 (the multimodal ML profile) and [`xpu-tile-scheduling`](../xpu-tile-scheduling-spec.md). Archived unimplemented (no plan was written). Its corpus, `research/llm-serving/papers/`, was re-read in full on 2026-09-06; the extraction is `research/llm-serving/notes-2026-09-06.md`.
+
 # Spec: LLM kernels & their scheduling (`llm-kernel-scheduling`)
 
 ## 1. Definition
@@ -136,7 +138,7 @@ out-of-memory or fragmentation.
   batch occupancy, and **prefix sharing** (shared system prompts share pages).
 - **Eviction/offload** under pressure: recompute or swap cold sequences' KV to
   host memory (ties to the orchestrator's residency manager, mirroring the gfx
-  streaming residency in [`xpu-gfx-streaming-geometry`](xpu-gfx-streaming-geometry-spec.md)).
+  streaming residency in [`xpu-gfx-streaming-geometry`](../xpu-gfx-streaming-geometry-spec.md)).
 - **Block-sparse / composable formats** (FlashInfer) for long-context and
   paged attention kernels.
 
@@ -226,12 +228,12 @@ overlapped.
 
 ## 9. References
 
-Corpus + markers in [`research/llm-serving/papers/`](../research/llm-serving/papers/):
+Corpus + markers in [`research/llm-serving/papers/`](../../research/llm-serving/papers/):
 PagedAttention/vLLM, FlashAttention (1/2), Orca (continuous batching),
 Sarathi-Serve (chunked prefill), DistServe & Splitwise (prefill/decode
 disaggregation), FlashInfer (kernel families), speculative decoding, Megatron
 (tensor parallel), Switch/MoE, and an LLM-serving survey. Sibling specs:
 [`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md),
-[`xpu-gfx-streaming-geometry`](xpu-gfx-streaming-geometry-spec.md); shared
+[`xpu-gfx-streaming-geometry`](../xpu-gfx-streaming-geometry-spec.md); shared
 serving references (Clockwork, Nexus, AlpaServe, iGniter) live in
 `research/xpu-scheduling/papers/`.

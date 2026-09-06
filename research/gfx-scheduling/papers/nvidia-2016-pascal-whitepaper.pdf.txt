@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: NVIDIA Tesla P100 / GP100 Pascal Architecture Whitepaper (WP-08019-001_v01.1)
+description: The primary-source statement that Pascal preempts compute tasks at instruction-level granularity rather than thread-block granularity, and why that bounds how long a low-priority kernel can block a high-priority one.
+url: https://images.nvidia.com/content/pdf/tesla/whitepaper/pascal-architecture-whitepaper.pdf

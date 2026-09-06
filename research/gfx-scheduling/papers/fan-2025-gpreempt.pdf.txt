@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPreempt: GPU Preemptive Scheduling Made General and Efficient (USENIX ATC 2025)
+description: Measures real preemption latency on commodity NVIDIA GPUs and builds a software preemption mechanism with bounded response time, quantifying what priority/deadline scheduling can actually promise on today's hardware.
+url: https://www.usenix.org/conference/atc25/presentation/fan

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Boosting Performance of Iterative Applications on GPUs: Kernel Batching with CUDA Graphs (2025)
+description: Batches N time-step iterations into one captured CUDA graph and measures the launch-overhead saving against graph-creation cost, finding a workload-independent optimal batch size - the direct evidence for graph capture in a simulation loop.
+url: https://arxiv.org/abs/2501.09398

@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: GPU Work Graphs (SIGGRAPH 2025 Course, AMD + Coburg University)
+description: The definitive current treatment of D3D12/Vulkan work graphs: node types and launch modes, GPU-side record allocation, the backing store, mesh nodes, and measured comparisons against ExecuteIndirect and persistent-thread schedulers.
+url: https://coburggraphicslab.github.io/files/Kuth25GWG.pdf

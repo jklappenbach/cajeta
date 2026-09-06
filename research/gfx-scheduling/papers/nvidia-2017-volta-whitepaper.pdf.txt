@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: NVIDIA Tesla V100 GPU Architecture Whitepaper (WP-08608-001_v1.1)
+description: Vendor documentation of Volta independent thread scheduling (per-thread program counters, yield, starvation-free algorithms) and hardware-accelerated MPS with a 3x client limit - the concurrency model a co-run scheduler sits on top of.
+url: https://images.nvidia.com/content/volta-architecture/pdf/volta-architecture-whitepaper.pdf

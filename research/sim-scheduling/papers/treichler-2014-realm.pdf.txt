@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Realm: An Event-Based Low-Level Runtime for Distributed Memory Architectures (PACT 2014)
+description: The deferred-execution event runtime under Legion: generational events, deferred allocation, and asynchronous operation launch so the runtime analysis for step N+1 overlaps with GPU execution of step N.
+url: https://legion.stanford.edu/pdfs/realm2014.pdf

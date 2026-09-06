@@ -5,8 +5,10 @@
 ### 1.1 Purpose
 
 Add **parallel scan (all-prefix-sums)** to the XPU kernel library as the first
-foundational primitive from the [`xpu-kernel-library`](xpu-kernel-scheduling-spec.md)
-backlog. Scan is the **root dependency** of the backlog: scatter-compaction,
+foundational primitive from the `xpu-kernel-library` backlog (its gap catalog is
+§10 of the archived [`xpu-kernel-scheduling`](archive/xpu-kernel-scheduling-spec.md);
+the kernel families each workload needs are now listed without status in
+[`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) §5.2). Scan is the **root dependency** of the backlog: scatter-compaction,
 radix sort, histogram, sparse-format (CSR) construction, GPU-driven culling / LOD
 selection (gfx), and continuous-batching offset computation (LLM) all reduce to a
 scan. Building it unblocks the rest.
@@ -160,4 +162,4 @@ hierarchy + LDS bank conflicts), Sengupta (segmented scan primitives), Merrill &
 Garland (single-pass decoupled look-back). Consumes `cajeta.xpu.Wave` /
 `Workgroup` / `Shared` / `Barrier`; roofline/footprint via `xpu-device-profile` +
 `kernel-occupancy-autotune`. Backlog + priority: local `xpu-kernel-library` plan;
-gap catalog in [`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md).
+gap catalog in the archived [`xpu-kernel-scheduling`](archive/xpu-kernel-scheduling-spec.md) §10.

@@ -1,3 +1,5 @@
+> **SUPERSEDED 2026-09-06**: folded into [`xpu-tile-workload-profiles`](../xpu-tile-workload-profiles-spec.md) §6 (its multi-rate, mixed-criticality model became the periodic streams of [`xpu-tile-scheduling`](../xpu-tile-scheduling-spec.md) §8.6; engine-affinity placement is deferred to `npu-target-support`; the energy governor is deferred). Archived unimplemented (no plan was written). Its corpus, `research/robotics-edge/papers/`, was re-read in full on 2026-09-06; the extraction is `research/robotics-edge/notes-2026-09-06.md`.
+
 # Spec: Robotics kernels & scheduling on limited hardware (`robotics-kernel-scheduling`)
 
 ## 1. Definition
@@ -199,7 +201,7 @@ Hold deadlines within a power/thermal/payload envelope.
 
 ## 8. References
 
-Corpus + markers in [`research/robotics-edge/papers/`](../research/robotics-edge/papers/):
+Corpus + markers in [`research/robotics-edge/papers/`](../../research/robotics-edge/papers/):
 cuRobo (GPU motion planning), MegBA (GPU bundle adjustment), real-time GPU depth
 fusion (TSDF/mapping), a heterogeneous-edge-GPU scheduling survey, DARIS
 (oversubscribed real-time DNN scheduling), holistic heterogeneous scheduling for
@@ -208,5 +210,5 @@ circuits/systems, OpenVLA (on-robot LLM-class policy), and a manipulation-worklo
 platform measurement study. Sibling specs:
 [`xpu-kernel-scheduling`](xpu-kernel-scheduling-spec.md),
 [`llm-kernel-scheduling`](llm-kernel-scheduling-spec.md),
-[`xpu-gfx-streaming-geometry`](xpu-gfx-streaming-geometry-spec.md). The real-time
+[`xpu-gfx-streaming-geometry`](../xpu-gfx-streaming-geometry-spec.md). The real-time
 accelerator scheduling survey in `research/xpu-scheduling/papers/` also applies.

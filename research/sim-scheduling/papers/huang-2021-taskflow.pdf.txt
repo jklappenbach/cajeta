@@ -1,0 +1,4 @@
+# PDF is gitignored (not tracked in git); fetch the original from the url below.
+name: Taskflow: A Lightweight Parallel and Heterogeneous Task Graph Computing System (IEEE TPDS 2021)
+description: A composable task-graph programming model with conditional/cyclic control flow and first-class cudaFlow capture, showing how to express a reusable GPU task graph once and replay it, including graph composition and profiling.
+url: https://arxiv.org/abs/2004.10908

@@ -1,6 +1,7 @@
 # XPU cooperative-tile abstraction: one algorithm, optimally shaped per architecture
 
-**draft** — filed 2026-09-04. Authored with the developer across the MXFP4/
+**active** — filed 2026-09-04, approved 2026-09-05; Phase A (units 0–6) merged
+to main 2026-09-05, reviewed and amended 2026-09-06 (§12). Authored with the developer across the MXFP4/
 coop-kernel work that motivated it (this session): coopQ8 beat llama.cpp on
 gfx1151, but only as one of four hand-written shapes of the same math (scalar /
 fast3 / coop / coopQ8), gated per backend, wave32-only, and silently wrong on
@@ -265,3 +266,35 @@ constraint, not a preference.
   exist as thin interfaces with no scheduler machinery behind them.
 - No regression on the existing AMD suite; the software-tile floor still lowers
   where no native MAC exists.
+
+## 12. Amendments — 2026-09-06 review
+
+Phase A (units 0–6) is merged to main; its 25 device and CPU tests were
+re-verified on a fresh build on 2026-09-06. The review found the following,
+which the `xpu-tile-*` family now owns rather than this spec:
+
+- **12.1** §6 (schedule declarations `@Tile` / `@Wave` / `@Schedule`, legality
+  checking) and §4.5 (schedule-chosen activation form) were never planned in
+  Phase A or B. They are specified by
+  [`xpu-tile-manifest`](xpu-tile-manifest-spec.md) §5 and §11.
+- **12.2** §7's seams shipped thin as intended, but the resource descriptor is
+  author-filled (LDS typed at the launch site, VGPR a zero stub). The manifest
+  spec replaces those fields with compiler-emitted values (§3, §12.2) and
+  retires the author-facing constructor parameters.
+- **12.3** The thunk-form submit was blocked by the kernel-launch-in-lambda
+  crash; [`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md) §2.1 specifies a
+  value-typed submission instead, so the scheduler does not depend on that
+  defect being fixed.
+- **12.4** Witness A's launcher in cajeta-llm still computes threads from a
+  literal 32 and documents itself as wave32-only; the kernel body is portable,
+  the launch is not (manifest spec §13.1).
+- **12.5** `TargetDescriptor.waveWidth()` on the host returns 1 on every
+  backend; `Group.rowId()` is correct only for one-group-per-block launches; a
+  `Tile` in two roles silently keeps the first; the `[mma-tiering]` note names
+  `CooperativeMatrix` for a `Tile` (manifest spec §13.2–13.5).
+- **12.6** No user documentation mentions `Group`, `Tile`, `TargetDescriptor`
+  or `Scheduler`; the XPU specification's §6.3 still describes only the Vulkan
+  subgroup surface. Docs are owed with the manifest spec's plan.
+- **12.7** The Phase A and B plans live on the agents branch
+  `worktree-cajeta-llama-unit-1`, not on agents/main, so the INDEX links dangle
+  on main until that branch merges.
