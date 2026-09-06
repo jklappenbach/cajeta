@@ -171,7 +171,7 @@ bool payloadSlice(const std::string& out, int id, std::string& slice) {
 std::string lintRequest(int id, const fs::path& file, bool emitXref = false,
                         const std::string& shadow = "") {
     std::string r = "{\"kind\":\"lint\",\"id\":" + std::to_string(id)
-                  + ",\"file\":\"" + file.string() + "\"";
+                  + ",\"file\":\"" + file.generic_string() + "\"";
     if (!shadow.empty()) r += ",\"shadow\":\"" + shadow + "\"";
     if (emitXref) r += ",\"emitXref\":true";
     r += "}\n";

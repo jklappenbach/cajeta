@@ -36,6 +36,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "../PortableEnv.h"
 
 #ifdef _WIN32
 #  define CAJETA_INC_DEVNULL "NUL"
@@ -161,9 +162,9 @@ struct Fixture {
             const auto& e = entries[i];
             m << "    { \"path\": \"" << e.relPath << "\", "
               << "\"clean\": " << (e.clean ? "true" : "false") << ", "
-              << "\"bc\": \"" << bcSlot(e.relPath).string() << "\", "
+              << "\"bc\": \"" << bcSlot(e.relPath).generic_string() << "\", "
               << "\"obligations\": \""
-              << obligationsSlot(e.relPath).string() << "\" }"
+              << obligationsSlot(e.relPath).generic_string() << "\" }"
               << (i + 1 < entries.size() ? "," : "") << "\n";
         }
         m << "  ]\n}\n";
@@ -184,7 +185,7 @@ struct Fixture {
 
     // Runs the produced executable; returns its exit code (= run()'s int32).
     int runExe() const {
-        std::string cmd = exePath().string() + " > /dev/null 2>&1";
+        std::string cmd = exePath().string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     }
 

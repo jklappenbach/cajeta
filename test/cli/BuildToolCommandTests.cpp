@@ -19,6 +19,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -62,11 +63,12 @@ struct ToolWorld {
 
     // Run `cajeta <args>` with cwd `dir` and the world's fake HOME/XDG.
     int runIn(const fs::path& dir, const std::string& args) {
-        std::string cmd = "cd " + dir.string()
-            + " && HOME=" + (root / "home").string()
-            + " XDG_CONFIG_HOME=" + (root / "home" / ".config").string()
-            + " XDG_DATA_HOME=" + (root / "home" / ".local").string()
-            + " " + compilerBinary() + " " + args
+        std::string cmd = CAJETA_PORTABLE_CD + dir.string()
+            + " && " + cajeta_env_prefix({
+                  {"HOME", (root / "home").string()},
+                  {"XDG_CONFIG_HOME", (root / "home" / ".config").string()},
+                  {"XDG_DATA_HOME", (root / "home" / ".local").string()}})
+            + compilerBinary() + " " + args
             + " > " + outLog().string() + " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     }
@@ -213,12 +215,12 @@ TEST(BuildToolCommandTests, trustStoreAddShowListRemove) {
     fs::path key = w.root / "key.pem";
     fs::path pub = w.root / "pub.pem";
     if (std::system(("openssl genpkey -algorithm ed25519 -out "
-                     + key.string() + " 2>/dev/null").c_str()) != 0) {
+                     + key.string() + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str()) != 0) {
         GTEST_SKIP() << "openssl unavailable";
     }
     ASSERT_EQ(std::system(("openssl pkey -in " + key.string()
                            + " -pubout -out " + pub.string()
-                           + " 2>/dev/null").c_str()), 0);
+                           + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str()), 0);
 
     EXPECT_EQ(w.run("trust add relkey " + pub.string()), 0) << w.output();
     EXPECT_NE(w.output().find("added 'relkey'"), std::string::npos)

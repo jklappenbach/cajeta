@@ -175,7 +175,7 @@ int siblingsReparsed(const std::string& doneBlock) {
 
 std::string lintReq(int id, const fs::path& file, bool emitXref = false) {
     std::string r = "{\"kind\":\"lint\",\"id\":" + std::to_string(id)
-                  + ",\"file\":\"" + file.string() + "\"";
+                  + ",\"file\":\"" + file.generic_string() + "\"";
     if (emitXref) r += ",\"emitXref\":true";
     return r + "}";
 }

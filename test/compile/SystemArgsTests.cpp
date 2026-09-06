@@ -26,6 +26,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace {
 
@@ -67,7 +68,7 @@ std::string argsCapture(const std::string& cmd) {
 #ifdef _WIN32
     FILE* p = _popen((cmd + " 2>NUL").c_str(), "r");
 #else
-    FILE* p = popen((cmd + " 2>/dev/null").c_str(), "r");
+    FILE* p = popen((cmd + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str(), "r");
 #endif
     if (!p) return out;
     std::array<char, 512> buf;
@@ -172,7 +173,7 @@ TEST(SystemArgsTests, theStringArrayAndSystemArgsAgreeInACompiledBinary) {
     auto bin = base / "build" / "agree";
     std::string cmd = argsCompilerBinary() + " --emit=exe -o " + bin.string()
         + " demo.Agree.main " + (base / "src").string() + " "
-        + (base / "build").string() + " > /dev/null 2>&1";
+        + (base / "build").string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
     bool built = std::system(cmd.c_str()) == 0;
     if (built && !fs::exists(bin)) {
         fs::path withExe = bin; withExe += ".exe";

@@ -107,7 +107,7 @@ std::string manifestText(const fs::path& repo, const std::string& pinned) {
     }
     json << "        \"repositories\": [\n"
          << "            { \"name\": \"fixture\", \"type\": \"filesystem\", "
-         << "\"path\": \"" << repo.string() << "\", \"priority\": 0 }\n"
+         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0 }\n"
          << "        ]\n"
          << "    }\n"
          << "}\n";
@@ -217,7 +217,7 @@ TEST(SessionPackagesSaveTests, noGoverningProjectSuggestsInitNotebook) {
     ASSERT_NE(nullptr, s.get());
 
     CellResult r = s->execute(
-        cell("Packages.installAndSave(\"" + cja.string() + "\", \"*\");\n"));
+        cell("Packages.installAndSave(\"" + cja.generic_string() + "\", \"*\");\n"));
     EXPECT_FALSE(r.ok) << "there is no manifest to write";
     EXPECT_TRUE(contains(r.message, "cajeta init notebook"))
         << "must suggest the fix; got: " << r.message;

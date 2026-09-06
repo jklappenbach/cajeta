@@ -26,6 +26,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -63,7 +64,7 @@ define ptr @touch() {
 
 // `nm` output for the lowered object, or empty when the tools are missing.
 std::string symbolsOf(const fs::path& obj) {
-    const std::string cmd = "nm '" + obj.string() + "' 2>/dev/null";
+    const std::string cmd = "nm '" + obj.string() + "' 2>" CAJETA_PORTABLE_DEVNULL "";
     std::string out;
     FILE* p = ::popen(cmd.c_str(), "r");
     if (p == nullptr) return out;
@@ -117,7 +118,7 @@ TEST(IrLowerSessionSymbols, loweredObjectDefinesTheSessionSymbolsWeakly) {
 
     const std::string cmd =
         "'" + compilerPath().string() + "' lower '" + ll.string() +
-        "' -o '" + obj.string() + "' >/dev/null 2>&1";
+        "' -o '" + obj.string() + "' >" CAJETA_PORTABLE_DEVNULL " 2>&1";
     ASSERT_EQ(std::system(cmd.c_str()), 0) << "cajeta lower failed";
     ASSERT_TRUE(fs::is_regular_file(obj)) << "no object produced";
 

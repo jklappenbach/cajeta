@@ -15,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include "../PortableEnv.h"
 
 using cajeta::buildtool::ActionRegistry;
 using cajeta::buildtool::loadManifestString;
@@ -247,7 +248,7 @@ TEST(ActionCatalogTests, versionErrorsWhenBothBumpAndSet) {
 namespace {
 
     bool haveOpenSslOnPath() {
-        return std::system("which openssl > /dev/null 2>&1") == 0;
+        return std::system("which openssl > " CAJETA_PORTABLE_DEVNULL " 2>&1") == 0;
     }
 
     struct KeyPair {
@@ -260,10 +261,10 @@ namespace {
         k.priv = dir / "priv.pem";
         k.pub  = dir / "pub.pem";
         std::string cmd = "openssl genpkey -algorithm ed25519 -out '" +
-                          k.priv.string() + "' > /dev/null 2>&1";
+                          k.priv.string() + "' > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         (void)std::system(cmd.c_str());
         cmd = "openssl pkey -in '" + k.priv.string() + "' -pubout -out '" +
-              k.pub.string() + "' > /dev/null 2>&1";
+              k.pub.string() + "' > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         (void)std::system(cmd.c_str());
         return k;
     }
@@ -316,7 +317,7 @@ TEST(ActionCatalogTests, signRejectsNonEd25519Key) {
     auto key = d / "rsa.pem";
     (void)std::system(("openssl genpkey -algorithm RSA -out '" +
                        key.string() +
-                       "' -pkeyopt rsa_keygen_bits:2048 > /dev/null 2>&1")
+                       "' -pkeyopt rsa_keygen_bits:2048 > " CAJETA_PORTABLE_DEVNULL " 2>&1")
                           .c_str());
     auto payload = d / "payload.bin";
     writeFile(payload, "x");

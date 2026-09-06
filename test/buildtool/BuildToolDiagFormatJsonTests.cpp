@@ -13,6 +13,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -79,7 +80,7 @@ int runBuildCapturingStderr(const fs::path& proj, const std::string& flags,
     auto bin = compilerBinary();
     if (!fs::exists(bin)) return -1;
     auto errFile = proj / "stderr.txt";
-    std::string cmd = "cd " + proj.string() + " && " + bin +
+    std::string cmd = CAJETA_PORTABLE_CD + proj.string() + " && " + bin +
                       " build " + flags +
                       " > " CAJETA_BT_DEVNULL " 2> " + errFile.string();
     int rc = std::system(cmd.c_str());

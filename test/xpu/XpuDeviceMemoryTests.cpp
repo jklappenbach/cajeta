@@ -28,6 +28,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "../PortableEnv.h"
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -70,7 +71,7 @@ std::string capture(const std::string& cmd) {
 #ifdef _WIN32
     FILE* p = _popen((cmd + " 2>NUL").c_str(), "r");
 #else
-    FILE* p = popen((cmd + " 2>/dev/null").c_str(), "r");
+    FILE* p = popen((cmd + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str(), "r");
 #endif
     if (!p) return out;
     std::array<char, 512> buf;

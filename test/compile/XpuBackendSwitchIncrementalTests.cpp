@@ -104,8 +104,8 @@ struct KernelWorld {
           << "  \"sources\": [\n"
           << "    { \"path\": \"" << kRel << "\", "
           << "\"clean\": " << (clean ? "true" : "false") << ", "
-          << "\"bc\": \"" << bcSlot().string() << "\", "
-          << "\"obligations\": \"" << obligationsSlot().string() << "\" }\n"
+          << "\"bc\": \"" << bcSlot().generic_string() << "\", "
+          << "\"obligations\": \"" << obligationsSlot().generic_string() << "\" }\n"
           << "  ]\n}\n";
         writeFileAt(manifestPath, m.str());
     }

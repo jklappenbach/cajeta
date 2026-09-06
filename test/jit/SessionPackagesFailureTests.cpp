@@ -101,7 +101,7 @@ fs::path stageProject(const fs::path& root, const fs::path& repo,
     if (requireSignatures) json << "    \"require-signatures\": true,\n";
     json << "    \"repositories\": [\n"
          << "      { \"name\": \"fixture\", \"type\": \"filesystem\", "
-         << "\"path\": \"" << repo.string() << "\", \"priority\": 0 }\n"
+         << "\"path\": \"" << repo.generic_string() << "\", \"priority\": 0 }\n"
          << "    ]\n"
          << "  }\n"
          << "}\n";
@@ -236,7 +236,7 @@ TEST(SessionPackagesFailureTests, saveWithNoProjectLeavesTheKernelServing) {
     seedBinding(*s);
 
     CellResult r = s->execute(
-        cell("Packages.installAndSave(\"" + cja.string() + "\", \"*\");\n"));
+        cell("Packages.installAndSave(\"" + cja.generic_string() + "\", \"*\");\n"));
     EXPECT_FALSE(r.ok);
     expectStillServing(*s, "installAndSave with no project");
 

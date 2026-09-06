@@ -34,6 +34,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -71,7 +72,7 @@ std::string capture(const std::string& cmd, bool mergeErr = false) {
 #ifdef _WIN32
                                              : " 2>NUL");
 #else
-                                             : " 2>/dev/null");
+                                             : " 2>" CAJETA_PORTABLE_DEVNULL "");
 #endif
 #ifdef _WIN32
     FILE* p = _popen(full.c_str(), "r");

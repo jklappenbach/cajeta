@@ -19,6 +19,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 using cajeta::CajetaArchive;
@@ -269,12 +270,12 @@ TEST(ArchiveCommandTests, signAndVerifySigRoundTrip) {
     fs::path key = w.root / "key.pem";
     fs::path pub = w.root / "pub.pem";
     if (std::system(("openssl genpkey -algorithm ed25519 -out "
-                     + key.string() + " 2>/dev/null").c_str()) != 0) {
+                     + key.string() + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str()) != 0) {
         GTEST_SKIP() << "openssl unavailable — signing arms untestable here";
     }
     ASSERT_EQ(std::system(("openssl pkey -in " + key.string()
                            + " -pubout -out " + pub.string()
-                           + " 2>/dev/null").c_str()), 0);
+                           + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str()), 0);
 
     fs::path cja = w.writeFixture();
     fs::path sig = w.root / "fix.cja.sig";

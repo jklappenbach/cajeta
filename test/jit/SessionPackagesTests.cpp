@@ -108,7 +108,7 @@ TEST(SessionPackagesTests, installFromACellReturnsTheResolvedVersion) {
     ASSERT_NE(nullptr, s.get());
 
     CellResult r = s->execute(
-        cell("Packages.install(\"" + cja.string() + "\", \"*\");\n"));
+        cell("Packages.install(\"" + cja.generic_string() + "\", \"*\");\n"));
     ASSERT_TRUE(r.ok) << r.errorId << ": " << r.message;
     ASSERT_TRUE(r.hasResult);
     EXPECT_EQ("1.0.0", r.result);
@@ -135,7 +135,7 @@ TEST(SessionPackagesTests, sameCellImportFailsAndTheHintNamesTheNextCell) {
     CellResult r = s->execute(
         "import cajeta.session.Packages;\n"
         "import depx.Answer;\n"
-        "Packages.install(\"" + cja.string() + "\", \"*\");\n"
+        "Packages.install(\"" + cja.generic_string() + "\", \"*\");\n"
         "Answer.v();\n");
     EXPECT_FALSE(r.ok) << "same-cell import must not resolve";
     EXPECT_TRUE(contains(r.message, "next cell"))
@@ -149,7 +149,7 @@ TEST(SessionPackagesTests, sameCellImportFailsAndTheHintNamesTheNextCell) {
     // ...and following the hint actually works, which is what makes the
     // hint worth printing: install in one cell, import in the next.
     CellResult put = s->execute(
-        cell("Packages.install(\"" + cja.string() + "\", \"*\");\n"));
+        cell("Packages.install(\"" + cja.generic_string() + "\", \"*\");\n"));
     ASSERT_TRUE(put.ok) << put.errorId << ": " << put.message;
 
     CellResult use = s->execute("import depx.Answer;\nAnswer.v();\n");
@@ -171,12 +171,12 @@ TEST(SessionPackagesTests, reinstallAtASatisfyingVersionIsANoOp) {
     ASSERT_NE(nullptr, s.get());
 
     CellResult first = s->execute(
-        cell("Packages.install(\"" + cja.string() + "\", \"*\");\n"));
+        cell("Packages.install(\"" + cja.generic_string() + "\", \"*\");\n"));
     ASSERT_TRUE(first.ok) << first.errorId << ": " << first.message;
     EXPECT_EQ("1.0.0", first.result);
 
     CellResult again = s->execute(
-        cell("Packages.install(\"" + cja.string() + "\", \"1.*\");\n"));
+        cell("Packages.install(\"" + cja.generic_string() + "\", \"1.*\");\n"));
     ASSERT_TRUE(again.ok) << again.errorId << ": " << again.message;
     EXPECT_EQ("1.0.0", again.result);
 
@@ -200,11 +200,11 @@ TEST(SessionPackagesTests, installExcludedByTheLoadedVersionNamesBothAndSaysRest
     ASSERT_NE(nullptr, s.get());
 
     CellResult first = s->execute(
-        cell("Packages.install(\"" + cja.string() + "\", \"*\");\n"));
+        cell("Packages.install(\"" + cja.generic_string() + "\", \"*\");\n"));
     ASSERT_TRUE(first.ok) << first.errorId << ": " << first.message;
 
     CellResult clash = s->execute(
-        cell("Packages.install(\"" + cja.string() + "\", \"2.*\");\n"));
+        cell("Packages.install(\"" + cja.generic_string() + "\", \"2.*\");\n"));
     EXPECT_FALSE(clash.ok) << "an excluded version must not install";
     EXPECT_TRUE(contains(clash.message, "1.0.0"))
         << "must name the LOADED version; got: " << clash.message;

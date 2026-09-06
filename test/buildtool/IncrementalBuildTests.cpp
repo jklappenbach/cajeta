@@ -27,6 +27,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 #ifdef _WIN32
 #  define CAJETA_IB_DEVNULL "NUL"
@@ -163,7 +164,7 @@ struct Project {
 
     // `cajeta build` in the project dir; combined stdout+stderr → outLog.
     int build() const {
-        std::string cmd = "cd " + root.string() + " && " + compilerBinary()
+        std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && " + compilerBinary()
             + " build > " + outLog().string() + " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     }
@@ -171,7 +172,7 @@ struct Project {
     std::string buildOutput() const { return readAll(outLog()); }
 
     int runExe() const {
-        std::string cmd = exePath().string() + " > /dev/null 2>&1";
+        std::string cmd = exePath().string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     }
 
@@ -452,7 +453,7 @@ TEST(IncrementalBuild, TourSmokeBuildsIncrementally) {
 
     auto log = root / "out.log";
     auto build = [&]() {
-        std::string cmd = "cd " + root.string() + " && " + compilerBinary()
+        std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && " + compilerBinary()
             + " build > " + log.string() + " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     };

@@ -37,6 +37,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 #ifndef _WIN32
 #  include <sys/wait.h>
@@ -176,7 +177,7 @@ struct Fixture {
             + " --emit=exe --classpath=" + cp
             + " > " + log.string() + " 2>&1";
         if (exitCodeOf(std::system(cmd.c_str())) != 0) return -1;
-        std::string run = (outDir / "a.out").string() + " > /dev/null 2>&1";
+        std::string run = (outDir / "a.out").string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         return exitCodeOf(std::system(run.c_str()));
     }
 

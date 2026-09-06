@@ -18,6 +18,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -78,7 +79,7 @@ struct DapWorld {
         for (const auto& r : requests) in << frame(r);
         in.close();
         std::string cmd = compilerBinary() + " dap < " + scriptIn().string()
-            + " > " + outLog().string() + " 2>/dev/null";
+            + " > " + outLog().string() + " 2>" CAJETA_PORTABLE_DEVNULL "";
         return exitCodeOf(std::system(cmd.c_str()));
     }
 
@@ -143,9 +144,9 @@ TEST(DapStdioSessionTests, scriptedSessionStopsResumesAndPumpsProgramOutput) {
 
     std::string launchArgs =
         "{\"entry-method\":\"test.D.run\",\"sourceRoot\":\""
-        + w.root.string() + "\",\"stopOnEntry\":false}";
+        + w.root.generic_string() + "\",\"stopOnEntry\":false}";
     std::string bpArgs =
-        "{\"source\":{\"path\":\"" + w.program().string()
+        "{\"source\":{\"path\":\"" + w.program().generic_string()
         + "\"},\"breakpoints\":[{\"line\":5}]}";
 
     EXPECT_EQ(w.drive({
@@ -207,7 +208,7 @@ TEST(DapStdioSessionTests, malformedFrameDoesNotWedgeTheServer) {
     in.close();
 
     std::string cmd = compilerBinary() + " dap < " + w.scriptIn().string()
-        + " > " + w.outLog().string() + " 2>/dev/null";
+        + " > " + w.outLog().string() + " 2>" CAJETA_PORTABLE_DEVNULL "";
     EXPECT_EQ(exitCodeOf(std::system(cmd.c_str())), 0) << w.output();
     EXPECT_NE(w.output().find("\"command\":\"initialize\""),
               std::string::npos) << w.output();

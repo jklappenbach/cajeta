@@ -16,6 +16,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -70,9 +71,10 @@ struct TaskWorld {
     }
 
     int run(const std::string& args) const {
-        std::string cmd = "cd " + root.string()
-            + " && HOME=" + (root / "home").string()
-            + " CAJETA_NO_SANDBOX=1 "
+        std::string cmd = CAJETA_PORTABLE_CD + root.string()
+            + " && " + cajeta_env_prefix({
+                  {"HOME", (root / "home").string()},
+                  {"CAJETA_NO_SANDBOX", "1"}})
             + compilerBinary() + " " + args
             + " > " + outLog().string() + " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));

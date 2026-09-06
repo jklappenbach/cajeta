@@ -24,6 +24,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 #ifndef _WIN32
 #  include <sys/wait.h>
@@ -90,7 +91,8 @@ RunResult runScript(const fs::path& cwd, const std::string& args) {
     fs::path home = cwd / "home";
     fs::create_directories(home);
     std::ostringstream cmd;
-    cmd << "cd " << cwd << " && HOME=" << home << " " << compilerBinary()
+    cmd << CAJETA_PORTABLE_CD << cwd.string() << " && "
+        << cajeta_env_prefix({{"HOME", home.string()}}) << compilerBinary()
         << " run " << args << " > " << outLog << " 2> " << errLog;
     int status = std::system(cmd.str().c_str());
     return {exitCodeOf(status), readAll(outLog), readAll(errLog)};
@@ -165,7 +167,8 @@ TEST(RunCommandTests, projectClasspathResolves) {
         fs::path home = lib / "home";
         fs::create_directories(home);
         std::ostringstream cmd;
-        cmd << "cd " << lib << " && HOME=" << home << " " << compilerBinary()
+        cmd << CAJETA_PORTABLE_CD << lib.string() << " && "
+            << cajeta_env_prefix({{"HOME", home.string()}}) << compilerBinary()
             << " build > build.log 2>&1";
         ASSERT_EQ(0, exitCodeOf(std::system(cmd.str().c_str())))
             << readAll(lib / "build.log");

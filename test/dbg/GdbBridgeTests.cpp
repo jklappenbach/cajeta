@@ -24,6 +24,7 @@
 #include <iterator>
 #include <random>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace {
 
@@ -43,7 +44,7 @@ namespace {
     std::string bridgePath()   { return sourceRoot() + "/tools/gdb/cajeta_gdb.py"; }
 
     bool haveGdb() {
-        return std::system("gdb --version > /dev/null 2>&1") == 0;
+        return std::system("gdb --version > " CAJETA_PORTABLE_DEVNULL " 2>&1") == 0;
     }
 
     std::string run(const std::string& cmd) {
@@ -95,7 +96,7 @@ namespace {
     bool build(const Fixture& f, const std::string& level) {
         std::string cmd = compilerPath() + " --debug-info=" + level
             + " --emit=exe demo.Hello.run " + f.src.string() + " "
-            + f.build.string() + " > /dev/null 2>&1";
+            + f.build.string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         return std::system(cmd.c_str()) == 0
             && fs::exists(f.build / "a.out");
     }

@@ -42,6 +42,7 @@
 #include <map>
 #include <sstream>
 #include <vector>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -144,7 +145,7 @@ struct LayoutProject {
 
     int build(std::string& output) const {
         fs::path log = root / "out.log";
-        std::string cmd = "cd " + root.string() + " && \""
+        std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && \""
             + layoutCompilerBinary() + "\" build > " + log.string() + " 2>&1";
         int rc = layoutExit(std::system(cmd.c_str()));
         std::ifstream in(log);
@@ -155,7 +156,7 @@ struct LayoutProject {
 
     int clean(std::string& output) const {
         fs::path log = root / "clean.log";
-        std::string cmd = "cd " + root.string() + " && \""
+        std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && \""
             + layoutCompilerBinary() + "\" clean > " + log.string() + " 2>&1";
         int rc = layoutExit(std::system(cmd.c_str()));
         std::ifstream in(log);
@@ -172,7 +173,7 @@ struct LayoutProject {
                      std::string& errOut) const {
         fs::path o = root / "ap.out";
         fs::path e = root / "ap.err";
-        std::string cmd = "cd " + root.string() + " && \""
+        std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && \""
             + layoutCompilerBinary() + "\" artifact-path " + args
             + " > " + o.string() + " 2> " + e.string();
         int rc = layoutExit(std::system(cmd.c_str()));
@@ -274,7 +275,7 @@ TEST(BuildOutputLayoutTests, dependencyObjectsLandUnderTheirOwnDepsSubtree) {
     {
         std::string cmd = "\"" + layoutCompilerBinary() + "\" --emit=cja -o \""
             + cja.string() + "\" '*' \"" + (libRoot / "src").string()
-            + "\" \"" + (libRoot / "out").string() + "\" > /dev/null 2>&1";
+            + "\" \"" + (libRoot / "out").string() + "\" > " CAJETA_PORTABLE_DEVNULL " 2>&1";
         ASSERT_EQ(0, layoutExit(std::system(cmd.c_str())))
             << "could not build the dependency archive";
     }

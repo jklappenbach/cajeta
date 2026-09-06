@@ -28,7 +28,7 @@ namespace fs = std::filesystem;
 namespace {
 
 int sh(const std::string& cmd) {
-    int rc = std::system((cmd + " > /dev/null 2>&1").c_str());
+    int rc = std::system((cmd + " > " CAJETA_PORTABLE_DEVNULL " 2>&1").c_str());
 #ifdef _WIN32
     return rc;
 #else

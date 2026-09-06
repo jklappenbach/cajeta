@@ -12,6 +12,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -62,9 +63,9 @@ struct NativeWorld {
     }
 
     int run(const std::string& args) {
-        std::string cmd = "cd " + (root / "proj").string()
-            + " && HOME=" + (root / "home").string()
-            + " " + compilerBinary() + " " + args
+        std::string cmd = CAJETA_PORTABLE_CD + (root / "proj").string()
+            + " && " + cajeta_env_prefix({{"HOME", (root / "home").string()}})
+            + compilerBinary() + " " + args
             + " > " + outLog().string() + " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     }

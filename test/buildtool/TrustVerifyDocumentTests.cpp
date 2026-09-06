@@ -22,6 +22,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 using namespace cajeta::buildtool::testing;
 namespace fs = std::filesystem;
@@ -45,8 +46,8 @@ std::string compilerBinary() {
 struct Run { int code; std::string out; };
 
 Run runCli(const fs::path& trustDir, const std::string& args) {
-    std::string cmd = "CAJETA_TRUST_KEYS_DIR=" + trustDir.string() + " " +
-                      compilerBinary() + " trust " + args + " 2>&1";
+    std::string cmd = cajeta_env_prefix({{"CAJETA_TRUST_KEYS_DIR", trustDir.string()}})
+                      + compilerBinary() + " trust " + args + " 2>&1";
     Run r{-1, {}};
     FILE* p = popen(cmd.c_str(), "r");
     if (!p) return r;

@@ -27,6 +27,7 @@
 #include <sstream>
 #include <string>
 #include <unistd.h>
+#include "../PortableEnv.h"
 
 using cajeta::buildtool::GitRepository;
 using cajeta::buildtool::loadManifestString;
@@ -44,7 +45,7 @@ namespace {
     }
 
     bool gitOnPath() {
-        return std::system("git --version >/dev/null 2>&1") == 0;
+        return std::system("git --version >" CAJETA_PORTABLE_DEVNULL " 2>&1") == 0;
     }
 
     std::filesystem::path makeTempDir(const std::string& tag) {
@@ -74,8 +75,8 @@ namespace {
         // git init + identity config (CI runners often have neither).
         // All git output silenced so test logs stay clean.
         auto run = [&](const std::string& cmd) {
-            std::string full = "cd " + dir.string() + " && " +
-                               cmd + " >/dev/null 2>&1";
+            std::string full = CAJETA_PORTABLE_CD + dir.string() + " && " +
+                               cmd + " >" CAJETA_PORTABLE_DEVNULL " 2>&1";
             EXPECT_EQ(0, std::system(full.c_str())) << full;
         };
         run("git init -q -b main");

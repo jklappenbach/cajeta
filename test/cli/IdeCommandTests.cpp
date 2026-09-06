@@ -16,6 +16,7 @@
 #include <random>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -72,10 +73,11 @@ struct IdeWorld {
     }
 
     int run(const std::string& ideArgs) const {
-        std::string cmd = "HOME=" + (root / "home").string()
-            + " XDG_CONFIG_HOME=" + configBase().string()
-            + " XDG_DATA_HOME=" + dataBase().string()
-            + " " + compilerBinary() + " ide " + ideArgs
+        std::string cmd = cajeta_env_prefix({
+                  {"HOME", (root / "home").string()},
+                  {"XDG_CONFIG_HOME", configBase().string()},
+                  {"XDG_DATA_HOME", dataBase().string()}})
+            + compilerBinary() + " ide " + ideArgs
             + " > " + outLog().string() + " 2>&1";
         return exitCodeOf(std::system(cmd.c_str()));
     }

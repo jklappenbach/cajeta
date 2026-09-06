@@ -36,6 +36,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace {
 
@@ -80,7 +81,7 @@ std::string captureBytes(const std::string& cmd) {
 #ifdef _WIN32
     FILE* p = _popen((cmd + " 2>NUL").c_str(), "rb");
 #else
-    FILE* p = popen((cmd + " 2>/dev/null").c_str(), "r");
+    FILE* p = popen((cmd + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str(), "r");
 #endif
     if (!p) return out;
     std::array<char, 1024> buf;
@@ -117,7 +118,7 @@ Built buildProgram(const std::string& body) {
     b.bin = b.base / "build" / "p";
     std::string cmd = compilerBinary() + " --emit=exe -o " + b.bin.string()
         + " demo.P.main " + (b.base / "src").string() + " "
-        + (b.base / "build").string() + " > /dev/null 2>&1";
+        + (b.base / "build").string() + " > " CAJETA_PORTABLE_DEVNULL " 2>&1";
     bool built = std::system(cmd.c_str()) == 0;
     if (built && !fs::exists(b.bin)) {
         fs::path withExe = b.bin; withExe += ".exe";

@@ -27,6 +27,7 @@
 #include "../jit/JitTestHelper.h"
 
 #include <cstdint>
+#include "../PortableEnv.h"
 
 using cajeta_test::CajetaJit;
 
@@ -224,7 +225,7 @@ std::string buildAndRun(const std::string& mode, int& exitCode) {
     std::string cmd = "\"" + releaseCompilerBinary() + "\" --emit=exe " + mode
         + " -o \"" + prog.string() + "\" pkg.Main.main \""
         + (root / "src").string() + "\" \"" + (root / "out").string()
-        + "\" > /dev/null 2>&1 && \"" + prog.string() + "\" > \""
+        + "\" > " CAJETA_PORTABLE_DEVNULL " 2>&1 && \"" + prog.string() + "\" > \""
         + log.string() + "\" 2>&1";
     exitCode = std::system(cmd.c_str());
     std::ifstream in(log);

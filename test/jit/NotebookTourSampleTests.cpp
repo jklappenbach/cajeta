@@ -166,9 +166,13 @@ TEST(NotebookTourSampleTests, everyCellOfTheTourBehavesAsTheProseSays) {
 
     // Stage the fixture repository, keys and signatures exactly as a reader
     // would. This is also what proves setup.sh still works.
-    std::string setup = "cd " + work.string()
-        + " && CAJETA_BINARY=" + compilerBinary()
-        + " ./setup.sh > setup.log 2>&1";
+    // setup.sh is a bash script: launch it through bash on every platform
+    // (cmd.exe cannot execute a .sh; msys bash wants the binary path with
+    // forward slashes).
+    std::string setup = CAJETA_PORTABLE_CD + work.string()
+        + " && " + cajeta_env_prefix({
+              {"CAJETA_BINARY", fs::path(compilerBinary()).generic_string()}})
+        + "bash ./setup.sh > setup.log 2>&1";
     int rc = std::system(setup.c_str());
 #ifndef _WIN32
     rc = WEXITSTATUS(rc);
