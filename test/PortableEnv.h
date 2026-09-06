@@ -99,3 +99,20 @@ static inline std::string cajeta_env_prefix(
     }
     return out;
 }
+
+// std::system()/popen() on Windows run the command through `cmd.exe /c
+// "<command>"`. cmd strips the OUTER quote pair, so a command that begins
+// with a quoted program AND contains another quoted argument (a redirect
+// target, an -o path) has its program-quote paired with that inner quote and
+// mangled -> "The filename, directory name, or volume label syntax is
+// incorrect", the command never runs. Wrapping the whole command in one more
+// quote pair makes cmd strip the ADDED pair and leave the real command
+// intact. Verified against a compiled mingw system() probe 2026-09-06: native
+// path + .exe still fails without this; with it, exit 0. No-op on POSIX.
+static inline std::string cajeta_shell(const std::string& cmd) {
+#if defined(_WIN32)
+    return "\"" + cmd + "\"";
+#else
+    return cmd;
+#endif
+}

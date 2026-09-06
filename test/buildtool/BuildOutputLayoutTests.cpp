@@ -147,7 +147,7 @@ struct LayoutProject {
         fs::path log = root / "out.log";
         std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && \""
             + layoutCompilerBinary() + "\" build > " + log.string() + " 2>&1";
-        int rc = layoutExit(std::system(cmd.c_str()));
+        int rc = layoutExit(std::system(cajeta_shell(cmd).c_str()));
         std::ifstream in(log);
         output.assign(std::istreambuf_iterator<char>(in),
                       std::istreambuf_iterator<char>());
@@ -158,7 +158,7 @@ struct LayoutProject {
         fs::path log = root / "clean.log";
         std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && \""
             + layoutCompilerBinary() + "\" clean > " + log.string() + " 2>&1";
-        int rc = layoutExit(std::system(cmd.c_str()));
+        int rc = layoutExit(std::system(cajeta_shell(cmd).c_str()));
         std::ifstream in(log);
         output.assign(std::istreambuf_iterator<char>(in),
                       std::istreambuf_iterator<char>());
@@ -176,7 +176,7 @@ struct LayoutProject {
         std::string cmd = CAJETA_PORTABLE_CD + root.string() + " && \""
             + layoutCompilerBinary() + "\" artifact-path " + args
             + " > " + o.string() + " 2> " + e.string();
-        int rc = layoutExit(std::system(cmd.c_str()));
+        int rc = layoutExit(std::system(cajeta_shell(cmd).c_str()));
         std::ifstream oi(o), ei(e);
         out.assign(std::istreambuf_iterator<char>(oi),
                    std::istreambuf_iterator<char>());
@@ -276,7 +276,7 @@ TEST(BuildOutputLayoutTests, dependencyObjectsLandUnderTheirOwnDepsSubtree) {
         std::string cmd = "\"" + layoutCompilerBinary() + "\" --emit=cja -o \""
             + cja.string() + "\" '*' \"" + (libRoot / "src").string()
             + "\" \"" + (libRoot / "out").string() + "\" > " CAJETA_PORTABLE_DEVNULL " 2>&1";
-        ASSERT_EQ(0, layoutExit(std::system(cmd.c_str())))
+        ASSERT_EQ(0, layoutExit(std::system(cajeta_shell(cmd).c_str())))
             << "could not build the dependency archive";
     }
     ASSERT_TRUE(fs::exists(cja));
@@ -298,7 +298,7 @@ TEST(BuildOutputLayoutTests, dependencyObjectsLandUnderTheirOwnDepsSubtree) {
         + (out / "prog").string() + "\" app.Main.run \""
         + (p->root / "src" / "main" / "cajeta").string() + "\" \""
         + out.string() + "\" > " + log + " 2>&1";
-    ASSERT_EQ(0, layoutExit(std::system(cmd.c_str())))
+    ASSERT_EQ(0, layoutExit(std::system(cajeta_shell(cmd).c_str())))
         << "classpath build failed";
 
     bool depUnderDeps = fs::exists(out / "deps" / "com.example.dlib"

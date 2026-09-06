@@ -92,7 +92,7 @@ struct ArchiveWorld {
     int run(const std::string& archiveArgs) {
         std::string cmd = compilerBinary() + " archive " + archiveArgs
             + " > " + outLog().string() + " 2>&1";
-        return exitCodeOf(std::system(cmd.c_str()));
+        return exitCodeOf(std::system(cajeta_shell(cmd).c_str()));
     }
     std::string output() const {
         std::ifstream in(outLog(), std::ios::binary);

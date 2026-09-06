@@ -57,15 +57,30 @@ public:
             had = true;
             saved = prev;
         }
+#if defined(_WIN32)
+        if (const char* t = std::getenv("TMP"))  { hadTmp = true;  savedTmp = t; }
+        if (const char* e = std::getenv("TEMP")) { hadTemp = true; savedTemp = e; }
+#endif
         dir = std::filesystem::temp_directory_path() / "cajeta_tmpdir_cleanup_test";
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
         std::filesystem::create_directories(dir);
         ::setenv("TMPDIR", dir.string().c_str(), /*overwrite=*/1);
+#if defined(_WIN32)
+        // std::filesystem::temp_directory_path() reads TMP/TEMP on Windows,
+        // never TMPDIR, so the private-dir redirect needs those too (release
+        // full sweep 2026-09-06).
+        ::setenv("TMP", dir.string().c_str(), 1);
+        ::setenv("TEMP", dir.string().c_str(), 1);
+#endif
     }
     ~PrivateTmpDir() {
         if (had) ::setenv("TMPDIR", saved.c_str(), 1);
         else     ::unsetenv("TMPDIR");
+#if defined(_WIN32)
+        if (hadTmp)  ::setenv("TMP",  savedTmp.c_str(), 1);  else ::unsetenv("TMP");
+        if (hadTemp) ::setenv("TEMP", savedTemp.c_str(), 1); else ::unsetenv("TEMP");
+#endif
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
@@ -73,8 +88,8 @@ public:
 
 private:
     std::filesystem::path dir;
-    std::string saved;
-    bool had = false;
+    std::string saved, savedTmp, savedTemp;
+    bool had = false, hadTmp = false, hadTemp = false;
 };
 
 } // namespace

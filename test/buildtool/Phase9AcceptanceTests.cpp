@@ -121,7 +121,7 @@ TEST(Phase9AcceptanceTests, packageContainerThenUploadPutHittsRegistry) {
 #endif
                       + "-cf " + tarBundle.string() +
                       " -C " + d.string() + " image";
-    EXPECT_EQ(std::system(cmd.c_str()), 0);
+    EXPECT_EQ(std::system(cajeta_shell(cmd).c_str()), 0);
 
     // Mock registry — accepts the PUT.
     TestHttpServer srv;

@@ -75,9 +75,9 @@ std::string capture(const std::string& cmd, bool mergeErr = false) {
                                              : " 2>" CAJETA_PORTABLE_DEVNULL "");
 #endif
 #ifdef _WIN32
-    FILE* p = _popen(full.c_str(), "r");
+    FILE* p = _popen(cajeta_shell(full).c_str(), "r");
 #else
-    FILE* p = popen(full.c_str(), "r");
+    FILE* p = popen(cajeta_shell(full).c_str(), "r");
 #endif
     if (!p) return out;
     std::array<char, 512> buf;

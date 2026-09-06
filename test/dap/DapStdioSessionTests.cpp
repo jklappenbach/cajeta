@@ -80,7 +80,7 @@ struct DapWorld {
         in.close();
         std::string cmd = compilerBinary() + " dap < " + scriptIn().string()
             + " > " + outLog().string() + " 2>" CAJETA_PORTABLE_DEVNULL "";
-        return exitCodeOf(std::system(cmd.c_str()));
+        return exitCodeOf(std::system(cajeta_shell(cmd).c_str()));
     }
 
     std::string output() const {
@@ -209,7 +209,7 @@ TEST(DapStdioSessionTests, malformedFrameDoesNotWedgeTheServer) {
 
     std::string cmd = compilerBinary() + " dap < " + w.scriptIn().string()
         + " > " + w.outLog().string() + " 2>" CAJETA_PORTABLE_DEVNULL "";
-    EXPECT_EQ(exitCodeOf(std::system(cmd.c_str())), 0) << w.output();
+    EXPECT_EQ(exitCodeOf(std::system(cajeta_shell(cmd).c_str())), 0) << w.output();
     EXPECT_NE(w.output().find("\"command\":\"initialize\""),
               std::string::npos) << w.output();
 }

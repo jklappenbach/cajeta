@@ -28,6 +28,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -49,7 +50,13 @@ namespace {
 #endif
     }
 
-    std::string compilerBinary() { return sourceRoot() + "/build/src/cajeta"; }
+    std::string compilerBinary() {
+        std::string b = sourceRoot() + "/build/src/cajeta";
+#ifdef _WIN32
+        b += ".exe";   // is_regular_file() guard needs the real name
+#endif
+        return b;
+    }
 
     fs::path freshTempDir(const std::string& tag) {
         static std::mt19937_64 rng(std::random_device{}());
@@ -69,7 +76,7 @@ namespace {
         auto errFile = dir / "stderr.txt";
         std::string cmd = bin + " " + args
                         + " > " + outFile.string() + " 2> " + errFile.string();
-        int rc = std::system(cmd.c_str());
+        int rc = std::system(cajeta_shell(cmd).c_str());
         std::ifstream fo(outFile), fe(errFile);
         out.assign((std::istreambuf_iterator<char>(fo)),
                     std::istreambuf_iterator<char>());

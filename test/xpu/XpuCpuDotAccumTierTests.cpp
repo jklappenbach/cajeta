@@ -67,9 +67,9 @@ std::string compilerPath() {
 std::string capture(const std::string& cmd) {
     std::string out;
 #ifdef _WIN32
-    FILE* p = _popen((cmd + " 2>NUL").c_str(), "r");
+    FILE* p = _popen(cajeta_shell(cmd + " 2>NUL").c_str(), "r");
 #else
-    FILE* p = popen((cmd + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str(), "r");
+    FILE* p = popen(cajeta_shell(cmd + " 2>" CAJETA_PORTABLE_DEVNULL "").c_str(), "r");
 #endif
     if (!p) return out;
     std::array<char, 512> buf;

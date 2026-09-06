@@ -4,6 +4,10 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#if defined(_WIN32)
+#include <io.h>
+#include <fcntl.h>
+#endif
 #include <llvm/Support/InitLLVM.h>
 #include <llvm/Config/llvm-config.h>
 #include <llvm/TargetParser/Host.h>
@@ -276,6 +280,15 @@ static void emitException(cajeta::Exception& e, bool jsonDiag) {
 }
 
 int main(int argc, const char* argv[]) {
+#if defined(_WIN32)
+    // NDJSON stream modes (lint server, --diag-format=json, jit-run)
+    // must be byte-exact \n; the Windows CRT text-mode default rewrites
+    // \n to \r\n, which breaks byte-identical stream comparisons and the
+    // per-line JSON check (LintReuse, DiagFormatJson, LintServer, release
+    // full sweep 2026-09-06). A compiler/tool CLI wants raw bytes.
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+#endif
     // Resolve --diag-format BEFORE any verb dispatches (compiler-jsonl 5.1.2).
     // `jit-run` and `dap` return from this function long before the flag-parse
     // loop below ever runs, which is precisely why the same flag used to mean

@@ -22,6 +22,7 @@
 #include <fstream>
 #include <random>
 #include <string>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -87,7 +88,7 @@ struct ArityWorld {
         fs::path log = root / "run.log";
         std::string cmd = "\"" + arityCompilerBinary() + "\" " + tail
                         + " > \"" + log.string() + "\" 2>&1";
-        int rc = arityExitCodeOf(std::system(cmd.c_str()));
+        int rc = arityExitCodeOf(std::system(cajeta_shell(cmd).c_str()));
         std::ifstream in(log);
         output.assign(std::istreambuf_iterator<char>(in),
                       std::istreambuf_iterator<char>());

@@ -23,6 +23,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include "../PortableEnv.h"
 
 namespace fs = std::filesystem;
 
@@ -51,7 +52,7 @@ std::string keyFor(const std::string& xpuFlags) {
     std::string cmd = "\"" + discriminatorCompilerBinary() + "\" " + xpuFlags
                     + " --print-cache-discriminator > \"" + log.string()
                     + "\" 2>&1";
-    int rc = std::system(cmd.c_str());
+    int rc = std::system(cajeta_shell(cmd).c_str());
     std::ifstream in(log);
     std::string first;
     std::getline(in, first);

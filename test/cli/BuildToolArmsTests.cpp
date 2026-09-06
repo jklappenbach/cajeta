@@ -80,7 +80,7 @@ struct ArmWorld {
                   {"CAJETA_TOOLCHAIN_HOME", toolchainHome().string()}})
             + compilerBinary() + " " + args
             + " > " + outLog().string() + " 2>&1";
-        return exitCodeOf(std::system(cmd.c_str()));
+        return exitCodeOf(std::system(cajeta_shell(cmd).c_str()));
     }
     int run(const std::string& args) { return runIn(workDir(), args); }
 
