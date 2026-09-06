@@ -1,6 +1,6 @@
 # Spec: Tile kernel manifest — what a kernel declares and what the compiler records (`xpu-tile-manifest`)
 
-**draft** — filed 2026-09-06. The compile-time half of the Tile scheduling
+**active** — filed 2026-09-06, approved 2026-09-06 (every open question resolved with the developer; plan in `agents/`). The compile-time half of the Tile scheduling
 family. Companion documents: [`xpu-tile-scheduling`](xpu-tile-scheduling-spec.md)
 (the runtime scheduler that consumes the manifest) and
 [`xpu-tile-workload-profiles`](xpu-tile-workload-profiles-spec.md) (the four

@@ -1,6 +1,6 @@
 # Spec: Tile scheduling — the single-process kernel scheduler over the submit seam (`xpu-tile-scheduling`)
 
-**draft** — filed 2026-09-06. Supersedes
+**active** — filed 2026-09-06, approved 2026-09-06 (every open question resolved with the developer; plan in `agents/`). Supersedes
 [`xpu-kernel-scheduling`](archive/xpu-kernel-scheduling-spec.md) (approved
 2026-08-20, never started), and absorbs the scheduling halves of
 [`llm-kernel-scheduling`](archive/llm-kernel-scheduling-spec.md) and
@@ -707,7 +707,12 @@ multiply-add at 3-bit versus 1.76 at 8-bit).
 
 Every number below is pinned as a design target with its source; each is
 re-measured on both reference devices by the calibration set (§12) before it is
-relied on.
+relied on. **Our own measurements live in
+[`xpu-tile-scheduling-report`](xpu-tile-scheduling-report.md)** (developer,
+2026-09-06: numbers driven) — a baseline profiled before any scheduler code,
+one trial row per configuration tried, and a "not worse beyond noise" gate on
+every optimization unit of the three plans. A literature number in this
+table is never a substitute for a row in that report.
 
 | Budget | Target | Source (silicon) |
 |---|---|---|
@@ -862,6 +867,9 @@ relied on.
 
 - [`xpu-tile-scheduling-findings`](xpu-tile-scheduling-findings.md) — the
   synthesis of five corpus readings with every number's source.
+- [`xpu-tile-scheduling-report`](xpu-tile-scheduling-report.md) — the numbers
+  ledger: method, measured device facts, baseline, trials, residuals, closing
+  summary.
 - Corpora with per-paper markers: `research/xpu-scheduling/papers/` (19),
   `research/llm-serving/papers/` (12), `research/robotics-edge/papers/` (10),
   `research/gfx-scheduling/` (11 PDFs + `SOURCES.md`),

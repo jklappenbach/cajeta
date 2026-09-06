@@ -1,6 +1,6 @@
 # Spec: Tile workload profiles — game rendering, multimodal ML, ML training at scale, engineering simulation (`xpu-tile-workload-profiles`)
 
-**draft** — filed 2026-09-06. The client half of the Tile scheduling family:
+**active** — filed 2026-09-06, approved 2026-09-06 (every open question resolved with the developer; plan in `agents/`). The client half of the Tile scheduling family:
 what each of the four workload classes the scheduler must serve looks like as
 a stream of submissions, which policies it uses, what it needs from the
 manifest ([`xpu-tile-manifest`](xpu-tile-manifest-spec.md)) and the scheduler
