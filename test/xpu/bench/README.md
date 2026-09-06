@@ -112,8 +112,12 @@ row superseding an earlier one with the same key); `trial` pairs two rows
 files by (workload, shape, KPI, backend) and prints §4 rows with delta, the
 before row's noise band, and a verdict — `keep`, `worse`, or `single` when
 the before row has no band (n = 1: reported, not gated; exit 1 on any
-`worse`); `spans` appends device-span rows derived from one profiled pass
-(`run.sh` calls it after every pass).
+`worse`). With `--bands=<rerun rows>` (the day-apart rerun of the before
+code) a KPI's band is the union of the two runs' bands and its n their sum,
+so a pair of single-sample rows is banded by the two runs' spread and a
+drifting five-block KPI widens to that drift; a KPI absent from the rerun
+keeps its own band. `spans` appends device-span rows derived from one
+profiled pass (`run.sh` calls it after every pass).
 
 A leg can be split across invocations to fit a tool's timeout:
 `run.sh cpu --workloads=kernels`, then `KEEP_ROWS=1 DATE=<the first

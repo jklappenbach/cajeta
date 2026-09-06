@@ -1,0 +1,20 @@
+package xpubenchreport;
+
+/** What a trial found: the counts behind its exit code and summary line. */
+public final class TrialResult {
+    /** KPIs outside their band in the bad direction — the gate. */
+    public int32 worse;
+    /** KPIs whose before row had no band and no day-apart partner: reported, not gated. */
+    public int32 single;
+    /** KPIs whose band came from the union of two runs (`--bands=`). */
+    public int32 widened;
+    /** KPIs paired at all (a row in both files). */
+    public int32 paired;
+
+    public TrialResult() {
+        this.worse = 0;
+        this.single = 0;
+        this.widened = 0;
+        this.paired = 0;
+    }
+}

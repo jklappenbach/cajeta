@@ -333,12 +333,53 @@ public final class Report {
         String unit #= Report.opt(args, "--unit=", "");
         String commit #= Report.opt(args, "--commit=", "");
         String date #= Report.opt(args, "--date=", "");
+        String bandsPath #= Report.opt(args, "--bands=", "");
         ArrayList<Row> b #= Report.loadFile(before);
         ArrayList<Row> af #= Report.loadFile(after);
+        ArrayList<Row> bands = heap ArrayList<Row>();
+        if (bandsPath.byteLength() > 0) {
+            ArrayList<Row> p #= Report.loadFile(bandsPath);
+            bands.appendAll(p);
+        }
+        TrialResult res #= Report.trialRows(b, af, bands, id, unit, commit, date);
+        return res.worse == 0 ? 0 : 1;
+    }
+
+    /** Index of the last measured row in `rows` with `key`, or -1. (An index,
+     *  not the row: a two-parameter function cannot return a borrow.) */
+    static int32 lastMeasured(ArrayList<Row> rows, String key) {
+        int32 found = 0 - 1;
+        int32 j = 0;
+        while (j < rows.count()) {
+            Row o = rows.get(j);
+            int32 here = j;
+            j = j + 1;
+            if (o.unit.equals("pending")) {
+                continue;
+            }
+            String ko #= o.key();
+            if (ko.equals(key)) {
+                found = here;
+            }
+        }
+        return found;
+    }
+
+    /**
+     * The trial proper (scheduling 0.3.3): every measured before row is
+     * paired with the last measured after row of the same key. With
+     * `bands` — the day-apart rerun of the before code — a KPI's band is the
+     * UNION of the two runs' bands and its n their sum, so a pair of
+     * single-sample rows (a frame p99, a seam kernel_time) is banded by the
+     * two runs' spread and a five-block KPI whose runs drift further than
+     * one run's blocks widens to that drift; without a partner the row's own
+     * band stands, and a single-sample row stays `single`.
+     */
+    public static #TrialResult trialRows(ArrayList<Row> b, ArrayList<Row> af, ArrayList<Row> bands,
+                                         String id, String unit, String commit, String date) {
+        TrialResult res = heap TrialResult();
         System.stdout.println("| Trial | Date | Plan / unit | Workload | Device | KPI | Before | After | Delta | Noise band | Commit | Verdict | Note |");
         System.stdout.println("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
-        int32 worse = 0;
-        int32 single = 0;
         int32 x = 0;
         while (x < b.count()) {
             Row rb = b.get(x);
@@ -359,20 +400,32 @@ public final class Report {
                 }
                 float64 delta = ra.median - rb.median;
                 float64 pct = rb.median != 0.0 ? delta / rb.median * 100.0 : 0.0;
-                int32 v = Verdict.of(Report.lowerIsBetter(rb), rb.lo, rb.hi, rb.n, ra.median);
+                float64 lo0 = rb.lo;
+                float64 hi0 = rb.hi;
+                int64 n0 = rb.n;
+                int32 pi = Report.lastMeasured(bands, key);
+                if (pi >= 0) {
+                    Row rp = bands.get(pi);
+                    lo0 = rp.lo < lo0 ? rp.lo : lo0;
+                    hi0 = rp.hi > hi0 ? rp.hi : hi0;
+                    n0 = n0 + rp.n;
+                    res.widened = res.widened + 1;
+                }
+                res.paired = res.paired + 1;
+                int32 v = Verdict.of(Report.lowerIsBetter(rb), lo0, hi0, n0, ra.median);
                 String verdict = Verdict.name(v);
                 if (v == Verdict.WORSE) {
-                    worse = worse + 1;
+                    res.worse = res.worse + 1;
                 } else if (v == Verdict.SINGLE) {
-                    single = single + 1;
+                    res.single = res.single + 1;
                 }
                 String dateCell = date.byteLength() > 0 ? date : ra.date;
                 String bm #= Report.fmt(rb.median);
                 String am #= Report.fmt(ra.median);
                 String dm #= Report.fmt(delta);
                 String dp #= Report.fmt(pct);
-                String lo #= Report.fmt(rb.lo);
-                String hi #= Report.fmt(rb.hi);
+                String lo #= Report.fmt(lo0);
+                String hi #= Report.fmt(hi0);
                 System.stdout.println("| " + id + " | " + dateCell + " | " + unit + " | "
                     + rb.workload + " [" + rb.shape + "] | " + rb.backend + " | " + rb.kpi
                     + " | " + bm + " " + rb.unit + " | " + am + " " + ra.unit + " | " + dm + " ("
@@ -382,18 +435,22 @@ public final class Report {
         }
         System.stdout.println("");
         String singles = "";
-        if (single > 0) {
-            singles = "; " + single + " single-sample KPI(s) carry no verdict (no noise band "
-                + "before the day-apart rerun, scheduling 0.3.3)";
+        if (res.single > 0) {
+            singles = "; " + res.single + " single-sample KPI(s) carry no verdict (no noise band "
+                + "and no day-apart partner: pass --bands=<rerun rows>)";
         }
-        if (worse == 0) {
+        String bandsNote = "";
+        if (res.widened > 0) {
+            bandsNote = "; " + res.widened + " KPI(s) banded by the union of two runs (--bands)";
+        }
+        if (res.worse == 0) {
             System.stdout.println("not-worse: every paired KPI with a noise band is inside it or better"
-                + singles);
+                + " (" + res.paired + " paired)" + bandsNote + singles);
         } else {
-            System.stdout.println("not-worse FAILED: " + worse
-                + " KPI(s) regressed beyond the noise band" + singles);
+            System.stdout.println("not-worse FAILED: " + res.worse
+                + " KPI(s) regressed beyond the noise band (" + res.paired + " paired)" + bandsNote + singles);
         }
-        return worse == 0 ? 0 : 1;
+        return res;
     }
 
     /**

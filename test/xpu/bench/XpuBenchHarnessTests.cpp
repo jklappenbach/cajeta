@@ -459,3 +459,104 @@ TEST(XpuBenchHarness, lossyRingMarksSpanRowsPending) {
     EXPECT_EQ(call("lossyRows"), 0);
     EXPECT_EQ(call("llmLossy"), 0);
 }
+
+// ── Trial bands from the day-apart pair (xpu-tile-scheduling 0.3.3) ───────
+//
+// One run's five-block band is a few percent wide; runs minutes apart drift
+// further (T-002: 9 of 43 KPIs `worse` with no change; T-003: 4 of 47). With
+// `--bands=<rerun rows>` a KPI's band is the union of the two runs' bands and
+// its n their sum: a pair of single-sample rows (frame p99) becomes banded by
+// the two runs' spread, a drifting five-block KPI widens to that drift, and a
+// KPI the rerun does not have keeps its own band (or stays `single`). Driven
+// in memory through the report tool's own trial core, compiled from disk.
+namespace {
+
+const char* kTrialDriver =
+    "package xpubenchreport;\n"
+    "import cajeta.collection.ArrayList;\n"
+    "import cajeta.lang.String;\n"
+    "public class DriveT {\n"
+    "    static #String row(String wl, String kpi, String unit, float64 med, float64 lo, float64 hi, int32 n) {\n"
+    "        return \"{\\\"workload\\\":\\\"\" + wl + \"\\\",\\\"shape\\\":\\\"s\\\",\\\"kpi\\\":\\\"\" + kpi\n"
+    "            + \"\\\",\\\"unit\\\":\\\"\" + unit + \"\\\",\\\"median\\\":\" + med + \",\\\"min\\\":\" + lo\n"
+    "            + \",\\\"max\\\":\" + hi + \",\\\"p95\\\":0,\\\"n\\\":\" + n\n"
+    "            + \",\\\"device\\\":\\\"d\\\",\\\"backend\\\":\\\"hip\\\",\\\"driver\\\":\\\"v\\\",\\\"compiler\\\":\\\"c\\\",\"\n"
+    "            + \"\\\"powerMode\\\":\\\"auto\\\",\\\"date\\\":\\\"2026-09-06\\\",\\\"arm\\\":\\\"baseline\\\",\\\"note\\\":\\\"\\\"}\\n\";\n"
+    "    }\n"
+    "    static #ArrayList<Report.Row> rows(String json) {\n"
+    "        ArrayList<Report.Row> list = heap ArrayList<Report.Row>();\n"
+    "        int8[] bytes #= json.toBytes();\n"
+    "        Report.load(list, bytes, (int32) bytes.count());\n"
+    "        return list;\n"
+    "    }\n"
+    // before: a frame p99 (single), a five-block saxpy duration, a seam kernel_time (single)
+    "    static #String before() {\n"
+    "        return DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.184, 5.184, 5.184, 1)\n"
+    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 44.71, 43.45, 57.74, 5)\n"
+    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 6.46, 6.46, 6.46, 1);\n"
+    "    }\n"
+    // the day-apart rerun of the same code: p99 4.937, saxpy drifted to 60 [58, 62]; no seam row
+    "    static #String pair() {\n"
+    "        return DriveT.row(\"frame\", \"frame_p99\", \"ms\", 4.937, 4.937, 4.937, 1)\n"
+    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 60.0, 58.0, 62.0, 5);\n"
+    "    }\n"
+    "    static int32 run(String afterJson, boolean withBands) {\n"
+    "        ArrayList<Report.Row> b #= DriveT.rows(DriveT.before());\n"
+    "        ArrayList<Report.Row> a #= DriveT.rows(afterJson);\n"
+    "        ArrayList<Report.Row> p #= DriveT.rows(withBands ? DriveT.pair() : \"\");\n"
+    "        TrialResult r #= Report.trialRows(b, a, p, \"T-test\", \"u\", \"c\", \"\");\n"
+    "        return r.worse * 1000 + r.single * 100 + r.widened * 10 + r.paired;\n"
+    "    }\n"
+    // p99 5.1 inside [4.937, 5.184]; saxpy 61 inside the union [43.45, 62] though
+    // outside one run's band; kernel_time 7.0 has no partner -> single.
+    // Expect worse 0, single 1, widened 2, paired 3 -> 0123.
+    "    public static int32 insideUnion() {\n"
+    "        String a #= DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.1, 5.1, 5.1, 1)\n"
+    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
+    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "        return DriveT.run(a, true);\n"
+    "    }\n"
+    // p99 5.5 past the pair's spread, slower: worse 1 -> 1123.
+    "    public static int32 outsideUnion() {\n"
+    "        String a #= DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.5, 5.5, 5.5, 1)\n"
+    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
+    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "        return DriveT.run(a, true);\n"
+    "    }\n"
+    // the same after rows without --bands: p99 and kernel_time single, saxpy 61 is
+    // outside [43.45, 57.74] -> worse 1, single 2, widened 0, paired 3 -> 1203.
+    "    public static int32 noBands() {\n"
+    "        String a #= DriveT.row(\"frame\", \"frame_p99\", \"ms\", 5.1, 5.1, 5.1, 1)\n"
+    "            + DriveT.row(\"kernel.saxpy\", \"duration_isolated\", \"us\", 61.0, 60.0, 62.5, 5)\n"
+    "            + DriveT.row(\"seam\", \"kernel_time\", \"us\", 7.0, 7.0, 7.0, 1);\n"
+    "        return DriveT.run(a, false);\n"
+    "    }\n"
+    "}\n";
+
+std::unique_ptr<CajetaJit> compileTrial() {
+    std::map<std::string, std::string> sources;
+    std::string dir = here() + "/../../../tools/xpubench-report/src/xpubenchreport/";
+    sources["xpubenchreport.Report"] = readFile(dir + "Report.cajeta");
+    sources["xpubenchreport.Verdict"] = readFile(dir + "Verdict.cajeta");
+    sources["xpubenchreport.Span"] = readFile(dir + "Span.cajeta");
+    sources["xpubenchreport.Derived"] = readFile(dir + "Derived.cajeta");
+    sources["xpubenchreport.Spans"] = readFile(dir + "Spans.cajeta");
+    sources["xpubenchreport.TrialResult"] = readFile(dir + "TrialResult.cajeta");
+    sources["xpubenchreport.DriveT"] = kTrialDriver;
+    return CajetaJit::compile(sources, "xpubenchreport.DriveT", cpuOptions());
+}
+
+} // namespace
+
+// 0.3.3 — the union of two runs' bands gates; a partnerless single stays single.
+TEST(XpuBenchHarness, trialBandsFromDayApartPair) {
+    auto jit = compileTrial();
+    ASSERT_NE(jit, nullptr);
+    auto call = [&](const char* name) {
+        auto f = jit->lookup<int (*)()>(name);
+        return f ? f() : -1;
+    };
+    EXPECT_EQ(call("insideUnion"), 123) << "worse.single.widened.paired: expected 0/1/2/3";
+    EXPECT_EQ(call("outsideUnion"), 1123) << "a p99 past the pair's spread must gate";
+    EXPECT_EQ(call("noBands"), 1203) << "without --bands the single-run rule stands";
+}
