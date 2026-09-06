@@ -1,6 +1,6 @@
 # cpu-barrier-fission-loops — a barrier inside a loop on the CPU backend
 
-Status: **active** — approved 2026-09-06. Plan: [`agents/cpu-barrier-fission-loops-plan.md`](../agents/cpu-barrier-fission-loops-plan.md).
+Status: **closed** — approved and shipped 2026-09-06 (Unit 1 in cajeta `e0fa4871`; report §3.3 rerun, §4 T-001). Plan: [`agents/cpu-barrier-fission-loops-plan.md`](../agents/cpu-barrier-fission-loops-plan.md).
 
 ## 1. Definition
 

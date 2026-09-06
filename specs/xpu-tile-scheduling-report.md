@@ -69,8 +69,12 @@ Filled by scheduling Unit 2. Absent means the device could not report it.
 
 Filled by scheduling Unit 0 on 2026-09-06, commit `8fea9b63` (the harness
 and the two compiler/runtime fixes it needed are the commit after). Rows:
-`tmp/bench/rows-{hip,cpu}-20260906-1810.jsonl` (gitignored; the tables below
-are the rendered copy). One row per (workload, shape, KPI); the noise band is
+`tmp/bench/rows-hip-20260906-1810.jsonl` for gfx1151 and, for the CPU
+backend, `tmp/bench/rows-cpu-20260906-1502-full.jsonl` — the leg rerun the
+same day on commit `e0fa4871` after the CPU barrier-fission fix
+(`cpu-barrier-fission-loops`); the first CPU leg, `rows-cpu-20260906-1810`,
+is the `Before` side of trial T-001 in §4 (gitignored; the tables below are
+the rendered copy). One row per (workload, shape, KPI); the noise band is
 min/max over five blocks (over frames for the frame stand-in); `pending`
 rows name what could not be measured here and why. Rows for `bytes_moved`
 and `bandwidth_fraction` (pending on every kernel until §2 has the device's
@@ -107,9 +111,24 @@ achievable bandwidth) are in the JSON and omitted from the tables.
   baseline carries the two-stage form (per-block partials, one final
   launch), which took the CG stand-in from 1,190 to 10,141 iterations/s.
   That change is in the kernels, not in any scheduler.
-- **The CPU backend declines three kernels** (`reduceSum`, `finalSum2`,
-  `matmulTiled`: a barrier inside a loop), so `dot`, `reduceSum`,
-  `matmulTiled`, `cg` and `degenerate` are pending on that leg — §5.
+- **The CPU backend declined three kernels in the first leg** (`reduceSum`,
+  `finalSum2`, `matmulTiled`: a barrier loop whose code after the last
+  barrier was the latch block), so `dot`, `reduceSum`, `matmulTiled`, `cg`
+  and `degenerate` were pending on that leg. Fixed the same day
+  (`cpu-barrier-fission-loops`, commit `e0fa4871`) and the leg rerun: 112
+  rows, 14 pending, all of them `bandwidth_fraction` (§2). The CPU numbers
+  worth knowing: `matmulTiled` 1024² runs at 65 GFLOP/s (33 ms a launch;
+  the WMMA software tile does 115), the tree reduce moves 16 GB/s against
+  saxpy's 260, and the CG stand-in does 2,023 iterations/s (494 µs per
+  iteration, 70.6 µs of host time per launch — the CPU backend runs each
+  launch inline, so host cost is the kernel).
+- **Run-to-run drift on the CPU backend is wider than one run's band.**
+  Three reruns of the fixed binary, minutes apart, disagreed by up to 31%
+  on `dot` 1M isolated (78 → 103 µs) and 18% on `stencil5` 1024² pipelined,
+  against five-block bands a few percent wide; a control trial of two
+  identical-code runs read 9 of 43 banded KPIs as `worse`. The trial verb's
+  bands come from one run, so a CPU-leg verdict is not readable until
+  0.3.2 and 0.3.3 set bands from repeated runs (§4, §5).
 - **Frame p50 is noisier than p99 suggests**: 4.18 ms median with a
   3.5–6.6 ms band over 600 frames, unscheduled and solo. Later units read
   the p99 and the miss count, not the p50, for the frame stand-in.
@@ -205,78 +224,122 @@ The CPU backend runs every launch inline on the calling thread, so
 concurrent (the pair row shows the frame absorbing the best-effort work),
 and the pipelined and isolated modes coincide.
 
-Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | cpu | linux 7.0.0-30-generic | 8fea9b63 | auto | 2026-09-06T17:11:37Z
+Identity: AMD RYZEN AI MAX+ 395 w/ Radeon 8060S | cpu | linux 7.0.0-30-generic | e0fa4871 | auto | 2026-09-06T19:02:13Z
 
 | Workload | Shape | Device | KPI | Median | Noise band | p95 | n | Note |
 |---|---|---|---|---|---|---|---|---|
-| kernel.saxpy | 1048576 | cpu | duration_isolated | 44.71 us | [43.45, 57.74] | 67.43 | 5 | launch+sync per sample; class memory-bound |
-| kernel.saxpy | 1048576 | cpu | duration_pipelined | 44.69 us | [43.63, 69.01] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.saxpy | 1048576 | cpu | achieved_rate | 46.93 GFLOP/s | [46.93, 46.93] |  | 1 | flops / duration_pipelined |
-| kernel.saxpy | 16777216 | cpu | duration_isolated | 979.2 us | [949.1, 1112.4] | 1280.8 | 5 | launch+sync per sample; class memory-bound |
-| kernel.saxpy | 16777216 | cpu | duration_pipelined | 1049.0 us | [964.8, 1066.5] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.saxpy | 16777216 | cpu | achieved_rate | 31.99 GFLOP/s | [31.99, 31.99] |  | 1 | flops / duration_pipelined |
-| kernel.dot | 1048576 | cpu | duration_isolated | pending | | | | 351 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.dot | 1048576 | cpu | duration_pipelined | pending | | | | 351 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.dot | 1048576 | cpu | achieved_bandwidth | pending | | | | 351 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.dot | 16777216 | cpu | duration_isolated | pending | | | | 351 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.dot | 16777216 | cpu | duration_pipelined | pending | | | | 351 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.dot | 16777216 | cpu | achieved_bandwidth | pending | | | | 351 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.stencil5 | 1024x1024 | cpu | duration_isolated | 116.7 us | [114.4, 159.8] | 188.9 | 5 | launch+sync per sample; class memory-bound |
-| kernel.stencil5 | 1024x1024 | cpu | duration_pipelined | 139.2 us | [124.2, 142.1] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.stencil5 | 1024x1024 | cpu | achieved_rate | 60.28 GFLOP/s | [60.28, 60.28] |  | 1 | flops / duration_pipelined |
-| kernel.stencil5 | 4096x4096 | cpu | duration_isolated | 2269.1 us | [2096.7, 2370.4] | 2579.4 | 5 | launch+sync per sample; class memory-bound |
-| kernel.stencil5 | 4096x4096 | cpu | duration_pipelined | 2231.8 us | [2068.3, 2281.6] |  | 5 | 50 queued launches / count; class memory-bound |
-| kernel.stencil5 | 4096x4096 | cpu | achieved_rate | 60.14 GFLOP/s | [60.14, 60.14] |  | 1 | flops / duration_pipelined |
-| kernel.reduceSum | 1048576 | cpu | duration_isolated | pending | | | | 702 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.reduceSum | 1048576 | cpu | duration_pipelined | pending | | | | 702 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.reduceSum | 1048576 | cpu | achieved_bandwidth | pending | | | | 702 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.reduceSum | 16777216 | cpu | duration_isolated | pending | | | | 702 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.reduceSum | 16777216 | cpu | duration_pipelined | pending | | | | 702 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.reduceSum | 16777216 | cpu | achieved_bandwidth | pending | | | | 702 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.matmulTiled | 512^2 | cpu | duration_isolated | pending | | | | 51 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.matmulTiled | 512^2 | cpu | duration_pipelined | pending | | | | 51 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.matmulTiled | 512^2 | cpu | achieved_bandwidth | pending | | | | 51 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.matmulTiled | 1024^2 | cpu | duration_isolated | pending | | | | 51 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.matmulTiled | 1024^2 | cpu | duration_pipelined | pending | | | | 51 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.matmulTiled | 1024^2 | cpu | achieved_bandwidth | pending | | | | 51 launches failed on this backend (kernel not registered; see stderr) |
-| kernel.wmmaGemm | 512^2 | cpu | duration_isolated | 2788.6 us | [2543.8, 2792.9] | 2975.1 | 5 | launch+sync per sample; class matrix-core |
-| kernel.wmmaGemm | 512^2 | cpu | duration_pipelined | 2797.8 us | [2350.3, 2989.5] |  | 5 | 50 queued launches / count; class matrix-core |
-| kernel.wmmaGemm | 512^2 | cpu | achieved_rate | 95.95 GFLOP/s | [95.95, 95.95] |  | 1 | flops / duration_pipelined |
-| kernel.wmmaGemm | 1024^2 | cpu | duration_isolated | 19551.6 us | [19314.4, 20293.6] | 20561.3 | 5 | launch+sync per sample; class matrix-core |
-| kernel.wmmaGemm | 1024^2 | cpu | duration_pipelined | 18483.0 us | [17635.7, 19392.1] |  | 5 | 50 queued launches / count; class matrix-core |
-| kernel.wmmaGemm | 1024^2 | cpu | achieved_rate | 116.2 GFLOP/s | [116.2, 116.2] |  | 1 | flops / duration_pipelined |
-| kernel.gather | 1048576 | cpu | duration_isolated | 77.26 us | [73.21, 96.53] | 122.0 | 5 | launch+sync per sample; class indirect |
-| kernel.gather | 1048576 | cpu | duration_pipelined | 77.76 us | [74, 97.47] |  | 5 | 50 queued launches / count; class indirect |
-| kernel.gather | 16777216 | cpu | duration_isolated | 7215.4 us | [7124.7, 7314.9] | 8103.8 | 5 | launch+sync per sample; class indirect |
-| kernel.gather | 16777216 | cpu | duration_pipelined | 7097.0 us | [6844.4, 7255.4] |  | 5 | 50 queued launches / count; class indirect |
-| cg | 1024x1024x2000 | cpu | iterations_per_second | pending | | | | 2001 launches failed on this backend (kernel not registered; see stderr) |
-| cg | 1024x1024x2000 | cpu | host_cost_per_node | pending | | | | 2001 launches failed on this backend (kernel not registered; see stderr) |
-| degenerate | 1x1x2000 | cpu | iterations_per_second | pending | | | | 2001 launches failed on this backend (kernel not registered; see stderr) |
-| degenerate | 1x1x2000 | cpu | host_cost_per_node | pending | | | | 2001 launches failed on this backend (kernel not registered; see stderr) |
-| seam | 5us | cpu | kernel_time | 6.46 us | [6.46, 6.46] |  | 1 | spin(4235) pipelined x100; calibrated from 1.181 ns/iter |
-| seam | 5us | cpu | launch_call | 6.302 us | [6.282, 6.402] | 6.442 | 5 | host time inside the launch statement |
-| seam | 5us | cpu | pipelined_overhead | -0.087 us | [-0.145, 0.066] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 5us | cpu | isolated_overhead | -0.124 us | [-0.144, 0.056] |  | 5 | launch + sync minus kernel_time |
-| seam | 50us | cpu | kernel_time | 50.96 us | [50.96, 50.96] |  | 1 | spin(42541) pipelined x100; calibrated from 1.175 ns/iter |
-| seam | 50us | cpu | launch_call | 50.856 us | [50.796, 50.966] | 51.157 | 5 | host time inside the launch statement |
-| seam | 50us | cpu | pipelined_overhead | 0.2 us | [0.018, 0.263] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 50us | cpu | isolated_overhead | -0.07 us | [-0.13, 0.04] |  | 5 | launch + sync minus kernel_time |
-| seam | 200us | cpu | kernel_time | 200.1 us | [200.1, 200.1] |  | 1 | spin(169658) pipelined x100; calibrated from 1.179 ns/iter |
-| seam | 200us | cpu | launch_call | 199.5 us | [199.5, 199.5] | 202.4 | 5 | host time inside the launch statement |
-| seam | 200us | cpu | pipelined_overhead | 0.055 us | [-0.027, 0.267] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
-| seam | 200us | cpu | isolated_overhead | -0.553 us | [-0.573, -0.483] |  | 5 | launch + sync minus kernel_time |
-| frame | 8388608x12@16.667ms | cpu | frame_p50 | 3.339 ms | [1.986, 7.233] | 5.184 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
-| frame | 8388608x12@16.667ms | cpu | frame_p99 | 5.184 ms | [5.184, 5.184] |  | 1 | nearest-rank over frames |
+| kernel.saxpy | 1048576 | cpu | duration_isolated | 46.29 us | [43.22, 58.26] | 78.47 | 5 | launch+sync per sample; class memory-bound |
+| kernel.saxpy | 1048576 | cpu | duration_pipelined | 44.18 us | [43.52, 88.07] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.saxpy | 1048576 | cpu | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
+| kernel.saxpy | 1048576 | cpu | achieved_bandwidth | 284.8 GB/s | [142.9, 289.1] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.saxpy | 1048576 | cpu | achieved_rate | 47.47 GFLOP/s | [23.81, 48.19] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.saxpy | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.saxpy | 16777216 | cpu | duration_isolated | 986.8 us | [860.9, 1029.6] | 1154.2 | 5 | launch+sync per sample; class memory-bound |
+| kernel.saxpy | 16777216 | cpu | duration_pipelined | 992.6 us | [954.8, 1023.5] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.saxpy | 16777216 | cpu | bytes_moved | 201326592 bytes | [201326592, 201326592] |  | 1 | ideal traffic: every element read/written once |
+| kernel.saxpy | 16777216 | cpu | achieved_bandwidth | 202.8 GB/s | [196.7, 210.9] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.saxpy | 16777216 | cpu | achieved_rate | 33.8 GFLOP/s | [32.79, 35.14] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.saxpy | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.dot | 1048576 | cpu | duration_isolated | 102.6 us | [78.4, 115.2] | 125.6 | 5 | launch+sync per sample; class memory-bound+reduce |
+| kernel.dot | 1048576 | cpu | duration_pipelined | 103.0 us | [84.12, 109.2] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
+| kernel.dot | 1048576 | cpu | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
+| kernel.dot | 1048576 | cpu | achieved_bandwidth | 81.48 GB/s | [76.85, 99.72] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.dot | 1048576 | cpu | achieved_rate | 20.37 GFLOP/s | [19.21, 24.93] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.dot | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.dot | 16777216 | cpu | duration_isolated | 2056.1 us | [1960.1, 2139.0] | 2217.2 | 5 | launch+sync per sample; class memory-bound+reduce |
+| kernel.dot | 16777216 | cpu | duration_pipelined | 1947.6 us | [1929.8, 2014.8] |  | 5 | 50 queued launches / count; class memory-bound+reduce |
+| kernel.dot | 16777216 | cpu | bytes_moved | 134217728 bytes | [134217728, 134217728] |  | 1 | ideal traffic: every element read/written once |
+| kernel.dot | 16777216 | cpu | achieved_bandwidth | 68.91 GB/s | [66.62, 69.55] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.dot | 16777216 | cpu | achieved_rate | 17.23 GFLOP/s | [16.65, 17.39] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.dot | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.stencil5 | 1024x1024 | cpu | duration_isolated | 149.9 us | [146.6, 156.9] | 199.4 | 5 | launch+sync per sample; class memory-bound |
+| kernel.stencil5 | 1024x1024 | cpu | duration_pipelined | 154.7 us | [128.2, 162.6] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.stencil5 | 1024x1024 | cpu | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
+| kernel.stencil5 | 1024x1024 | cpu | achieved_bandwidth | 54.21 GB/s | [51.58, 65.45] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 1024x1024 | cpu | achieved_rate | 54.21 GFLOP/s | [51.58, 65.45] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 1024x1024 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.stencil5 | 4096x4096 | cpu | duration_isolated | 2307.6 us | [2257.3, 2824.5] | 2987.3 | 5 | launch+sync per sample; class memory-bound |
+| kernel.stencil5 | 4096x4096 | cpu | duration_pipelined | 2243.0 us | [2122.6, 2354.0] |  | 5 | 50 queued launches / count; class memory-bound |
+| kernel.stencil5 | 4096x4096 | cpu | bytes_moved | 134217728 bytes | [134217728, 134217728] |  | 1 | ideal traffic: every element read/written once |
+| kernel.stencil5 | 4096x4096 | cpu | achieved_bandwidth | 59.84 GB/s | [57.02, 63.23] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 4096x4096 | cpu | achieved_rate | 59.84 GFLOP/s | [57.02, 63.23] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.stencil5 | 4096x4096 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.reduceSum | 1048576 | cpu | duration_isolated | 279.2 us | [211.6, 299.9] | 354.8 | 5 | launch+sync per sample; class sync-bound |
+| kernel.reduceSum | 1048576 | cpu | duration_pipelined | 279.3 us | [266.3, 292.0] |  | 5 | 50 queued launches / count; class sync-bound |
+| kernel.reduceSum | 1048576 | cpu | bytes_moved | 4194304 bytes | [4194304, 4194304] |  | 1 | ideal traffic: every element read/written once |
+| kernel.reduceSum | 1048576 | cpu | achieved_bandwidth | 15.02 GB/s | [14.37, 15.75] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 1048576 | cpu | achieved_rate | 3.75 GFLOP/s | [3.59, 3.94] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.reduceSum | 16777216 | cpu | duration_isolated | 4386.5 us | [4271.1, 4475.4] | 5046.6 | 5 | launch+sync per sample; class sync-bound |
+| kernel.reduceSum | 16777216 | cpu | duration_pipelined | 4140.1 us | [4060.9, 4271.2] |  | 5 | 50 queued launches / count; class sync-bound |
+| kernel.reduceSum | 16777216 | cpu | bytes_moved | 67108864 bytes | [67108864, 67108864] |  | 1 | ideal traffic: every element read/written once |
+| kernel.reduceSum | 16777216 | cpu | achieved_bandwidth | 16.21 GB/s | [15.71, 16.53] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 16777216 | cpu | achieved_rate | 4.05 GFLOP/s | [3.93, 4.13] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.reduceSum | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.matmulTiled | 512^2 | cpu | duration_isolated | 4954.8 us | [4888.3, 5016.5] | 5138.4 | 5 | launch+sync per sample; class compute-bound |
+| kernel.matmulTiled | 512^2 | cpu | duration_pipelined | 4983.4 us | [4615.1, 5342.3] |  | 5 | 50 queued launches / count; class compute-bound |
+| kernel.matmulTiled | 512^2 | cpu | bytes_moved | 3145728 bytes | [3145728, 3145728] |  | 1 | ideal traffic: every element read/written once |
+| kernel.matmulTiled | 512^2 | cpu | achieved_bandwidth | 0.63 GB/s | [0.59, 0.68] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 512^2 | cpu | achieved_rate | 53.87 GFLOP/s | [50.25, 58.17] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 512^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.matmulTiled | 1024^2 | cpu | duration_isolated | 33357.0 us | [31888.0, 34114.7] | 34813.3 | 5 | launch+sync per sample; class compute-bound |
+| kernel.matmulTiled | 1024^2 | cpu | duration_pipelined | 32904.8 us | [30960.1, 33549.7] |  | 5 | 50 queued launches / count; class compute-bound |
+| kernel.matmulTiled | 1024^2 | cpu | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
+| kernel.matmulTiled | 1024^2 | cpu | achieved_bandwidth | 0.38 GB/s | [0.38, 0.41] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 1024^2 | cpu | achieved_rate | 65.26 GFLOP/s | [64.01, 69.36] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.matmulTiled | 1024^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.wmmaGemm | 512^2 | cpu | duration_isolated | 2820.7 us | [2818.5, 2821.6] | 2849.6 | 5 | launch+sync per sample; class matrix-core |
+| kernel.wmmaGemm | 512^2 | cpu | duration_pipelined | 2679.1 us | [2548.7, 2822.0] |  | 5 | 50 queued launches / count; class matrix-core |
+| kernel.wmmaGemm | 512^2 | cpu | bytes_moved | 2097152 bytes | [2097152, 2097152] |  | 1 | ideal traffic: every element read/written once |
+| kernel.wmmaGemm | 512^2 | cpu | achieved_bandwidth | 0.78 GB/s | [0.74, 0.82] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 512^2 | cpu | achieved_rate | 100.2 GFLOP/s | [95.12, 105.3] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 512^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.wmmaGemm | 1024^2 | cpu | duration_isolated | 18667.3 us | [18149.0, 19699.4] | 20568.1 | 5 | launch+sync per sample; class matrix-core |
+| kernel.wmmaGemm | 1024^2 | cpu | duration_pipelined | 18577.0 us | [18127.3, 18983.5] |  | 5 | 50 queued launches / count; class matrix-core |
+| kernel.wmmaGemm | 1024^2 | cpu | bytes_moved | 8388608 bytes | [8388608, 8388608] |  | 1 | ideal traffic: every element read/written once |
+| kernel.wmmaGemm | 1024^2 | cpu | achieved_bandwidth | 0.45 GB/s | [0.44, 0.46] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 1024^2 | cpu | achieved_rate | 115.6 GFLOP/s | [113.1, 118.5] |  | 5 | flops / duration_pipelined; band from the duration band |
+| kernel.wmmaGemm | 1024^2 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.gather | 1048576 | cpu | duration_isolated | 73.75 us | [72.58, 106.5] | 125.4 | 5 | launch+sync per sample; class indirect |
+| kernel.gather | 1048576 | cpu | duration_pipelined | 85.5 us | [76.88, 88.21] |  | 5 | 50 queued launches / count; class indirect |
+| kernel.gather | 1048576 | cpu | bytes_moved | 12582912 bytes | [12582912, 12582912] |  | 1 | ideal traffic: every element read/written once |
+| kernel.gather | 1048576 | cpu | achieved_bandwidth | 147.2 GB/s | [142.7, 163.7] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.gather | 1048576 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| kernel.gather | 16777216 | cpu | duration_isolated | 7102.9 us | [6988.1, 7207.6] | 7677.8 | 5 | launch+sync per sample; class indirect |
+| kernel.gather | 16777216 | cpu | duration_pipelined | 7074.9 us | [7014.1, 7229.1] |  | 5 | 50 queued launches / count; class indirect |
+| kernel.gather | 16777216 | cpu | bytes_moved | 201326592 bytes | [201326592, 201326592] |  | 1 | ideal traffic: every element read/written once |
+| kernel.gather | 16777216 | cpu | achieved_bandwidth | 28.46 GB/s | [27.85, 28.7] |  | 5 | bytes_moved / duration_pipelined; band from the duration band |
+| kernel.gather | 16777216 | cpu | bandwidth_fraction | pending | | | | needs the device's measured achievable bandwidth (report §2, scheduling Unit 2) |
+| cg | 1024x1024x2000 | cpu | iterations_per_second | 2022.9 iter/s | [1950.7, 2145.3] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 400 iterations per block, one sync per block |
+| cg | 1024x1024x2000 | cpu | host_cost_per_node | 70.596 us | [66.569, 73.21] |  | 5 | host wall time inside the launch calls / launches |
+| cg | 1024x1024x2000 | cpu | wall_per_iteration | 494.3 us | [466.1, 512.6] |  | 5 | 1e6 / iterations_per_second; band from its band |
+| degenerate | 1x1x2000 | cpu | iterations_per_second | 93561.4 iter/s | [84624.4, 94248.5] |  | 5 | 7 launches/iteration (stencil + 2 dot partials + 1 final + 3 axpy), 400 iterations per block, one sync per block |
+| degenerate | 1x1x2000 | cpu | host_cost_per_node | 1.524 us | [1.513, 1.685] |  | 5 | host wall time inside the launch calls / launches |
+| degenerate | 1x1x2000 | cpu | wall_per_iteration | 10.69 us | [10.61, 11.82] |  | 5 | 1e6 / iterations_per_second; band from its band |
+| frame | 8388608x12@16.667ms | cpu | frame_p50 | 3.257 ms | [1.992, 5.883] | 5.31 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| frame | 8388608x12@16.667ms | cpu | frame_p99 | 5.31 ms | [5.31, 5.31] |  | 1 | nearest-rank over frames |
 | frame | 8388608x12@16.667ms | cpu | missed_frames_per_10000 | 0 frames | [0, 0] |  | 1 | 0 of 600 frames exceeded the period |
 | frame | 8388608x12@16.667ms | cpu | sync_points_per_frame | 1 count | [1, 1] |  | 1 | one host sync per frame; the 11 intra-frame dependencies ride stream order |
-| pair | 8388608x12@16.667ms | cpu | frame_p50 | 53.318 ms | [48.956, 60.047] | 58.035 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
-| pair | 8388608x12@16.667ms | cpu | frame_p99 | 58.035 ms | [58.035, 58.035] |  | 1 | nearest-rank over frames |
+| pair | 8388608x12@16.667ms | cpu | frame_p50 | 53.177 ms | [49.357, 59.97] | 57.286 | 600 | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| pair | 8388608x12@16.667ms | cpu | frame_p99 | 57.286 ms | [57.286, 57.286] |  | 1 | nearest-rank over frames |
 | pair | 8388608x12@16.667ms | cpu | missed_frames_per_10000 | 10000.0 frames | [10000.0, 10000.0] |  | 1 | 600 of 600 frames exceeded the period |
 | pair | 8388608x12@16.667ms | cpu | sync_points_per_frame | 1 count | [1, 1] |  | 1 | one host sync per frame; the 11 intra-frame dependencies ride stream order |
-| pair | 8388608x12@16.667ms | cpu | besteffort_throughput | 180.9 GB/s | [180.9, 180.9] |  | 1 | 28800 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
-| pair | 8388608x12@16.667ms | cpu | protected_p99_slowdown | 1019.4 % | [1019.4, 1019.4] |  | 1 | frame p99 co-run vs solo 5.184 ms |
-| pair | 8388608x12@16.667ms | cpu | besteffort_pct_of_solo | 97.9 % | [97.9, 97.9] |  | 1 | vs solo pipelined saxpy(16M) 184.87 GB/s |
-| pair | 8388608x12@16.667ms | cpu | goodput | 48.9 % | [48.9, 48.9] |  | 1 | mean of protected on-time % and best-effort % of solo |
+| pair | 8388608x12@16.667ms | cpu | besteffort_throughput | 181.5 GB/s | [181.5, 181.5] |  | 1 | 28800 saxpy(16M) launches on the second stream, batches of 24 refilled on completion |
+| pair | 8388608x12@16.667ms | cpu | protected_p99_slowdown | 978.8 % | [978.8, 978.8] |  | 1 | frame p99 co-run vs solo 5.31 ms |
+| pair | 8388608x12@16.667ms | cpu | besteffort_pct_of_solo | 99.6 % | [99.6, 99.6] |  | 1 | vs solo pipelined saxpy(16M) 182.19 GB/s |
+| pair | 8388608x12@16.667ms | cpu | goodput | 49.8 % | [49.8, 49.8] |  | 1 | mean of protected on-time % and best-effort % of solo |
+| seam | 5us | cpu | kernel_time | 6.56 us | [6.56, 6.56] |  | 1 | spin(4240) pipelined x100; calibrated from 1.179 ns/iter |
+| seam | 5us | cpu | launch_call | 6.392 us | [6.252, 6.403] | 6.523 | 5 | host time inside the launch statement |
+| seam | 5us | cpu | pipelined_overhead | -0.142 us | [-0.255, -0.052] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 5us | cpu | isolated_overhead | -0.144 us | [-0.274, -0.024] |  | 5 | launch + sync minus kernel_time |
+| seam | 50us | cpu | kernel_time | 50.94 us | [50.94, 50.94] |  | 1 | spin(42313) pipelined x100; calibrated from 1.182 ns/iter |
+| seam | 50us | cpu | launch_call | 50.626 us | [50.595, 50.766] | 51.056 | 5 | host time inside the launch statement |
+| seam | 50us | cpu | pipelined_overhead | -0.171 us | [-0.197, -0.109] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 50us | cpu | isolated_overhead | -0.282 us | [-0.313, -0.142] |  | 5 | launch + sync minus kernel_time |
+| seam | 200us | cpu | kernel_time | 200.4 us | [200.4, 200.4] |  | 1 | spin(170020) pipelined x100; calibrated from 1.176 ns/iter |
+| seam | 200us | cpu | launch_call | 200.0 us | [200.0, 200.1] | 203.3 | 5 | host time inside the launch statement |
+| seam | 200us | cpu | pipelined_overhead | 0.279 us | [0.249, 0.58] |  | 5 | (100 queued launches + sync)/100 minus kernel_time |
+| seam | 200us | cpu | isolated_overhead | -0.297 us | [-0.357, -0.247] |  | 5 | launch + sync minus kernel_time |
 
 ### 3.4 Device tier on the seam pass
 
@@ -327,12 +390,51 @@ not. Any per-kernel accounting over a long run sets the ring explicitly.
 ## 4. Trials
 
 One row per configuration tried, in order. `Before` is the previous accepted
-row for the same (workload, device, KPI). Verdict is one of `keep`, `revert`,
-`gate-off`, `blocked`.
+row for the same (workload, device, KPI). Verdict per KPI is `keep`, `worse` or
+`single` (§1, from the trial verb); the unit's verdict — `keep`, `revert`,
+`gate-off` or `blocked` — is the line under its rows.
 
 | Trial | Date | Plan / unit | Workload | Device | KPI | Before | After | Delta | Noise band | Commit | Verdict | Note |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| T-000 | | | | | | | | | | | | |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.saxpy [1048576] | cpu | duration_isolated | 44.71 us | 46.29 us | 1.58 (3.534%) | [43.45, 57.74] | e0fa4871 | keep | launch+sync per sample; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.saxpy [1048576] | cpu | duration_pipelined | 44.69 us | 44.18 us | -0.51 (-1.141%) | [43.63, 69.01] | e0fa4871 | keep | 50 queued launches / count; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.saxpy [16777216] | cpu | duration_isolated | 979.2 us | 986.8 us | 7.56 (0.772%) | [949.1, 1112.4] | e0fa4871 | keep | launch+sync per sample; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.saxpy [16777216] | cpu | duration_pipelined | 1049.0 us | 992.6 us | -56.38 (-5.375%) | [964.8, 1066.5] | e0fa4871 | keep | 50 queued launches / count; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.stencil5 [1024x1024] | cpu | duration_isolated | 116.7 us | 149.9 us | 33.29 (28.538%) | [114.4, 159.8] | e0fa4871 | keep | launch+sync per sample; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.stencil5 [1024x1024] | cpu | duration_pipelined | 139.2 us | 154.7 us | 15.59 (11.204%) | [124.2, 142.1] | e0fa4871 | worse | 50 queued launches / count; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.stencil5 [4096x4096] | cpu | duration_isolated | 2269.1 us | 2307.6 us | 38.49 (1.696%) | [2096.7, 2370.4] | e0fa4871 | keep | launch+sync per sample; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.stencil5 [4096x4096] | cpu | duration_pipelined | 2231.8 us | 2243.0 us | 11.19 (0.501%) | [2068.3, 2281.6] | e0fa4871 | keep | 50 queued launches / count; class memory-bound |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.wmmaGemm [512^2] | cpu | duration_isolated | 2788.6 us | 2820.7 us | 32.1 (1.151%) | [2543.8, 2792.9] | e0fa4871 | worse | launch+sync per sample; class matrix-core |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.wmmaGemm [512^2] | cpu | duration_pipelined | 2797.8 us | 2679.1 us | -118.7 (-4.241%) | [2350.3, 2989.5] | e0fa4871 | keep | 50 queued launches / count; class matrix-core |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.wmmaGemm [1024^2] | cpu | duration_isolated | 19551.6 us | 18667.3 us | -884.3 (-4.523%) | [19314.4, 20293.6] | e0fa4871 | keep | launch+sync per sample; class matrix-core |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.wmmaGemm [1024^2] | cpu | duration_pipelined | 18483.0 us | 18577.0 us | 93.94 (0.508%) | [17635.7, 19392.1] | e0fa4871 | keep | 50 queued launches / count; class matrix-core |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.gather [1048576] | cpu | duration_isolated | 77.26 us | 73.75 us | -3.51 (-4.543%) | [73.21, 96.53] | e0fa4871 | keep | launch+sync per sample; class indirect |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.gather [1048576] | cpu | duration_pipelined | 77.76 us | 85.5 us | 7.74 (9.954%) | [74, 97.47] | e0fa4871 | keep | 50 queued launches / count; class indirect |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.gather [16777216] | cpu | duration_isolated | 7215.4 us | 7102.9 us | -112.6 (-1.56%) | [7124.7, 7314.9] | e0fa4871 | keep | launch+sync per sample; class indirect |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | kernel.gather [16777216] | cpu | duration_pipelined | 7097.0 us | 7074.9 us | -22.07 (-0.311%) | [6844.4, 7255.4] | e0fa4871 | keep | 50 queued launches / count; class indirect |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [5us] | cpu | launch_call | 6.302 us | 6.392 us | 0.09 (1.428%) | [6.282, 6.402] | e0fa4871 | keep | host time inside the launch statement |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [5us] | cpu | pipelined_overhead | -0.087 us | -0.142 us | -0.055 (63.219%) | [-0.145, 0.066] | e0fa4871 | keep | (100 queued launches + sync)/100 minus kernel_time |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [5us] | cpu | isolated_overhead | -0.124 us | -0.144 us | -0.02 (16.129%) | [-0.144, 0.056] | e0fa4871 | keep | launch + sync minus kernel_time |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [50us] | cpu | launch_call | 50.856 us | 50.626 us | -0.23 (-0.452%) | [50.796, 50.966] | e0fa4871 | keep | host time inside the launch statement |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [50us] | cpu | pipelined_overhead | 0.2 us | -0.171 us | -0.371 (-185.5%) | [0.018, 0.263] | e0fa4871 | keep | (100 queued launches + sync)/100 minus kernel_time |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [50us] | cpu | isolated_overhead | -0.07 us | -0.282 us | -0.212 (302.9%) | [-0.13, 0.04] | e0fa4871 | keep | launch + sync minus kernel_time |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [200us] | cpu | launch_call | 199.5 us | 200.0 us | 0.561 (0.281%) | [199.5, 199.5] | e0fa4871 | worse | host time inside the launch statement |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [200us] | cpu | pipelined_overhead | 0.055 us | 0.279 us | 0.224 (407.3%) | [-0.027, 0.267] | e0fa4871 | worse | (100 queued launches + sync)/100 minus kernel_time |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | seam [200us] | cpu | isolated_overhead | -0.553 us | -0.297 us | 0.256 (-46.293%) | [-0.573, -0.483] | e0fa4871 | worse | launch + sync minus kernel_time |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | frame [8388608x12@16.667ms] | cpu | frame_p50 | 3.339 ms | 3.257 ms | -0.082 (-2.456%) | [1.986, 7.233] | e0fa4871 | keep | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+| T-001 | 2026-09-06T19:02:13Z | cpu-barrier-fission-loops:1 | pair [8388608x12@16.667ms] | cpu | frame_p50 | 53.318 ms | 53.177 ms | -0.141 (-0.264%) | [48.956, 60.047] | e0fa4871 | keep | 12 dependent chainStep launches + one sync per frame; band is min/max over frames |
+
+T-001 — `cpu-barrier-fission-loops` Unit 1 on the CPU leg (before: the first
+leg, `8fea9b63`; after: the rerun on `e0fa4871`). Unit verdict: **keep**.
+22 keep, 5 `worse`, 35 `single` (the single-sample rows are omitted above;
+§1). The five: `stencil5` 1024² pipelined +11%, `wmmaGemm` 512² isolated
++1.2%, and three seam rows at 200 µs that are sub-microsecond differences of
+200 µs measurements — none on a path the fission touches. Control T-002, two
+runs of the same code minutes apart (`rows-cpu-20260906-1449-full` vs
+`-1502-full`): 34 keep, 9 `worse`, 55 `single`, with `dot` 1M isolated +31%
+and `stencil5` 1024² pipelined +18% — the CPU backend's run-to-run drift is
+wider than one run's five-block band, so a CPU-leg `worse` is not readable
+until 0.3.2 and 0.3.3 set bands from repeated runs (§5).
 
 ## 5. Residuals
 
@@ -341,7 +443,8 @@ decided it and what would reopen it.
 
 | Residual | Trial | Why | Reopen when |
 |---|---|---|---|
-| CPU backend: `dot`, `reduceSum`, `matmulTiled`, `cg`, `degenerate` pending | baseline | The CPU barrier fission declines a workgroup barrier inside a loop ("unstructured barrier control flow", `CpuBarrierFission.cpp`) — the LDS tree reduce, the two-array final reduce and the LDS-tiled GEMM all carry one. The kernel gets no CPU code; the launch prints `no registered CPU kernel` and returns. Two silences fixed in Unit 0: the build now prints `[xpu-kernel-skipped] … barrier fission: …` and the runtime now counts the failed launch (`XpuCpuBarrierFissionNoteTests`, 3 tests). | The fission accepts a barrier inside a uniform loop (a compiler unit, not part of this family); then rerun the CPU leg and fill the rows |
+| CLOSED 2026-09-06 — CPU backend: `dot`, `reduceSum`, `matmulTiled`, `cg`, `degenerate` were pending | baseline → T-001 | The CPU barrier fission declined a uniform loop whose code after its last barrier was the latch block (`CpuBarrierFission.cpp` started a region at the latch and walked around the loop: "unstructured barrier control flow"). Fixed in `cpu-barrier-fission-loops` Unit 1 (cajeta `e0fa4871`; 7 tests, a per-work-item latch is now declined by name); the CPU leg reran the same day: 112 rows, 14 pending, all of them `bandwidth_fraction` (§3.3). Unit 0's two silences (the skip note, the failure count) stay in place | closed |
+| CPU-leg verdicts: one run's band understates run-to-run drift | T-001, T-002 | Two runs of identical code minutes apart (T-002) flagged 9 of 43 banded KPIs — `dot` 1M isolated +31%, `stencil5` 1024² pipelined +18%, seam rows at 200 µs by sub-microsecond amounts; the fission trial (T-001) flagged 5 of the same kind on paths it never touched. A five-block band from one run is a few percent wide on a 32-core host at `auto` power; day-to-day drift is not | scheduling 0.3.2 (the day-apart pair) with 0.3.3 (`trial --bands`: per KPI the wider of the within-run band and the day-apart spread); until then a CPU-leg `worse` is reported, not gating |
 | `bandwidth_fraction` pending on every kernel | baseline | needs the device's measured achievable bandwidth | scheduling Unit 2 fills §2 |
 | `matrix_core_fraction`, `attention_kernel_duration` not produced by the harness | baseline | the harness rows are host-clocked; §3.5 measured both from device spans in one profiled run (94%; 43.6 µs decode, 917 µs prefill) | a later unit folds a profiled llm pass into the harness so the rows carry them |
 | `per_token_p99` pending | baseline | `SchedThroughput` prints a per-run mean, not per-token latencies | cajeta-llm's bench emits per-token timings (profiles plan Unit 1 needs it) |
